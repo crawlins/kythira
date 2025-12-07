@@ -472,12 +472,101 @@ namespace network_fixture {
 | Enum Values | snake_case | Values like variables/constants |
 | Namespaces | snake_case | Matches std library convention |
 
+## Test Execution
+
+### Using CTest
+
+**Rule**: Tests MUST be executed using the `ctest` utility. Running tests directly should only be done as a last resort.
+
+**Rationale**:
+- CTest provides consistent test execution across the project
+- Enables parallel test execution for faster feedback
+- Provides standardized output formatting and result reporting
+- Integrates seamlessly with CI/CD pipelines
+- Supports test filtering, timeout management, and result aggregation
+- Handles test dependencies and execution order automatically
+
+**Preferred Test Execution**:
+
+```bash
+# ✅ CORRECT - Run all tests with CTest
+cd build
+ctest
+
+# ✅ CORRECT - Run tests in parallel
+ctest -j$(nproc)
+
+# ✅ CORRECT - Run tests with verbose output
+ctest --verbose
+
+# ✅ CORRECT - Run specific test by name
+ctest -R test_name_pattern
+
+# ✅ CORRECT - Run tests and show output on failure
+ctest --output-on-failure
+
+# ✅ CORRECT - Rerun only failed tests
+ctest --rerun-failed
+```
+
+**Direct Test Execution (Last Resort Only)**:
+
+```bash
+# ❌ AVOID - Direct execution bypasses CTest benefits
+./build/tests/specific_test
+
+# ⚠️ ACCEPTABLE ONLY FOR DEBUGGING - When you need direct control
+./build/tests/specific_test --log_level=all
+```
+
+**When Direct Execution is Acceptable**:
+- Debugging a specific test with detailed logging
+- Running a test under a debugger (gdb, lldb)
+- Profiling a specific test
+- Testing with specific command-line arguments not supported by CTest
+
+**CTest Configuration Best Practices**:
+
+In CMakeLists.txt, ensure tests are properly registered:
+
+```cmake
+# Register test with CTest
+add_test(NAME test_name COMMAND test_executable)
+
+# Set test properties
+set_tests_properties(test_name PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;fast"
+)
+
+# Enable CTest
+enable_testing()
+```
+
+**CI/CD Integration**:
+
+```bash
+# Build and run all tests
+cmake --build build
+cd build && ctest --output-on-failure -j$(nproc)
+```
+
+**Benefits of CTest**:
+1. **Consistency** - Same test execution method everywhere
+2. **Performance** - Parallel execution reduces test time
+3. **Reporting** - Standardized output for CI/CD systems
+4. **Filtering** - Easy to run subsets of tests
+5. **Reliability** - Timeout handling prevents hanging tests
+6. **Integration** - Works with CDash for test result dashboards
+
 ## Enforcement
 
 - Code reviews MUST verify naming conventions
 - Linters/formatters SHOULD be configured to check conventions
 - New code MUST follow these conventions
 - Existing code SHOULD be updated when modified
+- Test execution in documentation and scripts MUST use `ctest`
+- Direct test execution MUST be justified in code reviews
 
 ## Exceptions
 

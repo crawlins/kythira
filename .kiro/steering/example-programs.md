@@ -274,17 +274,78 @@ Before committing an example program, verify:
 
 ## Testing Examples
 
-Examples should be tested as part of CI/CD:
+### Using CTest for Examples
+
+**Rule**: Examples SHOULD be executed using `ctest` when possible. Direct execution should only be used as a last resort.
+
+**Rationale**:
+- CTest provides consistent execution and reporting
+- Enables parallel execution of multiple examples
+- Integrates with CI/CD pipelines seamlessly
+- Provides timeout management and failure handling
+- Standardizes output formatting
+
+**Preferred Approach - Register Examples with CTest**:
+
+In CMakeLists.txt:
+```cmake
+# Register example as a test
+add_test(NAME example_name_test COMMAND example_name)
+set_tests_properties(example_name_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;integration"
+)
+```
+
+**Running Examples via CTest**:
 
 ```bash
-# Run all examples and check exit codes
-for example in build/examples/*/; do
-    if ! "$example"; then
-        echo "Example $example failed"
-        exit 1
+# ✅ CORRECT - Run all examples through CTest
+cd build
+ctest -L example
+
+# ✅ CORRECT - Run examples in parallel
+ctest -L example -j$(nproc)
+
+# ✅ CORRECT - Run specific example
+ctest -R example_name_test --verbose
+```
+
+**Direct Execution (Last Resort)**:
+
+```bash
+# ❌ AVOID - Direct execution bypasses CTest benefits
+./build/examples/category/example_name
+
+# ⚠️ ACCEPTABLE FOR MANUAL TESTING - When exploring output interactively
+./build/examples/category/example_name
+```
+
+**CI/CD Integration**:
+
+```bash
+# ✅ CORRECT - Build and test examples with CTest
+cmake --build build
+cd build && ctest -L example --output-on-failure -j$(nproc)
+
+# ❌ AVOID - Manual loop over executables
+for example in build/examples/*/*; do
+    if [ -x "$example" ]; then
+        echo "Running $example..."
+        if ! "$example"; then
+            echo "Example $example failed"
+            exit 1
+        fi
     fi
 done
 ```
+
+**Benefits of CTest for Examples**:
+1. **Consistency** - Same execution method as unit tests
+2. **Reporting** - Standardized pass/fail reporting
+3. **Timeout Protection** - Prevents hanging examples
+4. **Parallel Execution** - Faster validation
+5. **Filtering** - Easy to run specific examples or categories
 
 ## Anti-Patterns to Avoid
 
