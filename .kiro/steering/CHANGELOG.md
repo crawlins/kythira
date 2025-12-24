@@ -7,6 +7,153 @@ inclusion: manual
 
 This document tracks changes to the steering documents in this directory.
 
+## 2024-12-15: Updated to Two-Argument BOOST_AUTO_TEST_CASE Requirement
+
+### All Steering Documents
+
+**Updated Requirement**: Changed from `BOOST_TEST_TIMEOUT` function calls to two-argument `BOOST_AUTO_TEST_CASE` with timeout.
+
+**Key Changes:**
+- Replaced `BOOST_TEST_TIMEOUT(seconds)` function approach with `BOOST_AUTO_TEST_CASE(name, * boost::unit_test::timeout(seconds))`
+- Updated all examples to use the two-argument form
+- Marked the `BOOST_TEST_TIMEOUT` function approach as deprecated
+- Provides better per-test-case timeout control
+- More consistent with modern Boost.Test practices
+
+**New Syntax:**
+```cpp
+// ✅ NEW CORRECT APPROACH
+BOOST_AUTO_TEST_CASE(my_test, * boost::unit_test::timeout(30)) {
+    // Test implementation
+}
+
+// ❌ OLD DEPRECATED APPROACH
+BOOST_AUTO_TEST_CASE(my_test) {
+    BOOST_TEST_TIMEOUT(30);
+    // Test implementation
+}
+```
+
+## 2024-12-14: Added BOOST_TEST_TIMEOUT Requirement
+
+### test-execution-standards.md
+
+Added new section: **BOOST_TEST_TIMEOUT Requirement**
+
+**Key Points:**
+- ALL Boost.Test test cases MUST include `BOOST_TEST_TIMEOUT`
+- Prevents tests from hanging indefinitely in CI/CD pipelines
+- Provides faster feedback when tests encounter infinite loops or deadlocks
+- Complements CTest timeout management with test-case-level granularity
+
+**Timeout Guidelines:**
+- Unit Tests: 10-30 seconds
+- Integration Tests: 30-60 seconds
+- Property Tests: 60-120 seconds
+- Performance Tests: 120-300 seconds
+- Network Tests: 60-180 seconds
+
+**Best Practices:**
+- Place `BOOST_TEST_TIMEOUT` as first line in test cases
+- Be generous but reasonable with timeout values
+- Consider CI environment performance differences
+- Document long timeouts with explanations
+- Use consistent timeouts for similar test types
+
+### cpp-coding-standards.md
+
+Added new section: **BOOST_TEST_TIMEOUT Requirement**
+
+**Key Points:**
+- Mandatory timeout specification for all Boost.Test test cases
+- Prevents hanging tests in CI/CD environments
+- Provides consistent timeout behavior across environments
+- Includes comprehensive examples and guidelines
+
+**Implementation Requirements:**
+- Timeout must be first line in test case
+- Appropriate timeout values for different test categories
+- Clear examples of correct and incorrect usage
+
+### example-programs.md
+
+Added new section: **Examples Using Boost.Test**
+
+**Key Points:**
+- Example programs using Boost.Test MUST include `BOOST_TEST_TIMEOUT`
+- Examples may need longer timeouts due to demonstration complexity
+- Provides specific timeout guidelines for example scenarios
+
+**Timeout Guidelines for Examples:**
+- Simple demonstrations: 60-120 seconds
+- Complex integration scenarios: 120-300 seconds
+- Performance demonstrations: 300+ seconds (with justification)
+
+### QUICK_REFERENCE.md
+
+Added new section: **Test Requirements**
+
+**Key Points:**
+- Quick reference for BOOST_TEST_TIMEOUT requirement
+- Includes timeout guidelines table
+- Added to checklist for code review
+
+**Checklist Updates:**
+- Added "All Boost.Test cases include `BOOST_TEST_TIMEOUT`"
+- Added "Test timeouts are appropriate for test type"
+
+## Rationale
+
+These additions were made to:
+
+1. **Prevent hanging tests** - Eliminate indefinite test execution in CI/CD
+2. **Improve CI/CD reliability** - Faster feedback when tests encounter problems
+3. **Standardize timeout behavior** - Consistent approach across all test code
+4. **Complement existing timeout management** - Work with CTest timeout features
+5. **Enforce through code review** - Make timeout requirement mandatory
+
+## Impact
+
+### On Existing Code
+
+Existing Boost.Test code should be updated to include `BOOST_TEST_TIMEOUT`:
+- New test code MUST include timeout specification
+- Existing tests SHOULD be updated when modified
+- Code reviews MUST check for timeout compliance
+
+### On New Development
+
+All new Boost.Test code must:
+- Include `BOOST_TEST_TIMEOUT` as first line in test cases
+- Use appropriate timeout values for test complexity
+- Follow the guidelines provided in steering documents
+- Pass code review timeout compliance checks
+
+## Examples
+
+### Before (Non-Compliant)
+
+```cpp
+BOOST_AUTO_TEST_CASE(network_communication_test) {
+    // Missing BOOST_TEST_TIMEOUT - could hang indefinitely
+    auto client = create_client();
+    auto result = client.send_request("test_data");
+    BOOST_CHECK(!result.empty());
+}
+```
+
+### After (Compliant)
+
+```cpp
+BOOST_AUTO_TEST_CASE(network_communication_test) {
+    BOOST_TEST_TIMEOUT(45);  // 45 second timeout
+    
+    auto client = create_client();
+    auto result = client.send_request("test_data");
+    BOOST_CHECK(!result.empty());
+}
+```
+
 ## 2024-11-19: Added Build System Integration Guidelines
 
 ### example-programs.md

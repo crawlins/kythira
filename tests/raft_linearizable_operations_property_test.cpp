@@ -18,6 +18,7 @@
 #include <raft/console_logger.hpp>
 #include <raft/metrics.hpp>
 #include <raft/membership.hpp>
+#include <raft/future.hpp>
 
 #include <network_simulator/network_simulator.hpp>
 
@@ -242,7 +243,7 @@ BOOST_AUTO_TEST_CASE(reads_observe_writes_in_order) {
         
         // Submit some commands (writes)
         constexpr std::size_t num_writes = 5;
-        std::vector<folly::Future<std::vector<std::byte>>> write_futures;
+        std::vector<kythira::Future<std::vector<std::byte>>> write_futures;
         
         for (std::size_t i = 0; i < num_writes; ++i) {
             std::vector<std::byte> command(sizeof(std::size_t));
@@ -326,7 +327,7 @@ BOOST_AUTO_TEST_CASE(concurrent_reads_are_linearizable) {
         
         // Issue multiple concurrent reads
         constexpr std::size_t num_reads = 10;
-        std::vector<folly::Future<std::vector<std::byte>>> read_futures;
+        std::vector<kythira::Future<std::vector<std::byte>>> read_futures;
         
         for (std::size_t i = 0; i < num_reads; ++i) {
             auto future = node.read_state(rpc_timeout);

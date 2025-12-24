@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_SUITE(joint_consensus_majority_property_tests)
  * For any joint consensus configuration, the configuration should contain
  * both the old and new node lists.
  */
-BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations) {
+BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations) {
  * This test verifies the logic in advance_commit_index() that checks for
  * majorities in both configurations.
  */
-BOOST_AUTO_TEST_CASE(commit_requires_both_majorities) {
+BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities) {
  * For any joint consensus configuration, the majority calculation should
  * correctly compute (size / 2) + 1 for both old and new configurations.
  */
-BOOST_AUTO_TEST_CASE(majority_calculation_is_correct) {
+BOOST_AUTO_TEST_CASE(majority_calculation_is_correct, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     

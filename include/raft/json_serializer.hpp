@@ -352,4 +352,7 @@ private:
 static_assert(rpc_serializer<json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>,
               "json_rpc_serializer must satisfy the rpc_serializer concept");
 
+// Convenience type alias for the default JSON serializer
+using json_serializer = json_rpc_serializer<std::vector<std::byte>>;
+
 } // namespace raft

@@ -107,7 +107,7 @@ private:
     std::optional<snapshot_t> _snapshot;
 };
 
-BOOST_AUTO_TEST_CASE(test_persistence_engine_concept) {
+BOOST_AUTO_TEST_CASE(test_persistence_engine_concept, * boost::unit_test::timeout(30)) {
     // Test that mock_persistence_engine satisfies persistence_engine concept
     using engine_t = mock_persistence_engine<>;
     using node_id_t = std::uint64_t;
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE(test_persistence_engine_concept) {
     );
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Test term operations
@@ -141,7 +141,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations) {
     BOOST_TEST(engine.load_current_term() == 10);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Initially no vote
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations) {
     BOOST_TEST(*voted_for == 42);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Create and append log entries
@@ -184,7 +184,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations) {
     BOOST_TEST(entries[2].index() == 3);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Add entries
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log) {
     BOOST_TEST(engine.get_log_entry(2).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Add entries
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before) {
     BOOST_TEST(engine.get_last_log_index() == 4);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, * boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
     
     // Initially no snapshot
@@ -255,7 +255,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations) {
     BOOST_TEST(snapshot->configuration().nodes().size() == 3);
 }
 
-BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept) {
+BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept, * boost::unit_test::timeout(30)) {
     // Test that memory_persistence_engine satisfies persistence_engine concept
     using engine_t = raft::memory_persistence_engine<>;
     using node_id_t = std::uint64_t;

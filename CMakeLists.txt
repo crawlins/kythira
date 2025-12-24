@@ -14,6 +14,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # For now, we'll make it optional to allow initial build
 find_package(folly QUIET)
 find_package(Boost QUIET COMPONENTS system thread unit_test_framework)
+find_package(httplib QUIET)
+find_package(OpenSSL QUIET)
+
+# Find libcoap using PkgConfig
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+endif()
 
 if(NOT folly_FOUND)
     message(WARNING "folly not found. Full implementation will require folly library.")
@@ -21,6 +29,18 @@ endif()
 
 if(NOT Boost_FOUND)
     message(WARNING "Boost not found. Tests will not be built.")
+endif()
+
+if(NOT httplib_FOUND)
+    message(WARNING "cpp-httplib not found. HTTP transport will not be available.")
+endif()
+
+if(NOT OpenSSL_FOUND)
+    message(WARNING "OpenSSL not found. HTTPS/TLS support will not be available.")
+endif()
+
+if(NOT LIBCOAP_FOUND)
+    message(WARNING "libcoap not found. CoAP transport will not be available.")
 endif()
 
 # Include directories
@@ -42,6 +62,21 @@ if(Boost_FOUND)
         Boost::thread
     )
 endif()
+
+if(httplib_FOUND)
+    target_link_libraries(network_simulator INTERFACE httplib::httplib)
+endif()
+
+if(OpenSSL_FOUND)
+    target_link_libraries(network_simulator INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+if(LIBCOAP_FOUND)
+    target_include_directories(network_simulator INTERFACE ${LIBCOAP_INCLUDE_DIRS})
+    target_link_libraries(network_simulator INTERFACE ${LIBCOAP_LIBRARIES})
+    target_compile_definitions(network_simulator INTERFACE ${LIBCOAP_CFLAGS_OTHER})
+endif()
+
 target_compile_features(network_simulator INTERFACE cxx_std_23)
 
 # Enable testing

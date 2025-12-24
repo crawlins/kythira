@@ -519,11 +519,121 @@ ctest --rerun-failed
 ./build/tests/specific_test --log_level=all
 ```
 
+### BOOST_AUTO_TEST_CASE Timeout Requirement
+
+**Rule**: ALL Boost.Test test cases MUST use the two-argument version of `BOOST_AUTO_TEST_CASE` with timeout.
+
+**Rationale**:
+- Prevents tests from hanging indefinitely in CI/CD environments
+- Provides faster feedback when tests encounter deadlocks or infinite loops
+- Ensures consistent timeout behavior across different environments
+- Complements CTest-level timeout management
+- Provides per-test-case timeout granularity
+
+**Implementation**:
+
+```cpp
+// ✅ CORRECT - Two-argument version with timeout
+BOOST_AUTO_TEST_CASE(test_network_operations, * boost::unit_test::timeout(45)) {
+    // Test implementation - 45 second timeout
+    auto client = create_client();
+    auto result = client.send_request("test_data");
+    BOOST_CHECK(!result.empty());
+}
+
+// ✅ CORRECT - Property test with longer timeout
+BOOST_AUTO_TEST_CASE(property_serialization_round_trip, * boost::unit_test::timeout(90)) {
+    // Property test with many iterations - 90 second timeout
+    for (int i = 0; i < 1000; ++i) {
+        auto data = generate_random_data();
+        auto serialized = serialize(data);
+        auto deserialized = deserialize(serialized);
+        BOOST_CHECK_EQUAL(data, deserialized);
+    }
+}
+
+// ❌ INCORRECT - Single argument without timeout
+BOOST_AUTO_TEST_CASE(test_without_timeout) {
+    // Missing timeout - could hang indefinitely
+    auto result = potentially_hanging_operation();
+    BOOST_CHECK(result.is_valid());
+}
+
+// ❌ INCORRECT - Using deprecated BOOST_TEST_TIMEOUT function
+BOOST_AUTO_TEST_CASE(test_with_deprecated_timeout) {
+    BOOST_TEST_TIMEOUT(30);  // Deprecated approach
+    auto result = some_operation();
+    BOOST_CHECK(result.is_valid());
+}
+```
+
+**Timeout Guidelines**:
+
+| Test Category | Timeout Range | Examples |
+|---------------|---------------|----------|
+| Unit Tests | 10-30 seconds | Function validation, data structure tests |
+| Integration Tests | 30-60 seconds | Component interaction, I/O operations |
+| Property Tests | 60-120 seconds | Many iterations with random data |
+| Network Tests | 60-180 seconds | Network operations, protocol tests |
+| Performance Tests | 120-300 seconds | Benchmarking, load testing |
+
 **When Direct Execution is Acceptable**:
 - Debugging a specific test with detailed logging
 - Running a test under a debugger (gdb, lldb)
 - Profiling a specific test
-- Testing with specific command-line arguments not supported by CTest
+
+**IMPORTANT: Tests with Additional Arguments**:
+
+**Rule**: When a test program needs to be run with additional command-line arguments, you MUST modify the `add_test` call in CMakeLists.txt to include those arguments, then run the test via `ctest`.
+
+**❌ NEVER DO THIS**:
+```bash
+# Wrong - bypasses CTest infrastructure
+./build/tests/my_test --verbose --config=test.json
+```
+
+**✅ ALWAYS DO THIS**:
+1. First, modify CMakeLists.txt:
+```cmake
+# Add arguments to the test command
+add_test(NAME my_test COMMAND my_test --verbose --config=test.json)
+
+# Or use separate arguments
+add_test(NAME my_test COMMAND my_test --verbose --config=test.json)
+set_tests_properties(my_test PROPERTIES
+    TIMEOUT 60
+    LABELS "integration"
+)
+```
+
+2. Then run via CTest:
+```bash
+# Correct - uses CTest with configured arguments
+ctest -R my_test --verbose
+```
+
+**Examples of Proper Test Configuration**:
+
+```cmake
+# Test with configuration file
+add_test(NAME network_test COMMAND network_test --config=${CMAKE_SOURCE_DIR}/test_config.json)
+
+# Test with multiple arguments
+add_test(NAME performance_test COMMAND performance_test --threads=4 --duration=30s --output=results.txt)
+
+# Test with environment variables
+add_test(NAME integration_test COMMAND integration_test --verbose)
+set_tests_properties(integration_test PROPERTIES
+    ENVIRONMENT "TEST_DATA_DIR=${CMAKE_SOURCE_DIR}/test_data"
+    TIMEOUT 120
+)
+
+# Test with working directory
+add_test(NAME file_test COMMAND file_test --input=test_input.txt)
+set_tests_properties(file_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/test_data
+)
+```
 
 **CTest Configuration Best Practices**:
 
@@ -567,6 +677,8 @@ cd build && ctest --output-on-failure -j$(nproc)
 - Existing code SHOULD be updated when modified
 - Test execution in documentation and scripts MUST use `ctest`
 - Direct test execution MUST be justified in code reviews
+- All Boost.Test test cases MUST use two-argument `BOOST_AUTO_TEST_CASE` with timeout
+- Test timeouts MUST be appropriate for test complexity and type
 
 ## Exceptions
 

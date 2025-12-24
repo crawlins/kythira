@@ -20,14 +20,362 @@ endfunction()
 # Test files
 add_network_test(concept_test concept_test.cpp)
 add_network_test(future_test future_test.cpp)
+add_network_test(future_concept_compliance_property_test future_concept_compliance_property_test.cpp)
+add_network_test(core_implementation_genericity_property_test core_implementation_genericity_property_test.cpp)
+add_network_test(core_implementation_namespace_property_test core_implementation_namespace_property_test.cpp)
+add_network_test(network_concept_compliance_property_test network_concept_compliance_property_test.cpp)
+add_network_test(network_simulator_return_types_property_test network_simulator_return_types_property_test.cpp)
 add_network_test(simulator_test simulator_test.cpp)
 add_network_test(simulator_property_test simulator_property_test.cpp)
 add_network_test(integration_test integration_test.cpp)
+add_network_test(test_code_future_usage_property_test test_code_future_usage_property_test.cpp)
+add_network_test(header_include_consistency_property_test header_include_consistency_property_test.cpp)
+add_network_test(future_usage_consistency_property_test future_usage_consistency_property_test.cpp)
+add_network_test(complete_conversion_validation_property_test complete_conversion_validation_property_test.cpp)
+add_network_test(build_success_property_test build_success_property_test.cpp)
+add_network_test(behavioral_preservation_property_test behavioral_preservation_property_test.cpp)
+add_network_test(performance_benchmark_test performance_benchmark_test.cpp)
+add_network_test(performance_equivalence_property_test performance_equivalence_property_test.cpp)
+add_network_test(future_test_utilities_test future_test_utilities_test.cpp)
+add_network_test(generic_future_concept_validation_test generic_future_concept_validation_test.cpp)
 
 # Raft tests
 add_network_test(raft_types_test raft_types_test.cpp)
 add_network_test(persistence_concept_test persistence_concept_test.cpp)
 add_network_test(persistence_round_trip_property_test persistence_round_trip_property_test.cpp)
+
+# HTTP transport tests
+add_network_test(http_exceptions_test http_exceptions_test.cpp)
+add_network_test(http_config_test http_config_test.cpp)
+
+# CoAP transport tests
+add_network_test(coap_transport_initialization_property_test coap_transport_initialization_property_test.cpp)
+add_network_test(coap_multicast_operation_return_types_property_test coap_multicast_operation_return_types_property_test.cpp)
+# CoAP event logging property test needs Boost.JSON
+add_executable(coap_event_logging_property_test coap_event_logging_property_test.cpp)
+target_link_libraries(coap_event_logging_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_event_logging_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_event_logging_property_test COMMAND coap_event_logging_property_test)
+
+# CoAP configuration test
+add_executable(coap_config_test coap_config_test.cpp)
+target_link_libraries(coap_config_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_config_test PRIVATE cxx_std_23)
+add_test(NAME coap_config_test COMMAND coap_config_test)
+
+# CoAP concept conformance test
+add_executable(coap_concept_conformance_test coap_concept_conformance_test.cpp)
+target_link_libraries(coap_concept_conformance_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_concept_conformance_test PRIVATE cxx_std_23)
+add_test(NAME coap_concept_conformance_test COMMAND coap_concept_conformance_test)
+
+# CoAP message serialization property test needs Boost.JSON
+add_executable(coap_message_serialization_property_test coap_message_serialization_property_test.cpp)
+target_link_libraries(coap_message_serialization_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_message_serialization_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_message_serialization_property_test COMMAND coap_message_serialization_property_test)
+
+# CoAP POST method property test needs Boost.JSON
+add_executable(coap_post_method_property_test coap_post_method_property_test.cpp)
+target_link_libraries(coap_post_method_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_post_method_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_post_method_property_test COMMAND coap_post_method_property_test)
+
+# CoAP future resolution property test needs Boost.JSON
+add_executable(coap_future_resolution_property_test coap_future_resolution_property_test.cpp)
+target_link_libraries(coap_future_resolution_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_future_resolution_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_future_resolution_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_future_resolution_property_test COMMAND coap_future_resolution_property_test)
+
+# CoAP Content-Format property test needs Boost.JSON
+add_executable(coap_content_format_property_test coap_content_format_property_test.cpp)
+target_link_libraries(coap_content_format_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_content_format_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_content_format_property_test COMMAND coap_content_format_property_test)
+
+# CoAP confirmable message property test needs Boost.JSON
+add_executable(coap_confirmable_message_property_test coap_confirmable_message_property_test.cpp)
+target_link_libraries(coap_confirmable_message_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_confirmable_message_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_confirmable_message_property_test COMMAND coap_confirmable_message_property_test)
+
+# CoAP duplicate detection property test needs Boost.JSON
+add_executable(coap_duplicate_detection_property_test coap_duplicate_detection_property_test.cpp)
+target_link_libraries(coap_duplicate_detection_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_duplicate_detection_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_duplicate_detection_property_test COMMAND coap_duplicate_detection_property_test)
+
+# CoAP non-confirmable message property test needs Boost.JSON
+add_executable(coap_non_confirmable_message_property_test coap_non_confirmable_message_property_test.cpp)
+target_link_libraries(coap_non_confirmable_message_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_non_confirmable_message_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_non_confirmable_message_property_test COMMAND coap_non_confirmable_message_property_test)
+
+# CoAP exponential backoff property test needs Boost.JSON
+add_executable(coap_exponential_backoff_property_test coap_exponential_backoff_property_test.cpp)
+target_link_libraries(coap_exponential_backoff_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_exponential_backoff_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_exponential_backoff_property_test COMMAND coap_exponential_backoff_property_test)
+
+# CoAP block transfer property test needs Boost.JSON
+add_executable(coap_block_transfer_property_test coap_block_transfer_property_test.cpp)
+target_link_libraries(coap_block_transfer_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_block_transfer_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_block_transfer_property_test COMMAND coap_block_transfer_property_test)
+
+# CoAP DTLS connection establishment property test needs Boost.JSON
+add_executable(coap_dtls_connection_establishment_property_test coap_dtls_connection_establishment_property_test.cpp)
+target_link_libraries(coap_dtls_connection_establishment_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_dtls_connection_establishment_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_dtls_connection_establishment_property_test COMMAND coap_dtls_connection_establishment_property_test)
+
+# CoAP certificate validation failure property test needs Boost.JSON
+add_executable(coap_certificate_validation_failure_property_test coap_certificate_validation_failure_property_test.cpp)
+target_link_libraries(coap_certificate_validation_failure_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_certificate_validation_failure_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_certificate_validation_failure_property_test COMMAND coap_certificate_validation_failure_property_test)
+
+# CoAP malformed message property test needs Boost.JSON
+add_executable(coap_malformed_message_property_test coap_malformed_message_property_test.cpp)
+target_link_libraries(coap_malformed_message_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_malformed_message_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_malformed_message_property_test COMMAND coap_malformed_message_property_test)
+
+# CoAP resource exhaustion property test needs Boost.JSON
+add_executable(coap_resource_exhaustion_property_test coap_resource_exhaustion_property_test.cpp)
+target_link_libraries(coap_resource_exhaustion_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_resource_exhaustion_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_resource_exhaustion_property_test COMMAND coap_resource_exhaustion_property_test)
+
+# CoAP network partition recovery property test needs Boost.JSON
+add_executable(coap_network_partition_recovery_property_test coap_network_partition_recovery_property_test.cpp)
+target_link_libraries(coap_network_partition_recovery_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_network_partition_recovery_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_network_partition_recovery_property_test COMMAND coap_network_partition_recovery_property_test)
+
+# CoAP connection limits property test needs Boost.JSON
+add_executable(coap_connection_limits_property_test coap_connection_limits_property_test.cpp)
+target_link_libraries(coap_connection_limits_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_connection_limits_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_connection_limits_property_test COMMAND coap_connection_limits_property_test)
+
+# CoAP exception handling property test needs Boost.JSON
+add_executable(coap_exception_handling_property_test coap_exception_handling_property_test.cpp)
+target_link_libraries(coap_exception_handling_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_exception_handling_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_exception_handling_property_test COMMAND coap_exception_handling_property_test)
+
+# HTTP server tests need Boost.JSON
+add_executable(http_server_test http_server_test.cpp)
+target_link_libraries(http_server_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_server_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_server_test PRIVATE cxx_std_23)
+add_test(NAME http_server_test COMMAND http_server_test)
+
+# HTTP server property tests need Boost.JSON
+add_executable(http_server_property_tests http_server_property_tests.cpp)
+target_link_libraries(http_server_property_tests PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_server_property_tests PRIVATE Folly::folly)
+endif()
+target_compile_features(http_server_property_tests PRIVATE cxx_std_23)
+add_test(NAME http_server_property_tests COMMAND http_server_property_tests)
+
+# HTTP integration tests need Boost.JSON
+add_executable(http_integration_test http_integration_test.cpp)
+target_link_libraries(http_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_integration_test PRIVATE cxx_std_23)
+add_test(NAME http_integration_test COMMAND http_integration_test)
+
+# HTTP client test needs Boost.JSON
+add_executable(http_client_test http_client_test.cpp)
+target_link_libraries(http_client_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_client_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_client_test PRIVATE cxx_std_23)
+add_test(NAME http_client_test COMMAND http_client_test)
+
+# HTTP client property tests need Boost.JSON
+add_executable(http_client_property_tests http_client_property_tests.cpp)
+target_link_libraries(http_client_property_tests PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_client_property_tests PRIVATE Folly::folly)
+endif()
+target_compile_features(http_client_property_tests PRIVATE cxx_std_23)
+add_test(NAME http_client_property_tests COMMAND http_client_property_tests)
+
+# HTTP transport return types property test
+add_executable(http_transport_return_types_property_test http_transport_return_types_property_test.cpp)
+target_link_libraries(http_transport_return_types_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_transport_return_types_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_transport_return_types_property_test PRIVATE cxx_std_23)
+add_test(NAME http_transport_return_types_property_test COMMAND http_transport_return_types_property_test)
+
+# HTTP client comprehensive test needs Boost.JSON
+add_executable(http_client_comprehensive_test http_client_comprehensive_test.cpp)
+target_link_libraries(http_client_comprehensive_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_client_comprehensive_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_client_comprehensive_test PRIVATE cxx_std_23)
+add_test(NAME http_client_comprehensive_test COMMAND http_client_comprehensive_test)
+
+# HTTP client connection test needs Boost.JSON
+add_executable(http_client_connection_test http_client_connection_test.cpp)
+target_link_libraries(http_client_connection_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_client_connection_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_client_connection_test PRIVATE cxx_std_23)
+add_test(NAME http_client_connection_test COMMAND http_client_connection_test)
+
+# HTTPLib server validation test
+add_executable(httplib_server_validation_test httplib_server_validation_test.cpp)
+target_link_libraries(httplib_server_validation_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(httplib_server_validation_test PRIVATE cxx_std_23)
+add_test(NAME httplib_server_validation_test COMMAND httplib_server_validation_test)
+
+# HTTPLib basic understanding test
+add_executable(httplib_basic_understanding_test httplib_basic_understanding_test.cpp)
+target_link_libraries(httplib_basic_understanding_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(httplib_basic_understanding_test PRIVATE cxx_std_23)
+add_test(NAME httplib_basic_understanding_test COMMAND httplib_basic_understanding_test)
+
+
+
+# HTTPLib best practices test
+add_executable(httplib_best_practices_test httplib_best_practices_test.cpp)
+target_link_libraries(httplib_best_practices_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(httplib_best_practices_test PRIVATE cxx_std_23)
+add_test(NAME httplib_best_practices_test COMMAND httplib_best_practices_test)
+
+
 
 # RPC serialization property test needs Boost.JSON
 add_executable(rpc_serialization_property_test rpc_serialization_property_test.cpp)
@@ -402,3 +750,72 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_log_replication_integration_test PRIVATE cxx_std_23)
 add_test(NAME raft_log_replication_integration_test COMMAND raft_log_replication_integration_test)
+
+# CoAP integration test
+add_executable(coap_integration_test coap_integration_test.cpp)
+target_link_libraries(coap_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_integration_test PRIVATE Folly::folly)
+endif()
+
+# Add CoAP transport dependencies
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+    if(LIBCOAP_FOUND)
+        target_link_libraries(coap_integration_test PRIVATE ${LIBCOAP_LIBRARIES})
+        target_include_directories(coap_integration_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
+        target_compile_definitions(coap_integration_test PRIVATE ${LIBCOAP_CFLAGS_OTHER})
+    endif()
+endif()
+
+# Link OpenSSL for DTLS support
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+target_compile_features(coap_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_integration_test COMMAND coap_integration_test)
+
+# CoAP concurrent processing property test needs Boost.JSON
+add_executable(coap_concurrent_processing_property_test coap_concurrent_processing_property_test.cpp)
+target_link_libraries(coap_concurrent_processing_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_concurrent_processing_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_concurrent_processing_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_concurrent_processing_property_test COMMAND coap_concurrent_processing_property_test)
+
+# CoAP connection reuse property test needs Boost.JSON
+add_executable(coap_connection_reuse_property_test coap_connection_reuse_property_test.cpp)
+target_link_libraries(coap_connection_reuse_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_connection_reuse_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_connection_reuse_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_connection_reuse_property_test COMMAND coap_connection_reuse_property_test)
+
+# CoAP multicast delivery property test needs Boost.JSON
+add_executable(coap_multicast_delivery_property_test coap_multicast_delivery_property_test.cpp)
+target_link_libraries(coap_multicast_delivery_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_multicast_delivery_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_multicast_delivery_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_multicast_delivery_property_test COMMAND coap_multicast_delivery_property_test)

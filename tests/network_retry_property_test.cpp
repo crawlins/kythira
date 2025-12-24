@@ -116,8 +116,8 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         
         // Create network client and server
         using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
-        raft::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
-        raft::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
         server.register_request_vote_handler([term](const raft::request_vote_request<>& req) {
@@ -223,7 +223,7 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
         
         // Create network client
         using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
-        raft::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
         
         // Create request
         raft::request_vote_request<> request;
@@ -305,8 +305,8 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately) {
         
         // Create network client and server
         using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
-        raft::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
-        raft::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
         server.register_request_vote_handler([term](const raft::request_vote_request<>& req) {

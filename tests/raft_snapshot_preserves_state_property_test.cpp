@@ -112,7 +112,7 @@ BOOST_AUTO_TEST_SUITE(snapshot_preserves_state_property_tests)
  * 
  * For any snapshot, saving and loading should preserve the last_included_index.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -153,7 +153,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index) {
  * 
  * For any snapshot, saving and loading should preserve the last_included_term.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term) {
  * 
  * For any snapshot, saving and loading should preserve the cluster configuration.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -244,7 +244,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration) {
  * 
  * For any snapshot, saving and loading should preserve the state machine state exactly.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -297,7 +297,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state) {
  * For any node with committed entries, creating a snapshot should preserve
  * the last applied index and term.
  */
-BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata) {
+BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     
@@ -361,7 +361,7 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata) {
  * 
  * For any snapshot with empty state, saving and loading should work correctly.
  */
-BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip) {
+BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     

@@ -20,5 +20,14 @@ add_network_example(basic_connectionless_example basic_connectionless.cpp)
 add_network_example(connection_oriented_example connection_oriented.cpp)
 add_network_example(network_topology_example network_topology.cpp)
 
+# Generic future architecture examples
+add_network_example(generic_future_example generic_future_example.cpp)
+add_network_example(generic_future_transport_example generic_future_transport_example.cpp)
+add_network_example(generic_future_network_simulator_example generic_future_network_simulator_example.cpp)
+add_network_example(migration_guide_example migration_guide_example.cpp)
+
+# Performance benchmark report
+add_network_example(performance_benchmark_report performance_benchmark_report.cpp)
+
 # Add Raft examples subdirectory
 add_subdirectory(raft)

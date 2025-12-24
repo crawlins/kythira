@@ -107,7 +107,7 @@ auto log_entries_equal(const raft::log_entry<>& a, const raft::log_entry<>& b) -
  * Property: For any valid RequestVote request, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip) {
+BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -152,7 +152,7 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip) {
  * Property: For any valid RequestVote response, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip) {
+BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip) {
  * Property: For any valid AppendEntries request, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip) {
+BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -255,7 +255,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip) {
  * Property: For any valid AppendEntries response, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip) {
+BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -307,7 +307,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip) {
  * Property: For any valid InstallSnapshot request, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip) {
+BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -360,7 +360,7 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip) {
  * Property: For any valid InstallSnapshot response, serializing then deserializing 
  * the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip) {
+BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     
@@ -399,7 +399,7 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip) {
  * Property: For any valid RPC message with string node IDs, serializing then 
  * deserializing the message produces an equivalent message with all fields preserved.
  */
-BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip) {
+BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     raft::json_rpc_serializer<> serializer;
     

@@ -240,6 +240,37 @@ private:
 } // namespace project_name
 ```
 
+## Test Requirements
+
+### BOOST_AUTO_TEST_CASE Timeout
+
+**Rule**: ALL Boost.Test test cases MUST use the two-argument version with timeout.
+
+```cpp
+// ✅ CORRECT - Two-argument version with timeout
+BOOST_AUTO_TEST_CASE(my_test, * boost::unit_test::timeout(30)) {
+    // Test implementation - 30 second timeout
+    BOOST_CHECK_EQUAL(add(2, 3), 5);
+}
+
+// ❌ INCORRECT - Single argument without timeout
+BOOST_AUTO_TEST_CASE(my_test) {
+    BOOST_CHECK_EQUAL(add(2, 3), 5);  // Could hang indefinitely
+}
+
+// ❌ INCORRECT - Using deprecated BOOST_TEST_TIMEOUT
+BOOST_AUTO_TEST_CASE(my_test) {
+    BOOST_TEST_TIMEOUT(30);  // Deprecated approach
+    BOOST_CHECK_EQUAL(add(2, 3), 5);
+}
+```
+
+**Timeout Guidelines**:
+- Unit tests: 10-30 seconds
+- Integration tests: 30-60 seconds  
+- Property tests: 60-120 seconds
+- Network tests: 60-180 seconds
+
 ## Quick Checklist
 
 Before committing code, verify:
@@ -251,6 +282,8 @@ Before committing code, verify:
 - [ ] Const correctness applied
 - [ ] Noexcept used where appropriate
 - [ ] [[nodiscard]] on functions returning values
+- [ ] All Boost.Test cases use two-argument `BOOST_AUTO_TEST_CASE` with timeout
+- [ ] Test timeouts are appropriate for test type
 - [ ] Example programs run all scenarios
 - [ ] Example programs return correct exit codes
 - [ ] Clear pass/fail indication in output

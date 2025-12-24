@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <network_simulator/network_simulator.hpp>
+#include <raft/future.hpp>
 
 #include <chrono>
 #include <string>
@@ -307,7 +308,7 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously) {
     
     // All senders send messages concurrently
     constexpr std::size_t messages_per_sender = 2;  // Reduced for simpler test
-    std::vector<folly::Future<bool>> send_futures;
+    std::vector<kythira::Future<bool>> send_futures;
     
     for (std::size_t sender_idx = 0; sender_idx < sender_count; ++sender_idx) {
         for (std::size_t msg_idx = 0; msg_idx < messages_per_sender; ++msg_idx) {
@@ -330,11 +331,11 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously) {
     }
     
     // Wait for all sends to complete
-    auto all_sends = std::move(folly::collectAll(send_futures)).get();
+    auto all_sends = kythira::wait_for_all(std::move(send_futures));
     
     // Verify all sends succeeded
     for (const auto& result : all_sends) {
-        BOOST_TEST(result.value());
+        BOOST_TEST(result);
     }
     
     // Receiver should get all messages

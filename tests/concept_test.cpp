@@ -8,7 +8,7 @@
 using namespace network_simulator;
 
 // Test that various types satisfy the address concept
-BOOST_AUTO_TEST_CASE(test_address_concept) {
+BOOST_AUTO_TEST_CASE(test_address_concept, * boost::unit_test::timeout(15)) {
     // std::string should satisfy address concept
     static_assert(address<std::string>, "std::string should satisfy address concept");
     
@@ -25,7 +25,7 @@ BOOST_AUTO_TEST_CASE(test_address_concept) {
 }
 
 // Test that various types satisfy the port concept
-BOOST_AUTO_TEST_CASE(test_port_concept) {
+BOOST_AUTO_TEST_CASE(test_port_concept, * boost::unit_test::timeout(15)) {
     // unsigned short should satisfy port concept
     static_assert(port<unsigned short>, "unsigned short should satisfy port concept");
     
@@ -47,7 +47,7 @@ namespace {
 }
 
 // Test Message type
-BOOST_AUTO_TEST_CASE(test_message_type) {
+BOOST_AUTO_TEST_CASE(test_message_type, * boost::unit_test::timeout(15)) {
     std::vector<std::byte> payload;
     for (char c : std::string(test_payload_str)) {
         payload.push_back(static_cast<std::byte>(c));
@@ -69,7 +69,7 @@ BOOST_AUTO_TEST_CASE(test_message_type) {
 }
 
 // Test NetworkEdge type
-BOOST_AUTO_TEST_CASE(test_network_edge_type) {
+BOOST_AUTO_TEST_CASE(test_network_edge_type, * boost::unit_test::timeout(15)) {
     NetworkEdge edge(test_latency, test_reliability);
     
     BOOST_TEST(edge.latency() == test_latency);
@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE(test_network_edge_type) {
 }
 
 // Test Endpoint type
-BOOST_AUTO_TEST_CASE(test_endpoint_type) {
+BOOST_AUTO_TEST_CASE(test_endpoint_type, * boost::unit_test::timeout(15)) {
     Endpoint<std::string, unsigned short> ep1(test_src_addr, test_src_port);
     Endpoint<std::string, unsigned short> ep2(test_src_addr, test_src_port);
     Endpoint<std::string, unsigned short> ep3(test_dst_addr, test_src_port);
@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(test_endpoint_type) {
 }
 
 // Test IPv4Address wrapper
-BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper) {
+BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper, * boost::unit_test::timeout(15)) {
     in_addr addr1{};
     addr1.s_addr = htonl(0xC0A80101);  // 192.168.1.1
     
@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper) {
 }
 
 // Test IPv6Address wrapper
-BOOST_AUTO_TEST_CASE(test_ipv6_address_wrapper) {
+BOOST_AUTO_TEST_CASE(test_ipv6_address_wrapper, * boost::unit_test::timeout(15)) {
     in6_addr addr1{};
     addr1.s6_addr[0] = 0x20;
     addr1.s6_addr[1] = 0x01;

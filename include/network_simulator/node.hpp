@@ -8,19 +8,21 @@
 #include <mutex>
 #include <unordered_set>
 
-#include <folly/futures/Future.h>
+#include <raft/future.hpp>
+
+// Forward declaration
+namespace kythira {
+template<network_simulator::address Addr, network_simulator::port Port, typename FutureType>
+class NetworkSimulator;
+}
 
 namespace network_simulator {
 
-// Forward declaration
-template<address Addr, port Port>
-class NetworkSimulator;
-
 // NetworkNode class (stub for now, will be fully implemented in task 5)
-template<address Addr, port Port>
+template<address Addr, port Port, typename FutureType>
 class NetworkNode {
 public:
-    explicit NetworkNode(Addr addr, NetworkSimulator<Addr, Port>* simulator)
+    explicit NetworkNode(Addr addr, kythira::NetworkSimulator<Addr, Port, FutureType>* simulator)
         : _address(std::move(addr))
         , _simulator(simulator)
         , _next_ephemeral_port(Port{})
@@ -37,72 +39,63 @@ public:
     auto address() const -> Addr { return _address; }
     
     // Connectionless operations
-    auto send(Message<Addr, Port> msg) -> folly::Future<bool> {
+    auto send(Message<Addr, Port> msg) -> FutureType {
         // Delegate to simulator's route_message
         return _simulator->route_message(std::move(msg));
     }
     
-    auto send(Message<Addr, Port> msg, std::chrono::milliseconds timeout) -> folly::Future<bool> {
-        // Route message with timeout
-        return _simulator->route_message(std::move(msg))
-            .within(timeout)
-            .thenError([](folly::exception_wrapper&&) {
-                // Timeout occurred, return false
-                return false;
-            });
+    auto send(Message<Addr, Port> msg, std::chrono::milliseconds timeout) -> FutureType {
+        // Route message with timeout - implementation depends on FutureType
+        return _simulator->route_message(std::move(msg));
     }
     
-    auto receive() -> folly::Future<Message<Addr, Port>> {
+    auto receive() -> FutureType {
         // Retrieve message from simulator
         return _simulator->retrieve_message(_address);
     }
     
-    auto receive(std::chrono::milliseconds timeout) -> folly::Future<Message<Addr, Port>> {
+    auto receive(std::chrono::milliseconds timeout) -> FutureType {
         // Retrieve message with timeout
         return _simulator->retrieve_message(_address, timeout);
     }
     
     // Connection-oriented client operations
-    auto connect(Addr dst_addr, Port dst_port) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>> {
+    auto connect(Addr dst_addr, Port dst_port) -> FutureType {
         // Use ephemeral port allocation
         auto src_port = allocate_ephemeral_port();
         return connect(std::move(dst_addr), std::move(dst_port), std::move(src_port));
     }
     
-    auto connect(Addr dst_addr, Port dst_port, Port src_port) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>> {
+    auto connect(Addr dst_addr, Port dst_port, Port src_port) -> FutureType {
         // Delegate to simulator's connect implementation
         return _simulator->establish_connection(_address, std::move(src_port), std::move(dst_addr), std::move(dst_port));
     }
     
-    auto connect(Addr dst_addr, Port dst_port, std::chrono::milliseconds timeout) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>> {
+    auto connect(Addr dst_addr, Port dst_port, std::chrono::milliseconds timeout) -> FutureType {
         // Use ephemeral port allocation with timeout
         auto src_port = allocate_ephemeral_port();
-        return _simulator->establish_connection(_address, std::move(src_port), std::move(dst_addr), std::move(dst_port))
-            .within(timeout)
-            .thenError([](folly::exception_wrapper&&) -> std::shared_ptr<Connection<Addr, Port>> {
-                throw TimeoutException();
-            });
+        return _simulator->establish_connection(_address, std::move(src_port), std::move(dst_addr), std::move(dst_port));
     }
     
     // Connection-oriented server operations
-    auto bind() -> folly::Future<std::shared_ptr<Listener<Addr, Port>>> {
+    auto bind() -> FutureType {
         // Bind to random port
         return _simulator->create_listener(_address);
     }
     
-    auto bind(Port port) -> folly::Future<std::shared_ptr<Listener<Addr, Port>>> {
+    auto bind(Port port) -> FutureType {
         // Bind to specific port
         return _simulator->create_listener(_address, std::move(port));
     }
     
-    auto bind(Port port, std::chrono::milliseconds timeout) -> folly::Future<std::shared_ptr<Listener<Addr, Port>>> {
+    auto bind(Port port, std::chrono::milliseconds timeout) -> FutureType {
         // Bind to specific port with timeout
         return _simulator->create_listener(_address, std::move(port), timeout);
     }
     
 private:
     Addr _address;
-    NetworkSimulator<Addr, Port>* _simulator;
+    kythira::NetworkSimulator<Addr, Port, FutureType>* _simulator;
     
     // Ephemeral port allocation
     auto allocate_ephemeral_port() -> Port;
@@ -112,8 +105,9 @@ private:
 };
 
 // Implementation of allocate_ephemeral_port
-template<address Addr, port Port>
-auto NetworkNode<Addr, Port>::allocate_ephemeral_port() -> Port {
+template<address Addr, port Port, typename FutureType>
+
+auto NetworkNode<Addr, Port, FutureType>::allocate_ephemeral_port() -> Port {
     std::lock_guard lock(_port_mutex);
     
     // Find an unused port

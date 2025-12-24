@@ -311,6 +311,94 @@ ctest -L example -j$(nproc)
 ctest -R example_name_test --verbose
 ```
 
+### Examples Using Boost.Test
+
+**Rule**: If example programs use Boost.Test framework, they MUST include `BOOST_TEST_TIMEOUT`.
+
+**Rationale**:
+- Example programs may demonstrate complex scenarios that could hang
+- Timeout prevents CI/CD pipelines from hanging on problematic examples
+- Provides consistent behavior with other test code in the project
+
+**Implementation**:
+
+```cpp
+// ✅ CORRECT - Example with Boost.Test and timeout
+BOOST_AUTO_TEST_CASE(example_network_communication, * boost::unit_test::timeout(120)) {
+    // Demonstrate network communication - 120 second timeout for examples
+    auto client = create_client();
+    auto server = create_server();
+    
+    // Run example scenarios
+    demonstrate_basic_communication(client, server);
+    demonstrate_error_handling(client, server);
+    demonstrate_performance_features(client, server);
+}
+
+// ❌ INCORRECT - Missing timeout in example
+BOOST_AUTO_TEST_CASE(example_without_timeout) {
+    // Missing timeout - could hang during demonstration
+    demonstrate_complex_scenario();
+}
+
+// ❌ INCORRECT - Using deprecated BOOST_TEST_TIMEOUT function
+BOOST_AUTO_TEST_CASE(example_with_deprecated_timeout) {
+    BOOST_TEST_TIMEOUT(120);  // Deprecated approach
+    demonstrate_complex_scenario();
+}
+```
+
+**Timeout Guidelines for Examples**:
+- **Simple demonstrations**: 60-120 seconds
+- **Complex integration scenarios**: 120-300 seconds  
+- **Performance demonstrations**: 300+ seconds (with justification)
+
+**IMPORTANT: Examples with Additional Arguments**:
+
+**Rule**: When an example program needs to be run with additional command-line arguments, you MUST modify the `add_test` call in CMakeLists.txt to include those arguments, then run the example via `ctest`.
+
+**❌ NEVER DO THIS**:
+```bash
+# Wrong - bypasses CTest infrastructure
+./build/examples/category/my_example --verbose --config=example.json
+```
+
+**✅ ALWAYS DO THIS**:
+1. First, modify CMakeLists.txt:
+```cmake
+# Add arguments to the example test command
+add_test(NAME my_example_test COMMAND my_example --verbose --config=example.json)
+set_tests_properties(my_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;integration"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/examples/category
+)
+```
+
+2. Then run via CTest:
+```bash
+# Correct - uses CTest with configured arguments
+ctest -R my_example_test --verbose
+```
+
+**Examples of Proper Example Test Configuration**:
+
+```cmake
+# Example with configuration file
+add_test(NAME network_example_test COMMAND network_example --config=${CMAKE_SOURCE_DIR}/examples/config.json)
+
+# Example with multiple arguments
+add_test(NAME performance_example_test COMMAND performance_example --threads=4 --duration=30s)
+
+# Example with environment variables
+add_test(NAME integration_example_test COMMAND integration_example --verbose)
+set_tests_properties(integration_example_test PROPERTIES
+    ENVIRONMENT "EXAMPLE_DATA_DIR=${CMAKE_SOURCE_DIR}/examples/data"
+    TIMEOUT 180
+    LABELS "example;integration;slow"
+)
+```
+
 **Direct Execution (Last Resort)**:
 
 ```bash
