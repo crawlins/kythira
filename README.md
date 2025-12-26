@@ -5,6 +5,7 @@ A C++23 network simulator library that models network communication between node
 ## Features
 
 - **Type-safe design** using C++23 concepts
+- **Enhanced C++20 concepts** for Folly-compatible types (futures, promises, executors)
 - **Flexible addressing** supporting strings, integers, IPv4, and IPv6
 - **Connectionless communication** (datagram-style like UDP)
 - **Connection-oriented communication** (stream-style like TCP)
@@ -45,6 +46,8 @@ ctest
 ```
 .
 ├── include/
+│   ├── concepts/
+│   │   └── future.hpp             # Enhanced C++20 concepts for Folly types
 │   └── network_simulator/
 │       ├── network_simulator.hpp  # Main header
 │       ├── concepts.hpp           # C++23 concepts
@@ -57,6 +60,47 @@ ctest
 ```
 
 ## Usage
+
+### Enhanced C++20 Concepts
+
+The library provides enhanced C++20 concepts that work seamlessly with Folly types while enabling generic programming:
+
+```cpp
+#include <concepts/future.hpp>
+#include <folly/futures/Future.h>
+#include <folly/futures/Promise.h>
+
+// Generic function that works with any Future-like type
+template<kythira::future<int> FutureType>
+auto process_async_result(FutureType future) -> int {
+    if (future.isReady()) {
+        return std::move(future).get();
+    }
+    
+    return std::move(future)
+        .thenValue([](int value) { return value * 2; })
+        .get();
+}
+
+// Works with folly::Future
+folly::Future<int> folly_future = folly::makeFuture(21);
+auto result = process_async_result(std::move(folly_future)); // Returns 42
+
+// Generic promise handling
+template<kythira::promise<std::string> PromiseType>
+auto create_greeting(PromiseType promise, const std::string& name) -> auto {
+    auto future = promise.getFuture();
+    promise.setValue("Hello, " + name + "!");
+    return future;
+}
+
+// Static assertions verify Folly compatibility
+static_assert(kythira::future<folly::Future<int>, int>);
+static_assert(kythira::promise<folly::Promise<int>, int>);
+static_assert(kythira::try_type<folly::Try<int>, int>);
+```
+
+See [Concepts Documentation](doc/concepts_documentation.md) for comprehensive usage examples and [Concepts Migration Guide](doc/concepts_migration_guide.md) for migration from older concept versions.
 
 ### Network Simulator
 
@@ -162,7 +206,25 @@ client_config.ca_cert_path = "/path/to/ca.crt";
 
 ## Documentation
 
-See the design document at `.kiro/specs/network-simulator/design.md` for detailed architecture and design decisions.
+### Core Documentation
+
+- [Concepts Summary](doc/concepts_summary.md) - High-level overview of enhanced concepts
+- [Concepts Documentation](doc/concepts_documentation.md) - Comprehensive guide to enhanced C++20 concepts
+- [Concepts API Reference](doc/concepts_api_reference.md) - Complete API reference
+- [Concepts Migration Guide](doc/concepts_migration_guide.md) - Migration from older concept versions
+- [Future Migration Guide](doc/future_migration_guide.md) - Migrating from old future patterns
+- [Generic Future Architecture](doc/generic_future_architecture.md) - Overall architecture design
+
+### Design Documents
+
+- [Network Simulator Design](`.kiro/specs/network-simulator/design.md`) - Network simulator architecture
+- [Folly Concepts Enhancement](`.kiro/specs/folly-concepts-enhancement/design.md`) - Enhanced concepts design
+
+### Examples
+
+- [Concepts Usage Examples](examples/concepts_usage_examples.cpp) - Practical concept usage patterns
+- [Network Examples](examples/) - Network simulator usage examples
+- [Raft Examples](examples/raft/) - Raft consensus implementation examples
 
 ## License
 

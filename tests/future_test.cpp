@@ -17,40 +17,40 @@ namespace {
 }
 
 // Test Try wrapper with value
-BOOST_AUTO_TEST_CASE(test_try_with_value) {
+BOOST_AUTO_TEST_CASE(test_try_with_value, * boost::unit_test::timeout(30)) {
     Try<int> t(test_value);
     
-    BOOST_TEST(t.has_value());
-    BOOST_TEST(!t.has_exception());
+    BOOST_TEST(t.hasValue());
+    BOOST_TEST(!t.hasException());
     BOOST_TEST(t.value() == test_value);
     
     // Verify it satisfies the try_type concept
-    static_assert(try_type<Try<int>>, "Try<int> should satisfy try_type concept");
+    static_assert(kythira::try_type<Try<int>, int>, "Try<int> should satisfy try_type concept");
 }
 
 // Test Try wrapper with exception
-BOOST_AUTO_TEST_CASE(test_try_with_exception) {
+BOOST_AUTO_TEST_CASE(test_try_with_exception, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     Try<int> t(ex);
     
-    BOOST_TEST(!t.has_value());
-    BOOST_TEST(t.has_exception());
+    BOOST_TEST(!t.hasValue());
+    BOOST_TEST(t.hasException());
     
     // Accessing value should throw
     BOOST_CHECK_THROW(t.value(), std::exception);
 }
 
 // Test Try wrapper with folly::Try
-BOOST_AUTO_TEST_CASE(test_try_from_folly_try) {
+BOOST_AUTO_TEST_CASE(test_try_from_folly_try, * boost::unit_test::timeout(30)) {
     folly::Try<int> folly_try(test_value);
     Try<int> t(std::move(folly_try));
     
-    BOOST_TEST(t.has_value());
+    BOOST_TEST(t.hasValue());
     BOOST_TEST(t.value() == test_value);
 }
 
 // Test Future wrapper with value
-BOOST_AUTO_TEST_CASE(test_future_with_value) {
+BOOST_AUTO_TEST_CASE(test_future_with_value, * boost::unit_test::timeout(30)) {
     Future<int> f(test_value);
     
     BOOST_TEST(f.isReady());
@@ -58,7 +58,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_value) {
 }
 
 // Test Future wrapper with exception
-BOOST_AUTO_TEST_CASE(test_future_with_exception) {
+BOOST_AUTO_TEST_CASE(test_future_with_exception, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     Future<int> f(ex);
     
@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_exception) {
 }
 
 // Test Future then() chaining
-BOOST_AUTO_TEST_CASE(test_future_then) {
+BOOST_AUTO_TEST_CASE(test_future_then, * boost::unit_test::timeout(30)) {
     Future<int> f(test_value);
     
     auto f2 = f.then([](int val) { return val * 2; });
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(test_future_then) {
 }
 
 // Test Future onError() handling
-BOOST_AUTO_TEST_CASE(test_future_on_error) {
+BOOST_AUTO_TEST_CASE(test_future_on_error, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     Future<int> f(ex);
     
@@ -86,7 +86,7 @@ BOOST_AUTO_TEST_CASE(test_future_on_error) {
 }
 
 // Test Future wait() with timeout
-BOOST_AUTO_TEST_CASE(test_future_wait) {
+BOOST_AUTO_TEST_CASE(test_future_wait, * boost::unit_test::timeout(60)) {
     folly::Promise<int> promise;
     Future<int> f(promise.getFuture());
     
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(test_future_wait) {
 }
 
 // Test wait_for_any with multiple futures
-BOOST_AUTO_TEST_CASE(test_wait_for_any) {
+BOOST_AUTO_TEST_CASE(test_wait_for_any, * boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -127,7 +127,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_any) {
     
     // Should be the second future (index 1)
     BOOST_TEST(index == 1);
-    BOOST_TEST(try_result.has_value());
+    BOOST_TEST(try_result.hasValue());
     BOOST_TEST(try_result.value() == test_value);
     
     t.join();
@@ -138,7 +138,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_any) {
 }
 
 // Test wait_for_all with multiple futures
-BOOST_AUTO_TEST_CASE(test_wait_for_all) {
+BOOST_AUTO_TEST_CASE(test_wait_for_all, * boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -172,9 +172,9 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all) {
     BOOST_TEST(results.size() == 3);
     
     // All should have values
-    BOOST_TEST(results[0].has_value());
-    BOOST_TEST(results[1].has_value());
-    BOOST_TEST(results[2].has_value());
+    BOOST_TEST(results[0].hasValue());
+    BOOST_TEST(results[1].hasValue());
+    BOOST_TEST(results[2].hasValue());
     
     // Check values
     BOOST_TEST(results[0].value() == 1);
@@ -187,7 +187,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all) {
 }
 
 // Test wait_for_all with mixed success and failure
-BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions) {
+BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::timeout(60)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -210,19 +210,19 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions) {
     BOOST_TEST(results.size() == 3);
     
     // First should have value
-    BOOST_TEST(results[0].has_value());
+    BOOST_TEST(results[0].hasValue());
     BOOST_TEST(results[0].value() == test_value);
     
     // Second should have exception
-    BOOST_TEST(results[1].has_exception());
+    BOOST_TEST(results[1].hasException());
     
     // Third should have value
-    BOOST_TEST(results[2].has_value());
+    BOOST_TEST(results[2].hasValue());
     BOOST_TEST(results[2].value() == test_value * 2);
 }
 
 // Test Message with empty payload
-BOOST_AUTO_TEST_CASE(test_message_empty_payload) {
+BOOST_AUTO_TEST_CASE(test_message_empty_payload, * boost::unit_test::timeout(30)) {
     Message<std::string, unsigned short> msg(
         "src",
         8080,
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(test_message_empty_payload) {
 }
 
 // Test Message with non-empty payload
-BOOST_AUTO_TEST_CASE(test_message_with_payload) {
+BOOST_AUTO_TEST_CASE(test_message_with_payload, * boost::unit_test::timeout(30)) {
     std::vector<std::byte> payload;
     for (char c : std::string(test_string)) {
         payload.push_back(static_cast<std::byte>(c));
@@ -257,7 +257,7 @@ BOOST_AUTO_TEST_CASE(test_message_with_payload) {
 }
 
 // Test Message with various address/port types
-BOOST_AUTO_TEST_CASE(test_message_various_types) {
+BOOST_AUTO_TEST_CASE(test_message_various_types, * boost::unit_test::timeout(30)) {
     // Test with unsigned long address and string port
     Message<unsigned long, std::string> msg1(
         0xC0A80101UL,  // 192.168.1.1
