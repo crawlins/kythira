@@ -126,3 +126,51 @@ This document specifies the requirements for implementing a CoAP (Constrained Ap
 3. WHEN type safety is evaluated THEN the system SHALL use concepts to validate that the types parameter provides all required type definitions
 4. WHEN instantiating CoAP transport components THEN the system SHALL use the types parameter to automatically deduce all necessary template arguments
 5. WHEN custom type configurations are needed THEN the system SHALL support user-defined types structures that satisfy the transport types concept
+
+### Requirement 10
+
+**User Story:** As a production system administrator, I want complete libcoap integration with real protocol implementations, so that I can deploy CoAP transport in production environments with full protocol compliance and performance.
+
+#### Acceptance Criteria
+
+1. WHEN libcoap is available THEN the CoAP_Transport SHALL replace all stub implementations with real libcoap calls
+2. WHEN large messages need to be transmitted THEN the CoAP_Transport SHALL implement proper block-wise transfer using Block1/Block2 options
+3. WHEN DTLS security is required THEN the CoAP_Transport SHALL complete certificate validation with OpenSSL integration
+4. WHEN CoAP responses are received THEN the CoAP_Transport SHALL implement proper response handling and error code processing
+5. WHEN multicast communication is needed THEN the CoAP_Transport SHALL add multicast support for discovery and group communication
+
+### Requirement 11
+
+**User Story:** As a security administrator, I want comprehensive DTLS certificate validation and management, so that I can ensure secure CoAP communication with proper certificate chain verification and revocation checking.
+
+#### Acceptance Criteria
+
+1. WHEN DTLS connections are established THEN the CoAP_Transport SHALL perform complete X.509 certificate parsing and validation
+2. WHEN certificate chains are presented THEN the CoAP_Transport SHALL implement certificate chain verification with OpenSSL
+3. WHEN certificate revocation checking is enabled THEN the CoAP_Transport SHALL add certificate revocation checking using CRL/OCSP
+4. WHEN PSK authentication is configured THEN the CoAP_Transport SHALL complete PSK authentication and key management
+5. WHEN certificate validation fails THEN the CoAP_Transport SHALL provide detailed error information and reject the connection
+
+### Requirement 12
+
+**User Story:** As a performance-critical application developer, I want optimized block-wise transfer and response handling, so that I can efficiently transmit large Raft messages and handle CoAP protocol responses correctly.
+
+#### Acceptance Criteria
+
+1. WHEN large messages exceed CoAP payload limits THEN the CoAP_Transport SHALL implement proper block reassembly and sequencing
+2. WHEN block transfers are in progress THEN the CoAP_Transport SHALL add block transfer timeout and retry mechanisms
+3. WHEN Block1/Block2 options are received THEN the CoAP_Transport SHALL complete block option parsing and validation
+4. WHEN block transfer progress needs monitoring THEN the CoAP_Transport SHALL add block transfer progress monitoring and metrics
+5. WHEN CoAP responses contain error codes THEN the CoAP_Transport SHALL implement proper CoAP response handling and error code mapping
+
+### Requirement 13
+
+**User Story:** As a distributed systems architect, I want full multicast support for CoAP discovery and group communication, so that I can implement efficient Raft cluster discovery and broadcast operations.
+
+#### Acceptance Criteria
+
+1. WHEN multicast discovery is needed THEN the CoAP_Transport SHALL add multicast support for discovery operations
+2. WHEN group communication is required THEN the CoAP_Transport SHALL support multicast message delivery to multiple nodes
+3. WHEN multicast responses are received THEN the CoAP_Transport SHALL implement response aggregation and correlation
+4. WHEN multicast operations fail THEN the CoAP_Transport SHALL provide multicast-specific error handling and recovery
+5. WHEN multicast groups need management THEN the CoAP_Transport SHALL support joining and leaving multicast groups

@@ -711,3 +711,135 @@ include/raft/
 - CoAP-HTTP proxy support (RFC 8075)
 - Enable integration with HTTP-based systems
 - Protocol translation capabilities
+
+## Production-Ready libcoap Integration
+
+### Current Implementation Status
+
+The current CoAP transport implementation provides comprehensive stub functionality with excellent test coverage and performance characteristics. However, for production deployment, the following areas require real libcoap integration to replace stub implementations:
+
+### libcoap Integration Requirements
+
+#### Complete libcoap Integration
+- **Current State**: Stub implementations provide API compatibility and testing
+- **Production Need**: Replace all stub implementations with real libcoap calls
+- **Implementation**: Integrate actual libcoap context creation, session management, and PDU handling
+- **Benefits**: Full CoAP protocol compliance and interoperability
+
+#### Block-wise Transfer Implementation
+- **Current State**: Basic block transfer interface with stub implementation
+- **Production Need**: Proper block reassembly, sequencing, and Block1/Block2 option handling
+- **Implementation**: 
+  - Real block size negotiation with libcoap
+  - Block transfer timeout and retry mechanisms
+  - Block option parsing and validation
+  - Block transfer progress monitoring and metrics
+- **Benefits**: Efficient handling of large Raft messages exceeding CoAP payload limits
+
+#### DTLS Certificate Validation
+- **Current State**: Basic DTLS interface with stub certificate validation
+- **Production Need**: Complete X.509 certificate validation with OpenSSL integration
+- **Implementation**:
+  - X.509 certificate parsing and validation
+  - Certificate chain verification with OpenSSL
+  - Certificate revocation checking (CRL/OCSP)
+  - PSK authentication and key management
+  - Detailed certificate error reporting
+- **Benefits**: Production-grade security with proper certificate validation
+
+#### CoAP Response Handling
+- **Current State**: Basic response handling with stub error code processing
+- **Production Need**: Proper CoAP response parsing and comprehensive error code mapping
+- **Implementation**:
+  - Complete CoAP response parsing and validation
+  - Comprehensive CoAP error code mapping and handling
+  - Response timeout and retry logic
+  - Acknowledgment processing for confirmable messages
+  - Response correlation with request tokens
+- **Benefits**: Robust error handling and proper CoAP protocol compliance
+
+#### Multicast Support
+- **Current State**: Basic multicast interface with stub implementation
+- **Production Need**: Full multicast support for discovery and group communication
+- **Implementation**:
+  - Multicast socket configuration and group management
+  - Multicast message delivery to multiple nodes
+  - Response aggregation and correlation for multicast
+  - Multicast-specific error handling and recovery
+  - Support for joining and leaving multicast groups
+- **Benefits**: Efficient Raft cluster discovery and broadcast operations
+
+### Implementation Architecture
+
+#### Conditional Compilation Strategy
+```cpp
+#ifdef LIBCOAP_AVAILABLE
+    // Real libcoap implementation
+    auto create_context() -> coap_context_t* {
+        return coap_new_context(nullptr);
+    }
+#else
+    // Stub implementation for testing and development
+    auto create_context() -> coap_context_t* {
+        return reinterpret_cast<coap_context_t*>(0x1); // Stub pointer
+    }
+#endif
+```
+
+#### Graceful Fallback Behavior
+- Maintain current stub implementations as fallback when libcoap is unavailable
+- Provide clear warnings and error messages when real functionality is needed
+- Ensure all tests continue to pass with stub implementations
+- Support development and testing environments without libcoap dependency
+
+#### Performance Optimization Areas
+- **Memory Pool Management**: Complete memory pool allocation and deallocation
+- **Serialization Caching**: Implement serialization result caching for repeated requests
+- **Connection Pooling**: Enhanced connection pooling with health checking
+- **Resource Management**: Proper cleanup with RAII patterns and leak detection
+
+#### Enhanced Error Handling
+- **Exception Handling**: Complete exception handling for all CoAP operations
+- **Error Recovery**: Implement retry logic with exponential backoff
+- **Graceful Degradation**: Add error recovery and graceful degradation mechanisms
+- **Resource Exhaustion**: Enhanced handling of memory and connection limits
+
+### Migration Strategy
+
+#### Phase 1: Core libcoap Integration (High Priority)
+1. Replace stub context and session management with real libcoap calls
+2. Implement proper CoAP PDU construction and parsing
+3. Add real CoAP response handling and error code processing
+4. Integrate basic DTLS functionality with certificate validation
+
+#### Phase 2: Advanced Features (Medium Priority)
+1. Implement complete block-wise transfer with Block1/Block2 options
+2. Add full multicast support for discovery and group communication
+3. Enhance performance optimizations with real memory management
+4. Complete DTLS certificate validation with OpenSSL integration
+
+#### Phase 3: Production Polish (Low Priority)
+1. Add comprehensive error handling and recovery mechanisms
+2. Implement enhanced security features and authentication
+3. Complete performance validation and optimization
+4. Final integration testing and production readiness validation
+
+### Testing Strategy for Real Implementation
+
+#### Integration Testing
+- Test all functionality with real libcoap library
+- Validate interoperability with other CoAP implementations
+- Test security features with actual DTLS handshakes
+- Performance testing with real protocol overhead
+
+#### Backward Compatibility
+- Maintain API compatibility with current stub implementation
+- Ensure all existing tests continue to pass
+- Support both stub and real implementations simultaneously
+- Provide clear migration path for applications
+
+#### Validation Criteria
+- All property-based tests pass with real libcoap
+- Performance meets or exceeds current stub implementation
+- Security features work with real certificate validation
+- Interoperability with standard CoAP clients and servers
