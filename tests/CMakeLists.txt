@@ -185,6 +185,23 @@ add_network_test(http_config_test http_config_test.cpp)
 # CoAP transport tests
 add_network_test(coap_transport_initialization_property_test coap_transport_initialization_property_test.cpp)
 add_network_test(coap_multicast_operation_return_types_property_test coap_multicast_operation_return_types_property_test.cpp)
+
+# CoAP libcoap integration test
+add_executable(coap_libcoap_integration_test coap_libcoap_integration_test.cpp)
+target_link_libraries(coap_libcoap_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libcoap_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_libcoap_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_libcoap_integration_test COMMAND coap_libcoap_integration_test)
+set_tests_properties(coap_libcoap_integration_test PROPERTIES
+    TIMEOUT 60
+    LABELS "coap;integration;libcoap"
+)
 # CoAP event logging property test needs Boost.JSON
 add_executable(coap_event_logging_property_test coap_event_logging_property_test.cpp)
 target_link_libraries(coap_event_logging_property_test PRIVATE
@@ -1018,3 +1035,49 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(coap_multicast_delivery_property_test PRIVATE cxx_std_23)
 add_test(NAME coap_multicast_delivery_property_test COMMAND coap_multicast_delivery_property_test)
+
+# CoAP real block transfer property test needs Boost.JSON
+add_executable(coap_real_block_transfer_property_test coap_real_block_transfer_property_test.cpp)
+target_link_libraries(coap_real_block_transfer_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_real_block_transfer_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_real_block_transfer_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_real_block_transfer_property_test COMMAND coap_real_block_transfer_property_test)
+set_tests_properties(coap_real_block_transfer_property_test PROPERTIES
+    TIMEOUT 180
+    LABELS "property;coap;block_transfer"
+)
+
+# CoAP enhanced block transfer test
+add_executable(coap_enhanced_block_transfer_test coap_enhanced_block_transfer_test.cpp)
+target_link_libraries(coap_enhanced_block_transfer_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_enhanced_block_transfer_test PRIVATE cxx_std_23)
+add_test(NAME coap_enhanced_block_transfer_test COMMAND coap_enhanced_block_transfer_test)
+set_tests_properties(coap_enhanced_block_transfer_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;coap;block_transfer;enhanced"
+)
+
+# CoAP DTLS certificate validation test
+add_executable(coap_dtls_certificate_validation_test coap_dtls_certificate_validation_test.cpp)
+target_link_libraries(coap_dtls_certificate_validation_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_dtls_certificate_validation_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_dtls_certificate_validation_test PRIVATE cxx_std_23)
+add_test(NAME coap_dtls_certificate_validation_test COMMAND coap_dtls_certificate_validation_test)
+set_tests_properties(coap_dtls_certificate_validation_test PROPERTIES
+    TIMEOUT 180
+    LABELS "property;coap;dtls;certificate;security"
+)

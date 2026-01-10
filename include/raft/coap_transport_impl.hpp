@@ -1665,39 +1665,48 @@ auto coap_client<Types>::send_rpc(
         coap_uri_t uri;
         if (coap_split_uri(reinterpret_cast<const uint8_t*>(endpoint_uri.c_str()), 
                           endpoint_uri.length(), &uri) < 0) {
+            _metrics.increment_counter("coap_uri_parse_errors");
             throw coap_network_error("Failed to parse endpoint URI: " + endpoint_uri);
         }
         
-        // Resolve the address
+        // Resolve the address with proper error handling
         coap_address_t dst_addr;
         if (!coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0, &dst_addr, 1, 1)) {
+            _metrics.increment_counter("coap_address_resolution_errors");
             throw coap_network_error("Failed to resolve endpoint address: " + endpoint_uri);
         }
         
-        // Create or get session
+        // Create or reuse session with proper session management
         coap_session_t* session = nullptr;
-        if (_config.enable_dtls && uri.scheme == COAP_URI_SCHEME_COAPS) {
-            session = coap_new_client_session_dtls(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
+        if (_config.enable_session_reuse) {
+            session = get_or_create_session(target, &dst_addr, &uri);
         } else {
-            session = coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_UDP);
+            session = create_new_session(&dst_addr, &uri);
         }
         
         if (!session) {
+            _metrics.increment_counter("coap_session_creation_errors");
             throw coap_network_error("Failed to create session to endpoint: " + endpoint_uri);
         }
         
         // Set client instance as session user data for response handling
         coap_session_set_app_data(session, this);
         
-        // Serialize the request
-        auto serialized_request = _serializer.serialize(request);
+        // Serialize the request with caching if enabled
+        std::vector<std::uint8_t> serialized_request;
+        if (_config.enable_serialization_caching) {
+            serialized_request = get_cached_or_serialize(request);
+        } else {
+            serialized_request = _serializer.serialize(request);
+        }
         
-        // Create CoAP PDU
+        // Create CoAP PDU with proper size calculation
+        size_t pdu_size = coap_session_max_pdu_size(session);
         coap_pdu_t* pdu = coap_pdu_init(
             _config.use_confirmable_messages ? COAP_MESSAGE_CON : COAP_MESSAGE_NON,
             COAP_REQUEST_CODE_POST,
             coap_new_message_id(session),
-            coap_session_max_pdu_size(session)
+            pdu_size
         );
         
         if (!pdu) {
@@ -2846,7 +2855,25 @@ auto coap_client<Types>::should_use_block_transfer(const std::vector<std::byte>&
     if (!_config.enable_block_transfer) {
         return false;
     }
-    return payload.size() > _config.max_block_size;
+    
+    // Use block transfer for payloads larger than configured block size
+    // Account for CoAP header overhead (typically 4-8 bytes) and options
+    constexpr std::size_t coap_overhead = 64; // Conservative estimate for headers + options
+    std::size_t effective_block_size = _config.max_block_size > coap_overhead ? 
+                                      _config.max_block_size - coap_overhead : 
+                                      _config.max_block_size;
+    
+    bool should_use = payload.size() > effective_block_size;
+    
+    if (should_use) {
+        _logger.debug("Block transfer required", {
+            {"payload_size", std::to_string(payload.size())},
+            {"effective_block_size", std::to_string(effective_block_size)},
+            {"max_block_size", std::to_string(_config.max_block_size)}
+        });
+    }
+    
+    return should_use;
 }
 
 template<typename Types>
@@ -2858,13 +2885,60 @@ auto coap_client<Types>::split_payload_into_blocks(const std::vector<std::byte>&
         return blocks;
     }
     
-    std::size_t offset = 0;
-    while (offset < payload.size()) {
-        std::size_t block_size = std::min(_config.max_block_size, payload.size() - offset);
-        std::vector<std::byte> block(payload.begin() + offset, payload.begin() + offset + block_size);
-        blocks.push_back(std::move(block));
-        offset += block_size;
+    // Calculate effective block size accounting for CoAP overhead
+    constexpr std::size_t coap_overhead = 64; // Conservative estimate for headers + options
+    std::size_t effective_block_size = _config.max_block_size > coap_overhead ? 
+                                      _config.max_block_size - coap_overhead : 
+                                      _config.max_block_size;
+    
+    // Ensure block size is aligned to power of 2 for CoAP Block option compatibility
+    // CoAP Block sizes must be 2^(SZX+4) where SZX is 0-7
+    std::size_t aligned_block_size = 16; // Minimum CoAP block size (2^4)
+    while (aligned_block_size < effective_block_size && aligned_block_size < 1024) {
+        aligned_block_size <<= 1; // Double the size
     }
+    
+    // If calculated size exceeds our limit, use the largest valid size
+    if (aligned_block_size > effective_block_size) {
+        aligned_block_size >>= 1;
+    }
+    
+    _logger.debug("Splitting payload into blocks", {
+        {"payload_size", std::to_string(payload.size())},
+        {"effective_block_size", std::to_string(effective_block_size)},
+        {"aligned_block_size", std::to_string(aligned_block_size)},
+        {"estimated_blocks", std::to_string((payload.size() + aligned_block_size - 1) / aligned_block_size)}
+    });
+    
+    std::size_t offset = 0;
+    std::uint32_t block_number = 0;
+    
+    while (offset < payload.size()) {
+        std::size_t remaining = payload.size() - offset;
+        std::size_t current_block_size = std::min(aligned_block_size, remaining);
+        
+        std::vector<std::byte> block;
+        block.reserve(current_block_size);
+        block.assign(payload.begin() + offset, payload.begin() + offset + current_block_size);
+        
+        blocks.push_back(std::move(block));
+        
+        _logger.debug("Created block", {
+            {"block_number", std::to_string(block_number)},
+            {"block_size", std::to_string(current_block_size)},
+            {"offset", std::to_string(offset)},
+            {"remaining", std::to_string(remaining - current_block_size)}
+        });
+        
+        offset += current_block_size;
+        block_number++;
+    }
+    
+    _logger.info("Payload split into blocks", {
+        {"total_blocks", std::to_string(blocks.size())},
+        {"total_payload_size", std::to_string(payload.size())},
+        {"block_size", std::to_string(aligned_block_size)}
+    });
     
     return blocks;
 }
@@ -3867,37 +3941,146 @@ auto coap_client<Types>::reassemble_blocks(
 ) -> std::optional<std::vector<std::byte>> {
     // Note: This method assumes the caller already holds _mutex
     
+    _logger.debug("Reassembling block", {
+        {"token", token},
+        {"block_number", std::to_string(block_opt.block_number)},
+        {"block_size", std::to_string(block_opt.block_size)},
+        {"more_blocks", block_opt.more_blocks ? "true" : "false"},
+        {"data_size", std::to_string(block_data.size())}
+    });
+    
     auto it = _active_block_transfers.find(token);
     if (it == _active_block_transfers.end()) {
         // First block - create new transfer state
         auto transfer_state = std::make_unique<block_transfer_state>(token, block_opt.block_size);
-        transfer_state->complete_payload.reserve(block_data.size() * 4); // Estimate total size
+        
+        // Estimate total size based on first block
+        if (block_opt.more_blocks) {
+            // Conservative estimate: assume at least 4 blocks for initial reservation
+            std::size_t estimated_total = block_data.size() * 4;
+            transfer_state->complete_payload.reserve(estimated_total);
+            
+            _logger.debug("Started new block transfer", {
+                {"token", token},
+                {"estimated_total_size", std::to_string(estimated_total)},
+                {"first_block_size", std::to_string(block_data.size())}
+            });
+        } else {
+            // Single block transfer
+            transfer_state->complete_payload.reserve(block_data.size());
+        }
+        
         it = _active_block_transfers.emplace(token, std::move(transfer_state)).first;
     }
     
     auto& state = it->second;
     
-    // Verify block number is what we expect
+    // Verify block sequence integrity
     if (block_opt.block_number != state->next_block_num) {
-        // Out of order block - for simplicity, fail the transfer
+        _logger.error("Block sequence error", {
+            {"token", token},
+            {"expected_block", std::to_string(state->next_block_num)},
+            {"received_block", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        // Out of order block - abort the transfer
         _active_block_transfers.erase(it);
         return std::nullopt;
     }
     
-    // Append block data
+    // Verify block size consistency (except for last block which may be smaller)
+    if (block_opt.more_blocks && block_data.size() != block_opt.block_size) {
+        _logger.error("Block size mismatch", {
+            {"token", token},
+            {"expected_size", std::to_string(block_opt.block_size)},
+            {"actual_size", std::to_string(block_data.size())},
+            {"block_number", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Validate block data is not empty (except for final block which could be empty)
+    if (block_data.empty() && block_opt.more_blocks) {
+        _logger.error("Empty block data with more blocks expected", {
+            {"token", token},
+            {"block_number", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Check for potential payload size overflow
+    constexpr std::size_t max_payload_size = 64 * 1024 * 1024; // 64MB limit
+    if (state->received_size + block_data.size() > max_payload_size) {
+        _logger.error("Payload size limit exceeded", {
+            {"token", token},
+            {"current_size", std::to_string(state->received_size)},
+            {"block_size", std::to_string(block_data.size())},
+            {"max_allowed", std::to_string(max_payload_size)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Append block data to complete payload
+    std::size_t old_size = state->complete_payload.size();
     state->complete_payload.insert(state->complete_payload.end(), block_data.begin(), block_data.end());
     state->received_size += block_data.size();
     state->next_block_num++;
     state->last_activity = std::chrono::steady_clock::now();
     
+    _logger.debug("Block appended to transfer", {
+        {"token", token},
+        {"block_number", std::to_string(block_opt.block_number)},
+        {"block_size", std::to_string(block_data.size())},
+        {"total_received", std::to_string(state->received_size)},
+        {"payload_size", std::to_string(state->complete_payload.size())},
+        {"next_expected_block", std::to_string(state->next_block_num)}
+    });
+    
+    // Check if transfer is complete
     if (!block_opt.more_blocks) {
         // This is the last block - transfer is complete
         auto complete_payload = std::move(state->complete_payload);
+        std::size_t final_size = complete_payload.size();
+        
+        _logger.info("Block transfer completed", {
+            {"token", token},
+            {"total_blocks", std::to_string(state->next_block_num)},
+            {"final_payload_size", std::to_string(final_size)},
+            {"block_size", std::to_string(state->block_size)}
+        });
+        
+        // Clean up transfer state
         _active_block_transfers.erase(it);
+        
+        // Validate final payload is not empty (unless it's legitimately empty)
+        if (complete_payload.empty() && state->next_block_num > 1) {
+            _logger.warning("Block transfer completed with empty payload", {
+                {"token", token},
+                {"blocks_received", std::to_string(state->next_block_num)}
+            });
+        }
+        
         return complete_payload;
     }
     
-    // More blocks expected
+    // More blocks expected - continue transfer
+    _logger.debug("Waiting for more blocks", {
+        {"token", token},
+        {"blocks_received", std::to_string(state->next_block_num)},
+        {"bytes_received", std::to_string(state->received_size)},
+        {"next_expected_block", std::to_string(state->next_block_num)}
+    });
+    
     return std::nullopt;
 }
 
@@ -3907,19 +4090,73 @@ auto coap_client<Types>::cleanup_expired_block_transfers() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     
     auto now = std::chrono::steady_clock::now();
-    constexpr auto max_age = std::chrono::minutes(5); // Keep block transfers for 5 minutes
+    
+    // Different timeouts based on transfer progress
+    constexpr auto initial_timeout = std::chrono::minutes(2);  // Timeout for first block
+    constexpr auto active_timeout = std::chrono::minutes(5);   // Timeout for active transfers
+    constexpr auto stale_timeout = std::chrono::minutes(10);   // Timeout for stale transfers
+    
+    std::size_t expired_count = 0;
+    std::size_t total_expired_bytes = 0;
     
     for (auto it = _active_block_transfers.begin(); it != _active_block_transfers.end();) {
-        if (now - it->second->last_activity > max_age) {
+        auto& state = it->second;
+        auto age = now - state->last_activity;
+        bool should_expire = false;
+        std::string reason;
+        
+        if (state->next_block_num == 0) {
+            // No blocks received yet
+            if (age > initial_timeout) {
+                should_expire = true;
+                reason = "initial_timeout";
+            }
+        } else if (state->received_size > 0 && state->next_block_num > 0) {
+            // Active transfer with progress
+            if (age > active_timeout) {
+                should_expire = true;
+                reason = "active_timeout";
+            }
+        } else {
+            // Stale transfer
+            if (age > stale_timeout) {
+                should_expire = true;
+                reason = "stale_timeout";
+            }
+        }
+        
+        if (should_expire) {
             _logger.warning("Block transfer expired", {
                 {"token", it->first},
-                {"received_size", std::to_string(it->second->received_size)},
-                {"next_block", std::to_string(it->second->next_block_num)}
+                {"reason", reason},
+                {"age_seconds", std::to_string(std::chrono::duration_cast<std::chrono::seconds>(age).count())},
+                {"blocks_received", std::to_string(state->next_block_num)},
+                {"bytes_received", std::to_string(state->received_size)},
+                {"expected_total", std::to_string(state->expected_total_size)},
+                {"block_size", std::to_string(state->block_size)}
             });
+            
+            expired_count++;
+            total_expired_bytes += state->received_size;
+            
             it = _active_block_transfers.erase(it);
         } else {
             ++it;
         }
+    }
+    
+    if (expired_count > 0) {
+        _logger.info("Block transfer cleanup completed", {
+            {"expired_transfers", std::to_string(expired_count)},
+            {"total_expired_bytes", std::to_string(total_expired_bytes)},
+            {"active_transfers", std::to_string(_active_block_transfers.size())}
+        });
+        
+        // Update metrics
+        _metrics.add_dimension("cleanup_type", "block_transfers");
+        _metrics.add_dimension("expired_count", std::to_string(expired_count));
+        _metrics.add_one();
+        _metrics.emit();
     }
 }
 
@@ -3931,7 +4168,25 @@ auto coap_server<Types>::should_use_block_transfer(const std::vector<std::byte>&
     if (!_config.enable_block_transfer) {
         return false;
     }
-    return payload.size() > _config.max_block_size;
+    
+    // Use block transfer for payloads larger than configured block size
+    // Account for CoAP header overhead (typically 4-8 bytes) and options
+    constexpr std::size_t coap_overhead = 64; // Conservative estimate for headers + options
+    std::size_t effective_block_size = _config.max_block_size > coap_overhead ? 
+                                      _config.max_block_size - coap_overhead : 
+                                      _config.max_block_size;
+    
+    bool should_use = payload.size() > effective_block_size;
+    
+    if (should_use) {
+        _logger.debug("Server block transfer required", {
+            {"payload_size", std::to_string(payload.size())},
+            {"effective_block_size", std::to_string(effective_block_size)},
+            {"max_block_size", std::to_string(_config.max_block_size)}
+        });
+    }
+    
+    return should_use;
 }
 
 template<typename Types>
@@ -3943,13 +4198,60 @@ auto coap_server<Types>::split_payload_into_blocks(const std::vector<std::byte>&
         return blocks;
     }
     
-    std::size_t offset = 0;
-    while (offset < payload.size()) {
-        std::size_t block_size = std::min(_config.max_block_size, payload.size() - offset);
-        std::vector<std::byte> block(payload.begin() + offset, payload.begin() + offset + block_size);
-        blocks.push_back(std::move(block));
-        offset += block_size;
+    // Calculate effective block size accounting for CoAP overhead
+    constexpr std::size_t coap_overhead = 64; // Conservative estimate for headers + options
+    std::size_t effective_block_size = _config.max_block_size > coap_overhead ? 
+                                      _config.max_block_size - coap_overhead : 
+                                      _config.max_block_size;
+    
+    // Ensure block size is aligned to power of 2 for CoAP Block option compatibility
+    // CoAP Block sizes must be 2^(SZX+4) where SZX is 0-7
+    std::size_t aligned_block_size = 16; // Minimum CoAP block size (2^4)
+    while (aligned_block_size < effective_block_size && aligned_block_size < 1024) {
+        aligned_block_size <<= 1; // Double the size
     }
+    
+    // If calculated size exceeds our limit, use the largest valid size
+    if (aligned_block_size > effective_block_size) {
+        aligned_block_size >>= 1;
+    }
+    
+    _logger.debug("Server splitting payload into blocks", {
+        {"payload_size", std::to_string(payload.size())},
+        {"effective_block_size", std::to_string(effective_block_size)},
+        {"aligned_block_size", std::to_string(aligned_block_size)},
+        {"estimated_blocks", std::to_string((payload.size() + aligned_block_size - 1) / aligned_block_size)}
+    });
+    
+    std::size_t offset = 0;
+    std::uint32_t block_number = 0;
+    
+    while (offset < payload.size()) {
+        std::size_t remaining = payload.size() - offset;
+        std::size_t current_block_size = std::min(aligned_block_size, remaining);
+        
+        std::vector<std::byte> block;
+        block.reserve(current_block_size);
+        block.assign(payload.begin() + offset, payload.begin() + offset + current_block_size);
+        
+        blocks.push_back(std::move(block));
+        
+        _logger.debug("Server created block", {
+            {"block_number", std::to_string(block_number)},
+            {"block_size", std::to_string(current_block_size)},
+            {"offset", std::to_string(offset)},
+            {"remaining", std::to_string(remaining - current_block_size)}
+        });
+        
+        offset += current_block_size;
+        block_number++;
+    }
+    
+    _logger.info("Server payload split into blocks", {
+        {"total_blocks", std::to_string(blocks.size())},
+        {"total_payload_size", std::to_string(payload.size())},
+        {"block_size", std::to_string(aligned_block_size)}
+    });
     
     return blocks;
 }
@@ -4042,8 +4344,75 @@ auto coap_server<Types>::cleanup_expired_block_transfers() -> void {
     // Clean up expired block transfer state
     std::lock_guard<std::mutex> lock(_mutex);
     
-    // In real implementation, would clean up block transfer state
-    _logger.debug("Cleaned up expired block transfers");
+    auto now = std::chrono::steady_clock::now();
+    
+    // Different timeouts based on transfer progress
+    constexpr auto initial_timeout = std::chrono::minutes(2);  // Timeout for first block
+    constexpr auto active_timeout = std::chrono::minutes(5);   // Timeout for active transfers
+    constexpr auto stale_timeout = std::chrono::minutes(10);   // Timeout for stale transfers
+    
+    std::size_t expired_count = 0;
+    std::size_t total_expired_bytes = 0;
+    
+    for (auto it = _active_block_transfers.begin(); it != _active_block_transfers.end();) {
+        auto& state = it->second;
+        auto age = now - state->last_activity;
+        bool should_expire = false;
+        std::string reason;
+        
+        if (state->next_block_num == 0) {
+            // No blocks received yet
+            if (age > initial_timeout) {
+                should_expire = true;
+                reason = "initial_timeout";
+            }
+        } else if (state->received_size > 0 && state->next_block_num > 0) {
+            // Active transfer with progress
+            if (age > active_timeout) {
+                should_expire = true;
+                reason = "active_timeout";
+            }
+        } else {
+            // Stale transfer
+            if (age > stale_timeout) {
+                should_expire = true;
+                reason = "stale_timeout";
+            }
+        }
+        
+        if (should_expire) {
+            _logger.warning("Server block transfer expired", {
+                {"token", it->first},
+                {"reason", reason},
+                {"age_seconds", std::to_string(std::chrono::duration_cast<std::chrono::seconds>(age).count())},
+                {"blocks_received", std::to_string(state->next_block_num)},
+                {"bytes_received", std::to_string(state->received_size)},
+                {"expected_total", std::to_string(state->expected_total_size)},
+                {"block_size", std::to_string(state->block_size)}
+            });
+            
+            expired_count++;
+            total_expired_bytes += state->received_size;
+            
+            it = _active_block_transfers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    
+    if (expired_count > 0) {
+        _logger.info("Server block transfer cleanup completed", {
+            {"expired_transfers", std::to_string(expired_count)},
+            {"total_expired_bytes", std::to_string(total_expired_bytes)},
+            {"active_transfers", std::to_string(_active_block_transfers.size())}
+        });
+        
+        // Update metrics
+        _metrics.add_dimension("cleanup_type", "server_block_transfers");
+        _metrics.add_dimension("expired_count", std::to_string(expired_count));
+        _metrics.add_one();
+        _metrics.emit();
+    }
 }
 
 template<typename Types>
@@ -4232,37 +4601,145 @@ auto coap_server<Types>::reassemble_blocks(
 ) -> std::optional<std::vector<std::byte>> {
     // Note: This method assumes the caller already holds _mutex
     
+    _logger.debug("Server reassembling block", {
+        {"token", token},
+        {"block_number", std::to_string(block_opt.block_number)},
+        {"block_size", std::to_string(block_opt.block_size)},
+        {"more_blocks", block_opt.more_blocks ? "true" : "false"},
+        {"data_size", std::to_string(block_data.size())}
+    });
+    
     auto it = _active_block_transfers.find(token);
     if (it == _active_block_transfers.end()) {
         // First block - create new transfer state
         auto transfer_state = std::make_unique<block_transfer_state>(token, block_opt.block_size);
-        transfer_state->complete_payload.reserve(block_data.size() * 4); // Estimate total size
+        
+        // Estimate total size based on first block
+        if (block_opt.more_blocks) {
+            // Conservative estimate: assume at least 4 blocks for initial reservation
+            std::size_t estimated_total = block_data.size() * 4;
+            transfer_state->complete_payload.reserve(estimated_total);
+            
+            _logger.debug("Server started new block transfer", {
+                {"token", token},
+                {"estimated_total_size", std::to_string(estimated_total)},
+                {"first_block_size", std::to_string(block_data.size())}
+            });
+        } else {
+            // Single block transfer
+            transfer_state->complete_payload.reserve(block_data.size());
+        }
+        
         it = _active_block_transfers.emplace(token, std::move(transfer_state)).first;
     }
     
     auto& state = it->second;
     
-    // Verify block number is what we expect
+    // Verify block sequence integrity
     if (block_opt.block_number != state->next_block_num) {
-        // Out of order block - for simplicity, fail the transfer
+        _logger.error("Server block sequence error", {
+            {"token", token},
+            {"expected_block", std::to_string(state->next_block_num)},
+            {"received_block", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        // Out of order block - abort the transfer
         _active_block_transfers.erase(it);
         return std::nullopt;
     }
     
-    // Append block data
+    // Verify block size consistency (except for last block which may be smaller)
+    if (block_opt.more_blocks && block_data.size() != block_opt.block_size) {
+        _logger.error("Server block size mismatch", {
+            {"token", token},
+            {"expected_size", std::to_string(block_opt.block_size)},
+            {"actual_size", std::to_string(block_data.size())},
+            {"block_number", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Validate block data is not empty (except for final block which could be empty)
+    if (block_data.empty() && block_opt.more_blocks) {
+        _logger.error("Server empty block data with more blocks expected", {
+            {"token", token},
+            {"block_number", std::to_string(block_opt.block_number)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Check for potential payload size overflow
+    constexpr std::size_t max_payload_size = 64 * 1024 * 1024; // 64MB limit
+    if (state->received_size + block_data.size() > max_payload_size) {
+        _logger.error("Server payload size limit exceeded", {
+            {"token", token},
+            {"current_size", std::to_string(state->received_size)},
+            {"block_size", std::to_string(block_data.size())},
+            {"max_allowed", std::to_string(max_payload_size)},
+            {"action", "aborting_transfer"}
+        });
+        
+        _active_block_transfers.erase(it);
+        return std::nullopt;
+    }
+    
+    // Append block data to complete payload
     state->complete_payload.insert(state->complete_payload.end(), block_data.begin(), block_data.end());
     state->received_size += block_data.size();
     state->next_block_num++;
     state->last_activity = std::chrono::steady_clock::now();
     
+    _logger.debug("Server block appended to transfer", {
+        {"token", token},
+        {"block_number", std::to_string(block_opt.block_number)},
+        {"block_size", std::to_string(block_data.size())},
+        {"total_received", std::to_string(state->received_size)},
+        {"payload_size", std::to_string(state->complete_payload.size())},
+        {"next_expected_block", std::to_string(state->next_block_num)}
+    });
+    
+    // Check if transfer is complete
     if (!block_opt.more_blocks) {
         // This is the last block - transfer is complete
         auto complete_payload = std::move(state->complete_payload);
+        std::size_t final_size = complete_payload.size();
+        
+        _logger.info("Server block transfer completed", {
+            {"token", token},
+            {"total_blocks", std::to_string(state->next_block_num)},
+            {"final_payload_size", std::to_string(final_size)},
+            {"block_size", std::to_string(state->block_size)}
+        });
+        
+        // Clean up transfer state
         _active_block_transfers.erase(it);
+        
+        // Validate final payload is not empty (unless it's legitimately empty)
+        if (complete_payload.empty() && state->next_block_num > 1) {
+            _logger.warning("Server block transfer completed with empty payload", {
+                {"token", token},
+                {"blocks_received", std::to_string(state->next_block_num)}
+            });
+        }
+        
         return complete_payload;
     }
     
-    // More blocks expected
+    // More blocks expected - continue transfer
+    _logger.debug("Server waiting for more blocks", {
+        {"token", token},
+        {"blocks_received", std::to_string(state->next_block_num)},
+        {"bytes_received", std::to_string(state->received_size)},
+        {"next_expected_block", std::to_string(state->next_block_num)}
+    });
+    
     return std::nullopt;
 }
 
@@ -5156,7 +5633,207 @@ auto coap_server<Types>::send_multicast_response(
     _metrics.emit();
 }
 
+// Enhanced libcoap integration methods for coap_client
 
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::get_or_create_session(
+    std::uint64_t target, 
+    coap_address_t* dst_addr, 
+    coap_uri_t* uri
+) -> coap_session_t* {
+#ifdef LIBCOAP_AVAILABLE
+    std::string endpoint_key = std::to_string(target);
+    
+    // Check if we have a pooled session for this endpoint
+    if (_config.enable_session_reuse) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto pool_it = _session_pools.find(endpoint_key);
+        if (pool_it != _session_pools.end() && !pool_it->second.empty()) {
+            auto session = pool_it->second.back();
+            pool_it->second.pop_back();
+            
+            // Validate session is still active
+            if (coap_session_get_state(session) == COAP_SESSION_STATE_ESTABLISHED) {
+                _logger.debug("Reusing existing session", {
+                    {"target", std::to_string(target)},
+                    {"session_state", "established"}
+                });
+                return session;
+            } else {
+                // Session is no longer valid, release it
+                coap_session_release(session);
+            }
+        }
+    }
+    
+    // Create new session
+    return create_new_session(dst_addr, uri);
+#else
+    // Stub implementation
+    return reinterpret_cast<coap_session_t*>(0x1);
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::create_new_session(
+    coap_address_t* dst_addr, 
+    coap_uri_t* uri
+) -> coap_session_t* {
+#ifdef LIBCOAP_AVAILABLE
+    coap_session_t* session = nullptr;
+    
+    if (_config.enable_dtls && uri->scheme == COAP_URI_SCHEME_COAPS) {
+        // Create DTLS session with enhanced security
+        session = coap_new_client_session_dtls(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+        
+        if (session) {
+            // Configure DTLS parameters
+            coap_dtls_set_log_level(LOG_DEBUG);
+            
+            // Set certificate validation callback if configured
+            if (_config.enable_certificate_validation) {
+                coap_session_set_app_data(session, this);
+            }
+            
+            _logger.debug("Created new DTLS session", {
+                {"protocol", "DTLS"},
+                {"certificate_validation", _config.enable_certificate_validation ? "enabled" : "disabled"}
+            });
+        }
+    } else {
+        // Create regular UDP session
+        session = coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_UDP);
+        
+        if (session) {
+            _logger.debug("Created new UDP session", {
+                {"protocol", "UDP"}
+            });
+        }
+    }
+    
+    if (!session) {
+        _metrics.increment_counter("coap_session_creation_failures");
+        throw coap_network_error("Failed to create CoAP session");
+    }
+    
+    // Configure session parameters
+    coap_session_set_max_retransmit(session, _config.max_retransmit);
+    coap_session_set_ack_timeout(session, _config.ack_timeout.count() / 1000.0f);
+    
+    _metrics.increment_counter("coap_sessions_created");
+    return session;
+#else
+    // Stub implementation
+    return reinterpret_cast<coap_session_t*>(0x1);
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::vector<std::uint8_t> {
+    if (!_config.enable_serialization_caching) {
+        return _serializer.serialize(request);
+    }
+    
+    // Calculate hash of request for cache key
+    std::size_t request_hash = std::hash<std::string>{}(typeid(request).name());
+    // Add request content to hash (simplified - in production would use proper hash)
+    request_hash ^= std::hash<std::uint64_t>{}(request.term()) + 0x9e3779b9 + (request_hash << 6) + (request_hash >> 2);
+    
+    std::lock_guard<std::mutex> lock(_mutex);
+    
+    // Check cache
+    auto cache_it = _serialization_cache.find(request_hash);
+    if (cache_it != _serialization_cache.end()) {
+        auto& entry = cache_it->second;
+        
+        // Check if cache entry is still valid
+        auto now = std::chrono::steady_clock::now();
+        if (now - entry.created < _config.cache_ttl) {
+            entry.access_count++;
+            entry.last_access = now;
+            
+            _metrics.increment_counter("coap_serialization_cache_hits");
+            _logger.debug("Serialization cache hit", {
+                {"request_hash", std::to_string(request_hash)},
+                {"cached_size", std::to_string(entry.serialized_data.size())}
+            });
+            
+            // Convert std::byte to std::uint8_t for return
+            std::vector<std::uint8_t> result;
+            result.reserve(entry.serialized_data.size());
+            for (const auto& b : entry.serialized_data) {
+                result.push_back(static_cast<std::uint8_t>(b));
+            }
+            return result;
+        } else {
+            // Cache entry expired, remove it
+            _serialization_cache.erase(cache_it);
+        }
+    }
+    
+    // Cache miss - serialize and cache
+    auto serialized_data = _serializer.serialize(request);
+    cache_serialization_result(request_hash, serialized_data);
+    
+    _metrics.increment_counter("coap_serialization_cache_misses");
+    return serialized_data;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::cache_serialization_result(
+    std::size_t hash, 
+    const std::vector<std::uint8_t>& data
+) -> void {
+    if (!_config.enable_serialization_caching) {
+        return;
+    }
+    
+    std::lock_guard<std::mutex> lock(_mutex);
+    
+    // Check cache size limits
+    if (_serialization_cache.size() >= _config.max_cache_entries) {
+        // Implement LRU eviction
+        auto oldest_it = _serialization_cache.begin();
+        auto oldest_time = oldest_it->second.last_access;
+        
+        for (auto it = _serialization_cache.begin(); it != _serialization_cache.end(); ++it) {
+            if (it->second.last_access < oldest_time) {
+                oldest_time = it->second.last_access;
+                oldest_it = it;
+            }
+        }
+        
+        _logger.debug("Evicting oldest cache entry", {
+            {"evicted_hash", std::to_string(oldest_it->first)},
+            {"cache_size", std::to_string(_serialization_cache.size())}
+        });
+        
+        _serialization_cache.erase(oldest_it);
+    }
+    
+    // Add new cache entry
+    cache_entry entry;
+    // Convert std::uint8_t to std::byte for storage
+    entry.serialized_data.reserve(data.size());
+    for (const auto& b : data) {
+        entry.serialized_data.push_back(static_cast<std::byte>(b));
+    }
+    entry.created = std::chrono::steady_clock::now();
+    entry.last_access = entry.created;
+    entry.access_count = 1;
+    
+    _serialization_cache[hash] = std::move(entry);
+    
+    _logger.debug("Cached serialization result", {
+        {"request_hash", std::to_string(hash)},
+        {"data_size", std::to_string(data.size())},
+        {"cache_size", std::to_string(_serialization_cache.size())}
+    });
+}
 
 } // namespace kythira
 

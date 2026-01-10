@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/types.hpp>
+#include <raft/coap_block_option.hpp>
 #include <raft/network.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/metrics.hpp>
@@ -32,8 +33,11 @@
 // Forward declarations for libcoap
 struct coap_context_t;
 struct coap_session_t;
+struct coap_address_t;
+struct coap_uri_t;
 struct coap_pdu_t;
 struct coap_resource_t;
+struct coap_string_t;
 struct coap_string_t;
 typedef std::uint8_t coap_pdu_code_t;
 
@@ -97,49 +101,6 @@ struct block_transfer_state {
     {}
 };
 
-// Block option parsing structure
-struct block_option {
-    std::uint32_t block_number{0};
-    bool more_blocks{false};
-    std::uint32_t block_size{1024};
-    
-    // Parse Block1/Block2 option value
-    static auto parse(std::uint32_t option_value) -> block_option {
-        block_option result;
-        
-        // CoAP Block option format (RFC 7959):
-        // 0-19 bits: Block number
-        // 20-22 bits: Block size (encoded as 2^(SZX+4))
-        // 23 bit: More flag
-        
-        result.block_number = option_value & 0xFFFFF;  // Lower 20 bits
-        std::uint8_t szx = (option_value >> 20) & 0x7;  // Bits 20-22
-        result.more_blocks = (option_value >> 23) & 0x1;  // Bit 23
-        
-        // Calculate actual block size from SZX
-        result.block_size = 1U << (szx + 4);  // 2^(SZX+4)
-        
-        return result;
-    }
-    
-    // Encode Block1/Block2 option value
-    auto encode() const -> std::uint32_t {
-        // Calculate SZX from block size
-        std::uint8_t szx = 0;
-        std::uint32_t size = block_size;
-        while (size > 16 && szx < 7) {
-            size >>= 1;
-            szx++;
-        }
-        
-        std::uint32_t result = 0;
-        result |= (block_number & 0xFFFFF);  // Lower 20 bits
-        result |= (static_cast<std::uint32_t>(szx) & 0x7) << 20;  // Bits 20-22
-        result |= (more_blocks ? 1U : 0U) << 23;  // Bit 23
-        
-        return result;
-    }
-};
 
 namespace kythira {
 
@@ -189,6 +150,9 @@ struct coap_client_config {
     std::size_t memory_pool_size{1024 * 1024}; // 1MB
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
+    std::size_t max_cache_entries{100};
+    std::chrono::milliseconds cache_ttl{60000}; // 1 minute
+    bool enable_certificate_validation{true};
 };
 
 struct coap_server_config {
@@ -244,8 +208,9 @@ struct memory_pool {
 
 // Serialization cache entry
 struct cache_entry {
-    std::vector<std::byte> serialized_data;
-    std::chrono::steady_clock::time_point created;
+    std::vector<std::byte> serialized_data;  // Changed from data to serialized_data and type to std::byte
+    std::chrono::steady_clock::time_point created;  // Changed from timestamp to created
+    std::chrono::steady_clock::time_point last_access;
     std::size_t access_count{0};
 };
 
@@ -392,6 +357,8 @@ private:
     
     // Session management methods
     auto get_or_create_session(const std::string& endpoint) -> coap_session_t*;
+    auto get_or_create_session(std::uint64_t target, coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
+    auto create_new_session(coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
     auto return_session_to_pool(const std::string& endpoint, coap_session_t* session) -> void;
     auto cleanup_expired_sessions() -> void;
     
@@ -409,6 +376,11 @@ private:
     auto cleanup_serialization_cache() -> void;
     auto acquire_concurrent_slot() -> bool;
     auto release_concurrent_slot() -> void;
+    
+    // Enhanced serialization caching methods
+    template<typename Request>
+    auto get_cached_or_serialize(const Request& request) -> std::vector<std::uint8_t>;
+    auto cache_serialization_result(std::size_t hash, const std::vector<std::uint8_t>& data) -> void;
     
     // Multicast methods
     auto is_valid_multicast_address(const std::string& address) -> bool;
