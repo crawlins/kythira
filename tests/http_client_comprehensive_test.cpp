@@ -23,7 +23,7 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction) {
     node_map[test_node_id_2] = test_https_url;
     node_map[test_node_id_3] = "http://remote.example.com:9090";
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.connection_pool_size = 15;
     config.connection_timeout = std::chrono::milliseconds{2000};
     config.request_timeout = std::chrono::milliseconds{8000};
@@ -32,12 +32,12 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction) {
     config.ca_cert_path = "/etc/ssl/certs/ca-certificates.crt";
     config.user_agent = "raft-test-client/1.0";
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
     // Test construction with multiple nodes
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
@@ -47,13 +47,13 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction) {
 BOOST_AUTO_TEST_CASE(test_empty_node_map_construction) {
     std::unordered_map<std::uint64_t, std::string> empty_node_map;
     
-    raft::cpp_httplib_client_config config;
-    raft::noop_metrics metrics;
+    kythira::cpp_httplib_client_config config;
+    kythira::noop_metrics metrics;
     
     // Should be able to construct with empty map
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(empty_node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
@@ -68,13 +68,13 @@ BOOST_AUTO_TEST_CASE(test_various_url_formats) {
     node_map[4] = "https://example.com:443";
     node_map[5] = "http://node-5.cluster.local:8080";
     
-    raft::cpp_httplib_client_config config;
-    raft::noop_metrics metrics;
+    kythira::cpp_httplib_client_config config;
+    kythira::noop_metrics metrics;
     
     // Test construction with various URL formats
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
@@ -87,17 +87,17 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases) {
     
     // Test with minimal timeouts
     {
-        raft::cpp_httplib_client_config config;
+        kythira::cpp_httplib_client_config config;
         config.connection_pool_size = 1;
         config.connection_timeout = std::chrono::milliseconds{1};
         config.request_timeout = std::chrono::milliseconds{1};
         config.keep_alive_timeout = std::chrono::milliseconds{1};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
-        raft::cpp_httplib_client<
-            raft::json_rpc_serializer<std::vector<std::byte>>,
-            raft::noop_metrics
+        kythira::cpp_httplib_client<
+            kythira::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::noop_metrics
         > client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
@@ -105,17 +105,17 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases) {
     
     // Test with maximum timeouts
     {
-        raft::cpp_httplib_client_config config;
+        kythira::cpp_httplib_client_config config;
         config.connection_pool_size = 1000;
         config.connection_timeout = std::chrono::milliseconds{60000};
         config.request_timeout = std::chrono::milliseconds{300000};
         config.keep_alive_timeout = std::chrono::milliseconds{600000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
-        raft::cpp_httplib_client<
-            raft::json_rpc_serializer<std::vector<std::byte>>,
-            raft::noop_metrics
+        kythira::cpp_httplib_client<
+            kythira::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::noop_metrics
         > client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
@@ -129,15 +129,15 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration) {
     
     // Test with SSL verification enabled
     {
-        raft::cpp_httplib_client_config config;
+        kythira::cpp_httplib_client_config config;
         config.enable_ssl_verification = true;
         config.ca_cert_path = "/etc/ssl/certs/ca-certificates.crt";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
-        raft::cpp_httplib_client<
-            raft::json_rpc_serializer<std::vector<std::byte>>,
-            raft::noop_metrics
+        kythira::cpp_httplib_client<
+            kythira::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::noop_metrics
         > client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
@@ -145,15 +145,15 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration) {
     
     // Test with SSL verification disabled
     {
-        raft::cpp_httplib_client_config config;
+        kythira::cpp_httplib_client_config config;
         config.enable_ssl_verification = false;
         config.ca_cert_path = "";  // Empty path
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
-        raft::cpp_httplib_client<
-            raft::json_rpc_serializer<std::vector<std::byte>>,
-            raft::noop_metrics
+        kythira::cpp_httplib_client<
+            kythira::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::noop_metrics
         > client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
@@ -165,14 +165,14 @@ BOOST_AUTO_TEST_CASE(test_user_agent_configuration) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.user_agent = "custom-raft-client/2.1.0 (Linux; x86_64)";
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
@@ -183,14 +183,14 @@ BOOST_AUTO_TEST_CASE(test_move_semantics) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
     
-    raft::cpp_httplib_client_config config;
-    raft::noop_metrics metrics;
+    kythira::cpp_httplib_client_config config;
+    kythira::noop_metrics metrics;
     
     // Test move construction
     auto create_client = [&]() {
-        return raft::cpp_httplib_client<
-            raft::json_rpc_serializer<std::vector<std::byte>>,
-            raft::noop_metrics
+        return kythira::cpp_httplib_client<
+            kythira::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::noop_metrics
         >(node_map, config, metrics);
     };
     
@@ -207,14 +207,14 @@ BOOST_AUTO_TEST_CASE(test_large_node_map) {
         large_node_map[i] = "http://node-" + std::to_string(i) + ".cluster.local:8080";
     }
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.connection_pool_size = 50;  // Smaller than node count
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(large_node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction with large node map succeeded

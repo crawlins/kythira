@@ -33,26 +33,26 @@ namespace {
 }
 
 // Define our future types for different RPC responses
-using RequestVoteFuture = kythira::Future<raft::request_vote_response<>>;
-using AppendEntriesFuture = kythira::Future<raft::append_entries_response<>>;
-using InstallSnapshotFuture = kythira::Future<raft::install_snapshot_response<>>;
+using RequestVoteFuture = kythira::Future<kythira::request_vote_response<>>;
+using AppendEntriesFuture = kythira::Future<kythira::append_entries_response<>>;
+using InstallSnapshotFuture = kythira::Future<kythira::install_snapshot_response<>>;
 
 auto demonstrate_generic_future_concepts() -> bool {
     std::cout << "=== Generic Future Concepts ===\n";
     
     try {
         // Verify that kythira::Future satisfies the future concept
-        static_assert(kythira::future<RequestVoteFuture, raft::request_vote_response<>>, 
+        static_assert(kythira::future<RequestVoteFuture, kythira::request_vote_response<>>, 
                       "RequestVoteFuture must satisfy future concept");
-        static_assert(kythira::future<AppendEntriesFuture, raft::append_entries_response<>>, 
+        static_assert(kythira::future<AppendEntriesFuture, kythira::append_entries_response<>>, 
                       "AppendEntriesFuture must satisfy future concept");
-        static_assert(kythira::future<InstallSnapshotFuture, raft::install_snapshot_response<>>, 
+        static_assert(kythira::future<InstallSnapshotFuture, kythira::install_snapshot_response<>>, 
                       "InstallSnapshotFuture must satisfy future concept");
         
         std::cout << "  ✓ All future types satisfy the generic future concept\n";
         
         // Demonstrate basic future operations
-        raft::request_vote_response<> response;
+        kythira::request_vote_response<> response;
         response._term = example_term;
         response._vote_granted = true;
         
@@ -112,14 +112,14 @@ auto demonstrate_future_chaining() -> bool {
     
     try {
         // Create a successful vote response
-        raft::request_vote_response<> vote_response;
+        kythira::request_vote_response<> vote_response;
         vote_response._term = example_term;
         vote_response._vote_granted = true;
         
         auto vote_future = RequestVoteFuture(vote_response);
         
         // Chain operations based on vote result
-        auto chained_result = vote_future.then([](const raft::request_vote_response<>& response) {
+        auto chained_result = vote_future.then([](const kythira::request_vote_response<>& response) {
             std::cout << "  Processing vote response for term " << response.term() << "\n";
             if (response.vote_granted()) {
                 std::cout << "  ✓ Vote was granted, proceeding with leadership\n";
@@ -153,7 +153,7 @@ auto demonstrate_error_handling() -> bool {
         auto safe_future = error_future.onError([](folly::exception_wrapper ex) {
             std::cout << "  Caught exception: " << ex.what() << "\n";
             // Return a default response
-            raft::request_vote_response<> default_response;
+            kythira::request_vote_response<> default_response;
             default_response._term = 0;
             default_response._vote_granted = false;
             return default_response;
@@ -179,19 +179,19 @@ auto demonstrate_collective_operations() -> bool {
         std::vector<RequestVoteFuture> vote_futures;
         
         // Node 1 grants vote
-        raft::request_vote_response<> response1;
+        kythira::request_vote_response<> response1;
         response1._term = example_term;
         response1._vote_granted = true;
         vote_futures.emplace_back(RequestVoteFuture(response1));
         
         // Node 2 grants vote
-        raft::request_vote_response<> response2;
+        kythira::request_vote_response<> response2;
         response2._term = example_term;
         response2._vote_granted = true;
         vote_futures.emplace_back(RequestVoteFuture(response2));
         
         // Node 3 denies vote
-        raft::request_vote_response<> response3;
+        kythira::request_vote_response<> response3;
         response3._term = example_term + 1; // Higher term
         response3._vote_granted = false;
         vote_futures.emplace_back(RequestVoteFuture(response3));
@@ -241,13 +241,13 @@ auto demonstrate_wait_for_any() -> bool {
         std::vector<RequestVoteFuture> mixed_futures;
         
         // Fast response
-        raft::request_vote_response<> fast_response;
+        kythira::request_vote_response<> fast_response;
         fast_response._term = example_term;
         fast_response._vote_granted = true;
         mixed_futures.emplace_back(RequestVoteFuture(fast_response));
         
         // Another response (would be slower in real scenario)
-        raft::request_vote_response<> slow_response;
+        kythira::request_vote_response<> slow_response;
         slow_response._term = example_term;
         slow_response._vote_granted = false;
         mixed_futures.emplace_back(RequestVoteFuture(slow_response));

@@ -15,11 +15,27 @@ namespace kythira {
 
 // Simulator network client implementation
 template<typename FutureType, typename Serializer, typename Data>
-requires raft::rpc_serializer<Serializer, Data>
+requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_client {
 public:
-    using node_type = std::shared_ptr<network_simulator::NetworkNode<std::uint64_t, unsigned short, kythira::Future<bool>>>;
-    using simulator_type = kythira::NetworkSimulator<std::uint64_t, unsigned short, kythira::Future<bool>>;
+    // Define a custom types structure for the network simulator
+    struct raft_network_types {
+        using address_type = std::string;
+        using port_type = unsigned short;
+        using message_type = network_simulator::Message<raft_network_types>;
+        using connection_type = network_simulator::Connection<raft_network_types>;
+        using listener_type = network_simulator::Listener<raft_network_types>;
+        using node_type = network_simulator::NetworkNode<raft_network_types>;
+        
+        // Future types using the generic FutureType template parameter
+        using future_bool_type = FutureType;
+        using future_bytes_type = FutureType;
+        using future_connection_type = FutureType;
+        using future_message_type = FutureType;
+    };
+    
+    using node_type = std::shared_ptr<network_simulator::NetworkNode<raft_network_types>>;
+    using simulator_type = network_simulator::NetworkSimulator<raft_network_types>;
     
     simulator_network_client(node_type node, Serializer serializer = Serializer{})
         : _node(std::move(node))
@@ -30,7 +46,7 @@ public:
     // Send RequestVote RPC
     auto send_request_vote(
         std::uint64_t target,
-        const raft::request_vote_request<>& req,
+        const kythira::request_vote_request<>& req,
         std::chrono::milliseconds timeout
     ) -> FutureType {
         // Serialize the request
@@ -40,7 +56,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
         
         // Create message
-        network_simulator::Message<std::uint64_t, unsigned short> msg(
+        typename raft_network_types::message_type msg(
             _node->address(),
             0,  // Source port (connectionless)
             target,
@@ -53,12 +69,12 @@ public:
             .then([this, timeout](bool success) -> FutureType {
                 if (!success) {
                     return FutureType(std::make_exception_ptr(
-                        raft::network_exception("Failed to send RequestVote RPC")));
+                        kythira::network_exception("Failed to send RequestVote RPC")));
                 }
                 
                 // Wait for response
                 return _node->receive(timeout)
-                    .then([this](network_simulator::Message<std::uint64_t, unsigned short> response_msg) -> raft::request_vote_response<> {
+                    .then([this](typename raft_network_types::message_type response_msg) -> kythira::request_vote_response<> {
                         // Deserialize response
                         auto payload = response_msg.payload();
                         Data response_data;
@@ -75,7 +91,7 @@ public:
     // Send AppendEntries RPC
     auto send_append_entries(
         std::uint64_t target,
-        const raft::append_entries_request<>& req,
+        const kythira::append_entries_request<>& req,
         std::chrono::milliseconds timeout
     ) -> FutureType {
         // Serialize the request
@@ -85,7 +101,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
         
         // Create message
-        network_simulator::Message<std::uint64_t, unsigned short> msg(
+        typename raft_network_types::message_type msg(
             _node->address(),
             0,  // Source port (connectionless)
             target,
@@ -98,12 +114,12 @@ public:
             .then([this, timeout](bool success) -> FutureType {
                 if (!success) {
                     return FutureType(std::make_exception_ptr(
-                        raft::network_exception("Failed to send AppendEntries RPC")));
+                        kythira::network_exception("Failed to send AppendEntries RPC")));
                 }
                 
                 // Wait for response
                 return _node->receive(timeout)
-                    .then([this](network_simulator::Message<std::uint64_t, unsigned short> response_msg) -> raft::append_entries_response<> {
+                    .then([this](typename raft_network_types::message_type response_msg) -> kythira::append_entries_response<> {
                         // Deserialize response
                         auto payload = response_msg.payload();
                         Data response_data;
@@ -120,7 +136,7 @@ public:
     // Send InstallSnapshot RPC
     auto send_install_snapshot(
         std::uint64_t target,
-        const raft::install_snapshot_request<>& req,
+        const kythira::install_snapshot_request<>& req,
         std::chrono::milliseconds timeout
     ) -> FutureType {
         // Serialize the request
@@ -130,7 +146,7 @@ public:
         std::vector<std::byte> payload(data.begin(), data.end());
         
         // Create message
-        network_simulator::Message<std::uint64_t, unsigned short> msg(
+        typename raft_network_types::message_type msg(
             _node->address(),
             0,  // Source port (connectionless)
             target,
@@ -143,12 +159,12 @@ public:
             .then([this, timeout](bool success) -> FutureType {
                 if (!success) {
                     return FutureType(std::make_exception_ptr(
-                        raft::network_exception("Failed to send InstallSnapshot RPC")));
+                        kythira::network_exception("Failed to send InstallSnapshot RPC")));
                 }
                 
                 // Wait for response
                 return _node->receive(timeout)
-                    .then([this](network_simulator::Message<std::uint64_t, unsigned short> response_msg) -> raft::install_snapshot_response<> {
+                    .then([this](typename raft_network_types::message_type response_msg) -> kythira::install_snapshot_response<> {
                         // Deserialize response
                         auto payload = response_msg.payload();
                         Data response_data;
@@ -170,11 +186,27 @@ private:
 
 // Simulator network server implementation
 template<typename FutureType, typename Serializer, typename Data>
-requires raft::rpc_serializer<Serializer, Data>
+requires kythira::rpc_serializer<Serializer, Data>
 class simulator_network_server {
 public:
-    using node_type = std::shared_ptr<network_simulator::NetworkNode<std::uint64_t, unsigned short, kythira::Future<bool>>>;
-    using simulator_type = kythira::NetworkSimulator<std::uint64_t, unsigned short, kythira::Future<bool>>;
+    // Define a custom types structure for the network simulator
+    struct raft_network_types {
+        using address_type = std::string;
+        using port_type = unsigned short;
+        using message_type = network_simulator::Message<raft_network_types>;
+        using connection_type = network_simulator::Connection<raft_network_types>;
+        using listener_type = network_simulator::Listener<raft_network_types>;
+        using node_type = network_simulator::NetworkNode<raft_network_types>;
+        
+        // Future types using the generic FutureType template parameter
+        using future_bool_type = FutureType;
+        using future_bytes_type = FutureType;
+        using future_connection_type = FutureType;
+        using future_message_type = FutureType;
+    };
+    
+    using node_type = std::shared_ptr<network_simulator::NetworkNode<raft_network_types>>;
+    using simulator_type = network_simulator::NetworkSimulator<raft_network_types>;
     
     simulator_network_server(node_type node, Serializer serializer = Serializer{})
         : _node(std::move(node))
@@ -224,7 +256,7 @@ public:
     
     // Register RequestVote handler
     auto register_request_vote_handler(
-        std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> handler
+        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
     ) -> void {
         std::unique_lock lock(_mutex);
         _request_vote_handler = std::move(handler);
@@ -232,7 +264,7 @@ public:
     
     // Register AppendEntries handler
     auto register_append_entries_handler(
-        std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> handler
+        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
     ) -> void {
         std::unique_lock lock(_mutex);
         _append_entries_handler = std::move(handler);
@@ -240,7 +272,7 @@ public:
     
     // Register InstallSnapshot handler
     auto register_install_snapshot_handler(
-        std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> handler
+        std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
     ) -> void {
         std::unique_lock lock(_mutex);
         _install_snapshot_handler = std::move(handler);
@@ -291,9 +323,9 @@ private:
     std::thread _server_thread;
     
     // RPC handlers
-    std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> _request_vote_handler;
-    std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> _append_entries_handler;
-    std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> _install_snapshot_handler;
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> _request_vote_handler;
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> _append_entries_handler;
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> _install_snapshot_handler;
     
     mutable std::shared_mutex _mutex;
     
@@ -317,7 +349,7 @@ private:
     }
     
     // Handle incoming message
-    auto handle_message(network_simulator::Message<std::uint64_t, unsigned short> msg) -> void {
+    auto handle_message(typename raft_network_types::message_type msg) -> void {
         try {
             // Extract payload
             auto payload = msg.payload();
@@ -389,7 +421,7 @@ private:
             std::vector<std::byte> payload(data.begin(), data.end());
             
             // Create response message
-            network_simulator::Message<std::uint64_t, unsigned short> msg(
+            typename raft_network_types::message_type msg(
                 _node->address(),
                 _rpc_port,
                 target,
@@ -406,12 +438,12 @@ private:
 };
 
 // Verify that simulator_network_client satisfies the network_client concept
-using SimulatorFutureType = kythira::Future<raft::request_vote_response<>>;
-static_assert(kythira::network_client<simulator_network_client<SimulatorFutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>, SimulatorFutureType>,
+using SimulatorFutureType = kythira::Future<kythira::request_vote_response<>>;
+static_assert(kythira::network_client<simulator_network_client<SimulatorFutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>, SimulatorFutureType>,
               "simulator_network_client must satisfy the network_client concept");
 
 // Verify that simulator_network_server satisfies the network_server concept
-static_assert(kythira::network_server<simulator_network_server<SimulatorFutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>, SimulatorFutureType>,
+static_assert(kythira::network_server<simulator_network_server<SimulatorFutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>, SimulatorFutureType>,
               "simulator_network_server must satisfy the network_server concept");
 
 } // namespace kythira

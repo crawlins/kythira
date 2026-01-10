@@ -25,6 +25,8 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 - **Response_Headers**: HTTP headers returned with each response containing metadata
 - **Connection_Retry**: The mechanism for retrying failed HTTP requests with exponential backoff
 - **Circuit_Breaker**: A failure detection mechanism that prevents requests to consistently failing endpoints
+- **Transport_Types**: A concept-based type bundle that provides all necessary type information for HTTP transport instantiation
+- **Types_Template_Parameter**: A single template parameter that encapsulates all type dependencies for HTTP transport classes
 
 ## Requirements
 
@@ -242,3 +244,37 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 3. WHEN property-based tests are executed THEN the system SHALL verify that connection failures are properly reported
 4. WHEN property-based tests are executed THEN the system SHALL verify that concurrent requests are handled correctly
 5. WHEN property-based tests are executed THEN the system SHALL verify that server lifecycle transitions are safe
+
+### Requirement 18
+
+**User Story:** As a developer, I want to parameterize the HTTP transport classes with a single types template argument, so that I can provide all necessary types through a clean, concept-based interface while maintaining type safety.
+
+#### Acceptance Criteria
+
+1. WHEN the HTTP client is defined THEN the system SHALL accept a single template parameter that provides all required type information
+2. WHEN the HTTP server is defined THEN the system SHALL accept a single template parameter that provides all required type information
+3. WHEN the types template parameter is used THEN the system SHALL extract the RPC_Serializer type from the types parameter
+4. WHEN the types template parameter is used THEN the system SHALL extract the Future template from the types parameter
+5. WHEN the types template parameter is used THEN the system SHALL extract the Executor type from the types parameter
+6. WHEN the types template parameter is used THEN the system SHALL validate that the types parameter conforms to the transport_types concept
+7. WHEN the transport_types concept is defined THEN the system SHALL require that the types provide a serializer_type member type
+8. WHEN the transport_types concept is defined THEN the system SHALL require that the types provide a future_template member template
+9. WHEN the transport_types concept is defined THEN the system SHALL require that the types provide an executor_type member type
+10. WHEN the HTTP transport classes are instantiated THEN the system SHALL use the types from the template parameter for all internal operations
+
+### Requirement 19
+
+**User Story:** As a developer, I want the transport_types concept to support template template parameters for future types, so that I can return different future types for different RPC responses while maintaining type safety and concept conformance.
+
+#### Acceptance Criteria
+
+1. WHEN the transport_types concept is defined THEN the system SHALL use a template template parameter for future_template instead of a concrete future_type
+2. WHEN send_request_vote is called THEN the system SHALL return typename Types::template future_template<request_vote_response>
+3. WHEN send_append_entries is called THEN the system SHALL return typename Types::template future_template<append_entries_response>
+4. WHEN send_install_snapshot is called THEN the system SHALL return typename Types::template future_template<install_snapshot_response>
+5. WHEN the transport_types concept validates future_template THEN the system SHALL verify that future_template can be instantiated with Raft RPC response types
+6. WHEN the transport_types concept validates future_template THEN the system SHALL verify that instantiated future types conform to the future concept
+7. WHEN HTTP transport methods are implemented THEN the system SHALL use the template future_template to construct appropriate return types
+8. WHEN example transport_types implementations are created THEN the system SHALL demonstrate how to provide folly::Future as future_template
+9. WHEN tests are written THEN the system SHALL verify that different RPC methods return correctly typed futures
+10. WHEN the concept is used THEN the system SHALL maintain backward compatibility with existing code that expects specific future types

@@ -46,17 +46,17 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
                   "kythira::Future<std::string> must satisfy future concept");
     static_assert(kythira::future<kythira::Future<void>, void>, 
                   "kythira::Future<void> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<raft::request_vote_response<>>, raft::request_vote_response<>>, 
+    static_assert(kythira::future<kythira::Future<kythira::request_vote_response<>>, kythira::request_vote_response<>>, 
                   "kythira::Future<request_vote_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<raft::append_entries_response<>>, raft::append_entries_response<>>, 
+    static_assert(kythira::future<kythira::Future<kythira::append_entries_response<>>, kythira::append_entries_response<>>, 
                   "kythira::Future<append_entries_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<raft::install_snapshot_response<>>, raft::install_snapshot_response<>>, 
+    static_assert(kythira::future<kythira::Future<kythira::install_snapshot_response<>>, kythira::install_snapshot_response<>>, 
                   "kythira::Future<install_snapshot_response> must satisfy future concept");
     
     // Test 2: Verify HTTP transport client template instantiation
-    using HttpFutureType = kythira::Future<raft::request_vote_response<>>;
-    using HttpSerializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using HttpMetrics = raft::noop_metrics;
+    using HttpFutureType = kythira::Future<kythira::request_vote_response<>>;
+    using HttpSerializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using HttpMetrics = kythira::noop_metrics;
     
     // This should compile if the template constraints are properly defined
     static_assert(std::is_constructible_v<
@@ -67,14 +67,15 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
     >, "HTTP client should be constructible with kythira::Future");
     
     // Test 3: Verify CoAP transport client template instantiation
-    using CoapFutureType = kythira::Future<raft::request_vote_response<>>;
-    using CoapSerializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using CoapMetrics = raft::noop_metrics;
-    using CoapLogger = raft::console_logger;
+    using CoapFutureType = kythira::Future<kythira::request_vote_response<>>;
+    using CoapSerializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using CoapMetrics = kythira::noop_metrics;
+    using CoapLogger = kythira::console_logger;
     
     // This should compile if the template constraints are properly defined
+    using TestTypes = kythira::default_transport_types<CoapFutureType, CoapSerializer, CoapMetrics, CoapLogger>;
     static_assert(std::is_constructible_v<
-        kythira::coap_client<CoapFutureType, CoapSerializer, CoapMetrics, CoapLogger>,
+        kythira::coap_client<TestTypes>,
         std::unordered_map<std::uint64_t, std::string>,
         kythira::coap_client_config,
         CoapMetrics,
@@ -90,7 +91,7 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
         kythira::Connection<TestAddress, TestPort, SimulatorFutureType>,
         network_simulator::Endpoint<TestAddress, TestPort>,
         network_simulator::Endpoint<TestAddress, TestPort>,
-        kythira::NetworkSimulator<TestAddress, TestPort, SimulatorFutureType>*
+        network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>*
     >, "Connection should be constructible with kythira::Future");
     
     // Test 5: Property-based test - verify concept compliance across iterations
@@ -137,10 +138,10 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
 BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::timeout(60)) {
     
     // Test 1: Verify network_client concept with kythira::Future
-    using TestFutureType = kythira::Future<raft::request_vote_response<>>;
-    using TestSerializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using TestMetrics = raft::noop_metrics;
-    using TestLogger = raft::console_logger;
+    using TestFutureType = kythira::Future<kythira::request_vote_response<>>;
+    using TestSerializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using TestMetrics = kythira::noop_metrics;
+    using TestLogger = kythira::console_logger;
     
     // HTTP client should satisfy network_client concept
     static_assert(kythira::network_client<
@@ -149,8 +150,9 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
     >, "HTTP client should satisfy network_client concept");
     
     // CoAP client should satisfy network_client concept
+    using TestTypes = kythira::default_transport_types<TestFutureType, TestSerializer, TestMetrics, TestLogger>;
     static_assert(kythira::network_client<
-        kythira::coap_client<TestFutureType, TestSerializer, TestMetrics, TestLogger>,
+        kythira::coap_client<TestTypes>,
         TestFutureType
     >, "CoAP client should satisfy network_client concept");
     
@@ -235,10 +237,10 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
 BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::unit_test::timeout(90)) {
     
     // Test 1: Verify that transport implementations can be instantiated with kythira::Future
-    using DefaultFutureType = kythira::Future<raft::request_vote_response<>>;
-    using DefaultSerializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using DefaultMetrics = raft::noop_metrics;
-    using DefaultLogger = raft::console_logger;
+    using DefaultFutureType = kythira::Future<kythira::request_vote_response<>>;
+    using DefaultSerializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using DefaultMetrics = kythira::noop_metrics;
+    using DefaultLogger = kythira::console_logger;
     
     // Test HTTP client template instantiation (compile-time check only)
     {
@@ -255,7 +257,7 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
         static_assert(std::is_same_v<
             decltype(std::declval<HttpClientType>().send_request_vote(
                 std::declval<std::uint64_t>(),
-                std::declval<const raft::request_vote_request<>&>(),
+                std::declval<const kythira::request_vote_request<>&>(),
                 std::declval<std::chrono::milliseconds>()
             )),
             DefaultFutureType
@@ -265,8 +267,9 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
     // Test CoAP client template instantiation (compile-time check only)
     {
         // Verify the template can be instantiated (compile-time check)
+        using TestTypes = kythira::default_transport_types<DefaultFutureType, DefaultSerializer, DefaultMetrics, DefaultLogger>;
         static_assert(std::is_constructible_v<
-            kythira::coap_client<DefaultFutureType, DefaultSerializer, DefaultMetrics, DefaultLogger>,
+            kythira::coap_client<TestTypes>,
             std::unordered_map<std::uint64_t, std::string>,
             kythira::coap_client_config,
             DefaultMetrics,
@@ -274,11 +277,11 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
         >, "CoAP client should be constructible with kythira::Future");
         
         // Verify the return types are correct
-        using CoapClientType = kythira::coap_client<DefaultFutureType, DefaultSerializer, DefaultMetrics, DefaultLogger>;
+        using CoapClientType = kythira::coap_client<TestTypes>;
         static_assert(std::is_same_v<
             decltype(std::declval<CoapClientType>().send_request_vote(
                 std::declval<std::uint64_t>(),
-                std::declval<const raft::request_vote_request<>&>(),
+                std::declval<const kythira::request_vote_request<>&>(),
                 std::declval<std::chrono::milliseconds>()
             )),
             DefaultFutureType
@@ -309,11 +312,11 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
     for (std::size_t i = 0; i < 20; ++i) {
         // Test that we can create futures with various response types
         {
-            raft::request_vote_response<> rv_response;
+            kythira::request_vote_response<> rv_response;
             // Use constructor instead of direct field access
-            rv_response = raft::request_vote_response<>(rng() % 1000, (rng() % 2) == 1);
+            rv_response = kythira::request_vote_response<>(rng() % 1000, (rng() % 2) == 1);
             
-            kythira::Future<raft::request_vote_response<>> future(rv_response);
+            kythira::Future<kythira::request_vote_response<>> future(rv_response);
             BOOST_CHECK(future.isReady());
             auto result = future.get();
             BOOST_CHECK_EQUAL(result.term(), rv_response.term());
@@ -321,11 +324,11 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
         }
         
         {
-            raft::append_entries_response<> ae_response;
+            kythira::append_entries_response<> ae_response;
             // Use constructor instead of direct field access
-            ae_response = raft::append_entries_response<>(rng() % 1000, (rng() % 2) == 1);
+            ae_response = kythira::append_entries_response<>(rng() % 1000, (rng() % 2) == 1);
             
-            kythira::Future<raft::append_entries_response<>> future(ae_response);
+            kythira::Future<kythira::append_entries_response<>> future(ae_response);
             BOOST_CHECK(future.isReady());
             auto result = future.get();
             BOOST_CHECK_EQUAL(result.term(), ae_response.term());
@@ -333,11 +336,11 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
         }
         
         {
-            raft::install_snapshot_response<> is_response;
+            kythira::install_snapshot_response<> is_response;
             // Use constructor instead of direct field access
-            is_response = raft::install_snapshot_response<>(rng() % 1000);
+            is_response = kythira::install_snapshot_response<>(rng() % 1000);
             
-            kythira::Future<raft::install_snapshot_response<>> future(is_response);
+            kythira::Future<kythira::install_snapshot_response<>> future(is_response);
             BOOST_CHECK(future.isReady());
             auto result = future.get();
             BOOST_CHECK_EQUAL(result.term(), is_response.term());

@@ -5,7 +5,9 @@
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
+#include <raft/future.hpp>
 #include <httplib.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <thread>
 #include <chrono>
@@ -19,6 +21,14 @@ namespace {
     constexpr const char* test_server_url = "http://localhost:8080";
     constexpr std::uint64_t test_node_id = 1;
     constexpr std::size_t property_test_iterations = 100;
+    
+    // Define transport types for testing using the provided template
+    using test_transport_types = kythira::http_transport_types<
+        kythira::Future<kythira::request_vote_response<>>,
+        kythira::json_serializer,
+        kythira::noop_metrics,
+        folly::CPUThreadPoolExecutor
+    >;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_property_tests)
@@ -46,7 +56,7 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
     server.Post("/v1/raft/request_vote", [&](const httplib::Request& req, httplib::Response& res) {
         capture_method(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -59,7 +69,7 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
     server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
         capture_method(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -72,7 +82,7 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
     server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
         capture_method(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -92,23 +102,23 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
     
     try {
         // Create client
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         // Test multiple requests to verify POST method is always used
         for (std::size_t i = 0; i < 3; ++i) {
             // Test RequestVote
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -121,7 +131,7 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
             
             // Test AppendEntries
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 200;
                 request._prev_log_index = i + 15;
@@ -135,7 +145,7 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
             
             // Test InstallSnapshot
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 300;
                 request._last_included_index = i + 100;
@@ -190,7 +200,7 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
     server.Post("/v1/raft/request_vote", [&](const httplib::Request& req, httplib::Response& res) {
         capture_handler(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -203,7 +213,7 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
     server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
         capture_handler(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -216,7 +226,7 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
     server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
         capture_handler(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -236,23 +246,23 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
     
     try {
         // Create client
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         // Test multiple requests with different data to verify Content-Type is always correct
         for (std::size_t i = 0; i < 3; ++i) {
             // Test RequestVote
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -265,7 +275,7 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
             
             // Test AppendEntries
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 200;
                 request._prev_log_index = i + 15;
@@ -279,7 +289,7 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
             
             // Test InstallSnapshot
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 300;
                 request._last_included_index = i + 100;
@@ -334,7 +344,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
     server.Post("/v1/raft/request_vote", [&](const httplib::Request& req, httplib::Response& res) {
         capture_content_length(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -347,7 +357,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
     server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
         capture_content_length(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -360,7 +370,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
     server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
         capture_content_length(req, res);
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -380,23 +390,23 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
     
     try {
         // Create client
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         // Test requests with varying sizes to verify Content-Length accuracy
         for (std::size_t i = 0; i < 3; ++i) {
             // Test RequestVote
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -409,7 +419,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
             
             // Test AppendEntries with varying entry counts
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 200;
                 request._prev_log_index = i + 15;
@@ -418,7 +428,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
                 
                 // Add varying number of entries to change request size
                 for (std::size_t j = 0; j < i + 1; ++j) {
-                    raft::log_entry<> entry;
+                    kythira::log_entry<> entry;
                     entry._term = i + j;
                     entry._index = i + j + 1;
                     entry._command = {std::byte{static_cast<unsigned char>('a' + j)}};
@@ -432,7 +442,7 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
             
             // Test InstallSnapshot with varying data sizes
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 300;
                 request._last_included_index = i + 100;
@@ -489,7 +499,7 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
         captured_user_agents.push_back(user_agent);
         res.status = 200;
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -505,7 +515,7 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
         captured_user_agents.push_back(user_agent);
         res.status = 200;
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -521,7 +531,7 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
         captured_user_agents.push_back(user_agent);
         res.status = 200;
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -542,24 +552,24 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
     
     try {
         // Create client with custom User-Agent
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.user_agent = "test-raft-client/1.0";
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         // Test multiple requests to verify User-Agent is always sent
         for (std::size_t i = 0; i < 3; ++i) {
             // Test RequestVote
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -572,7 +582,7 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
             
             // Test AppendEntries
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 200;
                 request._prev_log_index = i + 15;
@@ -586,7 +596,7 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
             
             // Test InstallSnapshot
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 300;
                 request._last_included_index = i + 100;
@@ -646,7 +656,7 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
     server.Post("/v1/raft/request_vote", [](const httplib::Request& req, httplib::Response& res) {
         res.status = 200;
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -660,7 +670,7 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
     server.Post("/v1/raft/append_entries", [](const httplib::Request& req, httplib::Response& res) {
         res.status = 200;
         // Parse the request to get the term and echo it back
-        raft::json_serializer serializer;
+        kythira::json_serializer serializer;
         std::vector<std::byte> request_data;
         request_data.reserve(req.body.size());
         for (char c : req.body) {
@@ -681,16 +691,16 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
     
     try {
         // Create client with connection pooling enabled
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         // Send multiple requests to the same target in sequence
@@ -698,7 +708,7 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
         for (std::size_t i = 0; i < 5; ++i) {
             // Test RequestVote
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -711,7 +721,7 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
             
             // Test AppendEntries
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = i + 1;
                 request._leader_id = i + 200;
                 request._prev_log_index = i + 15;
@@ -790,16 +800,16 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
     
     try {
         // Create client
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         std::size_t client_errors_caught = 0;
@@ -808,7 +818,7 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
         for (std::size_t i = 0; i < status_codes_4xx.size(); ++i) {
             // Test RequestVote with 4xx response
             try {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -819,7 +829,7 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
                 
                 // Should not reach here - expecting exception
                 BOOST_TEST(false, "Expected http_client_error exception for 4xx status");
-            } catch (const raft::http_client_error& e) {
+            } catch (const kythira::http_client_error& e) {
                 client_errors_caught++;
                 BOOST_TEST_MESSAGE("Caught expected http_client_error: " << e.what());
             } catch (const std::exception& e) {
@@ -887,16 +897,16 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
     
     try {
         // Create client
-        raft::cpp_httplib_client_config client_config;
+        kythira::cpp_httplib_client_config client_config;
         client_config.connection_timeout = std::chrono::milliseconds{1000};
         client_config.request_timeout = std::chrono::milliseconds{2000};
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
         
-        raft::cpp_httplib_client<raft::json_serializer, raft::noop_metrics> client(
+        kythira::cpp_httplib_client<test_transport_types> client(
             std::move(node_urls), client_config, metrics);
         
         std::size_t server_errors_caught = 0;
@@ -905,7 +915,7 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
         for (std::size_t i = 0; i < status_codes_5xx.size(); ++i) {
             // Test RequestVote with 5xx response
             try {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = i + 1;
                 request._candidate_id = i + 100;
                 request._last_log_index = i + 50;
@@ -916,7 +926,7 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
                 
                 // Should not reach here - expecting exception
                 BOOST_TEST(false, "Expected http_server_error exception for 5xx status");
-            } catch (const raft::http_server_error& e) {
+            } catch (const kythira::http_server_error& e) {
                 server_errors_caught++;
                 BOOST_TEST_MESSAGE("Caught expected http_server_error: " << e.what());
             } catch (const std::exception& e) {
@@ -943,11 +953,11 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
 // Property: For any valid Raft RPC message (request or response), serializing then
 // deserializing should produce an equivalent message.
 BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
-    raft::json_serializer serializer;
+    kythira::json_serializer serializer;
     
     // Test RequestVote request round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::request_vote_request<> original_req;
+        kythira::request_vote_request<> original_req;
         original_req._term = i + 1;
         original_req._candidate_id = i + 100;
         original_req._last_log_index = i + 50;
@@ -964,7 +974,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
     
     // Test RequestVote response round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::request_vote_response<> original_resp;
+        kythira::request_vote_response<> original_resp;
         original_resp._term = i + 1;
         original_resp._vote_granted = (i % 2 == 0);
         
@@ -977,7 +987,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
     
     // Test AppendEntries request round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::append_entries_request<> original_req;
+        kythira::append_entries_request<> original_req;
         original_req._term = i + 1;
         original_req._leader_id = i + 200;
         original_req._prev_log_index = i + 10;
@@ -986,7 +996,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
         
         // Add some log entries
         for (std::size_t j = 0; j < 3; ++j) {
-            raft::log_entry<> entry;
+            kythira::log_entry<> entry;
             entry._term = i + j;
             entry._index = i + j + 1;
             entry._command = {std::byte{static_cast<unsigned char>('a' + j)}};
@@ -1012,7 +1022,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
     
     // Test AppendEntries response round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::append_entries_response<> original_resp;
+        kythira::append_entries_response<> original_resp;
         original_resp._term = i + 1;
         original_resp._success = (i % 2 == 0);
         if (i % 3 == 0) {
@@ -1044,7 +1054,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
     
     // Test InstallSnapshot request round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::install_snapshot_request<> original_req;
+        kythira::install_snapshot_request<> original_req;
         original_req._term = i + 1;
         original_req._leader_id = i + 300;
         original_req._last_included_index = i + 100;
@@ -1071,7 +1081,7 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
     
     // Test InstallSnapshot response round-trip
     for (std::size_t i = 0; i < 10; ++i) {
-        raft::install_snapshot_response<> original_resp;
+        kythira::install_snapshot_response<> original_resp;
         original_resp._term = i + 1;
         
         auto serialized = serializer.serialize(original_resp);

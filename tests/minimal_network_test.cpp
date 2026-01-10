@@ -8,7 +8,7 @@ int main(int argc, char* argv[]) {
     folly::Init init(&argc, &argv);
     
     // Create simulator
-    network_simulator::NetworkSimulator<std::uint64_t, unsigned short> simulator;
+    network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
     
     // Add nodes
     simulator.add_node(1);

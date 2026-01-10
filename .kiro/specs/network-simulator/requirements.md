@@ -4,9 +4,13 @@
 
 This document specifies the requirements for a C++ network simulator that models network communication between nodes using concepts and concrete implementations. The simulator provides both connectionless (datagram) and connection-oriented (stream) communication patterns with configurable latency and reliability characteristics.
 
+**Design Philosophy**: This specification emphasizes a clean type system approach where each operation returns a specific, strongly-typed Future rather than using a single generic template parameter for all operations. This design eliminates template complexity issues while maintaining type safety and clear interfaces.
+
 ## Glossary
 
 - **Network Simulator**: The system that models network communication between nodes with configurable latency and reliability
+- **Types Template Argument**: A single template parameter that provides all type definitions through the network_simulator_types concept
+- **Network Simulator Types Concept**: A C++ concept that defines all required types for the network simulator including addresses, ports, messages, connections, listeners, and futures
 - **Network Node**: An endpoint in the network that can send and receive messages
 - **Node Address**: An identifier for a network node (string, unsigned long, IPv4, or IPv6 address)
 - **Port**: A communication endpoint identifier (unsigned short or string)
@@ -14,7 +18,7 @@ This document specifies the requirements for a C++ network simulator that models
 - **Payload**: The data content of a message, represented as a vector of bytes
 - **Connection**: A bidirectional communication channel between two nodes
 - **Listener**: A server-side object that accepts incoming connection requests
-- **Future**: An asynchronous result container modeled after folly::Future
+- **Future**: An asynchronous result container modeled after folly::Future with specific type parameters
 - **Latency**: The time delay for data transmission between nodes
 - **Reliability**: The probability that data transmission succeeds between nodes
 - **Directed Graph**: The network topology where edges represent communication paths with latency and reliability weights
@@ -36,20 +40,40 @@ This document specifies the requirements for a C++ network simulator that models
 
 ### Requirement 2
 
-**User Story:** As a developer, I want to parameterize the network simulator with specific address and port types, so that I can use the addressing scheme appropriate for my simulation scenario while maintaining type safety.
+**User Story:** As a developer, I want to parameterize the network simulator with a single types template argument, so that I can provide all necessary types through a clean, concept-based interface while maintaining type safety.
 
 #### Acceptance Criteria
 
-1. WHEN a user instantiates a Network Simulator THEN the Network Simulator SHALL be parameterized by a single node address type
-2. WHEN a user instantiates a Network Simulator THEN the Network Simulator SHALL be parameterized by a single port type
-3. WHEN a node address type satisfies the address concept THEN the Network Simulator SHALL accept string identifiers as valid address types
-4. WHEN a node address type satisfies the address concept THEN the Network Simulator SHALL accept unsigned long integers as valid address types
-5. WHEN a node address type satisfies the address concept THEN the Network Simulator SHALL accept IPv4 addresses (in_addr) as valid address types
-6. WHEN a node address type satisfies the address concept THEN the Network Simulator SHALL accept IPv6 addresses (in6_addr) as valid address types
-7. WHEN a port type satisfies the port concept THEN the Network Simulator SHALL accept unsigned short integers as valid port types
-8. WHEN a port type satisfies the port concept THEN the Network Simulator SHALL accept string identifiers as valid port types
-9. WHEN a Network Simulator instance is created THEN the Network Simulator SHALL use the same address type for all nodes in that instance
-10. WHEN a Network Simulator instance is created THEN the Network Simulator SHALL use the same port type for all ports in that instance
+1. WHEN a user instantiates a Network Simulator THEN the Network Simulator SHALL be parameterized by a single Types template argument
+2. WHEN the Types template argument satisfies the network_simulator_types concept THEN the Network Simulator SHALL accept it as valid
+3. WHEN a Network Simulator instance is created THEN the Network Simulator SHALL define typenames from the members of the provided Types template argument
+4. WHEN defining types THEN the Types template argument SHALL provide address_type that satisfies the address concept
+5. WHEN defining types THEN the Types template argument SHALL provide port_type that satisfies the port concept
+6. WHEN defining types THEN the Types template argument SHALL provide message_type that satisfies the message concept
+7. WHEN defining types THEN the Types template argument SHALL provide connection_type that satisfies the connection concept
+8. WHEN defining types THEN the Types template argument SHALL provide listener_type that satisfies the listener concept
+9. WHEN defining types THEN the Types template argument SHALL provide future_bool_type for boolean result operations
+10. WHEN defining types THEN the Types template argument SHALL provide future_message_type for message result operations
+11. WHEN defining types THEN the Types template argument SHALL provide future_connection_type for connection result operations
+12. WHEN defining types THEN the Types template argument SHALL provide future_listener_type for listener result operations
+13. WHEN defining types THEN the Types template argument SHALL provide future_bytes_type for byte vector result operations
+14. WHEN the address_type satisfies the address concept THEN the Network Simulator SHALL accept string, unsigned long, IPv4 (in_addr), and IPv6 (in6_addr) address types
+15. WHEN the port_type satisfies the port concept THEN the Network Simulator SHALL accept unsigned short and string port types
+
+### Requirement 3
+
+**User Story:** As a developer, I want the network simulator to use specific return types for each operation derived from the Types template argument, so that I can avoid template complexity issues and have clear, type-safe interfaces.
+
+#### Acceptance Criteria
+
+1. WHEN implementing send operations THEN the Network Simulator SHALL return typename Types::future_bool_type
+2. WHEN implementing receive operations THEN the Network Simulator SHALL return typename Types::future_message_type
+3. WHEN implementing connect operations THEN the Network Simulator SHALL return typename Types::future_connection_type
+4. WHEN implementing bind operations THEN the Network Simulator SHALL return typename Types::future_listener_type
+5. WHEN implementing read operations THEN the Network Simulator SHALL return typename Types::future_bytes_type
+6. WHEN implementing write operations THEN the Network Simulator SHALL return typename Types::future_bool_type
+7. WHEN implementing accept operations THEN the Network Simulator SHALL return typename Types::future_connection_type
+8. WHEN defining the type system THEN the Network Simulator SHALL use specific future types from the Types template argument rather than a single generic future template parameter
 
 ### Requirement 4
 
@@ -57,7 +81,7 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN a user calls send on a Network Node with a message THEN the Network Simulator SHALL return a future of boolean
+1. WHEN a user calls send on a Network Node with a message THEN the Network Simulator SHALL return typename Types::future_bool_type
 2. WHEN the network accepts a message for transmission THEN the Network Simulator SHALL satisfy the future with true
 3. WHEN the send operation exceeds the timeout before accepting the message THEN the Network Simulator SHALL satisfy the future with false
 4. WHEN the future is satisfied THEN the Network Simulator SHALL NOT guarantee message delivery to destination
@@ -68,7 +92,7 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN a user calls receive on a Network Node THEN the Network Simulator SHALL return a future of message
+1. WHEN a user calls receive on a Network Node THEN the Network Simulator SHALL return typename Types::future_message_type
 2. WHEN a message arrives at the node THEN the Network Simulator SHALL satisfy the future with the received message
 3. WHEN a user calls receive with a timeout parameter and no message is received before the timeout expires THEN the Network Simulator SHALL set the future to error state with timeout exception
 
@@ -78,7 +102,7 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN a user calls connect on a Network Node with destination address and port THEN the Network Simulator SHALL return a future of connection
+1. WHEN a user calls connect on a Network Node with destination address and port THEN the Network Simulator SHALL return typename Types::future_connection_type
 2. WHEN a user calls connect with a source port parameter THEN the Network Simulator SHALL use the specified source port
 3. WHEN a user calls connect without a source port parameter THEN the Network Simulator SHALL assign a random unused source port
 4. WHEN the connection is established THEN the Network Simulator SHALL satisfy the future with a connection object
@@ -90,12 +114,12 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN a user calls bind on a Network Node THEN the Network Simulator SHALL return a future of listener
+1. WHEN a user calls bind on a Network Node THEN the Network Simulator SHALL return typename Types::future_listener_type
 2. WHEN a user calls bind with a source port parameter THEN the Network Simulator SHALL bind to the specified port
 3. WHEN a user calls bind without a source port parameter THEN the Network Simulator SHALL assign a random unused port
 4. WHEN the bind operation succeeds THEN the Network Simulator SHALL satisfy the future with a listener object
 5. WHEN a user calls bind with a timeout parameter and the bind operation cannot complete before the timeout expires THEN the Network Simulator SHALL set the future to error state with timeout exception
-6. WHEN a user calls listen on a Listener THEN the Network Simulator SHALL return a future of connection
+6. WHEN a user calls listen on a Listener THEN the Network Simulator SHALL return typename Types::future_connection_type
 7. WHEN a client connects to the bound port THEN the Network Simulator SHALL satisfy the listen future with a connection object
 8. WHEN a user calls listen with a timeout parameter and no client connects before the timeout expires THEN the Network Simulator SHALL set the future to error state with timeout exception
 
@@ -105,10 +129,10 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN a user calls read on a Connection THEN the Network Simulator SHALL return a future of vector of bytes
+1. WHEN a user calls read on a Connection THEN the Network Simulator SHALL return typename Types::future_bytes_type
 2. WHEN data is available on the connection THEN the Network Simulator SHALL satisfy the future with the received bytes
 3. WHEN a user calls read with a timeout parameter and no data is available before the timeout expires THEN the Network Simulator SHALL set the future to error state with timeout exception
-4. WHEN a user calls write on a Connection with data THEN the Network Simulator SHALL return a future of boolean
+4. WHEN a user calls write on a Connection with data THEN the Network Simulator SHALL return typename Types::future_bool_type
 5. WHEN the write operation succeeds THEN the Network Simulator SHALL satisfy the future with true
 6. WHEN a user calls write with a timeout parameter and the write operation cannot complete before the timeout expires THEN the Network Simulator SHALL set the future to error state with timeout exception
 
@@ -130,11 +154,63 @@ This document specifies the requirements for a C++ network simulator that models
 
 #### Acceptance Criteria
 
-1. WHEN defining the node address interface THEN the Network Simulator SHALL use a C++ concept
-2. WHEN defining the port interface THEN the Network Simulator SHALL use a C++ concept
-3. WHEN defining the message interface THEN the Network Simulator SHALL use a C++ concept
-4. WHEN defining the future interface THEN the Network Simulator SHALL use a C++ concept modeled after folly::Future
-5. WHEN defining the connection interface THEN the Network Simulator SHALL use a C++ concept
-6. WHEN defining the listener interface THEN the Network Simulator SHALL use a C++ concept
-7. WHEN defining the network node interface THEN the Network Simulator SHALL use a C++ concept
-8. WHEN defining the network simulator interface THEN the Network Simulator SHALL use a C++ concept with methods for creating nodes and configuring edges
+1. WHEN defining the network simulator types interface THEN the Network Simulator SHALL use a network_simulator_types C++ concept
+2. WHEN defining the node address interface THEN the Network Simulator SHALL use a C++ concept
+3. WHEN defining the port interface THEN the Network Simulator SHALL use a C++ concept
+4. WHEN defining the message interface THEN the Network Simulator SHALL use a C++ concept
+5. WHEN defining the future interface THEN the Network Simulator SHALL use a C++ concept modeled after folly::Future
+6. WHEN defining the connection interface THEN the Network Simulator SHALL use a C++ concept
+7. WHEN defining the listener interface THEN the Network Simulator SHALL use a C++ concept
+8. WHEN defining the network node interface THEN the Network Simulator SHALL use a C++ concept
+9. WHEN defining the network simulator interface THEN the Network Simulator SHALL use a C++ concept with methods for creating nodes and configuring edges
+
+### Requirement 11
+
+**User Story:** As a network simulator user, I want to manage the network topology, so that I can configure the graph structure for my simulation scenarios.
+
+#### Acceptance Criteria
+
+1. WHEN a user calls add_node on the Network Simulator THEN the Network Simulator SHALL add the node to the topology
+2. WHEN a user calls remove_node on the Network Simulator THEN the Network Simulator SHALL remove the node and all associated edges from the topology
+3. WHEN a user calls add_edge on the Network Simulator with latency and reliability THEN the Network Simulator SHALL create a directed edge with those properties
+4. WHEN a user calls remove_edge on the Network Simulator THEN the Network Simulator SHALL remove the specified directed edge
+5. WHEN a user queries the topology THEN the Network Simulator SHALL provide methods to check node and edge existence
+6. WHEN a user queries edge properties THEN the Network Simulator SHALL return the configured latency and reliability values
+
+### Requirement 12
+
+**User Story:** As a network simulator user, I want to control the simulation lifecycle, so that I can start, stop, and reset the simulation as needed.
+
+#### Acceptance Criteria
+
+1. WHEN a user calls start on the Network Simulator THEN the Network Simulator SHALL begin processing network operations
+2. WHEN a user calls stop on the Network Simulator THEN the Network Simulator SHALL cease processing new network operations
+3. WHEN a user calls reset on the Network Simulator THEN the Network Simulator SHALL clear all state and return to initial conditions
+4. WHEN the simulator is not started THEN the Network Simulator SHALL reject network operations with appropriate errors
+5. WHEN the simulator is stopped THEN the Network Simulator SHALL complete pending operations before stopping
+
+### Requirement 13
+
+**User Story:** As a developer, I want the network simulator to handle errors consistently, so that I can build robust applications with proper error handling.
+
+#### Acceptance Criteria
+
+1. WHEN timeout conditions occur THEN the Network Simulator SHALL throw TimeoutException
+2. WHEN operations are attempted on closed connections THEN the Network Simulator SHALL throw ConnectionClosedException
+3. WHEN port conflicts occur during binding THEN the Network Simulator SHALL throw PortInUseException
+4. WHEN nodes are not found in topology THEN the Network Simulator SHALL throw NodeNotFoundException
+5. WHEN no route exists between nodes THEN the Network Simulator SHALL throw NoRouteException
+6. WHEN exceptions occur in async operations THEN the Network Simulator SHALL propagate them through the future mechanism
+7. WHEN defining exception types THEN the Network Simulator SHALL derive all exceptions from a common NetworkException base class
+
+### Requirement 14
+
+**User Story:** As a developer, I want the network simulator to be thread-safe, so that I can use it safely in multi-threaded applications.
+
+#### Acceptance Criteria
+
+1. WHEN multiple threads access the Network Simulator concurrently THEN the Network Simulator SHALL ensure thread-safe operations
+2. WHEN multiple threads modify topology concurrently THEN the Network Simulator SHALL use appropriate synchronization mechanisms
+3. WHEN multiple threads send/receive messages concurrently THEN the Network Simulator SHALL handle concurrent access safely
+4. WHEN multiple threads establish connections concurrently THEN the Network Simulator SHALL prevent race conditions
+5. WHEN using internal data structures THEN the Network Simulator SHALL protect shared state with appropriate locking mechanisms

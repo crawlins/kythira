@@ -5,7 +5,7 @@
 #include <vector>
 #include <unordered_map>
 
-namespace raft {
+namespace kythira {
 
 // Persistence engine concept
 // Defines the interface for durable storage of Raft state
@@ -151,4 +151,4 @@ private:
     std::optional<snapshot_t> _snapshot;
 };
 
-} // namespace raft
+} // namespace kythira

@@ -54,8 +54,8 @@ auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
 }
 
 // Helper to generate random log entry
-auto generate_random_log_entry(std::mt19937& rng) -> raft::log_entry<> {
-    raft::log_entry<> entry;
+auto generate_random_log_entry(std::mt19937& rng) -> kythira::log_entry<> {
+    kythira::log_entry<> entry;
     entry._term = generate_random_term(rng);
     entry._index = generate_random_log_index(rng);
     entry._command = generate_random_command(rng);
@@ -63,7 +63,7 @@ auto generate_random_log_entry(std::mt19937& rng) -> raft::log_entry<> {
 }
 
 // Helper to generate random cluster configuration
-auto generate_random_cluster_configuration(std::mt19937& rng) -> raft::cluster_configuration<> {
+auto generate_random_cluster_configuration(std::mt19937& rng) -> kythira::cluster_configuration<> {
     std::uniform_int_distribution<std::size_t> count_dist(1, max_config_nodes);
     std::uniform_int_distribution<int> bool_dist(0, 1);
     
@@ -89,7 +89,7 @@ auto generate_random_cluster_configuration(std::mt19937& rng) -> raft::cluster_c
         old_nodes = old_nodes_vec;
     }
     
-    return raft::cluster_configuration<>{nodes, is_joint, old_nodes};
+    return kythira::cluster_configuration<>{nodes, is_joint, old_nodes};
 }
 
 // Helper to generate random snapshot data
@@ -109,8 +109,8 @@ auto generate_random_snapshot_data(std::mt19937& rng) -> std::vector<std::byte> 
 }
 
 // Helper to generate random snapshot
-auto generate_random_snapshot(std::mt19937& rng) -> raft::snapshot<> {
-    raft::snapshot<> snap;
+auto generate_random_snapshot(std::mt19937& rng) -> kythira::snapshot<> {
+    kythira::snapshot<> snap;
     snap._last_included_index = generate_random_log_index(rng);
     snap._last_included_term = generate_random_term(rng);
     snap._configuration = generate_random_cluster_configuration(rng);
@@ -119,7 +119,7 @@ auto generate_random_snapshot(std::mt19937& rng) -> raft::snapshot<> {
 }
 
 // Helper to compare log entries
-auto log_entries_equal(const raft::log_entry<>& a, const raft::log_entry<>& b) -> bool {
+auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>& b) -> bool {
     return a.term() == b.term() && 
            a.index() == b.index() && 
            a.command() == b.command();
@@ -127,8 +127,8 @@ auto log_entries_equal(const raft::log_entry<>& a, const raft::log_entry<>& b) -
 
 // Helper to compare cluster configurations
 auto cluster_configurations_equal(
-    const raft::cluster_configuration<>& a, 
-    const raft::cluster_configuration<>& b
+    const kythira::cluster_configuration<>& a, 
+    const kythira::cluster_configuration<>& b
 ) -> bool {
     if (a.nodes() != b.nodes()) {
         return false;
@@ -143,7 +143,7 @@ auto cluster_configurations_equal(
 }
 
 // Helper to compare snapshots
-auto snapshots_equal(const raft::snapshot<>& a, const raft::snapshot<>& b) -> bool {
+auto snapshots_equal(const kythira::snapshot<>& a, const kythira::snapshot<>& b) -> bool {
     return a.last_included_index() == b.last_included_index() &&
            a.last_included_term() == b.last_included_term() &&
            cluster_configurations_equal(a.configuration(), b.configuration()) &&
@@ -163,7 +163,7 @@ BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate random term
         auto original_term = generate_random_term(rng);
@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(property_voted_for_round_trip) {
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate random node ID
         auto original_node_id = generate_random_node_id(rng);
@@ -242,7 +242,7 @@ BOOST_AUTO_TEST_CASE(property_log_entry_round_trip) {
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate random log entry
         auto original_entry = generate_random_log_entry(rng);
@@ -282,16 +282,16 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
     std::uniform_int_distribution<std::size_t> count_dist(1, max_log_entries);
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate random log entries with sequential indices
         std::size_t entry_count = count_dist(rng);
-        std::vector<raft::log_entry<>> original_entries;
+        std::vector<kythira::log_entry<>> original_entries;
         original_entries.reserve(entry_count);
         
         std::uint64_t start_index = generate_random_log_index(rng);
         for (std::size_t j = 0; j < entry_count; ++j) {
-            raft::log_entry<> entry;
+            kythira::log_entry<> entry;
             entry._term = generate_random_term(rng);
             entry._index = start_index + j;
             entry._command = generate_random_command(rng);
@@ -349,7 +349,7 @@ BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate random snapshot
         auto original_snapshot = generate_random_snapshot(rng);
@@ -389,7 +389,7 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
     std::uniform_int_distribution<std::size_t> count_dist(1, max_log_entries);
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        raft::memory_persistence_engine<> engine;
+        kythira::memory_persistence_engine<> engine;
         
         // Generate complete random state
         auto original_term = generate_random_term(rng);
@@ -397,12 +397,12 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
         auto original_snapshot = generate_random_snapshot(rng);
         
         std::size_t entry_count = count_dist(rng);
-        std::vector<raft::log_entry<>> original_entries;
+        std::vector<kythira::log_entry<>> original_entries;
         original_entries.reserve(entry_count);
         
         std::uint64_t start_index = generate_random_log_index(rng);
         for (std::size_t j = 0; j < entry_count; ++j) {
-            raft::log_entry<> entry;
+            kythira::log_entry<> entry;
             entry._term = generate_random_term(rng);
             entry._index = start_index + j;
             entry._command = generate_random_command(rng);

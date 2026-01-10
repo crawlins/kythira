@@ -36,7 +36,7 @@ auto test_snapshot_creation() -> bool {
     
     try {
         // Create a snapshot
-        raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t> snap;
+        kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t> snap;
         snap._last_included_index = 100;
         snap._last_included_term = 5;
         snap._configuration._nodes = {1, 2, 3};
@@ -63,10 +63,10 @@ auto test_snapshot_persistence() -> bool {
     std::cout << "\nTest 2: Snapshot Persistence\n";
     
     try {
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         
         // Create and save a snapshot
-        raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t> snap;
+        kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t> snap;
         snap._last_included_index = 50;
         snap._last_included_term = 3;
         snap._configuration._nodes = {1};
@@ -107,11 +107,11 @@ auto test_log_compaction_concept() -> bool {
     std::cout << "\nTest 3: Log Compaction Concept\n";
     
     try {
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         
         // Add some log entries
         for (std::uint64_t i = 1; i <= 10; ++i) {
-            raft::log_entry<std::uint64_t, std::uint64_t> entry;
+            kythira::log_entry<std::uint64_t, std::uint64_t> entry;
             entry._term = 1;
             entry._index = i;
             entry._command = {std::byte{static_cast<unsigned char>(i)}};

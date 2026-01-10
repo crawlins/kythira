@@ -44,7 +44,7 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Create CoAP client configuration
-            raft::coap_client_config config;
+            kythira::coap_client_config config;
             config.ack_timeout = std::chrono::milliseconds{2000};
             config.max_retransmit = 4;
             config.enable_dtls = false;
@@ -55,16 +55,16 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
             endpoints[target_node] = test_coap_endpoint;
             
             // Create metrics and serializer
-            raft::noop_metrics metrics;
+            kythira::noop_metrics metrics;
             
             // Create CoAP client
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
                 std::move(endpoints), config, metrics, std::move(logger));
             
             // Test RequestVote RPC - should use POST method
             {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = term_dist(rng);
                 request._candidate_id = node_dist(rng);
                 request._last_log_index = index_dist(rng);
@@ -89,7 +89,7 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
             
             // Test AppendEntries RPC - should use POST method
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._prev_log_index = index_dist(rng);
@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
                 
                 // Add some random entries
                 for (std::size_t j = 0; j < 3; ++j) {
-                    raft::log_entry<> entry;
+                    kythira::log_entry<> entry;
                     entry._term = term_dist(rng);
                     entry._index = index_dist(rng);
                     entry._command = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
@@ -113,7 +113,7 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
             
             // Test InstallSnapshot RPC - should use POST method
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._last_included_index = index_dist(rng);
@@ -151,17 +151,17 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
     // - InstallSnapshot uses "/raft/install_snapshot"
     
     // For the stub implementation, we verify the interface exists
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
     
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
     // Verify all RPC methods exist and can be called
-    raft::request_vote_request<> rv_req;
+    kythira::request_vote_request<> rv_req;
     rv_req._term = 1;
     rv_req._candidate_id = 1;
     rv_req._last_log_index = 0;
@@ -170,14 +170,14 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
     // Note: We don't actually call the RPC methods to avoid network hangs
     // The fact that we can create the client and requests validates the interface
     
-    raft::append_entries_request<> ae_req;
+    kythira::append_entries_request<> ae_req;
     ae_req._term = 1;
     ae_req._leader_id = 1;
     ae_req._prev_log_index = 0;
     ae_req._prev_log_term = 0;
     ae_req._leader_commit = 0;
     
-    raft::install_snapshot_request<> is_req;
+    kythira::install_snapshot_request<> is_req;
     is_req._term = 1;
     is_req._leader_id = 1;
     is_req._last_included_index = 0;
@@ -192,17 +192,17 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
 
 // Test that CoAP client handles invalid endpoints gracefully
 BOOST_AUTO_TEST_CASE(test_invalid_endpoint_handling, * boost::unit_test::timeout(30)) {
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
     
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
     // Try to send to a node that doesn't exist in the endpoint map
-    raft::request_vote_request<> request;
+    kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 1;
     request._last_log_index = 0;

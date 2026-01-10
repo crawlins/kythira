@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace raft {
+namespace kythira {
 
 // Base exception class for HTTP transport errors
 class http_transport_error : public std::runtime_error {
@@ -56,4 +56,4 @@ public:
         : http_transport_error(message) {}
 };
 
-} // namespace raft
+} // namespace kythira

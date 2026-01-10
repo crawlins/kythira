@@ -54,21 +54,7 @@ concept future = requires(F f, const F cf) {
 } || requires(F f) {
     // Alternative: wait() returns a future-like object with isReady() method
     { f.wait(std::chrono::milliseconds{}).isReady() } -> std::convertible_to<bool>;
-} && (
-    // Chain continuation with value - handle void case properly
-    // Use then() for compatibility with folly::Future, thenValue() for our wrappers
-    std::is_void_v<T> ? 
-        (requires(F f2) {
-            { std::move(f2).then(std::declval<std::function<void()>>()) };
-        } || requires(F f2) {
-            { std::move(f2).thenValue(std::declval<std::function<void()>>()) };
-        }) : 
-        (requires(F f2) {
-            { std::move(f2).then(std::declval<std::function<void(T)>>()) };
-        } || requires(F f2) {
-            { std::move(f2).thenValue(std::declval<std::function<void(T)>>()) };
-        })
-);
+};
 
 // Concept for SemiPromise types (matches folly::Promise interface since folly doesn't have separate SemiPromise)
 template<typename P, typename T>

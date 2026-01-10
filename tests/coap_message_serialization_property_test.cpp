@@ -31,7 +31,7 @@ BOOST_AUTO_TEST_SUITE(coap_message_serialization_property_tests)
 // Property: For any valid Raft RPC message (request or response), serializing then 
 // deserializing should produce an equivalent message.
 BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_test::timeout(60)) {
-    raft::json_rpc_serializer<std::vector<std::byte>> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -49,7 +49,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
         try {
             // Test RequestVote request round-trip
             {
-                raft::request_vote_request<> original;
+                kythira::request_vote_request<> original;
                 original._term = term_dist(rng);
                 original._candidate_id = node_dist(rng);
                 original._last_log_index = index_dist(rng);
@@ -69,7 +69,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
             
             // Test RequestVote response round-trip
             {
-                raft::request_vote_response<> original;
+                kythira::request_vote_response<> original;
                 original._term = term_dist(rng);
                 original._vote_granted = bool_dist(rng) == 1;
                 
@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
             
             // Test AppendEntries request round-trip
             {
-                raft::append_entries_request<> original;
+                kythira::append_entries_request<> original;
                 original._term = term_dist(rng);
                 original._leader_id = node_dist(rng);
                 original._prev_log_index = index_dist(rng);
@@ -95,7 +95,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
                 // Generate random entries
                 std::size_t entry_count = entries_count_dist(rng);
                 for (std::size_t j = 0; j < entry_count; ++j) {
-                    raft::log_entry<> entry;
+                    kythira::log_entry<> entry;
                     entry._term = term_dist(rng);
                     entry._index = index_dist(rng);
                     
@@ -142,7 +142,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
             
             // Test AppendEntries response round-trip
             {
-                raft::append_entries_response<> original;
+                kythira::append_entries_response<> original;
                 original._term = term_dist(rng);
                 original._success = bool_dist(rng) == 1;
                 
@@ -168,7 +168,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
             
             // Test InstallSnapshot request round-trip
             {
-                raft::install_snapshot_request<> original;
+                kythira::install_snapshot_request<> original;
                 original._term = term_dist(rng);
                 original._leader_id = node_dist(rng);
                 original._last_included_index = index_dist(rng);
@@ -200,7 +200,7 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
             
             // Test InstallSnapshot response round-trip
             {
-                raft::install_snapshot_response<> original;
+                kythira::install_snapshot_response<> original;
                 original._term = term_dist(rng);
                 
                 auto serialized = serializer.serialize(original);

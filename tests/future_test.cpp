@@ -8,6 +8,7 @@
 #include <thread>
 
 using namespace network_simulator;
+using namespace kythira;
 
 // Test constants
 namespace {
@@ -18,20 +19,20 @@ namespace {
 
 // Test Try wrapper with value
 BOOST_AUTO_TEST_CASE(test_try_with_value, * boost::unit_test::timeout(30)) {
-    Try<int> t(test_value);
+    kythira::Try<int> t(test_value);
     
     BOOST_TEST(t.hasValue());
     BOOST_TEST(!t.hasException());
     BOOST_TEST(t.value() == test_value);
     
     // Verify it satisfies the try_type concept
-    static_assert(kythira::try_type<Try<int>, int>, "Try<int> should satisfy try_type concept");
+    static_assert(kythira::try_type<kythira::Try<int>, int>, "Try<int> should satisfy try_type concept");
 }
 
 // Test Try wrapper with exception
 BOOST_AUTO_TEST_CASE(test_try_with_exception, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
-    Try<int> t(ex);
+    kythira::Try<int> t(ex);
     
     BOOST_TEST(!t.hasValue());
     BOOST_TEST(t.hasException());
@@ -43,7 +44,7 @@ BOOST_AUTO_TEST_CASE(test_try_with_exception, * boost::unit_test::timeout(30)) {
 // Test Try wrapper with folly::Try
 BOOST_AUTO_TEST_CASE(test_try_from_folly_try, * boost::unit_test::timeout(30)) {
     folly::Try<int> folly_try(test_value);
-    Try<int> t(std::move(folly_try));
+    kythira::Try<int> t(std::move(folly_try));
     
     BOOST_TEST(t.hasValue());
     BOOST_TEST(t.value() == test_value);
@@ -51,7 +52,7 @@ BOOST_AUTO_TEST_CASE(test_try_from_folly_try, * boost::unit_test::timeout(30)) {
 
 // Test Future wrapper with value
 BOOST_AUTO_TEST_CASE(test_future_with_value, * boost::unit_test::timeout(30)) {
-    Future<int> f(test_value);
+    kythira::Future<int> f(test_value);
     
     BOOST_TEST(f.isReady());
     BOOST_TEST(f.get() == test_value);
@@ -60,7 +61,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_value, * boost::unit_test::timeout(30)) {
 // Test Future wrapper with exception
 BOOST_AUTO_TEST_CASE(test_future_with_exception, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
-    Future<int> f(ex);
+    kythira::Future<int> f(ex);
     
     BOOST_TEST(f.isReady());
     BOOST_CHECK_THROW(f.get(), std::runtime_error);
@@ -68,7 +69,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_exception, * boost::unit_test::timeout(30)
 
 // Test Future then() chaining
 BOOST_AUTO_TEST_CASE(test_future_then, * boost::unit_test::timeout(30)) {
-    Future<int> f(test_value);
+    kythira::Future<int> f(test_value);
     
     auto f2 = f.then([](int val) { return val * 2; });
     
@@ -78,7 +79,7 @@ BOOST_AUTO_TEST_CASE(test_future_then, * boost::unit_test::timeout(30)) {
 // Test Future onError() handling
 BOOST_AUTO_TEST_CASE(test_future_on_error, * boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
-    Future<int> f(ex);
+    kythira::Future<int> f(ex);
     
     auto f2 = f.onError([](folly::exception_wrapper) { return test_value; });
     
@@ -88,7 +89,7 @@ BOOST_AUTO_TEST_CASE(test_future_on_error, * boost::unit_test::timeout(30)) {
 // Test Future wait() with timeout
 BOOST_AUTO_TEST_CASE(test_future_wait, * boost::unit_test::timeout(60)) {
     folly::Promise<int> promise;
-    Future<int> f(promise.getFuture());
+    kythira::Future<int> f(promise.getFuture());
     
     // Should not be ready yet
     BOOST_TEST(!f.isReady());
@@ -110,10 +111,10 @@ BOOST_AUTO_TEST_CASE(test_wait_for_any, * boost::unit_test::timeout(90)) {
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
     
-    std::vector<Future<int>> futures;
-    futures.push_back(Future<int>(promise1.getFuture()));
-    futures.push_back(Future<int>(promise2.getFuture()));
-    futures.push_back(Future<int>(promise3.getFuture()));
+    std::vector<kythira::Future<int>> futures;
+    futures.push_back(kythira::Future<int>(promise1.getFuture()));
+    futures.push_back(kythira::Future<int>(promise2.getFuture()));
+    futures.push_back(kythira::Future<int>(promise3.getFuture()));
     
     // Fulfill the second promise in a separate thread
     std::thread t([&promise2]() {
@@ -122,7 +123,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_any, * boost::unit_test::timeout(90)) {
     });
     
     // Wait for any future to complete
-    auto result_future = wait_for_any(std::move(futures));
+    auto result_future = kythira::wait_for_any(std::move(futures));
     auto [index, try_result] = result_future.get();
     
     // Should be the second future (index 1)
@@ -143,10 +144,10 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all, * boost::unit_test::timeout(90)) {
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
     
-    std::vector<Future<int>> futures;
-    futures.push_back(Future<int>(promise1.getFuture()));
-    futures.push_back(Future<int>(promise2.getFuture()));
-    futures.push_back(Future<int>(promise3.getFuture()));
+    std::vector<kythira::Future<int>> futures;
+    futures.push_back(kythira::Future<int>(promise1.getFuture()));
+    futures.push_back(kythira::Future<int>(promise2.getFuture()));
+    futures.push_back(kythira::Future<int>(promise3.getFuture()));
     
     // Fulfill all promises in separate threads
     std::thread t1([&promise1]() {
@@ -165,7 +166,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all, * boost::unit_test::timeout(90)) {
     });
     
     // Wait for all futures to complete
-    auto result_future = wait_for_all(std::move(futures));
+    auto result_future = kythira::wait_for_all(std::move(futures));
     auto results = result_future.get();
     
     // Should have 3 results
@@ -192,10 +193,10 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::time
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
     
-    std::vector<Future<int>> futures;
-    futures.push_back(Future<int>(promise1.getFuture()));
-    futures.push_back(Future<int>(promise2.getFuture()));
-    futures.push_back(Future<int>(promise3.getFuture()));
+    std::vector<kythira::Future<int>> futures;
+    futures.push_back(kythira::Future<int>(promise1.getFuture()));
+    futures.push_back(kythira::Future<int>(promise2.getFuture()));
+    futures.push_back(kythira::Future<int>(promise3.getFuture()));
     
     // Fulfill promises with mix of values and exceptions
     promise1.setValue(test_value);
@@ -203,7 +204,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::time
     promise3.setValue(test_value * 2);
     
     // Wait for all futures to complete
-    auto result_future = wait_for_all(std::move(futures));
+    auto result_future = kythira::wait_for_all(std::move(futures));
     auto results = result_future.get();
     
     // Should have 3 results
@@ -223,7 +224,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::time
 
 // Test Message with empty payload
 BOOST_AUTO_TEST_CASE(test_message_empty_payload, * boost::unit_test::timeout(30)) {
-    Message<std::string, unsigned short> msg(
+    Message<DefaultNetworkTypes> msg(
         "src",
         8080,
         "dst",
@@ -240,7 +241,7 @@ BOOST_AUTO_TEST_CASE(test_message_with_payload, * boost::unit_test::timeout(30))
         payload.push_back(static_cast<std::byte>(c));
     }
     
-    Message<std::string, unsigned short> msg(
+    Message<DefaultNetworkTypes> msg(
         "src",
         8080,
         "dst",
@@ -258,8 +259,22 @@ BOOST_AUTO_TEST_CASE(test_message_with_payload, * boost::unit_test::timeout(30))
 
 // Test Message with various address/port types
 BOOST_AUTO_TEST_CASE(test_message_various_types, * boost::unit_test::timeout(30)) {
+    // Create a custom types struct for testing different address/port types
+    struct CustomTypes {
+        using address_type = unsigned long;
+        using port_type = std::string;
+        using message_type = Message<CustomTypes>;
+        using connection_type = Connection<CustomTypes>;
+        using listener_type = Listener<CustomTypes>;
+        using future_bool_type = kythira::Future<bool>;
+        using future_message_type = kythira::Future<message_type>;
+        using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
+        using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
+        using future_bytes_type = kythira::Future<std::vector<std::byte>>;
+    };
+    
     // Test with unsigned long address and string port
-    Message<unsigned long, std::string> msg1(
+    Message<CustomTypes> msg1(
         0xC0A80101UL,  // 192.168.1.1
         "http",
         0xC0A80102UL,  // 192.168.1.2
@@ -269,17 +284,11 @@ BOOST_AUTO_TEST_CASE(test_message_various_types, * boost::unit_test::timeout(30)
     BOOST_TEST(msg1.source_address() == 0xC0A80101UL);
     BOOST_TEST(msg1.source_port() == "http");
     
-    // Test with IPv4Address
-    in_addr addr1{};
-    addr1.s_addr = htonl(0xC0A80101);
-    
-    in_addr addr2{};
-    addr2.s_addr = htonl(0xC0A80102);
-    
-    Message<IPv4Address, unsigned short> msg2(
-        IPv4Address(addr1),
+    // Test with DefaultNetworkTypes (string address, unsigned short port)
+    Message<DefaultNetworkTypes> msg2(
+        "192.168.1.1",
         8080,
-        IPv4Address(addr2),
+        "192.168.1.2",
         9090
     );
     

@@ -16,8 +16,16 @@
 #include <chrono>
 #include <format>
 
-// Use the correct serializer type alias
-using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
+// Define test types for the transport
+struct TestTypes {
+    using future_type = kythira::Future<void>;
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+};
 
 namespace {
     constexpr std::size_t property_test_iterations = 100;
@@ -60,7 +68,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
         try {
             // Test certificate-based DTLS connection establishment
             {
-                raft::coap_client_config client_config;
+                kythira::coap_client_config client_config;
                 client_config.enable_dtls = true;
                 client_config.cert_file = std::format("/tmp/test_cert_{}.pem", i);
                 client_config.key_file = std::format("/tmp/test_key_{}.pem", i);
@@ -71,12 +79,12 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                 std::uint16_t port = port_dist(rng);
                 node_endpoints[test_node_id] = std::format("coaps://127.0.0.1:{}", port);
                 
-                raft::noop_metrics metrics;
+                kythira::noop_metrics metrics;
                 
                 bool client_created = false;
                 try {
-                    raft::console_logger logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                    kythira::console_logger logger;
+                    kythira::coap_client<TestTypes> client(
                         std::move(node_endpoints), client_config, metrics, std::move(logger));
                     
                     // Verify DTLS is enabled
@@ -98,7 +106,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                     
                     client_created = true;
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
                     BOOST_TEST_MESSAGE("Expected security error at iteration " << i << ": " << e.what());
                     client_created = true; // This is acceptable
@@ -115,7 +123,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
             
             // Test PSK-based DTLS connection establishment
             {
-                raft::coap_client_config psk_config;
+                kythira::coap_client_config psk_config;
                 psk_config.enable_dtls = true;
                 psk_config.psk_identity = std::format("{}_{}", test_psk_identity, i);
                 
@@ -130,12 +138,12 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                 std::uint16_t psk_port = port_dist(rng);
                 psk_endpoints[test_node_id] = std::format("coaps://127.0.0.1:{}", psk_port);
                 
-                raft::noop_metrics psk_metrics;
+                kythira::noop_metrics psk_metrics;
                 
                 bool psk_client_created = false;
                 try {
-                    raft::console_logger psk_logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> psk_client(
+                    kythira::console_logger psk_logger;
+                    kythira::coap_client<TestTypes> psk_client(
                         std::move(psk_endpoints), psk_config, psk_metrics, std::move(psk_logger));
                     
                     // Verify DTLS is enabled
@@ -157,7 +165,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                     
                     psk_client_created = true;
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
                     BOOST_TEST_MESSAGE("Expected PSK security error at iteration " << i << ": " << e.what());
                     psk_client_created = true; // This is acceptable
@@ -174,7 +182,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
             
             // Test server DTLS configuration
             {
-                raft::coap_server_config server_config;
+                kythira::coap_server_config server_config;
                 server_config.enable_dtls = true;
                 
                 // Randomly choose between certificate and PSK authentication
@@ -194,13 +202,13 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                     }
                 }
                 
-                raft::noop_metrics server_metrics;
+                kythira::noop_metrics server_metrics;
                 std::uint16_t server_port = port_dist(rng);
                 
                 bool server_created = false;
                 try {
-                    raft::console_logger server_logger;
-                    raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+                    kythira::console_logger server_logger;
+                    kythira::coap_server<TestTypes> server(
                         test_bind_address, server_port, server_config, server_metrics, std::move(server_logger));
                     
                     // Verify DTLS is enabled
@@ -212,7 +220,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                     
                     server_created = true;
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
                     BOOST_TEST_MESSAGE("Expected server security error at iteration " << i << ": " << e.what());
                     server_created = true; // This is acceptable
@@ -229,7 +237,7 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
             
             // Test invalid endpoint handling
             {
-                raft::coap_client_config invalid_config;
+                kythira::coap_client_config invalid_config;
                 invalid_config.enable_dtls = true;
                 invalid_config.cert_file = "/tmp/test_cert.pem";
                 invalid_config.key_file = "/tmp/test_key.pem";
@@ -237,11 +245,11 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                 std::unordered_map<std::uint64_t, std::string> invalid_endpoints;
                 invalid_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
                 
-                raft::noop_metrics invalid_metrics;
+                kythira::noop_metrics invalid_metrics;
                 
                 try {
-                    raft::console_logger invalid_logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> invalid_client(
+                    kythira::console_logger invalid_logger;
+                    kythira::coap_client<TestTypes> invalid_client(
                         std::move(invalid_endpoints), invalid_config, invalid_metrics, std::move(invalid_logger));
                     
                     // Test connection to invalid endpoints
@@ -257,9 +265,9 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                         bool exception_thrown = false;
                         try {
                             invalid_client.establish_dtls_connection(invalid_endpoint);
-                        } catch (const raft::coap_network_error&) {
+                        } catch (const kythira::coap_network_error&) {
                             exception_thrown = true;
-                        } catch (const raft::coap_security_error&) {
+                        } catch (const kythira::coap_security_error&) {
                             exception_thrown = true;
                         }
                         
@@ -293,7 +301,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
     
     // Test invalid PSK key sizes
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         config.psk_identity = "test";
         
@@ -303,14 +311,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         bool exception_thrown = false;
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for short PSK: " << e.what());
         }
@@ -323,7 +331,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
     
     // Test PSK key too long
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         config.psk_identity = "test";
         
@@ -334,14 +342,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         bool exception_thrown = false;
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for long PSK: " << e.what());
         }
@@ -354,7 +362,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
     
     // Test PSK identity too long
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         config.psk_identity = std::string(200, 'x');  // 200 characters
         config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
@@ -362,14 +370,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         bool exception_thrown = false;
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for long PSK identity: " << e.what());
         }
@@ -382,21 +390,21 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
     
     // Test DTLS enabled without authentication method
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         // No certificate files or PSK configured
         
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         bool exception_thrown = false;
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for DTLS without auth method: " << e.what());
         }

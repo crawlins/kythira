@@ -83,10 +83,10 @@ template<
 >
 class spy_persistence_engine {
 private:
-    using log_entry_t = raft::log_entry<TermId, LogIndex>;
-    using snapshot_t = raft::snapshot<NodeId, TermId, LogIndex>;
+    using log_entry_t = kythira::log_entry<TermId, LogIndex>;
+    using snapshot_t = kythira::snapshot<NodeId, TermId, LogIndex>;
     
-    raft::memory_persistence_engine<NodeId, TermId, LogIndex> _engine;
+    kythira::memory_persistence_engine<NodeId, TermId, LogIndex> _engine;
     std::size_t _term_save_count;
     std::size_t _voted_for_save_count;
 
@@ -180,7 +180,7 @@ BOOST_AUTO_TEST_CASE(property_vote_granted_persists_before_response) {
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Create network simulator
-            auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+            auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
             simulator.start();
             
             // Generate random node IDs
@@ -200,21 +200,21 @@ BOOST_AUTO_TEST_CASE(property_vote_granted_persists_before_response) {
             auto persistence = spy_persistence_engine<>{};
             
             // Create node components
-            auto serializer = raft::json_rpc_serializer<std::vector<std::byte>>{};
-            auto network_client = raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
+            auto network_client = kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
             >{sim_node, serializer};
-            auto network_server = raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            auto network_server = kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
             >{sim_node, serializer};
-            auto logger = raft::console_logger{raft::log_level::error};  // Quiet for tests
-            auto metrics = raft::noop_metrics{};
-            auto membership = raft::default_membership_manager<>{};
+            auto logger = kythira::console_logger{kythira::log_level::error};  // Quiet for tests
+            auto metrics = kythira::noop_metrics{};
+            auto membership = kythira::default_membership_manager<>{};
             
             // Create Raft node
-            raft::node node{
+            kythira::node node{
                 node_id,
                 std::move(network_client),
                 std::move(network_server),
@@ -280,7 +280,7 @@ BOOST_AUTO_TEST_CASE(property_higher_term_persists_before_response) {
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Create network simulator
-            auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+            auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
             simulator.start();
             
             // Generate random node IDs
@@ -303,21 +303,21 @@ BOOST_AUTO_TEST_CASE(property_higher_term_persists_before_response) {
             persistence.save_current_term(initial_term);
             
             // Create node components
-            auto serializer = raft::json_rpc_serializer<std::vector<std::byte>>{};
-            auto network_client = raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
+            auto network_client = kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
             >{sim_node, serializer};
-            auto network_server = raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            auto network_server = kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
             >{sim_node, serializer};
-            auto logger = raft::console_logger{raft::log_level::error};
-            auto metrics = raft::noop_metrics{};
-            auto membership = raft::default_membership_manager<>{};
+            auto logger = kythira::console_logger{kythira::log_level::error};
+            auto metrics = kythira::noop_metrics{};
+            auto membership = kythira::default_membership_manager<>{};
             
             // Create Raft node
-            raft::node node{
+            kythira::node node{
                 node_id,
                 std::move(network_client),
                 std::move(network_server),

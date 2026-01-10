@@ -5,6 +5,7 @@
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
 #include <concepts/future.hpp>
+#include <network_simulator/types.hpp>
 
 #include <string>
 #include <chrono>
@@ -15,6 +16,14 @@
 #include <mutex>
 #include <atomic>
 #include <thread>
+#include <future>
+
+// Forward declarations for folly (when available)
+#ifdef FOLLY_AVAILABLE
+namespace folly {
+    template<typename T> class Future;
+}
+#endif
 
 // Forward declarations for cpp-httplib
 namespace httplib {
@@ -25,6 +34,37 @@ namespace httplib {
 }
 
 namespace kythira {
+
+// Default HTTP transport types implementation using folly
+template<typename RPC_Serializer, typename Metrics, typename Executor>
+struct http_transport_types {
+#ifdef FOLLY_AVAILABLE
+    template<typename T> using future_template = folly::Future<T>;
+#else
+    template<typename T> using future_template = network_simulator::SimpleFuture<T>;
+#endif
+    using serializer_type = RPC_Serializer;
+    using metrics_type = Metrics;
+    using executor_type = Executor;
+};
+
+// Alternative implementations for different future types
+template<typename RPC_Serializer, typename Metrics, typename Executor>
+struct std_http_transport_types {
+    template<typename T> using future_template = std::future<T>;
+    using serializer_type = RPC_Serializer;
+    using metrics_type = Metrics;
+    using executor_type = Executor;
+};
+
+// Simple future implementation for when folly is not available
+template<typename RPC_Serializer, typename Metrics, typename Executor>
+struct simple_http_transport_types {
+    template<typename T> using future_template = network_simulator::SimpleFuture<T>;
+    using serializer_type = RPC_Serializer;
+    using metrics_type = Metrics;
+    using executor_type = Executor;
+};
 
 // Client configuration structure
 struct cpp_httplib_client_config {
@@ -48,17 +88,21 @@ struct cpp_httplib_server_config {
 };
 
 // HTTP client implementation
-template<typename FutureType, typename RPC_Serializer, typename Metrics>
-requires 
-    raft::rpc_serializer<RPC_Serializer, std::vector<std::byte>> && 
-    raft::metrics<Metrics>
+template<typename Types>
+requires transport_types<Types>
 class cpp_httplib_client {
 public:
+    // Type aliases for convenience
+    using serializer_type = typename Types::serializer_type;
+    using metrics_type = typename Types::metrics_type;
+    using executor_type = typename Types::executor_type;
+    template<typename T> using future_template = typename Types::template future_template<T>;
+
     // Constructor
     cpp_httplib_client(
         std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
         cpp_httplib_client_config config,
-        Metrics metrics
+        metrics_type metrics
     );
 
     // Destructor
@@ -67,28 +111,28 @@ public:
     // Network client interface
     auto send_request_vote(
         std::uint64_t target,
-        const raft::request_vote_request<>& request,
+        const kythira::request_vote_request<>& request,
         std::chrono::milliseconds timeout
-    ) -> FutureType;
+    ) -> typename Types::template future_template<kythira::request_vote_response<>>;
 
     auto send_append_entries(
         std::uint64_t target,
-        const raft::append_entries_request<>& request,
+        const kythira::append_entries_request<>& request,
         std::chrono::milliseconds timeout
-    ) -> FutureType;
+    ) -> typename Types::template future_template<kythira::append_entries_response<>>;
 
     auto send_install_snapshot(
         std::uint64_t target,
-        const raft::install_snapshot_request<>& request,
+        const kythira::install_snapshot_request<>& request,
         std::chrono::milliseconds timeout
-    ) -> FutureType;
+    ) -> typename Types::template future_template<kythira::install_snapshot_response<>>;
 
 private:
-    RPC_Serializer _serializer;
+    serializer_type _serializer;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
     std::unordered_map<std::uint64_t, std::unique_ptr<httplib::Client>> _http_clients;
     cpp_httplib_client_config _config;
-    Metrics _metrics;
+    metrics_type _metrics;
     mutable std::mutex _mutex;
 
     // Helper methods
@@ -101,25 +145,26 @@ private:
         const std::string& endpoint,
         const Request& request,
         std::chrono::milliseconds timeout
-    ) -> FutureType;
+    ) -> typename Types::template future_template<Response>;
 };
 
 // HTTP server implementation
-template<typename FutureType, typename RPC_Serializer, typename Metrics>
-requires 
-    future<FutureType, raft::request_vote_response<>> &&
-    future<FutureType, raft::append_entries_response<>> &&
-    future<FutureType, raft::install_snapshot_response<>> &&
-    raft::rpc_serializer<RPC_Serializer, std::vector<std::byte>> && 
-    raft::metrics<Metrics>
+template<typename Types>
+requires transport_types<Types>
 class cpp_httplib_server {
 public:
+    // Type aliases for convenience
+    using serializer_type = typename Types::serializer_type;
+    using metrics_type = typename Types::metrics_type;
+    using executor_type = typename Types::executor_type;
+    template<typename T> using future_template = typename Types::template future_template<T>;
+
     // Constructor
     cpp_httplib_server(
         std::string bind_address,
         std::uint16_t bind_port,
         cpp_httplib_server_config config,
-        Metrics metrics
+        metrics_type metrics
     );
 
     // Destructor
@@ -127,15 +172,15 @@ public:
 
     // Network server interface
     auto register_request_vote_handler(
-        std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> handler
+        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
     ) -> void;
 
     auto register_append_entries_handler(
-        std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> handler
+        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
     ) -> void;
 
     auto register_install_snapshot_handler(
-        std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> handler
+        std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
     ) -> void;
 
     auto start() -> void;
@@ -143,15 +188,15 @@ public:
     auto is_running() const -> bool;
 
 private:
-    RPC_Serializer _serializer;
+    serializer_type _serializer;
     std::unique_ptr<httplib::Server> _http_server;
-    std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> _request_vote_handler;
-    std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> _append_entries_handler;
-    std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> _install_snapshot_handler;
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> _request_vote_handler;
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> _append_entries_handler;
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> _install_snapshot_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
     cpp_httplib_server_config _config;
-    Metrics _metrics;
+    metrics_type _metrics;
     std::atomic<bool> _running{false};
     mutable std::mutex _mutex;
     std::thread _server_thread;

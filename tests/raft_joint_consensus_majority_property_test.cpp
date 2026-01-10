@@ -70,14 +70,14 @@ BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, * boost::unit_test
         std::size_t new_node_count = node_count_dist(rng);
         
         // Create old configuration
-        raft::cluster_configuration<std::uint64_t> old_config{};
+        kythira::cluster_configuration<std::uint64_t> old_config{};
         old_config._is_joint_consensus = false;
         for (std::size_t i = 1; i <= old_node_count; ++i) {
             old_config._nodes.push_back(i);
         }
         
         // Create new configuration (may overlap with old)
-        raft::cluster_configuration<std::uint64_t> new_config{};
+        kythira::cluster_configuration<std::uint64_t> new_config{};
         new_config._is_joint_consensus = false;
         for (std::size_t i = 1; i <= new_node_count; ++i) {
             // Offset by old_node_count/2 to create partial overlap
@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, * boost::unit_test
         }
         
         // Create joint consensus configuration
-        raft::default_membership_manager<std::uint64_t> membership_manager{};
+        kythira::default_membership_manager<std::uint64_t> membership_manager{};
         auto joint_config = membership_manager.create_joint_configuration(old_config, new_config);
         
         // Verify joint consensus properties
@@ -111,7 +111,7 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         simulator.start();
         
         // Generate random configurations
@@ -127,38 +127,38 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
         auto leader_sim_node = simulator.create_node(leader_id);
         
         // Create configuration
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
-        auto leader = raft::node{
+        auto leader = kythira::node{
             leader_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{leader_sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{leader_sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            >{leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
         // Set up joint consensus configuration
-        raft::cluster_configuration<std::uint64_t> old_config{};
+        kythira::cluster_configuration<std::uint64_t> old_config{};
         old_config._nodes = old_nodes;
         old_config._is_joint_consensus = false;
         
-        raft::cluster_configuration<std::uint64_t> new_config{};
+        kythira::cluster_configuration<std::uint64_t> new_config{};
         new_config._nodes = new_nodes;
         new_config._is_joint_consensus = false;
         
-        raft::default_membership_manager<std::uint64_t> membership_manager{};
+        kythira::default_membership_manager<std::uint64_t> membership_manager{};
         auto joint_config = membership_manager.create_joint_configuration(old_config, new_config);
         
         // Verify the joint configuration has the expected properties
@@ -229,15 +229,15 @@ BOOST_AUTO_TEST_CASE(node_in_either_configuration_can_participate) {
         std::vector<std::uint64_t> old_nodes = {1, 2, 3, 4};
         std::vector<std::uint64_t> new_nodes = {3, 4, 5, 6};
         
-        raft::cluster_configuration<std::uint64_t> old_config{};
+        kythira::cluster_configuration<std::uint64_t> old_config{};
         old_config._nodes = old_nodes;
         old_config._is_joint_consensus = false;
         
-        raft::cluster_configuration<std::uint64_t> new_config{};
+        kythira::cluster_configuration<std::uint64_t> new_config{};
         new_config._nodes = new_nodes;
         new_config._is_joint_consensus = false;
         
-        raft::default_membership_manager<std::uint64_t> membership_manager{};
+        kythira::default_membership_manager<std::uint64_t> membership_manager{};
         auto joint_config = membership_manager.create_joint_configuration(old_config, new_config);
         
         // Verify nodes in old configuration are recognized

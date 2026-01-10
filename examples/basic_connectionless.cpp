@@ -1,6 +1,6 @@
 // Example: Basic Connectionless Communication
 // This example demonstrates:
-// 1. Creating a network simulator with topology
+// 1. Creating a network simulator with DefaultNetworkTypes
 // 2. Sending and receiving connectionless messages
 // 3. Timeout handling for send and receive operations
 // 4. Error handling and graceful failure reporting
@@ -12,8 +12,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
-#include <folly/init/Init.h>
 
 using namespace network_simulator;
 using namespace std::chrono_literals;
@@ -58,8 +56,8 @@ auto test_basic_send_receive() -> bool {
     std::cout << "Test 1: Basic Send/Receive\n";
     
     try {
-        // Create simulator with string addresses and unsigned short ports
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology
         simulator.add_node(node_a_id);
@@ -73,9 +71,9 @@ auto test_basic_send_receive() -> bool {
         // Start simulation
         simulator.start();
         
-        // Create and send message
+        // Create and send message using DefaultNetworkTypes::message_type
         auto payload = string_to_bytes(test_payload);
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             node_a_id, port_1000,
             node_b_id, port_2000,
             payload
@@ -125,7 +123,7 @@ auto test_send_timeout() -> bool {
     
     try {
         // Create simulator with no connectivity (no edges)
-        NetworkSimulator<std::string, unsigned short> simulator;
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology with isolated nodes
         simulator.add_node(node_a_id);
@@ -140,7 +138,7 @@ auto test_send_timeout() -> bool {
         
         // Create message
         auto payload = string_to_bytes(test_payload);
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             node_a_id, port_1000,
             node_b_id, port_2000,
             payload
@@ -170,7 +168,7 @@ auto test_receive_timeout() -> bool {
     
     try {
         // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology
         simulator.add_node(node_a_id);
@@ -206,7 +204,7 @@ auto test_reliability_drops() -> bool {
     
     try {
         // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology with very low reliability
         simulator.add_node(node_a_id);
@@ -226,7 +224,7 @@ auto test_reliability_drops() -> bool {
         
         for (int i = 0; i < message_count; ++i) {
             auto payload = string_to_bytes(std::format("Message {}", i));
-            Message<std::string, unsigned short> msg(
+            DefaultNetworkTypes::message_type msg(
                 node_a_id, port_1000,
                 node_b_id, port_2000,
                 payload
@@ -264,7 +262,7 @@ auto test_multi_hop_routing() -> bool {
     
     try {
         // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure linear topology: A -> B -> C
         simulator.add_node(node_a_id);
@@ -284,7 +282,7 @@ auto test_multi_hop_routing() -> bool {
         // Try to send from A to C - should fail since current implementation
         // only supports direct routing
         auto payload = string_to_bytes(test_payload);
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             node_a_id, port_1000,
             node_c_id, port_2000,
             payload
@@ -308,8 +306,6 @@ auto test_multi_hop_routing() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
-    // Initialize folly library
-    folly::Init init(&argc, &argv);
     std::cout << std::string(60, '=') << "\n";
     std::cout << "  Basic Connectionless Communication Example\n";
     std::cout << std::string(60, '=') << "\n\n";

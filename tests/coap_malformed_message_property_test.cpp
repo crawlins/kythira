@@ -46,19 +46,19 @@ BOOST_AUTO_TEST_CASE(property_malformed_message_rejection, * boost::unit_test::t
             std::size_t malformed_size = size_dist(rng);
             
             // Create server configuration
-            raft::coap_server_config config;
+            kythira::coap_server_config config;
             config.max_request_size = 64 * 1024;
             config.max_concurrent_sessions = 100;
             
             // Create server
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 server("127.0.0.1", server_port, config, metrics, std::move(logger));
             
             // Register a dummy handler
-            server.register_request_vote_handler([](const raft::request_vote_request<>& req) {
-                raft::request_vote_response<> response;
+            server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+                kythira::request_vote_response<> response;
                 response._term = req._term;
                 response._vote_granted = false;
                 return response;
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_message_rejection, * boost::unit_test::t
                     server.validate_client_certificate(malformed_cert);
                     // Should throw exception for malformed certificate
                     BOOST_FAIL("Expected exception for malformed certificate");
-                } catch (const raft::coap_security_error&) {
+                } catch (const kythira::coap_security_error&) {
                     // Expected behavior - malformed certificate rejected
                 }
             }
@@ -168,10 +168,10 @@ BOOST_AUTO_TEST_CASE(client_malformed_message_detection, * boost::unit_test::tim
         {1, "coap://127.0.0.1:5683"}
     };
     
-    raft::coap_client_config config;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config config;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     // Test client can detect malformed messages
@@ -192,12 +192,12 @@ BOOST_AUTO_TEST_CASE(client_malformed_message_detection, * boost::unit_test::tim
 
 // Test specific malformed message scenarios
 BOOST_AUTO_TEST_CASE(specific_malformed_message_scenarios, * boost::unit_test::timeout(45)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.max_request_size = 1024;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         server("127.0.0.1", 5683, config, metrics, std::move(logger));
     
     // Test empty certificate data
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(specific_malformed_message_scenarios, * boost::unit_test::t
             // DTLS not enabled or peer cert verification disabled, should return true
             BOOST_CHECK_EQUAL(result, true);
         }
-    } catch (const raft::coap_security_error& e) {
+    } catch (const kythira::coap_security_error& e) {
         BOOST_TEST_MESSAGE("Empty certificate rejected: " << e.what());
     }
     
@@ -222,7 +222,7 @@ BOOST_AUTO_TEST_CASE(specific_malformed_message_scenarios, * boost::unit_test::t
             // DTLS not enabled or peer cert verification disabled, should return true
             BOOST_CHECK_EQUAL(result, true);
         }
-    } catch (const raft::coap_security_error& e) {
+    } catch (const kythira::coap_security_error& e) {
         BOOST_TEST_MESSAGE("Malformed certificate rejected: " << e.what());
     }
     
@@ -235,7 +235,7 @@ BOOST_AUTO_TEST_CASE(specific_malformed_message_scenarios, * boost::unit_test::t
             // DTLS not enabled or peer cert verification disabled, should return true
             BOOST_CHECK_EQUAL(result, true);
         }
-    } catch (const raft::coap_security_error& e) {
+    } catch (const kythira::coap_security_error& e) {
         BOOST_TEST_MESSAGE("Certificate without markers rejected: " << e.what());
     }
     
@@ -248,7 +248,7 @@ BOOST_AUTO_TEST_CASE(specific_malformed_message_scenarios, * boost::unit_test::t
             // DTLS not enabled or peer cert verification disabled, should return true
             BOOST_CHECK_EQUAL(result, true);
         }
-    } catch (const raft::coap_security_error& e) {
+    } catch (const kythira::coap_security_error& e) {
         BOOST_TEST_MESSAGE("Incomplete certificate rejected: " << e.what());
     }
 }

@@ -12,11 +12,11 @@ namespace {
 
 // Mock persistence engine for testing the concept
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-requires raft::node_id<NodeId> && raft::term_id<TermId> && raft::log_index<LogIndex>
+requires kythira::node_id<NodeId> && kythira::term_id<TermId> && kythira::log_index<LogIndex>
 class mock_persistence_engine {
 public:
-    using log_entry_t = raft::log_entry<TermId, LogIndex>;
-    using snapshot_t = raft::snapshot<NodeId, TermId, LogIndex>;
+    using log_entry_t = kythira::log_entry<TermId, LogIndex>;
+    using snapshot_t = kythira::snapshot<NodeId, TermId, LogIndex>;
     
     auto save_current_term(TermId term) -> void {
         _current_term = term;
@@ -113,19 +113,19 @@ BOOST_AUTO_TEST_CASE(test_persistence_engine_concept, * boost::unit_test::timeou
     using node_id_t = std::uint64_t;
     using term_id_t = std::uint64_t;
     using log_index_t = std::uint64_t;
-    using log_entry_t = raft::log_entry<term_id_t, log_index_t>;
-    using snapshot_t = raft::snapshot<node_id_t, term_id_t, log_index_t>;
+    using log_entry_t = kythira::log_entry<term_id_t, log_index_t>;
+    using snapshot_t = kythira::snapshot<node_id_t, term_id_t, log_index_t>;
     
     static_assert(
-        raft::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
+        kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
         "mock_persistence_engine should satisfy persistence_engine concept"
     );
     
     // Test that memory_persistence_engine satisfies persistence_engine concept
-    using memory_engine_t = raft::memory_persistence_engine<>;
+    using memory_engine_t = kythira::memory_persistence_engine<>;
     
     static_assert(
-        raft::persistence_engine<memory_engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
+        kythira::persistence_engine<memory_engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
         "memory_persistence_engine should satisfy persistence_engine concept"
     );
 }
@@ -159,9 +159,9 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations, * boost::unit_test::t
     mock_persistence_engine<> engine;
     
     // Create and append log entries
-    raft::log_entry<> entry1{1, 1, {std::byte{0x01}}};
-    raft::log_entry<> entry2{1, 2, {std::byte{0x02}}};
-    raft::log_entry<> entry3{2, 3, {std::byte{0x03}}};
+    kythira::log_entry<> entry1{1, 1, {std::byte{0x01}}};
+    kythira::log_entry<> entry2{1, 2, {std::byte{0x02}}};
+    kythira::log_entry<> entry3{2, 3, {std::byte{0x03}}};
     
     engine.append_log_entry(entry1);
     engine.append_log_entry(entry2);
@@ -188,10 +188,10 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log, * boost::unit_test::tim
     mock_persistence_engine<> engine;
     
     // Add entries
-    raft::log_entry<> entry1{1, 1, {std::byte{0x01}}};
-    raft::log_entry<> entry2{1, 2, {std::byte{0x02}}};
-    raft::log_entry<> entry3{2, 3, {std::byte{0x03}}};
-    raft::log_entry<> entry4{2, 4, {std::byte{0x04}}};
+    kythira::log_entry<> entry1{1, 1, {std::byte{0x01}}};
+    kythira::log_entry<> entry2{1, 2, {std::byte{0x02}}};
+    kythira::log_entry<> entry3{2, 3, {std::byte{0x03}}};
+    kythira::log_entry<> entry4{2, 4, {std::byte{0x04}}};
     
     engine.append_log_entry(entry1);
     engine.append_log_entry(entry2);
@@ -213,10 +213,10 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before, * boost::u
     mock_persistence_engine<> engine;
     
     // Add entries
-    raft::log_entry<> entry1{1, 1, {std::byte{0x01}}};
-    raft::log_entry<> entry2{1, 2, {std::byte{0x02}}};
-    raft::log_entry<> entry3{2, 3, {std::byte{0x03}}};
-    raft::log_entry<> entry4{2, 4, {std::byte{0x04}}};
+    kythira::log_entry<> entry1{1, 1, {std::byte{0x01}}};
+    kythira::log_entry<> entry2{1, 2, {std::byte{0x02}}};
+    kythira::log_entry<> entry3{2, 3, {std::byte{0x03}}};
+    kythira::log_entry<> entry4{2, 4, {std::byte{0x04}}};
     
     engine.append_log_entry(entry1);
     engine.append_log_entry(entry2);
@@ -242,8 +242,8 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, * boost::unit_te
     BOOST_TEST(!snapshot.has_value());
     
     // Create and save a snapshot
-    raft::cluster_configuration<> config{{1, 2, 3}, false, std::nullopt};
-    raft::snapshot<> snap{10, 5, config, {std::byte{0xAA}, std::byte{0xBB}}};
+    kythira::cluster_configuration<> config{{1, 2, 3}, false, std::nullopt};
+    kythira::snapshot<> snap{10, 5, config, {std::byte{0xAA}, std::byte{0xBB}}};
     
     engine.save_snapshot(snap);
     
@@ -257,15 +257,15 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, * boost::unit_te
 
 BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept, * boost::unit_test::timeout(30)) {
     // Test that memory_persistence_engine satisfies persistence_engine concept
-    using engine_t = raft::memory_persistence_engine<>;
+    using engine_t = kythira::memory_persistence_engine<>;
     using node_id_t = std::uint64_t;
     using term_id_t = std::uint64_t;
     using log_index_t = std::uint64_t;
-    using log_entry_t = raft::log_entry<term_id_t, log_index_t>;
-    using snapshot_t = raft::snapshot<node_id_t, term_id_t, log_index_t>;
+    using log_entry_t = kythira::log_entry<term_id_t, log_index_t>;
+    using snapshot_t = kythira::snapshot<node_id_t, term_id_t, log_index_t>;
     
     static_assert(
-        raft::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
+        kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
         "memory_persistence_engine should satisfy persistence_engine concept"
     );
 }

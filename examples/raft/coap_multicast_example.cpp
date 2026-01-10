@@ -183,7 +183,7 @@ auto test_multicast_message_delivery() -> bool {
         // Test multicast RequestVote structure
         std::cout << "  Testing multicast RequestVote...\n";
         // Note: In real implementation:
-        // raft::request_vote_request<> vote_req;
+        // kythira::request_vote_request<> vote_req;
         // vote_req._term = 5;
         // vote_req._candidate_id = 2;
         // vote_req._last_log_index = 10;
@@ -194,7 +194,7 @@ auto test_multicast_message_delivery() -> bool {
         // Test multicast AppendEntries structure
         std::cout << "  Testing multicast AppendEntries...\n";
         // Note: In real implementation:
-        // raft::append_entries_request<> append_req;
+        // kythira::append_entries_request<> append_req;
         // append_req._term = 5;
         // append_req._leader_id = 1;
         // append_req._prev_log_index = 9;
@@ -206,7 +206,7 @@ auto test_multicast_message_delivery() -> bool {
         // Test multicast InstallSnapshot structure
         std::cout << "  Testing multicast InstallSnapshot...\n";
         // Note: In real implementation:
-        // raft::install_snapshot_request<> snapshot_req;
+        // kythira::install_snapshot_request<> snapshot_req;
         // snapshot_req._term = 5;
         // snapshot_req._leader_id = 1;
         // snapshot_req._last_included_index = 100;

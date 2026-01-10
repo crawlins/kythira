@@ -30,7 +30,7 @@ namespace {
     constexpr std::chrono::milliseconds test_timeout{2000};
     
     // Test serializer for multicast testing
-    using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
+    using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 }
 
 /**
@@ -62,7 +62,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
             
             try {
                 // Create client configuration for multicast
-                raft::coap_client_config client_config;
+                kythira::coap_client_config client_config;
                 client_config.enable_dtls = false; // Multicast typically uses plain CoAP
                 client_config.ack_timeout = std::chrono::milliseconds{1000};
                 client_config.max_retransmit = 2; // Fewer retries for multicast
@@ -71,10 +71,10 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
                 std::unordered_map<std::uint64_t, std::string> endpoints;
                 endpoints[1] = std::format("coap://{}:{}", address, port);
                 
-                raft::noop_metrics metrics;
-                raft::console_logger logger;
+                kythira::noop_metrics metrics;
+                kythira::console_logger logger;
                 
-                raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
                     std::move(endpoints), client_config, metrics, std::move(logger));
                 
                 // Test multicast address validation
@@ -124,14 +124,14 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_t
     BOOST_TEST_MESSAGE("Property test: Multicast address validation");
     
     // Create client for testing address validation
-    raft::coap_client_config client_config;
+    kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = "coap://224.0.1.187:5683";
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
     
-    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), client_config, metrics, std::move(logger));
     
     // Test valid multicast addresses
@@ -176,10 +176,10 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
     BOOST_TEST_MESSAGE("Property test: Multicast server configuration");
     
     // Test various multicast server configurations
-    std::vector<raft::coap_server_config> configs;
+    std::vector<kythira::coap_server_config> configs;
     
     // Valid multicast configuration
-    raft::coap_server_config valid_config;
+    kythira::coap_server_config valid_config;
     valid_config.enable_multicast = true;
     valid_config.multicast_address = test_multicast_address;
     valid_config.multicast_port = test_multicast_port;
@@ -187,7 +187,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
     configs.push_back(valid_config);
     
     // Configuration with different multicast address
-    raft::coap_server_config alt_config;
+    kythira::coap_server_config alt_config;
     alt_config.enable_multicast = true;
     alt_config.multicast_address = "239.255.255.250";
     alt_config.multicast_port = 1900;
@@ -196,10 +196,10 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
     
     for (const auto& config : configs) {
         try {
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
             
-            raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+            kythira::coap_server<test_serializer, kythira::noop_metrics, kythira::console_logger> server(
                 "0.0.0.0", 5683, config, metrics, std::move(logger));
             
             // Test multicast address validation
@@ -227,14 +227,14 @@ BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, * boost::unit_test:
     BOOST_TEST_MESSAGE("Property test: Multicast error handling");
     
     // Create client for error testing
-    raft::coap_client_config client_config;
+    kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = "coap://224.0.1.187:5683";
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
     
-    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), client_config, metrics, std::move(logger));
     
     // Test error conditions

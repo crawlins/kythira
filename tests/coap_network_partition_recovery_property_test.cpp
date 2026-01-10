@@ -49,10 +49,10 @@ BOOST_AUTO_TEST_CASE(property_network_partition_recovery, * boost::unit_test::ti
                 {3, "coap://192.168.1.100:5683"} // Another potentially unreachable endpoint
             };
             
-            raft::coap_client_config config;
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::coap_client_config config;
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 client(endpoints, config, metrics, std::move(logger));
             
             // Test network partition detection for reachable endpoint
@@ -85,7 +85,7 @@ BOOST_AUTO_TEST_CASE(property_network_partition_recovery, * boost::unit_test::ti
                 bool result = client.attempt_network_recovery("invalid-endpoint");
                 // Invalid endpoint should return false (recovery failed)
                 BOOST_CHECK_EQUAL(result, false);
-            } catch (const raft::coap_network_error& e) {
+            } catch (const kythira::coap_network_error& e) {
                 BOOST_TEST_MESSAGE("Invalid endpoint rejected: " << e.what());
             }
             
@@ -94,7 +94,7 @@ BOOST_AUTO_TEST_CASE(property_network_partition_recovery, * boost::unit_test::ti
                 bool result = client.attempt_network_recovery("");
                 // Empty endpoint should return false (recovery failed)
                 BOOST_CHECK_EQUAL(result, false);
-            } catch (const raft::coap_network_error& e) {
+            } catch (const kythira::coap_network_error& e) {
                 BOOST_TEST_MESSAGE("Empty endpoint rejected: " << e.what());
             }
             
@@ -118,10 +118,10 @@ BOOST_AUTO_TEST_CASE(specific_network_partition_scenarios, * boost::unit_test::t
         {3, "coaps://secure.example.com:5684"}
     };
     
-    raft::coap_client_config config;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config config;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     // Test partition detection for various endpoint formats
@@ -157,10 +157,10 @@ BOOST_AUTO_TEST_CASE(concurrent_network_partition_detection, * boost::unit_test:
         {3, "coap://unreachable2.example.com:5683"}
     };
     
-    raft::coap_client_config config;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config config;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     // Test concurrent partition detection
@@ -202,10 +202,10 @@ BOOST_AUTO_TEST_CASE(network_partition_malformed_endpoints, * boost::unit_test::
         {1, "coap://127.0.0.1:5683"}
     };
     
-    raft::coap_client_config config;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config config;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     // Test malformed endpoints
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(network_partition_malformed_endpoints, * boost::unit_test::
                 BOOST_TEST_MESSAGE("Malformed endpoint handled without exception: " + endpoint);
             }
             
-        } catch (const raft::coap_network_error& e) {
+        } catch (const kythira::coap_network_error& e) {
             // Expected for malformed endpoints
             BOOST_TEST_MESSAGE("Malformed endpoint rejected: " << endpoint << " - " << e.what());
         } catch (const std::exception& e) {
@@ -251,10 +251,10 @@ BOOST_AUTO_TEST_CASE(network_partition_state_management, * boost::unit_test::tim
         {2, "coap://test.example.com:5683"}
     };
     
-    raft::coap_client_config config;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config config;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     std::string test_endpoint = "coap://test.example.com:5683";

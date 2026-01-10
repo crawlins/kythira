@@ -13,9 +13,9 @@ template<typename C, typename FutureType>
 concept network_client = requires(
     C client,
     std::uint64_t target,
-    const raft::request_vote_request<>& rvr,
-    const raft::append_entries_request<>& aer,
-    const raft::install_snapshot_request<>& isr,
+    const kythira::request_vote_request<>& rvr,
+    const kythira::append_entries_request<>& aer,
+    const kythira::install_snapshot_request<>& isr,
     std::chrono::milliseconds timeout
 ) {
     // Send RequestVote RPC - returns a generic future
@@ -36,9 +36,9 @@ concept network_client = requires(
 template<typename S, typename FutureType>
 concept network_server = requires(
     S server,
-    std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> rv_handler,
-    std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> ae_handler,
-    std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> is_handler
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> rv_handler,
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> ae_handler,
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> is_handler
 ) {
     // Register RPC handlers
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;

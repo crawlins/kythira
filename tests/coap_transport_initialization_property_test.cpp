@@ -10,8 +10,13 @@
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
 
-// Use the correct serializer type alias
-using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
+// Use the correct transport types for testing
+using test_transport_types = kythira::default_transport_types<
+    kythira::Future<kythira::request_vote_response<>>,
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    kythira::console_logger
+>;
 
 #include <unordered_map>
 #include <string>
@@ -38,7 +43,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
         try {
             // Test CoAP client initialization
             {
-                raft::coap_client_config client_config;
+                kythira::coap_client_config client_config;
                 client_config.ack_timeout = std::chrono::milliseconds{2000 + i * 100};
                 client_config.max_retransmit = 4 + (i % 3);
                 client_config.max_block_size = 1024 + (i * 256);
@@ -51,7 +56,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                     client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
                 }
                 
-                raft::noop_metrics metrics;
+                kythira::noop_metrics metrics;
                 
                 std::unordered_map<std::uint64_t, std::string> node_endpoints;
                 node_endpoints[test_node_id + i] = std::format("coap://127.0.0.1:{}", 5683 + i);
@@ -61,8 +66,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 // The actual CoAP functionality will be tested in implementation-specific tests
                 bool client_created = false;
                 try {
-                    raft::console_logger logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                    kythira::console_logger logger;
+                    kythira::coap_client<test_transport_types> client(
                         std::move(node_endpoints), client_config, metrics, std::move(logger));
                     client_created = true;
                 } catch (const std::exception& e) {
@@ -75,7 +80,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
             
             // Test CoAP server initialization
             {
-                raft::coap_server_config server_config;
+                kythira::coap_server_config server_config;
                 server_config.max_concurrent_sessions = 200 + (i * 20);
                 server_config.max_request_size = (64 + i) * 1024;
                 server_config.enable_dtls = (i % 2 == 1);
@@ -88,15 +93,15 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                     server_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
                 }
                 
-                raft::noop_metrics metrics;
+                kythira::noop_metrics metrics;
                 
                 std::uint16_t port = test_bind_port + static_cast<std::uint16_t>(i);
                 
                 // Verify server can be constructed with valid configuration
                 bool server_created = false;
                 try {
-                    raft::console_logger logger;
-                    raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+                    kythira::console_logger logger;
+                    kythira::coap_server<test_transport_types> server(
                         test_bind_address, port, server_config, metrics, std::move(logger));
                     server_created = true;
                 } catch (const std::exception& e) {
@@ -109,7 +114,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
             
             // Test configuration validation - verify different parameter combinations work
             {
-                raft::coap_client_config config;
+                kythira::coap_client_config config;
                 
                 // Test timeout configurations
                 config.ack_timeout = std::chrono::milliseconds{1000 + i * 500};
@@ -130,12 +135,12 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 std::unordered_map<std::uint64_t, std::string> endpoints;
                 endpoints[1] = test_coap_endpoint;
                 
-                raft::noop_metrics metrics;
+                kythira::noop_metrics metrics;
                 
                 bool config_client_created = false;
                 try {
-                    raft::console_logger logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                    kythira::console_logger logger;
+                    kythira::coap_client<test_transport_types> client(
                         std::move(endpoints), config, metrics, std::move(logger));
                     config_client_created = true;
                 } catch (const std::exception& e) {
@@ -155,7 +160,7 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
     // Test DTLS configuration variations
     for (std::size_t i = 0; i < 3; ++i) {
         try {
-            raft::coap_client_config dtls_config;
+            kythira::coap_client_config dtls_config;
             dtls_config.enable_dtls = true;
             
             switch (i) {
@@ -184,12 +189,12 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[1] = test_coaps_endpoint;
             
-            raft::noop_metrics metrics;
+            kythira::noop_metrics metrics;
             
             bool dtls_client_created = false;
             try {
-                raft::console_logger logger;
-                raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                kythira::console_logger logger;
+                kythira::coap_client<test_transport_types> client(
                     std::move(endpoints), dtls_config, metrics, std::move(logger));
                 dtls_client_created = true;
             } catch (const std::exception& e) {
@@ -207,17 +212,17 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
     
     // Test multicast configuration
     try {
-        raft::coap_server_config multicast_config;
+        kythira::coap_server_config multicast_config;
         multicast_config.enable_multicast = true;
         multicast_config.multicast_address = "224.0.1.187";
         multicast_config.multicast_port = 5683;
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         bool multicast_server_created = false;
         try {
-            raft::console_logger logger;
-            raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+            kythira::console_logger logger;
+            kythira::coap_server<test_transport_types> server(
                 test_bind_address, test_bind_port, multicast_config, metrics, std::move(logger));
             multicast_server_created = true;
         } catch (const std::exception& e) {
@@ -238,17 +243,16 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
 // Test that the CoAP transport classes satisfy the required concepts
 BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(15)) {
     // Verify that coap_client satisfies network_client concept
-    using future_type = kythira::Future<raft::request_vote_response<>>;
-    static_assert(kythira::network_client<kythira::coap_client<future_type, test_serializer, raft::noop_metrics, raft::console_logger>, future_type>);
+    static_assert(kythira::network_client<kythira::coap_client<test_transport_types>, typename test_transport_types::future_type>);
     
     // Verify that coap_server satisfies network_server concept
-    static_assert(kythira::network_server<kythira::coap_server<future_type, test_serializer, raft::noop_metrics, raft::console_logger>>);
+    static_assert(kythira::network_server<kythira::coap_server<test_transport_types>, typename test_transport_types::future_type>);
     
     // Verify that json_serializer satisfies rpc_serializer concept
-    static_assert(raft::rpc_serializer<test_serializer, std::vector<std::byte>>);
+    static_assert(kythira::rpc_serializer<typename test_transport_types::rpc_serializer_type, std::vector<std::byte>>);
     
     // Verify that noop_metrics satisfies metrics concept
-    static_assert(raft::metrics<raft::noop_metrics>);
+    static_assert(kythira::metrics<typename test_transport_types::metrics_type>);
     
     BOOST_TEST(true); // Test passes if static_asserts compile
     BOOST_TEST_MESSAGE("All concept satisfaction tests passed");
@@ -258,16 +262,16 @@ BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(15))
 BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
     // Test that all CoAP exception types can be constructed and thrown
     try {
-        throw raft::coap_transport_error("Base transport error");
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_transport_error("Base transport error");
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_TEST(std::string(e.what()) == "Base transport error");
     } catch (...) {
         BOOST_TEST(false, "Wrong exception type caught");
     }
     
     try {
-        throw raft::coap_client_error(0x80, "Client error"); // 4.00 Bad Request
-    } catch (const raft::coap_client_error& e) {
+        throw kythira::coap_client_error(0x80, "Client error"); // 4.00 Bad Request
+    } catch (const kythira::coap_client_error& e) {
         BOOST_TEST(e.response_code() == 0x80);
         BOOST_TEST(std::string(e.what()) == "Client error");
     } catch (...) {
@@ -275,8 +279,8 @@ BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
     }
     
     try {
-        throw raft::coap_server_error(0xA0, "Server error"); // 5.00 Internal Server Error
-    } catch (const raft::coap_server_error& e) {
+        throw kythira::coap_server_error(0xA0, "Server error"); // 5.00 Internal Server Error
+    } catch (const kythira::coap_server_error& e) {
         BOOST_TEST(e.response_code() == 0xA0);
         BOOST_TEST(std::string(e.what()) == "Server error");
     } catch (...) {
@@ -284,32 +288,32 @@ BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
     }
     
     try {
-        throw raft::coap_timeout_error("Timeout occurred");
-    } catch (const raft::coap_timeout_error& e) {
+        throw kythira::coap_timeout_error("Timeout occurred");
+    } catch (const kythira::coap_timeout_error& e) {
         BOOST_TEST(std::string(e.what()) == "Timeout occurred");
     } catch (...) {
         BOOST_TEST(false, "Wrong exception type caught");
     }
     
     try {
-        throw raft::coap_security_error("DTLS handshake failed");
-    } catch (const raft::coap_security_error& e) {
+        throw kythira::coap_security_error("DTLS handshake failed");
+    } catch (const kythira::coap_security_error& e) {
         BOOST_TEST(std::string(e.what()) == "DTLS handshake failed");
     } catch (...) {
         BOOST_TEST(false, "Wrong exception type caught");
     }
     
     try {
-        throw raft::coap_protocol_error("Invalid CoAP message");
-    } catch (const raft::coap_protocol_error& e) {
+        throw kythira::coap_protocol_error("Invalid CoAP message");
+    } catch (const kythira::coap_protocol_error& e) {
         BOOST_TEST(std::string(e.what()) == "Invalid CoAP message");
     } catch (...) {
         BOOST_TEST(false, "Wrong exception type caught");
     }
     
     try {
-        throw raft::coap_network_error("Network unreachable");
-    } catch (const raft::coap_network_error& e) {
+        throw kythira::coap_network_error("Network unreachable");
+    } catch (const kythira::coap_network_error& e) {
         BOOST_TEST(std::string(e.what()) == "Network unreachable");
     } catch (...) {
         BOOST_TEST(false, "Wrong exception type caught");

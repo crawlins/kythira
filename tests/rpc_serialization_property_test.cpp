@@ -59,15 +59,15 @@ auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
 }
 
 // Helper to generate random log entries
-auto generate_random_log_entries(std::mt19937& rng) -> std::vector<raft::log_entry<>> {
+auto generate_random_log_entries(std::mt19937& rng) -> std::vector<kythira::log_entry<>> {
     std::uniform_int_distribution<std::size_t> count_dist(0, max_entries);
     std::size_t count = count_dist(rng);
     
-    std::vector<raft::log_entry<>> entries;
+    std::vector<kythira::log_entry<>> entries;
     entries.reserve(count);
     
     for (std::size_t i = 0; i < count; ++i) {
-        raft::log_entry<> entry;
+        kythira::log_entry<> entry;
         entry._term = generate_random_term(rng);
         entry._index = generate_random_log_index(rng);
         entry._command = generate_random_command(rng);
@@ -94,7 +94,7 @@ auto generate_random_snapshot_data(std::mt19937& rng) -> std::vector<std::byte> 
 }
 
 // Helper to compare log entries
-auto log_entries_equal(const raft::log_entry<>& a, const raft::log_entry<>& b) -> bool {
+auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>& b) -> bool {
     return a.term() == b.term() && 
            a.index() == b.index() && 
            a.command() == b.command();
@@ -109,13 +109,13 @@ auto log_entries_equal(const raft::log_entry<>& a, const raft::log_entry<>& b) -
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random RequestVote request
-        raft::request_vote_request<> original;
+        kythira::request_vote_request<> original;
         original._term = generate_random_term(rng);
         original._candidate_id = generate_random_node_id(rng);
         original._last_log_index = generate_random_log_index(rng);
@@ -154,14 +154,14 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_tes
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random RequestVote response
-        raft::request_vote_response<> original;
+        kythira::request_vote_response<> original;
         original._term = generate_random_term(rng);
         original._vote_granted = bool_dist(rng) == 1;
         
@@ -196,13 +196,13 @@ BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_te
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random AppendEntries request
-        raft::append_entries_request<> original;
+        kythira::append_entries_request<> original;
         original._term = generate_random_term(rng);
         original._leader_id = generate_random_node_id(rng);
         original._prev_log_index = generate_random_log_index(rng);
@@ -257,14 +257,14 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random AppendEntries response
-        raft::append_entries_response<> original;
+        kythira::append_entries_response<> original;
         original._term = generate_random_term(rng);
         original._success = bool_dist(rng) == 1;
         
@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -317,7 +317,7 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random InstallSnapshot request
-        raft::install_snapshot_request<> original;
+        kythira::install_snapshot_request<> original;
         original._term = generate_random_term(rng);
         original._leader_id = generate_random_node_id(rng);
         original._last_included_index = generate_random_log_index(rng);
@@ -362,13 +362,13 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random InstallSnapshot response
-        raft::install_snapshot_response<> original;
+        kythira::install_snapshot_response<> original;
         original._term = generate_random_term(rng);
         
         try {
@@ -401,13 +401,13 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::uni
  */
 BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t failures = 0;
     
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Test RequestVote with string node IDs
-        raft::request_vote_request<std::string> rv_original;
+        kythira::request_vote_request<std::string> rv_original;
         rv_original._term = generate_random_term(rng);
         rv_original._candidate_id = generate_random_string_node_id(rng);
         rv_original._last_log_index = generate_random_log_index(rng);

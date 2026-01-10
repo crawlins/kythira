@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_retransmission, * boost::unit_
             std::size_t max_attempts = attempts_dist(rng);
             
             // Create client configuration with exponential backoff
-            raft::coap_client_config config;
+            kythira::coap_client_config config;
             config.use_confirmable_messages = true;
             config.retransmission_timeout = base_timeout;
             config.exponential_backoff_factor = backoff_factor;
@@ -64,9 +64,9 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_retransmission, * boost::unit_
             endpoints[target_node] = "coap://127.0.0.1:5683";
             
             // Create client
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 client(std::move(endpoints), config, metrics, std::move(logger));
             
             // Test exponential backoff calculation
@@ -119,15 +119,15 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_retransmission, * boost::unit_
             // Test edge cases
             {
                 // Test with backoff factor of 1.0 (no exponential growth)
-                raft::coap_client_config no_backoff_config;
+                kythira::coap_client_config no_backoff_config;
                 no_backoff_config.retransmission_timeout = base_timeout;
                 no_backoff_config.exponential_backoff_factor = 1.0;
                 
                 std::unordered_map<std::uint64_t, std::string> no_backoff_endpoints;
                 no_backoff_endpoints[1] = "coap://127.0.0.1:5683";
                 
-                raft::console_logger no_backoff_logger;
-                raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+                kythira::console_logger no_backoff_logger;
+                kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                     no_backoff_client(std::move(no_backoff_endpoints), no_backoff_config, metrics, std::move(no_backoff_logger));
                 
                 // All timeouts should be the same with backoff factor 1.0

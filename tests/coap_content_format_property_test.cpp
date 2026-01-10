@@ -44,7 +44,7 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
     
     // Simplified test - create client once and test basic functionality
     try {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.ack_timeout = std::chrono::milliseconds{2000};
         config.max_retransmit = 4;
         config.enable_dtls = false;
@@ -52,13 +52,13 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = test_coap_endpoint;
         
-        raft::noop_metrics metrics;
-        raft::console_logger logger;
-        raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+        kythira::noop_metrics metrics;
+        kythira::console_logger logger;
+        kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
             std::move(endpoints), config, metrics, std::move(logger));
         
         // Test RequestVote with JSON serializer
-        raft::request_vote_request<> request;
+        kythira::request_vote_request<> request;
         request._term = 1;
         request._candidate_id = 1;
         request._last_log_index = 0;
@@ -91,10 +91,10 @@ BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, * boost::unit_test:
     // - Custom serializers use appropriate Content-Format values
     
     // For the stub implementation, we verify the JSON serializer interface
-    raft::json_rpc_serializer<std::vector<std::byte>> json_serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> json_serializer;
     
     // Test that JSON serializer can serialize/deserialize messages
-    raft::request_vote_request<> original_request;
+    kythira::request_vote_request<> original_request;
     original_request._term = 42;
     original_request._candidate_id = 1;
     original_request._last_log_index = 10;
@@ -119,20 +119,20 @@ BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, * boost::unit_test:
 
 // Test that Content-Format option is set for both requests and responses
 BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::timeout(30)) {
-    raft::coap_client_config client_config;
+    kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
-    raft::noop_metrics client_metrics;
-    raft::console_logger client_logger;
+    kythira::noop_metrics client_metrics;
+    kythira::console_logger client_logger;
     
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), client_config, client_metrics, std::move(client_logger));
     
-    raft::coap_server_config server_config;
-    raft::noop_metrics server_metrics;
-    raft::console_logger server_logger;
+    kythira::coap_server_config server_config;
+    kythira::noop_metrics server_metrics;
+    kythira::console_logger server_logger;
     
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> server(
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> server(
         "127.0.0.1", 5683, server_config, server_metrics, std::move(server_logger));
     
     // Test that both client and server can be created with the same serializer
@@ -144,7 +144,7 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
     // 5. Both use the same Content-Format value for the same serializer
     
     // For the stub implementation, verify the interfaces exist
-    raft::request_vote_request<> request;
+    kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 1;
     request._last_log_index = 0;
@@ -157,8 +157,8 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
     // Don't call future.get() as it might hang in the stub implementation
     
     // Register a handler on the server
-    server.register_request_vote_handler([](const raft::request_vote_request<>& req) -> raft::request_vote_response<> {
-        raft::request_vote_response<> response;
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+        kythira::request_vote_response<> response;
         response._term = req.term();
         response._vote_granted = true;
         return response;
@@ -169,13 +169,13 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
 
 // Test that Accept option is set correctly for expected response format
 BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30)) {
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
     
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
     // Test different RPC types to ensure Accept option is set consistently
@@ -184,7 +184,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
     for (const auto& rpc_type : rpc_types) {
         try {
             if (rpc_type == "RequestVote") {
-                raft::request_vote_request<> request;
+                kythira::request_vote_request<> request;
                 request._term = 1;
                 request._candidate_id = 1;
                 request._last_log_index = 0;
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
                 BOOST_TEST(future.valid());
                 
             } else if (rpc_type == "AppendEntries") {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = 1;
                 request._leader_id = 1;
                 request._prev_log_index = 0;
@@ -208,7 +208,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
                 // Don't call future.get() as it might hang in the stub implementation
                 
             } else if (rpc_type == "InstallSnapshot") {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = 1;
                 request._leader_id = 1;
                 request._last_included_index = 0;

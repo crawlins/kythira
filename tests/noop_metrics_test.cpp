@@ -3,12 +3,12 @@
 #include <chrono>
 
 // Test that noop_metrics satisfies the metrics concept
-static_assert(raft::metrics<raft::noop_metrics>, 
+static_assert(kythira::metrics<kythira::noop_metrics>, 
     "noop_metrics must satisfy metrics concept");
 
 int main() {
     // Create a noop_metrics instance
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
     // Test all operations - they should all be no-ops
     metrics.set_metric_name("test_metric");

@@ -244,7 +244,10 @@ public:
     explicit Try(folly::exception_wrapper ex) : _folly_try(std::move(ex)) {}
     explicit Try(std::exception_ptr ex) : _folly_try(detail::to_folly_exception_wrapper(ex)) {}
     
-    // No value() method for void specialization
+    // Value access for void (throws if contains exception)
+    auto value() const -> void {
+        _folly_try.value(); // This will throw if there's an exception
+    }
     
     // Access exception
     auto exception() const -> std::exception_ptr {
@@ -517,17 +520,46 @@ public:
         }
     }
     
+    // Chain continuation with Try (concept compliance)
+    template<typename F>
+    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<T>>> requires(!std::is_void_v<T>) {
+        using ReturnType = std::invoke_result_t<F, Try<T>>;
+        if constexpr (std::is_void_v<ReturnType>) {
+            return Future<void>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
+                Try<T> kythira_try(std::move(folly_try));
+                func(std::move(kythira_try));
+                return folly::Unit{};
+            }));
+        } else {
+            return Future<ReturnType>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
+                Try<T> kythira_try(std::move(folly_try));
+                return func(std::move(kythira_try));
+            }));
+        }
+    }
+    
     // Error handling (concept compliance)
     template<typename F>
     auto thenError(F&& func) -> Future<T> {
-        return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
-            if constexpr (std::is_void_v<T>) {
-                func(detail::to_std_exception_ptr(ex));
-                return folly::Unit{};
-            } else {
-                return func(detail::to_std_exception_ptr(ex));
-            }
-        }));
+        if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+                if constexpr (std::is_void_v<T>) {
+                    func(ex);
+                    return folly::Unit{};
+                } else {
+                    return func(ex);
+                }
+            }));
+        } else {
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+                if constexpr (std::is_void_v<T>) {
+                    func(detail::to_std_exception_ptr(ex));
+                    return folly::Unit{};
+                } else {
+                    return func(detail::to_std_exception_ptr(ex));
+                }
+            }));
+        }
     }
     
     // Ensure (cleanup functionality)
@@ -548,6 +580,9 @@ public:
     auto via(folly::Executor& executor) -> Future<T> {
         return Future<T>(std::move(_folly_future).via(&executor));
     }
+    
+    // Via with KeepAlive (concept compliance) - implemented after KeepAlive definition
+    auto via(const KeepAlive& keep_alive) -> Future<T>;
     
     auto delay(std::chrono::milliseconds duration) -> Future<T> {
         return Future<T>(std::move(_folly_future).delayed(duration));
@@ -626,13 +661,38 @@ public:
         }
     }
     
+    // Chain continuation with Try (concept compliance)
+    template<typename F>
+    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<void>>> {
+        using ReturnType = std::invoke_result_t<F, Try<void>>;
+        if constexpr (std::is_void_v<ReturnType>) {
+            return Future<void>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) {
+                Try<void> kythira_try(std::move(folly_try));
+                func(std::move(kythira_try));
+                return folly::Unit{};
+            }));
+        } else {
+            return Future<ReturnType>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) {
+                Try<void> kythira_try(std::move(folly_try));
+                return func(std::move(kythira_try));
+            }));
+        }
+    }
+    
     // Error handling (concept compliance)
     template<typename F>
     auto thenError(F&& func) -> Future<void> {
-        return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
-            func(detail::to_std_exception_ptr(ex));
-            return folly::Unit{};
-        }));
+        if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+                func(ex);
+                return folly::Unit{};
+            }));
+        } else {
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+                func(detail::to_std_exception_ptr(ex));
+                return folly::Unit{};
+            }));
+        }
     }
     
     // Ensure (cleanup functionality)
@@ -653,6 +713,9 @@ public:
     auto via(folly::Executor& executor) -> Future<void> {
         return Future<void>(std::move(_folly_future).via(&executor));
     }
+    
+    // Via with KeepAlive (concept compliance) - implemented after KeepAlive definition
+    auto via(const KeepAlive& keep_alive) -> Future<void>;
     
     auto delay(std::chrono::milliseconds duration) -> Future<void> {
         return Future<void>(std::move(_folly_future).delayed(duration));
@@ -819,6 +882,17 @@ inline auto Executor::get_keep_alive() -> KeepAlive {
         throw std::runtime_error("Executor is invalid");
     }
     return KeepAlive(_executor);
+}
+
+// Implementation of Future methods that depend on KeepAlive
+template<typename T>
+inline auto Future<T>::via(const KeepAlive& keep_alive) -> Future<T> {
+    return Future<T>(std::move(_folly_future).via(keep_alive.get()));
+}
+
+// Implementation for void specialization
+inline auto Future<void>::via(const KeepAlive& keep_alive) -> Future<void> {
+    return Future<void>(std::move(_folly_future).via(keep_alive.get()));
 }
 
 //=============================================================================
@@ -1051,6 +1125,66 @@ public:
             });
         
         return Future<std::vector<std::tuple<std::size_t, Try<T>>>>(std::move(result_future));
+    }
+    
+    // Collect all futures with timeout (concept compliance)
+    template<typename T>
+    static auto collectAllWithTimeout(std::vector<Future<T>> futures, std::chrono::milliseconds timeout) -> Future<std::vector<Try<T>>> {
+        // Convert our Future wrappers to folly::Future and apply timeout
+        std::vector<folly::Future<detail::void_to_unit_t<T>>> folly_futures;
+        folly_futures.reserve(futures.size());
+        for (auto& fut : futures) {
+            folly_futures.push_back(std::move(fut).get_folly_future().within(timeout));
+        }
+        
+        // Use folly::collectAll
+        auto result_future = folly::collectAll(folly_futures.begin(), folly_futures.end())
+            .toUnsafeFuture()
+            .thenValue([](std::vector<folly::Try<detail::void_to_unit_t<T>>> results) {
+                std::vector<Try<T>> wrapped_results;
+                wrapped_results.reserve(results.size());
+                for (auto& result : results) {
+                    if constexpr (std::is_void_v<T>) {
+                        wrapped_results.push_back(Try<void>(std::move(result)));
+                    } else {
+                        wrapped_results.push_back(Try<T>(std::move(result)));
+                    }
+                }
+                return wrapped_results;
+            });
+        
+        return Future<std::vector<Try<T>>>(std::move(result_future));
+    }
+    
+    // Collect any future with timeout (concept compliance)
+    template<typename T>
+    static auto collectAnyWithTimeout(std::vector<Future<T>> futures, std::chrono::milliseconds timeout) -> Future<std::tuple<std::size_t, Try<T>>> {
+        // Handle empty vector case
+        if (futures.empty()) {
+            return FutureFactory::makeExceptionalFuture<std::tuple<std::size_t, Try<T>>>(
+                folly::exception_wrapper(std::invalid_argument("collectAnyWithTimeout requires at least one future"))
+            );
+        }
+        
+        // Convert our Future wrappers to folly::Future and apply timeout
+        std::vector<folly::Future<detail::void_to_unit_t<T>>> folly_futures;
+        folly_futures.reserve(futures.size());
+        for (auto& fut : futures) {
+            folly_futures.push_back(std::move(fut).get_folly_future().within(timeout));
+        }
+        
+        // Use folly::collectAny
+        auto result_future = folly::collectAny(folly_futures.begin(), folly_futures.end())
+            .toUnsafeFuture()
+            .thenValue([](std::pair<std::size_t, folly::Try<detail::void_to_unit_t<T>>> result) {
+                if constexpr (std::is_void_v<T>) {
+                    return std::make_tuple(result.first, Try<void>(std::move(result.second)));
+                } else {
+                    return std::make_tuple(result.first, Try<T>(std::move(result.second)));
+                }
+            });
+        
+        return Future<std::tuple<std::size_t, Try<T>>>(std::move(result_future));
     }
 };
 

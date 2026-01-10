@@ -31,7 +31,7 @@ namespace {
 class test_logger {
 public:
     struct log_entry {
-        raft::log_level level;
+        kythira::log_level level;
         std::string message;
         std::vector<std::pair<std::string, std::string>> key_value_pairs;
     };
@@ -57,13 +57,13 @@ public:
     test_logger(const test_logger&) = delete;
     test_logger& operator=(const test_logger&) = delete;
     
-    auto log(raft::log_level level, std::string_view message) -> void {
+    auto log(kythira::log_level level, std::string_view message) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _entries.emplace_back(log_entry{level, std::string{message}, {}});
     }
     
     auto log(
-        raft::log_level level,
+        kythira::log_level level,
         std::string_view message,
         const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs
     ) -> void {
@@ -76,30 +76,30 @@ public:
     }
     
     // Convenience methods for each log level
-    auto trace(std::string_view message) -> void { log(raft::log_level::trace, message); }
-    auto debug(std::string_view message) -> void { log(raft::log_level::debug, message); }
-    auto info(std::string_view message) -> void { log(raft::log_level::info, message); }
-    auto warning(std::string_view message) -> void { log(raft::log_level::warning, message); }
-    auto error(std::string_view message) -> void { log(raft::log_level::error, message); }
-    auto critical(std::string_view message) -> void { log(raft::log_level::critical, message); }
+    auto trace(std::string_view message) -> void { log(kythira::log_level::trace, message); }
+    auto debug(std::string_view message) -> void { log(kythira::log_level::debug, message); }
+    auto info(std::string_view message) -> void { log(kythira::log_level::info, message); }
+    auto warning(std::string_view message) -> void { log(kythira::log_level::warning, message); }
+    auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
+    auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
     
     auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::trace, message, key_value_pairs);
+        log(kythira::log_level::trace, message, key_value_pairs);
     }
     auto debug(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::debug, message, key_value_pairs);
+        log(kythira::log_level::debug, message, key_value_pairs);
     }
     auto info(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::info, message, key_value_pairs);
+        log(kythira::log_level::info, message, key_value_pairs);
     }
     auto warning(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::warning, message, key_value_pairs);
+        log(kythira::log_level::warning, message, key_value_pairs);
     }
     auto error(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::error, message, key_value_pairs);
+        log(kythira::log_level::error, message, key_value_pairs);
     }
     auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
-        log(raft::log_level::critical, message, key_value_pairs);
+        log(kythira::log_level::critical, message, key_value_pairs);
     }
     
     [[nodiscard]] auto get_entries() const -> std::vector<log_entry> {
@@ -120,7 +120,7 @@ public:
             });
     }
     
-    [[nodiscard]] auto has_log_with_level(raft::log_level level) const -> bool {
+    [[nodiscard]] auto has_log_with_level(kythira::log_level level) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         return std::any_of(_entries.begin(), _entries.end(),
             [level](const log_entry& entry) {
@@ -145,7 +145,7 @@ private:
 };
 
 // Verify that test_logger satisfies the diagnostic_logger concept
-static_assert(raft::diagnostic_logger<test_logger>,
+static_assert(kythira::diagnostic_logger<test_logger>,
     "test_logger must satisfy diagnostic_logger concept");
 
 BOOST_AUTO_TEST_SUITE(coap_event_logging_property_tests)
@@ -175,10 +175,10 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
             auto max_block_size = block_size_dist(rng);
             
             auto logger = test_logger{};
-            auto metrics = raft::noop_metrics{};
+            auto metrics = kythira::noop_metrics{};
             
             // Create client configuration
-            auto config = raft::coap_client_config{};
+            auto config = kythira::coap_client_config{};
             config.enable_dtls = enable_dtls;
             config.enable_block_transfer = enable_block_transfer;
             config.max_block_size = max_block_size;
@@ -191,9 +191,9 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
             // The fact that this compiles and runs successfully demonstrates that
             // the logging infrastructure is properly integrated
             {
-                auto client = raft::coap_client<
-                    raft::json_rpc_serializer<std::vector<std::byte>>,
-                    raft::noop_metrics,
+                auto client = kythira::coap_client<
+                    kythira::json_rpc_serializer<std::vector<std::byte>>,
+                    kythira::noop_metrics,
                     test_logger
                 >{
                     std::move(endpoints),
@@ -243,17 +243,17 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::tim
             auto max_concurrent_sessions = sessions_dist(rng);
             
             auto logger = test_logger{};
-            auto metrics = raft::noop_metrics{};
+            auto metrics = kythira::noop_metrics{};
             
             // Create server configuration
-            auto config = raft::coap_server_config{};
+            auto config = kythira::coap_server_config{};
             config.enable_dtls = enable_dtls;
             config.max_concurrent_sessions = max_concurrent_sessions;
             
             // Create CoAP server - this should generate initialization logs
-            auto server = raft::coap_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
-                raft::noop_metrics,
+            auto server = kythira::coap_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
+                kythira::noop_metrics,
                 test_logger
             >{
                 test_bind_address,
@@ -309,17 +309,17 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
             auto timeout_ms = timeout_dist(rng);
             
             auto logger = test_logger{};
-            auto metrics = raft::noop_metrics{};
-            auto config = raft::coap_client_config{};
+            auto metrics = kythira::noop_metrics{};
+            auto config = kythira::coap_client_config{};
             
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[test_node_id] = test_endpoint;
             
             // Create CoAP client
-            auto client = raft::coap_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
-                raft::noop_metrics,
+            auto client = kythira::coap_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
+                kythira::noop_metrics,
                 test_logger
             >{
                 std::move(endpoints),
@@ -329,7 +329,7 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
             };
             
             // Create a RequestVote request
-            auto request = raft::request_vote_request<>{};
+            auto request = kythira::request_vote_request<>{};
             request._term = term;
             request._candidate_id = candidate_id;
             request._last_log_index = 0;
@@ -383,17 +383,17 @@ BOOST_AUTO_TEST_CASE(test_coap_error_logging, * boost::unit_test::timeout(30)) {
     for (const auto& endpoint : test_endpoints) {
         try {
             auto logger = test_logger{};
-            auto metrics = raft::noop_metrics{};
-            auto config = raft::coap_client_config{};
+            auto metrics = kythira::noop_metrics{};
+            auto config = kythira::coap_client_config{};
             
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[test_node_id] = endpoint;
             
             // Create CoAP client - this tests that logging infrastructure can handle various endpoints
-            auto client = raft::coap_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
-                raft::noop_metrics,
+            auto client = kythira::coap_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
+                kythira::noop_metrics,
                 test_logger
             >{
                 std::move(endpoints),

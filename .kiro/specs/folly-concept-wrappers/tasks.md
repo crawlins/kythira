@@ -1,206 +1,235 @@
 # Implementation Plan
 
-- [x] 1. Implement core type conversion utilities
+- [x] 1. Fix compilation issues in existing concepts
+  - Fix std::as_const syntax error by using proper const reference access
+  - Fix destructor concept syntax by removing invalid destructor requirements
+  - Fix template parameter constraint syntax issues
+  - Ensure all concepts compile without errors
+  - _Requirements: 1.1, 1.2, 1.3, 1.4_
+
+- [x] 1.1 Write property test for concept compilation and constraint validation
+  - **Property 1: Concept Compilation and Constraint Validation**
+  - **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5**
+
+- [x] 2. Enhance try_type concept to match folly::Try interface
+  - Update try_type concept to use hasValue() and hasException() methods (folly naming)
+  - Fix const correctness for value() method access
+  - Add proper exception access method requirements
+  - Remove std::as_const usage and use proper const reference parameters
+  - _Requirements: 9.1, 9.2, 9.3, 9.4_
+
+- [x] 3. Enhance semi_promise concept to match folly::SemiPromise interface
+  - Update semi_promise concept to handle void specialization properly
+  - Add proper setValue method requirements for both void and non-void types
+  - Add setException method requirements with folly::exception_wrapper support
+  - Add isFulfilled method requirements
+  - _Requirements: 2.1, 2.2, 2.3_
+
+- [x] 4. Enhance promise concept to match folly::Promise interface
+  - Ensure promise concept extends semi_promise concept properly
+  - Add getFuture method requirements
+  - Add getSemiFuture method requirements
+  - Ensure type consistency between promise and returned future types
+  - _Requirements: 3.1, 3.2, 3.3, 3.4_
+
+- [x] 5. Enhance executor concept to match folly::Executor interface
+  - Update executor concept to require add method for function execution
+  - Add getKeepAliveToken method requirements
+  - Remove invalid destructor requirements
+  - Make priority support optional (not all executors support priorities)
+  - _Requirements: 4.1, 4.3_
+
+- [x] 6. Enhance keep_alive concept to match folly::Executor::KeepAlive interface
+  - Update keep_alive concept to require add method delegation
+  - Add get method requirements for executor access
+  - Add copy and move construction requirements
+  - Ensure proper template parameter handling
+  - _Requirements: 5.1, 5.2, 5.3_
+
+- [x] 7. Enhance future concept to match folly::Future interface
+  - Update future concept to require get method (with move semantics)
+  - Add isReady method requirements
+  - Add wait method requirements with timeout support
+  - Add thenValue and thenTry method requirements for continuation chaining
+  - Add thenError method requirements for error handling
+  - Add via method requirements for executor attachment
+  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
+
+- [x] 8. Add concepts for global future factory and collection functions
+  - Create future_factory concept for makeFuture and makeExceptionalFuture functions
+  - Create future_collector concept for collectAll, collectAny, collectAnyWithoutException, and collectN
+  - Add requirements for creating futures from values and exceptions
+  - Add requirements for collection function signatures
+  - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6_
+
+- [x] 9. Add concepts for future continuation operations
+  - Create future_continuation concept for via, delay, and within methods
+  - Add requirements for executor-aware continuation operations
+  - Ensure proper executor attachment semantics
+  - _Requirements: 8.1, 8.2, 8.3_
+
+- [x] 9.1 Write property test for enhanced concept interface requirements
+  - **Property 2: Enhanced Concept Interface Requirements**
+  - **Validates: Requirements 2.1, 2.2, 2.3, 3.1, 3.2, 3.3, 4.1, 4.3, 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 6.4, 6.5, 9.1, 9.2, 9.3, 9.4**
+
+- [x] 10. Validate enhanced concepts with actual Folly types
+  - Add static assertions for folly::SemiPromise concept compliance
+  - Add static assertions for folly::Promise concept compliance
+  - Add static assertions for folly::Executor concept compliance
+  - Add static assertions for folly::Future concept compliance
+  - Add static assertions for kythira::Future concept compliance
+  - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+
+- [x] 10.1 Write property test for Folly type concept compliance
+  - **Property 3: Folly Type Concept Compliance**
+  - **Validates: Requirements 10.1, 10.2, 10.3, 10.4, 10.5**
+
+- [x] 11. Implement core type conversion utilities
   - Create exception conversion functions between folly::exception_wrapper and std::exception_ptr
   - Implement void/Unit type mapping utilities and template specializations
   - Add move semantics optimization helpers for type conversions
   - Create utility functions for safe type casting and validation
-  - _Requirements: 8.1, 8.2, 8.5_
+  - _Requirements: 18.1, 18.2, 18.5_
 
-- [x] 1.1 Write property test for exception conversion fidelity
-  - **Property 8: Exception and Type Conversion**
-  - **Validates: Requirements 8.1**
+- [x] 11.1 Write property test for exception and type conversion
+  - **Property 11: Exception and Type Conversion**
+  - **Validates: Requirements 18.1, 18.2, 18.3, 18.5**
 
-- [x] 1.2 Write property test for void/Unit semantic equivalence
-  - **Property 8: Exception and Type Conversion**
-  - **Validates: Requirements 8.2**
-
-- [x] 1.3 Write property test for move semantics optimization
-  - **Property 8: Exception and Type Conversion**
-  - **Validates: Requirements 8.5**
-
-- [x] 2. Implement SemiPromise wrapper class
+- [x] 12. Implement SemiPromise wrapper class
   - Create SemiPromise<T> class template that wraps folly::Promise<T>
   - Implement setValue() method with proper void/Unit handling
   - Implement setException() method with exception type conversion
   - Add isFulfilled() method for state checking
   - Ensure proper move semantics and resource management
-  - _Requirements: 1.2, 1.3, 1.4_
+  - _Requirements: 11.2, 11.3, 11.4_
 
-- [x] 2.1 Write property test for SemiPromise concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 1.2**
-
-- [x] 2.2 Write property test for SemiPromise value and exception handling
-  - **Property 2: Promise Value and Exception Handling**
-  - **Validates: Requirements 1.3, 1.4**
-
-- [x] 3. Implement Promise wrapper class
+- [x] 13. Implement Promise wrapper class
   - Create Promise<T> class template extending SemiPromise functionality
   - Implement getFuture() method returning wrapped Future<T>
   - Implement getSemiFuture() method for semi-future access
   - Ensure proper promise-future relationship and lifecycle management
   - Add constructors and proper resource cleanup
-  - _Requirements: 1.1, 1.5_
+  - _Requirements: 11.1, 11.5_
 
-- [x] 3.1 Write property test for Promise concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 1.1**
+- [x] 13.1 Write property test for wrapper concept compliance and promise handling
+  - **Property 4: Wrapper Concept Compliance and Generic Compatibility**
+  - **Property 5: Promise Value and Exception Handling**
+  - **Validates: Requirements 11.1, 11.2, 11.3, 11.4, 11.5**
 
-- [x] 3.2 Write property test for Promise future retrieval
-  - **Property 2: Promise Value and Exception Handling**
-  - **Validates: Requirements 1.5**
-
-- [x] 4. Implement Executor wrapper class
+- [x] 14. Implement Executor wrapper class
   - Create Executor class that wraps folly::Executor pointer
   - Implement add() method for work submission with proper forwarding
   - Add constructor taking folly::Executor pointer
   - Ensure proper lifetime management and null pointer handling
   - Implement proper copy/move semantics
-  - _Requirements: 2.1, 2.3_
+  - _Requirements: 12.1, 12.3_
 
-- [x] 4.1 Write property test for Executor concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 2.1**
-
-- [x] 4.2 Write property test for Executor work submission
-  - **Property 3: Executor Work Submission**
-  - **Validates: Requirements 2.3**
-
-- [x] 5. Implement KeepAlive wrapper class
+- [x] 15. Implement KeepAlive wrapper class
   - Create KeepAlive class that wraps folly::Executor::KeepAlive
   - Implement get() method for pointer-like access
   - Ensure proper copy and move constructors with reference counting
   - Add destructor with proper cleanup
   - Implement assignment operators with proper semantics
-  - _Requirements: 2.2, 2.4, 2.5_
+  - _Requirements: 12.2, 12.4, 12.5_
 
-- [x] 5.1 Write property test for KeepAlive concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 2.2**
+- [x] 15.1 Write property test for executor work submission
+  - **Property 6: Executor Work Submission**
+  - **Validates: Requirements 12.3, 12.4, 12.5**
 
-- [x] 5.2 Write property test for KeepAlive pointer access and reference counting
-  - **Property 3: Executor Work Submission**
-  - **Validates: Requirements 2.4, 2.5**
-
-- [x] 6. Implement FutureFactory static class
+- [x] 16. Implement FutureFactory static class
   - Create FutureFactory class with static factory methods
   - Implement makeFuture() template method for value-based future creation
   - Implement makeExceptionalFuture() template method for exception-based futures
   - Implement makeReadyFuture() method for void/Unit futures
   - Add proper type deduction and conversion handling
-  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+  - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
 
-- [x] 6.1 Write property test for FutureFactory concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 3.1, 3.2, 3.3**
+- [x] 16.1 Write property test for factory future creation
+  - **Property 7: Factory Future Creation**
+  - **Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5**
 
-- [x] 6.2 Write property test for factory future creation
-  - **Property 4: Factory Future Creation**
-  - **Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**
-
-- [x] 7. Implement FutureCollector static class
+- [x] 17. Implement FutureCollector static class
   - Create FutureCollector class with static collection methods
   - Implement collectAll() method for waiting on all futures
   - Implement collectAny() method for first-completed future
   - Implement collectAnyWithoutException() method for first successful future
   - Implement collectN() method for first N completed futures
   - Add proper timeout and cancellation handling
-  - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5_
+  - _Requirements: 14.1, 14.2, 14.3, 14.4, 14.5_
 
-- [x] 7.1 Write property test for FutureCollector concept compliance
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 4.1, 4.2, 4.3, 4.4**
+- [x] 17.1 Write property test for collection operations
+  - **Property 8: Collection Operations**
+  - **Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5**
 
-- [x] 7.2 Write property test for collection operations
-  - **Property 5: Collection Operations**
-  - **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5**
-
-- [x] 8. Enhance existing Future class with continuation operations
+- [x] 18. Enhance existing Future class with continuation operations
   - Add via() method for executor-based continuation scheduling
   - Add delay() method for time-based future delays
   - Add within() method for timeout-based future constraints
   - Ensure proper integration with existing Future implementation
   - Maintain backward compatibility with current API
-  - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
+  - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5_
 
-- [x] 8.1 Write property test for Future continuation operations
-  - **Property 6: Continuation Operations**
-  - **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5**
+- [x] 18.1 Write property test for continuation operations
+  - **Property 9: Continuation Operations**
+  - **Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5**
 
-- [x] 9. Enhance existing Future class with transformation operations
+- [x] 19. Enhance existing Future class with transformation operations
   - Add ensure() method for cleanup functionality
   - Enhance existing thenValue() and thenError() methods if needed
   - Ensure proper void/Unit handling in all transformation operations
   - Add proper type deduction and error propagation
   - Maintain compatibility with existing transformation methods
-  - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
+  - _Requirements: 16.1, 16.2, 16.3, 16.4, 16.5_
 
-- [x] 9.1 Write property test for Future transformation operations
-  - **Property 7: Transformation Operations**
-  - **Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5**
+- [x] 19.1 Write property test for transformation operations
+  - **Property 10: Transformation Operations**
+  - **Validates: Requirements 16.1, 16.2, 16.3, 16.4, 16.5**
 
-- [x] 10. Add comprehensive concept compliance validation
+- [x] 20. Add comprehensive concept compliance validation
   - Create static_assert statements for all wrapper classes and their concepts
   - Add compile-time validation for concept requirements
   - Create template test functions that use concept-constrained parameters
   - Ensure all wrappers work with existing concept-constrained code
   - Add validation for proper type deduction in generic contexts
-  - _Requirements: 7.1, 7.2, 7.4_
+  - _Requirements: 17.1, 17.2, 17.4_
 
-- [x] 10.1 Write property test for concept compliance validation
-  - **Property 1: Concept Compliance**
-  - **Validates: Requirements 7.1, 7.2**
-
-- [x] 10.2 Write property test for generic template compatibility
-  - **Property 9: Generic Template Compatibility**
-  - **Validates: Requirements 7.4**
-
-- [x] 11. Implement backward compatibility and interoperability
+- [x] 21. Implement backward compatibility and interoperability
   - Ensure new wrappers work seamlessly with existing Try and Future classes
   - Add conversion functions between wrapper types where appropriate
   - Test integration with existing codebase and APIs
   - Verify no breaking changes to existing functionality
   - Add interoperability utilities for mixed wrapper usage
-  - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+  - _Requirements: 20.1, 20.2, 20.3, 20.4, 20.5_
 
-- [x] 11.1 Write property test for backward compatibility
-  - **Property 10: Backward Compatibility and Interoperability**
-  - **Validates: Requirements 10.1, 10.2, 10.3, 10.5**
+- [x] 21.1 Write property test for backward compatibility and interoperability
+  - **Property 12: Backward Compatibility and Interoperability**
+  - **Validates: Requirements 20.1, 20.2, 20.3, 20.4, 20.5**
 
-- [x] 11.2 Write property test for wrapper interoperability
-  - **Property 10: Backward Compatibility and Interoperability**
-  - **Validates: Requirements 10.2, 10.4**
-
-- [x] 12. Add comprehensive error handling and exception safety
+- [x] 22. Add comprehensive error handling and exception safety
   - Implement proper exception safety guarantees for all wrapper operations
   - Add error handling for edge cases and invalid usage scenarios
   - Ensure proper resource cleanup in exception scenarios
   - Add validation and error reporting for invalid wrapper states
   - Implement timeout and cancellation error handling
-  - _Requirements: 8.3_
+  - _Requirements: 18.3_
 
-- [x] 12.1 Write property test for exception safety guarantees
-  - **Property 8: Exception and Type Conversion**
-  - **Validates: Requirements 8.3**
-
-- [x] 13. Create comprehensive unit tests for wrapper functionality
+- [x] 23. Create comprehensive unit tests for wrapper functionality
   - Write unit tests for each wrapper class covering basic functionality
   - Test edge cases, error conditions, and boundary scenarios
   - Verify proper resource management and cleanup
   - Test integration between different wrapper types
   - Add performance validation for critical operations
-  - _Requirements: All requirements_
+  - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.5_
 
-- [x] 14. Create integration tests with existing codebase
+- [x] 24. Create integration tests with existing codebase
   - Test new wrappers with existing Raft implementation
   - Verify compatibility with existing future-based operations
   - Test mixed usage of old and new wrapper types
   - Validate no regressions in existing functionality
   - Test concept-constrained template functions with new wrappers
-  - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+  - _Requirements: 20.1, 20.2, 20.3, 20.4, 20.5_
 
-- [x] 15. Update include/raft/future.hpp with new implementations
+- [x] 25. Update include/raft/future.hpp with new implementations
   - Integrate all new wrapper classes into the existing header file
   - Organize code with proper namespacing and documentation
   - Add comprehensive API documentation for new classes
@@ -208,15 +237,15 @@
   - Add usage examples in comments for complex operations
   - _Requirements: All requirements_
 
-- [x] 16. Add static assertions for concept compliance
+- [x] 26. Add static assertions for concept compliance
   - Add static_assert statements at the end of the header file
   - Verify all wrapper types satisfy their corresponding concepts
   - Test concept compliance with various template instantiations
   - Add compile-time validation for type conversion utilities
   - Ensure proper error messages for concept violations
-  - _Requirements: 7.1, 7.2_
+  - _Requirements: 17.1, 17.2_
 
-- [x] 17. Create example programs demonstrating wrapper usage
+- [x] 27. Create example programs demonstrating wrapper usage
   - Create examples/folly-wrappers/promise_example.cpp showing promise usage
   - Create examples/folly-wrappers/executor_example.cpp showing executor usage
   - Create examples/folly-wrappers/factory_example.cpp showing factory operations
@@ -225,7 +254,7 @@
   - Follow example program guidelines (run all scenarios, clear pass/fail, exit codes)
   - _Requirements: All requirements_
 
-- [x] 18. Update CMakeLists.txt for wrapper examples
+- [x] 28. Update CMakeLists.txt for wrapper examples
   - Add wrapper example executables to examples/CMakeLists.txt
   - Ensure proper linking with folly and other required libraries
   - Set appropriate output directories for example programs
@@ -233,7 +262,8 @@
   - Configure proper compiler flags and dependencies
   - _Requirements: All requirements_
 
-- [x] 19. Create comprehensive documentation
+- [x] 29. Create comprehensive documentation
+  - Document all enhanced concepts and their usage patterns
   - Document all new wrapper classes and their usage patterns
   - Add migration guide for developers using folly directly
   - Document concept compliance and type conversion behavior
@@ -241,5 +271,133 @@
   - Create API reference documentation for all public interfaces
   - _Requirements: All requirements_
 
-- [x] 20. Checkpoint - Ensure all tests pass
+- [x] 30. Checkpoint - Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 31. Convert codebase to use unified kythira::Future interface
+  - Search for and replace all std::future usage with kythira::Future
+  - Search for and replace all direct folly::Future usage with kythira::Future
+  - Update header includes to use raft/future.hpp instead of <future> or <folly/futures/Future.h>
+  - Ensure consistent future interface throughout codebase
+  - _Requirements: 21.1, 21.2, 21.3, 21.4_
+
+- [x] 31.1 Write property test for future usage consistency
+  - **Property 13: Future Usage Consistency**
+  - **Validates: Requirements 21.1, 21.2, 21.3**
+
+- [x] 31.2 Write property test for header include consistency
+  - **Property 14: Header Include Consistency**
+  - **Validates: Requirements 21.4, 26.1**
+
+- [x] 32. Generify transport layer interfaces with future concepts
+  - Template HTTP transport methods on future types
+  - Template CoAP transport methods on future types
+  - Update network client concepts to use future concepts as template parameters
+  - Move transport implementations to kythira namespace
+  - _Requirements: 22.1, 22.2, 22.3, 22.4, 22.5_
+
+- [x] 32.1 Write property test for transport method return types
+  - **Property 15: Transport Method Return Types**
+  - **Validates: Requirements 22.1, 22.2**
+
+- [x] 32.2 Write property test for network concept compliance
+  - **Property 16: Network Concept Compliance**
+  - **Validates: Requirements 22.3, 22.4**
+
+- [x] 33. Generify network simulator components with future concepts
+  - Template Connection class on future types
+  - Template Listener class on future types
+  - Update network simulator operations to use templated future types
+  - Move network simulator classes to kythira namespace
+  - Add timeout support with templated future types
+  - _Requirements: 23.1, 23.2, 23.3, 23.4, 23.5_
+
+- [x] 33.1 Write property test for network simulator return types
+  - **Property 17: Network Simulator Return Types**
+  - **Validates: Requirements 23.1, 23.2, 23.3, 23.4**
+
+- [x] 34. Convert test code to use kythira::Future consistently
+  - Update property-based tests to use kythira::Future
+  - Update integration tests to use kythira::Future
+  - Update test fixtures to use kythira::Future
+  - Ensure test synchronization uses kythira::Future methods
+  - Update test validation to use kythira::Future
+  - _Requirements: 24.1, 24.2, 24.3, 24.4, 24.5_
+
+- [x] 34.1 Write property test for test code future usage
+  - **Property 18: Test Code Future Usage**
+  - **Validates: Requirements 24.1, 24.2, 24.3, 24.4, 24.5**
+
+- [x] 35. Validate behavioral preservation during conversion
+  - Test async operation timing and ordering behavior
+  - Validate exception handling and error propagation
+  - Test thread safety and synchronization behavior
+  - Validate timeout handling behavior
+  - Ensure all existing tests pass without modification
+  - _Requirements: 25.1, 25.2, 25.3, 25.4, 25.5_
+
+- [x] 35.1 Write property test for behavioral preservation
+  - **Property 19: Behavioral Preservation**
+  - **Validates: Requirements 25.1, 25.2, 25.3, 25.4**
+
+- [x] 36. Maintain clean build dependencies
+  - Ensure compilation works without direct std::future or folly::Future includes
+  - Maintain same library dependencies
+  - Validate build produces same executable functionality
+  - Verify reduced direct dependencies on future implementations
+  - _Requirements: 26.2, 26.3, 26.4, 26.5_
+
+- [x] 36.1 Write property test for build dependency consistency
+  - **Property 20: Build Dependency Consistency**
+  - **Validates: Requirements 26.2, 26.3**
+
+- [x] 37. Convert Promise/Future patterns to kythira::Future
+  - Replace Promise/Future pairs with kythira::Future construction patterns
+  - Replace makeFuture calls with kythira::Future constructors
+  - Replace getFuture() calls with appropriate kythira::Future creation
+  - Update promise fulfillment to use kythira::Future constructors
+  - Update future chaining to use kythira::Future continuation methods
+  - _Requirements: 27.1, 27.2, 27.3, 27.4, 27.5_
+
+- [x] 37.1 Write property test for Promise/Future pattern conversion
+  - **Property 21: Promise/Future Pattern Conversion**
+  - **Validates: Requirements 27.1, 27.2, 27.3, 27.4, 27.5**
+
+- [x] 38. Make core implementations generic with future concepts
+  - Template core Raft implementations on future types
+  - Use future concepts instead of concrete future types
+  - Move include/future/future.hpp to include/raft/future.hpp
+  - Maintain kythira namespace for future classes
+  - Move core implementations to kythira namespace
+  - _Requirements: 28.1, 28.2, 28.3, 28.4, 28.5, 28.6, 28.7, 28.8, 28.9, 28.10_
+
+- [x] 38.1 Write property test for core implementation genericity
+  - **Property 22: Core Implementation Genericity**
+  - **Validates: Requirements 28.1, 28.2**
+
+- [x] 38.2 Write property test for namespace organization
+  - **Property 23: Namespace Organization**
+  - **Validates: Requirements 28.5, 28.6, 28.7, 28.8, 28.9, 28.10**
+
+- [x] 39. Validate complete conversion
+  - Search codebase for remaining std::future usage
+  - Search codebase for remaining direct folly::Future usage in public interfaces
+  - Ensure successful compilation with no future-related errors
+  - Validate all existing tests pass
+  - Demonstrate equivalent performance characteristics
+  - _Requirements: 29.1, 29.2, 29.3, 29.4, 29.5_
+
+- [x] 39.1 Write property test for complete conversion validation
+  - **Property 24: Complete Conversion Validation**
+  - **Validates: Requirements 29.1, 29.2**
+
+- [x] 40. Final comprehensive validation
+  - Run complete test suite with all conversions
+  - Validate all property-based tests pass
+  - Ensure no regressions in functionality
+  - Verify performance characteristics are maintained
+  - Document the unified future architecture
+  - _Requirements: All requirements_
+
+- [x] 41. Final checkpoint - Complete validation
   - Ensure all tests pass, ask the user if questions arise.

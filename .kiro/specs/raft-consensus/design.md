@@ -2,9 +2,11 @@
 
 ## Overview
 
-This document describes the design of a C++ implementation of the Raft consensus algorithm. The implementation uses C++20/23 concepts to define pluggable interfaces for all major components, enabling flexible deployment across different environments. The design emphasizes type safety through concepts, dependency injection through template parameters, and clear separation of concerns between the consensus algorithm core and its supporting infrastructure.
+This document describes the design of a complete, production-ready C++ implementation of the Raft consensus algorithm. The implementation uses C++20/23 concepts to define pluggable interfaces for all major components, enabling flexible deployment across different environments. The design emphasizes type safety through concepts, dependency injection through template parameters, and clear separation of concerns between the consensus algorithm core and its supporting infrastructure.
 
-The Raft implementation follows the algorithm as described in the extended Raft paper by Diego Ongaro and John Ousterhout. It provides strong consistency guarantees through leader election, log replication, and safety mechanisms while maintaining understandability and correctness.
+The Raft implementation follows the algorithm as described in the extended Raft paper by Diego Ongaro and John Ousterhout. It provides strong consistency guarantees through leader election, log replication, and safety mechanisms while maintaining understandability and correctness. Additionally, this design includes completion components that make the implementation production-ready by ensuring proper async coordination, commit waiting, configuration change synchronization, and comprehensive error handling.
+
+**Kythira Integration:** This design leverages generic future concepts as template parameters throughout the implementation, allowing flexibility in future implementations while defaulting to the kythira future wrapper classes from `include/raft/future.hpp`. The kythira wrappers (`kythira::Future<T>`, `kythira::Promise<T>`, `kythira::Try<T>`, `kythira::FutureCollector`, `kythira::FutureFactory`) wrap Folly futures and provide a unified, type-safe interface for asynchronous programming while satisfying the kythira concept system requirements. Core implementations are placed in the `kythira` namespace to reflect their foundational role in the system architecture.
 
 ## Architecture
 
@@ -14,58 +16,160 @@ The Raft implementation is structured in layers:
 
 1. **Concept Layer**: Defines C++ concepts for all pluggable components
 2. **Core Algorithm Layer**: Implements the Raft consensus protocol
-3. **Component Implementation Layer**: Provides concrete implementations of concepts
-4. **Application Layer**: User-defined state machines and client applications
+3. **Completion Layer**: Provides async coordination, commit waiting, and error handling
+4. **Component Implementation Layer**: Provides concrete implementations of concepts
+5. **Application Layer**: User-defined state machines and client applications
 
-### Component Dependencies
+### Enhanced Component Dependencies
 
 ```
-Node<NetworkClient, NetworkServer, PersistenceEngine, Logger, Metrics, MembershipManager>
-    ├── NetworkClient<RpcSerializer, Data>
+Node<Types = default_raft_types>
+    ├── Types::network_client_type<Types::future_type, RpcSerializer, Data>
     │   └── RpcSerializer<Data> (concept: rpc_serializer, Data: serialized_data)
-    ├── NetworkServer<RpcSerializer, Data>
+    ├── Types::network_server_type<Types::future_type, RpcSerializer, Data>
     │   └── RpcSerializer<Data> (concept: rpc_serializer, Data: serialized_data)
-    ├── PersistenceEngine (concept: persistence_engine)
-    ├── Logger (concept: diagnostic_logger)
-    ├── Metrics (concept: metrics)
-    └── MembershipManager (concept: membership_manager)
+    ├── Types::persistence_engine_type (concept: persistence_engine)
+    ├── Types::logger_type (concept: diagnostic_logger)
+    ├── Types::metrics_type (concept: metrics)
+    ├── Types::membership_manager_type (concept: membership_manager)
+    └── Completion Components (using Types::future_type)
+        ├── CommitWaiter<Types::future_type>
+        ├── FutureCollector<Types::future_type, T> (for heartbeats, elections, replication)
+        ├── ConfigurationSynchronizer<Types::future_type>
+        └── ErrorHandler<Types::future_type, Result> (with retry policies)
 ```
 
-### Template-Based Dependency Injection
+### Enhanced Architecture Components
 
-All concrete classes use template parameters to specify their dependencies:
+The completion adds several new components to the existing architecture:
+
+```
+Enhanced Raft Node
+├── Existing Core Components (unchanged)
+│   ├── NetworkClient, NetworkServer
+│   ├── PersistenceEngine, Logger, Metrics
+│   └── MembershipManager
+├── New Async Coordination Layer
+│   ├── CommitWaiter - manages client operation futures
+│   ├── FutureCollector - handles multiple async operations
+│   ├── ConfigurationSynchronizer - coordinates config changes
+│   └── ErrorHandler - manages retry and recovery logic
+└── Enhanced State Management
+    ├── PendingOperations - tracks uncommitted client ops
+    ├── CommitNotifier - signals when entries are committed
+    └── ApplicationQueue - manages state machine application
+```
+
+### Template-Based Dependency Injection with Unified Types Parameter
+
+All concrete classes use a unified types template parameter to specify their dependencies, providing a clean interface:
 
 ```cpp
-// Network client depends on RPC serializer and data type
-template<typename Serializer, serialized_data Data>
-requires rpc_serializer<Serializer, Data>
-class http_network_client;
+// Unified types concept that encapsulates all required types
+namespace kythira {
 
-// Network server depends on RPC serializer and data type
-template<typename Serializer, serialized_data Data>
-requires rpc_serializer<Serializer, Data>
-class http_network_server;
+template<typename T>
+concept raft_types = requires {
+    // Future types
+    typename T::future_type;
+    typename T::promise_type;
+    typename T::try_type;
+    
+    // Component types
+    typename T::network_client_type;
+    typename T::network_server_type;
+    typename T::persistence_engine_type;
+    typename T::logger_type;
+    typename T::metrics_type;
+    typename T::membership_manager_type;
+    
+    // Data types
+    typename T::node_id_type;
+    typename T::term_id_type;
+    typename T::log_index_type;
+    
+    // Concept validation
+    requires future<typename T::future_type, std::vector<std::byte>>;
+    requires network_client<typename T::network_client_type, typename T::future_type>;
+    requires network_server<typename T::network_server_type, typename T::future_type>;
+    requires persistence_engine<typename T::persistence_engine_type>;
+    requires diagnostic_logger<typename T::logger_type>;
+    requires metrics<typename T::metrics_type>;
+    requires membership_manager<typename T::membership_manager_type>;
+};
 
-// Raft node depends on all pluggable components
-template<
-    typename NetworkClient,
-    typename NetworkServer,
-    typename PersistenceEngine,
-    typename Logger,
-    typename Metrics,
-    typename MembershipManager
->
-requires 
-    network_client<NetworkClient> &&
-    network_server<NetworkServer> &&
-    persistence_engine<PersistenceEngine> &&
-    diagnostic_logger<Logger> &&
-    metrics<Metrics> &&
-    membership_manager<MembershipManager>
-class node;
+// Default types implementation
+struct default_raft_types {
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
+    
+    using network_client_type = kythira::simulator_network_client<future_type, json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using network_server_type = kythira::simulator_network_server<future_type, json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using persistence_engine_type = memory_persistence_engine;
+    using logger_type = console_logger;
+    using metrics_type = noop_metrics;
+    using membership_manager_type = default_membership_manager;
+    
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
+};
+
+// Simplified Raft node with single template parameter
+template<raft_types Types = default_raft_types>
+class node {
+    // All types automatically deduced from Types parameter
+    using future_type = typename Types::future_type;
+    using network_client_type = typename Types::network_client_type;
+    using network_server_type = typename Types::network_server_type;
+    // ... other type aliases
+    
+private:
+    network_client_type _network_client;
+    network_server_type _network_server;
+    // ... other components
+    
+public:
+    // Clean interface using deduced types
+    auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout) -> future_type;
+    auto read_state(std::chrono::milliseconds timeout) -> future_type;
+    // ... other methods
+};
+
+} // namespace kythira
 ```
 
 ## Components and Interfaces
+
+### 0. Future Concept Definition
+
+The `future` concept defines the interface requirements for future types used throughout the Raft implementation:
+
+```cpp
+// Future concept defined in include/concepts/future.hpp
+namespace kythira {
+
+template<typename F, typename T>
+concept future = requires(F f) {
+    // Get value (blocking)
+    { f.get() } -> std::same_as<T>;
+    
+    // Check if ready
+    { f.isReady() } -> std::convertible_to<bool>;
+    
+    // Wait with timeout
+    { f.wait(std::chrono::milliseconds{}) } -> std::convertible_to<bool>;
+    
+    // Chain continuation
+    { f.then(std::declval<std::function<void(T)>>()) };
+    
+    // Error handling
+    { f.onError(std::declval<std::function<T(std::exception_ptr)>>()) };
+};
+
+} // namespace kythira
+```
 
 ### 1. RPC Serializer Concept
 
@@ -132,10 +236,12 @@ concept rpc_serializer = requires(
 
 ### 2. Network Client Concept
 
-The `network_client` concept defines the interface for sending RPC requests to remote Raft nodes. Network client implementations are templated on an RPC serializer type.
+The `network_client` concept defines the interface for sending RPC requests to remote Raft nodes. Network client implementations are templated on future type and RPC serializer type, and are placed in the `kythira` namespace.
 
 ```cpp
-template<typename C, typename Future, typename NodeId>
+namespace kythira {
+
+template<typename C, typename FutureType, typename NodeId>
 concept network_client = requires(
     C client,
     const NodeId& target,
@@ -145,40 +251,47 @@ concept network_client = requires(
     std::chrono::milliseconds timeout
 ) {
     requires node_id<NodeId>;
+    requires future<FutureType, request_vote_response>;
     
-    // Send RequestVote RPC - returns a future
+    // Send RequestVote RPC - returns a generic future
     { client.send_request_vote(target, rvr, timeout) } 
-        -> std::same_as<Future<request_vote_response>>;
+        -> std::same_as<FutureType>;
     
-    // Send AppendEntries RPC - returns a future
+    // Send AppendEntries RPC - returns a generic future
     { client.send_append_entries(target, aer, timeout) }
-        -> std::same_as<Future<append_entries_response>>;
+        -> std::same_as<FutureType>;
     
-    // Send InstallSnapshot RPC - returns a future
+    // Send InstallSnapshot RPC - returns a generic future
     { client.send_install_snapshot(target, isr, timeout) }
-        -> std::same_as<Future<install_snapshot_response>>;
+        -> std::same_as<FutureType>;
 };
+
+} // namespace kythira
 ```
 
 **Concrete Implementations:**
-- `http_network_client<Serializer, Data>`: HTTP/1.1 or HTTP/2 transport
-- `https_network_client<Serializer, Data>`: HTTPS with TLS
-- `coap_network_client<Serializer, Data>`: CoAP over UDP
-- `coaps_network_client<Serializer, Data>`: CoAP over DTLS (Datagram TLS)
-- `simulator_network_client<Serializer, Data>`: Network simulator transport
+- `kythira::http_network_client<FutureType, Serializer, Data>`: HTTP/1.1 or HTTP/2 transport
+- `kythira::https_network_client<FutureType, Serializer, Data>`: HTTPS with TLS
+- `kythira::coap_network_client<FutureType, Serializer, Data>`: CoAP over UDP
+- `kythira::coaps_network_client<FutureType, Serializer, Data>`: CoAP over DTLS (Datagram TLS)
+- `kythira::simulator_network_client<FutureType, Serializer, Data>`: Network simulator transport
 
 ### 3. Network Server Concept
 
-The `network_server` concept defines the interface for receiving RPC requests from remote Raft nodes. Network server implementations are templated on an RPC serializer type.
+The `network_server` concept defines the interface for receiving RPC requests from remote Raft nodes. Network server implementations are templated on future type and RPC serializer type, and are placed in the `kythira` namespace.
 
 ```cpp
-template<typename S>
+namespace kythira {
+
+template<typename S, typename FutureType>
 concept network_server = requires(
     S server,
     std::function<request_vote_response(const request_vote_request&)> rv_handler,
     std::function<append_entries_response(const append_entries_request&)> ae_handler,
     std::function<install_snapshot_response(const install_snapshot_request&)> is_handler
 ) {
+    requires future<FutureType, void>;
+    
     // Register RPC handlers
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;
     { server.register_append_entries_handler(ae_handler) } -> std::same_as<void>;
@@ -189,14 +302,16 @@ concept network_server = requires(
     { server.stop() } -> std::same_as<void>;
     { server.is_running() } -> std::convertible_to<bool>;
 };
+
+} // namespace kythira
 ```
 
 **Concrete Implementations:**
-- `http_network_server<Serializer, Data>`: HTTP/1.1 or HTTP/2 transport
-- `https_network_server<Serializer, Data>`: HTTPS with TLS
-- `coap_network_server<Serializer, Data>`: CoAP over UDP
-- `coaps_network_server<Serializer, Data>`: CoAP over DTLS (Datagram TLS)
-- `simulator_network_server<Serializer, Data>`: Network simulator transport
+- `kythira::http_network_server<FutureType, Serializer, Data>`: HTTP/1.1 or HTTP/2 transport
+- `kythira::https_network_server<FutureType, Serializer, Data>`: HTTPS with TLS
+- `kythira::coap_network_server<FutureType, Serializer, Data>`: CoAP over UDP
+- `kythira::coaps_network_server<FutureType, Serializer, Data>`: CoAP over DTLS (Datagram TLS)
+- `kythira::simulator_network_server<FutureType, Serializer, Data>`: Network simulator transport
 
 ### 4. Persistence Engine Concept
 
@@ -380,20 +495,24 @@ concept metrics = requires(
 
 ### 8. Node Concept
 
-The `node` concept defines the interface for a Raft node that participates in the consensus protocol.
+The `node` concept defines the interface for a Raft node that participates in the consensus protocol, placed in the `kythira` namespace.
 
 ```cpp
-template<typename N, typename Future>
+namespace kythira {
+
+template<typename N, typename FutureType>
 concept raft_node = requires(
     N node,
     const std::vector<std::byte>& command,
     std::chrono::milliseconds timeout
 ) {
-    // Client operations - return futures
+    requires future<FutureType, std::vector<std::byte>>;
+    
+    // Client operations - return generic futures
     { node.submit_command(command, timeout) } 
-        -> std::same_as<Future<std::vector<std::byte>>>;
+        -> std::same_as<FutureType>;
     { node.read_state(timeout) } 
-        -> std::same_as<Future<std::vector<std::byte>>>;
+        -> std::same_as<FutureType>;
     
     // Node lifecycle
     { node.start() } -> std::same_as<void>;
@@ -406,14 +525,179 @@ concept raft_node = requires(
     { node.get_state() } -> std::same_as<server_state>;
     { node.is_leader() } -> std::convertible_to<bool>;
     
-    // Cluster operations - return futures
-    { node.add_server(node_id{}) } -> std::same_as<Future<bool>>;
-    { node.remove_server(node_id{}) } -> std::same_as<Future<bool>>;
+    // Cluster operations - return generic futures
+    { node.add_server(node_id{}) } -> std::same_as<FutureType>;
+    { node.remove_server(node_id{}) } -> std::same_as<FutureType>;
 };
+
+} // namespace kythira
 ```
 
 **Concrete Implementation:**
-- `node<NetworkClient, NetworkServer, PersistenceEngine, Logger, Metrics, MembershipManager>`: The main Raft node implementation templated on all pluggable components
+- `kythira::node<FutureType, NetworkClient, NetworkServer, PersistenceEngine, Logger, Metrics, MembershipManager>`: The main Raft node implementation templated on future type and all pluggable components
+
+### 9. Commit Waiting Mechanism
+
+The commit waiting mechanism ensures that client operations wait for actual durability before completing, using generic future concepts.
+
+#### CommitWaiter Component
+
+```cpp
+namespace kythira {
+
+template<typename FutureType>
+requires future<FutureType, std::vector<std::byte>>
+class commit_waiter {
+private:
+    struct pending_operation {
+        log_index entry_index;
+        // Use generic promise concept with kythira::Promise as default
+        typename FutureType::promise_type promise;
+        std::chrono::steady_clock::time_point submitted_at;
+        std::optional<std::chrono::milliseconds> timeout;
+    };
+    
+    std::unordered_map<log_index, std::vector<pending_operation>> _pending_operations;
+    std::mutex _mutex;
+    
+public:
+    // Register a new operation that waits for commit
+    auto register_operation(log_index index, std::chrono::milliseconds timeout) 
+        -> FutureType;
+    
+    // Notify that entries up to commit_index are committed and applied
+    auto notify_committed_and_applied(log_index commit_index) -> void;
+    
+    // Cancel all pending operations (e.g., on leadership loss)
+    auto cancel_all_operations(const std::string& reason) -> void;
+    
+    // Cancel operations that have timed out
+    auto cancel_timed_out_operations() -> void;
+};
+
+} // namespace kythira
+```
+
+### 10. Future Collection Mechanism
+
+The future collection mechanism handles multiple async operations efficiently using generic future concepts.
+
+#### FutureCollector Component
+
+```cpp
+namespace kythira {
+
+template<typename FutureType, typename T>
+requires future<FutureType, T>
+class future_collector {
+public:
+    // Collect futures and wait for majority response
+    auto collect_majority(
+        std::vector<FutureType> futures,
+        std::chrono::milliseconds timeout
+    ) -> FutureType;
+    
+    // Collect all futures with timeout handling
+    auto collect_all_with_timeout(
+        std::vector<FutureType> futures,
+        std::chrono::milliseconds timeout
+    ) -> FutureType;
+    
+    // Cancel all futures in a collection
+    auto cancel_collection(std::vector<FutureType>& futures) -> void;
+};
+
+} // namespace kythira
+```
+
+### 11. Configuration Change Synchronization
+
+The configuration synchronization mechanism ensures safe transitions between cluster configurations using generic future concepts.
+
+#### ConfigurationSynchronizer Component
+
+```cpp
+namespace kythira {
+
+template<typename FutureType>
+requires future<FutureType, bool>
+class configuration_synchronizer {
+private:
+    enum class config_change_phase {
+        none,
+        joint_consensus,
+        final_configuration
+    };
+    
+    config_change_phase _current_phase{config_change_phase::none};
+    std::optional<cluster_configuration> _target_configuration;
+    std::optional<typename FutureType::promise_type> _change_promise;
+    
+public:
+    // Start a configuration change with proper synchronization
+    auto start_configuration_change(
+        const cluster_configuration& new_config,
+        std::chrono::milliseconds timeout
+    ) -> FutureType;
+    
+    // Notify that a configuration entry has been committed
+    auto notify_configuration_committed(
+        const cluster_configuration& config,
+        log_index committed_index
+    ) -> void;
+    
+    // Cancel ongoing configuration change
+    auto cancel_configuration_change(const std::string& reason) -> void;
+    
+    // Check if a configuration change is in progress
+    auto is_configuration_change_in_progress() const -> bool;
+};
+
+} // namespace kythira
+```
+
+### 12. Comprehensive Error Handling
+
+The error handling system provides robust retry and recovery mechanisms for all network operations using generic future concepts.
+
+#### ErrorHandler Component
+
+```cpp
+namespace kythira {
+
+template<typename FutureType, typename Result>
+requires future<FutureType, Result>
+class error_handler {
+private:
+    struct retry_policy {
+        std::chrono::milliseconds initial_delay{100};
+        std::chrono::milliseconds max_delay{5000};
+        double backoff_multiplier{2.0};
+        std::size_t max_attempts{5};
+    };
+    
+    std::unordered_map<std::string, retry_policy> _retry_policies;
+    
+public:
+    // Execute operation with retry and error handling
+    template<typename Operation>
+    auto execute_with_retry(
+        const std::string& operation_name,
+        Operation&& op,
+        const retry_policy& policy = {}
+    ) -> FutureType;
+    
+    // Handle specific error types
+    auto handle_network_error(const std::exception& e) -> bool;
+    auto handle_timeout_error(const std::exception& e) -> bool;
+    auto handle_serialization_error(const std::exception& e) -> bool;
+    
+    // Configure retry policies for different operations
+    auto set_retry_policy(const std::string& operation, const retry_policy& policy) -> void;
+};
+
+} // namespace kythira
+```
 
 ## Data Models
 
@@ -615,55 +899,154 @@ struct install_snapshot_response {
 };
 ```
 
-### Raft Node State
+### Enhanced Raft Node State
+
+The existing node state is extended with new components for async coordination using the unified types parameter:
 
 ```cpp
-template<
-    typename NetworkClient,
-    typename NetworkServer,
-    typename PersistenceEngine,
-    typename Logger,
-    typename Metrics,
-    typename MembershipManager
->
+namespace kythira {
+
+template<raft_types Types = default_raft_types>
 class node {
+    // Type aliases from unified Types parameter
+    using future_type = typename Types::future_type;
+    using network_client_type = typename Types::network_client_type;
+    using network_server_type = typename Types::network_server_type;
+    using persistence_engine_type = typename Types::persistence_engine_type;
+    using logger_type = typename Types::logger_type;
+    using metrics_type = typename Types::metrics_type;
+    using membership_manager_type = typename Types::membership_manager_type;
+    using node_id_type = typename Types::node_id_type;
+    using term_id_type = typename Types::term_id_type;
+    using log_index_type = typename Types::log_index_type;
+    
 private:
-    // Persistent state (stored before responding to RPCs)
-    term_id _current_term;
-    std::optional<node_id> _voted_for;
+    // Existing persistent state (stored before responding to RPCs)
+    term_id_type _current_term;
+    std::optional<node_id_type> _voted_for;
     std::vector<log_entry> _log;
     
-    // Volatile state (all servers)
-    log_index _commit_index;
-    log_index _last_applied;
+    // Existing volatile state (all servers)
+    log_index_type _commit_index;
+    log_index_type _last_applied;
     server_state _state;
     
-    // Volatile state (leaders only)
-    std::unordered_map<node_id, log_index> _next_index;
-    std::unordered_map<node_id, log_index> _match_index;
+    // Existing volatile state (leaders only)
+    std::unordered_map<node_id_type, log_index_type> _next_index;
+    std::unordered_map<node_id_type, log_index_type> _match_index;
     
-    // Components
-    NetworkClient _network_client;
-    NetworkServer _network_server;
-    PersistenceEngine _persistence;
-    Logger _logger;
-    Metrics _metrics;
-    MembershipManager _membership;
+    // Components using types from unified Types parameter
+    network_client_type _network_client;
+    network_server_type _network_server;
+    persistence_engine_type _persistence;
+    logger_type _logger;
+    metrics_type _metrics;
+    membership_manager_type _membership;
     
-    // Timing
+    // New async coordination components using unified types
+    commit_waiter<future_type> _commit_waiter;
+    future_collector<future_type, append_entries_response> _heartbeat_collector;
+    future_collector<future_type, request_vote_response> _election_collector;
+    configuration_synchronizer<future_type> _config_synchronizer;
+    error_handler<future_type, append_entries_response> _append_entries_error_handler;
+    error_handler<future_type, request_vote_response> _vote_error_handler;
+    error_handler<future_type, install_snapshot_response> _snapshot_error_handler;
+    
+    // Enhanced state tracking
+    std::unordered_map<log_index_type, std::chrono::steady_clock::time_point> _entry_timestamps;
+    std::unordered_set<node_id_type> _unresponsive_followers;
+    
+    // Existing timing
     std::chrono::milliseconds _election_timeout;
     std::chrono::milliseconds _heartbeat_interval;
     std::chrono::steady_clock::time_point _last_heartbeat;
     
-    // Configuration
+    // Enhanced configuration
+    cluster_configuration _configuration;
+    node_id_type _node_id;
+    std::chrono::milliseconds _commit_timeout{30000};
+    std::chrono::milliseconds _rpc_timeout{5000};
+    std::chrono::milliseconds _heartbeat_lease_duration{1000};
+    
+public:
+    // Clean interface using unified types
+    auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout) -> future_type;
+    auto read_state(std::chrono::milliseconds timeout) -> future_type;
+    auto add_server(node_id_type server_id) -> future_type;
+    auto remove_server(node_id_type server_id) -> future_type;
+    // ... other methods
+};
+
+} // namespace kythira
+```ollector;
+    future_collector<request_vote_response> _election_collector;
+    configuration_synchronizer<kythira::Future<bool>> _config_synchronizer;
+    error_handler<append_entries_response> _append_entries_error_handler;
+    error_handler<request_vote_response> _vote_error_handler;
+    error_handler<install_snapshot_response> _snapshot_error_handler;
+    
+    // Enhanced state tracking
+    std::unordered_map<log_index, std::chrono::steady_clock::time_point> _entry_timestamps;
+    std::unordered_set<NodeId> _unresponsive_followers;
+    
+    // Existing timing
+    std::chrono::milliseconds _election_timeout;
+    std::chrono::milliseconds _heartbeat_interval;
+    std::chrono::steady_clock::time_point _last_heartbeat;
+    
+    // Enhanced configuration
     cluster_configuration _configuration;
     node_id _node_id;
+    std::chrono::milliseconds _commit_timeout{30000};
+    std::chrono::milliseconds _rpc_timeout{5000};
+    std::chrono::milliseconds _heartbeat_lease_duration{1000};
+};
+```
+
+### Completion-Related Data Models
+
+#### Pending Operation Tracking
+
+```cpp
+struct pending_client_operation {
+    log_index entry_index;
+    std::vector<std::byte> command;
+    std::chrono::steady_clock::time_point submitted_at;
+    std::chrono::milliseconds timeout;
+    kythira::Promise<std::vector<std::byte>> promise;
+    
+    auto is_timed_out() const -> bool {
+        auto elapsed = std::chrono::steady_clock::now() - submitted_at;
+        return elapsed > timeout;
+    }
+};
+```
+
+#### Configuration Change State
+
+```cpp
+struct configuration_change_state {
+    enum class phase {
+        none,
+        joint_consensus_pending,
+        joint_consensus_committed,
+        final_configuration_pending,
+        final_configuration_committed
+    };
+    
+    phase current_phase{phase::none};
+    cluster_configuration old_configuration;
+    cluster_configuration new_configuration;
+    log_index joint_config_index{0};
+    log_index final_config_index{0};
+    std::chrono::steady_clock::time_point started_at;
+    kythira::Promise<bool> completion_promise;
 };
 ```
 
 ## Error Handling
 
-### Exception Hierarchy
+### Enhanced Exception Hierarchy
 
 ```cpp
 class raft_exception : public std::runtime_error {
@@ -690,15 +1073,69 @@ class election_exception : public raft_exception {
 public:
     explicit election_exception(const std::string& message);
 };
+
+// Completion-specific exceptions
+class raft_completion_exception : public raft_exception {
+public:
+    explicit raft_completion_exception(const std::string& message);
+};
+
+class commit_timeout_exception : public raft_completion_exception {
+public:
+    commit_timeout_exception(log_index index, std::chrono::milliseconds timeout);
+    auto get_entry_index() const -> log_index { return _entry_index; }
+    auto get_timeout() const -> std::chrono::milliseconds { return _timeout; }
+    
+private:
+    log_index _entry_index;
+    std::chrono::milliseconds _timeout;
+};
+
+class leadership_lost_exception : public raft_completion_exception {
+public:
+    leadership_lost_exception(term_id old_term, term_id new_term);
+    auto get_old_term() const -> term_id { return _old_term; }
+    auto get_new_term() const -> term_id { return _new_term; }
+    
+private:
+    term_id _old_term;
+    term_id _new_term;
+};
+
+class future_collection_exception : public raft_completion_exception {
+public:
+    future_collection_exception(const std::string& operation, std::size_t failed_count);
+    auto get_operation() const -> const std::string& { return _operation; }
+    auto get_failed_count() const -> std::size_t { return _failed_count; }
+    
+private:
+    std::string _operation;
+    std::size_t _failed_count;
+};
+
+class configuration_change_exception : public raft_completion_exception {
+public:
+    configuration_change_exception(const std::string& phase, const std::string& reason);
+    auto get_phase() const -> const std::string& { return _phase; }
+    auto get_reason() const -> const std::string& { return _reason; }
+    
+private:
+    std::string _phase;
+    std::string _reason;
+};
 ```
 
-### Error Handling Strategy
+### Enhanced Error Handling Strategy
 
-1. **Network Errors**: Retry with exponential backoff up to configured limits
+1. **Network Errors**: Retry with exponential backoff up to configured limits using ErrorHandler
 2. **Persistence Errors**: Fatal - log and terminate to prevent data corruption
 3. **Serialization Errors**: Reject malformed messages and log warnings
 4. **Election Timeouts**: Normal operation - trigger new election
-5. **RPC Failures**: Retry according to Raft protocol requirements
+5. **RPC Failures**: Retry according to Raft protocol requirements with comprehensive error handling
+6. **Commit Timeout Recovery**: Cancel timed-out operations and notify clients
+7. **Leadership Loss Recovery**: Cancel all pending operations and clean up state
+8. **Configuration Change Failure Recovery**: Rollback to previous stable configuration
+9. **Future Collection Failures**: Handle individual future failures without blocking collections
 
 ## Testing Strategy
 
@@ -975,6 +1412,322 @@ This property ensures observability. All important state changes are logged for 
 **Validates: Requirements 6.4**
 
 This property ensures that servers respect term numbers. Discovering a higher term means the server's information is stale, so it must step down.
+
+### Completion Properties
+
+The following properties ensure the correctness of the completion components:
+
+### Property 23: Commit Waiting Completion
+
+*For any* client command submission, the returned future completes only after the command is both committed (replicated to majority) and applied to the state machine.
+
+**Validates: Requirements 15.1, 15.2**
+
+### Property 24: Application Before Future Fulfillment
+
+*For any* committed log entry with associated client futures, state machine application occurs before any client future is fulfilled.
+
+**Validates: Requirements 15.2**
+
+### Property 25: Error Propagation on Application Failure
+
+*For any* state machine application failure, the error is propagated to all associated client futures.
+
+**Validates: Requirements 15.3**
+
+### Property 26: Leadership Loss Rejection
+
+*For any* client operation submitted to a leader that loses leadership before commit, the associated future is rejected with an appropriate error.
+
+**Validates: Requirements 15.4**
+
+### Property 27: Sequential Application Order
+
+*For any* set of concurrently submitted commands, they are applied to the state machine in log order regardless of submission timing.
+
+**Validates: Requirements 15.5**
+
+### Property 28: Heartbeat Majority Collection
+
+*For any* heartbeat operation, the system waits for majority response before completing the operation.
+
+**Validates: Requirements 16.1**
+
+### Property 29: Election Vote Collection
+
+*For any* leader election, vote collection determines outcome based on majority votes received.
+
+**Validates: Requirements 16.2**
+
+### Property 30: Replication Majority Acknowledgment
+
+*For any* log entry replication, commit index advances only when majority acknowledgment is received.
+
+**Validates: Requirements 16.3**
+
+### Property 31: Timeout Handling in Collections
+
+*For any* future collection with timeouts, individual timeouts are handled without blocking other operations.
+
+**Validates: Requirements 16.4**
+
+### Property 32: Collection Cancellation Cleanup
+
+*For any* cancelled future collection operation, all pending futures are properly cleaned up.
+
+**Validates: Requirements 16.5**
+
+### Property 33: Joint Consensus Synchronization
+
+*For any* server addition, the system waits for joint consensus configuration commit before proceeding to final configuration.
+
+**Validates: Requirements 17.1**
+
+### Property 34: Configuration Phase Synchronization
+
+*For any* server removal, each configuration phase waits for commit before proceeding to the next phase.
+
+**Validates: Requirements 17.2**
+
+### Property 35: Configuration Change Serialization
+
+*For any* configuration change attempt while another is in progress, the new change is prevented until the current change completes.
+
+**Validates: Requirements 17.3**
+
+### Property 36: Configuration Rollback on Failure
+
+*For any* configuration change failure during any phase, the system rolls back to the previous stable configuration.
+
+**Validates: Requirements 17.4**
+
+### Property 37: Leadership Change During Configuration
+
+*For any* leadership change during configuration change, the system properly handles the transition and continues or aborts appropriately.
+
+**Validates: Requirements 17.5**
+
+### Property 38: Heartbeat Retry with Backoff
+
+*For any* heartbeat RPC failure, the system retries with exponential backoff up to configured limits.
+
+**Validates: Requirements 18.1**
+
+### Property 39: AppendEntries Retry Handling
+
+*For any* AppendEntries RPC failure, the system retries and handles different failure modes appropriately.
+
+**Validates: Requirements 18.2**
+
+### Property 40: Snapshot Transfer Retry
+
+*For any* InstallSnapshot RPC failure, the system retries snapshot transfer with proper error recovery.
+
+**Validates: Requirements 18.3**
+
+### Property 41: Vote Request Failure Handling
+
+*For any* RequestVote RPC failure during election, the system handles the failure and continues the election process.
+
+**Validates: Requirements 18.4**
+
+### Property 42: Partition Detection and Handling
+
+*For any* network partition, the system detects the partition and handles it according to Raft safety requirements.
+
+**Validates: Requirements 18.5**
+
+### Property 43: Timeout Classification
+
+*For any* RPC timeout, the system distinguishes between network delays and actual failures.
+
+**Validates: Requirements 18.6**
+
+### Property 44: Batch Entry Application
+
+*For any* commit index advance, all entries between old and new commit index are applied to the state machine.
+
+**Validates: Requirements 19.1**
+
+### Property 45: Sequential Application Ordering
+
+*For any* state machine application operation, entries are applied in increasing log index order.
+
+**Validates: Requirements 19.2**
+
+### Property 46: Application Success Handling
+
+*For any* successful state machine application, the applied index is updated and waiting client futures are fulfilled.
+
+**Validates: Requirements 19.3**
+
+### Property 47: Application Failure Handling
+
+*For any* state machine application failure, further application is halted and the error is reported.
+
+**Validates: Requirements 19.4**
+
+### Property 48: Applied Index Catch-up
+
+*For any* scenario where applied index lags behind commit index, the system catches up by applying pending entries.
+
+**Validates: Requirements 19.5**
+
+### Property 49: Follower Acknowledgment Tracking
+
+*For any* entry replication to followers, the system tracks which followers have acknowledged each entry.
+
+**Validates: Requirements 20.1**
+
+### Property 50: Majority Commit Index Advancement
+
+*For any* entry acknowledged by majority of followers, the commit index advances to include that entry.
+
+**Validates: Requirements 20.2**
+
+### Property 51: Non-blocking Slow Followers
+
+*For any* slow follower responses, the system continues replication without blocking other operations.
+
+**Validates: Requirements 20.3**
+
+### Property 52: Unresponsive Follower Handling
+
+*For any* consistently unresponsive follower, the system marks it unavailable but continues with majority.
+
+**Validates: Requirements 20.4**
+
+### Property 53: Leader Self-acknowledgment
+
+*For any* commit decision, the leader includes itself in majority calculations.
+
+**Validates: Requirements 20.5**
+
+### Property 54: Read Linearizability Verification
+
+*For any* read_state operation, leader status is verified by collecting heartbeat responses from majority.
+
+**Validates: Requirements 21.1**
+
+### Property 55: Successful Read State Return
+
+*For any* successful heartbeat collection during read, the current state machine state is returned.
+
+**Validates: Requirements 21.2**
+
+### Property 56: Failed Read Rejection
+
+*For any* failed heartbeat collection during read, the read request is rejected with leadership error.
+
+**Validates: Requirements 21.3**
+
+### Property 57: Read Abortion on Leadership Loss
+
+*For any* leadership loss during read operation, the read is aborted and error is returned.
+
+**Validates: Requirements 21.4**
+
+### Property 58: Concurrent Read Efficiency
+
+*For any* concurrent read operations, they are handled efficiently without unnecessary heartbeat overhead.
+
+**Validates: Requirements 21.5**
+
+### Property 59: Shutdown Cleanup
+
+*For any* node shutdown, all pending futures are cancelled and resources are cleaned up.
+
+**Validates: Requirements 22.1**
+
+### Property 60: Step-down Operation Cancellation
+
+*For any* leader step-down, all pending client operations are cancelled with appropriate errors.
+
+**Validates: Requirements 22.2**
+
+### Property 61: Timeout Cancellation Cleanup
+
+*For any* operation timeout, the associated future is cancelled and related state is cleaned up.
+
+**Validates: Requirements 22.3**
+
+### Property 62: Callback Safety After Cancellation
+
+*For any* cancelled future, no callbacks are invoked after cancellation.
+
+**Validates: Requirements 22.4**
+
+### Property 63: Resource Leak Prevention
+
+*For any* future cleanup operation, memory leaks and resource exhaustion are prevented.
+
+**Validates: Requirements 22.5**
+
+### Property 64: RPC Timeout Configuration
+
+*For any* RPC timeout configuration, separate timeout values for different RPC types are supported.
+
+**Validates: Requirements 23.1**
+
+### Property 65: Retry Policy Configuration
+
+*For any* retry policy configuration, exponential backoff with configurable parameters is supported.
+
+**Validates: Requirements 23.2**
+
+### Property 66: Heartbeat Interval Compatibility
+
+*For any* heartbeat interval configuration, compatibility with election timeouts is ensured.
+
+**Validates: Requirements 23.3**
+
+### Property 67: Adaptive Timeout Behavior
+
+*For any* network condition change, timeout and retry behavior adapts within configured bounds.
+
+**Validates: Requirements 23.4**
+
+### Property 68: Configuration Validation
+
+*For any* invalid timeout configuration, the system rejects it with clear error messages.
+
+**Validates: Requirements 23.5**
+
+### Property 69: RPC Error Logging
+
+*For any* RPC operation failure, detailed error information including failure type, target node, and retry attempts is logged.
+
+**Validates: Requirements 24.1**
+
+### Property 70: Commit Timeout Logging
+
+*For any* commit waiting timeout, the timeout is logged with context about pending operations.
+
+**Validates: Requirements 24.2**
+
+### Property 71: Configuration Failure Logging
+
+*For any* configuration change failure, the failure reason and current cluster state are logged.
+
+**Validates: Requirements 24.3**
+
+### Property 72: Collection Error Logging
+
+*For any* future collection error, which futures failed and why is logged.
+
+**Validates: Requirements 24.4**
+
+### Property 73: Application Failure Logging
+
+*For any* state machine application failure, the failing entry and error details are logged.
+
+**Validates: Requirements 24.5**
+
+### Property 74: Kythira Future Type Safety
+
+*For any* async operation, kythira::Future<T> wrapper classes maintain type safety and concept compliance.
+
+**Validates: Requirements 25.1, 25.2, 25.3, 25.4, 25.5**
 
 };
 ```

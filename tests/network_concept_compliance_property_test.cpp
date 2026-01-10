@@ -14,12 +14,12 @@ namespace {
     constexpr const char* test_name = "network_concept_compliance_property_test";
     
     // Test type aliases
-    using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using test_metrics = raft::noop_metrics;
-    using test_logger = raft::console_logger;
-    using rv_future_type = kythira::Future<raft::request_vote_response<>>;
-    using ae_future_type = kythira::Future<raft::append_entries_response<>>;
-    using is_future_type = kythira::Future<raft::install_snapshot_response<>>;
+    using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using test_metrics = kythira::noop_metrics;
+    using test_logger = kythira::console_logger;
+    using rv_future_type = kythira::Future<kythira::request_vote_response<>>;
+    using ae_future_type = kythira::Future<kythira::append_entries_response<>>;
+    using is_future_type = kythira::Future<kythira::install_snapshot_response<>>;
 }
 
 BOOST_AUTO_TEST_SUITE(network_concept_compliance_property_tests)
@@ -34,11 +34,11 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, * boost::unit_test::ti
     // Test that the network_client concept is properly defined and accessible in kythira namespace
     
     // Test that kythira::Future satisfies the future concept for different response types
-    static_assert(kythira::future<rv_future_type, raft::request_vote_response<>>,
+    static_assert(kythira::future<rv_future_type, kythira::request_vote_response<>>,
                  "RequestVote future must satisfy future concept");
-    static_assert(kythira::future<ae_future_type, raft::append_entries_response<>>,
+    static_assert(kythira::future<ae_future_type, kythira::append_entries_response<>>,
                  "AppendEntries future must satisfy future concept");
-    static_assert(kythira::future<is_future_type, raft::install_snapshot_response<>>,
+    static_assert(kythira::future<is_future_type, kythira::install_snapshot_response<>>,
                  "InstallSnapshot future must satisfy future concept");
     
     // Test that invalid types are properly rejected
@@ -62,26 +62,26 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, * boost::unit_test::ti
     public:
         auto send_request_vote(
             std::uint64_t target,
-            const raft::request_vote_request<>& request,
+            const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
         
         auto send_append_entries(
             std::uint64_t target,
-            const raft::append_entries_request<>& request,
+            const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
         
         auto send_install_snapshot(
             std::uint64_t target,
-            const raft::install_snapshot_request<>& request,
+            const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
     };
     
@@ -95,11 +95,11 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, * boost::unit_test::ti
 // Test that future concept requirements are properly enforced
 BOOST_AUTO_TEST_CASE(test_future_concept_enforcement, * boost::unit_test::timeout(30)) {
     // Test that kythira::Future satisfies the future concept for all RPC response types
-    static_assert(kythira::future<rv_future_type, raft::request_vote_response<>>,
+    static_assert(kythira::future<rv_future_type, kythira::request_vote_response<>>,
                  "kythira::Future must satisfy future concept for RequestVote");
-    static_assert(kythira::future<ae_future_type, raft::append_entries_response<>>,
+    static_assert(kythira::future<ae_future_type, kythira::append_entries_response<>>,
                  "kythira::Future must satisfy future concept for AppendEntries");
-    static_assert(kythira::future<is_future_type, raft::install_snapshot_response<>>,
+    static_assert(kythira::future<is_future_type, kythira::install_snapshot_response<>>,
                  "kythira::Future must satisfy future concept for InstallSnapshot");
     
     // Test that the network_client concept requires the future concept
@@ -127,15 +127,15 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_compliance, * boost::unit_test:
     class mock_server {
     public:
         auto register_request_vote_handler(
-            std::function<raft::request_vote_response<>(const raft::request_vote_request<>&)> handler
+            std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
         ) -> void {}
         
         auto register_append_entries_handler(
-            std::function<raft::append_entries_response<>(const raft::append_entries_request<>&)> handler
+            std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
         ) -> void {}
         
         auto register_install_snapshot_handler(
-            std::function<raft::install_snapshot_response<>(const raft::install_snapshot_request<>&)> handler
+            std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
         ) -> void {}
         
         auto start() -> void {}
@@ -160,26 +160,26 @@ BOOST_AUTO_TEST_CASE(test_concrete_transport_implementations, * boost::unit_test
     public:
         auto send_request_vote(
             std::uint64_t target,
-            const raft::request_vote_request<>& request,
+            const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
         
         auto send_append_entries(
             std::uint64_t target,
-            const raft::append_entries_request<>& request,
+            const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
         
         auto send_install_snapshot(
             std::uint64_t target,
-            const raft::install_snapshot_request<>& request,
+            const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
         ) -> rv_future_type {
-            return rv_future_type(raft::request_vote_response<>{});
+            return rv_future_type(kythira::request_vote_response<>{});
         }
     };
     
@@ -217,7 +217,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_with_invalid_types, * boost::unit_
     public:
         auto send_request_vote(
             std::uint64_t target,
-            const raft::request_vote_request<>& request,
+            const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
         ) -> invalid_future {
             return invalid_future{};
@@ -225,7 +225,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_with_invalid_types, * boost::unit_
         
         auto send_append_entries(
             std::uint64_t target,
-            const raft::append_entries_request<>& request,
+            const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
         ) -> invalid_future {
             return invalid_future{};
@@ -233,7 +233,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_with_invalid_types, * boost::unit_
         
         auto send_install_snapshot(
             std::uint64_t target,
-            const raft::install_snapshot_request<>& request,
+            const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
         ) -> invalid_future {
             return invalid_future{};
@@ -254,11 +254,11 @@ BOOST_AUTO_TEST_CASE(test_rpc_method_return_type_enforcement, * boost::unit_test
     // This is enforced at compile time through the concept definition
     
     // Test that different future specializations work correctly
-    static_assert(kythira::future<rv_future_type, raft::request_vote_response<>>,
+    static_assert(kythira::future<rv_future_type, kythira::request_vote_response<>>,
                  "RequestVote future specialization must satisfy future concept");
-    static_assert(kythira::future<ae_future_type, raft::append_entries_response<>>,
+    static_assert(kythira::future<ae_future_type, kythira::append_entries_response<>>,
                  "AppendEntries future specialization must satisfy future concept");
-    static_assert(kythira::future<is_future_type, raft::install_snapshot_response<>>,
+    static_assert(kythira::future<is_future_type, kythira::install_snapshot_response<>>,
                  "InstallSnapshot future specialization must satisfy future concept");
     
     // Test that the concept enforces the correct return types for all RPC methods

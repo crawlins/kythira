@@ -85,6 +85,11 @@ public:
     auto get() -> MockExecutor* {
         return _executor.get();
     }
+    
+    // Get underlying executor (const version)
+    auto get() const -> void* {
+        return const_cast<MockExecutor*>(_executor.get());
+    }
 
 private:
     std::shared_ptr<MockExecutor> _executor;

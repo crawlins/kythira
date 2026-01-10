@@ -19,19 +19,19 @@ BOOST_AUTO_TEST_CASE(test_actual_http_request_handling) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_server_url;
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.connection_timeout = std::chrono::milliseconds{2000};
     config.request_timeout = std::chrono::milliseconds{5000};
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(node_map, config, metrics);
     
     // Create a test RequestVote request
-    raft::request_vote_request<> request;
+    kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 2;
     request._last_log_index = 0;
@@ -48,13 +48,13 @@ BOOST_AUTO_TEST_CASE(test_actual_http_request_handling) {
         
         // If we get here, something unexpected happened
         BOOST_TEST_MESSAGE("Unexpected success - httpbin.org responded to Raft RPC");
-    } catch (const raft::http_client_error& e) {
+    } catch (const kythira::http_client_error& e) {
         // Expected: 404 Not Found or similar client error
         exception_caught = true;
         error_message = e.what();
         BOOST_TEST_MESSAGE("Caught expected HTTP client error: " << error_message);
         BOOST_CHECK(e.status_code() >= 400 && e.status_code() < 500);
-    } catch (const raft::http_server_error& e) {
+    } catch (const kythira::http_server_error& e) {
         // Possible: 500 Internal Server Error
         exception_caught = true;
         error_message = e.what();
@@ -77,19 +77,19 @@ BOOST_AUTO_TEST_CASE(test_connection_to_nonexistent_server) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = "http://nonexistent.example.com:9999";
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.connection_timeout = std::chrono::milliseconds{1000};
     config.request_timeout = std::chrono::milliseconds{2000};
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::cpp_httplib_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
-        raft::noop_metrics
+    kythira::cpp_httplib_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics
     > client(node_map, config, metrics);
     
     // Create a test RequestVote request
-    raft::request_vote_request<> request;
+    kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 2;
     request._last_log_index = 0;

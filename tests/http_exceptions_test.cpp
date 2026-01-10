@@ -11,13 +11,13 @@ BOOST_AUTO_TEST_SUITE(http_exceptions_test)
 // Test http_transport_error base class
 BOOST_AUTO_TEST_CASE(test_http_transport_error_construction, * boost::unit_test::timeout(15)) {
     const std::string error_message = "Transport error occurred";
-    raft::http_transport_error error(error_message);
+    kythira::http_transport_error error(error_message);
     
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
 BOOST_AUTO_TEST_CASE(test_http_transport_error_inheritance, * boost::unit_test::timeout(15)) {
-    raft::http_transport_error error("Test error");
+    kythira::http_transport_error error("Test error");
     
     // Should be catchable as std::runtime_error
     try {
@@ -31,7 +31,7 @@ BOOST_AUTO_TEST_CASE(test_http_transport_error_inheritance, * boost::unit_test::
 BOOST_AUTO_TEST_CASE(test_http_client_error_construction, * boost::unit_test::timeout(15)) {
     constexpr int status_code_404 = 404;
     const std::string error_message = "Not Found";
-    raft::http_client_error error(status_code_404, error_message);
+    kythira::http_client_error error(status_code_404, error_message);
     
     BOOST_CHECK_EQUAL(error.status_code(), status_code_404);
     BOOST_CHECK_EQUAL(error.what(), error_message);
@@ -39,12 +39,12 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_construction, * boost::unit_test::ti
 
 BOOST_AUTO_TEST_CASE(test_http_client_error_inheritance, * boost::unit_test::timeout(15)) {
     constexpr int status_code_400 = 400;
-    raft::http_client_error error(status_code_400, "Bad Request");
+    kythira::http_client_error error(status_code_400, "Bad Request");
     
     // Should be catchable as http_transport_error
     try {
         throw error;
-    } catch (const raft::http_transport_error& e) {
+    } catch (const kythira::http_transport_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Bad Request");
     }
 }
@@ -56,11 +56,11 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_various_status_codes, * boost::unit_
     constexpr int status_code_404 = 404;
     constexpr int status_code_429 = 429;
     
-    raft::http_client_error error_400(status_code_400, "Bad Request");
-    raft::http_client_error error_401(status_code_401, "Unauthorized");
-    raft::http_client_error error_403(status_code_403, "Forbidden");
-    raft::http_client_error error_404(status_code_404, "Not Found");
-    raft::http_client_error error_429(status_code_429, "Too Many Requests");
+    kythira::http_client_error error_400(status_code_400, "Bad Request");
+    kythira::http_client_error error_401(status_code_401, "Unauthorized");
+    kythira::http_client_error error_403(status_code_403, "Forbidden");
+    kythira::http_client_error error_404(status_code_404, "Not Found");
+    kythira::http_client_error error_429(status_code_429, "Too Many Requests");
     
     BOOST_CHECK_EQUAL(error_400.status_code(), status_code_400);
     BOOST_CHECK_EQUAL(error_401.status_code(), status_code_401);
@@ -73,7 +73,7 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_various_status_codes, * boost::unit_
 BOOST_AUTO_TEST_CASE(test_http_server_error_construction, * boost::unit_test::timeout(15)) {
     constexpr int status_code_500 = 500;
     const std::string error_message = "Internal Server Error";
-    raft::http_server_error error(status_code_500, error_message);
+    kythira::http_server_error error(status_code_500, error_message);
     
     BOOST_CHECK_EQUAL(error.status_code(), status_code_500);
     BOOST_CHECK_EQUAL(error.what(), error_message);
@@ -81,12 +81,12 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_construction, * boost::unit_test::ti
 
 BOOST_AUTO_TEST_CASE(test_http_server_error_inheritance, * boost::unit_test::timeout(15)) {
     constexpr int status_code_503 = 503;
-    raft::http_server_error error(status_code_503, "Service Unavailable");
+    kythira::http_server_error error(status_code_503, "Service Unavailable");
     
     // Should be catchable as http_transport_error
     try {
         throw error;
-    } catch (const raft::http_transport_error& e) {
+    } catch (const kythira::http_transport_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Service Unavailable");
     }
 }
@@ -97,10 +97,10 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_various_status_codes, * boost::unit_
     constexpr int status_code_503 = 503;
     constexpr int status_code_504 = 504;
     
-    raft::http_server_error error_500(status_code_500, "Internal Server Error");
-    raft::http_server_error error_502(status_code_502, "Bad Gateway");
-    raft::http_server_error error_503(status_code_503, "Service Unavailable");
-    raft::http_server_error error_504(status_code_504, "Gateway Timeout");
+    kythira::http_server_error error_500(status_code_500, "Internal Server Error");
+    kythira::http_server_error error_502(status_code_502, "Bad Gateway");
+    kythira::http_server_error error_503(status_code_503, "Service Unavailable");
+    kythira::http_server_error error_504(status_code_504, "Gateway Timeout");
     
     BOOST_CHECK_EQUAL(error_500.status_code(), status_code_500);
     BOOST_CHECK_EQUAL(error_502.status_code(), status_code_502);
@@ -111,18 +111,18 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_various_status_codes, * boost::unit_
 // Test http_timeout_error
 BOOST_AUTO_TEST_CASE(test_http_timeout_error_construction, * boost::unit_test::timeout(15)) {
     const std::string error_message = "Request timeout after 5000ms";
-    raft::http_timeout_error error(error_message);
+    kythira::http_timeout_error error(error_message);
     
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
 BOOST_AUTO_TEST_CASE(test_http_timeout_error_inheritance, * boost::unit_test::timeout(15)) {
-    raft::http_timeout_error error("Connection timeout");
+    kythira::http_timeout_error error("Connection timeout");
     
     // Should be catchable as http_transport_error
     try {
         throw error;
-    } catch (const raft::http_transport_error& e) {
+    } catch (const kythira::http_transport_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Connection timeout");
     }
 }
@@ -130,18 +130,18 @@ BOOST_AUTO_TEST_CASE(test_http_timeout_error_inheritance, * boost::unit_test::ti
 // Test serialization_error
 BOOST_AUTO_TEST_CASE(test_serialization_error_construction, * boost::unit_test::timeout(15)) {
     const std::string error_message = "Failed to deserialize JSON response";
-    raft::serialization_error error(error_message);
+    kythira::serialization_error error(error_message);
     
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
 BOOST_AUTO_TEST_CASE(test_serialization_error_inheritance, * boost::unit_test::timeout(15)) {
-    raft::serialization_error error("Invalid JSON format");
+    kythira::serialization_error error("Invalid JSON format");
     
     // Should be catchable as http_transport_error
     try {
         throw error;
-    } catch (const raft::http_transport_error& e) {
+    } catch (const kythira::http_transport_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Invalid JSON format");
     }
 }
@@ -153,32 +153,32 @@ BOOST_AUTO_TEST_CASE(test_exception_hierarchy, * boost::unit_test::timeout(15)) 
     
     // All exceptions should be catchable as http_transport_error
     try {
-        throw raft::http_client_error(status_code_404, "Not Found");
-    } catch (const raft::http_transport_error&) {
+        throw kythira::http_client_error(status_code_404, "Not Found");
+    } catch (const kythira::http_transport_error&) {
         // Expected
     }
     
     try {
-        throw raft::http_server_error(status_code_500, "Internal Error");
-    } catch (const raft::http_transport_error&) {
+        throw kythira::http_server_error(status_code_500, "Internal Error");
+    } catch (const kythira::http_transport_error&) {
         // Expected
     }
     
     try {
-        throw raft::http_timeout_error("Timeout");
-    } catch (const raft::http_transport_error&) {
+        throw kythira::http_timeout_error("Timeout");
+    } catch (const kythira::http_transport_error&) {
         // Expected
     }
     
     try {
-        throw raft::serialization_error("Serialization failed");
-    } catch (const raft::http_transport_error&) {
+        throw kythira::serialization_error("Serialization failed");
+    } catch (const kythira::http_transport_error&) {
         // Expected
     }
     
     // All exceptions should be catchable as std::runtime_error
     try {
-        throw raft::http_transport_error("Base error");
+        throw kythira::http_transport_error("Base error");
     } catch (const std::runtime_error&) {
         // Expected
     }
@@ -189,8 +189,8 @@ BOOST_AUTO_TEST_CASE(test_status_code_preservation, * boost::unit_test::timeout(
     constexpr int client_status = 418;  // I'm a teapot
     constexpr int server_status = 507;  // Insufficient Storage
     
-    raft::http_client_error client_error(client_status, "Teapot error");
-    raft::http_server_error server_error(server_status, "Storage error");
+    kythira::http_client_error client_error(client_status, "Teapot error");
+    kythira::http_server_error server_error(server_status, "Storage error");
     
     BOOST_CHECK_EQUAL(client_error.status_code(), client_status);
     BOOST_CHECK_EQUAL(server_error.status_code(), server_status);

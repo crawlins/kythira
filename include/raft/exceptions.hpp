@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace raft {
+namespace kythira {
 
 // Base exception for all Raft-related errors
 class raft_exception : public std::runtime_error {
@@ -40,4 +40,4 @@ public:
         : raft_exception(message) {}
 };
 
-} // namespace raft
+} // namespace kythira

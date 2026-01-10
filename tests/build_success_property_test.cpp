@@ -60,9 +60,9 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
             // Test that HTTP transport templates can be instantiated
             // This validates that the templated transport layer compiles correctly
             using HttpClientType = kythira::cpp_httplib_client<
-                kythira::Future<raft::request_vote_response<>>,
-                raft::json_rpc_serializer<std::vector<std::byte>>,
-                raft::noop_metrics
+                kythira::Future<kythira::request_vote_response<>>,
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
+                kythira::noop_metrics
             >;
             
             // If this compiles, the HTTP transport templates are working
@@ -74,10 +74,10 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
         {
             // Test that CoAP transport templates can be instantiated
             using CoapClientType = kythira::coap_client<
-                kythira::Future<raft::request_vote_response<>>,
-                raft::json_rpc_serializer<std::vector<std::byte>>,
-                raft::noop_metrics,
-                raft::console_logger
+                kythira::Future<kythira::request_vote_response<>>,
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
+                kythira::noop_metrics,
+                kythira::console_logger
             >;
             
             // If this compiles, the CoAP transport templates are working
@@ -88,7 +88,7 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
         // Test 6: Network simulator types can be instantiated
         {
             // Test that network simulator can be instantiated with kythira::Future
-            using SimulatorType = kythira::NetworkSimulator<
+            using SimulatorType = network_simulator::NetworkSimulator<
                 std::string, 
                 unsigned short, 
                 kythira::Future<bool>

@@ -22,13 +22,14 @@ namespace {
     constexpr const char* test_endpoint = "coap://127.0.0.1:5683";
     
     // Test serializer type alias
-    using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
-    using test_metrics = raft::noop_metrics;
+    using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using test_metrics = kythira::noop_metrics;
     
 #ifdef LIBCOAP_AVAILABLE
-    using future_type = kythira::Future<raft::request_vote_response<>>;
-    using test_client = kythira::coap_client<future_type, test_serializer, test_metrics, raft::console_logger>;
-    using test_server = kythira::coap_server<future_type, test_serializer, test_metrics, raft::console_logger>;
+    using future_type = kythira::Future<kythira::request_vote_response<>>;
+    using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics, kythira::console_logger>;
+    using test_client = kythira::coap_client<test_types>;
+    using test_server = kythira::coap_server<test_types>;
 #endif
 }
 
@@ -48,7 +49,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, * boost::unit_test
 // Test that coap_server satisfies network_server concept
 BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, * boost::unit_test::timeout(15)) {
     // Static assertion to verify concept satisfaction
-    static_assert(kythira::network_server<test_server>, 
+    static_assert(kythira::network_server<test_server, future_type>, 
                   "coap_server must satisfy network_server concept");
     
     BOOST_TEST_MESSAGE("coap_server satisfies network_server concept");
@@ -59,7 +60,7 @@ BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, * boost::unit_test
 // Test RPC serializer integration with coap_client
 BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, * boost::unit_test::timeout(15)) {
     // Verify that the serializer satisfies rpc_serializer concept
-    static_assert(raft::rpc_serializer<test_serializer, std::vector<std::byte>>, 
+    static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>, 
                   "json_rpc_serializer must satisfy rpc_serializer concept");
     
 #ifdef LIBCOAP_AVAILABLE
@@ -68,7 +69,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, * boost::unit_
         {test_node_id, test_endpoint}
     };
     
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     test_metrics metrics;
     
     // This should compile without errors if concepts are satisfied
@@ -84,12 +85,12 @@ BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, * boost::unit_
 // Test RPC serializer integration with coap_server
 BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, * boost::unit_test::timeout(15)) {
     // Verify that the serializer satisfies rpc_serializer concept
-    static_assert(raft::rpc_serializer<test_serializer, std::vector<std::byte>>, 
+    static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>, 
                   "json_rpc_serializer must satisfy rpc_serializer concept");
     
 #ifdef LIBCOAP_AVAILABLE
     // Test server instantiation with serializer
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     test_metrics metrics;
     
     // This should compile without errors if concepts are satisfied
@@ -105,7 +106,7 @@ BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, * boost::unit_
 // Test metrics concept integration
 BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, * boost::unit_test::timeout(15)) {
     // Verify that noop_metrics satisfies metrics concept
-    static_assert(raft::metrics<test_metrics>, 
+    static_assert(kythira::metrics<test_metrics>, 
                   "noop_metrics must satisfy metrics concept");
     
 #ifdef LIBCOAP_AVAILABLE
@@ -114,8 +115,8 @@ BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, * boost::unit_test::timeo
         {test_node_id, test_endpoint}
     };
     
-    raft::coap_client_config client_config;
-    raft::coap_server_config server_config;
+    kythira::coap_client_config client_config;
+    kythira::coap_server_config server_config;
     test_metrics client_metrics;
     test_metrics server_metrics;
     
@@ -137,7 +138,7 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
         {test_node_id, test_endpoint}
     };
     
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     test_metrics metrics;
     test_client client(std::move(endpoints), config, metrics);
     
@@ -146,9 +147,9 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
     std::chrono::milliseconds timeout{5000};
     
     // Create test requests
-    raft::request_vote_request<> rv_request{1, 2, 3, 4};
-    raft::append_entries_request<> ae_request{1, 2, 3, 4, {}, 5};
-    raft::install_snapshot_request<> is_request{1, 2, 3, 4, {}};
+    kythira::request_vote_request<> rv_request{1, 2, 3, 4};
+    kythira::append_entries_request<> ae_request{1, 2, 3, 4, {}, 5};
+    kythira::install_snapshot_request<> is_request{1, 2, 3, 4, {}};
     
     // Test that methods return the correct future types
     auto rv_future = client.send_request_vote(target, rv_request, timeout);
@@ -156,9 +157,9 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
     auto is_future = client.send_install_snapshot(target, is_request, timeout);
     
     // Verify return types (these will be checked at compile time)
-    static_assert(std::same_as<decltype(rv_future), folly::Future<raft::request_vote_response<>>>);
-    static_assert(std::same_as<decltype(ae_future), folly::Future<raft::append_entries_response<>>>);
-    static_assert(std::same_as<decltype(is_future), folly::Future<raft::install_snapshot_response<>>>);
+    static_assert(std::same_as<decltype(rv_future), folly::Future<kythira::request_vote_response<>>>);
+    static_assert(std::same_as<decltype(ae_future), folly::Future<kythira::append_entries_response<>>>);
+    static_assert(std::same_as<decltype(is_future), folly::Future<kythira::install_snapshot_response<>>>);
     
     BOOST_TEST_MESSAGE("network_client concept requirements verified");
 #else
@@ -170,23 +171,23 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
 // Test network_server concept requirements in detail
 BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, * boost::unit_test::timeout(30)) {
 #ifdef LIBCOAP_AVAILABLE
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     test_metrics metrics;
     test_server server(test_bind_address, test_bind_port, config, metrics);
     
     // Test that all required methods exist and have correct signatures
     
     // Create test handlers
-    auto rv_handler = [](const raft::request_vote_request<>& req) -> raft::request_vote_response<> {
-        return raft::request_vote_response<>{req.term(), false};
+    auto rv_handler = [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+        return kythira::request_vote_response<>{req.term(), false};
     };
     
-    auto ae_handler = [](const raft::append_entries_request<>& req) -> raft::append_entries_response<> {
-        return raft::append_entries_response<>{req.term(), false};
+    auto ae_handler = [](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
+        return kythira::append_entries_response<>{req.term(), false};
     };
     
-    auto is_handler = [](const raft::install_snapshot_request<>& req) -> raft::install_snapshot_response<> {
-        return raft::install_snapshot_response<>{req.term()};
+    auto is_handler = [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
+        return kythira::install_snapshot_response<>{req.term()};
     };
     
     // Test handler registration methods
@@ -209,13 +210,14 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, * boost::unit_tes
 // Test that non-conforming types do not satisfy concepts
 BOOST_AUTO_TEST_CASE(test_non_conforming_types, * boost::unit_test::timeout(15)) {
     // Test that a non-conforming serializer does not satisfy rpc_serializer concept
+    // Make it not satisfy by using a non-byte data type
     class non_serializer {
     public:
         // Missing required methods
         auto serialize(int x) -> std::vector<std::byte> { return {}; }
     };
     
-    static_assert(!raft::rpc_serializer<non_serializer, std::vector<std::byte>>, 
+    static_assert(!kythira::rpc_serializer<non_serializer, std::vector<int>>, 
                   "non_serializer must not satisfy rpc_serializer concept");
     
     // Test that a non-conforming metrics class does not satisfy metrics concept
@@ -225,7 +227,7 @@ BOOST_AUTO_TEST_CASE(test_non_conforming_types, * boost::unit_test::timeout(15))
         auto add_one() -> void {}
     };
     
-    static_assert(!raft::metrics<non_metrics>, 
+    static_assert(!kythira::metrics<non_metrics>, 
                   "non_metrics must not satisfy metrics concept");
     
     BOOST_TEST_MESSAGE("Non-conforming types correctly rejected by concepts");
@@ -238,19 +240,19 @@ BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, * boost::unit_test::ti
     // Verify that coap_client and coap_server have proper template constraints
     
     // This should compile - valid template parameters
-    using valid_client = raft::coap_client<test_serializer, test_metrics>;
-    using valid_server = raft::coap_server<test_serializer, test_metrics>;
+    using valid_client = kythira::coap_client<test_serializer, test_metrics>;
+    using valid_server = kythira::coap_server<test_serializer, test_metrics>;
     
     // Verify the types are instantiable
     static_assert(std::is_constructible_v<valid_client, 
                   std::unordered_map<std::uint64_t, std::string>, 
-                  raft::coap_client_config, 
+                  kythira::coap_client_config, 
                   test_metrics>);
     
     static_assert(std::is_constructible_v<valid_server, 
                   std::string, 
                   std::uint16_t, 
-                  raft::coap_server_config, 
+                  kythira::coap_server_config, 
                   test_metrics>);
     
     BOOST_TEST_MESSAGE("Template parameter constraints verified");

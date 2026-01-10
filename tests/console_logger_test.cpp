@@ -16,7 +16,7 @@ auto test_basic_logging() -> bool {
     std::cout << "Test 1: Basic logging methods\n";
     
     try {
-        raft::console_logger logger;
+        kythira::console_logger logger;
         
         logger.trace("This is a trace message");
         logger.debug("This is a debug message");
@@ -37,10 +37,10 @@ auto test_structured_logging() -> bool {
     std::cout << "Test 2: Structured logging with key-value pairs\n";
     
     try {
-        raft::console_logger logger;
+        kythira::console_logger logger;
         
         logger.log(
-            raft::log_level::info,
+            kythira::log_level::info,
             "Leader election started",
             {
                 {"term", "42"},
@@ -50,7 +50,7 @@ auto test_structured_logging() -> bool {
         );
         
         logger.log(
-            raft::log_level::warning,
+            kythira::log_level::warning,
             "Network partition detected",
             {
                 {"affected_nodes", "3"},
@@ -59,7 +59,7 @@ auto test_structured_logging() -> bool {
         );
         
         logger.log(
-            raft::log_level::error,
+            kythira::log_level::error,
             "Persistence failure",
             {
                 {"error_code", "ENOSPC"},
@@ -79,7 +79,7 @@ auto test_log_level_filtering() -> bool {
     std::cout << "Test 3: Log level filtering\n";
     
     try {
-        raft::console_logger logger(raft::log_level::warning);
+        kythira::console_logger logger(kythira::log_level::warning);
         
         std::cout << "  (Messages below WARNING should not appear)\n";
         logger.trace("This should not appear");
@@ -90,13 +90,13 @@ auto test_log_level_filtering() -> bool {
         logger.critical("This critical should appear");
         
         // Verify min level getter
-        if (logger.get_min_level() != raft::log_level::warning) {
+        if (logger.get_min_level() != kythira::log_level::warning) {
             std::cerr << "  ✗ Min level getter failed\n\n";
             return false;
         }
         
         // Change min level
-        logger.set_min_level(raft::log_level::error);
+        logger.set_min_level(kythira::log_level::error);
         std::cout << "  (Changed min level to ERROR)\n";
         logger.warning("This warning should not appear");
         logger.error("This error should appear");
@@ -113,7 +113,7 @@ auto test_thread_safety() -> bool {
     std::cout << "Test 4: Thread safety\n";
     
     try {
-        raft::console_logger logger;
+        kythira::console_logger logger;
         std::vector<std::thread> threads;
         
         // Launch multiple threads that log concurrently
@@ -124,7 +124,7 @@ auto test_thread_safety() -> bool {
                                " message " + std::to_string(j));
                     
                     logger.log(
-                        raft::log_level::debug,
+                        kythira::log_level::debug,
                         "Structured message",
                         {
                             {"thread_id", std::to_string(i)},
@@ -152,7 +152,7 @@ auto test_concept_satisfaction() -> bool {
     std::cout << "Test 5: Concept satisfaction\n";
     
     // Compile-time verification
-    static_assert(raft::diagnostic_logger<raft::console_logger>,
+    static_assert(kythira::diagnostic_logger<kythira::console_logger>,
         "console_logger must satisfy diagnostic_logger concept");
     
     std::cout << "  ✓ Concept satisfaction passed\n\n";

@@ -7,14 +7,14 @@ BOOST_AUTO_TEST_SUITE(raft_configuration_concept_tests)
 
 // Test that the default raft_configuration satisfies the concept
 BOOST_AUTO_TEST_CASE(test_default_raft_configuration_satisfies_concept) {
-    static_assert(raft::raft_configuration_type<raft::raft_configuration>,
+    static_assert(kythira::raft_configuration_type<kythira::raft_configuration>,
                   "Default raft_configuration should satisfy raft_configuration_type concept");
     BOOST_CHECK(true);
 }
 
 // Test that default values are reasonable
 BOOST_AUTO_TEST_CASE(test_default_raft_configuration_values) {
-    raft::raft_configuration config;
+    kythira::raft_configuration config;
     
     // Test election timeout range
     BOOST_CHECK_EQUAL(config.election_timeout_min().count(), 150);
@@ -58,7 +58,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration) {
         auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
     };
     
-    static_assert(raft::raft_configuration_type<custom_raft_configuration>,
+    static_assert(kythira::raft_configuration_type<custom_raft_configuration>,
                   "Custom configuration should satisfy raft_configuration_type concept");
     
     custom_raft_configuration config;
@@ -73,7 +73,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration) {
 
 // Test that configuration values can be modified
 BOOST_AUTO_TEST_CASE(test_modifiable_raft_configuration) {
-    raft::raft_configuration config;
+    kythira::raft_configuration config;
     
     // Modify values
     config._election_timeout_min = std::chrono::milliseconds{250};

@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Create CoAP client configuration
-            raft::coap_client_config config;
+            kythira::coap_client_config config;
             config.ack_timeout = std::chrono::milliseconds{1000};
             config.max_retransmit = 2;
             config.enable_dtls = false;
@@ -57,26 +57,26 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
             endpoints[target_node] = test_coap_endpoint;
             
             // Create metrics and client
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
                 std::move(endpoints), config, metrics, std::move(logger));
             
             // Test interface validation for all RPC types
-            raft::request_vote_request<> rv_request;
+            kythira::request_vote_request<> rv_request;
             rv_request._term = term_dist(rng);
             rv_request._candidate_id = node_dist(rng);
             rv_request._last_log_index = index_dist(rng);
             rv_request._last_log_term = term_dist(rng);
             
-            raft::append_entries_request<> ae_request;
+            kythira::append_entries_request<> ae_request;
             ae_request._term = term_dist(rng);
             ae_request._leader_id = node_dist(rng);
             ae_request._prev_log_index = index_dist(rng);
             ae_request._prev_log_term = term_dist(rng);
             ae_request._leader_commit = index_dist(rng);
             
-            raft::install_snapshot_request<> is_request;
+            kythira::install_snapshot_request<> is_request;
             is_request._term = term_dist(rng);
             is_request._leader_id = node_dist(rng);
             is_request._last_included_index = index_dist(rng);
@@ -90,7 +90,7 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
             
             // Test AppendEntries future resolution
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._prev_log_index = index_dist(rng);
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
                 
                 // Add some entries
                 for (std::size_t j = 0; j < 2; ++j) {
-                    raft::log_entry<> entry;
+                    kythira::log_entry<> entry;
                     entry._term = term_dist(rng);
                     entry._index = index_dist(rng);
                     entry._command = {std::byte{0x01}, std::byte{0x02}};
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
             
             // Test InstallSnapshot future resolution
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._last_included_index = index_dist(rng);
@@ -182,19 +182,19 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
 
 // Test that futures are properly invalidated after resolution
 BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution, * boost::unit_test::timeout(45)) {
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     config.ack_timeout = std::chrono::milliseconds{500};
     config.max_retransmit = 1;
     
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
-    raft::request_vote_request<> request;
+    kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 1;
     request._last_log_index = 0;
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution, * boost::unit_te
 
 // Test concurrent future resolution
 BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution, * boost::unit_test::timeout(60)) {
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     config.ack_timeout = std::chrono::milliseconds{500};
     config.max_retransmit = 1;
     
@@ -217,16 +217,16 @@ BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution, * boost::unit_test::time
     endpoints[1] = test_coap_endpoint;
     endpoints[2] = "coap://127.0.0.1:5684";
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
     // Test interface validation for multiple concurrent requests
     std::size_t successful_requests = 0;
     
     for (std::size_t i = 0; i < 5; ++i) {
-        raft::request_vote_request<> request;
+        kythira::request_vote_request<> request;
         request._term = i + 1;
         request._candidate_id = 1;
         request._last_log_index = i;

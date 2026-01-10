@@ -40,23 +40,23 @@ auto test_cluster_initialization() -> bool {
         
         auto sim_node = simulator.create_node(node_id);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::simulator_network_server<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::info},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::info},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -83,7 +83,7 @@ auto test_membership_manager() -> bool {
     std::cout << "\nTest 2: Membership Manager\n";
     
     try {
-        auto membership = raft::default_membership_manager<>{};
+        auto membership = kythira::default_membership_manager<>{};
         
         // Test node validation
         constexpr std::uint64_t new_node_id = 2;
@@ -110,7 +110,7 @@ auto test_cluster_configuration() -> bool {
     
     try {
         // Create a cluster configuration
-        raft::cluster_configuration<std::uint64_t> config;
+        kythira::cluster_configuration<std::uint64_t> config;
         config._nodes = {1, 2, 3};
         config._is_joint_consensus = false;
         config._old_nodes = std::nullopt;
@@ -119,9 +119,9 @@ auto test_cluster_configuration() -> bool {
         std::cout << "  Joint consensus: " << (config.is_joint_consensus() ? "yes" : "no") << "\n";
         
         // Test joint consensus configuration
-        auto membership = raft::default_membership_manager<>{};
+        auto membership = kythira::default_membership_manager<>{};
         
-        raft::cluster_configuration<std::uint64_t> new_config;
+        kythira::cluster_configuration<std::uint64_t> new_config;
         new_config._nodes = {1, 2, 3, 4};
         new_config._is_joint_consensus = false;
         new_config._old_nodes = std::nullopt;

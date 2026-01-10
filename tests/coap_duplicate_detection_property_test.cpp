@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
             // Test client-side duplicate detection
             {
                 // Create client configuration
-                raft::coap_client_config config;
+                kythira::coap_client_config config;
                 
                 // Create endpoint mapping
                 std::unordered_map<std::uint64_t, std::string> endpoints;
@@ -53,9 +53,9 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
                 endpoints[target_node] = "coap://127.0.0.1:5683";
                 
                 // Create client
-                raft::noop_metrics metrics;
-                raft::console_logger logger;
-                raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+                kythira::noop_metrics metrics;
+                kythira::console_logger logger;
+                kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                     client(std::move(endpoints), config, metrics, std::move(logger));
                 
                 // Generate random message IDs and test duplicate detection
@@ -95,12 +95,12 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
             // Test server-side duplicate detection
             {
                 // Create server configuration
-                raft::coap_server_config config;
+                kythira::coap_server_config config;
                 
                 // Create server
-                raft::noop_metrics metrics;
-                raft::console_logger logger;
-                raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+                kythira::noop_metrics metrics;
+                kythira::console_logger logger;
+                kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                     server("127.0.0.1", 5683, config, metrics, std::move(logger));
                 
                 // Generate random message IDs and test duplicate detection
@@ -139,13 +139,13 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
             
             // Test duplicate detection with multiple occurrences of same message ID
             {
-                raft::coap_client_config config;
+                kythira::coap_client_config config;
                 std::unordered_map<std::uint64_t, std::string> endpoints;
                 endpoints[1] = "coap://127.0.0.1:5683";
                 
-                raft::noop_metrics metrics;
-                raft::console_logger logger;
-                raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+                kythira::noop_metrics metrics;
+                kythira::console_logger logger;
+                kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                     client(std::move(endpoints), config, metrics, std::move(logger));
                 
                 std::uint16_t msg_id = msg_id_dist(rng);

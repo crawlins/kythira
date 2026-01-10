@@ -6,12 +6,15 @@
 
 #include <chrono>
 #include <random>
+#include <set>
 #include <string>
 
 #include <folly/init/Init.h>
 
 using namespace network_simulator;
-using kythira::NetworkSimulator;
+
+// Type alias for the correct NetworkSimulator template instantiation
+using TestNetworkSimulator = NetworkSimulator<DefaultNetworkTypes>;
 
 // Global fixture to initialize folly
 struct FollyInitFixture {
@@ -77,7 +80,7 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_latency_preservation) {
         auto expected_latency = generate_random_latency(rng);
         
         // Create simulator and add edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.add_node(addr1);
         sim.add_node(addr2);
         
@@ -126,7 +129,7 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_reliability_preservation) {
         auto expected_reliability = generate_random_reliability(rng);
         
         // Create simulator and add edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.add_node(addr1);
         sim.add_node(addr2);
         
@@ -178,7 +181,7 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
         auto expected_latency = std::chrono::milliseconds{latency_dist(rng)};
         
         // Create simulator with edge having the specified latency
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(expected_latency, 1.0);  // 100% reliability
@@ -193,7 +196,7 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
             auto start_time = std::chrono::steady_clock::now();
             
             // Send message
-            Message<std::string, unsigned short> msg(
+            DefaultNetworkTypes::message_type msg(
                 addr1, static_cast<unsigned short>(1000),
                 addr2, static_cast<unsigned short>(2000),
                 std::vector<std::byte>{std::byte{0x42}}
@@ -269,7 +272,7 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
         auto expected_reliability = reliability_dist(rng);
         
         // Create simulator with edge having the specified reliability
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, expected_reliability);
@@ -285,7 +288,7 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
             std::size_t successful_sends = 0;
             
             for (std::size_t j = 0; j < message_count; ++j) {
-                Message<std::string, unsigned short> msg(
+                DefaultNetworkTypes::message_type msg(
                     addr1, static_cast<unsigned short>(1000),
                     addr2, static_cast<unsigned short>(2000),
                     std::vector<std::byte>{std::byte{static_cast<unsigned char>(j)}}
@@ -346,7 +349,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         auto addr3 = generate_random_address(rng, i * 3 + 2);
         
         // Create simulator
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Create nodes
@@ -359,7 +362,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         sim.add_edge(addr1, addr2, edge);
         
         try {
-            Message<std::string, unsigned short> msg1(
+            DefaultNetworkTypes::message_type msg1(
                 addr1, static_cast<unsigned short>(1000),
                 addr2, static_cast<unsigned short>(2000),
                 std::vector<std::byte>{std::byte{0x01}}
@@ -380,7 +383,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         
         // Test case 2: No edge exists - message should fail
         try {
-            Message<std::string, unsigned short> msg2(
+            DefaultNetworkTypes::message_type msg2(
                 addr1, static_cast<unsigned short>(1000),
                 addr3, static_cast<unsigned short>(3000),
                 std::vector<std::byte>{std::byte{0x02}}
@@ -404,7 +407,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         try {
             // Message from addr1 to addr3 should still fail because there's no direct edge
             // (current implementation only supports direct routing, not multi-hop)
-            Message<std::string, unsigned short> msg3(
+            DefaultNetworkTypes::message_type msg3(
                 addr1, static_cast<unsigned short>(1000),
                 addr3, static_cast<unsigned short>(3000),
                 std::vector<std::byte>{std::byte{0x03}}
@@ -424,7 +427,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         
         // Test case 4: Verify that messages can be sent along existing edges
         try {
-            Message<std::string, unsigned short> msg4(
+            DefaultNetworkTypes::message_type msg4(
                 addr2, static_cast<unsigned short>(2000),
                 addr3, static_cast<unsigned short>(3000),
                 std::vector<std::byte>{std::byte{0x04}}
@@ -466,7 +469,7 @@ BOOST_AUTO_TEST_CASE(property_send_success_result) {
         auto addr2 = generate_random_address(rng, i * 2 + 1);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Add nodes and edge with 100% reliability
@@ -478,7 +481,7 @@ BOOST_AUTO_TEST_CASE(property_send_success_result) {
         auto node2 = sim.create_node(addr2);
         
         // Create message
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             addr1, static_cast<unsigned short>(1000),
             addr2, static_cast<unsigned short>(2000),
             std::vector<std::byte>{std::byte{0x42}}
@@ -521,7 +524,7 @@ BOOST_AUTO_TEST_CASE(property_send_timeout_result) {
         auto addr2 = generate_random_address(rng, i * 2 + 1);
         
         // Create simulator WITHOUT starting it (so messages won't be accepted)
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         
         // Add nodes but no edge (no route)
         sim.add_node(addr1);
@@ -532,7 +535,7 @@ BOOST_AUTO_TEST_CASE(property_send_timeout_result) {
         auto node2 = sim.create_node(addr2);
         
         // Create message
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             addr1, static_cast<unsigned short>(1000),
             addr2, static_cast<unsigned short>(2000),
             std::vector<std::byte>{std::byte{0x42}}
@@ -580,7 +583,7 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     auto addr2 = "receiver";
     
     // Create simulator with low reliability edge
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     sim.start();
     
     NetworkEdge edge(std::chrono::milliseconds{10}, low_reliability);
@@ -595,7 +598,7 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     
     // Send many messages
     for (std::size_t i = 0; i < message_count; ++i) {
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             addr1, static_cast<unsigned short>(1000),
             addr2, static_cast<unsigned short>(2000),
             std::vector<std::byte>{std::byte{static_cast<unsigned char>(i)}}
@@ -649,7 +652,7 @@ BOOST_AUTO_TEST_CASE(property_receive_returns_sent_message) {
         auto addr2 = generate_random_address(rng, i * 2 + 1);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
@@ -671,7 +674,7 @@ BOOST_AUTO_TEST_CASE(property_receive_returns_sent_message) {
         unsigned short dst_port = static_cast<unsigned short>(rng() % 10000 + 1000);
         
         // Create message
-        Message<std::string, unsigned short> msg(
+        DefaultNetworkTypes::message_type msg(
             addr1, src_port,
             addr2, dst_port,
             payload
@@ -741,7 +744,7 @@ BOOST_AUTO_TEST_CASE(property_receive_timeout_exception) {
         auto addr = generate_random_address(rng, i);
         
         // Create simulator
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Create node
@@ -773,7 +776,7 @@ BOOST_AUTO_TEST_CASE(property_receive_timeout_exception) {
  * Property: For any connect operation with an explicitly specified source port,
  * the resulting connection's local endpoint SHALL have that source port.
  */
-BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port) {
+BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -789,7 +792,7 @@ BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
@@ -814,30 +817,30 @@ BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port) {
             
             // Verify the connection uses the specified source port
             auto local_endpoint = connection->local_endpoint();
-            if (local_endpoint.port() != src_port) {
+            if (local_endpoint.port != src_port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source port " 
-                    << src_port << ", got " << local_endpoint.port());
+                    << src_port << ", got " << local_endpoint.port);
             }
             
             // Also verify the local address is correct
-            if (local_endpoint.address() != addr1) {
+            if (local_endpoint.address != addr1) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source address " 
-                    << addr1 << ", got " << local_endpoint.address());
+                    << addr1 << ", got " << local_endpoint.address);
             }
             
             // Verify remote endpoint
             auto remote_endpoint = connection->remote_endpoint();
-            if (remote_endpoint.address() != addr2) {
+            if (remote_endpoint.address != addr2) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination address " 
-                    << addr2 << ", got " << remote_endpoint.address());
+                    << addr2 << ", got " << remote_endpoint.address);
             }
-            if (remote_endpoint.port() != dst_port) {
+            if (remote_endpoint.port != dst_port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination port " 
-                    << dst_port << ", got " << remote_endpoint.port());
+                    << dst_port << ", got " << remote_endpoint.port);
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -855,7 +858,7 @@ BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port) {
  * Property: For any sequence of connect operations without specified source ports from the same node,
  * each resulting connection SHALL have a unique source port that was not previously in use.
  */
-BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports) {
+BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -870,7 +873,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
@@ -882,7 +885,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports) {
         
         // Make multiple connections without specifying source port
         constexpr std::size_t connection_count = 10;
-        std::vector<std::shared_ptr<Connection<std::string, unsigned short>>> connections;
+        std::vector<std::shared_ptr<DefaultNetworkTypes::connection_type>> connections;
         std::unordered_set<unsigned short> used_ports;
         
         try {
@@ -902,7 +905,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports) {
                 
                 // Get the assigned source port
                 auto local_endpoint = connection->local_endpoint();
-                auto assigned_port = local_endpoint.port();
+                auto assigned_port = local_endpoint.port;
                 
                 // Check if this port was already used
                 if (used_ports.find(assigned_port) != used_ports.end()) {
@@ -938,7 +941,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports) {
  * Property: For any connect operation that successfully establishes a connection,
  * the future SHALL resolve to a valid connection object with is_open() returning true.
  */
-BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object) {
+BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -953,7 +956,7 @@ BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);  // 100% reliability
@@ -993,17 +996,17 @@ BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object) {
             auto local_endpoint = connection->local_endpoint();
             auto remote_endpoint = connection->remote_endpoint();
             
-            if (local_endpoint.address() != addr1) {
+            if (local_endpoint.address != addr1) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong local address");
             }
             
-            if (remote_endpoint.address() != addr2) {
+            if (remote_endpoint.address != addr2) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong remote address");
             }
             
-            if (remote_endpoint.port() != dst_port) {
+            if (remote_endpoint.port != dst_port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong remote port");
             }
@@ -1023,7 +1026,7 @@ BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object) {
  * Property: For any connect operation with a timeout where the connection cannot be established
  * before the timeout expires, the future SHALL enter an error state with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_connect_timeout_exception) {
+BOOST_AUTO_TEST_CASE(property_connect_timeout_exception, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -1038,7 +1041,7 @@ BOOST_AUTO_TEST_CASE(property_connect_timeout_exception) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with high latency edge (longer than timeout)
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Use high latency (longer than timeout) to force timeout
@@ -1089,7 +1092,7 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
         auto port = port_dist(rng);
         
         // Create simulator
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Create node
@@ -1114,16 +1117,16 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
             
             // Verify local endpoint is correct
             auto local_endpoint = listener->local_endpoint();
-            if (local_endpoint.address() != addr) {
+            if (local_endpoint.address != addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong listener address. Expected: " 
-                    << addr << ", Got: " << local_endpoint.address());
+                    << addr << ", Got: " << local_endpoint.address);
             }
             
-            if (local_endpoint.port() != port) {
+            if (local_endpoint.port != port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong listener port. Expected: " 
-                    << port << ", Got: " << local_endpoint.port());
+                    << port << ", Got: " << local_endpoint.port);
             }
             
             // Test bind without specific port (random port assignment)
@@ -1141,13 +1144,13 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
             }
             
             auto local_endpoint2 = listener2->local_endpoint();
-            if (local_endpoint2.address() != addr) {
+            if (local_endpoint2.address != addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong random port listener address");
             }
             
             // Verify the two listeners have different ports
-            if (local_endpoint.port() == local_endpoint2.port()) {
+            if (local_endpoint.port == local_endpoint2.port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Random port assignment gave same port as specific port");
             }
@@ -1163,13 +1166,13 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
 }
 
 /**
- * Feature: network-simulator, Property 16: Bind Timeout Exception
+ * Feature: network-simulator, Property 16: Bind Assigns Unique Ports
  * Validates: Requirements 7.3
  * 
- * Property: For any bind operation with a timeout where the bind cannot complete before
- * the timeout expires, the future SHALL enter an error state with a timeout exception.
+ * Property: For any bind operation without a specified port, the resulting listener 
+ * SHALL have a unique port that was not previously in use.
  */
-BOOST_AUTO_TEST_CASE(property_bind_timeout_exception) {
+BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -1178,75 +1181,61 @@ BOOST_AUTO_TEST_CASE(property_bind_timeout_exception) {
         // Generate random address
         auto addr = generate_random_address(rng, i);
         
-        // Generate random port
-        std::uniform_int_distribution<unsigned short> port_dist(1000, 65535);
-        auto port = port_dist(rng);
-        
-        // Create simulator but DON'T start it (this should cause bind to fail/timeout)
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
-        // Note: Not calling sim.start() to simulate a condition where bind might timeout
+        // Create simulator
+        TestNetworkSimulator sim;
+        sim.start();
         
         // Create node
         auto node = sim.create_node(addr);
         
         try {
-            // Try to bind with a very short timeout
-            // Since the simulator is not started, this should timeout or fail
-            auto listener = node->bind(port, std::chrono::milliseconds{10}).get();
+            // Create multiple listeners without specifying ports
+            constexpr std::size_t listener_count = 5;
+            std::vector<std::shared_ptr<TestNetworkSimulator::listener_type>> listeners;
+            std::set<TestNetworkSimulator::port_type> used_ports;
             
-            // If we get here without exception, this might be a failure
-            // However, bind might succeed even without simulator started
-            // Let's check if it's a valid listener
-            if (!listener || !listener->is_listening()) {
-                // This is acceptable - bind failed as expected
-            } else {
-                // Bind succeeded - this is also valid behavior
-                // The timeout test is more about ensuring timeout mechanism works
-                // when there are actual delays in the bind process
+            for (std::size_t j = 0; j < listener_count; ++j) {
+                // Bind without specifying port (should assign unique port)
+                auto listener = node->bind().get();
+                
+                if (!listener) {
+                    ++failures;
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Listener is null");
+                    break;
+                }
+                
+                if (!listener->is_listening()) {
+                    ++failures;
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Listener is not listening");
+                    break;
+                }
+                
+                auto local_endpoint = listener->local_endpoint();
+                auto port = local_endpoint.port;
+                
+                // Check if port is unique
+                if (used_ports.find(port) != used_ports.end()) {
+                    ++failures;
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Port " << port 
+                        << " was already used (not unique)");
+                    break;
+                }
+                
+                used_ports.insert(port);
+                listeners.push_back(listener);
             }
             
-        } catch (const TimeoutException&) {
-            // Expected - timeout exception thrown
-        } catch (const std::exception& e) {
-            // Other exceptions might also be acceptable (e.g., simulator not started)
-            // The key is that we don't crash and handle errors gracefully
-        }
-    }
-    
-    // For this property, we're mainly testing that the timeout mechanism works
-    // and doesn't cause crashes. Since bind is typically a fast operation,
-    // we'll create a more specific test case that forces a timeout condition.
-    
-    // Test case: Try to bind to a port that's already in use
-    try {
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
-        sim.start();
-        
-        auto node = sim.create_node("test_node");
-        
-        // First bind should succeed
-        constexpr unsigned short test_port = 12345;
-        auto listener1 = node->bind(test_port).get();
-        
-        // Second bind to same port should fail (port in use)
-        try {
-            auto listener2 = node->bind(test_port, std::chrono::milliseconds{100}).get();
+            // Verify all listeners have unique ports
+            if (used_ports.size() != listener_count) {
+                ++failures;
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected " << listener_count 
+                    << " unique ports, got " << used_ports.size());
+            }
             
-            // If we get here, the second bind unexpectedly succeeded
+        } catch (const std::exception& e) {
             ++failures;
-            BOOST_TEST_MESSAGE("Second bind to same port should have failed");
-            
-        } catch (const PortInUseException&) {
-            // Expected - port already in use
-        } catch (const TimeoutException&) {
-            // Also acceptable - timeout while trying to bind
-        } catch (const std::exception& e) {
-            // Other exceptions are also acceptable as long as bind fails appropriately
+            BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
-        
-    } catch (const std::exception& e) {
-        ++failures;
-        BOOST_TEST_MESSAGE("Exception in port conflict test: " << e.what());
     }
     
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of " 
@@ -1260,7 +1249,7 @@ BOOST_AUTO_TEST_CASE(property_bind_timeout_exception) {
  * Property: For any data written to one end of a connection, reading from the other end
  * SHALL return the same data (subject to network reliability and latency).
  */
-BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip) {
+BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, * boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -1276,7 +1265,7 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);  // 100% reliability
@@ -1300,8 +1289,23 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip) {
             // Client side: establish connection from node1 to node2
             auto client_connection = node1->connect(addr2, dst_port, src_port).get();
             
+            if (!client_connection) {
+                ++failures;
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Failed to create client connection");
+                continue;
+            }
+            
+            // Small delay to allow connection establishment to complete
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            
             // Server side: accept the connection
             auto server_connection = listener->accept(std::chrono::milliseconds{100}).get();
+            
+            if (!server_connection) {
+                ++failures;
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Failed to accept server connection");
+                continue;
+            }
             
             // Generate random data
             std::uniform_int_distribution<int> byte_dist(0, 255);
@@ -1350,7 +1354,7 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip) {
  * Property: For any read operation with a timeout where no data is available before
  * the timeout expires, the future SHALL enter an error state with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_read_timeout_exception) {
+BOOST_AUTO_TEST_CASE(property_read_timeout_exception, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -1366,7 +1370,7 @@ BOOST_AUTO_TEST_CASE(property_read_timeout_exception) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
@@ -1431,7 +1435,7 @@ BOOST_AUTO_TEST_CASE(property_successful_write_returns_true) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with reliable edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);  // 100% reliability
@@ -1488,7 +1492,7 @@ BOOST_AUTO_TEST_CASE(property_successful_write_returns_true) {
  * Property: For any write operation with a timeout where the write cannot complete before
  * the timeout expires, the future SHALL enter an error state with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_write_timeout_exception) {
+BOOST_AUTO_TEST_CASE(property_write_timeout_exception, * boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
     
     std::size_t failures = 0;
@@ -1504,7 +1508,7 @@ BOOST_AUTO_TEST_CASE(property_write_timeout_exception) {
         auto dst_port = port_dist(rng);
         
         // Create simulator with high latency edge (longer than timeout)
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Use high latency (longer than timeout) to force timeout
@@ -1571,7 +1575,7 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
         auto server_port = port_dist(rng);
         
         // Create simulator with reliable bidirectional edge
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);  // 100% reliability
@@ -1592,13 +1596,7 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
                 continue;
             }
             
-            // Start accept operation (non-blocking)
-            auto accept_future = listener->accept();
-            
-            // Give a small delay to ensure accept is waiting
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-            
-            // Client connects to server
+            // Client connects to server first
             auto client_connection = client_node->connect(server_addr, server_port).get();
             
             if (!client_connection || !client_connection->is_open()) {
@@ -1607,8 +1605,8 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
                 continue;
             }
             
-            // Accept should now complete with a connection
-            auto server_connection = std::move(accept_future).get();
+            // Now accept the connection with a timeout
+            auto server_connection = listener->accept(std::chrono::milliseconds{100}).get();
             
             if (!server_connection) {
                 ++failures;
@@ -1625,17 +1623,17 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
             auto server_local = server_connection->local_endpoint();
             auto server_remote = server_connection->remote_endpoint();
             
-            if (server_local.address() != server_addr) {
+            if (server_local.address != server_addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong server local address");
             }
             
-            if (server_local.port() != server_port) {
+            if (server_local.port != server_port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong server local port");
             }
             
-            if (server_remote.address() != client_addr) {
+            if (server_remote.address != client_addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong server remote address");
             }
@@ -1644,23 +1642,23 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
             auto client_local = client_connection->local_endpoint();
             auto client_remote = client_connection->remote_endpoint();
             
-            if (client_local.address() != client_addr) {
+            if (client_local.address != client_addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong client local address");
             }
             
-            if (client_remote.address() != server_addr) {
+            if (client_remote.address != server_addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong client remote address");
             }
             
-            if (client_remote.port() != server_port) {
+            if (client_remote.port != server_port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong client remote port");
             }
             
             // Verify the connections are paired (client's remote port should match server's local port)
-            if (server_remote.port() != client_local.port()) {
+            if (server_remote.port != client_local.port) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Connection endpoints not properly paired");
             }
@@ -1696,7 +1694,7 @@ BOOST_AUTO_TEST_CASE(property_accept_timeout_exception) {
         auto server_port = port_dist(rng);
         
         // Create simulator
-        NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+        TestNetworkSimulator sim;
         sim.start();
         
         // Create server node

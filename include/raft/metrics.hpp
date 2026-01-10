@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <chrono>
 
-namespace raft {
+namespace kythira {
 
 // Metrics concept for collecting and reporting performance metrics
 template<typename M>
@@ -60,4 +60,4 @@ public:
 // Verify that noop_metrics satisfies the metrics concept
 static_assert(metrics<noop_metrics>, "noop_metrics must satisfy metrics concept");
 
-} // namespace raft
+} // namespace kythira

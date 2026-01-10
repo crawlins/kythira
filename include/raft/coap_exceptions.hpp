@@ -4,7 +4,7 @@
 #include <string>
 #include <cstdint>
 
-namespace raft {
+namespace kythira {
 
 // Base exception class for CoAP transport errors
 class coap_transport_error : public std::runtime_error {
@@ -71,4 +71,4 @@ public:
         : coap_transport_error(message) {}
 };
 
-} // namespace raft
+} // namespace kythira

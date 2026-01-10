@@ -4,6 +4,8 @@
 #include <raft/network.hpp>
 #include <raft/http_transport.hpp>
 #include <raft/coap_transport.hpp>
+#include <raft/connection.hpp>
+#include <raft/listener.hpp>
 #include <network_simulator/connection.hpp>
 #include <network_simulator/listener.hpp>
 #include <raft/simulator_network.hpp>
@@ -26,8 +28,8 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_namespace, * boost::unit_test::
     // This is a compile-time test - if it compiles, the concept is accessible
     
     // Verify the concept exists in kythira namespace by using it in a static_assert
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using ClientType = kythira::cpp_httplib_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using ClientType = kythira::cpp_httplib_client<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>;
     
     // This will only compile if network_client concept is in kythira namespace
     static_assert(kythira::network_client<ClientType, FutureType>, 
@@ -39,8 +41,8 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_namespace, * boost::unit_test::
 
 BOOST_AUTO_TEST_CASE(test_cpp_httplib_client_namespace, * boost::unit_test::timeout(30)) {
     // Test that cpp_httplib_client is in kythira namespace
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using ClientType = kythira::cpp_httplib_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using ClientType = kythira::cpp_httplib_client<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>;
     
     // If this compiles, the class is accessible in kythira namespace
     BOOST_CHECK(true);
@@ -49,8 +51,9 @@ BOOST_AUTO_TEST_CASE(test_cpp_httplib_client_namespace, * boost::unit_test::time
 
 BOOST_AUTO_TEST_CASE(test_coap_client_namespace, * boost::unit_test::timeout(30)) {
     // Test that coap_client is in kythira namespace
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using ClientType = kythira::coap_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using TestTypes = kythira::default_transport_types<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>;
+    using ClientType = kythira::coap_client<TestTypes>;
     
     // If this compiles, the class is accessible in kythira namespace
     BOOST_CHECK(true);
@@ -80,8 +83,8 @@ BOOST_AUTO_TEST_CASE(test_listener_namespace, * boost::unit_test::timeout(30)) {
 
 BOOST_AUTO_TEST_CASE(test_simulator_network_client_namespace, * boost::unit_test::timeout(30)) {
     // Test that simulator_network_client is in kythira namespace
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using ClientType = kythira::simulator_network_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using ClientType = kythira::simulator_network_client<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
     
     // If this compiles, the class is accessible in kythira namespace
     BOOST_CHECK(true);
@@ -90,8 +93,8 @@ BOOST_AUTO_TEST_CASE(test_simulator_network_client_namespace, * boost::unit_test
 
 BOOST_AUTO_TEST_CASE(test_simulator_network_server_namespace, * boost::unit_test::timeout(30)) {
     // Test that simulator_network_server is in kythira namespace
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using ServerType = kythira::simulator_network_server<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using ServerType = kythira::simulator_network_server<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
     
     // If this compiles, the class is accessible in kythira namespace
     BOOST_CHECK(true);
@@ -115,13 +118,14 @@ BOOST_AUTO_TEST_CASE(test_namespace_migration_completeness, * boost::unit_test::
     // This is verified by the fact that the includes work and the code compiles
     
     // Verify that we can reference all the core types in kythira namespace
-    using FutureType = kythira::Future<raft::request_vote_response<>>;
-    using HttpClientType = kythira::cpp_httplib_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics>;
-    using CoapClientType = kythira::coap_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>;
+    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using HttpClientType = kythira::cpp_httplib_client<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>;
+    using TestTypes = kythira::default_transport_types<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>;
+    using CoapClientType = kythira::coap_client<TestTypes>;
     using ConnectionType = kythira::Connection<std::uint64_t, unsigned short, FutureType>;
     using ListenerType = kythira::Listener<std::uint64_t, unsigned short, FutureType>;
-    using SimClientType = kythira::simulator_network_client<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
-    using SimServerType = kythira::simulator_network_server<FutureType, raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using SimClientType = kythira::simulator_network_client<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
+    using SimServerType = kythira::simulator_network_server<FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
     
     BOOST_CHECK(true);
     BOOST_TEST_MESSAGE("Core implementations successfully moved to kythira namespace");

@@ -93,7 +93,7 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         auto last_log_term = term_dist(rng);
         
         // Create network simulator
-        network_simulator::NetworkSimulator<std::uint64_t, unsigned short> simulator;
+        network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
         simulator.add_node(client_node_id);
@@ -115,13 +115,13 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         simulator.start();
         
         // Create network client and server
-        using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
+        using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
         kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
         kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
-        server.register_request_vote_handler([term](const raft::request_vote_request<>& req) {
-            raft::request_vote_response<> response;
+        server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
+            kythira::request_vote_response<> response;
             response._term = term;
             response._vote_granted = true;
             return response;
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
         
         // Create request
-        raft::request_vote_request<> request;
+        kythira::request_vote_request<> request;
         request._term = term;
         request._candidate_id = candidate_id;
         request._last_log_index = last_log_index;
@@ -206,7 +206,7 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
         auto last_log_term = term_dist(rng);
         
         // Create network simulator
-        network_simulator::NetworkSimulator<std::uint64_t, unsigned short> simulator;
+        network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
         simulator.add_node(client_node_id);
@@ -222,11 +222,11 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
         simulator.start();
         
         // Create network client
-        using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
+        using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
         kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
         
         // Create request
-        raft::request_vote_request<> request;
+        kythira::request_vote_request<> request;
         request._term = term;
         request._candidate_id = candidate_id;
         request._last_log_index = last_log_index;
@@ -282,7 +282,7 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately) {
         auto last_log_term = term_dist(rng);
         
         // Create network simulator
-        network_simulator::NetworkSimulator<std::uint64_t, unsigned short> simulator;
+        network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
         simulator.add_node(client_node_id);
@@ -304,13 +304,13 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately) {
         simulator.start();
         
         // Create network client and server
-        using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
+        using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
         kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
         kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
-        server.register_request_vote_handler([term](const raft::request_vote_request<>& req) {
-            raft::request_vote_response<> response;
+        server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
+            kythira::request_vote_response<> response;
             response._term = term;
             response._vote_granted = true;
             return response;
@@ -323,7 +323,7 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
         
         // Create request
-        raft::request_vote_request<> request;
+        kythira::request_vote_request<> request;
         request._term = term;
         request._candidate_id = candidate_id;
         request._last_log_index = last_log_index;

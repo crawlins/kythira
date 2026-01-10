@@ -14,8 +14,6 @@
 #include <string>
 #include <vector>
 
-#include <folly/init/Init.h>
-
 using namespace network_simulator;
 using namespace std::chrono_literals;
 
@@ -71,8 +69,8 @@ auto test_topology_configuration() -> bool {
     std::cout << "Test 1: Basic Topology Configuration\n";
     
     try {
-        // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure a star topology: B, C, D all connect to central node A
         simulator.add_node(node_a_id);
@@ -137,8 +135,8 @@ auto test_latency_characteristics() -> bool {
     std::cout << "Test 2: Latency Characteristics\n";
     
     try {
-        // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology with different latencies
         simulator.add_node(node_a_id);
@@ -161,10 +159,10 @@ auto test_latency_characteristics() -> bool {
         // Send messages to both destinations simultaneously
         auto payload = string_to_bytes(test_payload);
         
-        Message<std::string, unsigned short> msg_to_b(
+        DefaultNetworkTypes::message_type msg_to_b(
             node_a_id, port_1000, node_b_id, port_2000, payload
         );
-        Message<std::string, unsigned short> msg_to_c(
+        DefaultNetworkTypes::message_type msg_to_c(
             node_a_id, port_1000, node_c_id, port_2000, payload
         );
         
@@ -216,8 +214,8 @@ auto test_reliability_characteristics() -> bool {
     std::cout << "Test 3: Reliability Characteristics\n";
     
     try {
-        // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure topology with different reliabilities
         simulator.add_node(node_a_id);
@@ -243,7 +241,7 @@ auto test_reliability_characteristics() -> bool {
         
         for (int i = 0; i < reliability_test_messages; ++i) {
             auto payload = string_to_bytes(std::format("Message {} to B", i));
-            Message<std::string, unsigned short> msg_to_b(
+            DefaultNetworkTypes::message_type msg_to_b(
                 node_a_id, port_1000, node_b_id, port_2000, payload
             );
             
@@ -255,7 +253,7 @@ auto test_reliability_characteristics() -> bool {
         
         for (int i = 0; i < reliability_test_messages; ++i) {
             auto payload = string_to_bytes(std::format("Message {} to C", i));
-            Message<std::string, unsigned short> msg_to_c(
+            DefaultNetworkTypes::message_type msg_to_c(
                 node_a_id, port_1000, node_c_id, port_2000, payload
             );
             
@@ -303,8 +301,8 @@ auto test_network_partitions() -> bool {
     std::cout << "Test 4: Network Partitions\n";
     
     try {
-        // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure two separate partitions: A-B and C-D (no connection between partitions)
         simulator.add_node(node_a_id);
@@ -333,7 +331,7 @@ auto test_network_partitions() -> bool {
         
         // Test communication within partition 1 (A -> B)
         auto payload_ab = string_to_bytes("Message from A to B");
-        Message<std::string, unsigned short> msg_ab(
+        DefaultNetworkTypes::message_type msg_ab(
             node_a_id, port_1000, node_b_id, port_2000, payload_ab
         );
         
@@ -347,7 +345,7 @@ auto test_network_partitions() -> bool {
         
         // Test communication within partition 2 (C -> D)
         auto payload_cd = string_to_bytes("Message from C to D");
-        Message<std::string, unsigned short> msg_cd(
+        DefaultNetworkTypes::message_type msg_cd(
             node_c_id, port_1000, node_d_id, port_2000, payload_cd
         );
         
@@ -361,7 +359,7 @@ auto test_network_partitions() -> bool {
         
         // Test communication across partitions (A -> C) - should fail
         auto payload_ac = string_to_bytes("Message from A to C");
-        Message<std::string, unsigned short> msg_ac(
+        DefaultNetworkTypes::message_type msg_ac(
             node_a_id, port_1000, node_c_id, port_2000, payload_ac
         );
         
@@ -389,8 +387,8 @@ auto test_complex_topology() -> bool {
     std::cout << "Test 5: Complex Topology\n";
     
     try {
-        // Create simulator
-        NetworkSimulator<std::string, unsigned short> simulator;
+        // Create simulator using DefaultNetworkTypes
+        NetworkSimulator<DefaultNetworkTypes> simulator;
         
         // Configure a more complex topology:
         //     A
@@ -434,21 +432,21 @@ auto test_complex_topology() -> bool {
         auto payload = string_to_bytes(test_payload);
         
         // A -> B (direct)
-        Message<std::string, unsigned short> msg_ab(
+        DefaultNetworkTypes::message_type msg_ab(
             node_a_id, port_1000, node_b_id, port_2000, payload
         );
         auto send_ab_future = node_a->send(std::move(msg_ab));
         bool send_ab_success = std::move(send_ab_future).get();
         
         // B -> D (direct)
-        Message<std::string, unsigned short> msg_bd(
+        DefaultNetworkTypes::message_type msg_bd(
             node_b_id, port_1000, node_d_id, port_2000, payload
         );
         auto send_bd_future = node_b->send(std::move(msg_bd));
         bool send_bd_success = std::move(send_bd_future).get();
         
         // Test connection that doesn't exist (D -> E)
-        Message<std::string, unsigned short> msg_de(
+        DefaultNetworkTypes::message_type msg_de(
             node_d_id, port_1000, node_e_id, port_2000, payload
         );
         auto send_de_future = node_d->send(std::move(msg_de));
@@ -481,8 +479,6 @@ auto test_complex_topology() -> bool {
 }
 
 auto main(int argc, char* argv[]) -> int {
-    // Initialize folly library
-    folly::Init init(&argc, &argv);
     std::cout << std::string(60, '=') << "\n";
     std::cout << "  Network Topology Configuration Example\n";
     std::cout << std::string(60, '=') << "\n\n";

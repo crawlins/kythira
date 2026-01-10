@@ -40,12 +40,12 @@ BOOST_AUTO_TEST_CASE(property_exception_throwing_on_errors, * boost::unit_test::
             std::uint16_t server_port = port_dist(rng);
             
             // Test server exception handling
-            raft::coap_server_config server_config;
+            kythira::coap_server_config server_config;
             server_config.max_concurrent_sessions = 100;
             
-            raft::noop_metrics server_metrics;
-            raft::console_logger server_logger;
-            raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::noop_metrics server_metrics;
+            kythira::console_logger server_logger;
+            kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 server("127.0.0.1", server_port, server_config, server_metrics, std::move(server_logger));
             
             // Test client exception handling
@@ -53,10 +53,10 @@ BOOST_AUTO_TEST_CASE(property_exception_throwing_on_errors, * boost::unit_test::
                 {1, "coap://127.0.0.1:" + std::to_string(server_port)}
             };
             
-            raft::coap_client_config client_config;
-            raft::noop_metrics client_metrics;
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::coap_client_config client_config;
+            kythira::noop_metrics client_metrics;
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 client(endpoints, client_config, client_metrics, std::move(logger));
             
             // Test exception handling for invalid operations - limit iterations to prevent timeout
@@ -74,7 +74,7 @@ BOOST_AUTO_TEST_CASE(property_exception_throwing_on_errors, * boost::unit_test::
                 try {
                     server.validate_client_certificate("invalid-cert-data");
                     // May succeed if DTLS is not enabled or validation is disabled
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     BOOST_CHECK(!std::string(e.what()).empty());
                     BOOST_TEST_MESSAGE("Invalid certificate exception: " << e.what());
                 }
@@ -99,10 +99,10 @@ BOOST_AUTO_TEST_CASE(property_exception_throwing_on_errors, * boost::unit_test::
                 server.enforce_connection_limits();
                 client.enforce_connection_limits();
                 // May throw if limits are exceeded
-            } catch (const raft::coap_network_error& e) {
+            } catch (const kythira::coap_network_error& e) {
                 BOOST_CHECK(!std::string(e.what()).empty());
                 BOOST_TEST_MESSAGE("Connection limit exception: " << e.what());
-            } catch (const raft::coap_transport_error& e) {
+            } catch (const kythira::coap_transport_error& e) {
                 BOOST_CHECK(!std::string(e.what()).empty());
                 BOOST_TEST_MESSAGE("Transport error exception: " << e.what());
             }
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_transport_error
     try {
-        throw raft::coap_transport_error("Test transport error");
+        throw kythira::coap_transport_error("Test transport error");
     } catch (const std::runtime_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_transport_error caught as runtime_error: " << e.what());
@@ -140,8 +140,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_client_error
     try {
-        throw raft::coap_client_error(0x80, "Test client error"); // 4.00 Bad Request
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_client_error(0x80, "Test client error"); // 4.00 Bad Request
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_client_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -150,8 +150,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_server_error
     try {
-        throw raft::coap_server_error(0xA0, "Test server error"); // 5.00 Internal Server Error
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_server_error(0xA0, "Test server error"); // 5.00 Internal Server Error
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_server_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -160,8 +160,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_timeout_error
     try {
-        throw raft::coap_timeout_error("Test timeout error");
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_timeout_error("Test timeout error");
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_timeout_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -170,8 +170,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_security_error
     try {
-        throw raft::coap_security_error("Test security error");
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_security_error("Test security error");
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_security_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -180,8 +180,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_protocol_error
     try {
-        throw raft::coap_protocol_error("Test protocol error");
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_protocol_error("Test protocol error");
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_protocol_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -190,8 +190,8 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
     
     // Test coap_network_error
     try {
-        throw raft::coap_network_error("Test network error");
-    } catch (const raft::coap_transport_error& e) {
+        throw kythira::coap_network_error("Test network error");
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_CHECK(!std::string(e.what()).empty());
         BOOST_TEST_MESSAGE("coap_network_error caught as coap_transport_error: " << e.what());
     } catch (...) {
@@ -202,28 +202,28 @@ BOOST_AUTO_TEST_CASE(exception_type_hierarchy, * boost::unit_test::timeout(15)) 
 // Test exception response codes for client and server errors
 BOOST_AUTO_TEST_CASE(exception_response_codes, * boost::unit_test::timeout(15)) {
     // Test coap_client_error response codes
-    raft::coap_client_error client_error(0x80, "Bad Request"); // 4.00
+    kythira::coap_client_error client_error(0x80, "Bad Request"); // 4.00
     BOOST_CHECK_EQUAL(client_error.response_code(), 0x80);
     
-    raft::coap_client_error client_error2(0x84, "Not Found"); // 4.04
+    kythira::coap_client_error client_error2(0x84, "Not Found"); // 4.04
     BOOST_CHECK_EQUAL(client_error2.response_code(), 0x84);
     
     // Test coap_server_error response codes
-    raft::coap_server_error server_error(0xA0, "Internal Server Error"); // 5.00
+    kythira::coap_server_error server_error(0xA0, "Internal Server Error"); // 5.00
     BOOST_CHECK_EQUAL(server_error.response_code(), 0xA0);
     
-    raft::coap_server_error server_error2(0xA3, "Service Unavailable"); // 5.03
+    kythira::coap_server_error server_error2(0xA3, "Service Unavailable"); // 5.03
     BOOST_CHECK_EQUAL(server_error2.response_code(), 0xA3);
 }
 
 // Test exception handling in error conditions
 BOOST_AUTO_TEST_CASE(error_condition_exception_handling, * boost::unit_test::timeout(45)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.max_concurrent_sessions = 10;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         server("127.0.0.1", 5683, config, metrics, std::move(logger));
     
     // Test certificate validation with various invalid inputs
@@ -245,7 +245,7 @@ BOOST_AUTO_TEST_CASE(error_condition_exception_handling, * boost::unit_test::tim
                 // DTLS not enabled, should return true
                 BOOST_CHECK_EQUAL(result, true);
             }
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             // Expected for invalid certificates when DTLS is enabled
             BOOST_CHECK(!std::string(e.what()).empty());
             BOOST_TEST_MESSAGE("Certificate validation exception: " << e.what());
@@ -257,9 +257,9 @@ BOOST_AUTO_TEST_CASE(error_condition_exception_handling, * boost::unit_test::tim
         {1, "coap://127.0.0.1:5683"}
     };
     
-    raft::coap_client_config client_config;
-    raft::console_logger client_logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config client_config;
+    kythira::console_logger client_logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, client_config, metrics, std::move(client_logger));
     
     // Test network recovery with invalid endpoints
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(error_condition_exception_handling, * boost::unit_test::tim
             if (endpoint.empty() || endpoint == "invalid-endpoint") {
                 BOOST_CHECK_EQUAL(recovery_result, false);
             }
-        } catch (const raft::coap_network_error& e) {
+        } catch (const kythira::coap_network_error& e) {
             BOOST_CHECK(!std::string(e.what()).empty());
             BOOST_TEST_MESSAGE("Invalid endpoint recovery exception: " << e.what());
         }
@@ -286,12 +286,12 @@ BOOST_AUTO_TEST_CASE(error_condition_exception_handling, * boost::unit_test::tim
 
 // Test exception safety and resource cleanup
 BOOST_AUTO_TEST_CASE(exception_safety_and_cleanup, * boost::unit_test::timeout(45)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.max_concurrent_sessions = 50;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         server("127.0.0.1", 5683, config, metrics, std::move(logger));
     
     // Test that operations remain functional after exceptions
@@ -301,7 +301,7 @@ BOOST_AUTO_TEST_CASE(exception_safety_and_cleanup, * boost::unit_test::timeout(4
         if (server.is_dtls_enabled()) {
             server.validate_client_certificate("invalid");
         }
-    } catch (const raft::coap_security_error&) {
+    } catch (const kythira::coap_security_error&) {
         // Expected
     }
     
@@ -327,15 +327,15 @@ BOOST_AUTO_TEST_CASE(exception_safety_and_cleanup, * boost::unit_test::timeout(4
         {1, "coap://127.0.0.1:5683"}
     };
     
-    raft::coap_client_config client_config;
-    raft::console_logger client_logger2;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::coap_client_config client_config;
+    kythira::console_logger client_logger2;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, client_config, metrics, std::move(client_logger2));
     
     // 1. Cause an exception through invalid network recovery
     try {
         client.attempt_network_recovery("");
-    } catch (const raft::coap_network_error&) {
+    } catch (const kythira::coap_network_error&) {
         // Expected for empty endpoint
     }
     

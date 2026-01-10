@@ -8,10 +8,10 @@
 #include <cstddef>
 #include <string>
 
-namespace raft {
+namespace kythira {
 
 // JSON RPC Serializer implementation
-template<typename Data = std::vector<std::byte>>
+template<typename Data>
 requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Data>, std::byte>
 class json_rpc_serializer {
 public:
@@ -255,6 +255,31 @@ public:
         
         return resp;
     }
+    
+    // Generic deserialize method that dispatches to specific deserialize methods
+    template<typename T>
+    auto deserialize(const Data& data) const -> T {
+        if constexpr (std::same_as<T, request_vote_request<>>) {
+            return deserialize_request_vote_request(data);
+        } else if constexpr (std::same_as<T, request_vote_response<>>) {
+            return deserialize_request_vote_response(data);
+        } else if constexpr (std::same_as<T, append_entries_request<>>) {
+            return deserialize_append_entries_request(data);
+        } else if constexpr (std::same_as<T, append_entries_response<>>) {
+            return deserialize_append_entries_response(data);
+        } else if constexpr (std::same_as<T, install_snapshot_request<>>) {
+            return deserialize_install_snapshot_request(data);
+        } else if constexpr (std::same_as<T, install_snapshot_response<>>) {
+            return deserialize_install_snapshot_response(data);
+        } else {
+            static_assert(std::is_same_v<T, void>, "Unsupported type for deserialization");
+        }
+    }
+    
+    // Provide name method for content format detection
+    auto name() const -> std::string {
+        return "json";
+    }
 
 private:
     // Helper to convert JSON string to bytes
@@ -355,4 +380,4 @@ static_assert(rpc_serializer<json_rpc_serializer<std::vector<std::byte>>, std::v
 // Convenience type alias for the default JSON serializer
 using json_serializer = json_rpc_serializer<std::vector<std::byte>>;
 
-} // namespace raft
+} // namespace kythira

@@ -114,3 +114,15 @@ This document specifies the requirements for implementing a CoAP (Constrained Ap
 3. WHEN resource exhaustion occurs THEN the CoAP_Transport SHALL handle it gracefully without crashing
 4. WHEN DNS resolution fails THEN the CoAP_Transport SHALL retry with exponential backoff
 5. WHEN connection limits are reached THEN the CoAP_Transport SHALL queue requests or reject them with appropriate error codes
+
+### Requirement 9
+
+**User Story:** As a developer, I want to parameterize the CoAP transport classes with a single types template argument, so that I can provide all necessary types through a clean, concept-based interface while maintaining type safety.
+
+#### Acceptance Criteria
+
+1. WHEN defining CoAP transport classes THEN the system SHALL accept a single types template parameter that encapsulates all required type information
+2. WHEN the types parameter is provided THEN the system SHALL extract future types, serializer types, address types, port types, and all other component types from the unified interface
+3. WHEN type safety is evaluated THEN the system SHALL use concepts to validate that the types parameter provides all required type definitions
+4. WHEN instantiating CoAP transport components THEN the system SHALL use the types parameter to automatically deduce all necessary template arguments
+5. WHEN custom type configurations are needed THEN the system SHALL support user-defined types structures that satisfy the transport types concept

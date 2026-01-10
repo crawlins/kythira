@@ -42,14 +42,14 @@ BOOST_AUTO_TEST_CASE(property_resource_exhaustion_handling, * boost::unit_test::
             std::size_t resource_count = resource_dist(rng);
             
             // Create server configuration with limited resources
-            raft::coap_server_config config;
+            kythira::coap_server_config config;
             config.max_request_size = 1024;
             config.max_concurrent_sessions = 10; // Low limit to trigger exhaustion
             
             // Create server
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 server("127.0.0.1", server_port, config, metrics, std::move(logger));
             
             // Test resource exhaustion handling
@@ -68,7 +68,7 @@ BOOST_AUTO_TEST_CASE(property_resource_exhaustion_handling, * boost::unit_test::
             try {
                 server.enforce_connection_limits();
                 // Should succeed when under limits
-            } catch (const raft::coap_network_error& e) {
+            } catch (const kythira::coap_network_error& e) {
                 // May fail if resource exhaustion is detected
                 BOOST_TEST_MESSAGE("Connection limit enforcement: " << e.what());
             }
@@ -99,12 +99,12 @@ BOOST_AUTO_TEST_CASE(client_resource_exhaustion_handling, * boost::unit_test::ti
         {1, "coap://127.0.0.1:5683"}
     };
     
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     config.max_sessions = 5; // Low limit to trigger exhaustion
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         client(endpoints, config, metrics, std::move(logger));
     
     // Test client resource exhaustion handling
@@ -114,7 +114,7 @@ BOOST_AUTO_TEST_CASE(client_resource_exhaustion_handling, * boost::unit_test::ti
     try {
         client.enforce_connection_limits();
         // Should succeed when under limits
-    } catch (const raft::coap_network_error& e) {
+    } catch (const kythira::coap_network_error& e) {
         // May fail if resource exhaustion is detected
         BOOST_TEST_MESSAGE("Client connection limit enforcement: " << e.what());
     }
@@ -138,13 +138,13 @@ BOOST_AUTO_TEST_CASE(client_resource_exhaustion_handling, * boost::unit_test::ti
 
 // Test resource exhaustion with concurrent operations
 BOOST_AUTO_TEST_CASE(concurrent_resource_exhaustion, * boost::unit_test::timeout(60)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.max_concurrent_sessions = 20;
     config.max_request_size = 2048;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         server("127.0.0.1", 5683, config, metrics, std::move(logger));
     
     // Simulate concurrent resource exhaustion handling
@@ -182,13 +182,13 @@ BOOST_AUTO_TEST_CASE(concurrent_resource_exhaustion, * boost::unit_test::timeout
 
 // Test specific resource exhaustion scenarios
 BOOST_AUTO_TEST_CASE(specific_resource_exhaustion_scenarios, * boost::unit_test::timeout(45)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.max_concurrent_sessions = 100;
     config.max_request_size = 64 * 1024;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
         server("127.0.0.1", 5683, config, metrics, std::move(logger));
     
     // Test handling when many messages are recorded
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(specific_resource_exhaustion_scenarios, * boost::unit_test:
     try {
         server.enforce_connection_limits();
         // Should succeed under normal conditions
-    } catch (const raft::coap_transport_error& e) {
+    } catch (const kythira::coap_transport_error& e) {
         BOOST_TEST_MESSAGE("Connection limit enforcement with high load: " << e.what());
     }
 }

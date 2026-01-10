@@ -37,12 +37,15 @@ auto process_future_generic(F&& fut) -> T {
 // Generic function that works with any promise type
 template<typename P, typename T>
     requires promise<P, T>
-auto fulfill_promise_generic(P&& prom, const T& value) -> void {
-    if constexpr (std::is_void_v<T>) {
-        std::forward<P>(prom).setValue(folly::Unit{});
-    } else {
-        std::forward<P>(prom).setValue(value);
-    }
+auto fulfill_promise_generic(P&& prom, const T& value) -> void requires(!std::is_void_v<T>) {
+    std::forward<P>(prom).setValue(value);
+}
+
+// Specialization for void promises
+template<typename P>
+    requires promise<P, void>
+auto fulfill_promise_generic(P&& prom) -> void {
+    std::forward<P>(prom).setValue(folly::Unit{});
 }
 
 // Generic function that works with any executor type
@@ -163,7 +166,7 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test, * boost::unit
         // Test with void promise
         Promise<void> promise_void;
         auto future_void = promise_void.getFuture();
-        fulfill_promise_generic<Promise<void>, void>(std::move(promise_void), folly::Unit{});
+        fulfill_promise_generic<Promise<void>>(std::move(promise_void));
         future_void.get(); // Should not throw
         
         BOOST_TEST_MESSAGE("Generic promise fulfillment works with all wrapper types");
@@ -198,7 +201,7 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test, * boost::unit
         BOOST_CHECK_EQUAL(extracted_int, test_value);
         
         // Test with failed Try<int>
-        Try<int> try_int_failed(folly::exception_wrapper(std::runtime_error(test_string)));
+        Try<int> try_int_failed{folly::exception_wrapper(std::runtime_error(test_string))};
         int default_int = extract_value_or_default<Try<int>, int>(try_int_failed, -1);
         BOOST_CHECK_EQUAL(default_int, -1);
         
@@ -213,7 +216,7 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test, * boost::unit
         bool void_success = extract_value_or_default_void<Try<void>>(try_void_success);
         BOOST_CHECK(void_success);
         
-        Try<void> try_void_failed(folly::exception_wrapper(std::runtime_error(test_string)));
+        Try<void> try_void_failed{folly::exception_wrapper(std::runtime_error(test_string))};
         bool void_failed = extract_value_or_default_void<Try<void>>(try_void_failed);
         BOOST_CHECK(!void_failed);
         
@@ -410,9 +413,11 @@ BOOST_AUTO_TEST_CASE(template_specialization_compatibility_test, * boost::unit_t
     
     // Test copy semantics with wrapper types
     {
-        // Futures should be copyable (they wrap folly::Future which is copyable)
-        static_assert(std::is_copy_constructible_v<Future<int>>, "Future should be copy constructible");
-        static_assert(std::is_copy_assignable_v<Future<int>>, "Future should be copy assignable");
+        // Futures should NOT be copyable (they wrap folly::Future which is move-only)
+        static_assert(!std::is_copy_constructible_v<Future<int>>, "Future should not be copy constructible");
+        static_assert(!std::is_copy_assignable_v<Future<int>>, "Future should not be copy assignable");
+        static_assert(std::is_move_constructible_v<Future<int>>, "Future should be move constructible");
+        static_assert(std::is_move_assignable_v<Future<int>>, "Future should be move assignable");
         
         // Promises should NOT be copyable (they wrap folly::Promise which is move-only)
         static_assert(!std::is_copy_constructible_v<Promise<int>>, "Promise should not be copy constructible");

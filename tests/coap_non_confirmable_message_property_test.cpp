@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(property_non_confirmable_message_delivery, * boost::unit_te
             bool use_confirmable = bool_dist(rng) == 1;
             
             // Create client configuration with non-confirmable messages
-            raft::coap_client_config config;
+            kythira::coap_client_config config;
             config.use_confirmable_messages = use_confirmable;
             config.retransmission_timeout = std::chrono::milliseconds{1000};
             config.exponential_backoff_factor = 2.0;
@@ -58,13 +58,13 @@ BOOST_AUTO_TEST_CASE(property_non_confirmable_message_delivery, * boost::unit_te
             endpoints[target_node] = "coap://127.0.0.1:5683";
             
             // Create client
-            raft::noop_metrics metrics;
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+            kythira::noop_metrics metrics;
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
                 client(std::move(endpoints), config, metrics, std::move(logger));
             
             // Create a test request
-            raft::request_vote_request<> request;
+            kythira::request_vote_request<> request;
             request._term = 1;
             request._candidate_id = target_node;
             request._last_log_index = 0;

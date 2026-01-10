@@ -8,7 +8,26 @@
 #include <string>
 
 using namespace network_simulator;
-using kythira::NetworkSimulator;
+
+// Define a custom types structure for testing
+struct test_network_types {
+    using address_type = std::string;
+    using port_type = unsigned short;
+    using message_type = network_simulator::Message<test_network_types>;
+    using connection_type = network_simulator::Connection<test_network_types>;
+    using listener_type = network_simulator::Listener<test_network_types>;
+    using node_type = network_simulator::NetworkNode<test_network_types>;
+    
+    // Future types using kythira::Future
+    using future_bool_type = kythira::Future<bool>;
+    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
+    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
+    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
+    using future_message_type = kythira::Future<message_type>;
+};
+
+// Type alias for the correct NetworkSimulator template instantiation
+using TestNetworkSimulator = NetworkSimulator<test_network_types>;
 
 namespace {
     constexpr const char* test_node_a = "node_a";
@@ -21,7 +40,7 @@ namespace {
 BOOST_AUTO_TEST_SUITE(topology_management)
 
 BOOST_AUTO_TEST_CASE(add_node_creates_node_in_topology) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.add_node(test_node_a);
     
@@ -29,7 +48,7 @@ BOOST_AUTO_TEST_CASE(add_node_creates_node_in_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(add_multiple_nodes) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.add_node(test_node_a);
     sim.add_node(test_node_b);
@@ -41,7 +60,7 @@ BOOST_AUTO_TEST_CASE(add_multiple_nodes) {
 }
 
 BOOST_AUTO_TEST_CASE(remove_node_removes_from_topology) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.add_node(test_node_a);
     BOOST_TEST(sim.has_node(test_node_a));
@@ -51,7 +70,7 @@ BOOST_AUTO_TEST_CASE(remove_node_removes_from_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(add_edge_creates_edge_between_nodes) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.add_node(test_node_a);
     sim.add_node(test_node_b);
@@ -63,7 +82,7 @@ BOOST_AUTO_TEST_CASE(add_edge_creates_edge_between_nodes) {
 }
 
 BOOST_AUTO_TEST_CASE(add_edge_creates_nodes_if_not_exist) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -74,7 +93,7 @@ BOOST_AUTO_TEST_CASE(add_edge_creates_nodes_if_not_exist) {
 }
 
 BOOST_AUTO_TEST_CASE(remove_edge_removes_edge_from_topology) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -86,7 +105,7 @@ BOOST_AUTO_TEST_CASE(remove_edge_removes_edge_from_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(edges_are_directional) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -96,7 +115,7 @@ BOOST_AUTO_TEST_CASE(edges_are_directional) {
 }
 
 BOOST_AUTO_TEST_CASE(remove_node_removes_outgoing_edges) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -108,7 +127,7 @@ BOOST_AUTO_TEST_CASE(remove_node_removes_outgoing_edges) {
 }
 
 BOOST_AUTO_TEST_CASE(remove_node_removes_incoming_edges) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -120,7 +139,7 @@ BOOST_AUTO_TEST_CASE(remove_node_removes_incoming_edges) {
 }
 
 BOOST_AUTO_TEST_CASE(get_edge_returns_correct_edge) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     NetworkEdge edge(test_latency, test_reliability);
     sim.add_edge(test_node_a, test_node_b, edge);
@@ -136,7 +155,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(node_creation)
 
 BOOST_AUTO_TEST_CASE(create_node_returns_valid_node) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     auto node = sim.create_node(test_node_a);
     
@@ -145,7 +164,7 @@ BOOST_AUTO_TEST_CASE(create_node_returns_valid_node) {
 }
 
 BOOST_AUTO_TEST_CASE(create_node_adds_to_topology) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     auto node = sim.create_node(test_node_a);
     
@@ -153,7 +172,7 @@ BOOST_AUTO_TEST_CASE(create_node_adds_to_topology) {
 }
 
 BOOST_AUTO_TEST_CASE(create_node_twice_returns_same_instance) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     auto node1 = sim.create_node(test_node_a);
     auto node2 = sim.create_node(test_node_a);
@@ -166,7 +185,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(simulation_control)
 
 BOOST_AUTO_TEST_CASE(simulator_starts_stopped) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     // Simulator should start in stopped state
     // We can't directly test this without exposing internal state,
@@ -174,7 +193,7 @@ BOOST_AUTO_TEST_CASE(simulator_starts_stopped) {
 }
 
 BOOST_AUTO_TEST_CASE(start_enables_simulation) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.start();
     
@@ -183,7 +202,7 @@ BOOST_AUTO_TEST_CASE(start_enables_simulation) {
 }
 
 BOOST_AUTO_TEST_CASE(stop_disables_simulation) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     sim.start();
     sim.stop();
@@ -192,7 +211,7 @@ BOOST_AUTO_TEST_CASE(stop_disables_simulation) {
 }
 
 BOOST_AUTO_TEST_CASE(reset_clears_all_state) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     // Add some state
     sim.add_node(test_node_a);
@@ -211,7 +230,7 @@ BOOST_AUTO_TEST_CASE(reset_clears_all_state) {
 }
 
 BOOST_AUTO_TEST_CASE(reset_allows_reuse) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     // First use
     sim.add_node(test_node_a);
@@ -230,7 +249,7 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(reliability_simulation)
 
 BOOST_AUTO_TEST_CASE(check_reliability_drops_messages) {
-    NetworkSimulator<std::string, unsigned short, kythira::Future<bool>> sim;
+    TestNetworkSimulator sim;
     
     // Add edge with 30% reliability
     NetworkEdge edge(std::chrono::milliseconds{10}, 0.3);

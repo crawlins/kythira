@@ -8,7 +8,7 @@ The implementation consists of two main components:
 - **cpp_httplib_client**: Implements the `network_client` concept to send Raft RPCs over HTTP
 - **cpp_httplib_server**: Implements the `network_server` concept to receive and handle Raft RPCs over HTTP
 
-Both components are templated on an RPC serializer that conforms to the `rpc_serializer` concept, allowing flexible serialization formats (JSON, Protocol Buffers, etc.) to be used independently of the transport layer.
+Both components use a single template parameter that conforms to the `transport_types` concept, providing a clean interface for specifying all necessary types including the RPC serializer, future type, and executor type. This design allows flexible serialization formats (JSON, Protocol Buffers, etc.) and asynchronous execution models to be used independently of the transport layer.
 
 ## Architecture
 
@@ -24,17 +24,22 @@ Both components are templated on an RPC serializer that conforms to the `rpc_ser
              ▼                              ▼
 ┌────────────────────────┐      ┌────────────────────────────┐
 │  cpp_httplib_client    │      │   cpp_httplib_server       │
-│  <RPC_Serializer>      │      │   <RPC_Serializer>         │
+│  <Types>               │      │   <Types>                  │
 │                        │      │                            │
 │  Implements:           │      │   Implements:              │
 │  - network_client      │      │   - network_server         │
 │    concept             │      │     concept                │
+│                        │      │                            │
+│  Uses Types::          │      │   Uses Types::             │
+│  - serializer_type     │      │   - serializer_type        │
+│  - future_type         │      │   - future_type            │
+│  - executor_type       │      │   - executor_type          │
 └────────┬───────────────┘      └────────┬───────────────────┘
          │                               │
          │ uses                          │ uses
          ▼                               ▼
 ┌────────────────────────┐      ┌────────────────────────────┐
-│   RPC_Serializer       │      │   RPC_Serializer           │
+│   Types::serializer_type│      │   Types::serializer_type   │
 │   (e.g., JSON)         │      │   (e.g., JSON)             │
 │                        │      │                            │
 │   Implements:          │      │   Implements:              │
@@ -72,10 +77,88 @@ Both components are templated on an RPC serializer that conforms to the `rpc_ser
 
 ## Components and Interfaces
 
+### transport_types Concept
+
+The `transport_types` concept defines the interface for the single template parameter used by both HTTP client and server classes. This concept ensures type safety and provides a clean interface for specifying all necessary types. The key innovation is using a template template parameter for `future_template` instead of a concrete `future_type`, allowing different RPC methods to return appropriately typed futures.
+
+```cpp
+template<typename T>
+concept transport_types = requires {
+    // Required type members
+    typename T::serializer_type;
+    typename T::executor_type;
+    
+    // Required template template parameter for futures
+    template<typename ResponseType> typename T::template future_template<ResponseType>;
+    
+    // Concept constraints
+    requires rpc_serializer<typename T::serializer_type>;
+    
+    // Validate that future_template can be instantiated with Raft response types
+    requires future<typename T::template future_template<request_vote_response<>>, request_vote_response<>>;
+    requires future<typename T::template future_template<append_entries_response<>>, append_entries_response<>>;
+    requires future<typename T::template future_template<install_snapshot_response<>>, install_snapshot_response<>>;
+};
+```
+
+**Type Requirements:**
+- `serializer_type`: Must conform to the `rpc_serializer` concept
+- `future_template`: A template template parameter that can be instantiated with response types (e.g., `folly::Future`, `std::future`)
+- `executor_type`: Must be a valid executor type for managing asynchronous operations
+
+**Template Template Parameter Benefits:**
+- **Type Safety**: Each RPC method returns the correct future type for its response
+- **Flexibility**: Supports any future implementation (folly::Future, std::future, custom futures)
+- **Concept Conformance**: Validates that instantiated futures conform to the future concept
+- **Clean Interface**: Single types parameter encapsulates all type dependencies
+
+**Example Implementation:**
+```cpp
+struct http_transport_types {
+    using serializer_type = json_serializer;
+    template<typename T> using future_template = folly::Future<T>;
+    using executor_type = folly::CPUThreadPoolExecutor;
+};
+
+// Usage - each method returns correctly typed future
+cpp_httplib_client<http_transport_types> client(config);
+auto vote_future = client.send_request_vote(target, request, timeout);
+// vote_future is folly::Future<request_vote_response<>>
+
+auto append_future = client.send_append_entries(target, request, timeout);
+// append_future is folly::Future<append_entries_response<>>
+```
+
+**Alternative Future Implementations:**
+```cpp
+// Using std::future
+struct std_transport_types {
+    using serializer_type = json_serializer;
+    template<typename T> using future_template = std::future<T>;
+    using executor_type = std::thread;
+};
+
+// Using custom future
+template<typename T>
+class custom_future { /* ... */ };
+
+struct custom_transport_types {
+    using serializer_type = json_serializer;
+    template<typename T> using future_template = custom_future<T>;
+    using executor_type = custom_executor;
+};
+```
+
 ### cpp_httplib_client
 
 **Template Parameters:**
-- `RPC_Serializer`: Type that conforms to the `rpc_serializer` concept
+- `Types`: A single template parameter that provides all required type information and conforms to the `transport_types` concept
+
+**Type Extraction:**
+The client extracts the following types from the `Types` parameter:
+- `typename Types::serializer_type`: RPC serializer that conforms to the `rpc_serializer` concept
+- `template<typename T> typename Types::template future_template<T>`: Template template parameter for future types
+- `typename Types::executor_type`: Executor type for managing asynchronous operations
 
 **Constructor Parameters:**
 - `node_id_to_url_map`: Mapping from node IDs to base URLs (e.g., `{1: "http://node1:8080", 2: "http://node2:8080"}`)
@@ -89,27 +172,28 @@ auto send_request_vote(
     std::uint64_t target,
     const request_vote_request<>& request,
     std::chrono::milliseconds timeout
-) -> folly::Future<request_vote_response<>>;
+) -> typename Types::template future_template<request_vote_response<>>;
 
 auto send_append_entries(
     std::uint64_t target,
     const append_entries_request<>& request,
     std::chrono::milliseconds timeout
-) -> folly::Future<append_entries_response<>>;
+) -> typename Types::template future_template<append_entries_response<>>;
 
 auto send_install_snapshot(
     std::uint64_t target,
     const install_snapshot_request<>& request,
     std::chrono::milliseconds timeout
-) -> folly::Future<install_snapshot_response<>>;
+) -> typename Types::template future_template<install_snapshot_response<>>;
 ```
 
 **Private Members:**
-- `_serializer`: Instance of RPC_Serializer
+- `_serializer`: Instance of `typename Types::serializer_type`
 - `_node_id_to_url`: Map from node IDs to base URLs
 - `_http_client`: cpp-httplib client instance (with connection pooling)
 - `_config`: Client configuration
 - `_metrics`: Metrics recorder instance
+- `_executor`: Instance of `typename Types::executor_type` for managing async operations
 - `_mutex`: Mutex for thread-safe access
 
 **Private Methods:**
@@ -120,7 +204,7 @@ auto send_rpc(
     const std::string& endpoint,
     const Request& request,
     std::chrono::milliseconds timeout
-) -> folly::Future<Response>;
+) -> typename Types::future_type<Response>;
 
 auto get_base_url(std::uint64_t node_id) const -> std::string;
 auto set_request_headers(httplib::Headers& headers) const -> void;
@@ -129,7 +213,13 @@ auto set_request_headers(httplib::Headers& headers) const -> void;
 ### cpp_httplib_server
 
 **Template Parameters:**
-- `RPC_Serializer`: Type that conforms to the `rpc_serializer` concept
+- `Types`: A single template parameter that provides all required type information and conforms to the `transport_types` concept
+
+**Type Extraction:**
+The server extracts the following types from the `Types` parameter:
+- `typename Types::serializer_type`: RPC serializer that conforms to the `rpc_serializer` concept
+- `template<typename T> typename Types::template future_template<T>`: Template template parameter for future types
+- `typename Types::executor_type`: Executor type for managing asynchronous operations
 
 **Constructor Parameters:**
 - `bind_address`: Address to bind to (e.g., "0.0.0.0")
@@ -158,7 +248,7 @@ auto is_running() const -> bool;
 ```
 
 **Private Members:**
-- `_serializer`: Instance of RPC_Serializer
+- `_serializer`: Instance of `typename Types::serializer_type`
 - `_http_server`: cpp-httplib server instance
 - `_request_vote_handler`: Registered handler for RequestVote RPCs
 - `_append_entries_handler`: Registered handler for AppendEntries RPCs
@@ -167,6 +257,7 @@ auto is_running() const -> bool;
 - `_bind_port`: Server bind port
 - `_config`: Server configuration
 - `_metrics`: Metrics recorder instance
+- `_executor`: Instance of `typename Types::executor_type` for managing async operations
 - `_running`: Atomic flag for server state
 - `_mutex`: Mutex for thread-safe access
 
@@ -459,6 +550,16 @@ The property-based tests will use a C++ property-based testing library (e.g., Ra
 
 *For any* HTTP response with a 5xx status code, the client should set the future to error state with an http_server_error exception.
 **Validates: Requirements 13.5**
+
+### Property 11: Types template parameter conformance
+
+*For any* types template parameter used with HTTP transport classes, the parameter should conform to the transport_types concept and provide valid serializer_type, future_template, and executor_type members.
+**Validates: Requirements 18.6, 18.7, 18.8, 18.9**
+
+### Property 12: Template template parameter future type correctness
+
+*For any* HTTP transport RPC method (send_request_vote, send_append_entries, send_install_snapshot), the returned future type should be correctly instantiated from the Types::future_template with the appropriate response type.
+**Validates: Requirements 19.2, 19.3, 19.4, 19.7, 19.9**
 
 
 ### Property-Based Testing Configuration

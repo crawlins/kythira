@@ -3,7 +3,7 @@
 #include "types.hpp"
 #include <concepts>
 
-namespace raft {
+namespace kythira {
 
 // Membership manager concept
 // Defines the interface for managing cluster membership changes
@@ -122,4 +122,4 @@ public:
     }
 };
 
-} // namespace raft
+} // namespace kythira

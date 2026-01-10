@@ -16,8 +16,16 @@
 #include <chrono>
 #include <format>
 
-// Use the correct serializer type alias
-using test_serializer = raft::json_rpc_serializer<std::vector<std::byte>>;
+// Define test types for the transport
+struct TestTypes {
+    using future_type = kythira::Future<void>;
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+};
 
 namespace {
     constexpr std::size_t property_test_iterations = 100;
@@ -73,7 +81,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
         try {
             // Test client certificate validation failure
             {
-                raft::coap_client_config client_config;
+                kythira::coap_client_config client_config;
                 client_config.enable_dtls = true;
                 client_config.cert_file = "/tmp/test_cert.pem";
                 client_config.key_file = "/tmp/test_key.pem";
@@ -83,11 +91,11 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 std::unordered_map<std::uint64_t, std::string> node_endpoints;
                 node_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
                 
-                raft::noop_metrics metrics;
+                kythira::noop_metrics metrics;
                 
                 try {
-                    raft::console_logger logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+                    kythira::console_logger logger;
+                    kythira::coap_client<TestTypes> client(
                         std::move(node_endpoints), client_config, metrics, std::move(logger));
                     
                     // Test validation with various invalid certificates
@@ -119,7 +127,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                         if (!result) {
                             validation_failed = true;
                         }
-                    } catch (const raft::coap_security_error&) {
+                    } catch (const kythira::coap_security_error&) {
                         validation_failed = true;  // Expected behavior
                     }
                     
@@ -128,7 +136,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                         BOOST_TEST_MESSAGE("Certificate validation should have failed for invalid certificate at iteration " << i);
                     }
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors during client creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during client creation at iteration " << i << ": " << e.what());
                 } catch (const std::exception& e) {
@@ -139,18 +147,18 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
             
             // Test server certificate validation failure
             {
-                raft::coap_server_config server_config;
+                kythira::coap_server_config server_config;
                 server_config.enable_dtls = true;
                 server_config.cert_file = "/tmp/server_cert.pem";
                 server_config.key_file = "/tmp/server_key.pem";
                 server_config.ca_file = "/tmp/server_ca.pem";
                 server_config.verify_peer_cert = true;  // Enable client certificate verification
                 
-                raft::noop_metrics server_metrics;
+                kythira::noop_metrics server_metrics;
                 
                 try {
-                    raft::console_logger server_logger;
-                    raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+                    kythira::console_logger server_logger;
+                    kythira::coap_server<TestTypes> server(
                         test_bind_address, test_bind_port, server_config, server_metrics, std::move(server_logger));
                     
                     // Test validation with various invalid client certificates
@@ -182,7 +190,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                         if (!result) {
                             validation_failed = true;
                         }
-                    } catch (const raft::coap_security_error&) {
+                    } catch (const kythira::coap_security_error&) {
                         validation_failed = true;  // Expected behavior
                     }
                     
@@ -191,7 +199,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                         BOOST_TEST_MESSAGE("Client certificate validation should have failed for invalid certificate at iteration " << i);
                     }
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors during server creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during server creation at iteration " << i << ": " << e.what());
                 } catch (const std::exception& e) {
@@ -202,7 +210,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
             
             // Test certificate validation with verification disabled
             {
-                raft::coap_client_config no_verify_config;
+                kythira::coap_client_config no_verify_config;
                 no_verify_config.enable_dtls = true;
                 no_verify_config.cert_file = "/tmp/test_cert.pem";
                 no_verify_config.key_file = "/tmp/test_key.pem";
@@ -211,11 +219,11 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 std::unordered_map<std::uint64_t, std::string> no_verify_endpoints;
                 no_verify_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
                 
-                raft::noop_metrics no_verify_metrics;
+                kythira::noop_metrics no_verify_metrics;
                 
                 try {
-                    raft::console_logger no_verify_logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> no_verify_client(
+                    kythira::console_logger no_verify_logger;
+                    kythira::coap_client<TestTypes> no_verify_client(
                         std::move(no_verify_endpoints), no_verify_config, no_verify_metrics, std::move(no_verify_logger));
                     
                     // When verification is disabled, even invalid certificates should be accepted
@@ -224,7 +232,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     bool validation_result = false;
                     try {
                         validation_result = no_verify_client.validate_peer_certificate(invalid_cert);
-                    } catch (const raft::coap_security_error& e) {
+                    } catch (const kythira::coap_security_error& e) {
                         // Some format errors might still be caught even with verification disabled
                         BOOST_TEST_MESSAGE("Format error caught even with verification disabled: " << e.what());
                         validation_result = false;
@@ -233,7 +241,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     // The behavior depends on the type of invalidity
                     // Format errors should still be caught, but verification errors should be ignored
                     
-                } catch (const raft::coap_security_error& e) {
+                } catch (const kythira::coap_security_error& e) {
                     // Security errors during client creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during no-verify client creation at iteration " << i << ": " << e.what());
                 } catch (const std::exception& e) {
@@ -244,17 +252,17 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
             
             // Test certificate validation with DTLS disabled
             {
-                raft::coap_client_config no_dtls_config;
+                kythira::coap_client_config no_dtls_config;
                 no_dtls_config.enable_dtls = false;  // DTLS disabled
                 
                 std::unordered_map<std::uint64_t, std::string> no_dtls_endpoints;
                 no_dtls_endpoints[test_node_id] = "coap://127.0.0.1:5683";  // Regular CoAP
                 
-                raft::noop_metrics no_dtls_metrics;
+                kythira::noop_metrics no_dtls_metrics;
                 
                 try {
-                    raft::console_logger no_dtls_logger;
-                    raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> no_dtls_client(
+                    kythira::console_logger no_dtls_logger;
+                    kythira::coap_client<TestTypes> no_dtls_client(
                         std::move(no_dtls_endpoints), no_dtls_config, no_dtls_metrics, std::move(no_dtls_logger));
                     
                     // When DTLS is disabled, certificate validation should always succeed
@@ -291,7 +299,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
     
     // Test empty certificate handling
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         config.cert_file = "/tmp/test_cert.pem";
         config.key_file = "/tmp/test_key.pem";
@@ -300,17 +308,17 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
             
             bool exception_thrown = false;
             try {
                 client.validate_peer_certificate("");
-            } catch (const raft::coap_security_error& e) {
+            } catch (const kythira::coap_security_error& e) {
                 exception_thrown = true;
                 BOOST_TEST_MESSAGE("Expected security error for empty certificate: " << e.what());
             }
@@ -320,7 +328,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 BOOST_TEST_MESSAGE("Expected exception not thrown for empty certificate");
             }
             
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             // Security errors during client creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during client creation: " << e.what());
         }
@@ -328,7 +336,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
     
     // Test valid certificate format (should succeed in stub implementation)
     {
-        raft::coap_client_config config;
+        kythira::coap_client_config config;
         config.enable_dtls = true;
         config.cert_file = "/tmp/test_cert.pem";
         config.key_file = "/tmp/test_key.pem";
@@ -337,18 +345,18 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         try {
-            raft::console_logger logger;
-            raft::coap_client<test_serializer, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<TestTypes> client(
                 std::move(endpoints), config, metrics, std::move(logger));
             
             bool validation_result = false;
             bool exception_thrown = false;
             try {
                 validation_result = client.validate_peer_certificate(valid_cert_content);
-            } catch (const raft::coap_security_error& e) {
+            } catch (const kythira::coap_security_error& e) {
                 exception_thrown = true;
                 BOOST_TEST_MESSAGE("Unexpected security error for valid certificate format: " << e.what());
             }
@@ -361,7 +369,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 BOOST_TEST_MESSAGE("Valid certificate format should pass validation");
             }
             
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             // Security errors during client creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during client creation: " << e.what());
         }
@@ -369,17 +377,17 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
     
     // Test server certificate validation with various scenarios
     {
-        raft::coap_server_config config;
+        kythira::coap_server_config config;
         config.enable_dtls = true;
         config.cert_file = "/tmp/server_cert.pem";
         config.key_file = "/tmp/server_key.pem";
         config.verify_peer_cert = true;
         
-        raft::noop_metrics metrics;
+        kythira::noop_metrics metrics;
         
         try {
-            raft::console_logger logger;
-            raft::coap_server<test_serializer, raft::noop_metrics, raft::console_logger> server(
+            kythira::console_logger logger;
+            kythira::coap_server<TestTypes> server(
                 test_bind_address, test_bind_port, config, metrics, std::move(logger));
             
             // Test various invalid client certificates
@@ -390,7 +398,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                     if (!result) {
                         validation_failed = true;
                     }
-                } catch (const raft::coap_security_error&) {
+                } catch (const kythira::coap_security_error&) {
                     validation_failed = true;  // Expected behavior
                 }
                 
@@ -400,7 +408,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 }
             }
             
-        } catch (const raft::coap_security_error& e) {
+        } catch (const kythira::coap_security_error& e) {
             // Security errors during server creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during server creation: " << e.what());
         }

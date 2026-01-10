@@ -68,10 +68,10 @@ auto test_coap_transport_basic_usage() -> bool {
         std::cout << "  ✓ CoAP endpoint mapping configured\n";
         
         // Note: In a real implementation with libcoap available:
-        // - raft::coap_server would be instantiated with the configuration
+        // - kythira::coap_server would be instantiated with the configuration
         // - Handler functions would be registered for each RPC type
         // - server.start() would bind to the configured port
-        // - raft::coap_client would establish CoAP sessions
+        // - kythira::coap_client would establish CoAP sessions
         // - RPC calls would be sent over CoAP/UDP protocol
         std::cout << "  ✓ CoAP transport API structured correctly\n";
         return true;
@@ -104,7 +104,7 @@ auto test_rpc_communication() -> bool {
         // Test RequestVote RPC structure
         std::cout << "  Testing RequestVote RPC...\n";
         // Note: In real implementation:
-        // raft::request_vote_request<> vote_req;
+        // kythira::request_vote_request<> vote_req;
         // vote_req._term = 5;
         // vote_req._candidate_id = 42;
         // auto future = client.send_request_vote(node_id, vote_req, rpc_timeout);
@@ -114,7 +114,7 @@ auto test_rpc_communication() -> bool {
         // Test AppendEntries RPC structure
         std::cout << "  Testing AppendEntries RPC...\n";
         // Note: In real implementation:
-        // raft::append_entries_request<> append_req;
+        // kythira::append_entries_request<> append_req;
         // append_req._term = 5;
         // append_req._leader_id = 1;
         // auto future = client.send_append_entries(node_id, append_req, rpc_timeout);
@@ -124,7 +124,7 @@ auto test_rpc_communication() -> bool {
         // Test InstallSnapshot RPC structure
         std::cout << "  Testing InstallSnapshot RPC...\n";
         // Note: In real implementation:
-        // raft::install_snapshot_request<> snapshot_req;
+        // kythira::install_snapshot_request<> snapshot_req;
         // snapshot_req._term = 5;
         // snapshot_req._leader_id = 1;
         // auto future = client.send_install_snapshot(node_id, snapshot_req, rpc_timeout);

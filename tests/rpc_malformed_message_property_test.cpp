@@ -48,7 +48,7 @@ auto string_to_bytes(const std::string& str) -> std::vector<std::byte> {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -62,7 +62,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
             // Attempt to deserialize - should throw
             auto result = serializer.deserialize_request_vote_request(random_data);
             // If we get here, deserialization succeeded (unexpected for random data)
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             // Expected - malformed data rejected
             ++rejection_count;
         } catch (const std::exception&) {
@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
  * rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
         try {
             auto result = serializer.deserialize_request_vote_request(data);
             // Should not reach here
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;
@@ -125,7 +125,7 @@ BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
  * rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -144,7 +144,7 @@ BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
         try {
             auto result = serializer.deserialize_request_vote_request(data);
             // Should not reach here
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
  * with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
         try {
             auto result = serializer.deserialize_request_vote_request(data);
             // Should not reach here
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;
@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -219,7 +219,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
         
         try {
             auto result = serializer.deserialize_append_entries_request(random_data);
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;
@@ -240,7 +240,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
         
         try {
             auto result = serializer.deserialize_install_snapshot_request(random_data);
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;
@@ -272,7 +272,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
  * the deserializer rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_invalid_entry_data_rejection) {
-    raft::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -289,7 +289,7 @@ BOOST_AUTO_TEST_CASE(property_invalid_entry_data_rejection) {
         try {
             auto result = serializer.deserialize_append_entries_request(data);
             // Should not reach here
-        } catch (const raft::serialization_exception&) {
+        } catch (const kythira::serialization_exception&) {
             ++rejection_count;
         } catch (const std::exception&) {
             ++rejection_count;

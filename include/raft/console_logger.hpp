@@ -10,7 +10,7 @@
 #include <iomanip>
 #include <sstream>
 
-namespace raft {
+namespace kythira {
 
 // Console logger implementation for development and testing
 // Provides thread-safe structured logging to stdout/stderr
@@ -179,4 +179,4 @@ private:
 static_assert(diagnostic_logger<console_logger>,
     "console_logger must satisfy diagnostic_logger concept");
 
-} // namespace raft
+} // namespace kythira

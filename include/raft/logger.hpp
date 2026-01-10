@@ -6,7 +6,7 @@
 #include <utility>
 #include <cstdint>
 
-namespace raft {
+namespace kythira {
 
 // Log severity levels
 enum class log_level : std::uint8_t {
@@ -41,4 +41,4 @@ concept diagnostic_logger = requires(
     { logger.critical(message) } -> std::same_as<void>;
 };
 
-} // namespace raft
+} // namespace kythira

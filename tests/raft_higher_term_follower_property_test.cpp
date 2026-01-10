@@ -69,7 +69,7 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         simulator.start();
         
         // Generate random initial term
@@ -80,28 +80,28 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
         constexpr std::uint64_t node_id = 1;
         auto sim_node = simulator.create_node(node_id);
         
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -118,7 +118,7 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
         BOOST_REQUIRE_GE(current_term_before, initial_term);
         
         // Create RequestVote with higher term
-        raft::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t> rv_request{
+        kythira::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t> rv_request{
             higher_term,
             999,  // candidate_id (different node)
             0,    // last_log_index
@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(candidate_becomes_follower_on_higher_term_append_entries) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         simulator.start();
         
         // Generate random initial term
@@ -176,28 +176,28 @@ BOOST_AUTO_TEST_CASE(candidate_becomes_follower_on_higher_term_append_entries) {
         constexpr std::uint64_t node_id = 1;
         auto sim_node = simulator.create_node(node_id);
         
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -236,7 +236,7 @@ BOOST_AUTO_TEST_CASE(server_becomes_follower_on_higher_term_install_snapshot) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         simulator.start();
         
         // Generate random initial term
@@ -247,28 +247,28 @@ BOOST_AUTO_TEST_CASE(server_becomes_follower_on_higher_term_install_snapshot) {
         constexpr std::uint64_t node_id = 1;
         auto sim_node = simulator.create_node(node_id);
         
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -312,7 +312,7 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
     
     for (std::size_t iteration = 0; iteration < network_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         
         // Generate random terms
         std::uint64_t initial_term = term_dist(rng);
@@ -337,28 +337,28 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         simulator.start();
         
         // Create node1 with initial term
-        auto persistence1 = raft::memory_persistence_engine<>{};
+        auto persistence1 = kythira::memory_persistence_engine<>{};
         persistence1.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node1 = raft::node{
+        auto node1 = kythira::node{
             node1_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence1),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -374,14 +374,14 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         auto term_before = node1.get_current_term();
         
         // Create and send RequestVote with higher term from node2 to node1
-        raft::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t> rv_request{
+        kythira::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t> rv_request{
             higher_term,
             node2_id,
             0,  // last_log_index
             0   // last_log_term
         };
         
-        auto serializer = raft::json_rpc_serializer<std::vector<std::byte>>{};
+        auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
         auto data = serializer.serialize(rv_request);
         
         // Send message from node2 to node1 via network simulator
@@ -403,7 +403,7 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         // Property: node1 should REMAIN as leader (reject non-cluster member)
         // Per Requirement 9.6, RequestVote from non-cluster members should be rejected
         BOOST_CHECK(node1.is_leader());
-        BOOST_CHECK_EQUAL(node1.get_state(), raft::server_state::leader);
+        BOOST_CHECK_EQUAL(node1.get_state(), kythira::server_state::leader);
         
         // Property: node1's term should NOT have been updated
         BOOST_CHECK_EQUAL(node1.get_current_term(), term_before);
@@ -432,7 +432,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
     
     for (std::size_t iteration = 0; iteration < network_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         
         // Generate random terms
         std::uint64_t initial_term = term_dist(rng);
@@ -456,28 +456,28 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
         simulator.start();
         
         // Create node1 - will become leader in single-node cluster
-        auto persistence1 = raft::memory_persistence_engine<>{};
+        auto persistence1 = kythira::memory_persistence_engine<>{};
         persistence1.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node1 = raft::node{
+        auto node1 = kythira::node{
             node1_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence1),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -491,7 +491,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
         BOOST_REQUIRE(node1.is_leader());
         
         // Send AppendEntries with higher term
-        raft::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t> ae_request{
+        kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t> ae_request{
             higher_term,
             node2_id,
             0,  // prev_log_index
@@ -500,7 +500,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
             0   // leader_commit
         };
         
-        auto serializer = raft::json_rpc_serializer<std::vector<std::byte>>{};
+        auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
         auto data = serializer.serialize(ae_request);
         
         // Note: Raft RPC port is 5000 (default port used by simulator_network_server)
@@ -519,7 +519,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
         std::this_thread::sleep_for(std::chrono::milliseconds{500});
         
         // Property: node1 should have transitioned to follower
-        BOOST_CHECK_EQUAL(node1.get_state(), raft::server_state::follower);
+        BOOST_CHECK_EQUAL(node1.get_state(), kythira::server_state::follower);
         BOOST_CHECK_GE(node1.get_current_term(), higher_term);
         
         node1.stop();
@@ -544,7 +544,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
     
     for (std::size_t iteration = 0; iteration < network_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         
         // Generate random terms
         std::uint64_t initial_term = term_dist(rng);
@@ -568,28 +568,28 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
         simulator.start();
         
         // Create node1
-        auto persistence1 = raft::memory_persistence_engine<>{};
+        auto persistence1 = kythira::memory_persistence_engine<>{};
         persistence1.save_current_term(initial_term);
         
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = std::chrono::milliseconds{50};
         
-        auto node1 = raft::node{
+        auto node1 = kythira::node{
             node1_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node1, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence1),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -603,7 +603,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
         BOOST_REQUIRE(node1.is_leader());
         
         // Send InstallSnapshot with higher term
-        raft::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t> is_request{
+        kythira::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t> is_request{
             higher_term,
             node2_id,
             0,    // last_included_index
@@ -613,7 +613,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
             true  // done
         };
         
-        auto serializer = raft::json_rpc_serializer<std::vector<std::byte>>{};
+        auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
         auto data = serializer.serialize(is_request);
         
         // Note: Raft RPC port is 5000 (default port used by simulator_network_server)
@@ -633,7 +633,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
         
         // Property: node1 should have transitioned to follower
         BOOST_CHECK(!node1.is_leader());
-        BOOST_CHECK_EQUAL(node1.get_state(), raft::server_state::follower);
+        BOOST_CHECK_EQUAL(node1.get_state(), kythira::server_state::follower);
         BOOST_CHECK_GE(node1.get_current_term(), higher_term);
         
         node1.stop();

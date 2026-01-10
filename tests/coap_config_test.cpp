@@ -13,7 +13,7 @@
 #include <string>
 
 using namespace raft;
-using namespace raft::coap_utils;
+using namespace kythira::coap_utils;
 
 // Stream operator for coap_content_format (for testing)
 inline auto operator<<(std::ostream& os, coap_content_format format) -> std::ostream& {

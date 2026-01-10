@@ -17,22 +17,22 @@ namespace {
 // Test that the node class template structure is well-formed
 BOOST_AUTO_TEST_CASE(test_node_type_structure) {
     // Define the node type with all template parameters
-    using network_client_t = raft::simulator_network_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_client_t = kythira::simulator_network_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using network_server_t = raft::simulator_network_server<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_server_t = kythira::simulator_network_server<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using persistence_t = raft::memory_persistence_engine<>;
-    using logger_t = raft::console_logger;
-    using metrics_t = raft::noop_metrics;
-    using membership_t = raft::default_membership_manager<>;
+    using persistence_t = kythira::memory_persistence_engine<>;
+    using logger_t = kythira::console_logger;
+    using metrics_t = kythira::noop_metrics;
+    using membership_t = kythira::default_membership_manager<>;
     
-    using node_t = raft::node<
+    using node_t = kythira::node<
         network_client_t,
         network_server_t,
         persistence_t,
@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_CASE(test_node_type_structure) {
     [[maybe_unused]] node_t* ptr = nullptr;
     
     // Verify that node satisfies raft_node concept
-    static_assert(raft::raft_node<node_t>, "node must satisfy raft_node concept");
+    static_assert(kythira::raft_node<node_t>, "node must satisfy raft_node concept");
     
     BOOST_CHECK(true);  // Test passes if it compiles
 }
@@ -57,22 +57,22 @@ BOOST_AUTO_TEST_CASE(test_node_with_custom_types) {
     using custom_term_id = std::uint32_t;
     using custom_log_index = std::uint32_t;
     
-    using network_client_t = raft::simulator_network_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_client_t = kythira::simulator_network_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using network_server_t = raft::simulator_network_server<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_server_t = kythira::simulator_network_server<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using persistence_t = raft::memory_persistence_engine<custom_node_id, custom_term_id, custom_log_index>;
-    using logger_t = raft::console_logger;
-    using metrics_t = raft::noop_metrics;
-    using membership_t = raft::default_membership_manager<custom_node_id>;
+    using persistence_t = kythira::memory_persistence_engine<custom_node_id, custom_term_id, custom_log_index>;
+    using logger_t = kythira::console_logger;
+    using metrics_t = kythira::noop_metrics;
+    using membership_t = kythira::default_membership_manager<custom_node_id>;
     
-    using node_t = raft::node<
+    using node_t = kythira::node<
         network_client_t,
         network_server_t,
         persistence_t,
@@ -88,29 +88,29 @@ BOOST_AUTO_TEST_CASE(test_node_with_custom_types) {
     [[maybe_unused]] node_t* ptr = nullptr;
     
     // Verify that node satisfies raft_node concept
-    static_assert(raft::raft_node<node_t>, "node with custom types must satisfy raft_node concept");
+    static_assert(kythira::raft_node<node_t>, "node with custom types must satisfy raft_node concept");
     
     BOOST_CHECK(true);  // Test passes if it compiles
 }
 
 // Test that all required member types are defined
 BOOST_AUTO_TEST_CASE(test_node_member_types) {
-    using network_client_t = raft::simulator_network_client<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_client_t = kythira::simulator_network_client<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using network_server_t = raft::simulator_network_server<
-        raft::json_rpc_serializer<std::vector<std::byte>>,
+    using network_server_t = kythira::simulator_network_server<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
         std::vector<std::byte>
     >;
     
-    using persistence_t = raft::memory_persistence_engine<>;
-    using logger_t = raft::console_logger;
-    using metrics_t = raft::noop_metrics;
-    using membership_t = raft::default_membership_manager<>;
+    using persistence_t = kythira::memory_persistence_engine<>;
+    using logger_t = kythira::console_logger;
+    using metrics_t = kythira::noop_metrics;
+    using membership_t = kythira::default_membership_manager<>;
     
-    using node_t = raft::node<
+    using node_t = kythira::node<
         network_client_t,
         network_server_t,
         persistence_t,

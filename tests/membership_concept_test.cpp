@@ -17,11 +17,11 @@ public:
     }
     
     auto create_joint_configuration(
-        const raft::cluster_configuration<NodeId>& old_config,
-        const raft::cluster_configuration<NodeId>& new_config
-    ) -> raft::cluster_configuration<NodeId> {
+        const kythira::cluster_configuration<NodeId>& old_config,
+        const kythira::cluster_configuration<NodeId>& new_config
+    ) -> kythira::cluster_configuration<NodeId> {
         // Create joint consensus configuration
-        raft::cluster_configuration<NodeId> joint_config;
+        kythira::cluster_configuration<NodeId> joint_config;
         joint_config._nodes = new_config._nodes;
         joint_config._is_joint_consensus = true;
         joint_config._old_nodes = old_config._nodes;
@@ -30,7 +30,7 @@ public:
     
     auto is_node_in_configuration(
         const NodeId& node,
-        const raft::cluster_configuration<NodeId>& config
+        const kythira::cluster_configuration<NodeId>& config
     ) -> bool {
         // Check if node is in the configuration
         for (const auto& n : config.nodes()) {
@@ -60,20 +60,20 @@ public:
 
 // Verify that test_membership_manager satisfies the membership_manager concept
 static_assert(
-    raft::membership_manager<
+    kythira::membership_manager<
         test_membership_manager<std::uint64_t>,
         std::uint64_t,
-        raft::cluster_configuration<std::uint64_t>
+        kythira::cluster_configuration<std::uint64_t>
     >,
     "test_membership_manager must satisfy membership_manager concept"
 );
 
 // Test with string node IDs
 static_assert(
-    raft::membership_manager<
+    kythira::membership_manager<
         test_membership_manager<std::string>,
         std::string,
-        raft::cluster_configuration<std::string>
+        kythira::cluster_configuration<std::string>
     >,
     "test_membership_manager with string IDs must satisfy membership_manager concept"
 );
@@ -86,10 +86,10 @@ public:
 };
 
 static_assert(
-    !raft::membership_manager<
+    !kythira::membership_manager<
         non_membership_manager,
         std::uint64_t,
-        raft::cluster_configuration<std::uint64_t>
+        kythira::cluster_configuration<std::uint64_t>
     >,
     "non_membership_manager must not satisfy membership_manager concept"
 );
@@ -98,11 +98,11 @@ int main() {
     // Instantiate to ensure it compiles
     test_membership_manager<std::uint64_t> manager;
     
-    raft::cluster_configuration<std::uint64_t> old_config;
+    kythira::cluster_configuration<std::uint64_t> old_config;
     old_config._nodes = {1, 2, 3};
     old_config._is_joint_consensus = false;
     
-    raft::cluster_configuration<std::uint64_t> new_config;
+    kythira::cluster_configuration<std::uint64_t> new_config;
     new_config._nodes = {1, 2, 3, 4};
     new_config._is_joint_consensus = false;
     

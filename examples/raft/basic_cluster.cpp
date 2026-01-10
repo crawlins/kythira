@@ -66,24 +66,24 @@ auto test_node_creation() -> bool {
         auto sim_node = simulator.create_node(node_id);
         
         // Create Raft configuration
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
         // Create Raft node
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::simulator_network_server<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::info},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::info},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -124,24 +124,24 @@ auto test_leader_election() -> bool {
         auto sim_node = simulator.create_node(node_id);
         
         // Create Raft configuration
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
         // Create Raft node
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::simulator_network_server<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::info},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::info},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -192,24 +192,24 @@ auto test_command_submission() -> bool {
         auto sim_node = simulator.create_node(node_id);
         
         // Create Raft configuration
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
         // Create Raft node
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::simulator_network_server<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::info},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::info},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         
@@ -257,24 +257,24 @@ auto test_state_reading() -> bool {
         auto sim_node = simulator.create_node(node_id);
         
         // Create Raft configuration
-        auto config = raft::raft_configuration{};
+        auto config = kythira::raft_configuration{};
         config._election_timeout_min = election_timeout_min;
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
         // Create Raft node
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::simulator_network_server<raft::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}
+            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
+                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
             },
-            raft::memory_persistence_engine<>{},
-            raft::console_logger{raft::log_level::info},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{},
+            kythira::memory_persistence_engine<>{},
+            kythira::console_logger{kythira::log_level::info},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{},
             config
         };
         

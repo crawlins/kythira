@@ -14,20 +14,20 @@ namespace {
 
 // Verify that default_membership_manager satisfies the membership_manager concept
 static_assert(
-    raft::membership_manager<
-        raft::default_membership_manager<std::uint64_t>,
+    kythira::membership_manager<
+        kythira::default_membership_manager<std::uint64_t>,
         std::uint64_t,
-        raft::cluster_configuration<std::uint64_t>
+        kythira::cluster_configuration<std::uint64_t>
     >,
     "default_membership_manager must satisfy membership_manager concept"
 );
 
 // Test with string node IDs
 static_assert(
-    raft::membership_manager<
-        raft::default_membership_manager<std::string>,
+    kythira::membership_manager<
+        kythira::default_membership_manager<std::string>,
         std::string,
-        raft::cluster_configuration<std::string>
+        kythira::cluster_configuration<std::string>
     >,
     "default_membership_manager with string IDs must satisfy membership_manager concept"
 );
@@ -35,7 +35,7 @@ static_assert(
 auto test_basic_validation() -> bool {
     std::cout << "Testing basic validation...\n";
     
-    raft::default_membership_manager<std::uint64_t> manager;
+    kythira::default_membership_manager<std::uint64_t> manager;
     
     // Test validate_new_node - should accept all nodes
     if (!manager.validate_new_node(node_1)) {
@@ -56,16 +56,16 @@ auto test_basic_validation() -> bool {
 auto test_joint_consensus_creation() -> bool {
     std::cout << "Testing joint consensus configuration creation...\n";
     
-    raft::default_membership_manager<std::uint64_t> manager;
+    kythira::default_membership_manager<std::uint64_t> manager;
     
     // Create old configuration with 3 nodes
-    raft::cluster_configuration<std::uint64_t> old_config;
+    kythira::cluster_configuration<std::uint64_t> old_config;
     old_config._nodes = {node_1, node_2, node_3};
     old_config._is_joint_consensus = false;
     old_config._old_nodes = std::nullopt;
     
     // Create new configuration with 4 nodes (adding node_4)
-    raft::cluster_configuration<std::uint64_t> new_config;
+    kythira::cluster_configuration<std::uint64_t> new_config;
     new_config._nodes = {node_1, node_2, node_3, node_4};
     new_config._is_joint_consensus = false;
     new_config._old_nodes = std::nullopt;
@@ -131,10 +131,10 @@ auto test_joint_consensus_creation() -> bool {
 auto test_node_in_configuration() -> bool {
     std::cout << "Testing node in configuration check...\n";
     
-    raft::default_membership_manager<std::uint64_t> manager;
+    kythira::default_membership_manager<std::uint64_t> manager;
     
     // Test with simple configuration
-    raft::cluster_configuration<std::uint64_t> simple_config;
+    kythira::cluster_configuration<std::uint64_t> simple_config;
     simple_config._nodes = {node_1, node_2, node_3};
     simple_config._is_joint_consensus = false;
     
@@ -161,11 +161,11 @@ auto test_node_in_configuration() -> bool {
     }
     
     // Test with joint consensus configuration
-    raft::cluster_configuration<std::uint64_t> old_config;
+    kythira::cluster_configuration<std::uint64_t> old_config;
     old_config._nodes = {node_1, node_2, node_3};
     old_config._is_joint_consensus = false;
     
-    raft::cluster_configuration<std::uint64_t> new_config;
+    kythira::cluster_configuration<std::uint64_t> new_config;
     new_config._nodes = {node_2, node_3, node_4};
     new_config._is_joint_consensus = false;
     
@@ -205,7 +205,7 @@ auto test_node_in_configuration() -> bool {
 auto test_node_removal() -> bool {
     std::cout << "Testing node removal...\n";
     
-    raft::default_membership_manager<std::uint64_t> manager;
+    kythira::default_membership_manager<std::uint64_t> manager;
     
     // Test handle_node_removal - should not throw or crash
     manager.handle_node_removal(node_1);
@@ -217,14 +217,14 @@ auto test_node_removal() -> bool {
 auto test_string_node_ids() -> bool {
     std::cout << "Testing with string node IDs...\n";
     
-    raft::default_membership_manager<std::string> manager;
+    kythira::default_membership_manager<std::string> manager;
     
     // Create configurations with string IDs
-    raft::cluster_configuration<std::string> old_config;
+    kythira::cluster_configuration<std::string> old_config;
     old_config._nodes = {"node_a", "node_b", "node_c"};
     old_config._is_joint_consensus = false;
     
-    raft::cluster_configuration<std::string> new_config;
+    kythira::cluster_configuration<std::string> new_config;
     new_config._nodes = {"node_a", "node_b", "node_c", "node_d"};
     new_config._is_joint_consensus = false;
     

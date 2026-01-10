@@ -6,7 +6,7 @@ The Network Simulator is a C++ library that models network communication between
 
 The simulator uses a directed graph topology where nodes are vertices and communication paths are edges weighted by latency and reliability parameters. This allows realistic simulation of network conditions including delays, packet loss, and network partitions.
 
-The design emphasizes type safety through C++ concepts, asynchronous operations using folly::Future-like semantics, and flexibility through template parameterization of address and port types.
+**Key Design Innovation**: The design uses a single Types template parameter that provides all necessary type definitions through the `network_simulator_types` concept. This eliminates template complexity issues while maintaining type safety and clear interfaces. Each operation returns a specific, strongly-typed future (e.g., `typename Types::future_bool_type`, `typename Types::future_message_type`) rather than using a single generic future template parameter.
 
 ## Architecture
 
@@ -21,17 +21,18 @@ The design emphasizes type safety through C++ concepts, asynchronous operations 
                  ▼                            ▼
 ┌────────────────────────────┐  ┌────────────────────────────┐
 │   Connectionless API       │  │  Connection-Oriented API   │
-│   - send()                 │  │  - connect()               │
-│   - receive()              │  │  - bind()                  │
-│                            │  │  - listen()                │
-│                            │  │  - read() / write()        │
+│   - send() -> future_bool  │  │  - connect() -> future_conn│
+│   - receive() -> future_msg│  │  - bind() -> future_listen │
+│                            │  │  - accept() -> future_conn │
+│                            │  │  - read() -> future_bytes  │
+│                            │  │  - write() -> future_bool  │
 └────────────┬───────────────┘  └────────────┬───────────────┘
              │                               │
              └───────────────┬───────────────┘
                              ▼
                 ┌────────────────────────────┐
                 │      Network Node          │
-                │  (Template parameterized)  │
+                │   (Types parameterized)    │
                 └────────────┬───────────────┘
                              │
                              ▼
@@ -41,6 +42,7 @@ The design emphasizes type safety through C++ concepts, asynchronous operations 
                 │  - Message Routing         │
                 │  - Latency Simulation      │
                 │  - Reliability Simulation  │
+                │  - Lifecycle Control       │
                 └────────────┬───────────────┘
                              │
                              ▼
@@ -53,17 +55,55 @@ The design emphasizes type safety through C++ concepts, asynchronous operations 
 
 ### Component Layers
 
-1. **Concept Layer**: Defines compile-time contracts for types
-2. **Core Simulator Layer**: Implements network topology and message routing
-3. **Node Layer**: Provides network node abstraction with send/receive/connect/bind
-4. **Connection Layer**: Implements connection-oriented communication
-5. **Future Layer**: Provides asynchronous operation results
+1. **Types Layer**: Defines all type contracts through the `network_simulator_types` concept
+2. **Concept Layer**: Defines compile-time contracts for individual types
+3. **Core Simulator Layer**: Implements network topology and message routing
+4. **Node Layer**: Provides network node abstraction with send/receive/connect/bind
+5. **Connection Layer**: Implements connection-oriented communication
+6. **Exception Layer**: Provides structured error handling
 
 ## Components and Interfaces
 
-### 1. Concepts (Type Constraints)
+### 1. Network Simulator Types Concept
 
-#### 1.1 Address Concept
+The core innovation of this design is the `network_simulator_types` concept that provides all type definitions through a single template parameter:
+
+```cpp
+template<typename T>
+concept network_simulator_types = requires {
+    // Core types
+    typename T::address_type;
+    typename T::port_type;
+    typename T::message_type;
+    typename T::connection_type;
+    typename T::listener_type;
+    
+    // Future types for specific operations
+    typename T::future_bool_type;
+    typename T::future_message_type;
+    typename T::future_connection_type;
+    typename T::future_listener_type;
+    typename T::future_bytes_type;
+    
+    // Type constraints
+    requires address<typename T::address_type>;
+    requires port<typename T::port_type>;
+    requires message<typename T::message_type, typename T::address_type, typename T::port_type>;
+    requires connection<typename T::connection_type>;
+    requires listener<typename T::listener_type, typename T::connection_type>;
+    
+    // Future constraints
+    requires future<typename T::future_bool_type, bool>;
+    requires future<typename T::future_message_type, typename T::message_type>;
+    requires future<typename T::future_connection_type, std::shared_ptr<typename T::connection_type>>;
+    requires future<typename T::future_listener_type, std::shared_ptr<typename T::listener_type>>;
+    requires future<typename T::future_bytes_type, std::vector<std::byte>>;
+};
+```
+
+### 2. Individual Type Concepts
+
+#### 2.1 Address Concept
 
 ```cpp
 template<typename T>
@@ -87,7 +127,7 @@ concept address = requires(T a, T b) {
 - `in_addr` (IPv4)
 - `in6_addr` (IPv6)
 
-#### 1.2 Port Concept
+#### 2.2 Port Concept
 
 ```cpp
 template<typename T>
@@ -108,27 +148,7 @@ concept port = requires(T p, T q) {
 **Supported Types:**
 - `unsigned short`
 - `std::string`
-
-#### 1.3 Try Concept
-
-```cpp
-template<typename T, typename V>
-concept try_type = requires(T t) {
-    // Must provide value access
-    { t.value() } -> std::same_as<V>;
-    
-    // Must provide exception access
-    { t.exception() } -> std::same_as<std::exception_ptr>;
-    
-    // Must be able to check if contains value
-    { t.has_value() } -> std::convertible_to<bool>;
-    
-    // Must be able to check if contains exception
-    { t.has_exception() } -> std::convertible_to<bool>;
-};
-```
-
-#### 1.4 Future Concept
+#### 2.3 Future Concept
 
 ```cpp
 template<typename F, typename T>
@@ -148,23 +168,9 @@ concept future = requires(F f) {
     // Must support timeout
     { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
 };
-
-// Collective future operations (modeled after folly::collectAny and folly::collectAll)
-
-// Wait for any future to complete (modeled after folly::collectAny)
-// Returns a future of tuple containing the index and Try<T> of the first completed future
-template<std::ranges::range R>
-    requires future<std::ranges::range_value_t<R>, typename std::ranges::range_value_t<R>::value_type>
-auto wait_for_any(R&& futures) -> future<std::tuple<std::size_t, Try<typename std::ranges::range_value_t<R>::value_type>>>;
-
-// Wait for all futures to complete (modeled after folly::collectAll)
-// Returns a future of range containing Try<T> for each future (preserving order)
-template<std::ranges::range R>
-    requires future<std::ranges::range_value_t<R>, typename std::ranges::range_value_t<R>::value_type>
-auto wait_for_all(R&& futures) -> future<std::ranges::range<try_type<typename std::ranges::range_value_t<R>::value_type>> auto>;
 ```
 
-#### 1.5 Message Concept
+#### 2.4 Message Concept
 
 ```cpp
 template<typename M, typename Addr, typename Port>
@@ -186,18 +192,18 @@ concept message = requires(M msg) {
 };
 ```
 
-#### 1.6 Connection Concept
+#### 2.5 Connection Concept
 
 ```cpp
-template<typename C>
+template<typename C, typename FutureBytes, typename FutureBool>
 concept connection = requires(C conn, std::vector<std::byte> data) {
     // Must support reading data
-    { conn.read() } -> future<std::vector<std::byte>>;
-    { conn.read(std::chrono::milliseconds{100}) } -> future<std::vector<std::byte>>;
+    { conn.read() } -> std::same_as<FutureBytes>;
+    { conn.read(std::chrono::milliseconds{100}) } -> std::same_as<FutureBytes>;
     
     // Must support writing data
-    { conn.write(data) } -> future<bool>;
-    { conn.write(data, std::chrono::milliseconds{100}) } -> future<bool>;
+    { conn.write(data) } -> std::same_as<FutureBool>;
+    { conn.write(data, std::chrono::milliseconds{100}) } -> std::same_as<FutureBool>;
     
     // Must be closeable
     { conn.close() } -> std::same_as<void>;
@@ -207,14 +213,14 @@ concept connection = requires(C conn, std::vector<std::byte> data) {
 };
 ```
 
-#### 1.7 Listener Concept
+#### 2.6 Listener Concept
 
 ```cpp
-template<typename L, typename Conn>
+template<typename L, typename FutureConn>
 concept listener = requires(L lstn) {
     // Must support accepting connections
-    { lstn.accept() } -> future<Conn>;
-    { lstn.accept(std::chrono::milliseconds{100}) } -> future<Conn>;
+    { lstn.accept() } -> std::same_as<FutureConn>;
+    { lstn.accept(std::chrono::milliseconds{100}) } -> std::same_as<FutureConn>;
     
     // Must be closeable
     { lstn.close() } -> std::same_as<void>;
@@ -224,24 +230,7 @@ concept listener = requires(L lstn) {
 };
 ```
 
-#### 1.8 Endpoint Concept
-
-```cpp
-template<typename E, typename Addr, typename Port>
-concept endpoint = requires(E ep) {
-    // Must provide address access
-    { ep.address() } -> std::same_as<Addr>;
-    
-    // Must provide port access
-    { ep.port() } -> std::same_as<Port>;
-    
-    // Must support equality comparison
-    { ep == ep } -> std::convertible_to<bool>;
-    { ep != ep } -> std::convertible_to<bool>;
-};
-```
-
-#### 1.9 Network Edge Concept
+#### 2.7 Network Edge Concept
 
 ```cpp
 template<typename E>
@@ -254,40 +243,38 @@ concept network_edge = requires(E edge) {
 };
 ```
 
-#### 1.10 Network Node Concept
+#### 2.8 Network Node Concept
 
 ```cpp
-template<typename N, typename Addr, typename Port, typename Msg, typename Conn, typename Lstn>
-concept network_node = requires(N node, Msg msg, Addr addr, Port port) {
+template<typename N, typename Types>
+concept network_node = requires(N node, typename Types::message_type msg, 
+                                typename Types::address_type addr, typename Types::port_type port) {
     // Connectionless operations
-    { node.send(msg) } -> future<bool>;
-    { node.send(msg, std::chrono::milliseconds{100}) } -> future<bool>;
-    { node.receive() } -> future<Msg>;
-    { node.receive(std::chrono::milliseconds{100}) } -> future<Msg>;
+    { node.send(msg) } -> std::same_as<typename Types::future_bool_type>;
+    { node.send(msg, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_bool_type>;
+    { node.receive() } -> std::same_as<typename Types::future_message_type>;
+    { node.receive(std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_message_type>;
     
     // Connection-oriented client operations
-    { node.connect(addr, port) } -> future<Conn>;
-    { node.connect(addr, port, port) } -> future<Conn>;  // with source port
-    { node.connect(addr, port, std::chrono::milliseconds{100}) } -> future<Conn>;
+    { node.connect(addr, port) } -> std::same_as<typename Types::future_connection_type>;
+    { node.connect(addr, port, port) } -> std::same_as<typename Types::future_connection_type>;  // with source port
+    { node.connect(addr, port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_connection_type>;
     
     // Connection-oriented server operations
-    { node.bind() } -> future<Lstn>;  // bind to random port
-    { node.bind(port) } -> future<Lstn>;  // bind to specific port
-    { node.bind(port, std::chrono::milliseconds{100}) } -> future<Lstn>;
+    { node.bind() } -> std::same_as<typename Types::future_listener_type>;  // bind to random port
+    { node.bind(port) } -> std::same_as<typename Types::future_listener_type>;  // bind to specific port
+    { node.bind(port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_listener_type>;
     
     // Node identity
-    { node.address() } -> std::same_as<Addr>;
+    { node.address() } -> std::same_as<typename Types::address_type>;
 };
 ```
 
-#### 1.11 Network Simulator Concept
+#### 2.9 Network Simulator Concept
 
 ```cpp
-template<typename S, typename Addr, typename Port, typename Node, typename Edge>
-concept network_simulator = requires(S sim, Addr addr, Edge edge) {
-    // Edge must satisfy network_edge concept
-    requires network_edge<Edge>;
-    
+template<typename S, typename Types>
+concept network_simulator = requires(S sim, typename Types::address_type addr, NetworkEdge edge) {
     // Topology configuration
     { sim.add_node(addr) } -> std::same_as<void>;
     { sim.remove_node(addr) } -> std::same_as<void>;
@@ -295,7 +282,7 @@ concept network_simulator = requires(S sim, Addr addr, Edge edge) {
     { sim.remove_edge(addr, addr) } -> std::same_as<void>;
     
     // Node creation
-    { sim.create_node(addr) } -> std::same_as<std::shared_ptr<Node>>;
+    { sim.create_node(addr) } -> std::same_as<std::shared_ptr<typename Types::node_type>>;
     
     // Simulation control
     { sim.start() } -> std::same_as<void>;
@@ -303,35 +290,63 @@ concept network_simulator = requires(S sim, Addr addr, Edge edge) {
     { sim.reset() } -> std::same_as<void>;
 };
 ```
+### 3. Core Data Structures
 
-### 2. Core Data Structures
+#### 3.1 Example Types Implementation
 
-#### 2.1 Message Structure
+Here's an example of how to implement the `network_simulator_types` concept:
 
 ```cpp
-template<address Addr, port Port>
+struct DefaultNetworkTypes {
+    // Core types
+    using address_type = std::string;
+    using port_type = unsigned short;
+    using message_type = Message<address_type, port_type>;
+    using connection_type = Connection<address_type, port_type>;
+    using listener_type = Listener<address_type, port_type>;
+    using node_type = NetworkNode<DefaultNetworkTypes>;
+    
+    // Future types (using folly::Future as base)
+    using future_bool_type = folly::Future<bool>;
+    using future_message_type = folly::Future<message_type>;
+    using future_connection_type = folly::Future<std::shared_ptr<connection_type>>;
+    using future_listener_type = folly::Future<std::shared_ptr<listener_type>>;
+    using future_bytes_type = folly::Future<std::vector<std::byte>>;
+};
+
+// Verify the concept is satisfied
+static_assert(network_simulator_types<DefaultNetworkTypes>);
+```
+
+#### 3.2 Message Structure
+
+```cpp
+template<typename Types>
 class Message {
 public:
-    Message(Addr src_addr, Port src_port, 
-            Addr dst_addr, Port dst_port,
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    
+    Message(address_type src_addr, port_type src_port, 
+            address_type dst_addr, port_type dst_port,
             std::vector<std::byte> payload = {});
     
-    auto source_address() const -> Addr;
-    auto source_port() const -> Port;
-    auto destination_address() const -> Addr;
-    auto destination_port() const -> Port;
+    auto source_address() const -> address_type;
+    auto source_port() const -> port_type;
+    auto destination_address() const -> address_type;
+    auto destination_port() const -> port_type;
     auto payload() const -> const std::vector<std::byte>&;
     
 private:
-    Addr _source_address;
-    Port _source_port;
-    Addr _destination_address;
-    Port _destination_port;
+    address_type _source_address;
+    port_type _source_port;
+    address_type _destination_address;
+    port_type _destination_port;
     std::vector<std::byte> _payload;
 };
 ```
 
-#### 2.2 Network Edge
+#### 3.3 Network Edge
 
 ```cpp
 struct NetworkEdge {
@@ -340,154 +355,220 @@ struct NetworkEdge {
     
     NetworkEdge(std::chrono::milliseconds lat, double rel)
         : latency(lat), reliability(rel) {}
+        
+    auto latency() const -> std::chrono::milliseconds { return latency; }
+    auto reliability() const -> double { return reliability; }
 };
 ```
 
-#### 2.3 Endpoint
+#### 3.4 Endpoint
 
 ```cpp
-template<address Addr, port Port>
+template<typename Types>
 struct Endpoint {
-    Addr address;
-    Port port;
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    
+    address_type address;
+    port_type port;
     
     auto operator==(const Endpoint&) const -> bool = default;
 };
 
 // Hash specialization for use in unordered containers
-template<address Addr, port Port>
-struct std::hash<Endpoint<Addr, Port>> {
-    auto operator()(const Endpoint<Addr, Port>& ep) const -> std::size_t {
-        std::size_t h1 = std::hash<Addr>{}(ep.address);
-        std::size_t h2 = std::hash<Port>{}(ep.port);
+template<typename Types>
+struct std::hash<Endpoint<Types>> {
+    auto operator()(const Endpoint<Types>& ep) const -> std::size_t {
+        std::size_t h1 = std::hash<typename Types::address_type>{}(ep.address);
+        std::size_t h2 = std::hash<typename Types::port_type>{}(ep.port);
         return h1 ^ (h2 << 1);
     }
 };
 ```
+### 4. Network Simulator Core
 
-### 3. Network Simulator Core
-
-#### 3.1 NetworkSimulator Class
+#### 4.1 NetworkSimulator Class
 
 ```cpp
-template<address Addr, port Port>
+template<network_simulator_types Types>
 class NetworkSimulator {
 public:
+    // Type aliases from Types template argument
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    using message_type = typename Types::message_type;
+    using connection_type = typename Types::connection_type;
+    using listener_type = typename Types::listener_type;
+    using node_type = typename Types::node_type;
+    using endpoint_type = Endpoint<Types>;
+    
+    // Future type aliases
+    using future_bool_type = typename Types::future_bool_type;
+    using future_message_type = typename Types::future_message_type;
+    using future_connection_type = typename Types::future_connection_type;
+    using future_listener_type = typename Types::future_listener_type;
+    using future_bytes_type = typename Types::future_bytes_type;
+    
     // Topology configuration
-    auto add_node(Addr address) -> void;
-    auto remove_node(Addr address) -> void;
-    auto add_edge(Addr from, Addr to, NetworkEdge edge) -> void;
-    auto remove_edge(Addr from, Addr to) -> void;
+    auto add_node(address_type address) -> void;
+    auto remove_node(address_type address) -> void;
+    auto add_edge(address_type from, address_type to, NetworkEdge edge) -> void;
+    auto remove_edge(address_type from, address_type to) -> void;
     
     // Node creation
-    auto create_node(Addr address) -> std::shared_ptr<NetworkNode<Addr, Port>>;
+    auto create_node(address_type address) -> std::shared_ptr<node_type>;
     
     // Simulation control
     auto start() -> void;
     auto stop() -> void;
     auto reset() -> void;
     
+    // Query methods for testing
+    auto has_node(address_type address) const -> bool;
+    auto has_edge(address_type from, address_type to) const -> bool;
+    auto get_edge(address_type from, address_type to) const -> NetworkEdge;
+    
 private:
     // Directed graph: adjacency list representation
-    std::unordered_map<Addr, std::unordered_map<Addr, NetworkEdge>> _topology;
+    std::unordered_map<address_type, std::unordered_map<address_type, NetworkEdge>> _topology;
     
     // Active nodes
-    std::unordered_map<Addr, std::shared_ptr<NetworkNode<Addr, Port>>> _nodes;
+    std::unordered_map<address_type, std::shared_ptr<node_type>> _nodes;
     
     // Message queues per node
-    std::unordered_map<Addr, std::queue<Message<Addr, Port>>> _message_queues;
+    std::unordered_map<address_type, std::queue<message_type>> _message_queues;
     
     // Connection state
-    std::unordered_map<Endpoint<Addr, Port>, std::shared_ptr<Connection<Addr, Port>>> _connections;
+    std::unordered_map<endpoint_type, std::shared_ptr<connection_type>> _connections;
     
     // Listeners
-    std::unordered_map<Endpoint<Addr, Port>, std::shared_ptr<Listener<Addr, Port>>> _listeners;
+    std::unordered_map<endpoint_type, std::shared_ptr<listener_type>> _listeners;
     
     // Thread pool for async operations
-    folly::Executor* _executor;
+    std::unique_ptr<folly::Executor> _executor;
     
     // Random number generator for reliability simulation
     std::mt19937 _rng;
+    
+    // Simulation state
+    std::atomic<bool> _started{false};
     
     // Mutex for thread safety
     mutable std::shared_mutex _mutex;
     
     // Internal routing and delivery
-    auto route_message(Message<Addr, Port> msg) -> folly::Future<bool>;
-    auto deliver_message(Message<Addr, Port> msg) -> void;
-    auto apply_latency(Addr from, Addr to) -> std::chrono::milliseconds;
-    auto check_reliability(Addr from, Addr to) -> bool;
+    auto route_message(message_type msg) -> future_bool_type;
+    auto deliver_message(message_type msg) -> void;
+    auto apply_latency(address_type from, address_type to) -> std::chrono::milliseconds;
+    auto check_reliability(address_type from, address_type to) -> bool;
+    auto retrieve_message(address_type address) -> future_message_type;
+    auto retrieve_message(address_type address, std::chrono::milliseconds timeout) -> future_message_type;
+    
+    // Connection establishment
+    auto establish_connection(address_type src_addr, port_type src_port, 
+                             address_type dst_addr, port_type dst_port) -> future_connection_type;
+    
+    // Listener establishment
+    auto create_listener(address_type addr, port_type port) -> future_listener_type;
+    auto create_listener(address_type addr) -> future_listener_type;  // Random port
+    auto create_listener(address_type addr, port_type port, 
+                        std::chrono::milliseconds timeout) -> future_listener_type;
 };
 ```
 
-### 4. Network Node Implementation
+### 5. Network Node Implementation
 
-#### 4.1 NetworkNode Class
+#### 5.1 NetworkNode Class
 
 ```cpp
-template<address Addr, port Port>
+template<network_simulator_types Types>
 class NetworkNode {
 public:
-    explicit NetworkNode(Addr addr, NetworkSimulator<Addr, Port>* simulator);
+    // Type aliases from Types template argument
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    using message_type = typename Types::message_type;
+    using connection_type = typename Types::connection_type;
+    using listener_type = typename Types::listener_type;
+    using simulator_type = NetworkSimulator<Types>;
+    
+    // Future type aliases
+    using future_bool_type = typename Types::future_bool_type;
+    using future_message_type = typename Types::future_message_type;
+    using future_connection_type = typename Types::future_connection_type;
+    using future_listener_type = typename Types::future_listener_type;
+    
+    explicit NetworkNode(address_type addr, simulator_type* simulator);
     
     // Connectionless operations
-    auto send(Message<Addr, Port> msg) -> folly::Future<bool>;
-    auto send(Message<Addr, Port> msg, std::chrono::milliseconds timeout) -> folly::Future<bool>;
-    auto receive() -> folly::Future<Message<Addr, Port>>;
-    auto receive(std::chrono::milliseconds timeout) -> folly::Future<Message<Addr, Port>>;
+    auto send(message_type msg) -> future_bool_type;
+    auto send(message_type msg, std::chrono::milliseconds timeout) -> future_bool_type;
+    auto receive() -> future_message_type;
+    auto receive(std::chrono::milliseconds timeout) -> future_message_type;
     
     // Connection-oriented client operations
-    auto connect(Addr dst_addr, Port dst_port) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>>;
-    auto connect(Addr dst_addr, Port dst_port, Port src_port) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>>;
-    auto connect(Addr dst_addr, Port dst_port, std::chrono::milliseconds timeout) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>>;
+    auto connect(address_type dst_addr, port_type dst_port) -> future_connection_type;
+    auto connect(address_type dst_addr, port_type dst_port, port_type src_port) -> future_connection_type;
+    auto connect(address_type dst_addr, port_type dst_port, std::chrono::milliseconds timeout) -> future_connection_type;
     
     // Connection-oriented server operations
-    auto bind() -> folly::Future<std::shared_ptr<Listener<Addr, Port>>>;  // bind to random port
-    auto bind(Port port) -> folly::Future<std::shared_ptr<Listener<Addr, Port>>>;  // bind to specific port
-    auto bind(Port port, std::chrono::milliseconds timeout) -> folly::Future<std::shared_ptr<Listener<Addr, Port>>>;
+    auto bind() -> future_listener_type;  // bind to random port
+    auto bind(port_type port) -> future_listener_type;  // bind to specific port
+    auto bind(port_type port, std::chrono::milliseconds timeout) -> future_listener_type;
     
     // Node identity
-    auto address() const -> Addr { return _address; }
+    auto address() const -> address_type { return _address; }
     
 private:
-    Addr _address;
-    NetworkSimulator<Addr, Port>* _simulator;
+    address_type _address;
+    simulator_type* _simulator;
     
     // Ephemeral port allocation
-    auto allocate_ephemeral_port() -> Port;
-    std::unordered_set<Port> _used_ports;
+    auto allocate_ephemeral_port() -> port_type;
+    std::unordered_set<port_type> _used_ports;
     mutable std::mutex _port_mutex;
 };
 ```
 
-### 5. Connection Implementation
+### 6. Connection Implementation
 
-#### 5.1 Connection Class
+#### 6.1 Connection Class
 
 ```cpp
-template<address Addr, port Port>
+template<network_simulator_types Types>
 class Connection {
 public:
-    Connection(Endpoint<Addr, Port> local, 
-               Endpoint<Addr, Port> remote,
-               NetworkSimulator<Addr, Port>* simulator);
+    // Type aliases from Types template argument
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    using endpoint_type = Endpoint<Types>;
+    using simulator_type = NetworkSimulator<Types>;
+    using future_bool_type = typename Types::future_bool_type;
+    using future_bytes_type = typename Types::future_bytes_type;
     
-    auto read() -> folly::Future<std::vector<std::byte>>;
-    auto read(std::chrono::milliseconds timeout) -> folly::Future<std::vector<std::byte>>;
+    Connection(endpoint_type local, 
+               endpoint_type remote,
+               simulator_type* simulator);
     
-    auto write(std::vector<std::byte> data) -> folly::Future<bool>;
-    auto write(std::vector<std::byte> data, std::chrono::milliseconds timeout) -> folly::Future<bool>;
+    auto read() -> future_bytes_type;
+    auto read(std::chrono::milliseconds timeout) -> future_bytes_type;
+    
+    auto write(std::vector<std::byte> data) -> future_bool_type;
+    auto write(std::vector<std::byte> data, std::chrono::milliseconds timeout) -> future_bool_type;
     
     auto close() -> void;
     auto is_open() const -> bool;
     
-    auto local_endpoint() const -> Endpoint<Addr, Port> { return _local; }
-    auto remote_endpoint() const -> Endpoint<Addr, Port> { return _remote; }
+    auto local_endpoint() const -> endpoint_type { return _local; }
+    auto remote_endpoint() const -> endpoint_type { return _remote; }
+    
+    // Internal method for simulator to deliver data
+    auto deliver_data(std::vector<std::byte> data) -> void;
     
 private:
-    Endpoint<Addr, Port> _local;
-    Endpoint<Addr, Port> _remote;
-    NetworkSimulator<Addr, Port>* _simulator;
+    endpoint_type _local;
+    endpoint_type _remote;
+    simulator_type* _simulator;
     
     std::atomic<bool> _open{true};
     
@@ -498,42 +579,50 @@ private:
 };
 ```
 
-#### 5.2 Listener Class
+#### 6.2 Listener Class
 
 ```cpp
-template<address Addr, port Port>
+template<network_simulator_types Types>
 class Listener {
 public:
-    Listener(Endpoint<Addr, Port> local_endpoint,
-             NetworkSimulator<Addr, Port>* simulator);
+    // Type aliases from Types template argument
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    using endpoint_type = Endpoint<Types>;
+    using connection_type = typename Types::connection_type;
+    using simulator_type = NetworkSimulator<Types>;
+    using future_connection_type = typename Types::future_connection_type;
     
-    auto accept() -> folly::Future<std::shared_ptr<Connection<Addr, Port>>>;
-    auto accept(std::chrono::milliseconds timeout) -> folly::Future<std::shared_ptr<Connection<Addr, Port>>>;
+    Listener(endpoint_type local_endpoint,
+             simulator_type* simulator);
+    
+    auto accept() -> future_connection_type;
+    auto accept(std::chrono::milliseconds timeout) -> future_connection_type;
     
     auto close() -> void;
     auto is_listening() const -> bool;
     
-    auto local_endpoint() const -> Endpoint<Addr, Port> { return _local; }
+    auto local_endpoint() const -> endpoint_type { return _local; }
+    
+    // Internal method for simulator to queue pending connections
+    auto queue_pending_connection(std::shared_ptr<connection_type> connection) -> void;
     
 private:
-    Endpoint<Addr, Port> _local;
-    NetworkSimulator<Addr, Port>* _simulator;
+    endpoint_type _local;
+    simulator_type* _simulator;
     
     std::atomic<bool> _listening{true};
     
     // Queue of pending connections
-    std::queue<std::shared_ptr<Connection<Addr, Port>>> _pending_connections;
+    std::queue<std::shared_ptr<connection_type>> _pending_connections;
     mutable std::mutex _queue_mutex;
     std::condition_variable _connection_available;
-};
-```
-
 ## Data Models
 
 ### Topology Graph Model
 
 The network topology is modeled as a directed graph where:
-- **Vertices**: Network nodes identified by addresses
+- **Vertices**: Network nodes identified by addresses from `typename Types::address_type`
 - **Edges**: Communication paths with two weights:
   - **Latency weight**: Time delay for message transmission
   - **Reliability weight**: Probability (0.0-1.0) of successful transmission
@@ -605,22 +694,79 @@ CLOSED ──connect()──> CONNECTING ──success──> OPEN ──close()
 CLOSED ──bind()──> LISTENING ──close()──> CLOSED
 ```
 
+## Error Handling
 
+### Exception Types
+
+```cpp
+namespace network_simulator {
+
+class NetworkException : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
+};
+
+class TimeoutException : public NetworkException {
+public:
+    TimeoutException() : NetworkException("Operation timed out") {}
+};
+
+class ConnectionClosedException : public NetworkException {
+public:
+    ConnectionClosedException() : NetworkException("Connection is closed") {}
+};
+
+class PortInUseException : public NetworkException {
+public:
+    explicit PortInUseException(const std::string& port) 
+        : NetworkException("Port already in use: " + port) {}
+};
+
+class NodeNotFoundException : public NetworkException {
+public:
+    explicit NodeNotFoundException(const std::string& address)
+        : NetworkException("Node not found: " + address) {}
+};
+
+class NoRouteException : public NetworkException {
+public:
+    NoRouteException(const std::string& from, const std::string& to)
+        : NetworkException("No route from " + from + " to " + to) {}
+};
+
+} // namespace network_simulator
+```
+
+### Error Handling Strategy
+
+1. **Timeout Errors**: All operations with timeouts use `TimeoutException` when the timeout expires
+2. **Connection Errors**: Operations on closed connections throw `ConnectionClosedException`
+3. **Port Conflicts**: Binding to an in-use port throws `PortInUseException`
+4. **Routing Errors**: Messages to unreachable nodes throw `NoRouteException`
+5. **Future Error States**: Exceptions are propagated through the future mechanism, allowing async error handling
+
+### Error Recovery
+
+- **Timeouts**: Callers can retry operations or use longer timeouts
+- **Connection Failures**: Callers can attempt reconnection with exponential backoff
+- **Port Conflicts**: Callers can try different ports or wait for port release
 ## Correctness Properties
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system-essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+
+Based on the prework analysis, I've identified properties that can be combined to eliminate redundancy and provide comprehensive validation:
 
 ### Property 1: Topology Edge Latency Preservation
 
 *For any* pair of nodes and configured latency value, when an edge is added to the topology with that latency, querying the topology SHALL return the same latency value.
 
-**Validates: Requirements 1.1**
+**Validates: Requirements 1.1, 11.3, 11.6**
 
 ### Property 2: Topology Edge Reliability Preservation
 
 *For any* pair of nodes and configured reliability value, when an edge is added to the topology with that reliability, querying the topology SHALL return the same reliability value.
 
-**Validates: Requirements 1.2**
+**Validates: Requirements 1.2, 11.3, 11.6**
 
 ### Property 3: Latency Application
 
@@ -698,11 +844,11 @@ CLOSED ──bind()──> LISTENING ──close()──> CLOSED
 
 *For any* bind operation that successfully binds to a port, the future SHALL resolve to a valid listener object with is_listening() returning true.
 
-**Validates: Requirements 7.2**
+**Validates: Requirements 7.2, 7.4**
 
-### Property 16: Bind Timeout Exception
+### Property 16: Bind Assigns Unique Ports
 
-*For any* bind operation with a timeout where the bind cannot complete before the timeout expires, the future SHALL enter an error state with a timeout exception.
+*For any* bind operation without a specified port, the resulting listener SHALL have a unique port that was not previously in use.
 
 **Validates: Requirements 7.3**
 
@@ -710,19 +856,19 @@ CLOSED ──bind()──> LISTENING ──close()──> CLOSED
 
 *For any* listener with a pending accept operation, when a client connects to the bound port, the accept future SHALL resolve to a valid connection object.
 
-**Validates: Requirements 7.5**
+**Validates: Requirements 7.7**
 
 ### Property 18: Accept Timeout Exception
 
 *For any* accept operation with a timeout where no client connects before the timeout expires, the future SHALL enter an error state with a timeout exception.
 
-**Validates: Requirements 7.6**
+**Validates: Requirements 7.8**
 
 ### Property 19: Connection Read-Write Round Trip
 
 *For any* data written to one end of a connection, reading from the other end SHALL return the same data (subject to network reliability and latency).
 
-**Validates: Requirements 8.2**
+**Validates: Requirements 8.2, 8.5**
 
 ### Property 20: Read Timeout Exception
 
@@ -730,70 +876,145 @@ CLOSED ──bind()──> LISTENING ──close()──> CLOSED
 
 **Validates: Requirements 8.3**
 
-### Property 21: Successful Write Returns True
-
-*For any* write operation that successfully queues data for transmission, the future SHALL resolve to true.
-
-**Validates: Requirements 8.5**
-
-### Property 22: Write Timeout Exception
+### Property 21: Write Timeout Exception
 
 *For any* write operation with a timeout where the write cannot complete before the timeout expires, the future SHALL enter an error state with a timeout exception.
 
 **Validates: Requirements 8.6**
 
-## Error Handling
+### Property 22: Topology Management Operations
 
-### Exception Types
+*For any* node or edge added to the topology, the topology query methods SHALL reflect the addition, and for any node or edge removed, the query methods SHALL reflect the removal.
 
-```cpp
-namespace network_simulator {
+**Validates: Requirements 11.1, 11.2, 11.4, 11.5**
 
-class NetworkException : public std::runtime_error {
-public:
-    using std::runtime_error::runtime_error;
-};
+### Property 23: Simulation Lifecycle Control
 
-class TimeoutException : public NetworkException {
-public:
-    TimeoutException() : NetworkException("Operation timed out") {}
-};
+*For any* simulator that is started, network operations SHALL be processed, and for any simulator that is stopped, new network operations SHALL be rejected with appropriate errors.
 
-class ConnectionClosedException : public NetworkException {
-public:
-    ConnectionClosedException() : NetworkException("Connection is closed") {}
-};
+**Validates: Requirements 12.1, 12.2, 12.4**
 
-class PortInUseException : public NetworkException {
-public:
-    explicit PortInUseException(const std::string& port) 
-        : NetworkException("Port already in use: " + port) {}
-};
+### Property 24: Simulation Reset
 
-class NodeNotFoundException : public NetworkException {
-public:
-    explicit NodeNotFoundException(const std::string& address)
-        : NetworkException("Node not found: " + address) {}
-};
+*For any* simulator with existing state, calling reset SHALL clear all topology, nodes, connections, and listeners, returning the simulator to initial conditions.
 
-class NoRouteException : public NetworkException {
-public:
-    NoRouteException(const std::string& from, const std::string& to)
-        : NetworkException("No route from " + from + " to " + to) {}
-};
+**Validates: Requirements 12.3**
 
-} // namespace network_simulator
-```
+## Testing Strategy
 
-### Error Handling Strategy
+### Unit Testing
 
-1. **Timeout Errors**: All operations with timeouts use `TimeoutException` when the timeout expires
-2. **Connection Errors**: Operations on closed connections throw `ConnectionClosedException`
-3. **Port Conflicts**: Binding to an in-use port throws `PortInUseException`
-4. **Routing Errors**: Messages to unreachable nodes throw `NoRouteException`
-5. **Future Error States**: Exceptions are propagated through the future mechanism, allowing async error handling
+Unit tests will verify specific behaviors and edge cases:
 
-### Error Recovery
+1. **Concept Satisfaction Tests**: Verify that expected types satisfy the concepts
+   - Test that `std::string`, `unsigned long`, `in_addr`, `in6_addr` satisfy `address` concept
+   - Test that `unsigned short`, `std::string` satisfy `port` concept
+   - Test that example Types implementations satisfy `network_simulator_types` concept
+
+2. **Message Construction Tests**: Verify message creation with various address/port combinations
+   - Test message with empty payload
+   - Test message with large payload
+   - Test message accessor methods
+
+3. **Topology Configuration Tests**: Verify graph operations
+   - Add/remove nodes
+   - Add/remove edges
+   - Query edge properties
+
+4. **Connection State Tests**: Verify connection lifecycle
+   - Connection open/close transitions
+   - Operations on closed connections throw exceptions
+
+5. **Listener State Tests**: Verify listener lifecycle
+   - Listener start/stop transitions
+   - Operations on closed listeners throw exceptions
+
+6. **Ephemeral Port Allocation Tests**: Verify unique port assignment
+   - Multiple connections get unique ports
+   - Port reuse after connection close
+
+### Property-Based Testing
+
+Property-based tests will verify universal properties across many randomly generated inputs using a C++ property-based testing library (e.g., RapidCheck or similar).
+
+**Configuration**: Each property test will run a minimum of 100 iterations with randomly generated inputs.
+
+**Property Test Implementations**:
+
+Each correctness property from the design document will be implemented as a separate property-based test, tagged with comments referencing the specific property number and requirements.
+
+### Integration Testing
+
+Integration tests will verify end-to-end scenarios:
+
+1. **Client-Server Communication**: Full connection establishment, data transfer, and teardown
+2. **Multi-Node Topology**: Messages routed through intermediate nodes
+3. **Network Partition Simulation**: Verify behavior when edges are removed
+4. **Concurrent Operations**: Multiple nodes sending/receiving simultaneously
+5. **Stress Testing**: High message volume with varying latency/reliability
+
+### Test Infrastructure
+
+- **Test Fixtures**: Reusable network topologies for common scenarios
+- **Mock Time**: Ability to advance simulated time for latency testing
+- **Deterministic RNG**: Seeded random number generator for reproducible reliability tests
+- **Assertion Helpers**: Custom assertions for future results and exception types
+
+## Implementation Notes
+
+### Thread Safety
+
+- All public methods of `NetworkSimulator`, `NetworkNode`, `Connection`, and `Listener` are thread-safe
+- Internal state protected by `std::shared_mutex` for read-write locking
+- Message queues and connection buffers use mutexes and condition variables
+
+### Performance Considerations
+
+- **Lock Granularity**: Fine-grained locking to minimize contention
+- **Lock-Free Queues**: Consider lock-free data structures for message queues
+- **Thread Pool**: Use folly::Executor for async operations to avoid thread creation overhead
+- **Memory Management**: Use `std::shared_ptr` for shared ownership, avoid unnecessary copies
+
+### Type System Benefits
+
+The new Types template parameter approach provides several advantages:
+
+1. **Simplified Template Complexity**: Single template parameter instead of multiple
+2. **Type Safety**: All types are defined consistently through the concept
+3. **Flexibility**: Easy to swap different future implementations or address types
+4. **Maintainability**: Clear separation of type definitions from implementation
+5. **Extensibility**: Easy to add new types to the Types concept
+
+### Future Implementation
+
+The design uses the Types template argument to provide future implementations, which can be:
+- folly::Future for production use
+- Custom test futures for unit testing
+- Mock futures for simulation scenarios
+
+## Dependencies
+
+- **folly**: For Future/Promise implementation and executor framework (when using folly-based Types)
+- **C++23 compiler**: For concepts, ranges, and modern language features
+- **Boost.Graph** (optional): For advanced graph algorithms if needed
+- **RapidCheck or similar**: For property-based testing framework
+
+## Build System
+
+- **CMake**: Build system configuration
+- **C++23 standard**: Required language standard
+- **Compiler support**: GCC 13+, Clang 16+, or MSVC 2022+
+
+## Future Enhancements
+
+1. **Advanced Routing**: Implement shortest-path routing algorithms
+2. **Bandwidth Simulation**: Add bandwidth limits to edges
+3. **Packet Reordering**: Simulate out-of-order delivery
+4. **Network Partitions**: Dynamic topology changes during simulation
+5. **Statistics Collection**: Detailed metrics on message delivery, latency distribution, etc.
+6. **Visualization**: Tools to visualize topology and message flow
+7. **Protocol Implementations**: Built-in implementations of common protocols (TCP, UDP, etc.)
+8. **Failure Injection**: Programmatic injection of various failure modes
 
 - **Timeouts**: Callers can retry operations or use longer timeouts
 - **Connection Failures**: Callers can attempt reconnection with exponential backoff

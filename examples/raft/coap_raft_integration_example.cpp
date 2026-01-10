@@ -85,23 +85,23 @@ auto test_basic_coap_integration() -> bool {
     
     try {
         // Create CoAP transport configurations
-        raft::coap_server_config server_config;
+        kythira::coap_server_config server_config;
         server_config.enable_dtls = false;
         server_config.max_concurrent_sessions = 50;
         server_config.enable_block_transfer = true;
         server_config.max_block_size = 1024;
         
-        raft::coap_client_config client_config;
+        kythira::coap_client_config client_config;
         client_config.enable_dtls = false;
         client_config.ack_timeout = std::chrono::milliseconds{2000};
         client_config.enable_block_transfer = true;
         client_config.max_block_size = 1024;
         
         // Create supporting components
-        raft::console_logger logger;
-        raft::noop_metrics metrics;
-        raft::default_membership_manager<std::uint64_t> membership;
-        raft::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t> persistence;
+        kythira::console_logger logger;
+        kythira::noop_metrics metrics;
+        kythira::default_membership_manager<std::uint64_t> membership;
+        kythira::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t> persistence;
         
         // Create endpoint mapping for CoAP
         std::unordered_map<std::uint64_t, std::string> coap_endpoints;
@@ -109,11 +109,11 @@ auto test_basic_coap_integration() -> bool {
         coap_endpoints[node_3_id] = std::format("coap://{}:{}", coap_server_address, coap_server_port + 2);
         
         // Create CoAP transport components
-        raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> 
+        kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> 
             coap_client(std::move(coap_endpoints), client_config, metrics, std::move(logger));
             
-        raft::console_logger server_logger;
-        raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>
+        kythira::console_logger server_logger;
+        kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>
             coap_server(coap_server_address, coap_server_port, server_config, metrics, std::move(server_logger));
         
         // Test transport component creation
@@ -129,9 +129,9 @@ auto test_basic_coap_integration() -> bool {
         
         // Test handler registration
         bool handler_called = false;
-        coap_server.register_request_vote_handler([&](const raft::request_vote_request<>& req) {
+        coap_server.register_request_vote_handler([&](const kythira::request_vote_request<>& req) {
             handler_called = true;
-            raft::request_vote_response<> resp;
+            kythira::request_vote_response<> resp;
             resp._term = req.term() + 1;
             resp._vote_granted = true;
             return resp;
@@ -177,26 +177,26 @@ auto test_coap_http_interoperability() -> bool {
     
     try {
         // Create CoAP configuration
-        raft::coap_server_config coap_server_config;
+        kythira::coap_server_config coap_server_config;
         coap_server_config.enable_dtls = false;
         coap_server_config.max_concurrent_sessions = 20;
         
-        raft::coap_client_config coap_client_config;
+        kythira::coap_client_config coap_client_config;
         coap_client_config.enable_dtls = false;
         coap_client_config.ack_timeout = short_timeout;
         
         // Create HTTP configuration
-        raft::cpp_httplib_server_config http_server_config;
+        kythira::cpp_httplib_server_config http_server_config;
         http_server_config.max_concurrent_connections = 20;
         http_server_config.request_timeout = std::chrono::seconds{5};
         
-        raft::cpp_httplib_client_config http_client_config;
+        kythira::cpp_httplib_client_config http_client_config;
         http_client_config.connection_timeout = short_timeout;
         http_client_config.request_timeout = short_timeout;
         
         // Create supporting components
-        raft::console_logger logger;
-        raft::noop_metrics metrics;
+        kythira::console_logger logger;
+        kythira::noop_metrics metrics;
         
         // Create mixed endpoint mapping
         std::unordered_map<std::uint64_t, std::string> mixed_endpoints;
@@ -216,11 +216,11 @@ auto test_coap_http_interoperability() -> bool {
         }
         
         // Create transport components
-        raft::console_logger coap_logger;
-        raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>
+        kythira::console_logger coap_logger;
+        kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>
             coap_server(coap_server_address, coap_server_port + 10, coap_server_config, metrics, std::move(coap_logger));
             
-        raft::cpp_httplib_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics>
+        kythira::cpp_httplib_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>
             http_server(coap_server_address, http_server_port, http_server_config, metrics);
         
         // Test concurrent server startup
@@ -281,7 +281,7 @@ auto test_dtls_security_configuration() -> bool {
     
     try {
         // Test PSK-based DTLS configuration
-        raft::coap_server_config psk_server_config;
+        kythira::coap_server_config psk_server_config;
         psk_server_config.enable_dtls = true;
         psk_server_config.psk_identity = "raft-cluster-psk";
         psk_server_config.psk_key = {
@@ -292,7 +292,7 @@ auto test_dtls_security_configuration() -> bool {
         };
         psk_server_config.verify_peer_cert = false; // PSK mode
         
-        raft::coap_client_config psk_client_config;
+        kythira::coap_client_config psk_client_config;
         psk_client_config.enable_dtls = true;
         psk_client_config.psk_identity = psk_server_config.psk_identity;
         psk_client_config.psk_key = psk_server_config.psk_key;
@@ -322,14 +322,14 @@ auto test_dtls_security_configuration() -> bool {
         std::cout << "✓ PSK-based DTLS configuration validated\n";
         
         // Test certificate-based DTLS configuration
-        raft::coap_server_config cert_server_config;
+        kythira::coap_server_config cert_server_config;
         cert_server_config.enable_dtls = true;
         cert_server_config.cert_file = "/etc/ssl/certs/raft-server.pem";
         cert_server_config.key_file = "/etc/ssl/private/raft-server-key.pem";
         cert_server_config.ca_file = "/etc/ssl/certs/raft-ca.pem";
         cert_server_config.verify_peer_cert = true;
         
-        raft::coap_client_config cert_client_config;
+        kythira::coap_client_config cert_client_config;
         cert_client_config.enable_dtls = true;
         cert_client_config.cert_file = "/etc/ssl/certs/raft-client.pem";
         cert_client_config.key_file = "/etc/ssl/private/raft-client-key.pem";
@@ -363,7 +363,7 @@ auto test_dtls_security_configuration() -> bool {
         std::cout << "✓ Secure endpoint format validated: " << secure_endpoint << "\n";
         
         // Test mixed security configuration (should fail)
-        raft::coap_server_config mixed_config;
+        kythira::coap_server_config mixed_config;
         mixed_config.enable_dtls = true;
         // Neither PSK nor certificate configured - should be invalid
         
@@ -396,14 +396,14 @@ auto test_performance_load_testing() -> bool {
     
     try {
         // Create high-performance configuration
-        raft::coap_server_config perf_server_config;
+        kythira::coap_server_config perf_server_config;
         perf_server_config.enable_dtls = false; // Disable for performance
         perf_server_config.max_concurrent_sessions = 200;
         perf_server_config.max_request_size = 1024 * 1024; // 1MB
         perf_server_config.enable_block_transfer = true;
         perf_server_config.max_block_size = 4096; // Larger blocks for performance
         
-        raft::coap_client_config perf_client_config;
+        kythira::coap_client_config perf_client_config;
         perf_client_config.enable_dtls = false;
         perf_client_config.ack_timeout = std::chrono::milliseconds{500}; // Faster timeout
         perf_client_config.max_retransmit = 2; // Fewer retries for speed
@@ -523,19 +523,19 @@ auto test_error_handling_recovery() -> bool {
     std::cout << "\n=== Test 5: Error Handling and Recovery ===\n";
     
     try {
-        raft::console_logger logger;
-        raft::noop_metrics metrics;
+        kythira::console_logger logger;
+        kythira::noop_metrics metrics;
         
         // Test malformed message detection
         std::vector<std::byte> malformed_data = {
             std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}
         };
         
-        raft::coap_client_config client_config;
+        kythira::coap_client_config client_config;
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[node_1_id] = std::format("coap://{}:{}", coap_server_address, coap_server_port + 20);
         
-        raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>
+        kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>
             client(std::move(endpoints), client_config, metrics, std::move(logger));
         
         // Test malformed message detection

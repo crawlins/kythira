@@ -6,7 +6,7 @@ BOOST_AUTO_TEST_SUITE(http_config_tests)
 
 // Test client configuration structure
 BOOST_AUTO_TEST_CASE(test_client_config_defaults) {
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     
     // Verify default values match design document
     BOOST_CHECK_EQUAL(config.connection_pool_size, 10);
@@ -27,7 +27,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_customization) {
     constexpr const char* custom_ca_cert_path = "/etc/ssl/certs/ca-bundle.crt";
     constexpr const char* custom_user_agent = "my-raft-client/2.0";
     
-    raft::cpp_httplib_client_config config;
+    kythira::cpp_httplib_client_config config;
     config.connection_pool_size = custom_pool_size;
     config.connection_timeout = custom_connection_timeout;
     config.request_timeout = custom_request_timeout;
@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_customization) {
 
 // Test server configuration structure
 BOOST_AUTO_TEST_CASE(test_server_config_defaults) {
-    raft::cpp_httplib_server_config config;
+    kythira::cpp_httplib_server_config config;
     
     // Verify default values match design document
     BOOST_CHECK_EQUAL(config.max_concurrent_connections, 100);
@@ -66,7 +66,7 @@ BOOST_AUTO_TEST_CASE(test_server_config_customization) {
     constexpr const char* custom_ssl_cert_path = "/etc/ssl/certs/server.crt";
     constexpr const char* custom_ssl_key_path = "/etc/ssl/private/server.key";
     
-    raft::cpp_httplib_server_config config;
+    kythira::cpp_httplib_server_config config;
     config.max_concurrent_connections = custom_max_connections;
     config.max_request_body_size = custom_max_body_size;
     config.request_timeout = custom_request_timeout;
@@ -84,7 +84,7 @@ BOOST_AUTO_TEST_CASE(test_server_config_customization) {
 
 // Test that configuration structures are copyable
 BOOST_AUTO_TEST_CASE(test_config_copyable) {
-    raft::cpp_httplib_client_config client_config;
+    kythira::cpp_httplib_client_config client_config;
     client_config.connection_pool_size = 15;
     client_config.user_agent = "test-agent";
     
@@ -92,7 +92,7 @@ BOOST_AUTO_TEST_CASE(test_config_copyable) {
     BOOST_CHECK_EQUAL(client_config_copy.connection_pool_size, 15);
     BOOST_CHECK_EQUAL(client_config_copy.user_agent, "test-agent");
     
-    raft::cpp_httplib_server_config server_config;
+    kythira::cpp_httplib_server_config server_config;
     server_config.max_concurrent_connections = 150;
     server_config.enable_ssl = true;
     

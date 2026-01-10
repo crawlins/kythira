@@ -5,13 +5,15 @@
 #include <cstddef>
 #include <exception>
 #include <functional>
-#include <ranges>
-#include <tuple>
+#include <memory>
 #include <vector>
+#include <netinet/in.h>  // For in_addr, in6_addr
 
 namespace network_simulator {
 
-// 1.1 Address Concept
+// Individual type concepts
+
+// Address Concept
 template<typename T>
 concept address = requires(T a, T b) {
     // Must be copyable and movable
@@ -26,7 +28,7 @@ concept address = requires(T a, T b) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
 };
 
-// 1.2 Port Concept
+// Port Concept
 template<typename T>
 concept port = requires(T p, T q) {
     // Must be copyable and movable
@@ -41,42 +43,30 @@ concept port = requires(T p, T q) {
     { std::hash<T>{}(p) } -> std::convertible_to<std::size_t>;
 };
 
-// 1.3 Try Concept
-template<typename T>
-concept try_type = requires(T t) {
-    // Must provide value access
-    { t.value() };
-    
-    // Must provide exception access
-    { t.exception() } -> std::same_as<std::exception_ptr>;
-    
-    // Must be able to check if contains value
-    { t.has_value() } -> std::convertible_to<bool>;
-    
-    // Must be able to check if contains exception
-    { t.has_exception() } -> std::convertible_to<bool>;
-};
-
-// 1.4 Future Concept
+// Future Concept - matches kythira::Future API
 template<typename F, typename T>
-concept future = requires(F f) {
-    // Must provide value access (blocking)
-    { f.get() } -> std::same_as<T>;
-    
-    // Must support then() for chaining
-    { f.then([](T val) { return val; }) };
-    
-    // Must support error handling
-    { f.onError([](std::exception_ptr) {}) };
-    
+concept future = requires(F f, const F cf) {
     // Must be able to check if ready
-    { f.isReady() } -> std::convertible_to<bool>;
+    { cf.isReady() } -> std::convertible_to<bool>;
     
     // Must support timeout
     { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
-};
+    
+    // Must support error handling (legacy method name for compatibility)
+    { f.onError([](std::exception_ptr) {}) };
+} && (
+    // Handle void case - get() returns void
+    std::is_void_v<T> ? requires(F f) {
+        { std::move(f).get() } -> std::same_as<void>;
+        { f.then([]() {}) };
+    } : requires(F f) {
+        // Handle non-void case - get() returns T
+        { std::move(f).get() } -> std::same_as<T>;
+        { f.then([](T val) { return val; }) };
+    }
+);
 
-// 1.5 Message Concept
+// Message Concept
 template<typename M, typename Addr, typename Port>
 concept message = requires(M msg) {
     // Must provide source address
@@ -92,11 +82,11 @@ concept message = requires(M msg) {
     { msg.destination_port() } -> std::same_as<Port>;
     
     // Must provide payload access
-    { msg.payload() } -> std::same_as<const std::vector<std::byte>&>;
+    { msg.payload() } -> std::same_as<std::vector<std::byte>>;
 };
 
-// 1.6 Connection Concept
-template<typename C, typename T>
+// Connection Concept
+template<typename C>
 concept connection = requires(C conn, std::vector<std::byte> data) {
     // Must support reading data
     { conn.read() };
@@ -113,12 +103,12 @@ concept connection = requires(C conn, std::vector<std::byte> data) {
     { conn.is_open() } -> std::convertible_to<bool>;
 };
 
-// 1.7 Listener Concept
-template<typename L, typename Conn>
+// Listener Concept
+template<typename L, typename FutureConn>
 concept listener = requires(L lstn) {
     // Must support accepting connections
-    { lstn.accept() };
-    { lstn.accept(std::chrono::milliseconds{100}) };
+    { lstn.accept() } -> std::same_as<FutureConn>;
+    { lstn.accept(std::chrono::milliseconds{100}) } -> std::same_as<FutureConn>;
     
     // Must be closeable
     { lstn.close() } -> std::same_as<void>;
@@ -127,21 +117,7 @@ concept listener = requires(L lstn) {
     { lstn.is_listening() } -> std::convertible_to<bool>;
 };
 
-// 1.8 Endpoint Concept
-template<typename E, typename Addr, typename Port>
-concept endpoint = requires(E ep) {
-    // Must provide address access
-    { ep.address() } -> std::same_as<Addr>;
-    
-    // Must provide port access
-    { ep.port() } -> std::same_as<Port>;
-    
-    // Must support equality comparison
-    { ep == ep } -> std::convertible_to<bool>;
-    { ep != ep } -> std::convertible_to<bool>;
-};
-
-// 1.9 Network Edge Concept
+// Network Edge Concept
 template<typename E>
 concept network_edge = requires(E edge) {
     // Must provide latency
@@ -151,35 +127,33 @@ concept network_edge = requires(E edge) {
     { edge.reliability() } -> std::convertible_to<double>;
 };
 
-// 1.10 Network Node Concept
-template<typename N, typename Addr, typename Port, typename Msg, typename Conn, typename Lstn>
-concept network_node = requires(N node, Msg msg, Addr addr, Port prt) {
+// Network Node Concept
+template<typename N, typename Types>
+concept network_node = requires(N node, typename Types::message_type msg, 
+                                typename Types::address_type addr, typename Types::port_type port) {
     // Connectionless operations
-    { node.send(msg) };
-    { node.send(msg, std::chrono::milliseconds{100}) };
-    { node.receive() };
-    { node.receive(std::chrono::milliseconds{100}) };
+    { node.send(msg) } -> std::same_as<typename Types::future_bool_type>;
+    { node.send(msg, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_bool_type>;
+    { node.receive() } -> std::same_as<typename Types::future_message_type>;
+    { node.receive(std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_message_type>;
     
     // Connection-oriented client operations
-    { node.connect(addr, prt) };
-    { node.connect(addr, prt, prt) };  // with source port
-    { node.connect(addr, prt, std::chrono::milliseconds{100}) };
+    { node.connect(addr, port) } -> std::same_as<typename Types::future_connection_type>;
+    { node.connect(addr, port, port) } -> std::same_as<typename Types::future_connection_type>;  // with source port
+    { node.connect(addr, port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_connection_type>;
     
     // Connection-oriented server operations
-    { node.bind() };  // bind to random port
-    { node.bind(prt) };  // bind to specific port
-    { node.bind(prt, std::chrono::milliseconds{100}) };
+    { node.bind() } -> std::same_as<typename Types::future_listener_type>;  // bind to random port
+    { node.bind(port) } -> std::same_as<typename Types::future_listener_type>;  // bind to specific port
+    { node.bind(port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_listener_type>;
     
     // Node identity
-    { node.address() } -> std::same_as<Addr>;
+    { node.address() } -> std::same_as<typename Types::address_type>;
 };
 
-// 1.11 Network Simulator Concept
-template<typename S, typename Addr, typename Port, typename Node, typename Edge>
-concept network_simulator = requires(S sim, Addr addr, Edge edge) {
-    // Edge must satisfy network_edge concept
-    requires network_edge<Edge>;
-    
+// Network Simulator Concept
+template<typename S, typename Types, typename Edge>
+concept network_simulator = requires(S sim, typename Types::address_type addr, Edge edge) {
     // Topology configuration
     { sim.add_node(addr) } -> std::same_as<void>;
     { sim.remove_node(addr) } -> std::same_as<void>;
@@ -187,12 +161,52 @@ concept network_simulator = requires(S sim, Addr addr, Edge edge) {
     { sim.remove_edge(addr, addr) } -> std::same_as<void>;
     
     // Node creation
-    { sim.create_node(addr) } -> std::same_as<std::shared_ptr<Node>>;
+    { sim.create_node(addr) } -> std::same_as<std::shared_ptr<typename Types::node_type>>;
     
     // Simulation control
     { sim.start() } -> std::same_as<void>;
     { sim.stop() } -> std::same_as<void>;
     { sim.reset() } -> std::same_as<void>;
+    
+    // Query methods
+    { sim.has_node(addr) } -> std::convertible_to<bool>;
+    { sim.has_edge(addr, addr) } -> std::convertible_to<bool>;
+};
+
+// Primary Network Simulator Types Concept
+template<typename T>
+concept network_simulator_types = requires {
+    // Core types
+    typename T::address_type;
+    typename T::port_type;
+    typename T::message_type;
+    typename T::connection_type;
+    typename T::listener_type;
+    typename T::node_type;
+    
+    // Future types for specific operations
+    typename T::future_bool_type;
+    typename T::future_message_type;
+    typename T::future_connection_type;
+    typename T::future_listener_type;
+    typename T::future_bytes_type;
+    
+    // Type constraints
+    requires address<typename T::address_type>;
+    requires port<typename T::port_type>;
+    requires message<typename T::message_type, typename T::address_type, typename T::port_type>;
+    requires connection<typename T::connection_type>;
+    requires listener<typename T::listener_type, typename T::future_connection_type>;
+    
+    // Future constraints
+    requires future<typename T::future_bool_type, bool>;
+    requires future<typename T::future_message_type, typename T::message_type>;
+    requires future<typename T::future_connection_type, std::shared_ptr<typename T::connection_type>>;
+    requires future<typename T::future_listener_type, std::shared_ptr<typename T::listener_type>>;
+    requires future<typename T::future_bytes_type, std::vector<std::byte>>;
+    
+    // Node constraint
+    requires network_node<typename T::node_type, T>;
 };
 
 } // namespace network_simulator

@@ -10,63 +10,63 @@ BOOST_AUTO_TEST_SUITE(raft_types_test)
 
 // Test that the node_id concept accepts unsigned integers
 BOOST_AUTO_TEST_CASE(test_node_id_concept_unsigned_integers) {
-    static_assert(raft::node_id<std::uint32_t>, "uint32_t should satisfy node_id");
-    static_assert(raft::node_id<std::uint64_t>, "uint64_t should satisfy node_id");
-    static_assert(raft::node_id<std::size_t>, "size_t should satisfy node_id");
+    static_assert(kythira::node_id<std::uint32_t>, "uint32_t should satisfy node_id");
+    static_assert(kythira::node_id<std::uint64_t>, "uint64_t should satisfy node_id");
+    static_assert(kythira::node_id<std::size_t>, "size_t should satisfy node_id");
     
     // Verify signed integers are rejected
-    static_assert(!raft::node_id<int>, "int should not satisfy node_id");
-    static_assert(!raft::node_id<std::int32_t>, "int32_t should not satisfy node_id");
+    static_assert(!kythira::node_id<int>, "int should not satisfy node_id");
+    static_assert(!kythira::node_id<std::int32_t>, "int32_t should not satisfy node_id");
 }
 
 // Test that the node_id concept accepts strings
 BOOST_AUTO_TEST_CASE(test_node_id_concept_strings) {
-    static_assert(raft::node_id<std::string>, "std::string should satisfy node_id");
+    static_assert(kythira::node_id<std::string>, "std::string should satisfy node_id");
     
     // Verify other types are rejected
-    static_assert(!raft::node_id<const char*>, "const char* should not satisfy node_id");
-    static_assert(!raft::node_id<double>, "double should not satisfy node_id");
+    static_assert(!kythira::node_id<const char*>, "const char* should not satisfy node_id");
+    static_assert(!kythira::node_id<double>, "double should not satisfy node_id");
 }
 
 // Test that the term_id concept accepts unsigned integers
 BOOST_AUTO_TEST_CASE(test_term_id_concept) {
-    static_assert(raft::term_id<std::uint32_t>, "uint32_t should satisfy term_id");
-    static_assert(raft::term_id<std::uint64_t>, "uint64_t should satisfy term_id");
-    static_assert(raft::term_id<std::size_t>, "size_t should satisfy term_id");
+    static_assert(kythira::term_id<std::uint32_t>, "uint32_t should satisfy term_id");
+    static_assert(kythira::term_id<std::uint64_t>, "uint64_t should satisfy term_id");
+    static_assert(kythira::term_id<std::size_t>, "size_t should satisfy term_id");
     
     // Verify signed integers and other types are rejected
-    static_assert(!raft::term_id<int>, "int should not satisfy term_id");
-    static_assert(!raft::term_id<std::string>, "std::string should not satisfy term_id");
+    static_assert(!kythira::term_id<int>, "int should not satisfy term_id");
+    static_assert(!kythira::term_id<std::string>, "std::string should not satisfy term_id");
 }
 
 // Test that the log_index concept accepts unsigned integers
 BOOST_AUTO_TEST_CASE(test_log_index_concept) {
-    static_assert(raft::log_index<std::uint32_t>, "uint32_t should satisfy log_index");
-    static_assert(raft::log_index<std::uint64_t>, "uint64_t should satisfy log_index");
-    static_assert(raft::log_index<std::size_t>, "size_t should satisfy log_index");
+    static_assert(kythira::log_index<std::uint32_t>, "uint32_t should satisfy log_index");
+    static_assert(kythira::log_index<std::uint64_t>, "uint64_t should satisfy log_index");
+    static_assert(kythira::log_index<std::size_t>, "size_t should satisfy log_index");
     
     // Verify signed integers and other types are rejected
-    static_assert(!raft::log_index<int>, "int should not satisfy log_index");
-    static_assert(!raft::log_index<std::string>, "std::string should not satisfy log_index");
+    static_assert(!kythira::log_index<int>, "int should not satisfy log_index");
+    static_assert(!kythira::log_index<std::string>, "std::string should not satisfy log_index");
 }
 
 // Test server_state enum values
 BOOST_AUTO_TEST_CASE(test_server_state_enum) {
-    raft::server_state state = raft::server_state::follower;
-    BOOST_CHECK(state == raft::server_state::follower);
+    kythira::server_state state = kythira::server_state::follower;
+    BOOST_CHECK(state == kythira::server_state::follower);
     
-    state = raft::server_state::candidate;
-    BOOST_CHECK(state == raft::server_state::candidate);
+    state = kythira::server_state::candidate;
+    BOOST_CHECK(state == kythira::server_state::candidate);
     
-    state = raft::server_state::leader;
-    BOOST_CHECK(state == raft::server_state::leader);
+    state = kythira::server_state::leader;
+    BOOST_CHECK(state == kythira::server_state::leader);
 }
 
 // Test exception hierarchy - raft_exception
 BOOST_AUTO_TEST_CASE(test_raft_exception) {
     try {
-        throw raft::raft_exception("Test raft exception");
-    } catch (const raft::raft_exception& e) {
+        throw kythira::raft_exception("Test raft exception");
+    } catch (const kythira::raft_exception& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test raft exception");
     } catch (...) {
         BOOST_FAIL("Should catch raft_exception");
@@ -76,10 +76,10 @@ BOOST_AUTO_TEST_CASE(test_raft_exception) {
 // Test exception hierarchy - network_exception
 BOOST_AUTO_TEST_CASE(test_network_exception) {
     try {
-        throw raft::network_exception("Test network exception");
-    } catch (const raft::network_exception& e) {
+        throw kythira::network_exception("Test network exception");
+    } catch (const kythira::network_exception& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test network exception");
-    } catch (const raft::raft_exception& e) {
+    } catch (const kythira::raft_exception& e) {
         // Should also be catchable as base class
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test network exception");
     } catch (...) {
@@ -90,10 +90,10 @@ BOOST_AUTO_TEST_CASE(test_network_exception) {
 // Test exception hierarchy - persistence_exception
 BOOST_AUTO_TEST_CASE(test_persistence_exception) {
     try {
-        throw raft::persistence_exception("Test persistence exception");
-    } catch (const raft::persistence_exception& e) {
+        throw kythira::persistence_exception("Test persistence exception");
+    } catch (const kythira::persistence_exception& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test persistence exception");
-    } catch (const raft::raft_exception& e) {
+    } catch (const kythira::raft_exception& e) {
         // Should also be catchable as base class
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test persistence exception");
     } catch (...) {
@@ -104,10 +104,10 @@ BOOST_AUTO_TEST_CASE(test_persistence_exception) {
 // Test exception hierarchy - serialization_exception
 BOOST_AUTO_TEST_CASE(test_serialization_exception) {
     try {
-        throw raft::serialization_exception("Test serialization exception");
-    } catch (const raft::serialization_exception& e) {
+        throw kythira::serialization_exception("Test serialization exception");
+    } catch (const kythira::serialization_exception& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test serialization exception");
-    } catch (const raft::raft_exception& e) {
+    } catch (const kythira::raft_exception& e) {
         // Should also be catchable as base class
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test serialization exception");
     } catch (...) {
@@ -118,10 +118,10 @@ BOOST_AUTO_TEST_CASE(test_serialization_exception) {
 // Test exception hierarchy - election_exception
 BOOST_AUTO_TEST_CASE(test_election_exception) {
     try {
-        throw raft::election_exception("Test election exception");
-    } catch (const raft::election_exception& e) {
+        throw kythira::election_exception("Test election exception");
+    } catch (const kythira::election_exception& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test election exception");
-    } catch (const raft::raft_exception& e) {
+    } catch (const kythira::raft_exception& e) {
         // Should also be catchable as base class
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test election exception");
     } catch (...) {
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(test_election_exception) {
 // Test that all exceptions inherit from std::runtime_error
 BOOST_AUTO_TEST_CASE(test_exception_inheritance) {
     try {
-        throw raft::network_exception("Test");
+        throw kythira::network_exception("Test");
     } catch (const std::runtime_error& e) {
         BOOST_CHECK_EQUAL(std::string(e.what()), "Test");
     } catch (...) {
@@ -142,10 +142,10 @@ BOOST_AUTO_TEST_CASE(test_exception_inheritance) {
 
 // Test log_entry default implementation
 BOOST_AUTO_TEST_CASE(test_log_entry_default_implementation) {
-    using log_entry_t = raft::log_entry<std::uint64_t, std::uint64_t>;
+    using log_entry_t = kythira::log_entry<std::uint64_t, std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::log_entry_type<log_entry_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::log_entry_type<log_entry_t, std::uint64_t, std::uint64_t>,
                   "log_entry should satisfy log_entry_type concept");
     
     // Create a log entry
@@ -159,10 +159,10 @@ BOOST_AUTO_TEST_CASE(test_log_entry_default_implementation) {
 
 // Test request_vote_request default implementation
 BOOST_AUTO_TEST_CASE(test_request_vote_request_default_implementation) {
-    using request_t = raft::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using request_t = kythira::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::request_vote_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::request_vote_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
                   "request_vote_request should satisfy request_vote_request_type concept");
     
     // Create a request
@@ -176,10 +176,10 @@ BOOST_AUTO_TEST_CASE(test_request_vote_request_default_implementation) {
 
 // Test request_vote_response default implementation
 BOOST_AUTO_TEST_CASE(test_request_vote_response_default_implementation) {
-    using response_t = raft::request_vote_response<std::uint64_t>;
+    using response_t = kythira::request_vote_response<std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::request_vote_response_type<response_t, std::uint64_t>,
+    static_assert(kythira::request_vote_response_type<response_t, std::uint64_t>,
                   "request_vote_response should satisfy request_vote_response_type concept");
     
     // Create a response
@@ -195,11 +195,11 @@ BOOST_AUTO_TEST_CASE(test_request_vote_response_default_implementation) {
 
 // Test append_entries_request default implementation
 BOOST_AUTO_TEST_CASE(test_append_entries_request_default_implementation) {
-    using log_entry_t = raft::log_entry<std::uint64_t, std::uint64_t>;
-    using request_t = raft::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>;
+    using log_entry_t = kythira::log_entry<std::uint64_t, std::uint64_t>;
+    using request_t = kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::append_entries_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>,
+    static_assert(kythira::append_entries_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>,
                   "append_entries_request should satisfy append_entries_request_type concept");
     
     // Create entries
@@ -220,10 +220,10 @@ BOOST_AUTO_TEST_CASE(test_append_entries_request_default_implementation) {
 
 // Test append_entries_response default implementation
 BOOST_AUTO_TEST_CASE(test_append_entries_response_default_implementation) {
-    using response_t = raft::append_entries_response<std::uint64_t, std::uint64_t>;
+    using response_t = kythira::append_entries_response<std::uint64_t, std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::append_entries_response_type<response_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::append_entries_response_type<response_t, std::uint64_t, std::uint64_t>,
                   "append_entries_response should satisfy append_entries_response_type concept");
     
     // Create a successful response
@@ -247,10 +247,10 @@ BOOST_AUTO_TEST_CASE(test_append_entries_response_default_implementation) {
 
 // Test install_snapshot_request default implementation
 BOOST_AUTO_TEST_CASE(test_install_snapshot_request_default_implementation) {
-    using request_t = raft::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using request_t = kythira::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::install_snapshot_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::install_snapshot_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
                   "install_snapshot_request should satisfy install_snapshot_request_type concept");
     
     // Create snapshot data
@@ -274,10 +274,10 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_request_default_implementation) {
 
 // Test install_snapshot_response default implementation
 BOOST_AUTO_TEST_CASE(test_install_snapshot_response_default_implementation) {
-    using response_t = raft::install_snapshot_response<std::uint64_t>;
+    using response_t = kythira::install_snapshot_response<std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::install_snapshot_response_type<response_t, std::uint64_t>,
+    static_assert(kythira::install_snapshot_response_type<response_t, std::uint64_t>,
                   "install_snapshot_response should satisfy install_snapshot_response_type concept");
     
     // Create a response
@@ -288,16 +288,16 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_response_default_implementation) {
 
 // Test RPC message types with string node IDs
 BOOST_AUTO_TEST_CASE(test_rpc_messages_with_string_node_ids) {
-    using request_vote_req_t = raft::request_vote_request<std::string, std::uint64_t, std::uint64_t>;
-    using append_entries_req_t = raft::append_entries_request<std::string, std::uint64_t, std::uint64_t>;
-    using install_snapshot_req_t = raft::install_snapshot_request<std::string, std::uint64_t, std::uint64_t>;
+    using request_vote_req_t = kythira::request_vote_request<std::string, std::uint64_t, std::uint64_t>;
+    using append_entries_req_t = kythira::append_entries_request<std::string, std::uint64_t, std::uint64_t>;
+    using install_snapshot_req_t = kythira::install_snapshot_request<std::string, std::uint64_t, std::uint64_t>;
     
     // Verify they satisfy the concepts
-    static_assert(raft::request_vote_request_type<request_vote_req_t, std::string, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::request_vote_request_type<request_vote_req_t, std::string, std::uint64_t, std::uint64_t>,
                   "request_vote_request should work with string node IDs");
-    static_assert(raft::append_entries_request_type<append_entries_req_t, std::string, std::uint64_t, std::uint64_t, raft::log_entry<>>,
+    static_assert(kythira::append_entries_request_type<append_entries_req_t, std::string, std::uint64_t, std::uint64_t, kythira::log_entry<>>,
                   "append_entries_request should work with string node IDs");
-    static_assert(raft::install_snapshot_request_type<install_snapshot_req_t, std::string, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::install_snapshot_request_type<install_snapshot_req_t, std::string, std::uint64_t, std::uint64_t>,
                   "install_snapshot_request should work with string node IDs");
     
     // Create and test with string IDs
@@ -313,10 +313,10 @@ BOOST_AUTO_TEST_CASE(test_rpc_messages_with_string_node_ids) {
 
 // Test cluster_configuration default implementation
 BOOST_AUTO_TEST_CASE(test_cluster_configuration_default_implementation) {
-    using config_t = raft::cluster_configuration<std::uint64_t>;
+    using config_t = kythira::cluster_configuration<std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::cluster_configuration_type<config_t, std::uint64_t>,
+    static_assert(kythira::cluster_configuration_type<config_t, std::uint64_t>,
                   "cluster_configuration should satisfy cluster_configuration_type concept");
     
     // Create a simple configuration
@@ -340,10 +340,10 @@ BOOST_AUTO_TEST_CASE(test_cluster_configuration_default_implementation) {
 
 // Test cluster_configuration with string node IDs
 BOOST_AUTO_TEST_CASE(test_cluster_configuration_with_string_node_ids) {
-    using config_t = raft::cluster_configuration<std::string>;
+    using config_t = kythira::cluster_configuration<std::string>;
     
     // Verify it satisfies the concept
-    static_assert(raft::cluster_configuration_type<config_t, std::string>,
+    static_assert(kythira::cluster_configuration_type<config_t, std::string>,
                   "cluster_configuration should work with string node IDs");
     
     // Create a configuration with string IDs
@@ -357,11 +357,11 @@ BOOST_AUTO_TEST_CASE(test_cluster_configuration_with_string_node_ids) {
 
 // Test snapshot default implementation
 BOOST_AUTO_TEST_CASE(test_snapshot_default_implementation) {
-    using snapshot_t = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>;
-    using config_t = raft::cluster_configuration<std::uint64_t>;
+    using snapshot_t = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using config_t = kythira::cluster_configuration<std::uint64_t>;
     
     // Verify it satisfies the concept
-    static_assert(raft::snapshot_type<snapshot_t, std::uint64_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::snapshot_type<snapshot_t, std::uint64_t, std::uint64_t, std::uint64_t>,
                   "snapshot should satisfy snapshot_type concept");
     
     // Create a configuration
@@ -382,8 +382,8 @@ BOOST_AUTO_TEST_CASE(test_snapshot_default_implementation) {
 
 // Test snapshot with joint consensus configuration
 BOOST_AUTO_TEST_CASE(test_snapshot_with_joint_consensus) {
-    using snapshot_t = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>;
-    using config_t = raft::cluster_configuration<std::uint64_t>;
+    using snapshot_t = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using config_t = kythira::cluster_configuration<std::uint64_t>;
     
     // Create a joint consensus configuration
     std::vector<std::uint64_t> old_nodes = {1, 2};
@@ -405,11 +405,11 @@ BOOST_AUTO_TEST_CASE(test_snapshot_with_joint_consensus) {
 
 // Test snapshot with string node IDs
 BOOST_AUTO_TEST_CASE(test_snapshot_with_string_node_ids) {
-    using snapshot_t = raft::snapshot<std::string, std::uint64_t, std::uint64_t>;
-    using config_t = raft::cluster_configuration<std::string>;
+    using snapshot_t = kythira::snapshot<std::string, std::uint64_t, std::uint64_t>;
+    using config_t = kythira::cluster_configuration<std::string>;
     
     // Verify it satisfies the concept
-    static_assert(raft::snapshot_type<snapshot_t, std::string, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::snapshot_type<snapshot_t, std::string, std::uint64_t, std::uint64_t>,
                   "snapshot should work with string node IDs");
     
     // Create a configuration with string IDs

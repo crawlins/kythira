@@ -42,7 +42,7 @@ private:
 };
 
 // Verify that test_metrics satisfies the metrics concept
-static_assert(raft::metrics<test_metrics>, "test_metrics must satisfy metrics concept");
+static_assert(kythira::metrics<test_metrics>, "test_metrics must satisfy metrics concept");
 
 // Test that a non-conforming type does not satisfy the concept
 class non_metrics {
@@ -51,7 +51,7 @@ public:
     // Missing other required methods
 };
 
-static_assert(!raft::metrics<non_metrics>, "non_metrics must not satisfy metrics concept");
+static_assert(!kythira::metrics<non_metrics>, "non_metrics must not satisfy metrics concept");
 
 int main() {
     // Instantiate to ensure it compiles

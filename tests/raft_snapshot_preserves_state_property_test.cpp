@@ -85,7 +85,7 @@ auto generate_random_state(std::mt19937& rng) -> std::vector<std::byte> {
 }
 
 // Helper to generate random cluster configuration
-auto generate_random_configuration(std::mt19937& rng) -> raft::cluster_configuration<std::uint64_t> {
+auto generate_random_configuration(std::mt19937& rng) -> kythira::cluster_configuration<std::uint64_t> {
     std::uniform_int_distribution<std::size_t> node_count_dist(1, 10);
     auto node_count = node_count_dist(rng);
     
@@ -98,7 +98,7 @@ auto generate_random_configuration(std::mt19937& rng) -> raft::cluster_configura
     std::sort(nodes.begin(), nodes.end());
     nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
     
-    return raft::cluster_configuration<std::uint64_t>{
+    return kythira::cluster_configuration<std::uint64_t>{
         nodes,
         false,  // not joint consensus
         std::nullopt
@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
         auto state = generate_random_state(rng);
         
         // Create snapshot
-        auto original_snapshot = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
+        auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
             last_included_index,
             last_included_term,
             configuration,
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
         };
         
         // Save to persistence
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
         auto state = generate_random_state(rng);
         
         // Create snapshot
-        auto original_snapshot = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
+        auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
             last_included_index,
             last_included_term,
             configuration,
@@ -173,7 +173,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
         };
         
         // Save to persistence
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -206,7 +206,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_t
         auto state = generate_random_state(rng);
         
         // Create snapshot
-        auto original_snapshot = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
+        auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
             last_included_index,
             last_included_term,
             configuration,
@@ -214,7 +214,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_t
         };
         
         // Save to persistence
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -256,7 +256,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
         auto state = generate_random_state(rng);
         
         // Create snapshot
-        auto original_snapshot = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
+        auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
             last_included_index,
             last_included_term,
             configuration,
@@ -264,7 +264,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
         };
         
         // Save to persistence
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -308,19 +308,19 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
         auto log_count = generate_random_log_count(rng);
         
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<std::uint64_t, std::uint16_t>{};
+        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
         simulator.start();
         
         // Create network node
         auto sim_node = simulator.create_node(node_id);
         
         // Create persistence engine with log entries
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_current_term(term);
         
         // Add log entries
         for (std::uint64_t i = 1; i <= log_count; ++i) {
-            auto entry = raft::log_entry<std::uint64_t, std::uint64_t>{
+            auto entry = kythira::log_entry<std::uint64_t, std::uint64_t>{
                 term,
                 i,
                 std::vector<std::byte>{std::byte{static_cast<unsigned char>(i % 256)}}
@@ -329,20 +329,20 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
         }
         
         // Create and start node
-        auto node = raft::node{
+        auto node = kythira::node{
             node_id,
-            raft::simulator_network_client<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            kythira::simulator_network_client<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
-            raft::simulator_network_server<
-                raft::json_rpc_serializer<std::vector<std::byte>>,
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            kythira::simulator_network_server<
+                kythira::json_rpc_serializer<std::vector<std::byte>>,
                 std::vector<std::byte>
-            >{sim_node, raft::json_rpc_serializer<std::vector<std::byte>>{}},
+            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence),
-            raft::console_logger{raft::log_level::error},
-            raft::noop_metrics{},
-            raft::default_membership_manager<>{}
+            kythira::console_logger{kythira::log_level::error},
+            kythira::noop_metrics{},
+            kythira::default_membership_manager<>{}
         };
         
         node.start();
@@ -373,7 +373,7 @@ BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout
         std::vector<std::byte> empty_state{};
         
         // Create snapshot
-        auto original_snapshot = raft::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
+        auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
             last_included_index,
             last_included_term,
             configuration,
@@ -381,7 +381,7 @@ BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout
         };
         
         // Save to persistence
-        auto persistence = raft::memory_persistence_engine<>{};
+        auto persistence = kythira::memory_persistence_engine<>{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence

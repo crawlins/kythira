@@ -1,19 +1,18 @@
 #pragma once
 
 #include "concepts.hpp"
-#include "../raft/future.hpp"
-#include <concepts/future.hpp>
+#include <chrono>
 #include <cstring>
+#include <memory>
 #include <netinet/in.h>
+#include <string>
 #include <vector>
 
-namespace network_simulator {
+// Include kythira future wrapper which provides the correct API
+#include "../raft/future.hpp"
+#define KYTHIRA_FUTURES_AVAILABLE 1
 
-// Import Future and Try from kythira namespace
-using kythira::Future;
-using kythira::Try;
-using kythira::wait_for_any;
-using kythira::wait_for_all;
+namespace network_simulator {
 
 // Wrapper for in_addr to satisfy address concept
 struct IPv4Address {
@@ -51,35 +50,140 @@ struct IPv6Address {
     auto get() const -> const in6_addr& { return _addr; }
 };
 
-// Forward declarations
-template<address Addr, port Port>
+// Simple Future implementation for when kythira is not available
+template<typename T>
+class SimpleFuture {
+public:
+    SimpleFuture() = default;
+    explicit SimpleFuture(T value) : _value(std::move(value)), _ready(true) {}
+    explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
+    
+    auto get() -> T {
+        if (_exception) {
+            std::rethrow_exception(_exception);
+        }
+        return _value;
+    }
+    
+    template<typename F>
+    auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F, T>> {
+        if (_exception) {
+            return SimpleFuture<std::invoke_result_t<F, T>>(_exception);
+        }
+        try {
+            return SimpleFuture<std::invoke_result_t<F, T>>(func(_value));
+        } catch (...) {
+            return SimpleFuture<std::invoke_result_t<F, T>>(std::current_exception());
+        }
+    }
+    
+    template<typename F>
+    auto onError(F&& func) -> SimpleFuture<T> {
+        if (_exception) {
+            try {
+                func(_exception);
+            } catch (...) {
+                // Ignore errors in error handler
+            }
+        }
+        return *this;
+    }
+    
+    auto isReady() const -> bool { return _ready; }
+    
+    auto wait(std::chrono::milliseconds timeout) -> bool {
+        // Simple implementation - always ready for now
+        return _ready;
+    }
+    
+private:
+    T _value{};
+    std::exception_ptr _exception;
+    bool _ready = false;
+};
+
+// Specialization for void
+template<>
+class SimpleFuture<void> {
+public:
+    SimpleFuture() : _ready(true) {}
+    explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
+    
+    auto get() -> void {
+        if (_exception) {
+            std::rethrow_exception(_exception);
+        }
+    }
+    
+    template<typename F>
+    auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F>> {
+        if (_exception) {
+            return SimpleFuture<std::invoke_result_t<F>>(_exception);
+        }
+        try {
+            if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
+                func();
+                return SimpleFuture<void>();
+            } else {
+                return SimpleFuture<std::invoke_result_t<F>>(func());
+            }
+        } catch (...) {
+            return SimpleFuture<std::invoke_result_t<F>>(std::current_exception());
+        }
+    }
+    
+    template<typename F>
+    auto onError(F&& func) -> SimpleFuture<void> {
+        if (_exception) {
+            try {
+                func(_exception);
+            } catch (...) {
+                // Ignore errors in error handler
+            }
+        }
+        return *this;
+    }
+    
+    auto isReady() const -> bool { return _ready; }
+    
+    auto wait(std::chrono::milliseconds timeout) -> bool {
+        // Simple implementation - always ready for now
+        return _ready;
+    }
+    
+private:
+    std::exception_ptr _exception;
+    bool _ready = false;
+};
+
+// Forward declarations for template classes that will be defined later
+template<typename Types>
 class Message;
 
-template<address Addr, port Port, typename FutureType>
-
+template<typename Types>
 class NetworkNode;
 
-} // namespace network_simulator
-
-// Forward declarations for kythira namespace
-namespace kythira {
-
-template<network_simulator::address Addr, network_simulator::port Port, typename FutureType>
+template<typename Types>
 class Connection;
 
-template<network_simulator::address Addr, network_simulator::port Port, typename FutureType>
+template<typename Types>
 class Listener;
 
-} // namespace kythira
+template<typename Types>
+class NetworkSimulator;
 
-namespace network_simulator {
-
-// 2.1 Message Structure
-template<address Addr, port Port>
+// Message Structure
+template<typename Types>
 class Message {
 public:
-    Message(Addr src_addr, Port src_port, 
-            Addr dst_addr, Port dst_port,
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
+    
+    // Default constructor for empty messages
+    Message() = default;
+    
+    Message(address_type src_addr, port_type src_port, 
+            address_type dst_addr, port_type dst_port,
             std::vector<std::byte> payload = {})
         : _source_address(std::move(src_addr))
         , _source_port(std::move(src_port))
@@ -88,21 +192,21 @@ public:
         , _payload(std::move(payload))
     {}
     
-    auto source_address() const -> Addr { return _source_address; }
-    auto source_port() const -> Port { return _source_port; }
-    auto destination_address() const -> Addr { return _destination_address; }
-    auto destination_port() const -> Port { return _destination_port; }
-    auto payload() const -> const std::vector<std::byte>& { return _payload; }
+    auto source_address() const -> address_type { return _source_address; }
+    auto source_port() const -> port_type { return _source_port; }
+    auto destination_address() const -> address_type { return _destination_address; }
+    auto destination_port() const -> port_type { return _destination_port; }
+    auto payload() const -> std::vector<std::byte> { return _payload; }
     
 private:
-    Addr _source_address;
-    Port _source_port;
-    Addr _destination_address;
-    Port _destination_port;
+    address_type _source_address;
+    port_type _source_port;
+    address_type _destination_address;
+    port_type _destination_port;
     std::vector<std::byte> _payload;
 };
 
-// 2.2 Network Edge
+// Network Edge
 struct NetworkEdge {
     std::chrono::milliseconds _latency;
     double _reliability;  // 0.0 to 1.0
@@ -116,25 +220,63 @@ struct NetworkEdge {
     auto reliability() const -> double { return _reliability; }
 };
 
-// 2.3 Endpoint
-template<address Addr, port Port>
+// Endpoint
+template<typename Types>
 struct Endpoint {
-    Addr _address;
-    Port _port;
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
     
-    Endpoint(Addr addr, Port prt)
-        : _address(std::move(addr)), _port(std::move(prt)) {}
+    address_type address;
+    port_type port;
     
-    auto address() const -> Addr { return _address; }
-    auto port() const -> Port { return _port; }
+    Endpoint(address_type addr, port_type prt)
+        : address(std::move(addr)), port(std::move(prt)) {}
     
-    auto operator==(const Endpoint& other) const -> bool {
-        return _address == other._address && _port == other._port;
-    }
+    auto operator==(const Endpoint&) const -> bool = default;
+};
+
+// Connection ID using 4-tuple (src_addr, src_port, dst_addr, dst_port)
+template<typename Types>
+struct ConnectionId {
+    using address_type = typename Types::address_type;
+    using port_type = typename Types::port_type;
     
-    auto operator!=(const Endpoint& other) const -> bool {
-        return !(*this == other);
-    }
+    address_type src_addr;
+    port_type src_port;
+    address_type dst_addr;
+    port_type dst_port;
+    
+    ConnectionId(address_type src_a, port_type src_p, address_type dst_a, port_type dst_p)
+        : src_addr(std::move(src_a)), src_port(std::move(src_p))
+        , dst_addr(std::move(dst_a)), dst_port(std::move(dst_p)) {}
+    
+    auto operator==(const ConnectionId&) const -> bool = default;
+};
+
+// Default Types Implementation using folly::Future when available, SimpleFuture otherwise
+struct DefaultNetworkTypes {
+    // Core types
+    using address_type = std::string;
+    using port_type = unsigned short;
+    using message_type = Message<DefaultNetworkTypes>;
+    using connection_type = Connection<DefaultNetworkTypes>;
+    using listener_type = Listener<DefaultNetworkTypes>;
+    using node_type = NetworkNode<DefaultNetworkTypes>;
+    
+    // Future types - use kythira::Future since we included it
+#ifdef KYTHIRA_FUTURES_AVAILABLE
+    using future_bool_type = kythira::Future<bool>;
+    using future_message_type = kythira::Future<message_type>;
+    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
+    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
+    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
+#else
+    using future_bool_type = SimpleFuture<bool>;
+    using future_message_type = SimpleFuture<message_type>;
+    using future_connection_type = SimpleFuture<std::shared_ptr<connection_type>>;
+    using future_listener_type = SimpleFuture<std::shared_ptr<listener_type>>;
+    using future_bytes_type = SimpleFuture<std::vector<std::byte>>;
+#endif
 };
 
 } // namespace network_simulator
@@ -160,11 +302,23 @@ struct std::hash<network_simulator::IPv6Address> {
 };
 
 // Hash specialization for Endpoint
-template<network_simulator::address Addr, network_simulator::port Port>
-struct std::hash<network_simulator::Endpoint<Addr, Port>> {
-    auto operator()(const network_simulator::Endpoint<Addr, Port>& ep) const -> std::size_t {
-        std::size_t h1 = std::hash<Addr>{}(ep._address);
-        std::size_t h2 = std::hash<Port>{}(ep._port);
+template<typename Types>
+struct std::hash<network_simulator::Endpoint<Types>> {
+    auto operator()(const network_simulator::Endpoint<Types>& ep) const -> std::size_t {
+        std::size_t h1 = std::hash<typename Types::address_type>{}(ep.address);
+        std::size_t h2 = std::hash<typename Types::port_type>{}(ep.port);
         return h1 ^ (h2 << 1);
+    }
+};
+
+// Hash specialization for ConnectionId
+template<typename Types>
+struct std::hash<network_simulator::ConnectionId<Types>> {
+    auto operator()(const network_simulator::ConnectionId<Types>& conn_id) const -> std::size_t {
+        std::size_t h1 = std::hash<typename Types::address_type>{}(conn_id.src_addr);
+        std::size_t h2 = std::hash<typename Types::port_type>{}(conn_id.src_port);
+        std::size_t h3 = std::hash<typename Types::address_type>{}(conn_id.dst_addr);
+        std::size_t h4 = std::hash<typename Types::port_type>{}(conn_id.dst_port);
+        return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
     }
 };

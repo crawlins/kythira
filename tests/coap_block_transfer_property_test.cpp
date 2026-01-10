@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(property_block_transfer_for_large_messages, * boost::unit_t
             std::size_t block_size = block_size_dist(rng);
             std::size_t payload_size = payload_size_dist(rng);
             
-            raft::coap_client_config config;
+            kythira::coap_client_config config;
             config.enable_block_transfer = true;
             config.max_block_size = block_size;
             config.ack_timeout = std::chrono::milliseconds{2000};
@@ -61,11 +61,11 @@ BOOST_AUTO_TEST_CASE(property_block_transfer_for_large_messages, * boost::unit_t
             std::uint64_t target_node = node_dist(rng);
             endpoints[target_node] = test_coap_endpoint;
             
-            raft::noop_metrics metrics;
+            kythira::noop_metrics metrics;
             
             // Create CoAP client
-            raft::console_logger logger;
-            raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+            kythira::console_logger logger;
+            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
                 std::move(endpoints), config, metrics, std::move(logger));
             
             // Test block transfer decision for different payload sizes
@@ -152,7 +152,7 @@ BOOST_AUTO_TEST_CASE(property_block_transfer_for_large_messages, * boost::unit_t
             
             // Test with AppendEntries request that might need block transfer
             {
-                raft::append_entries_request<> request;
+                kythira::append_entries_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._prev_log_index = index_dist(rng);
@@ -162,7 +162,7 @@ BOOST_AUTO_TEST_CASE(property_block_transfer_for_large_messages, * boost::unit_t
                 // Add entries that might make the payload large
                 std::size_t entry_count = payload_size / 100; // Rough estimate
                 for (std::size_t j = 0; j < entry_count; ++j) {
-                    raft::log_entry<> entry;
+                    kythira::log_entry<> entry;
                     entry._term = term_dist(rng);
                     entry._index = index_dist(rng);
                     
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_CASE(property_block_transfer_for_large_messages, * boost::unit_t
             
             // Test with InstallSnapshot request that definitely needs block transfer
             {
-                raft::install_snapshot_request<> request;
+                kythira::install_snapshot_request<> request;
                 request._term = term_dist(rng);
                 request._leader_id = node_dist(rng);
                 request._last_included_index = index_dist(rng);
@@ -226,16 +226,16 @@ BOOST_AUTO_TEST_CASE(test_block_option_encoding, * boost::unit_test::timeout(45)
     // Test basic block option functionality
     // For stub implementation, just verify the interface exists
     
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     config.enable_block_transfer = true;
     config.max_block_size = 1024;
     
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     
-    raft::noop_metrics metrics;
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger>
+    kythira::noop_metrics metrics;
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger>
         client(std::move(endpoints), config, metrics, std::move(logger));
     
     // Test that block transfer methods exist and can be called
@@ -252,17 +252,17 @@ BOOST_AUTO_TEST_CASE(test_block_option_encoding, * boost::unit_test::timeout(45)
 
 // Test block reassembly with simulated out-of-order and missing blocks
 BOOST_AUTO_TEST_CASE(test_block_reassembly_edge_cases, * boost::unit_test::timeout(60)) {
-    raft::coap_client_config config;
+    kythira::coap_client_config config;
     config.enable_block_transfer = true;
     config.max_block_size = 256;
     
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::console_logger logger;
-    raft::coap_client<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> client(
+    kythira::console_logger logger;
+    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
         std::move(endpoints), config, metrics, std::move(logger));
     
     std::random_device rd;
@@ -311,16 +311,16 @@ BOOST_AUTO_TEST_CASE(test_block_reassembly_edge_cases, * boost::unit_test::timeo
 
 // Test server-side block transfer functionality
 BOOST_AUTO_TEST_CASE(test_server_block_transfer, * boost::unit_test::timeout(60)) {
-    raft::coap_server_config config;
+    kythira::coap_server_config config;
     config.enable_block_transfer = true;
     config.max_block_size = 512;
     config.max_concurrent_sessions = 100;
     config.max_request_size = 64 * 1024;
     
-    raft::noop_metrics metrics;
+    kythira::noop_metrics metrics;
     
-    raft::console_logger logger;
-    raft::coap_server<raft::json_rpc_serializer<std::vector<std::byte>>, raft::noop_metrics, raft::console_logger> server(
+    kythira::console_logger logger;
+    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> server(
         "127.0.0.1", 5683, config, metrics, std::move(logger));
     
     std::random_device rd;

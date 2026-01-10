@@ -19,6 +19,36 @@ endfunction()
 add_network_example(basic_connectionless_example basic_connectionless.cpp)
 add_network_example(connection_oriented_example connection_oriented.cpp)
 add_network_example(network_topology_example network_topology.cpp)
+add_network_example(custom_types_example custom_types_example.cpp)
+
+# Register network simulator examples as tests
+add_test(NAME basic_connectionless_example_test COMMAND basic_connectionless_example)
+set_tests_properties(basic_connectionless_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;network-simulator;integration"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
+add_test(NAME connection_oriented_example_test COMMAND connection_oriented_example)
+set_tests_properties(connection_oriented_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;network-simulator;integration"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
+add_test(NAME network_topology_example_test COMMAND network_topology_example)
+set_tests_properties(network_topology_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;network-simulator;integration"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
+add_test(NAME custom_types_example_test COMMAND custom_types_example)
+set_tests_properties(custom_types_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;network-simulator;integration"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
 
 # Generic future architecture examples
 add_network_example(generic_future_example generic_future_example.cpp)
