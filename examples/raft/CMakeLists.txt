@@ -107,6 +107,7 @@ add_raft_example(http_transport_example http_transport_example.cpp)
 
 # CoAP transport examples - demonstrate CoAP/DTLS integration
 add_raft_example(coap_transport_basic_example coap_transport_basic_example.cpp)
+add_raft_example(coap_transport_basic_example_fixed coap_transport_basic_example_fixed.cpp)
 add_raft_example(coap_dtls_security_example coap_dtls_security_example.cpp)
 add_raft_example(coap_multicast_example coap_multicast_example.cpp)
 add_raft_example(coap_block_transfer_example coap_block_transfer_example.cpp)

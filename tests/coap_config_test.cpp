@@ -534,7 +534,7 @@ BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
     // Test parsing and encoding of block options
     std::uint32_t option_value = (1 << 23) | (2 << 20) | 42; // More=1, SZX=2, Block=42
     
-    auto parsed = block_option::parse(option_value);
+    auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 42);
     BOOST_CHECK_EQUAL(parsed.more_blocks, true);
     BOOST_CHECK_EQUAL(parsed.block_size, 64); // SZX=2 -> 2^(2+4) = 64
@@ -546,7 +546,7 @@ BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
 BOOST_AUTO_TEST_CASE(test_block_option_no_more_blocks) {
     std::uint32_t option_value = (0 << 23) | (3 << 20) | 10; // More=0, SZX=3, Block=10
     
-    auto parsed = block_option::parse(option_value);
+    auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 10);
     BOOST_CHECK_EQUAL(parsed.more_blocks, false);
     BOOST_CHECK_EQUAL(parsed.block_size, 128); // SZX=3 -> 2^(3+4) = 128

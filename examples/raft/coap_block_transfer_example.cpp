@@ -13,6 +13,7 @@
 #include <thread>
 #include <chrono>
 #include <format>
+#include <raft/coap_block_option.hpp>
 #include <random>
 #include <vector>
 #include <cstddef>
@@ -54,49 +55,7 @@ struct coap_client_config {
     bool enable_dtls{false};
 };
 
-// Block option structure (from CoAP RFC 7959)
-struct block_option {
-    std::uint32_t block_number{0};
-    bool more_blocks{false};
-    std::uint32_t block_size{1024};
-    
-    // Parse Block1/Block2 option value
-    static auto parse(std::uint32_t option_value) -> block_option {
-        block_option result;
-        
-        // CoAP Block option format (RFC 7959):
-        // 0-19 bits: Block number
-        // 20-22 bits: Block size (encoded as 2^(SZX+4))
-        // 23 bit: More flag
-        
-        result.block_number = option_value & 0xFFFFF;  // Lower 20 bits
-        std::uint8_t szx = (option_value >> 20) & 0x7;  // Bits 20-22
-        result.more_blocks = (option_value >> 23) & 0x1;  // Bit 23
-        
-        // Calculate actual block size from SZX
-        result.block_size = 1U << (szx + 4);  // 2^(SZX+4)
-        
-        return result;
-    }
-    
-    // Encode Block1/Block2 option value
-    auto encode() const -> std::uint32_t {
-        // Calculate SZX from block size
-        std::uint8_t szx = 0;
-        std::uint32_t size = block_size;
-        while (size > 16 && szx < 7) {
-            size >>= 1;
-            szx++;
-        }
-        
-        std::uint32_t result = 0;
-        result |= (block_number & 0xFFFFF);  // Lower 20 bits
-        result |= (static_cast<std::uint32_t>(szx) & 0x7) << 20;  // Bits 20-22
-        result |= (more_blocks ? 1U : 0U) << 23;  // Bit 23
-        
-        return result;
-    }
-};
+// Block option structure is now defined in kythira namespace in coap_block_option.hpp
 
 auto generate_test_payload(std::size_t size) -> std::vector<std::byte> {
     std::vector<std::byte> payload;
@@ -172,13 +131,13 @@ auto test_block_option_parsing() -> bool {
         // Test Block1/Block2 option encoding and decoding
         
         // Test case 1: First block, more blocks to follow, 1024 byte blocks
-        block_option block1;
+        kythira::block_option block1;
         block1.block_number = 0;
         block1.more_blocks = true;
         block1.block_size = 1024;
         
         std::uint32_t encoded1 = block1.encode();
-        block_option decoded1 = block_option::parse(encoded1);
+        kythira::block_option decoded1 = kythira::block_option::parse(encoded1);
         
         if (decoded1.block_number != block1.block_number ||
             decoded1.more_blocks != block1.more_blocks ||
@@ -192,13 +151,13 @@ auto test_block_option_parsing() -> bool {
                   << ", size=" << decoded1.block_size << "\n";
         
         // Test case 2: Last block, no more blocks, 512 byte blocks
-        block_option block2;
+        kythira::block_option block2;
         block2.block_number = 5;
         block2.more_blocks = false;
         block2.block_size = 512;
         
         std::uint32_t encoded2 = block2.encode();
-        block_option decoded2 = block_option::parse(encoded2);
+        kythira::block_option decoded2 = kythira::block_option::parse(encoded2);
         
         if (decoded2.block_number != block2.block_number ||
             decoded2.more_blocks != block2.more_blocks ||
@@ -212,13 +171,13 @@ auto test_block_option_parsing() -> bool {
                   << ", size=" << decoded2.block_size << "\n";
         
         // Test case 3: Middle block, more blocks to follow, 256 byte blocks
-        block_option block3;
+        kythira::block_option block3;
         block3.block_number = 10;
         block3.more_blocks = true;
         block3.block_size = 256;
         
         std::uint32_t encoded3 = block3.encode();
-        block_option decoded3 = block_option::parse(encoded3);
+        kythira::block_option decoded3 = kythira::block_option::parse(encoded3);
         
         if (decoded3.block_number != block3.block_number ||
             decoded3.more_blocks != block3.more_blocks ||

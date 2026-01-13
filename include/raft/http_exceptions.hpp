@@ -56,4 +56,25 @@ public:
         : http_transport_error(message) {}
 };
 
+// Exception for SSL configuration errors
+class ssl_configuration_error : public http_transport_error {
+public:
+    explicit ssl_configuration_error(const std::string& message)
+        : http_transport_error(message) {}
+};
+
+// Exception for certificate validation errors
+class certificate_validation_error : public http_transport_error {
+public:
+    explicit certificate_validation_error(const std::string& message)
+        : http_transport_error(message) {}
+};
+
+// Exception for SSL context errors
+class ssl_context_error : public http_transport_error {
+public:
+    explicit ssl_context_error(const std::string& message)
+        : http_transport_error(message) {}
+};
+
 } // namespace kythira

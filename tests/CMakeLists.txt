@@ -1081,3 +1081,256 @@ set_tests_properties(coap_dtls_certificate_validation_test PROPERTIES
     TIMEOUT 180
     LABELS "property;coap;dtls;certificate;security"
 )
+
+# CoAP response handling property test
+add_executable(coap_response_handling_property_test coap_response_handling_property_test.cpp)
+target_link_libraries(coap_response_handling_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_response_handling_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_response_handling_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_response_handling_property_test COMMAND coap_response_handling_property_test)
+set_tests_properties(coap_response_handling_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;coap;response;error_handling"
+)
+
+# CoAP multicast discovery property test
+add_executable(coap_multicast_discovery_property_test coap_multicast_discovery_property_test.cpp)
+target_link_libraries(coap_multicast_discovery_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_multicast_discovery_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_multicast_discovery_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_multicast_discovery_property_test COMMAND coap_multicast_discovery_property_test)
+set_tests_properties(coap_multicast_discovery_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;coap;multicast;discovery"
+)
+
+# CoAP multicast group communication property test
+add_executable(coap_multicast_group_communication_property_test coap_multicast_group_communication_property_test.cpp)
+target_link_libraries(coap_multicast_group_communication_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_multicast_group_communication_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_multicast_group_communication_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_multicast_group_communication_property_test COMMAND coap_multicast_group_communication_property_test)
+set_tests_properties(coap_multicast_group_communication_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;coap;multicast;group_communication"
+)
+
+# CoAP multicast response aggregation property test
+add_executable(coap_multicast_response_aggregation_property_test coap_multicast_response_aggregation_property_test.cpp)
+target_link_libraries(coap_multicast_response_aggregation_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_multicast_response_aggregation_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_multicast_response_aggregation_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_multicast_response_aggregation_property_test COMMAND coap_multicast_response_aggregation_property_test)
+set_tests_properties(coap_multicast_response_aggregation_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;coap;multicast;response_aggregation"
+)
+# CoAP final integration test
+add_executable(coap_final_integration_test coap_final_integration_test.cpp)
+target_link_libraries(coap_final_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_final_integration_test PRIVATE Folly::folly)
+endif()
+
+# Add CoAP transport dependencies
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+    if(LIBCOAP_FOUND)
+        target_link_libraries(coap_final_integration_test PRIVATE ${LIBCOAP_LIBRARIES})
+        target_include_directories(coap_final_integration_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
+        target_compile_definitions(coap_final_integration_test PRIVATE ${LIBCOAP_CFLAGS_OTHER} LIBCOAP_AVAILABLE)
+    endif()
+endif()
+
+# Link OpenSSL for DTLS support
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_final_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+target_compile_features(coap_final_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_final_integration_test COMMAND coap_final_integration_test)
+set_tests_properties(coap_final_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;coap;final;libcoap"
+)
+
+# CoAP performance benchmark test
+add_executable(coap_performance_benchmark_test coap_performance_benchmark_test.cpp)
+target_link_libraries(coap_performance_benchmark_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_performance_benchmark_test PRIVATE Folly::folly)
+endif()
+
+# Add CoAP transport dependencies
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+    if(LIBCOAP_FOUND)
+        target_link_libraries(coap_performance_benchmark_test PRIVATE ${LIBCOAP_LIBRARIES})
+        target_include_directories(coap_performance_benchmark_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
+        target_compile_definitions(coap_performance_benchmark_test PRIVATE ${LIBCOAP_CFLAGS_OTHER} LIBCOAP_AVAILABLE)
+    endif()
+endif()
+
+# Link OpenSSL for DTLS support
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_performance_benchmark_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+target_compile_features(coap_performance_benchmark_test PRIVATE cxx_std_23)
+add_test(NAME coap_performance_benchmark_test COMMAND coap_performance_benchmark_test)
+set_tests_properties(coap_performance_benchmark_test PROPERTIES
+    TIMEOUT 600
+    LABELS "performance;coap;benchmark;libcoap"
+)
+
+# CoAP production readiness test
+add_executable(coap_production_readiness_test coap_production_readiness_test.cpp)
+target_link_libraries(coap_production_readiness_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_production_readiness_test PRIVATE Folly::folly)
+endif()
+
+# Add CoAP transport dependencies
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+    if(LIBCOAP_FOUND)
+        target_link_libraries(coap_production_readiness_test PRIVATE ${LIBCOAP_LIBRARIES})
+        target_include_directories(coap_production_readiness_test PRIVATE ${LIBCOAP_INCLUDE_DIRS})
+        target_compile_definitions(coap_production_readiness_test PRIVATE ${LIBCOAP_CFLAGS_OTHER} LIBCOAP_AVAILABLE)
+    endif()
+endif()
+
+# Link OpenSSL for DTLS support
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_production_readiness_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+target_compile_features(coap_production_readiness_test PRIVATE cxx_std_23)
+add_test(NAME coap_production_readiness_test COMMAND coap_production_readiness_test)
+set_tests_properties(coap_production_readiness_test PROPERTIES
+    TIMEOUT 900
+    LABELS "production;coap;readiness;validation;libcoap"
+)
+
+# HTTP SSL Configuration Property Tests
+add_executable(http_ssl_configuration_property_test http_ssl_configuration_property_test.cpp)
+target_link_libraries(http_ssl_configuration_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_ssl_configuration_property_test PRIVATE Folly::folly)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(http_ssl_configuration_property_test PRIVATE httplib::httplib)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(http_ssl_configuration_property_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(http_ssl_configuration_property_test PRIVATE cxx_std_23)
+add_test(NAME http_ssl_configuration_property_test COMMAND http_ssl_configuration_property_test)
+set_tests_properties(http_ssl_configuration_property_test PROPERTIES
+    TIMEOUT 60
+    LABELS "property;ssl;http;transport"
+)
+
+# HTTP SSL Certificate Loading Unit Tests
+add_executable(http_ssl_certificate_loading_unit_test http_ssl_certificate_loading_unit_test.cpp)
+target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE Folly::folly)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE httplib::httplib)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(http_ssl_certificate_loading_unit_test PRIVATE cxx_std_23)
+add_test(NAME http_ssl_certificate_loading_unit_test COMMAND http_ssl_certificate_loading_unit_test)
+set_tests_properties(http_ssl_certificate_loading_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;ssl;certificate;http;transport"
+)
+
+# HTTP SSL Context Configuration Unit Tests
+add_executable(http_ssl_context_configuration_unit_test http_ssl_context_configuration_unit_test.cpp)
+target_link_libraries(http_ssl_context_configuration_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_ssl_context_configuration_unit_test PRIVATE Folly::folly)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(http_ssl_context_configuration_unit_test PRIVATE httplib::httplib)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(http_ssl_context_configuration_unit_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(http_ssl_context_configuration_unit_test PRIVATE cxx_std_23)
+add_test(NAME http_ssl_context_configuration_unit_test COMMAND http_ssl_context_configuration_unit_test)
+set_tests_properties(http_ssl_context_configuration_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;ssl;context;http;transport"
+)
+
+# HTTP SSL Mutual TLS Integration Tests
+add_executable(http_ssl_mutual_tls_integration_test http_ssl_mutual_tls_integration_test.cpp)
+target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE Folly::folly)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE httplib::httplib)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(http_ssl_mutual_tls_integration_test PRIVATE cxx_std_23)
+add_test(NAME http_ssl_mutual_tls_integration_test COMMAND http_ssl_mutual_tls_integration_test)
+set_tests_properties(http_ssl_mutual_tls_integration_test PROPERTIES
+    TIMEOUT 120
+    LABELS "integration;ssl;mutual_tls;http;transport"
+)

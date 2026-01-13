@@ -74,6 +74,11 @@ struct cpp_httplib_client_config {
     std::chrono::milliseconds keep_alive_timeout{60000};
     bool enable_ssl_verification{true};
     std::string ca_cert_path{};
+    std::string client_cert_path{};
+    std::string client_key_path{};
+    std::string cipher_suites{};
+    std::string min_tls_version{"TLSv1.2"};
+    std::string max_tls_version{"TLSv1.3"};
     std::string user_agent{"raft-cpp-httplib/1.0"};
 };
 
@@ -85,6 +90,11 @@ struct cpp_httplib_server_config {
     bool enable_ssl{false};
     std::string ssl_cert_path{};
     std::string ssl_key_path{};
+    std::string ca_cert_path{};
+    bool require_client_cert{false};
+    std::string cipher_suites{};
+    std::string min_tls_version{"TLSv1.2"};
+    std::string max_tls_version{"TLSv1.3"};
 };
 
 // HTTP client implementation
@@ -138,6 +148,9 @@ private:
     // Helper methods
     auto get_base_url(std::uint64_t node_id) const -> std::string;
     auto get_or_create_client(std::uint64_t node_id) -> httplib::Client*;
+    auto configure_ssl_client(httplib::Client* client) -> void;
+    auto load_client_certificates() -> void;
+    auto validate_certificate_files() const -> void;
     
     template<typename Request, typename Response>
     auto send_rpc(
@@ -203,6 +216,9 @@ private:
 
     // Helper methods
     auto setup_endpoints() -> void;
+    auto configure_ssl_server() -> void;
+    auto load_server_certificates() -> void;
+    auto validate_certificate_files() const -> void;
     
     template<typename Request, typename Response>
     auto handle_rpc_endpoint(
