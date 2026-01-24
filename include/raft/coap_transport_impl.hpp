@@ -78,9 +78,21 @@ coap_client<Types>::coap_client(
     
     // Initialize performance optimization structures
     if (_config.enable_memory_optimization) {
-        _memory_pool = std::make_unique<memory_pool>(_config.memory_pool_size);
+        std::chrono::seconds reset_interval = _config.enable_periodic_pool_reset 
+            ? _config.pool_reset_interval 
+            : std::chrono::seconds{0};
+        
+        _memory_pool = std::make_unique<memory_pool>(
+            _config.memory_pool_size, 
+            _config.memory_pool_block_size,
+            reset_interval
+        );
+        
         _logger.debug("Memory pool initialized", {
-            {"pool_size", std::to_string(_config.memory_pool_size)}
+            {"pool_size", std::to_string(_config.memory_pool_size)},
+            {"block_size", std::to_string(_config.memory_pool_block_size)},
+            {"periodic_reset", _config.enable_periodic_pool_reset ? "enabled" : "disabled"},
+            {"reset_interval_seconds", std::to_string(_config.pool_reset_interval.count())}
         });
     }
     
@@ -267,9 +279,21 @@ coap_server<Types>::coap_server(
     
     // Initialize performance optimization structures
     if (_config.enable_memory_optimization) {
-        _memory_pool = std::make_unique<memory_pool>(_config.memory_pool_size);
+        std::chrono::seconds reset_interval = _config.enable_periodic_pool_reset 
+            ? _config.pool_reset_interval 
+            : std::chrono::seconds{0};
+        
+        _memory_pool = std::make_unique<memory_pool>(
+            _config.memory_pool_size, 
+            _config.memory_pool_block_size,
+            reset_interval
+        );
+        
         _logger.debug("Server memory pool initialized", {
-            {"pool_size", std::to_string(_config.memory_pool_size)}
+            {"pool_size", std::to_string(_config.memory_pool_size)},
+            {"block_size", std::to_string(_config.memory_pool_block_size)},
+            {"periodic_reset", _config.enable_periodic_pool_reset ? "enabled" : "disabled"},
+            {"reset_interval_seconds", std::to_string(_config.pool_reset_interval.count())}
         });
     }
     
@@ -3757,19 +3781,18 @@ auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
         return nullptr;
     }
     
-    if (size > _config.memory_pool_size) {
-        return nullptr; // Too large for pool
+    if (size > _config.memory_pool_block_size) {
+        return nullptr; // Too large for a single block
     }
     
-    std::lock_guard<std::mutex> lock(_mutex);
-    
-    // Try to allocate from pool
-    std::byte* ptr = _memory_pool->allocate(size);
+    // Try to allocate from pool (memory_pool handles its own locking)
+    void* ptr = _memory_pool->allocate(size);
     if (ptr) {
+        auto metrics = _memory_pool->get_metrics();
         _logger.debug("Allocated from memory pool", {
             {"size", std::to_string(size)},
-            {"pool_offset", std::to_string(_memory_pool->offset)},
-            {"pool_size", std::to_string(_memory_pool->buffer.size())}
+            {"allocated_size", std::to_string(metrics.allocated_size)},
+            {"free_size", std::to_string(metrics.free_size)}
         });
         
         // Record metrics
@@ -3777,34 +3800,107 @@ auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
         _metrics.add_one();
         _metrics.emit();
         
-        return ptr;
+        return static_cast<std::byte*>(ptr);
     }
     
-    // Pool exhausted, reset and try again
+    // Pool exhausted
+    _logger.warning("Memory pool allocation failed - pool exhausted", {
+        {"requested_size", std::to_string(size)},
+        {"pool_size", std::to_string(_config.memory_pool_size)}
+    });
+    
+    _metrics.add_dimension("memory_allocation", "pool_failed");
+    _metrics.add_one();
+    _metrics.emit();
+    
+    return nullptr;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::deallocate_to_pool(void* ptr) -> void {
+    if (!_config.enable_memory_optimization || !_memory_pool || !ptr) {
+        return;
+    }
+    
+    // Deallocate back to pool (memory_pool handles its own locking)
+    _memory_pool->deallocate(ptr);
+    
+    auto metrics = _memory_pool->get_metrics();
+    _logger.debug("Deallocated to memory pool", {
+        {"allocated_size", std::to_string(metrics.allocated_size)},
+        {"free_size", std::to_string(metrics.free_size)}
+    });
+    
+    // Record metrics
+    _metrics.add_dimension("memory_deallocation", "pool");
+    _metrics.add_one();
+    _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::reset_memory_pool() -> void {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return;
+    }
+    
+    // Reset the pool (memory_pool handles its own locking)
     _memory_pool->reset();
-    ptr = _memory_pool->allocate(size);
     
-    if (ptr) {
-        _logger.debug("Allocated from reset memory pool", {
-            {"size", std::to_string(size)},
-            {"pool_reset", "true"}
+    auto metrics = _memory_pool->get_metrics();
+    _logger.info("Memory pool reset", {
+        {"total_size", std::to_string(metrics.total_size)},
+        {"free_size", std::to_string(metrics.free_size)},
+        {"allocation_count", std::to_string(metrics.allocation_count)},
+        {"deallocation_count", std::to_string(metrics.deallocation_count)}
+    });
+    
+    // Record metrics
+    _metrics.add_dimension("memory_pool", "reset");
+    _metrics.add_one();
+    _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::get_pool_metrics() const -> memory_pool_metrics {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return memory_pool_metrics{};
+    }
+    
+    return _memory_pool->get_metrics();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return {};
+    }
+    
+    auto leaks = _memory_pool->detect_leaks();
+    
+    if (!leaks.empty()) {
+        _logger.warning("Memory leaks detected", {
+            {"leak_count", std::to_string(leaks.size())}
         });
         
-        _metrics.add_dimension("memory_allocation", "pool_reset");
-        _metrics.add_one();
-        _metrics.emit();
-    } else {
-        _logger.warning("Memory pool allocation failed even after reset", {
-            {"requested_size", std::to_string(size)},
-            {"pool_size", std::to_string(_memory_pool->buffer.size())}
-        });
+        for (const auto& leak : leaks) {
+            _logger.warning("Memory leak details", {
+                {"address", std::to_string(reinterpret_cast<std::uintptr_t>(leak.address))},
+                {"size", std::to_string(leak.size)},
+                {"context", leak.allocation_context}
+            });
+        }
         
-        _metrics.add_dimension("memory_allocation", "pool_failed");
-        _metrics.add_one();
+        // Record metrics
+        _metrics.add_dimension("memory_leak", "detected");
+        _metrics.add_value(static_cast<double>(leaks.size()));
         _metrics.emit();
     }
     
-    return ptr;
+    return leaks;
 }
 
 template<typename Types>
@@ -5127,12 +5223,127 @@ auto coap_server<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
         return nullptr; // Use regular allocation if optimization is disabled
     }
     
-    if (size > _memory_pool->buffer.size() / 4) {
-        // Request too large for pool, use regular allocation
+    if (size > _config.memory_pool_block_size) {
+        // Request too large for a single block
         return nullptr;
     }
     
-    return _memory_pool->allocate(size);
+    // Try to allocate from pool (memory_pool handles its own locking)
+    void* ptr = _memory_pool->allocate(size);
+    if (ptr) {
+        auto metrics = _memory_pool->get_metrics();
+        _logger.debug("Server allocated from memory pool", {
+            {"size", std::to_string(size)},
+            {"allocated_size", std::to_string(metrics.allocated_size)},
+            {"free_size", std::to_string(metrics.free_size)}
+        });
+        
+        // Record metrics
+        _metrics.add_dimension("memory_allocation", "pool");
+        _metrics.add_one();
+        _metrics.emit();
+        
+        return static_cast<std::byte*>(ptr);
+    }
+    
+    // Pool exhausted
+    _logger.warning("Server memory pool allocation failed - pool exhausted", {
+        {"requested_size", std::to_string(size)},
+        {"pool_size", std::to_string(_config.memory_pool_size)}
+    });
+    
+    _metrics.add_dimension("memory_allocation", "pool_failed");
+    _metrics.add_one();
+    _metrics.emit();
+    
+    return nullptr;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::deallocate_to_pool(void* ptr) -> void {
+    if (!_config.enable_memory_optimization || !_memory_pool || !ptr) {
+        return;
+    }
+    
+    // Deallocate back to pool (memory_pool handles its own locking)
+    _memory_pool->deallocate(ptr);
+    
+    auto metrics = _memory_pool->get_metrics();
+    _logger.debug("Server deallocated to memory pool", {
+        {"allocated_size", std::to_string(metrics.allocated_size)},
+        {"free_size", std::to_string(metrics.free_size)}
+    });
+    
+    // Record metrics
+    _metrics.add_dimension("memory_deallocation", "pool");
+    _metrics.add_one();
+    _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::reset_memory_pool() -> void {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return;
+    }
+    
+    // Reset the pool (memory_pool handles its own locking)
+    _memory_pool->reset();
+    
+    auto metrics = _memory_pool->get_metrics();
+    _logger.info("Server memory pool reset", {
+        {"total_size", std::to_string(metrics.total_size)},
+        {"free_size", std::to_string(metrics.free_size)},
+        {"allocation_count", std::to_string(metrics.allocation_count)},
+        {"deallocation_count", std::to_string(metrics.deallocation_count)}
+    });
+    
+    // Record metrics
+    _metrics.add_dimension("memory_pool", "reset");
+    _metrics.add_one();
+    _metrics.emit();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::get_pool_metrics() const -> memory_pool_metrics {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return memory_pool_metrics{};
+    }
+    
+    return _memory_pool->get_metrics();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> {
+    if (!_config.enable_memory_optimization || !_memory_pool) {
+        return {};
+    }
+    
+    auto leaks = _memory_pool->detect_leaks();
+    
+    if (!leaks.empty()) {
+        _logger.warning("Server memory leaks detected", {
+            {"leak_count", std::to_string(leaks.size())}
+        });
+        
+        for (const auto& leak : leaks) {
+            _logger.warning("Server memory leak details", {
+                {"address", std::to_string(reinterpret_cast<std::uintptr_t>(leak.address))},
+                {"size", std::to_string(leak.size)},
+                {"context", leak.allocation_context}
+            });
+        }
+        
+        // Record metrics
+        _metrics.add_dimension("memory_leak", "detected");
+        _metrics.add_value(static_cast<double>(leaks.size()));
+        _metrics.emit();
+    }
+    
+    return leaks;
 }
 
 template<typename Types>

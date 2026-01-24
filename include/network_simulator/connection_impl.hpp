@@ -186,6 +186,11 @@ template<typename Types>
 auto Connection<Types>::close() -> void {
     _open.store(false);
     
+    // Notify simulator about connection closure for state tracking
+    if (_simulator) {
+        _simulator->notify_connection_closed(_local);
+    }
+    
     // Notify all waiting threads that the connection is closed
     {
         std::lock_guard lock(_buffer_mutex);

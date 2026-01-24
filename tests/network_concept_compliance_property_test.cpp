@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, * boost::unit_test::ti
         auto some_method() -> void {}
     };
     
-    static_assert(!kythira::network_client<invalid_client, rv_future_type>,
+    static_assert(!kythira::network_client<invalid_client>,
                  "Invalid client type must not satisfy network_client concept");
     
     // Test that non-kythira::Future types are rejected by the concept
@@ -64,28 +64,28 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, * boost::unit_test::ti
             std::uint64_t target,
             const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::request_vote_response<>> {
+            return kythira::Future<kythira::request_vote_response<>>(kythira::request_vote_response<>{});
         }
         
         auto send_append_entries(
             std::uint64_t target,
             const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::append_entries_response<>> {
+            return kythira::Future<kythira::append_entries_response<>>(kythira::append_entries_response<>{});
         }
         
         auto send_install_snapshot(
             std::uint64_t target,
             const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::install_snapshot_response<>> {
+            return kythira::Future<kythira::install_snapshot_response<>>(kythira::install_snapshot_response<>{});
         }
     };
     
-    static_assert(kythira::network_client<mock_client, rv_future_type>,
+    static_assert(kythira::network_client<mock_client>,
                  "Mock client must satisfy network_client concept");
     
     BOOST_TEST_MESSAGE("Network concept compliance validation completed");
@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_compliance, * boost::unit_test:
         auto some_method() -> void {}
     };
     
-    static_assert(!kythira::network_server<invalid_server, rv_future_type>,
+    static_assert(!kythira::network_server<invalid_server>,
                  "Invalid server type must not satisfy network_server concept");
     
     // Test that the concept accepts the correct template parameters
@@ -143,7 +143,7 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_compliance, * boost::unit_test:
         auto is_running() -> bool { return true; }
     };
     
-    static_assert(kythira::network_server<mock_server, rv_future_type>,
+    static_assert(kythira::network_server<mock_server>,
                  "Mock server must satisfy network_server concept");
     
     BOOST_TEST_MESSAGE("Network server concept compliance verified");
@@ -162,29 +162,29 @@ BOOST_AUTO_TEST_CASE(test_concrete_transport_implementations, * boost::unit_test
             std::uint64_t target,
             const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::request_vote_response<>> {
+            return kythira::Future<kythira::request_vote_response<>>(kythira::request_vote_response<>{});
         }
         
         auto send_append_entries(
             std::uint64_t target,
             const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::append_entries_response<>> {
+            return kythira::Future<kythira::append_entries_response<>>(kythira::append_entries_response<>{});
         }
         
         auto send_install_snapshot(
             std::uint64_t target,
             const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> rv_future_type {
-            return rv_future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::install_snapshot_response<>> {
+            return kythira::Future<kythira::install_snapshot_response<>>(kythira::install_snapshot_response<>{});
         }
     };
     
-    static_assert(kythira::network_client<mock_rv_client, rv_future_type>,
-                 "Mock client with RequestVote future must satisfy concept");
+    static_assert(kythira::network_client<mock_rv_client>,
+                 "Mock client with correct future types must satisfy concept");
     
     BOOST_TEST_MESSAGE("Concrete transport implementations satisfy network_client concept");
     BOOST_CHECK(true);
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_with_invalid_types, * boost::unit_
         auto some_method() -> void {}
     };
     
-    static_assert(!kythira::network_client<invalid_client, rv_future_type>,
+    static_assert(!kythira::network_client<invalid_client>,
                  "Invalid client type must not satisfy network_client concept");
     
     // Test that valid clients with invalid future types are rejected

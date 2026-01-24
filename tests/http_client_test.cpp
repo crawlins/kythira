@@ -28,11 +28,9 @@ BOOST_AUTO_TEST_SUITE(http_client_tests)
 // Test that cpp_httplib_client satisfies network_client concept
 BOOST_AUTO_TEST_CASE(test_client_satisfies_network_client_concept, * boost::unit_test::timeout(30)) {
     using client_type = kythira::cpp_httplib_client<test_transport_types>;
-    using future_type = typename test_transport_types::template future_template<kythira::request_vote_response<>>;
     
-    // TODO: Fix concept check - currently failing due to template instantiation issues
-    // static_assert(kythira::network_client<client_type, future_type>,
-    //               "cpp_httplib_client must satisfy network_client concept");
+    static_assert(kythira::network_client<client_type>,
+                  "cpp_httplib_client must satisfy network_client concept");
     
     BOOST_CHECK(true);  // If we get here, static_assert passed
 }

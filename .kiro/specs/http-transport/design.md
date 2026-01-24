@@ -288,6 +288,11 @@ struct cpp_httplib_client_config {
     std::chrono::milliseconds keep_alive_timeout{60000};
     bool enable_ssl_verification{true};
     std::string ca_cert_path{};
+    std::string client_cert_path{};
+    std::string client_key_path{};
+    std::string cipher_suites{};
+    std::string min_tls_version{"TLSv1.2"};
+    std::string max_tls_version{"TLSv1.3"};
     std::string user_agent{"raft-cpp-httplib/1.0"};
 };
 ```
@@ -302,6 +307,11 @@ struct cpp_httplib_server_config {
     bool enable_ssl{false};
     std::string ssl_cert_path{};
     std::string ssl_key_path{};
+    std::string ca_cert_path{};
+    bool require_client_cert{false};
+    std::string cipher_suites{};
+    std::string min_tls_version{"TLSv1.2"};
+    std::string max_tls_version{"TLSv1.3"};
 };
 ```
 
@@ -394,6 +404,21 @@ public:
 class serialization_error : public http_transport_error {
 public:
     explicit serialization_error(const std::string& message);
+};
+
+class ssl_configuration_error : public http_transport_error {
+public:
+    explicit ssl_configuration_error(const std::string& message);
+};
+
+class certificate_validation_error : public http_transport_error {
+public:
+    explicit certificate_validation_error(const std::string& message);
+};
+
+class ssl_context_error : public http_transport_error {
+public:
+    explicit ssl_context_error(const std::string& message);
 };
 ```
 
@@ -561,6 +586,26 @@ The property-based tests will use a C++ property-based testing library (e.g., Ra
 *For any* HTTP transport RPC method (send_request_vote, send_append_entries, send_install_snapshot), the returned future type should be correctly instantiated from the Types::future_template with the appropriate response type.
 **Validates: Requirements 19.2, 19.3, 19.4, 19.7, 19.9**
 
+### Property 13: SSL certificate loading validation
+
+*For any* valid SSL certificate and private key file paths, the HTTP transport should successfully load and configure SSL certificates without errors.
+**Validates: Requirements 10.6, 10.7, 10.12**
+
+### Property 14: Certificate chain verification
+
+*For any* SSL certificate with a valid certificate chain, the HTTP transport should successfully validate the entire chain to a trusted root CA.
+**Validates: Requirements 10.8**
+
+### Property 15: Cipher suite restriction enforcement
+
+*For any* configured cipher suite list, the HTTP transport should only allow TLS connections using the specified cipher suites.
+**Validates: Requirements 10.13, 14.10, 14.14**
+
+### Property 16: Client certificate authentication
+
+*For any* client presenting a valid certificate when mutual TLS is enabled, the server should successfully authenticate the client and allow the connection.
+**Validates: Requirements 10.10, 10.11**
+
 
 ### Property-Based Testing Configuration
 
@@ -612,10 +657,45 @@ Timeouts are enforced at multiple levels:
 
 ### TLS/HTTPS Support
 
-TLS support is optional and configured via:
-- Client: HTTPS URLs in node_id_to_url_map, `enable_ssl_verification`, `ca_cert_path`
-- Server: `enable_ssl`, `ssl_cert_path`, `ssl_key_path`
-- cpp-httplib provides TLS support via OpenSSL
+TLS support is comprehensive and configurable via multiple parameters:
+
+**Client Configuration:**
+- HTTPS URLs in node_id_to_url_map trigger TLS mode
+- `enable_ssl_verification`: Controls certificate validation
+- `ca_cert_path`: Path to CA certificate bundle for server verification
+- `client_cert_path`: Path to client certificate for mutual TLS
+- `client_key_path`: Path to client private key for mutual TLS
+- `cipher_suites`: Comma-separated list of allowed cipher suites
+- `min_tls_version`/`max_tls_version`: TLS protocol version constraints
+
+**Server Configuration:**
+- `enable_ssl`: Enables HTTPS server mode
+- `ssl_cert_path`: Path to server certificate file
+- `ssl_key_path`: Path to server private key file
+- `ca_cert_path`: Path to CA certificate for client verification
+- `require_client_cert`: Enables mutual TLS authentication
+- `cipher_suites`: Comma-separated list of allowed cipher suites
+- `min_tls_version`/`max_tls_version`: TLS protocol version constraints
+
+**SSL Context Management:**
+- Automatic SSL context creation and configuration
+- Certificate chain validation with full path verification
+- Cipher suite restriction enforcement
+- Protocol version enforcement (TLS 1.2+ required)
+- Proper error handling for SSL configuration failures
+
+**Certificate Loading:**
+- Support for PEM and DER certificate formats
+- Automatic certificate chain loading and validation
+- Private key loading with optional password protection
+- Certificate expiration and validity checking
+
+**Error Handling:**
+- `ssl_configuration_error`: SSL setup and configuration failures
+- `certificate_validation_error`: Certificate verification failures
+- `ssl_context_error`: SSL context creation and management failures
+
+cpp-httplib provides comprehensive TLS support via OpenSSL integration
 
 ### Serializer Integration
 

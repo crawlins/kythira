@@ -27,32 +27,37 @@ BOOST_AUTO_TEST_SUITE(network_concept_template_parameter_consistency_property_te
  * **Validates: Requirements 1.1, 1.2, 2.1, 2.2, 4.1, 4.2**
  * 
  * Property: For any usage of network_client or network_server concepts throughout the codebase, 
- * exactly two template parameters should be provided: the implementation type and the future type
+ * exactly one template parameter should be provided: the implementation type
  */
 BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * boost::unit_test::timeout(90)) {
-    // Test that network_client concept requires exactly 2 template parameters
+    // Test that network_client concept requires exactly 1 template parameter
     
-    // Test 1: Valid network_client usage with 2 template parameters
-    using valid_http_client = kythira::cpp_httplib_client<future_type, test_serializer, test_metrics>;
-    static_assert(kythira::network_client<valid_http_client, future_type>,
-                 "Valid HTTP client with 2 template parameters must satisfy network_client concept");
+    // Test 1: Valid network_client usage with 1 template parameter
+    using test_types = kythira::http_transport_types<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        test_metrics,
+        test_metrics  // Using test_metrics as executor placeholder
+    >;
+    using valid_http_client = kythira::cpp_httplib_client<test_types>;
+    static_assert(kythira::network_client<valid_http_client>,
+                 "Valid HTTP client must satisfy network_client concept");
     
-    // Test 2: Valid network_server usage with 2 template parameters
-    using valid_http_server = kythira::cpp_httplib_server<future_type, test_serializer, test_metrics>;
-    static_assert(kythira::network_server<valid_http_server, future_type>,
-                 "Valid HTTP server with 2 template parameters must satisfy network_server concept");
+    // Test 2: Valid network_server usage with 1 template parameter
+    using valid_http_server = kythira::cpp_httplib_server<test_types>;
+    static_assert(kythira::network_server<valid_http_server>,
+                 "Valid HTTP server must satisfy network_server concept");
     
 #ifdef LIBCOAP_AVAILABLE
-    // Test 3: Valid CoAP client usage with 2 template parameters
+    // Test 3: Valid CoAP client usage with 1 template parameter
     using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics, test_logger>;
     using valid_coap_client = kythira::coap_client<test_types>;
-    static_assert(kythira::network_client<valid_coap_client, future_type>,
-                 "Valid CoAP client with 2 template parameters must satisfy network_client concept");
+    static_assert(kythira::network_client<valid_coap_client>,
+                 "Valid CoAP client must satisfy network_client concept");
     
-    // Test 4: Valid CoAP server usage with 2 template parameters
-    using valid_coap_server = kythira::coap_server<future_type, test_serializer, test_metrics, test_logger>;
-    static_assert(kythira::network_server<valid_coap_server, future_type>,
-                 "Valid CoAP server with 2 template parameters must satisfy network_server concept");
+    // Test 4: Valid CoAP server usage with 1 template parameter
+    using valid_coap_server = kythira::coap_server<test_types>;
+    static_assert(kythira::network_server<valid_coap_server>,
+                 "Valid CoAP server must satisfy network_server concept");
 #endif
     
     // Test 5: Verify that concepts are in kythira namespace (not raft namespace)
@@ -60,20 +65,32 @@ BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * 
     BOOST_TEST_MESSAGE("Network concepts are accessible in kythira namespace with correct template parameters");
     
     // Test 6: Test with different future types to ensure consistency
-    using rv_future_type = kythira::Future<kythira::request_vote_response<>>;
-    using ae_future_type = kythira::Future<kythira::append_entries_response<>>;
-    using is_future_type = kythira::Future<kythira::install_snapshot_response<>>;
+    using rv_types = kythira::http_transport_types<
+        test_serializer,
+        test_metrics,
+        test_metrics  // Using test_metrics as executor placeholder
+    >;
+    using ae_types = kythira::std_http_transport_types<
+        test_serializer,
+        test_metrics,
+        test_metrics  // Using test_metrics as executor placeholder
+    >;
+    using is_types = kythira::simple_http_transport_types<
+        test_serializer,
+        test_metrics,
+        test_metrics  // Using test_metrics as executor placeholder
+    >;
     
-    using http_client_rv = kythira::cpp_httplib_client<rv_future_type, test_serializer, test_metrics>;
-    using http_client_ae = kythira::cpp_httplib_client<ae_future_type, test_serializer, test_metrics>;
-    using http_client_is = kythira::cpp_httplib_client<is_future_type, test_serializer, test_metrics>;
+    using http_client_rv = kythira::cpp_httplib_client<rv_types>;
+    using http_client_ae = kythira::cpp_httplib_client<ae_types>;
+    using http_client_is = kythira::cpp_httplib_client<is_types>;
     
-    static_assert(kythira::network_client<http_client_rv, rv_future_type>,
-                 "HTTP client with RequestVote future must satisfy network_client concept");
-    static_assert(kythira::network_client<http_client_ae, ae_future_type>,
-                 "HTTP client with AppendEntries future must satisfy network_client concept");
-    static_assert(kythira::network_client<http_client_is, is_future_type>,
-                 "HTTP client with InstallSnapshot future must satisfy network_client concept");
+    static_assert(kythira::network_client<http_client_rv>,
+                 "HTTP client with default future must satisfy network_client concept");
+    static_assert(kythira::network_client<http_client_ae>,
+                 "HTTP client with std future must satisfy network_client concept");
+    static_assert(kythira::network_client<http_client_is>,
+                 "HTTP client with simple future must satisfy network_client concept");
     
     // Test 7: Verify that invalid types are properly rejected
     class invalid_client {
@@ -81,7 +98,7 @@ BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * 
         auto some_method() -> void {}
     };
     
-    static_assert(!kythira::network_client<invalid_client, future_type>,
+    static_assert(!kythira::network_client<invalid_client>,
                  "Invalid client type must not satisfy network_client concept");
     
     class invalid_server {
@@ -89,7 +106,7 @@ BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * 
         auto some_method() -> void {}
     };
     
-    static_assert(!kythira::network_server<invalid_server, future_type>,
+    static_assert(!kythira::network_server<invalid_server>,
                  "Invalid server type must not satisfy network_server concept");
     
     // Test 8: Test that mock implementations with correct signatures satisfy concepts
@@ -99,28 +116,28 @@ BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * 
             std::uint64_t target,
             const kythira::request_vote_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> future_type {
-            return future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::request_vote_response<>> {
+            return kythira::Future<kythira::request_vote_response<>>(kythira::request_vote_response<>{});
         }
         
         auto send_append_entries(
             std::uint64_t target,
             const kythira::append_entries_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> future_type {
-            return future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::append_entries_response<>> {
+            return kythira::Future<kythira::append_entries_response<>>(kythira::append_entries_response<>{});
         }
         
         auto send_install_snapshot(
             std::uint64_t target,
             const kythira::install_snapshot_request<>& request,
             std::chrono::milliseconds timeout
-        ) -> future_type {
-            return future_type(kythira::request_vote_response<>{});
+        ) -> kythira::Future<kythira::install_snapshot_response<>> {
+            return kythira::Future<kythira::install_snapshot_response<>>(kythira::install_snapshot_response<>{});
         }
     };
     
-    static_assert(kythira::network_client<mock_client, future_type>,
+    static_assert(kythira::network_client<mock_client>,
                  "Mock client with correct signature must satisfy network_client concept");
     
     class mock_server {
@@ -142,7 +159,7 @@ BOOST_AUTO_TEST_CASE(property_network_concept_template_parameter_consistency, * 
         auto is_running() -> bool { return true; }
     };
     
-    static_assert(kythira::network_server<mock_server, future_type>,
+    static_assert(kythira::network_server<mock_server>,
                  "Mock server with correct signature must satisfy network_server concept");
     
     BOOST_TEST_MESSAGE("Network concept template parameter consistency validation completed");
@@ -155,29 +172,30 @@ BOOST_AUTO_TEST_CASE(test_file_concept_usage_consistency, * boost::unit_test::ti
     // for network concepts, which is what Property 1 is specifically about
     
     // Test that HTTP transport test types use correct template parameters
-    using http_client_test_type = kythira::cpp_httplib_client<
-        future_type,
+    using test_types = kythira::http_transport_types<
         kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
+        kythira::noop_metrics,
+        kythira::noop_metrics  // Using noop_metrics as executor placeholder
     >;
-    using http_server_test_type = kythira::cpp_httplib_server<future_type, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>;
+    using http_client_test_type = kythira::cpp_httplib_client<test_types>;
+    using http_server_test_type = kythira::cpp_httplib_server<test_types>;
     
     // These should satisfy the concepts with correct template parameters
-    static_assert(kythira::network_client<http_client_test_type, future_type>,
-                 "HTTP client test type must satisfy network_client concept with correct parameters");
-    static_assert(kythira::network_server<http_server_test_type, future_type>,
-                 "HTTP server test type must satisfy network_server concept with correct parameters");
+    static_assert(kythira::network_client<http_client_test_type>,
+                 "HTTP client test type must satisfy network_client concept");
+    static_assert(kythira::network_server<http_server_test_type>,
+                 "HTTP server test type must satisfy network_server concept");
     
 #ifdef LIBCOAP_AVAILABLE
     // Test that CoAP transport test types use correct template parameters
-    using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics, test_logger>;
-    using coap_client_test_type = kythira::coap_client<test_types>;
-    using coap_server_test_type = kythira::coap_server<test_types>;
+    using coap_types = kythira::default_transport_types<future_type, test_serializer, test_metrics, test_logger>;
+    using coap_client_test_type = kythira::coap_client<coap_types>;
+    using coap_server_test_type = kythira::coap_server<coap_types>;
     
-    static_assert(kythira::network_client<coap_client_test_type, future_type>,
-                 "CoAP client test type must satisfy network_client concept with correct parameters");
-    static_assert(kythira::network_server<coap_server_test_type, future_type>,
-                 "CoAP server test type must satisfy network_server concept with correct parameters");
+    static_assert(kythira::network_client<coap_client_test_type>,
+                 "CoAP client test type must satisfy network_client concept");
+    static_assert(kythira::network_server<coap_server_test_type>,
+                 "CoAP server test type must satisfy network_server concept");
 #endif
     
     BOOST_TEST_MESSAGE("Test file concept usage consistency verified");
@@ -190,36 +208,19 @@ BOOST_AUTO_TEST_CASE(test_static_assertion_template_parameters, * boost::unit_te
     // the correct number of template parameters for network concepts
     
     // Test patterns that should be used in test files
-    using client_type = kythira::cpp_httplib_client<
-        future_type,
+    using test_types = kythira::http_transport_types<
         kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
+        kythira::noop_metrics,
+        kythira::noop_metrics  // Using noop_metrics as executor placeholder
     >;
-    using server_type = kythira::cpp_httplib_server<future_type, kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics>;
+    using client_type = kythira::cpp_httplib_client<test_types>;
+    using server_type = kythira::cpp_httplib_server<test_types>;
     
-    // Correct static assertion patterns (2 template parameters)
-    static_assert(kythira::network_client<client_type, future_type>,
-                 "Static assertions must use 2 template parameters for network_client");
-    static_assert(kythira::network_server<server_type, future_type>,
-                 "Static assertions must use 2 template parameters for network_server");
-    
-    // Test that the concepts work with different future specializations
-    using different_future = kythira::Future<kythira::append_entries_response<>>;
-    using client_with_different_future = kythira::cpp_httplib_client<
-        different_future,
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    >;
-    using server_with_different_future = kythira::cpp_httplib_server<
-        different_future,
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    >;
-    
-    static_assert(kythira::network_client<client_with_different_future, different_future>,
-                 "Static assertions must work with different future specializations");
-    static_assert(kythira::network_server<server_with_different_future, different_future>,
-                 "Static assertions must work with different future specializations");
+    // Correct static assertion patterns (1 template parameter)
+    static_assert(kythira::network_client<client_type>,
+                 "Static assertions must use 1 template parameter for network_client");
+    static_assert(kythira::network_server<server_type>,
+                 "Static assertions must use 1 template parameter for network_server");
     
     BOOST_TEST_MESSAGE("Static assertion template parameters verified");
     BOOST_CHECK(true);

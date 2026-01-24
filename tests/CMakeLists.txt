@@ -82,6 +82,8 @@ add_network_test(future_concept_compliance_property_test future_concept_complian
 add_network_test(core_implementation_genericity_property_test core_implementation_genericity_property_test.cpp)
 add_network_test(core_implementation_namespace_property_test core_implementation_namespace_property_test.cpp)
 add_network_test(network_concept_compliance_property_test network_concept_compliance_property_test.cpp)
+add_network_test(network_concept_template_parameter_consistency_property_test network_concept_template_parameter_consistency_property_test.cpp)
+add_network_test(transport_static_assertion_correctness_property_test transport_static_assertion_correctness_property_test.cpp)
 add_network_test(network_simulator_return_types_property_test network_simulator_return_types_property_test.cpp)
 add_network_test(simulator_test simulator_test.cpp)
 add_network_test(simulator_property_test simulator_property_test.cpp)
@@ -96,11 +98,22 @@ add_network_test(network_node_send_timeout_property_test network_node_send_timeo
 add_network_test(network_node_send_non_delivery_property_test network_node_send_non_delivery_property_test.cpp)
 add_network_test(network_node_receive_message_property_test network_node_receive_message_property_test.cpp)
 add_network_test(network_node_receive_timeout_property_test network_node_receive_timeout_property_test.cpp)
+add_network_test(network_simulator_connection_establishment_timeout_property_test network_simulator_connection_establishment_timeout_property_test.cpp)
+add_network_test(network_simulator_connection_establishment_cancellation_property_test network_simulator_connection_establishment_cancellation_property_test.cpp)
+add_network_test(network_simulator_connection_pool_reuse_property_test network_simulator_connection_pool_reuse_property_test.cpp)
+add_network_test(network_simulator_connection_pool_eviction_property_test network_simulator_connection_pool_eviction_property_test.cpp)
+add_network_test(network_simulator_connection_pool_cleanup_property_test network_simulator_connection_pool_cleanup_property_test.cpp)
+add_network_test(network_simulator_listener_resource_cleanup_property_test network_simulator_listener_resource_cleanup_property_test.cpp)
+add_network_test(network_simulator_listener_port_release_property_test network_simulator_listener_port_release_property_test.cpp)
+add_network_test(network_simulator_connection_state_tracking_property_test network_simulator_connection_state_tracking_property_test.cpp)
+add_network_test(network_simulator_connection_state_updates_property_test network_simulator_connection_state_updates_property_test.cpp)
+add_network_test(network_simulator_connection_resource_cleanup_property_test network_simulator_connection_resource_cleanup_property_test.cpp)
 add_network_test(integration_test integration_test.cpp)
 add_network_test(network_simulator_client_server_integration_test network_simulator_client_server_integration_test.cpp)
 add_network_test(network_simulator_simple_integration_test network_simulator_simple_integration_test.cpp)
 add_network_test(network_simulator_multi_node_topology_integration_test network_simulator_multi_node_topology_integration_test.cpp)
 add_network_test(network_simulator_concurrent_operations_integration_test network_simulator_concurrent_operations_integration_test.cpp)
+add_network_test(network_simulator_connection_management_integration_test network_simulator_connection_management_integration_test.cpp)
 add_network_test(network_simulator_different_types_integration_test network_simulator_different_types_integration_test.cpp)
 add_network_test(test_code_future_usage_property_test test_code_future_usage_property_test.cpp)
 add_network_test(header_include_consistency_property_test header_include_consistency_property_test.cpp)
@@ -116,6 +129,7 @@ add_network_test(generic_future_concept_validation_test generic_future_concept_v
 
 # Raft tests
 add_network_test(raft_types_test raft_types_test.cpp)
+add_network_test(raft_state_machine_concept_test raft_state_machine_concept_test.cpp)
 add_network_test(persistence_concept_test persistence_concept_test.cpp)
 add_network_test(persistence_round_trip_property_test persistence_round_trip_property_test.cpp)
 add_network_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
@@ -157,6 +171,24 @@ add_raft_completion_test(raft_failed_read_rejection_property_test raft_failed_re
 add_raft_completion_test(raft_read_abortion_leadership_loss_property_test raft_read_abortion_leadership_loss_property_test.cpp)
 add_raft_completion_test(raft_concurrent_read_efficiency_property_test raft_concurrent_read_efficiency_property_test.cpp)
 
+# Raft completion property tests - heartbeat-based read state implementation (Property 80)
+add_raft_completion_test(raft_heartbeat_based_read_state_property_test raft_heartbeat_based_read_state_property_test.cpp)
+
+# Raft completion property tests - election vote collection implementation (Property 81)
+add_raft_completion_test(raft_election_vote_collection_implementation_property_test raft_election_vote_collection_implementation_property_test.cpp)
+
+# Raft completion property tests - replication acknowledgment collection (Property 82)
+add_raft_completion_test(raft_replication_acknowledgment_collection_property_test raft_replication_acknowledgment_collection_property_test.cpp)
+
+# Raft completion property tests - replicate to followers implementation (Property 88)
+add_raft_completion_test(raft_replicate_to_followers_property_test raft_replicate_to_followers_property_test.cpp)
+
+# Raft completion property tests - timeout handling in future collections (Property 83)
+add_raft_completion_test(raft_timeout_handling_future_collections_property_test raft_timeout_handling_future_collections_property_test.cpp)
+
+# Raft completion property tests - cancellation and cleanup in future collections (Property 84)
+add_raft_completion_test(raft_cancellation_cleanup_future_collections_property_test raft_cancellation_cleanup_future_collections_property_test.cpp)
+
 # Raft completion property tests - cancellation and cleanup mechanism
 add_raft_completion_test(raft_shutdown_cleanup_property_test raft_shutdown_cleanup_property_test.cpp)
 add_raft_completion_test(raft_step_down_operation_cancellation_property_test raft_step_down_operation_cancellation_property_test.cpp)
@@ -178,6 +210,12 @@ add_raft_completion_test(raft_configuration_failure_logging_property_test raft_c
 add_raft_completion_test(raft_collection_error_logging_property_test raft_collection_error_logging_property_test.cpp)
 add_raft_completion_test(raft_application_failure_logging_property_test raft_application_failure_logging_property_test.cpp)
 
+# Raft completion property tests - add_server implementation (Property 92)
+add_raft_completion_test(raft_add_server_implementation_property_test raft_add_server_implementation_property_test.cpp)
+
+# Raft completion property tests - remove_server implementation (Property 93)
+add_raft_completion_test(raft_remove_server_implementation_property_test raft_remove_server_implementation_property_test.cpp)
+
 # HTTP transport tests
 add_network_test(http_exceptions_test http_exceptions_test.cpp)
 add_network_test(http_config_test http_config_test.cpp)
@@ -185,6 +223,14 @@ add_network_test(http_config_test http_config_test.cpp)
 # CoAP transport tests
 add_network_test(coap_transport_initialization_property_test coap_transport_initialization_property_test.cpp)
 add_network_test(coap_multicast_operation_return_types_property_test coap_multicast_operation_return_types_property_test.cpp)
+add_network_test(memory_pool_basic_test memory_pool_basic_test.cpp)
+add_network_test(memory_pool_reset_cleanup_test memory_pool_reset_cleanup_test.cpp)
+add_network_test(memory_pool_reset_cleanup_property_test memory_pool_reset_cleanup_property_test.cpp)
+add_network_test(memory_pool_metrics_monitoring_test memory_pool_metrics_monitoring_test.cpp)
+add_network_test(memory_pool_size_monitoring_property_test memory_pool_size_monitoring_property_test.cpp)
+add_network_test(memory_pool_leak_detection_test memory_pool_leak_detection_test.cpp)
+add_network_test(memory_pool_leak_detection_property_test memory_pool_leak_detection_property_test.cpp)
+add_network_test(memory_pool_leak_detection_debug memory_pool_leak_detection_debug.cpp)
 
 # CoAP libcoap integration test
 add_executable(coap_libcoap_integration_test coap_libcoap_integration_test.cpp)
@@ -666,6 +712,27 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_lifecycle_test PRIVATE cxx_std_23)
 add_test(NAME raft_lifecycle_test COMMAND raft_lifecycle_test)
+set_tests_properties(raft_lifecycle_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;raft"
+)
+
+# Raft get_log_entry test
+add_executable(raft_get_log_entry_test raft_get_log_entry_test.cpp)
+target_link_libraries(raft_get_log_entry_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_get_log_entry_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_get_log_entry_test PRIVATE cxx_std_23)
+add_test(NAME raft_get_log_entry_test COMMAND raft_get_log_entry_test)
+set_tests_properties(raft_get_log_entry_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;raft"
+)
 
 # Raft crash recovery property test
 add_executable(raft_crash_recovery_property_test raft_crash_recovery_property_test.cpp)
@@ -692,6 +759,74 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(request_vote_persistence_property_test PRIVATE cxx_std_23)
 add_test(NAME request_vote_persistence_property_test COMMAND request_vote_persistence_property_test)
+
+# Complete RequestVote handler property test
+add_executable(raft_complete_request_vote_handler_property_test raft_complete_request_vote_handler_property_test.cpp)
+target_link_libraries(raft_complete_request_vote_handler_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_complete_request_vote_handler_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_complete_request_vote_handler_property_test PRIVATE cxx_std_23)
+add_test(NAME raft_complete_request_vote_handler_property_test COMMAND raft_complete_request_vote_handler_property_test)
+set_tests_properties(raft_complete_request_vote_handler_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;raft;vote;election"
+)
+
+# Complete AppendEntries handler property test
+add_executable(raft_complete_append_entries_handler_property_test raft_complete_append_entries_handler_property_test.cpp)
+target_link_libraries(raft_complete_append_entries_handler_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_complete_append_entries_handler_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_complete_append_entries_handler_property_test PRIVATE cxx_std_23)
+add_test(NAME raft_complete_append_entries_handler_property_test COMMAND raft_complete_append_entries_handler_property_test)
+set_tests_properties(raft_complete_append_entries_handler_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;raft;append_entries;replication"
+)
+
+# Submit command with timeout property test
+add_executable(raft_submit_command_timeout_property_test raft_submit_command_timeout_property_test.cpp)
+target_link_libraries(raft_submit_command_timeout_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_submit_command_timeout_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_submit_command_timeout_property_test PRIVATE cxx_std_23)
+add_test(NAME raft_submit_command_timeout_property_test COMMAND raft_submit_command_timeout_property_test)
+set_tests_properties(raft_submit_command_timeout_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;raft;submit_command;timeout;commit_waiter"
+)
+
+# InstallSnapshot handler unit test
+add_executable(raft_install_snapshot_handler_test raft_install_snapshot_handler_test.cpp)
+target_link_libraries(raft_install_snapshot_handler_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_install_snapshot_handler_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_install_snapshot_handler_test PRIVATE cxx_std_23)
+add_test(NAME raft_install_snapshot_handler_test COMMAND raft_install_snapshot_handler_test)
+set_tests_properties(raft_install_snapshot_handler_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;snapshot;install_snapshot"
+)
 
 # Election safety property test
 add_executable(raft_election_safety_property_test raft_election_safety_property_test.cpp)
@@ -901,6 +1036,10 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_log_replication_integration_test PRIVATE cxx_std_23)
 add_test(NAME raft_log_replication_integration_test COMMAND raft_log_replication_integration_test)
+set_tests_properties(raft_log_replication_integration_test PROPERTIES
+    TIMEOUT 180
+    LABELS "integration;raft;replication"
+)
 
 # Commit waiting integration test
 add_executable(raft_commit_waiting_integration_test raft_commit_waiting_integration_test.cpp)
@@ -966,6 +1105,74 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_state_machine_synchronization_integration_test PRIVATE cxx_std_23)
 add_test(NAME raft_state_machine_synchronization_integration_test COMMAND raft_state_machine_synchronization_integration_test)
+
+# RPC handlers integration test
+add_executable(raft_rpc_handlers_integration_test raft_rpc_handlers_integration_test.cpp)
+target_link_libraries(raft_rpc_handlers_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_rpc_handlers_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_rpc_handlers_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_rpc_handlers_integration_test COMMAND raft_rpc_handlers_integration_test)
+set_tests_properties(raft_rpc_handlers_integration_test PROPERTIES
+    TIMEOUT 180
+    LABELS "integration;raft;rpc"
+)
+
+# Snapshot operations integration test
+add_executable(raft_snapshot_operations_integration_test raft_snapshot_operations_integration_test.cpp)
+target_link_libraries(raft_snapshot_operations_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_snapshot_operations_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_snapshot_operations_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_snapshot_operations_integration_test COMMAND raft_snapshot_operations_integration_test)
+set_tests_properties(raft_snapshot_operations_integration_test PROPERTIES
+    TIMEOUT 180
+    LABELS "integration;raft;snapshot"
+)
+
+# Client operations integration test
+add_executable(raft_client_operations_integration_test raft_client_operations_integration_test.cpp)
+target_link_libraries(raft_client_operations_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_client_operations_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_client_operations_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_client_operations_integration_test COMMAND raft_client_operations_integration_test)
+set_tests_properties(raft_client_operations_integration_test PROPERTIES
+    TIMEOUT 180
+    LABELS "integration;raft;client"
+)
+
+# Cluster management integration test
+add_executable(raft_cluster_management_integration_test raft_cluster_management_integration_test.cpp)
+target_link_libraries(raft_cluster_management_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_cluster_management_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_cluster_management_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_cluster_management_integration_test COMMAND raft_cluster_management_integration_test)
+set_tests_properties(raft_cluster_management_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;cluster;membership"
+)
 
 # CoAP integration test
 add_executable(coap_integration_test coap_integration_test.cpp)

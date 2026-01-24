@@ -207,7 +207,12 @@ auto NetworkSimulator<Types>::stop() -> void {
         }
     }
     
-    // Close all listeners
+    // Close all listeners using ListenerManager
+    if (_listener_manager) {
+        _listener_manager->cleanup_all_listeners();
+    }
+    
+    // Also close listeners in the legacy _listeners map for backward compatibility
     for (auto& [endpoint, listener] : _listeners) {
         if (listener && listener->is_listening()) {
             listener->close();
@@ -230,7 +235,12 @@ auto NetworkSimulator<Types>::reset() -> void {
         }
     }
     
-    // Close all listeners before clearing
+    // Close all listeners using ListenerManager
+    if (_listener_manager) {
+        _listener_manager->cleanup_all_listeners();
+    }
+    
+    // Also close listeners in the legacy _listeners map for backward compatibility
     for (auto& [endpoint, listener] : _listeners) {
         if (listener && listener->is_listening()) {
             listener->close();
@@ -511,6 +521,23 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, std::chrono
 template<typename Types>
 auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_type src_port, 
                                                   address_type dst_addr, port_type dst_port) -> future_connection_type {
+    // Check if connection pooling is enabled and try to reuse existing connection
+    endpoint_type destination_endpoint(dst_addr, dst_port);
+    
+    if (_connection_config.enable_connection_pooling && _connection_pool) {
+        // Use get_or_create_connection which will reuse if available or create new
+        return _connection_pool->get_or_create_connection(destination_endpoint, [&]() {
+            return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
+        });
+    } else {
+        // Connection pooling disabled, create connection directly
+        return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
+    }
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::establish_connection_internal(address_type src_addr, port_type src_port, 
+                                                           address_type dst_addr, port_type dst_port) -> future_connection_type {
     // First, check basic conditions without holding the lock for too long
     {
         std::shared_lock lock(_mutex);
@@ -649,6 +676,12 @@ auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_t
         _connections[server_conn_id] = server_connection;
     }
     
+    // Register connections with the connection tracker
+    if (_connection_tracker) {
+        _connection_tracker->register_connection(client_endpoint, server_endpoint, client_connection);
+        _connection_tracker->register_connection(server_endpoint, client_endpoint, server_connection);
+    }
+    
     // Notify the listener about the incoming connection
     listener->queue_pending_connection(server_connection);
     
@@ -675,8 +708,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     
     endpoint_type local_endpoint(addr, port);
     
-    // Check if port is already in use
-    if (_listeners.find(local_endpoint) != _listeners.end()) {
+    // Check if port is already in use using ListenerManager
+    if (_listener_manager && !_listener_manager->is_port_available(addr, port)) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<listener_type>>(
             folly::exception_wrapper(PortInUseException("Port " + std::to_string(port) + " is already in use")));
@@ -686,8 +719,31 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
 #endif
     }
     
+    // Check legacy _listeners map and clean up closed listeners
+    auto it = _listeners.find(local_endpoint);
+    if (it != _listeners.end()) {
+        // If the listener is no longer listening, remove it
+        if (!it->second || !it->second->is_listening()) {
+            _listeners.erase(it);
+        } else {
+            // Port is still in use by an active listener
+#ifdef FOLLY_FUTURES_AVAILABLE
+            return folly::makeFuture<std::shared_ptr<listener_type>>(
+                folly::exception_wrapper(PortInUseException("Port " + std::to_string(port) + " is already in use")));
+#else
+            return future_listener_type(std::make_exception_ptr(
+                PortInUseException("Port " + std::to_string(port) + " is already in use")));
+#endif
+        }
+    }
+    
     auto listener = std::make_shared<listener_type>(local_endpoint, this);
     _listeners[local_endpoint] = listener;
+    
+    // Register listener with ListenerManager
+    if (_listener_manager) {
+        _listener_manager->register_listener(local_endpoint, listener);
+    }
     
 #ifdef FOLLY_FUTURES_AVAILABLE
     return folly::makeFuture(listener);
@@ -916,6 +972,130 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port,
     return create_listener(addr, port);
 }
 
+// Connection Establishment with Timeout Handling
+
+template<typename Types>
+auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src_addr, port_type src_port,
+                                                               address_type dst_addr, port_type dst_port,
+                                                               std::chrono::milliseconds timeout) -> future_connection_type {
+    // Record the connection request with timeout tracking
+    endpoint_type source_endpoint(src_addr, src_port);
+    endpoint_type destination_endpoint(dst_addr, dst_port);
+    
+    ConnectionRequest request{
+        source_endpoint,
+        destination_endpoint,
+        std::chrono::steady_clock::now(),
+        timeout
+    };
+    
+    // Add to pending connections for tracking
+    {
+        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+        _pending_connections.push_back(request);
+    }
+    
+    // Attempt to establish the connection
+    auto connection_future = establish_connection(src_addr, src_port, dst_addr, dst_port);
+    
+#ifdef FOLLY_FUTURES_AVAILABLE
+    // For folly::Future, use within() for timeout handling
+    return std::move(connection_future).within(timeout).onError([=](const folly::FutureTimeout& e) {
+        // Remove from pending connections on timeout
+        {
+            std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+            _pending_connections.erase(
+                std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+                    [&](const ConnectionRequest& req) {
+                        return req.source == source_endpoint && req.destination == destination_endpoint;
+                    }),
+                _pending_connections.end()
+            );
+        }
+        
+        // Throw TimeoutException
+        throw TimeoutException();
+    }).onError([=](const std::exception& e) {
+        // Remove from pending connections on any error
+        {
+            std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+            _pending_connections.erase(
+                std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+                    [&](const ConnectionRequest& req) {
+                        return req.source == source_endpoint && req.destination == destination_endpoint;
+                    }),
+                _pending_connections.end()
+            );
+        }
+        
+        // Re-throw the exception
+        throw;
+    });
+#else
+    // For SimpleFuture, we don't have timeout support built-in
+    // Just return the connection future and let the caller handle timeout
+    // The timeout checking will be done at a higher level
+    
+    // Remove from pending connections immediately for SimpleFuture
+    {
+        std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+        _pending_connections.erase(
+            std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+                [&](const ConnectionRequest& req) {
+                    return req.source == source_endpoint && req.destination == destination_endpoint;
+                }),
+            _pending_connections.end()
+        );
+    }
+    
+    return connection_future;
+#endif
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
+    std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+    
+    auto now = std::chrono::steady_clock::now();
+    
+    // Find and remove expired connection requests
+    _pending_connections.erase(
+        std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+            [now](const ConnectionRequest& req) {
+                return req.is_expired();
+            }),
+        _pending_connections.end()
+    );
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
+    std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+    
+    auto now = std::chrono::steady_clock::now();
+    
+    // Identify expired requests
+    std::vector<ConnectionRequest> expired_requests;
+    for (const auto& req : _pending_connections) {
+        if (req.is_expired()) {
+            expired_requests.push_back(req);
+        }
+    }
+    
+    // Remove expired requests from pending list
+    _pending_connections.erase(
+        std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+            [now](const ConnectionRequest& req) {
+                return req.is_expired();
+            }),
+        _pending_connections.end()
+    );
+    
+    // Note: In a more complete implementation, we would also cancel any
+    // in-flight connection establishment operations here. For now, we just
+    // remove them from tracking.
+}
+
 // Connection Data Routing
 
 template<typename Types>
@@ -1000,6 +1180,12 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id, 
         }
     }
     
+    // Update connection tracker statistics for data transfer
+    if (_connection_config.enable_connection_tracking && _connection_tracker) {
+        endpoint_type src_endpoint(conn_id.src_addr, conn_id.src_port);
+        _connection_tracker->update_connection_stats(src_endpoint, data.size(), true);
+    }
+    
     // Deliver data immediately after delay (outside of lock to avoid deadlock)
     lock.unlock();
     dest_connection->deliver_data(std::move(data));
@@ -1009,6 +1195,43 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id, 
     } else {
         return future_bool_type(true);
     }
+}
+
+// Connection Management Configuration
+
+template<typename Types>
+auto NetworkSimulator<Types>::notify_connection_closed(endpoint_type local_endpoint) -> void {
+    if (_connection_config.enable_connection_tracking && _connection_tracker) {
+        _connection_tracker->update_connection_state(local_endpoint, ConnectionState::CLOSED);
+        // Optionally cleanup the connection from tracker after a delay
+        // For now, we keep it for historical tracking
+    }
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::configure_connection_management(ConnectionConfig config) -> void {
+    std::unique_lock lock(_mutex);
+    _connection_config = config;
+    
+    // Configure connection pool if enabled
+    if (_connection_pool && config.enable_connection_pooling) {
+        _connection_pool->configure_pool(config.pool_config);
+    }
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::get_connection_pool() -> ConnectionPool<Types>& {
+    return *_connection_pool;
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::get_listener_manager() -> ListenerManager<Types>& {
+    return *_listener_manager;
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::get_connection_tracker() -> ConnectionTracker<Types>& {
+    return *_connection_tracker;
 }
 
 } // namespace network_simulator

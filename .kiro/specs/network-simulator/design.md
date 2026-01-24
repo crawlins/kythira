@@ -694,6 +694,256 @@ CLOSED ──connect()──> CONNECTING ──success──> OPEN ──close()
 CLOSED ──bind()──> LISTENING ──close()──> CLOSED
 ```
 
+## Connection Management Architecture
+
+### Connection Establishment with Timeout Handling
+
+The network simulator implements robust connection establishment with comprehensive timeout handling to ensure reliable operation under various network conditions.
+
+#### Connection Establishment Flow
+
+```cpp
+template<network_simulator_types Types>
+class NetworkSimulator {
+private:
+    struct ConnectionRequest {
+        endpoint_type source;
+        endpoint_type destination;
+        std::chrono::steady_clock::time_point start_time;
+        std::chrono::milliseconds timeout;
+        folly::Promise<std::shared_ptr<connection_type>> promise;
+        
+        bool is_expired() const {
+            return std::chrono::steady_clock::now() - start_time > timeout;
+        }
+    };
+    
+    // Pending connection requests with timeout tracking
+    std::vector<ConnectionRequest> _pending_connections;
+    std::mutex _connection_requests_mutex;
+    
+    // Timer for connection timeout processing
+    std::unique_ptr<folly::TimerManager> _timer_manager;
+    
+    auto establish_connection_with_timeout(
+        endpoint_type source, 
+        endpoint_type destination,
+        std::chrono::milliseconds timeout
+    ) -> future_connection_type;
+    
+    auto process_connection_timeouts() -> void;
+    auto cancel_expired_connections() -> void;
+};
+```
+
+#### Timeout Handling Implementation
+
+1. **Request Tracking**: Each connection request is tracked with timestamp and timeout
+2. **Periodic Cleanup**: Timer-based cleanup of expired connection requests
+3. **Cancellation Support**: Ability to cancel pending operations
+4. **Error Propagation**: Detailed timeout errors with context information
+
+### Connection Pooling and Reuse
+
+The simulator implements connection pooling to improve performance by reusing existing connections when possible.
+
+#### Connection Pool Architecture
+
+```cpp
+template<network_simulator_types Types>
+class ConnectionPool {
+public:
+    struct PooledConnection {
+        std::shared_ptr<connection_type> connection;
+        std::chrono::steady_clock::time_point last_used;
+        std::chrono::steady_clock::time_point created;
+        bool is_healthy;
+        
+        bool is_stale(std::chrono::milliseconds max_age) const {
+            return std::chrono::steady_clock::now() - last_used > max_age;
+        }
+    };
+    
+    struct PoolConfig {
+        std::size_t max_connections_per_endpoint = 10;
+        std::chrono::milliseconds max_idle_time{300000}; // 5 minutes
+        std::chrono::milliseconds max_connection_age{3600000}; // 1 hour
+        bool enable_health_checks = true;
+    };
+    
+private:
+    // Pool organized by destination endpoint
+    std::unordered_map<endpoint_type, std::vector<PooledConnection>> _connection_pools;
+    PoolConfig _config;
+    mutable std::shared_mutex _pool_mutex;
+    
+    // Background cleanup timer
+    std::unique_ptr<folly::TimerManager> _cleanup_timer;
+    
+public:
+    auto get_or_create_connection(endpoint_type destination) -> future_connection_type;
+    auto return_connection(std::shared_ptr<connection_type> conn) -> void;
+    auto cleanup_stale_connections() -> void;
+    auto configure_pool(PoolConfig config) -> void;
+};
+```
+
+#### Pool Management Features
+
+1. **LRU Eviction**: Least recently used connections are evicted when pool is full
+2. **Health Checking**: Periodic validation of pooled connections
+3. **Automatic Cleanup**: Background cleanup of stale and invalid connections
+4. **Per-Endpoint Limits**: Separate pool limits for each destination
+
+### Listener Management with Resource Cleanup
+
+Comprehensive listener management ensures proper resource cleanup and prevents resource leaks.
+
+#### Listener Resource Tracking
+
+```cpp
+template<network_simulator_types Types>
+class ListenerManager {
+public:
+    struct ListenerResource {
+        std::shared_ptr<listener_type> listener;
+        endpoint_type bound_endpoint;
+        std::chrono::steady_clock::time_point created;
+        std::vector<std::shared_ptr<connection_type>> pending_connections;
+        std::atomic<bool> is_active{true};
+        
+        // Resource tracking
+        std::vector<std::unique_ptr<folly::TimerManager>> timers;
+        std::vector<folly::Future<folly::Unit>> pending_operations;
+    };
+    
+private:
+    std::unordered_map<endpoint_type, ListenerResource> _active_listeners;
+    mutable std::shared_mutex _listeners_mutex;
+    
+    // Port allocation tracking
+    std::unordered_set<port_type> _allocated_ports;
+    std::mutex _port_allocation_mutex;
+    
+public:
+    auto create_listener(endpoint_type endpoint) -> future_listener_type;
+    auto close_listener(endpoint_type endpoint) -> void;
+    auto cleanup_all_listeners() -> void;
+    auto release_port(port_type port) -> void;
+    auto is_port_available(port_type port) const -> bool;
+};
+```
+
+#### Resource Cleanup Features
+
+1. **Immediate Cleanup**: Resources released immediately on explicit close
+2. **Automatic Cleanup**: All resources cleaned up on simulator stop/reset
+3. **Port Management**: Proper port allocation and release tracking
+4. **Pending Operation Handling**: Graceful handling of pending accept operations
+
+### Connection State Tracking and Lifecycle Management
+
+Comprehensive connection state tracking provides visibility into connection health and lifecycle events.
+
+#### Connection State Model
+
+```cpp
+enum class ConnectionState {
+    CONNECTING,    // Connection establishment in progress
+    CONNECTED,     // Connection established and ready
+    CLOSING,       // Connection close initiated
+    CLOSED,        // Connection closed
+    ERROR          // Connection in error state
+};
+
+template<network_simulator_types Types>
+class ConnectionTracker {
+public:
+    struct ConnectionStats {
+        std::chrono::steady_clock::time_point established_time;
+        std::chrono::steady_clock::time_point last_activity;
+        std::size_t bytes_sent = 0;
+        std::size_t bytes_received = 0;
+        std::size_t messages_sent = 0;
+        std::size_t messages_received = 0;
+        std::optional<std::string> last_error;
+    };
+    
+    struct ConnectionInfo {
+        endpoint_type local_endpoint;
+        endpoint_type remote_endpoint;
+        ConnectionState state;
+        ConnectionStats stats;
+        std::weak_ptr<connection_type> connection_ref;
+        
+        // Optional observer callback
+        std::function<void(ConnectionState, ConnectionState)> state_change_callback;
+    };
+    
+private:
+    std::unordered_map<endpoint_type, ConnectionInfo> _connection_info;
+    mutable std::shared_mutex _info_mutex;
+    
+    // Keep-alive and idle timeout management
+    std::chrono::milliseconds _keep_alive_interval{30000}; // 30 seconds
+    std::chrono::milliseconds _idle_timeout{300000}; // 5 minutes
+    std::unique_ptr<folly::TimerManager> _keep_alive_timer;
+    
+public:
+    auto register_connection(std::shared_ptr<connection_type> conn) -> void;
+    auto update_connection_state(endpoint_type endpoint, ConnectionState new_state) -> void;
+    auto update_connection_stats(endpoint_type endpoint, std::size_t bytes_transferred, bool is_send) -> void;
+    auto get_connection_info(endpoint_type endpoint) const -> std::optional<ConnectionInfo>;
+    auto get_all_connections() const -> std::vector<ConnectionInfo>;
+    auto cleanup_connection(endpoint_type endpoint) -> void;
+    
+    // Keep-alive and idle management
+    auto configure_keep_alive(std::chrono::milliseconds interval) -> void;
+    auto configure_idle_timeout(std::chrono::milliseconds timeout) -> void;
+    auto process_keep_alive() -> void;
+    auto process_idle_timeouts() -> void;
+};
+```
+
+#### Lifecycle Management Features
+
+1. **State Transitions**: Proper tracking of connection state changes
+2. **Statistics Collection**: Comprehensive metrics on data transfer and activity
+3. **Error Tracking**: Detailed error information and history
+4. **Observer Pattern**: Optional callbacks for state change notifications
+5. **Keep-Alive Support**: Configurable keep-alive mechanisms
+6. **Idle Timeout**: Automatic cleanup of idle connections
+
+### Integration with Core Simulator
+
+The connection management components integrate seamlessly with the core NetworkSimulator:
+
+```cpp
+template<network_simulator_types Types>
+class NetworkSimulator {
+private:
+    // Connection management components
+    std::unique_ptr<ConnectionPool<Types>> _connection_pool;
+    std::unique_ptr<ListenerManager<Types>> _listener_manager;
+    std::unique_ptr<ConnectionTracker<Types>> _connection_tracker;
+    
+    // Configuration
+    struct ConnectionConfig {
+        std::chrono::milliseconds default_connect_timeout{30000}; // 30 seconds
+        std::chrono::milliseconds default_accept_timeout{60000};  // 60 seconds
+        bool enable_connection_pooling = true;
+        bool enable_connection_tracking = true;
+        bool enable_keep_alive = false;
+    } _connection_config;
+    
+public:
+    auto configure_connection_management(ConnectionConfig config) -> void;
+    auto get_connection_pool() -> ConnectionPool<Types>&;
+    auto get_listener_manager() -> ListenerManager<Types>&;
+    auto get_connection_tracker() -> ConnectionTracker<Types>&;
+};
+```
+
 ## Error Handling
 
 ### Exception Types
@@ -899,6 +1149,66 @@ Based on the prework analysis, I've identified properties that can be combined t
 *For any* simulator with existing state, calling reset SHALL clear all topology, nodes, connections, and listeners, returning the simulator to initial conditions.
 
 **Validates: Requirements 12.3**
+
+### Property 25: Connection Establishment Timeout Handling
+
+*For any* connection establishment request with a specified timeout, if the connection cannot be established within the timeout period, the operation SHALL fail with a timeout exception and cancel any pending connection attempts.
+
+**Validates: Requirements 15.1, 15.2, 15.3**
+
+### Property 26: Connection Establishment Cancellation
+
+*For any* pending connection establishment operation, when cancellation is requested, the operation SHALL be cancelled and any associated resources SHALL be cleaned up immediately.
+
+**Validates: Requirements 15.5**
+
+### Property 27: Connection Pool Reuse
+
+*For any* connection request to a destination where a healthy pooled connection exists, the connection pool SHALL return the existing connection rather than creating a new one.
+
+**Validates: Requirements 16.2**
+
+### Property 28: Connection Pool Eviction
+
+*For any* connection pool that reaches its capacity limit, adding a new connection SHALL evict the least recently used connection from the pool.
+
+**Validates: Requirements 16.3**
+
+### Property 29: Connection Pool Cleanup
+
+*For any* pooled connection that becomes stale or invalid, the connection pool SHALL automatically remove it from the pool during cleanup operations.
+
+**Validates: Requirements 16.4**
+
+### Property 30: Listener Resource Cleanup
+
+*For any* listener that is closed or when the simulator is stopped, all associated resources including ports, pending connections, and timers SHALL be immediately released and made available for reuse.
+
+**Validates: Requirements 17.2, 17.3, 17.4**
+
+### Property 31: Listener Port Release
+
+*For any* listener that is closed, the bound port SHALL be immediately released and made available for new listeners to bind to.
+
+**Validates: Requirements 17.6**
+
+### Property 32: Connection State Tracking
+
+*For any* connection that is established, the connection tracker SHALL maintain accurate state information including current status, establishment time, and data transfer statistics.
+
+**Validates: Requirements 18.1, 18.2**
+
+### Property 33: Connection State Updates
+
+*For any* connection state change event (connecting, connected, closing, closed, error), the connection tracker SHALL update the connection state appropriately and notify any registered observers.
+
+**Validates: Requirements 18.2, 18.4**
+
+### Property 34: Connection Resource Cleanup
+
+*For any* connection that is closed or enters an error state, all associated resources including buffers, timers, and network handles SHALL be properly deallocated to prevent resource leaks.
+
+**Validates: Requirements 18.6**
 
 ## Testing Strategy
 

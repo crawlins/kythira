@@ -13,6 +13,11 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 - **RPC_Serializer**: A pluggable component that handles serialization/deserialization of RPC messages (e.g., JSON, Protocol Buffers)
 - **TLS_Connection**: An encrypted HTTPS connection using Transport Layer Security
 - **Certificate_Validation**: The process of verifying server certificates against trusted certificate authorities
+- **Certificate_Chain_Verification**: The process of validating the entire certificate chain from the server certificate to a trusted root CA
+- **SSL_Context**: The OpenSSL context that manages SSL/TLS configuration parameters including ciphers, protocols, and certificates
+- **Client_Certificate_Authentication**: Mutual TLS authentication where the client presents a certificate to authenticate to the server
+- **Cipher_Suite**: The cryptographic algorithms used for key exchange, authentication, encryption, and message authentication
+- **SSL_Certificate_Loading**: The process of loading SSL certificates and private keys from files or memory for TLS connections
 - **Request_Timeout**: The maximum time allowed for an HTTP request to complete
 - **Connection_Pool**: A cache of reusable HTTP connections to reduce connection establishment overhead
 - **Keep_Alive**: HTTP connection persistence mechanism to reuse TCP connections for multiple requests
@@ -146,7 +151,7 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 
 ### Requirement 10
 
-**User Story:** As a security-conscious operator, I want HTTPS support with TLS encryption, so that I can protect Raft communication from eavesdropping and tampering.
+**User Story:** As a security-conscious operator, I want comprehensive HTTPS support with advanced TLS configuration, so that I can protect Raft communication from eavesdropping and tampering while meeting enterprise security requirements.
 
 #### Acceptance Criteria
 
@@ -155,6 +160,15 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 3. WHEN establishing TLS connections THEN the system SHALL validate server certificates against trusted certificate authorities
 4. WHEN certificate validation fails THEN the system SHALL reject the connection and set the future to error state
 5. WHEN TLS is enabled THEN the system SHALL use TLS 1.2 or higher protocol versions
+6. WHEN the HTTP client is configured with SSL certificate paths THEN the system SHALL load SSL certificates and private keys from the specified file paths
+7. WHEN the HTTP server is configured with SSL certificate paths THEN the system SHALL load SSL certificates and private keys from the specified file paths
+8. WHEN certificate chain verification is enabled THEN the system SHALL validate the entire certificate chain from the server certificate to a trusted root CA
+9. WHEN SSL context parameters are configured THEN the system SHALL apply cipher suite restrictions, protocol version limits, and other SSL context settings
+10. WHEN client certificate authentication is enabled THEN the system SHALL require clients to present valid certificates for mutual TLS authentication
+11. WHEN client certificate authentication is enabled THEN the system SHALL verify client certificates against the configured CA certificate or certificate chain
+12. WHEN SSL certificate loading fails THEN the system SHALL return appropriate error messages indicating the specific failure reason
+13. WHEN cipher suite configuration is provided THEN the system SHALL restrict TLS connections to use only the specified cipher suites
+14. WHEN SSL context creation fails THEN the system SHALL provide detailed error information about the SSL configuration problem
 
 ### Requirement 11
 
@@ -195,7 +209,7 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 
 ### Requirement 14
 
-**User Story:** As a system administrator, I want configurable HTTP client and server settings, so that I can tune the transport for my deployment environment.
+**User Story:** As a system administrator, I want configurable HTTP client and server settings including comprehensive SSL/TLS options, so that I can tune the transport for my deployment environment and security requirements.
 
 #### Acceptance Criteria
 
@@ -206,6 +220,14 @@ This document specifies the requirements for implementing HTTP/HTTPS transport s
 5. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for bind address and port
 6. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for maximum concurrent connections
 7. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for request size limits
+8. WHEN the HTTP client is constructed THEN the system SHALL accept configuration for SSL certificate file paths for client certificate authentication
+9. WHEN the HTTP client is constructed THEN the system SHALL accept configuration for SSL private key file paths for client certificate authentication
+10. WHEN the HTTP client is constructed THEN the system SHALL accept configuration for cipher suite restrictions
+11. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for SSL certificate file paths for server certificates
+12. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for SSL private key file paths for server private keys
+13. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for client certificate authentication requirements
+14. WHEN the HTTP server is constructed THEN the system SHALL accept configuration for cipher suite restrictions
+15. WHEN SSL configuration is provided THEN the system SHALL accept configuration for minimum and maximum TLS protocol versions
 
 ### Requirement 15
 

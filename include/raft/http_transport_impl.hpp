@@ -621,7 +621,7 @@ namespace {
 
 // Constructor implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 cpp_httplib_client<Types>::cpp_httplib_client(
     std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
     cpp_httplib_client_config config,
@@ -646,12 +646,12 @@ cpp_httplib_client<Types>::cpp_httplib_client(
 
 // Destructor implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 cpp_httplib_client<Types>::~cpp_httplib_client() = default;
 
 // Validate certificate files
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::validate_certificate_files() const -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     // Validate cipher suites configuration
@@ -702,7 +702,7 @@ auto cpp_httplib_client<Types>::validate_certificate_files() const -> void {
 
 // Load client certificates
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::load_client_certificates() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     // Certificate loading is handled per-client in get_or_create_client
@@ -716,7 +716,7 @@ auto cpp_httplib_client<Types>::load_client_certificates() -> void {
 
 // Configure SSL for a client
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!client) {
@@ -778,7 +778,7 @@ auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) ->
 
 // Helper to get base URL for a node
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::get_base_url(std::uint64_t node_id) const -> std::string {
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _node_id_to_url.find(node_id);
@@ -790,7 +790,7 @@ auto cpp_httplib_client<Types>::get_base_url(std::uint64_t node_id) const -> std
 
 // Helper to get or create HTTP client for a node
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> httplib::Client* {
     std::lock_guard<std::mutex> lock(_mutex);
     
@@ -873,7 +873,7 @@ auto cpp_httplib_client<Types>::get_or_create_client(std::uint64_t node_id) -> h
 
 // Generic RPC send implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 template<typename Request, typename Response>
 auto cpp_httplib_client<Types>::send_rpc(
     std::uint64_t target,
@@ -1067,7 +1067,7 @@ auto cpp_httplib_client<Types>::send_rpc(
 
 // send_request_vote implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::send_request_vote(
     std::uint64_t target,
     const kythira::request_vote_request<>& request,
@@ -1079,7 +1079,7 @@ auto cpp_httplib_client<Types>::send_request_vote(
 
 // send_append_entries implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::send_append_entries(
     std::uint64_t target,
     const kythira::append_entries_request<>& request,
@@ -1091,7 +1091,7 @@ auto cpp_httplib_client<Types>::send_append_entries(
 
 // send_install_snapshot implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::send_install_snapshot(
     std::uint64_t target,
     const kythira::install_snapshot_request<>& request,
@@ -1103,7 +1103,7 @@ auto cpp_httplib_client<Types>::send_install_snapshot(
 
 // Server constructor implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 cpp_httplib_server<Types>::cpp_httplib_server(
     std::string bind_address,
     std::uint16_t bind_port,
@@ -1141,7 +1141,7 @@ cpp_httplib_server<Types>::cpp_httplib_server(
 
 // Server destructor implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 cpp_httplib_server<Types>::~cpp_httplib_server() {
     if (_running.load()) {
         stop();
@@ -1150,7 +1150,7 @@ cpp_httplib_server<Types>::~cpp_httplib_server() {
 
 // Validate certificate files for server
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::validate_certificate_files() const -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (_config.enable_ssl) {
@@ -1223,7 +1223,7 @@ auto cpp_httplib_server<Types>::validate_certificate_files() const -> void {
 
 // Load server certificates
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::load_server_certificates() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!_config.enable_ssl) {
@@ -1242,7 +1242,7 @@ auto cpp_httplib_server<Types>::load_server_certificates() -> void {
 
 // Configure SSL for server
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (!_config.enable_ssl) {
@@ -1337,7 +1337,7 @@ auto cpp_httplib_server<Types>::configure_ssl_server() -> void {
 
 // Register RequestVote handler
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::register_request_vote_handler(
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
 ) -> void {
@@ -1347,7 +1347,7 @@ auto cpp_httplib_server<Types>::register_request_vote_handler(
 
 // Register AppendEntries handler
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::register_append_entries_handler(
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
 ) -> void {
@@ -1357,7 +1357,7 @@ auto cpp_httplib_server<Types>::register_append_entries_handler(
 
 // Register InstallSnapshot handler
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::register_install_snapshot_handler(
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
 ) -> void {
@@ -1367,7 +1367,7 @@ auto cpp_httplib_server<Types>::register_install_snapshot_handler(
 
 // Generic RPC endpoint handler
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 template<typename Request, typename Response>
 auto cpp_httplib_server<Types>::handle_rpc_endpoint(
     const httplib::Request& http_req,
@@ -1540,7 +1540,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(
 
 // Setup endpoints
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::setup_endpoints() -> void {
     // RequestVote endpoint
     _http_server->Post(endpoint_request_vote, [this](const httplib::Request& req, httplib::Response& resp) {
@@ -1563,7 +1563,7 @@ auto cpp_httplib_server<Types>::setup_endpoints() -> void {
 
 // Start server
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::start() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     
@@ -1610,7 +1610,7 @@ auto cpp_httplib_server<Types>::start() -> void {
 
 // Stop server
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::stop() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
     
@@ -1636,7 +1636,7 @@ auto cpp_httplib_server<Types>::stop() -> void {
 
 // Check if server is running
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::is_running() const -> bool {
     return _running.load();
 }

@@ -99,7 +99,7 @@ struct cpp_httplib_server_config {
 
 // HTTP client implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 class cpp_httplib_client {
 public:
     // Type aliases for convenience
@@ -163,7 +163,7 @@ private:
 
 // HTTP server implementation
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 class cpp_httplib_server {
 public:
     // Type aliases for convenience

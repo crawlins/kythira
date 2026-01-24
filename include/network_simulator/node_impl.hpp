@@ -180,71 +180,13 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
 #endif
     }
     
-    // Check if there's a route and get the latency
-    try {
-        auto edge = _simulator->get_edge(_address, dst_addr);
-        auto connection_latency = edge.latency();
-        
-        // If the connection latency is greater than timeout, throw TimeoutException
-        if (connection_latency > timeout) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(TimeoutException()));
-#else
-            return future_connection_type(std::make_exception_ptr(TimeoutException()));
-#endif
-        }
-    } catch (const NoRouteException&) {
-        // No route exists, connection would timeout
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(TimeoutException()));
-#else
-        return future_connection_type(std::make_exception_ptr(TimeoutException()));
-#endif
-    }
+    // Use ephemeral port allocation
+    auto src_port = allocate_ephemeral_port();
     
-    // Try to establish the connection
-    auto future = connect(dst_addr, dst_port);
-    
-#ifdef FOLLY_FUTURES_AVAILABLE
-    try {
-        // Get the result with timeout
-        auto result = std::move(future).get(timeout);
-        return folly::makeFuture(std::move(result));
-    } catch (const folly::FutureTimeout&) {
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(TimeoutException()));
-    } catch (const std::exception& e) {
-        // Convert connection failures to timeout exceptions for timeout version
-        std::string error_msg = e.what();
-        if (error_msg.find("Connection refused") != std::string::npos ||
-            error_msg.find("No listener") != std::string::npos ||
-            error_msg.find("not listening") != std::string::npos) {
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(TimeoutException()));
-        }
-        throw; // Re-throw other exceptions
-    }
-#else
-    try {
-        auto result = future.get();
-        if (!result) {
-            // Connection failed, treat as timeout
-            return future_connection_type(std::make_exception_ptr(TimeoutException()));
-        }
-        return future_connection_type(result);
-    } catch (const std::exception& e) {
-        // Convert connection failures to timeout exceptions for timeout version
-        std::string error_msg = e.what();
-        if (error_msg.find("Connection refused") != std::string::npos ||
-            error_msg.find("No listener") != std::string::npos ||
-            error_msg.find("not listening") != std::string::npos) {
-            return future_connection_type(std::make_exception_ptr(TimeoutException()));
-        }
-        throw; // Re-throw other exceptions
-    }
-#endif
+    // Use the new establish_connection_with_timeout method
+    return _simulator->establish_connection_with_timeout(_address, std::move(src_port), 
+                                                        std::move(dst_addr), std::move(dst_port),
+                                                        timeout);
 }
 
 // Connection-oriented server operations

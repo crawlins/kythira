@@ -53,6 +53,47 @@ namespace {
     constexpr std::chrono::milliseconds election_timeout_min{150};
     constexpr std::chrono::milliseconds election_timeout_max{300};
     constexpr std::chrono::milliseconds heartbeat_interval{50};
+    
+    // Custom types for simulator-based testing with string node IDs
+    struct simulator_raft_types {
+        // Future types
+        using future_type = kythira::Future<std::vector<std::byte>>;
+        using promise_type = kythira::Promise<std::vector<std::byte>>;
+        using try_type = kythira::Try<std::vector<std::byte>>;
+        
+        // Basic data types - using std::string for node_id to match NetworkSimulator
+        using node_id_type = std::string;
+        using term_id_type = std::uint64_t;
+        using log_index_type = std::uint64_t;
+        
+        // Serializer and data types
+        using serialized_data_type = std::vector<std::byte>;
+        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+        
+        // Component types with proper template parameters
+        using network_client_type = kythira::simulator_network_client<future_type, serializer_type, serialized_data_type>;
+        using network_server_type = kythira::simulator_network_server<future_type, serializer_type, serialized_data_type>;
+        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+        using logger_type = kythira::console_logger;
+        using metrics_type = kythira::noop_metrics;
+        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+        
+        // Configuration type
+        using configuration_type = kythira::raft_configuration;
+        
+        // Type aliases for commonly used compound types
+        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+        
+        // RPC message types
+        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
+        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+    };
 }
 
 BOOST_AUTO_TEST_SUITE(leader_election_integration_tests)
@@ -62,12 +103,15 @@ BOOST_AUTO_TEST_SUITE(leader_election_integration_tests)
  * 
  * Verifies that a single node becomes leader after election timeout.
  */
-BOOST_AUTO_TEST_CASE(single_node_leader_election) {
-    // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+BOOST_AUTO_TEST_CASE(single_node_leader_election, * boost::unit_test::timeout(30)) {
+    using test_types = simulator_raft_types;
+    using raft_network_types = kythira::raft_simulator_network_types<test_types::future_type>;
+    
+    // Create network simulator with matching types
+    auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
     simulator.start();
     
-    constexpr std::uint64_t node_id = 1;
+    const std::string node_id = "node_1";
     auto sim_node = simulator.create_node(node_id);
     
     auto config = kythira::raft_configuration{};
@@ -75,18 +119,18 @@ BOOST_AUTO_TEST_CASE(single_node_leader_election) {
     config._election_timeout_max = election_timeout_max;
     config._heartbeat_interval = heartbeat_interval;
     
-    auto node = kythira::node{
+    auto node = kythira::node<test_types>{
         node_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_client_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_server_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::memory_persistence_engine<>{},
-        kythira::console_logger{kythira::log_level::error},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_types::persistence_engine_type{},
+        test_types::logger_type{kythira::log_level::error},
+        test_types::metrics_type{},
+        test_types::membership_manager_type{},
         config
     };
     
@@ -113,12 +157,15 @@ BOOST_AUTO_TEST_CASE(single_node_leader_election) {
  * 
  * Verifies that a node can recover from a crash and become leader again.
  */
-BOOST_AUTO_TEST_CASE(leader_crash_and_recovery) {
-    // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+BOOST_AUTO_TEST_CASE(leader_crash_and_recovery, * boost::unit_test::timeout(30)) {
+    using test_types = simulator_raft_types;
+    using raft_network_types = kythira::raft_simulator_network_types<test_types::future_type>;
+    
+    // Create network simulator with matching types
+    auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
     simulator.start();
     
-    constexpr std::uint64_t node_id = 1;
+    const std::string node_id = "node_1";
     auto sim_node = simulator.create_node(node_id);
     
     auto config = kythira::raft_configuration{};
@@ -126,18 +173,18 @@ BOOST_AUTO_TEST_CASE(leader_crash_and_recovery) {
     config._election_timeout_max = election_timeout_max;
     config._heartbeat_interval = heartbeat_interval;
     
-    auto node = kythira::node{
+    auto node = kythira::node<test_types>{
         node_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_client_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_server_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::memory_persistence_engine<>{},
-        kythira::console_logger{kythira::log_level::error},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_types::persistence_engine_type{},
+        test_types::logger_type{kythira::log_level::error},
+        test_types::metrics_type{},
+        test_types::membership_manager_type{},
         config
     };
     
@@ -177,16 +224,19 @@ BOOST_AUTO_TEST_CASE(leader_crash_and_recovery) {
  * 
  * Verifies that election timeouts are randomized within the configured range.
  */
-BOOST_AUTO_TEST_CASE(election_timeout_randomization) {
-    // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+BOOST_AUTO_TEST_CASE(election_timeout_randomization, * boost::unit_test::timeout(60)) {
+    using test_types = simulator_raft_types;
+    using raft_network_types = kythira::raft_simulator_network_types<test_types::future_type>;
+    
+    // Create network simulator with matching types
+    auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
     simulator.start();
     
     constexpr std::size_t test_iterations = 10;
     std::vector<std::chrono::milliseconds> election_times;
     
     for (std::size_t i = 0; i < test_iterations; ++i) {
-        constexpr std::uint64_t node_id = 1;
+        const std::string node_id = "node_1";
         auto sim_node = simulator.create_node(node_id);
         
         auto config = kythira::raft_configuration{};
@@ -194,18 +244,18 @@ BOOST_AUTO_TEST_CASE(election_timeout_randomization) {
         config._election_timeout_max = election_timeout_max;
         config._heartbeat_interval = heartbeat_interval;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_types>{
             node_id,
-            kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+            test_types::network_client_type{
+                sim_node, test_types::serializer_type{}
             },
-            kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-                sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+            test_types::network_server_type{
+                sim_node, test_types::serializer_type{}
             },
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_types::persistence_engine_type{},
+            test_types::logger_type{kythira::log_level::error},
+            test_types::metrics_type{},
+            test_types::membership_manager_type{},
             config
         };
         
@@ -244,12 +294,15 @@ BOOST_AUTO_TEST_CASE(election_timeout_randomization) {
  * Verifies that a node can go through multiple election rounds
  * and maintain consistent term progression.
  */
-BOOST_AUTO_TEST_CASE(multiple_election_rounds) {
-    // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+BOOST_AUTO_TEST_CASE(multiple_election_rounds, * boost::unit_test::timeout(60)) {
+    using test_types = simulator_raft_types;
+    using raft_network_types = kythira::raft_simulator_network_types<test_types::future_type>;
+    
+    // Create network simulator with matching types
+    auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
     simulator.start();
     
-    constexpr std::uint64_t node_id = 1;
+    const std::string node_id = "node_1";
     auto sim_node = simulator.create_node(node_id);
     
     auto config = kythira::raft_configuration{};
@@ -257,18 +310,18 @@ BOOST_AUTO_TEST_CASE(multiple_election_rounds) {
     config._election_timeout_max = election_timeout_max;
     config._heartbeat_interval = heartbeat_interval;
     
-    auto node = kythira::node{
+    auto node = kythira::node<test_types>{
         node_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_client_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{
-            sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}
+        test_types::network_server_type{
+            sim_node, test_types::serializer_type{}
         },
-        kythira::memory_persistence_engine<>{},
-        kythira::console_logger{kythira::log_level::error},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_types::persistence_engine_type{},
+        test_types::logger_type{kythira::log_level::error},
+        test_types::metrics_type{},
+        test_types::membership_manager_type{},
         config
     };
     

@@ -1773,3 +1773,273 @@ struct snapshot {
     auto state_machine_state() const -> const std::vector<std::byte>& { return _state_machine_state; }
 };
 ```
+
+
+## Raft Implementation Completion Details
+
+This section provides detailed design information for the completion items identified in the TODO document's "Raft Implementation Completion" section.
+
+### Complete Future Collection Mechanisms
+
+The future collection mechanisms enable efficient coordination of multiple asynchronous operations without blocking:
+
+#### Heartbeat Response Collection
+- **Purpose**: Collect heartbeat responses from followers to verify leader validity for linearizable reads
+- **Implementation**: Use `FutureCollector<FutureType, append_entries_response>` to collect responses
+- **Majority Logic**: Wait for responses from majority of followers before confirming leader status
+- **Timeout Handling**: Individual follower timeouts don't block the collection; proceed when majority responds
+- **Optimization**: Batch concurrent read requests to share heartbeat collection overhead
+
+#### Election Vote Collection
+- **Purpose**: Collect vote responses during leader election to determine election outcome
+- **Implementation**: Use `FutureCollector<FutureType, request_vote_response>` to collect votes
+- **Majority Logic**: Transition to leader when majority of votes are received
+- **Timeout Handling**: Continue election even if some followers don't respond
+- **Split Vote Prevention**: Randomized election timeouts prevent repeated split votes
+
+#### Replication Acknowledgment Collection
+- **Purpose**: Track follower acknowledgments to determine when entries are committed
+- **Implementation**: Use follower acknowledgment tracking with match_index updates
+- **Majority Logic**: Advance commit index when majority of followers acknowledge replication
+- **Slow Follower Handling**: Continue with majority; don't block on slow followers
+- **Leader Self-Acknowledgment**: Include leader in majority calculations
+
+### Proper Heartbeat Response Collection for Linearizable Reads
+
+The read_state operation ensures linearizable reads by verifying leader validity:
+
+```cpp
+namespace kythira {
+
+template<raft_types Types>
+auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
+    // Verify we are the leader
+    if (_state != server_state::leader) {
+        return future_factory::make_exception_future<std::vector<std::byte>>(
+            leadership_lost_exception(_current_term, _current_term));
+    }
+    
+    // Send heartbeats to all followers
+    std::vector<future_type> heartbeat_futures;
+    for (const auto& follower : _configuration.nodes()) {
+        if (follower == _node_id) continue;  // Skip self
+        
+        auto heartbeat_future = _network_client.send_append_entries(
+            follower,
+            create_heartbeat_request(),
+            _rpc_timeout
+        );
+        heartbeat_futures.push_back(std::move(heartbeat_future));
+    }
+    
+    // Collect majority of heartbeat responses
+    return _heartbeat_collector.collect_majority(
+        std::move(heartbeat_futures),
+        timeout
+    ).then([this](auto responses) -> std::vector<std::byte> {
+        // Check for higher term in responses
+        for (const auto& response : responses) {
+            if (response.term() > _current_term) {
+                step_down_to_follower(response.term());
+                throw leadership_lost_exception(_current_term, response.term());
+            }
+        }
+        
+        // Leader validity confirmed, return current state
+        return get_state_machine_state();
+    });
+}
+
+} // namespace kythira
+```
+
+### Complete Configuration Change Synchronization with Two-Phase Protocol
+
+Configuration changes use a two-phase protocol to ensure safety:
+
+#### Phase 1: Joint Consensus
+1. Leader creates joint consensus configuration (C_old,new) containing both old and new configurations
+2. Leader appends joint configuration to log and replicates to followers
+3. System waits for joint configuration to be committed (replicated to majority of both old and new)
+4. During joint consensus, all decisions require majorities from both configurations
+
+#### Phase 2: Final Configuration
+1. Once joint configuration is committed, leader creates final configuration (C_new)
+2. Leader appends final configuration to log and replicates to followers
+3. System waits for final configuration to be committed
+4. Once committed, configuration change is complete
+
+#### Implementation Details
+
+```cpp
+namespace kythira {
+
+template<raft_types Types>
+auto node<Types>::add_server(node_id_type server_id) -> future_type {
+    // Validate we are the leader
+    if (_state != server_state::leader) {
+        return future_factory::make_exception_future<bool>(
+            leadership_lost_exception(_current_term, _current_term));
+    }
+    
+    // Check if configuration change is already in progress
+    if (_config_synchronizer.is_configuration_change_in_progress()) {
+        return future_factory::make_exception_future<bool>(
+            configuration_change_exception("add_server", "Configuration change already in progress"));
+    }
+    
+    // Create new configuration with added server
+    cluster_configuration new_config = _configuration;
+    new_config.add_node(server_id);
+    
+    // Start configuration change with synchronization
+    return _config_synchronizer.start_configuration_change(
+        new_config,
+        _commit_timeout
+    );
+}
+
+} // namespace kythira
+```
+
+### Proper Timeout Handling for RPC Operations
+
+All RPC operations have configurable timeouts with exponential backoff retry:
+
+#### RequestVote RPC Timeout Handling
+- **Initial Timeout**: Configurable per RPC (default: 100ms)
+- **Retry Policy**: Exponential backoff with jitter
+- **Max Attempts**: Configurable (default: 5 attempts)
+- **Failure Handling**: Continue election even if some votes fail
+
+#### AppendEntries RPC Timeout Handling
+- **Initial Timeout**: Configurable per RPC (default: 100ms)
+- **Retry Policy**: Exponential backoff for transient failures
+- **Failure Modes**: Distinguish between network delays and actual failures
+- **Slow Follower Handling**: Mark as unresponsive but continue with majority
+
+#### InstallSnapshot RPC Timeout Handling
+- **Initial Timeout**: Longer timeout for large transfers (default: 5000ms)
+- **Retry Policy**: Resume interrupted transfers from last successful chunk
+- **Chunk-based Transfer**: Transfer snapshots in chunks to handle timeouts gracefully
+- **Progress Tracking**: Track transfer progress to resume efficiently
+
+#### Timeout Configuration Validation
+
+```cpp
+struct rpc_timeout_configuration {
+    std::chrono::milliseconds request_vote_timeout{100};
+    std::chrono::milliseconds append_entries_timeout{100};
+    std::chrono::milliseconds install_snapshot_timeout{5000};
+    std::chrono::milliseconds heartbeat_timeout{50};
+    
+    // Validation: ensure timeouts are compatible with election timeout
+    auto validate(std::chrono::milliseconds election_timeout_min) const -> bool {
+        return heartbeat_timeout * 3 < election_timeout_min &&
+               request_vote_timeout < election_timeout_min &&
+               append_entries_timeout < election_timeout_min;
+    }
+};
+```
+
+### Complete Snapshot Installation and Log Compaction
+
+Snapshot installation and log compaction manage storage efficiently:
+
+#### Snapshot Creation
+- **Trigger**: Log size exceeds configured threshold (default: 10MB)
+- **Metadata**: Includes last_included_index, last_included_term, and cluster configuration
+- **State Capture**: Captures complete state machine state at snapshot point
+- **Atomic Operation**: Snapshot creation is atomic to ensure consistency
+
+#### Snapshot Transfer
+- **Chunked Transfer**: Snapshots are transferred in configurable chunks (default: 1MB)
+- **Resume Capability**: Failed transfers can resume from last successful chunk
+- **Progress Tracking**: Track transfer progress for monitoring and debugging
+- **Retry Logic**: Exponential backoff retry for failed chunk transfers
+
+#### Log Compaction
+- **Safe Deletion**: Only delete log entries covered by committed snapshot
+- **Metadata Preservation**: Keep snapshot metadata for recovery
+- **Atomic Operation**: Log deletion is atomic to prevent inconsistencies
+- **Validation**: Verify snapshot integrity before deleting log entries
+
+#### Implementation Flow
+
+```cpp
+namespace kythira {
+
+template<raft_types Types>
+auto node<Types>::create_snapshot() -> void {
+    // Check if snapshot is needed
+    auto log_size = calculate_log_size();
+    if (log_size < _config.snapshot_threshold_bytes()) {
+        return;
+    }
+    
+    // Capture state machine state
+    auto state = _state_machine.capture_state();
+    
+    // Create snapshot with metadata
+    snapshot snap{
+        .last_included_index = _last_applied,
+        .last_included_term = _log[_last_applied].term(),
+        .configuration = _configuration,
+        .state_machine_state = std::move(state)
+    };
+    
+    // Persist snapshot
+    _persistence.save_snapshot(snap);
+    
+    // Compact log (delete entries covered by snapshot)
+    _persistence.delete_log_entries_before(_last_applied);
+    
+    _logger.info("Snapshot created", {
+        {"last_included_index", std::to_string(_last_applied)},
+        {"log_size_before", std::to_string(log_size)},
+        {"log_size_after", std::to_string(calculate_log_size())}
+    });
+}
+
+template<raft_types Types>
+auto node<Types>::install_snapshot(const snapshot& snap) -> void {
+    // Validate snapshot
+    if (snap.last_included_index() <= _last_applied) {
+        _logger.warning("Ignoring stale snapshot", {
+            {"snapshot_index", std::to_string(snap.last_included_index())},
+            {"last_applied", std::to_string(_last_applied)}
+        });
+        return;
+    }
+    
+    // Apply snapshot to state machine
+    _state_machine.restore_state(snap.state_machine_state());
+    
+    // Update Raft state
+    _last_applied = snap.last_included_index();
+    _commit_index = std::max(_commit_index, snap.last_included_index());
+    _configuration = snap.configuration();
+    
+    // Compact log
+    _persistence.delete_log_entries_before(snap.last_included_index());
+    
+    _logger.info("Snapshot installed", {
+        {"last_included_index", std::to_string(snap.last_included_index())},
+        {"last_included_term", std::to_string(snap.last_included_term())}
+    });
+}
+
+} // namespace kythira
+```
+
+### Integration with Existing Implementation
+
+All completion components integrate seamlessly with the existing Raft implementation:
+
+1. **CommitWaiter**: Integrated into submit_command to provide proper async waiting
+2. **FutureCollector**: Used in read_state, start_election, and replication tracking
+3. **ConfigurationSynchronizer**: Used in add_server and remove_server operations
+4. **ErrorHandler**: Wraps all RPC operations for consistent retry and error handling
+5. **Unified Types Parameter**: All components use the raft_types template parameter for clean integration
+
+The completion ensures that the Raft implementation is production-ready with proper async coordination, comprehensive error handling, and efficient resource management.

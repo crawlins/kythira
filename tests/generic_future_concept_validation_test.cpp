@@ -157,8 +157,8 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
     >, "CoAP client should satisfy network_client concept");
     
     // Test 2: Verify that the concept correctly validates required operations
-    auto test_concept_operations = []<typename Client, typename FutureType>(Client& client)
-        requires kythira::network_client<Client, FutureType>
+    auto test_concept_operations = []<typename Client>(Client& client)
+        requires kythira::network_client<Client>
     {
         // This lambda should only compile if Client satisfies network_client concept
         // The fact that it compiles validates the concept constraints

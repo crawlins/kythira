@@ -214,3 +214,56 @@ This document specifies the requirements for a C++ network simulator that models
 3. WHEN multiple threads send/receive messages concurrently THEN the Network Simulator SHALL handle concurrent access safely
 4. WHEN multiple threads establish connections concurrently THEN the Network Simulator SHALL prevent race conditions
 5. WHEN using internal data structures THEN the Network Simulator SHALL protect shared state with appropriate locking mechanisms
+
+### Requirement 15
+
+**User Story:** As a network application developer, I want robust connection establishment with proper timeout handling, so that I can build reliable distributed systems that handle network delays and failures gracefully.
+
+#### Acceptance Criteria
+
+1. WHEN a connection establishment request is made THEN the Network Simulator SHALL implement proper timeout handling for the entire connection process
+2. WHEN a connection establishment exceeds the specified timeout THEN the Network Simulator SHALL cancel the operation and return appropriate timeout errors
+3. WHEN connection establishment fails due to network conditions THEN the Network Simulator SHALL provide detailed error information including failure reason
+4. WHEN multiple connection attempts are made concurrently THEN the Network Simulator SHALL handle them independently without interference
+5. WHEN connection establishment is in progress THEN the Network Simulator SHALL allow cancellation of pending operations
+6. WHEN connection establishment completes successfully THEN the Network Simulator SHALL ensure the connection is fully initialized and ready for data transfer
+
+### Requirement 16
+
+**User Story:** As a performance-conscious developer, I want connection pooling and reuse mechanisms, so that I can minimize connection overhead and improve application performance.
+
+#### Acceptance Criteria
+
+1. WHEN connections are closed THEN the Network Simulator SHALL optionally retain them in a connection pool for reuse
+2. WHEN new connections are requested to the same destination THEN the Network Simulator SHALL reuse existing pooled connections when available
+3. WHEN connection pools reach capacity limits THEN the Network Simulator SHALL evict least recently used connections
+4. WHEN pooled connections become stale or invalid THEN the Network Simulator SHALL remove them from the pool automatically
+5. WHEN connection pool configuration is specified THEN the Network Simulator SHALL respect pool size limits and timeout settings
+6. WHEN connection reuse occurs THEN the Network Simulator SHALL ensure the reused connection is in a clean, ready state
+
+### Requirement 17
+
+**User Story:** As a server application developer, I want comprehensive listener management with proper cleanup, so that I can manage server resources effectively and prevent resource leaks.
+
+#### Acceptance Criteria
+
+1. WHEN listeners are created THEN the Network Simulator SHALL track all active listeners and their associated resources
+2. WHEN listeners are closed explicitly THEN the Network Simulator SHALL immediately release all associated resources including ports and pending connections
+3. WHEN the simulator is stopped or reset THEN the Network Simulator SHALL automatically close all active listeners and clean up their resources
+4. WHEN listener cleanup occurs THEN the Network Simulator SHALL ensure no resource leaks including memory, file descriptors, or port bindings
+5. WHEN listeners have pending accept operations THEN the Network Simulator SHALL properly cancel or complete these operations during cleanup
+6. WHEN listener ports are released THEN the Network Simulator SHALL make them immediately available for reuse by new listeners
+
+### Requirement 18
+
+**User Story:** As a network application developer, I want comprehensive connection state tracking and lifecycle management, so that I can monitor connection health and handle connection failures appropriately.
+
+#### Acceptance Criteria
+
+1. WHEN connections are established THEN the Network Simulator SHALL track connection state including establishment time, data transfer statistics, and current status
+2. WHEN connection state changes occur THEN the Network Simulator SHALL update connection status appropriately (connecting, connected, closing, closed, error)
+3. WHEN connections experience errors or failures THEN the Network Simulator SHALL update connection state and provide detailed error information
+4. WHEN connection lifecycle events occur THEN the Network Simulator SHALL optionally notify registered observers or callbacks
+5. WHEN connections are idle for extended periods THEN the Network Simulator SHALL optionally implement keep-alive mechanisms or idle timeout handling
+6. WHEN connection resources need cleanup THEN the Network Simulator SHALL ensure proper resource deallocation including buffers, timers, and network handles
+7. WHEN querying connection state THEN the Network Simulator SHALL provide accurate, real-time information about connection status and statistics

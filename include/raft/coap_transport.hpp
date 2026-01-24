@@ -8,6 +8,7 @@
 #include <raft/logger.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/memory_pool.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/network_simulator.hpp>
 
@@ -152,10 +153,12 @@ struct simple_coap_transport_types {
 // Default transport types implementation (deprecated - use coap_transport_types instead)
 template<typename FutureType, typename RPC_Serializer, typename Metrics, typename Logger>
 struct default_transport_types {
+    template<typename T> using future_template = FutureType;  // Note: This assumes FutureType is a template-like wrapper
     using future_type = FutureType;
     using serializer_type = RPC_Serializer;
     using metrics_type = Metrics;
     using logger_type = Logger;
+    using executor_type = Logger;  // Use logger as executor for backward compatibility
     using address_type = std::string;
     using port_type = std::uint16_t;
 };
@@ -198,6 +201,9 @@ struct coap_client_config {
     std::size_t max_concurrent_requests{50};
     bool enable_memory_optimization{false};
     std::size_t memory_pool_size{1024 * 1024}; // 1MB
+    std::size_t memory_pool_block_size{4096}; // 4KB blocks
+    bool enable_periodic_pool_reset{false}; // Enable periodic memory pool reset
+    std::chrono::seconds pool_reset_interval{300}; // Reset interval (5 minutes default)
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
     std::size_t max_cache_entries{100};
@@ -233,70 +239,14 @@ struct coap_server_config {
     std::size_t max_concurrent_requests{100};
     bool enable_memory_optimization{false};
     std::size_t memory_pool_size{1024 * 1024}; // 1MB
+    std::size_t memory_pool_block_size{4096}; // 4KB blocks
+    bool enable_periodic_pool_reset{false}; // Enable periodic memory pool reset
+    std::chrono::seconds pool_reset_interval{300}; // Reset interval (5 minutes default)
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
 };
 
-// Memory pool for optimization
-struct memory_pool {
-    std::vector<std::byte> buffer;
-    std::size_t offset{0};
-    std::size_t peak_usage{0};
-    std::size_t allocation_count{0};
-    std::size_t reset_count{0};
-    mutable std::mutex mutex;
-    
-    explicit memory_pool(std::size_t size) : buffer(size) {}
-    
-    auto allocate(std::size_t size) -> std::byte* {
-        std::lock_guard<std::mutex> lock(mutex);
-        
-        // Align allocation to 8-byte boundary for better performance
-        std::size_t aligned_size = (size + 7) & ~7;
-        
-        if (offset + aligned_size > buffer.size()) {
-            return nullptr; // Pool exhausted
-        }
-        
-        auto* ptr = buffer.data() + offset;
-        offset += aligned_size;
-        allocation_count++;
-        
-        // Track peak usage
-        if (offset > peak_usage) {
-            peak_usage = offset;
-        }
-        
-        return ptr;
-    }
-    
-    auto reset() -> void {
-        std::lock_guard<std::mutex> lock(mutex);
-        offset = 0;
-        reset_count++;
-    }
-    
-    auto get_usage_stats() const -> std::tuple<std::size_t, std::size_t, std::size_t, std::size_t> {
-        std::lock_guard<std::mutex> lock(mutex);
-        return {offset, peak_usage, allocation_count, reset_count};
-    }
-    
-    auto get_utilization_percentage() const -> double {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (buffer.empty()) return 0.0;
-        return (static_cast<double>(offset) / buffer.size()) * 100.0;
-    }
-    
-    auto is_exhausted() const -> bool {
-        std::lock_guard<std::mutex> lock(mutex);
-        return offset >= buffer.size();
-    }
-    
-    auto available_space() const -> std::size_t {
-        std::lock_guard<std::mutex> lock(mutex);
-        return buffer.size() - offset;
-    }
-};
+// Memory pool for optimization - see memory_pool.hpp for implementation
 
 // Serialization cache entry
 struct cache_entry {
@@ -326,9 +276,6 @@ struct cache_entry {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - last_accessed);
     }
-};
-    std::chrono::steady_clock::time_point last_access;
-    std::size_t access_count{0};
 };
 
 // Multicast response structure
@@ -360,7 +307,7 @@ struct multicast_response_collector {
 
 // CoAP client class declaration
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 class coap_client {
 public:
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -372,7 +319,7 @@ public:
     // Constructor and destructor
     coap_client(
         std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
-        coap_client_config config,
+        kythira::coap_client_config config,
         metrics_type metrics
     );
     
@@ -441,7 +388,7 @@ private:
     serializer_type _serializer;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
     coap_context_t* _coap_context;
-    coap_client_config _config;
+    kythira::coap_client_config _config;
     metrics_type _metrics;
     logger_type _logger;
     
@@ -495,7 +442,7 @@ private:
     // Block transfer methods
     auto should_use_block_transfer(const std::vector<std::byte>& payload) const -> bool;
     auto split_payload_into_blocks(const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>>;
-    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const kythira::block_option& block_opt) -> std::optional<std::vector<std::byte>>;
+    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
     auto cleanup_expired_block_transfers() -> void;
     
     // Session management methods
@@ -514,6 +461,10 @@ private:
     
     // Performance optimization methods
     auto allocate_from_pool(std::size_t size) -> std::byte*;
+    auto deallocate_to_pool(void* ptr) -> void;
+    auto reset_memory_pool() -> void;
+    auto get_pool_metrics() const -> memory_pool_metrics;
+    auto detect_memory_leaks() -> std::vector<memory_leak_info>;
     auto get_cached_serialization(std::size_t hash) -> std::optional<std::vector<std::byte>>;
     auto cache_serialization(std::size_t hash, const std::vector<std::byte>& data) -> void;
     auto cleanup_serialization_cache() -> void;
@@ -541,7 +492,7 @@ private:
 
 // CoAP server class declaration
 template<typename Types>
-requires transport_types<Types>
+requires kythira::transport_types<Types>
 class coap_server {
 public:
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -556,7 +507,7 @@ public:
     coap_server(
         std::string bind_address,
         std::uint16_t bind_port,
-        coap_server_config config,
+        kythira::coap_server_config config,
         metrics_type metrics
     );
     
@@ -591,7 +542,7 @@ private:
     coap_context_t* _coap_context;
     address_type _bind_address;
     port_type _bind_port;
-    coap_server_config _config;
+    kythira::coap_server_config _config;
     metrics_type _metrics;
     logger_type _logger;
     
@@ -643,7 +594,7 @@ private:
     // Block transfer methods
     auto should_use_block_transfer(const std::vector<std::byte>& payload) const -> bool;
     auto split_payload_into_blocks(const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>>;
-    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const kythira::block_option& block_opt) -> std::optional<std::vector<std::byte>>;
+    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
     auto cleanup_expired_block_transfers() -> void;
     auto reject_malformed_request(coap_pdu_t* response, const std::string& reason) -> void;
     
@@ -654,6 +605,10 @@ private:
     
     // Performance optimization methods
     auto allocate_from_pool(std::size_t size) -> std::byte*;
+    auto deallocate_to_pool(void* ptr) -> void;
+    auto reset_memory_pool() -> void;
+    auto get_pool_metrics() const -> memory_pool_metrics;
+    auto detect_memory_leaks() -> std::vector<memory_leak_info>;
     auto get_cached_serialization(std::size_t hash) -> std::optional<std::vector<std::byte>>;
     auto cache_serialization(std::size_t hash, const std::vector<std::byte>& data) -> void;
     auto cleanup_serialization_cache() -> void;

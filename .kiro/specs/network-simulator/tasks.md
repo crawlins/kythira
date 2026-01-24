@@ -389,6 +389,188 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Check example program exit codes and error handling
     - _Requirements: All_
 
+- [x] 19. Implement enhanced connection establishment with timeout handling
+  - [x] 19.1 Implement ConnectionRequest tracking system
+    - Create ConnectionRequest struct with timeout tracking
+    - Implement pending connection request management
+    - Add timer-based cleanup of expired requests
+    - _Requirements: 15.1, 15.2, 15.3_
+  
+  - [x] 19.2 Implement connection establishment timeout logic
+    - Add proper timeout handling for connection establishment
+    - Implement cancellation support for pending operations
+    - Add detailed error reporting for timeout conditions
+    - _Requirements: 15.1, 15.2, 15.3, 15.5_
+  
+  - [x] 19.3 Write property test for connection establishment timeout
+    - **Property 25: Connection Establishment Timeout Handling**
+    - **Validates: Requirements 15.1, 15.2, 15.3**
+  
+  - [x] 19.4 Write property test for connection establishment cancellation
+    - **Property 26: Connection Establishment Cancellation**
+    - **Validates: Requirements 15.5**
+
+- [x] 20. Implement connection pooling and reuse mechanisms
+  - [x] 20.1 Implement ConnectionPool class
+    - Create ConnectionPool template with PooledConnection tracking
+    - Implement get_or_create_connection with reuse logic
+    - Add connection health checking and validation
+    - _Requirements: 16.1, 16.2, 16.4_
+  
+  - [x] 20.2 Implement connection pool management
+    - Add LRU eviction when pool reaches capacity
+    - Implement background cleanup of stale connections
+    - Add configurable pool limits and timeouts
+    - _Requirements: 16.3, 16.4, 16.5_
+  
+  - [x] 20.3 Write property test for connection pool reuse
+    - **Property 27: Connection Pool Reuse**
+    - **Validates: Requirements 16.2**
+  
+  - [x] 20.4 Write property test for connection pool eviction
+    - **Property 28: Connection Pool Eviction**
+    - **Validates: Requirements 16.3**
+  
+  - [x] 20.5 Write property test for connection pool cleanup
+    - **Property 29: Connection Pool Cleanup**
+    - **Validates: Requirements 16.4**
+
+- [x] 21. Implement comprehensive listener management with resource cleanup
+  - [x] 21.1 Implement ListenerManager class
+    - Create ListenerManager with ListenerResource tracking
+    - Implement create_listener and close_listener methods
+    - Add port allocation and release management
+    - _Requirements: 17.1, 17.2, 17.6_
+  
+  - [x] 21.2 Implement listener resource cleanup
+    - Add automatic cleanup on simulator stop/reset
+    - Implement proper handling of pending accept operations
+    - Add resource leak prevention and detection
+    - _Requirements: 17.3, 17.4, 17.5_
+  
+  - [x] 21.3 Write property test for listener resource cleanup
+    - **Property 30: Listener Resource Cleanup**
+    - **Validates: Requirements 17.2, 17.3, 17.4**
+  
+  - [x] 21.4 Write property test for listener port release
+    - **Property 31: Listener Port Release**
+    - **Validates: Requirements 17.6**
+
+- [x] 22. Implement connection state tracking and lifecycle management
+  - [x] 22.1 Implement ConnectionTracker class
+    - Create ConnectionTracker with ConnectionInfo and ConnectionStats
+    - Implement connection registration and state updates
+    - Add statistics collection for data transfer
+    - _Requirements: 18.1, 18.2, 18.3_
+  
+  - [x] 22.2 Implement connection lifecycle management
+    - Add observer pattern for state change notifications
+    - Implement keep-alive and idle timeout mechanisms
+    - Add proper resource cleanup for closed connections
+    - _Requirements: 18.4, 18.5, 18.6_
+  
+  - [x] 22.3 Write property test for connection state tracking
+    - **Property 32: Connection State Tracking**
+    - **Validates: Requirements 18.1, 18.2**
+  
+  - [x] 22.4 Write property test for connection state updates
+    - **Property 33: Connection State Updates**
+    - **Validates: Requirements 18.2, 18.4**
+  
+  - [x] 22.5 Write property test for connection resource cleanup
+    - **Property 34: Connection Resource Cleanup**
+    - **Validates: Requirements 18.6**
+
+- [x] 23. Integrate connection management components with core simulator
+  - [x] 23.1 Integrate ConnectionPool with NetworkSimulator
+    - Modified `establish_connection()` to use `ConnectionPool::get_or_create_connection()`
+    - Created `establish_connection_internal()` as the actual connection creation logic
+    - Connection pool automatically handles reuse when enabled via configuration
+    - _Requirements: 16.1-16.6_
+  
+  - [x] 23.2 Integrate ListenerManager with NetworkSimulator
+    - ListenerManager already integrated for port availability checking
+    - Listener registration happens in `create_listener()`
+    - Cleanup happens automatically in `stop()` and `reset()` via `cleanup_all_listeners()`
+    - Port allocation tracking prevents port conflicts
+    - _Requirements: 17.1-17.6_
+  
+  - [x] 23.3 Integrate ConnectionTracker with NetworkSimulator
+    - Add ConnectionTracker as member of NetworkSimulator
+    - Modify connection operations to update tracker state
+    - Add configuration options for connection tracking
+    - _Requirements: 18.1-18.7_
+  
+  - [x] 23.4 Add connection management configuration
+    - Create ConnectionConfig struct with timeout and pool settings
+    - Implement configure_connection_management method
+    - Add accessor methods for connection management components
+    - _Requirements: 15.1-18.7_
+
+- [x] 24. Write integration tests for connection management
+  - [x] 24.1 Write connection establishment timeout integration test
+    - Test end-to-end connection establishment with various timeout scenarios
+    - Verify proper cleanup of timed-out connection attempts
+    - Test cancellation of pending connection operations
+    - _Requirements: 15.1-15.6_
+  
+  - [x] 24.2 Write connection pooling integration test
+    - Test connection reuse across multiple operations
+    - Verify pool eviction and cleanup behavior
+    - Test pool configuration and limits
+    - _Requirements: 16.1-16.6_
+  
+  - [x] 24.3 Write listener management integration test
+    - Test listener creation, cleanup, and port management
+    - Verify resource cleanup on simulator stop/reset
+    - Test handling of pending accept operations during cleanup
+    - _Requirements: 17.1-17.6_
+  
+  - [x] 24.4 Write connection lifecycle integration test
+    - Test connection state tracking across full lifecycle
+    - Verify statistics collection and observer notifications
+    - Test keep-alive and idle timeout mechanisms
+    - _Requirements: 18.1-18.7_
+
+- [x] 25. Update example programs for connection management features
+  - [x] 25.1 Create connection pooling example
+    - Demonstrate connection pool configuration and usage
+    - Show connection reuse and pool management
+    - Follow example program guidelines
+    - _Requirements: 16.1-16.6_
+  
+  - [x] 25.2 Create connection lifecycle monitoring example
+    - Demonstrate connection state tracking and statistics
+    - Show observer pattern usage for state changes
+    - Demonstrate keep-alive and timeout configuration
+    - Follow example program guidelines
+    - _Requirements: 18.1-18.7_
+  
+  - [x] 25.3 Update existing examples for enhanced timeout handling
+    - Update connection-oriented examples to use new timeout features
+    - Demonstrate proper error handling for timeout conditions
+    - Show cancellation of pending operations
+    - _Requirements: 15.1-15.6_
+
+- [x] 26. Final validation of connection management features
+  - [x] 26.1 Run comprehensive connection management test suite
+    - Ensure all new property tests pass
+    - Ensure all integration tests pass
+    - Verify no regressions in existing functionality
+    - _Requirements: 15.1-18.7_
+  
+  - [x] 26.2 Validate connection management example programs
+    - Ensure all new example programs run successfully
+    - Verify examples demonstrate intended connection management features
+    - Check example program exit codes and error handling
+    - _Requirements: 15.1-18.7_
+  
+  - [x] 26.3 Performance validation of connection management
+    - Benchmark connection establishment with timeout handling
+    - Measure connection pool performance and overhead
+    - Validate resource cleanup performance and completeness
+    - _Requirements: 15.1-18.7_
+
 ## Notes
 
 - Tasks marked with `[x]` are completed and verified through passing tests
@@ -400,24 +582,39 @@ This implementation plan tracks the development of a C++ network simulator that 
 
 ## Current Status
 
-The network simulator implementation is substantially complete with the following status:
+The network simulator implementation has a solid foundation with basic functionality complete, but requires significant enhancements for production-ready connection management:
 
-**✅ Working Components:**
-- Core concepts and type system
-- Topology management (add/remove nodes/edges)
-- Connectionless messaging (send/receive)
-- Latency and reliability simulation
-- Property-based testing framework
-- Example programs for basic functionality
+**✅ Completed Components:**
+- Core concepts and type system with C++23 concepts
+- Topology management (add/remove nodes/edges) with directed graph model
+- Connectionless messaging (send/receive) with latency and reliability simulation
+- Basic connection-oriented operations (connect/bind/accept/read/write)
+- Property-based testing framework with 24 properties validated
+- Example programs demonstrating core functionality
+- Thread safety implementation with appropriate locking
 
-**⚠️ Issues Requiring Fixes:**
-- Connection-oriented operations (connect/bind/accept/read/write) have timeout and lifecycle issues
-- Multi-hop message routing has addressing and delivery problems
-- Integration tests are failing due to async operation handling
-- Some timeout exception handling is not working as expected
+**🚧 Connection Management Enhancements Needed:**
+- **Enhanced Connection Establishment**: Robust timeout handling, cancellation support, detailed error reporting
+- **Connection Pooling**: Performance optimization through connection reuse, LRU eviction, health checking
+- **Listener Management**: Comprehensive resource cleanup, port management, pending operation handling
+- **Connection Lifecycle**: State tracking, statistics collection, keep-alive mechanisms, observer patterns
 
-**🎯 Priority Fixes:**
-1. Fix connection establishment and data transfer operations
-2. Resolve message routing and addressing issues
-3. Fix timeout handling and async operation completion
-4. Ensure integration tests pass consistently
+**🎯 Implementation Priorities:**
+1. **Connection Establishment Timeout Handling** - Critical for reliable operation under network delays
+2. **Connection Pooling and Reuse** - Important for performance in high-throughput scenarios
+3. **Listener Resource Management** - Essential for preventing resource leaks in server applications
+4. **Connection State Tracking** - Valuable for monitoring and debugging distributed systems
+
+**📊 New Requirements Coverage:**
+- **Requirement 15**: Connection establishment with timeout handling (6 acceptance criteria)
+- **Requirement 16**: Connection pooling and reuse mechanisms (6 acceptance criteria)
+- **Requirement 17**: Listener management with resource cleanup (6 acceptance criteria)
+- **Requirement 18**: Connection state tracking and lifecycle management (7 acceptance criteria)
+
+**🧪 Testing Strategy:**
+- **10 new property-based tests** for connection management features (Properties 25-34)
+- **4 integration test suites** for end-to-end connection management validation
+- **Performance benchmarks** for connection establishment, pooling, and cleanup operations
+- **Resource leak detection** to ensure proper cleanup and prevent memory/handle leaks
+
+The enhanced connection management features will transform the network simulator from a basic prototype into a production-ready tool suitable for testing distributed systems under realistic network conditions.

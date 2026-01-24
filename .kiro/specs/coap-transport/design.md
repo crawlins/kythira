@@ -112,6 +112,8 @@ auto send_install_snapshot(
 - `_metrics`: Metrics recorder instance
 - `_pending_requests`: Map from message token to pending future
 - `_mutex`: Mutex for thread-safe access
+- `_memory_pool`: Memory pool for efficient message allocation
+- `_pool_metrics`: Memory pool usage metrics
 
 **Private Methods:**
 ```cpp
@@ -127,6 +129,13 @@ auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
 auto generate_message_token() -> std::vector<std::byte>;
 auto setup_dtls_context() -> void;
 auto handle_response(coap_pdu_t* response, const std::vector<std::byte>& token) -> void;
+
+// Memory pool management
+auto allocate_from_pool(std::size_t size) -> void*;
+auto deallocate_to_pool(void* ptr) -> void;
+auto reset_memory_pool() -> void;
+auto get_pool_metrics() const -> memory_pool_metrics;
+auto detect_memory_leaks() -> std::vector<memory_leak_info>;
 ```
 
 ### coap_server
@@ -172,6 +181,8 @@ auto is_running() const -> bool;
 - `_metrics`: Metrics recorder instance
 - `_running`: Atomic flag for server state
 - `_mutex`: Mutex for thread-safe access
+- `_memory_pool`: Memory pool for efficient message allocation
+- `_pool_metrics`: Memory pool usage metrics
 
 **Private Methods:**
 ```cpp
@@ -189,6 +200,13 @@ auto handle_rpc_resource(
 ) -> void;
 
 auto send_error_response(coap_pdu_t* response, coap_pdu_code_t code, const std::string& message) -> void;
+
+// Memory pool management
+auto allocate_from_pool(std::size_t size) -> void*;
+auto deallocate_to_pool(void* ptr) -> void;
+auto reset_memory_pool() -> void;
+auto get_pool_metrics() const -> memory_pool_metrics;
+auto detect_memory_leaks() -> std::vector<memory_leak_info>;
 ```
 
 ## Data Models
@@ -248,6 +266,12 @@ struct coap_server_config {
     bool enable_multicast{false};
     std::string multicast_address{"224.0.1.187"};
     std::uint16_t multicast_port{5683};
+    
+    // Memory Pool Configuration
+    std::size_t memory_pool_size{1024 * 1024};  // 1 MB default
+    std::size_t memory_pool_block_size{4096};   // 4 KB blocks
+    bool enable_memory_pool_metrics{true};
+    bool enable_leak_detection{false};  // Disabled by default for performance
 };
 ```
 
@@ -257,6 +281,47 @@ The client maintains a mapping from Raft node IDs to CoAP endpoints:
 ```cpp
 std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint;
 // Example: {1: "coap://192.168.1.10:5683", 2: "coaps://192.168.1.11:5684"}
+```
+
+### Memory Pool Structures
+
+```cpp
+struct memory_pool_metrics {
+    std::size_t total_size;           // Total pool size in bytes
+    std::size_t allocated_size;       // Currently allocated bytes
+    std::size_t free_size;            // Available bytes
+    std::size_t allocation_count;     // Total allocations
+    std::size_t deallocation_count;   // Total deallocations
+    std::size_t peak_usage;           // Peak memory usage
+    std::size_t fragmentation_ratio;  // Fragmentation percentage
+    std::chrono::steady_clock::time_point last_reset;
+};
+
+struct memory_leak_info {
+    void* address;                    // Address of leaked memory
+    std::size_t size;                 // Size of allocation
+    std::chrono::steady_clock::time_point allocation_time;
+    std::string allocation_context;   // Stack trace or context info
+};
+
+class memory_pool {
+public:
+    memory_pool(std::size_t pool_size, std::size_t block_size);
+    ~memory_pool();
+    
+    auto allocate(std::size_t size) -> void*;
+    auto deallocate(void* ptr) -> void;
+    auto reset() -> void;
+    auto get_metrics() const -> memory_pool_metrics;
+    auto detect_leaks() -> std::vector<memory_leak_info>;
+    
+private:
+    std::vector<std::byte> _pool_memory;
+    std::unordered_map<void*, std::size_t> _allocations;
+    std::vector<void*> _free_blocks;
+    memory_pool_metrics _metrics;
+    mutable std::shared_mutex _mutex;
+};
 ```
 
 ### CoAP Resources
@@ -459,6 +524,26 @@ public:
 *For any* significant transport operation (message send/receive, connection events, errors), appropriate log entries should be generated.
 **Validates: Requirements 5.1, 5.2, 5.3**
 
+### Property 37: Memory pool allocation efficiency
+
+*For any* CoAP message processing operation, memory pools should be used for allocation and deallocation to minimize overhead.
+**Validates: Requirements 14.1**
+
+### Property 38: Memory pool reset and cleanup
+
+*For any* memory pool maintenance operation, reset and cleanup methods should properly release resources without leaks.
+**Validates: Requirements 14.2**
+
+### Property 39: Memory pool size monitoring
+
+*For any* memory pool usage scenario, pool size monitoring and metrics should accurately track allocation patterns.
+**Validates: Requirements 14.3**
+
+### Property 40: Memory leak detection
+
+*For any* extended operation sequence, memory leak detection mechanisms should identify and prevent memory leaks.
+**Validates: Requirements 14.4**
+
 ## Testing Strategy
 
 ### Unit Tests
@@ -538,6 +623,30 @@ CoAP uses tokens to correlate requests and responses:
 - Generate unique tokens for each request
 - Maintain mapping from token to pending future
 - Handle token collision and cleanup
+
+### Memory Pool Management
+
+The CoAP transport uses memory pools for efficient message allocation:
+- **Pool Initialization**: Pre-allocate memory blocks at startup based on configuration
+- **Allocation Strategy**: Use fixed-size blocks for predictable allocation patterns
+- **Deallocation**: Return blocks to pool for reuse instead of freeing to OS
+- **Reset Mechanism**: Periodic pool reset to defragment and reclaim memory
+- **Metrics Collection**: Track allocation patterns, peak usage, and fragmentation
+- **Leak Detection**: Optional tracking of allocation lifetimes to detect leaks
+- **Thread Safety**: Use shared_mutex for concurrent access to pool structures
+
+**Memory Pool Benefits:**
+- Reduced allocation overhead (no system calls for each message)
+- Predictable memory usage patterns
+- Lower memory fragmentation
+- Faster allocation/deallocation cycles
+- Better cache locality for message processing
+
+**Pool Configuration Guidelines:**
+- Set pool size based on expected message throughput
+- Use block size matching typical message sizes
+- Enable metrics in development, disable in production for performance
+- Enable leak detection only during testing and debugging
 
 ### Block-wise Transfer
 

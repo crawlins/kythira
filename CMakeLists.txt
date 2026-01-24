@@ -79,36 +79,36 @@ endif()
 
 target_compile_features(network_simulator INTERFACE cxx_std_23)
 
-# Debug executable
-add_executable(debug_connect_test debug_connect_test.cpp)
-target_link_libraries(debug_connect_test PRIVATE network_simulator)
-if(folly_FOUND)
-    target_link_libraries(debug_connect_test PRIVATE Folly::folly)
-endif()
-target_compile_features(debug_connect_test PRIVATE cxx_std_23)
+# Debug executable - commented out due to missing source files
+# add_executable(debug_connect_test debug_connect_test.cpp)
+# target_link_libraries(debug_connect_test PRIVATE network_simulator)
+# if(folly_FOUND)
+#     target_link_libraries(debug_connect_test PRIVATE Folly::folly)
+# endif()
+# target_compile_features(debug_connect_test PRIVATE cxx_std_23)
 
 # Register debug test with CTest
-add_test(NAME debug_connect_test COMMAND debug_connect_test)
-set_tests_properties(debug_connect_test PROPERTIES
-    TIMEOUT 30
-    LABELS "debug;connection"
-)
+# add_test(NAME debug_connect_test COMMAND debug_connect_test)
+# set_tests_properties(debug_connect_test PROPERTIES
+#     TIMEOUT 30
+#     LABELS "debug;connection"
+# )
 
-# Debug accept test
-add_executable(debug_accept_test debug_accept_test.cpp)
-target_link_libraries(debug_accept_test PRIVATE network_simulator)
-if(folly_FOUND)
-    target_link_libraries(debug_accept_test PRIVATE Folly::folly)
-endif()
-target_compile_features(debug_accept_test PRIVATE cxx_std_23)
+# Debug accept test - commented out due to missing source files
+# add_executable(debug_accept_test debug_accept_test.cpp)
+# target_link_libraries(debug_accept_test PRIVATE network_simulator)
+# if(folly_FOUND)
+#     target_link_libraries(debug_accept_test PRIVATE Folly::folly)
+# endif()
+# target_compile_features(debug_accept_test PRIVATE cxx_std_23)
 
-# Single test case
-add_executable(test_single_case test_single_case.cpp)
-target_link_libraries(test_single_case PRIVATE network_simulator Boost::unit_test_framework)
-if(folly_FOUND)
-    target_link_libraries(test_single_case PRIVATE Folly::folly)
-endif()
-target_compile_features(test_single_case PRIVATE cxx_std_23)
+# Single test case - commented out due to missing source files
+# add_executable(test_single_case test_single_case.cpp)
+# target_link_libraries(test_single_case PRIVATE network_simulator Boost::unit_test_framework)
+# if(folly_FOUND)
+#     target_link_libraries(test_single_case PRIVATE Folly::folly)
+# endif()
+# target_compile_features(test_single_case PRIVATE cxx_std_23)
 
 # Enable testing
 enable_testing()

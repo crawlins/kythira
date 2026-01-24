@@ -24,10 +24,9 @@ BOOST_AUTO_TEST_SUITE(http_server_tests)
 // Test server conforms to network_server concept
 BOOST_AUTO_TEST_CASE(test_server_concept_conformance, * boost::unit_test::timeout(30)) {
     using server_type = kythira::cpp_httplib_server<test_transport_types>;
-    using future_type = typename test_transport_types::template future_template<kythira::request_vote_response<>>;
     
-    // TODO: Fix concept check - currently failing due to template instantiation issues
-    // static_assert(kythira::network_server<server_type, future_type>);
+    static_assert(kythira::network_server<server_type>,
+                  "cpp_httplib_server must satisfy network_server concept");
     
     BOOST_TEST(true); // Test passes if compilation succeeds
 }

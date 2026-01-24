@@ -89,6 +89,13 @@ constexpr decltype(auto) conditional_move(T&& value) noexcept {
     return std::forward<T>(value);
 }
 
+// Helper trait to detect if a type is a Future
+template<typename T>
+struct is_future : std::false_type {};
+
+template<typename T>
+struct is_future<Future<T>> : std::true_type {};
+
 // Safe type casting utilities
 template<typename To, typename From>
 constexpr auto safe_cast(From&& from) -> To {
@@ -507,8 +514,10 @@ public:
     }
     
     // Chain continuation with value (concept compliance)
+    // This overload handles lambdas that return non-Future types
     template<typename F>
-    auto thenValue(F&& func) -> Future<std::invoke_result_t<F, T>> requires(!std::is_void_v<T>) {
+    auto thenValue(F&& func) -> Future<std::invoke_result_t<F, T>> 
+        requires(!std::is_void_v<T> && !detail::is_future<std::invoke_result_t<F, T>>::value) {
         using ReturnType = std::invoke_result_t<F, T>;
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) {
@@ -518,6 +527,23 @@ public:
         } else {
             return Future<ReturnType>(std::move(_folly_future).thenValue(std::forward<F>(func)));
         }
+    }
+    
+    // Chain continuation with value - Future-returning overload (automatic flattening)
+    // This overload handles lambdas that return Future<U>, automatically flattening to Future<U>
+    template<typename F>
+    auto thenValue(F&& func) -> std::invoke_result_t<F, T>
+        requires(!std::is_void_v<T> && detail::is_future<std::invoke_result_t<F, T>>::value) {
+        using FutureReturnType = std::invoke_result_t<F, T>;
+        using InnerType = typename FutureReturnType::value_type;
+        
+        // Use folly's automatic future flattening
+        return FutureReturnType(std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) {
+            // Call the lambda which returns Future<U>
+            auto inner_future = func(std::move(value));
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
     }
     
     // Chain continuation with Try (concept compliance)
@@ -646,8 +672,10 @@ public:
     }
     
     // Chain continuation with value (concept compliance)
+    // This overload handles lambdas that return non-Future types
     template<typename F>
-    auto thenValue(F&& func) -> Future<std::invoke_result_t<F>> {
+    auto thenValue(F&& func) -> Future<std::invoke_result_t<F>> 
+        requires(!detail::is_future<std::invoke_result_t<F>>::value) {
         using ReturnType = std::invoke_result_t<F>;
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) {
@@ -659,6 +687,23 @@ public:
                 return func();
             }));
         }
+    }
+    
+    // Chain continuation with value - Future-returning overload (automatic flattening)
+    // This overload handles lambdas that return Future<U>, automatically flattening to Future<U>
+    template<typename F>
+    auto thenValue(F&& func) -> std::invoke_result_t<F>
+        requires(detail::is_future<std::invoke_result_t<F>>::value) {
+        using FutureReturnType = std::invoke_result_t<F>;
+        using InnerType = typename FutureReturnType::value_type;
+        
+        // Use folly's automatic future flattening
+        return FutureReturnType(std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) {
+            // Call the lambda which returns Future<U>
+            auto inner_future = func();
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
     }
     
     // Chain continuation with Try (concept compliance)
