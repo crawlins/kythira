@@ -401,3 +401,124 @@
 
 - [x] 41. Final checkpoint - Complete validation
   - Ensure all tests pass, ask the user if questions arise.
+
+## Phase 2: Complete Missing Wrapper Implementations
+
+**Note**: Tasks 1-41 above created the concept definitions, test infrastructure, and placeholder tests. The following tasks implement the actual wrapper functionality documented in `tests/WRAPPER_UNIT_TEST_SUMMARY.md`.
+
+- [x] 42. Implement kythira::SemiPromise<T> wrapper class
+  - Implement setValue() method with proper void/Unit handling
+  - Implement setException() method with exception type conversion
+  - Implement isFulfilled() method for state checking
+  - Ensure proper move semantics and resource management
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 11.2, 11.3, 11.4_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (SemiPromise tests)_
+
+- [x] 43. Implement kythira::Promise<T> wrapper class
+  - Extend SemiPromise functionality
+  - Implement getFuture() method returning wrapped Future<T>
+  - Implement getSemiFuture() method for semi-future access
+  - Ensure proper promise-future relationship and lifecycle management
+  - Convert 2 placeholder tests to actual implementation tests
+  - _Requirements: 11.1, 11.5_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Promise tests)_
+
+- [x] 44. Implement kythira::Executor wrapper class
+  - Create Executor class that wraps folly::Executor pointer
+  - Implement add() method for work submission with proper forwarding
+  - Ensure proper lifetime management and null pointer handling
+  - Implement proper copy/move semantics
+  - Convert 2 placeholder tests to actual implementation tests
+  - _Requirements: 12.1, 12.3_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Executor tests)_
+
+- [x] 45. Implement kythira::KeepAlive wrapper class
+  - Create KeepAlive class that wraps folly::Executor::KeepAlive
+  - Implement get() method for pointer-like access
+  - Ensure proper copy and move constructors with reference counting
+  - Implement assignment operators with proper semantics
+  - Convert 2 placeholder tests to actual implementation tests
+  - _Requirements: 12.2, 12.4, 12.5_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (KeepAlive tests)_
+
+- [x] 46. Implement kythira::FutureFactory static class
+  - Create FutureFactory class with static factory methods
+  - Implement makeFuture() template method for value-based future creation
+  - Implement makeExceptionalFuture() template method for exception-based futures
+  - Implement makeReadyFuture() method for void/Unit futures
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (FutureFactory tests)_
+
+- [x] 47. Implement kythira::FutureCollector static class
+  - Create FutureCollector class with static collection methods
+  - Implement collectAll() method for waiting on all futures
+  - Implement collectAny() method for first-completed future
+  - Implement collectN() method for first N completed futures
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 14.1, 14.2, 14.3, 14.4_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (FutureCollector tests)_
+
+- [x] 48. Add missing Future continuation methods
+  - Implement via() method for executor-based continuation scheduling
+  - Implement delay() method for time-based future delays
+  - Implement within() method for timeout-based future constraints
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 15.1, 15.2, 15.3_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Continuation tests)_
+
+- [x] 49. Add missing Future transformation methods
+  - Rename then() to thenValue() for concept compliance
+  - Rename onError() to thenError() for concept compliance
+  - Implement ensure() method for cleanup functionality
+  - Maintain backward compatibility with old method names
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 16.1, 16.2, 16.3_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Transformation tests)_
+
+- [x] 50. Implement interoperability utilities
+  - Implement exception wrapper conversion (folly::exception_wrapper ↔ std::exception_ptr)
+  - Implement void/Unit conversion utilities
+  - Implement move semantics optimization helpers
+  - Implement folly::Future ↔ kythira::Future conversion utilities
+  - Implement folly::Try ↔ kythira::Try conversion utilities
+  - Convert 16 placeholder tests to actual implementation tests
+  - _Requirements: 18.1, 18.2, 18.5_
+  - _Reference: tests/wrapper_interop_utilities_unit_test.cpp (all tests)_
+
+- [x] 51. Add integration tests for wrapper interactions
+  - Test Promise-Future integration
+  - Test Executor-Future integration
+  - Test Factory-Collector integration
+  - Convert 3 placeholder tests to actual implementation tests
+  - _Requirements: 20.1, 20.2, 20.3_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Integration tests)_
+
+- [x] 52. Add performance validation tests
+  - Validate wrapper overhead is minimal
+  - Validate memory usage is acceptable
+  - Convert 2 placeholder tests to actual implementation tests
+  - _Requirements: 19.5_
+  - _Reference: tests/missing_wrapper_functionality_unit_test.cpp (Performance tests)_
+
+- [x] 53. Update include/raft/future.hpp with all new implementations
+  - Integrate all new wrapper classes (SemiPromise, Promise, Executor, KeepAlive)
+  - Integrate factory and collector classes
+  - Add all new continuation and transformation methods
+  - Add all interoperability utilities
+  - Update API documentation
+  - _Requirements: All requirements_
+
+- [x] 54. Verify all 42 placeholder tests now pass with real implementations
+  - Run missing_wrapper_functionality_unit_test.cpp and verify all tests pass
+  - Run wrapper_interop_utilities_unit_test.cpp and verify all tests pass
+  - Ensure no placeholder tests remain
+  - _Requirements: 19.1, 19.2, 19.3, 19.4_
+
+- [x] 55. Final validation checkpoint
+  - Ensure all 87 unit tests pass (45 existing + 42 newly implemented)
+  - Verify concept compliance for all wrapper classes
+  - Validate performance characteristics
+  - Confirm backward compatibility maintained
+  - _Requirements: All requirements_
