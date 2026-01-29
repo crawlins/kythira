@@ -24,7 +24,6 @@ namespace {
     
     // Define transport types for testing using the provided template
     using test_transport_types = kythira::http_transport_types<
-        kythira::Future<kythira::request_vote_response<>>,
         kythira::json_serializer,
         kythira::noop_metrics,
         folly::CPUThreadPoolExecutor

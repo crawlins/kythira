@@ -17,6 +17,25 @@
 #include <openssl/bio.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#else
+// Define CoAP response codes when libcoap is not available
+#define COAP_RESPONSE_CODE_BAD_REQUEST 0x80
+#define COAP_RESPONSE_CODE_UNAUTHORIZED 0x81
+#define COAP_RESPONSE_CODE_BAD_OPTION 0x82
+#define COAP_RESPONSE_CODE_FORBIDDEN 0x83
+#define COAP_RESPONSE_CODE_NOT_FOUND 0x84
+#define COAP_RESPONSE_CODE_METHOD_NOT_ALLOWED 0x85
+#define COAP_RESPONSE_CODE_NOT_ACCEPTABLE 0x86
+#define COAP_RESPONSE_CODE_REQUEST_ENTITY_INCOMPLETE 0x88
+#define COAP_RESPONSE_CODE_PRECONDITION_FAILED 0x8C
+#define COAP_RESPONSE_CODE_REQUEST_ENTITY_TOO_LARGE 0x8D
+#define COAP_RESPONSE_CODE_UNSUPPORTED_CONTENT_FORMAT 0x8F
+#define COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR 0xA0
+#define COAP_RESPONSE_CODE_NOT_IMPLEMENTED 0xA1
+#define COAP_RESPONSE_CODE_BAD_GATEWAY 0xA2
+#define COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE 0xA3
+#define COAP_RESPONSE_CODE_GATEWAY_TIMEOUT 0xA4
+#define COAP_RESPONSE_CODE_PROXYING_NOT_SUPPORTED 0xA5
 #endif
 
 namespace kythira {
@@ -1870,15 +1889,15 @@ auto coap_client<Types>::send_rpc(
         
         // Create a default response for the stub implementation
         Response response{};
-        return future_type::makeReady(std::move(response));
+        return FutureFactory::makeFuture(std::move(response));
 #endif
         
     } catch (const coap_transport_error& e) {
         // CoAP-specific errors
-        return future_type::makeError(std::make_exception_ptr(e));
+        return FutureFactory::makeExceptionalFuture<Response>(std::make_exception_ptr(e));
     } catch (const std::exception& e) {
         // Generic errors
-        return future_type::makeError(std::make_exception_ptr(
+        return FutureFactory::makeExceptionalFuture<Response>(std::make_exception_ptr(
             coap_transport_error("Unexpected error in send_rpc: " + std::string(e.what()))));
     }
 }
@@ -5811,385 +5830,6 @@ auto coap_client<Types>::get_joined_multicast_groups() const -> std::vector<std:
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::discover_raft_nodes(
-    const std::string& multicast_address,
-    std::uint16_t multicast_port,
-    std::chrono::milliseconds timeout
-) -> future_template<std::vector<std::string>> {
-    // Send multicast discovery message to find Raft nodes
-    _logger.info("Starting Raft node discovery", {
-        {"multicast_address", multicast_address},
-        {"multicast_port", std::to_string(multicast_port)},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
-    
-    // Create discovery message
-    auto discovery_payload = create_discovery_message();
-    
-    // Send multicast discovery message
-    auto multicast_future = send_multicast_message(
-        multicast_address,
-        multicast_port,
-        "/raft/discovery",
-        discovery_payload,
-        timeout
-    );
-    
-    // Transform the multicast response future to extract node IDs
-    return multicast_future.thenValue([this](std::vector<std::vector<std::byte>> responses) -> std::vector<std::string> {
-        std::vector<std::string> discovered_nodes;
-        
-        for (const auto& response_data : responses) {
-            auto node_id = parse_discovery_response(response_data);
-            if (node_id) {
-                discovered_nodes.push_back(*node_id);
-                
-                _logger.debug("Discovered Raft node", {
-                    {"node_id", *node_id}
-                });
-            }
-        }
-        
-        _logger.info("Raft node discovery completed", {
-            {"discovered_nodes", std::to_string(discovered_nodes.size())},
-            {"total_responses", std::to_string(responses.size())}
-        });
-        
-        // Record discovery metrics
-        _metrics.add_dimension("discovery_type", "raft_nodes");
-        _metrics.add_dimension("nodes_discovered", std::to_string(discovered_nodes.size()));
-        _metrics.add_one();
-        _metrics.emit();
-        
-        return discovered_nodes;
-    }).thenError([this](const std::exception& e) -> std::vector<std::string> {
-        _logger.error("Raft node discovery failed", {
-            {"error", e.what()}
-        });
-        
-        // Record discovery failure metrics
-        _metrics.add_dimension("discovery_type", "raft_nodes");
-        _metrics.add_dimension("result", "failure");
-        _metrics.add_one();
-        _metrics.emit();
-        
-        throw;
-    });
-}
-
-template<typename Types>
-requires kythira::transport_types<Types>
-auto coap_client<Types>::send_multicast_heartbeat(
-    const std::string& multicast_address,
-    std::uint16_t multicast_port,
-    const std::string& node_id,
-    std::chrono::milliseconds timeout
-) -> future_template<std::vector<std::string>> {
-    // Send multicast heartbeat to announce presence and discover peers
-    _logger.debug("Sending multicast heartbeat", {
-        {"multicast_address", multicast_address},
-        {"multicast_port", std::to_string(multicast_port)},
-        {"node_id", node_id},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
-    
-    // Create heartbeat message with node ID
-    auto heartbeat_payload = create_discovery_message(node_id);
-    
-    // Send multicast heartbeat message
-    auto multicast_future = send_multicast_message(
-        multicast_address,
-        multicast_port,
-        "/raft/heartbeat",
-        heartbeat_payload,
-        timeout
-    );
-    
-    // Transform the multicast response future to extract responding node IDs
-    return multicast_future.thenValue([this, node_id](std::vector<std::vector<std::byte>> responses) -> std::vector<std::string> {
-        std::vector<std::string> responding_nodes;
-        
-        for (const auto& response_data : responses) {
-            auto responding_node_id = parse_discovery_response(response_data);
-            if (responding_node_id && *responding_node_id != node_id) {
-                // Don't include our own node ID in the response
-                responding_nodes.push_back(*responding_node_id);
-                
-                _logger.debug("Received heartbeat response", {
-                    {"responding_node_id", *responding_node_id}
-                });
-            }
-        }
-        
-        _logger.info("Multicast heartbeat completed", {
-            {"responding_nodes", std::to_string(responding_nodes.size())},
-            {"total_responses", std::to_string(responses.size())}
-        });
-        
-        // Record heartbeat metrics
-        _metrics.add_dimension("heartbeat_type", "multicast");
-        _metrics.add_dimension("responses_received", std::to_string(responding_nodes.size()));
-        _metrics.add_one();
-        _metrics.emit();
-        
-        return responding_nodes;
-    }).thenError([this](const std::exception& e) -> std::vector<std::string> {
-        _logger.error("Multicast heartbeat failed", {
-            {"error", e.what()}
-        });
-        
-        // Record heartbeat failure metrics
-        _metrics.add_dimension("heartbeat_type", "multicast");
-        _metrics.add_dimension("result", "failure");
-        _metrics.add_one();
-        _metrics.emit();
-        
-        throw;
-    });
-}
-
-template<typename Types>
-requires kythira::transport_types<Types>
-auto coap_client<Types>::send_multicast_message(
-    const std::string& multicast_address,
-    std::uint16_t multicast_port,
-    const std::string& resource_path,
-    const std::vector<std::byte>& payload,
-    std::chrono::milliseconds timeout
-) -> future_template<std::vector<std::vector<std::byte>>> {
-    // Send message to multicast address and collect responses from multiple receivers
-    _logger.debug("Sending multicast CoAP message", {
-        {"multicast_address", multicast_address},
-        {"multicast_port", std::to_string(multicast_port)},
-        {"resource_path", resource_path},
-        {"payload_size", std::to_string(payload.size())},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
-    
-    // Validate multicast address
-    if (!is_valid_multicast_address(multicast_address)) {
-        return future_type(std::make_exception_ptr(
-            coap_network_error("Invalid multicast address: " + multicast_address)));
-    }
-    
-    // Validate multicast port
-    if (multicast_port == 0) {
-        return future_type(std::make_exception_ptr(
-            coap_network_error("Invalid multicast port: " + std::to_string(multicast_port))));
-    }
-    
-    // Validate resource path
-    if (resource_path.empty() || resource_path[0] != '/') {
-        return future_type(std::make_exception_ptr(
-            coap_network_error("Invalid resource path: " + resource_path)));
-    }
-    
-#ifdef LIBCOAP_AVAILABLE
-    try {
-        // Create multicast endpoint URI
-        std::string multicast_uri = "coap://" + multicast_address + ":" + std::to_string(multicast_port);
-        
-        // Parse the multicast URI
-        coap_uri_t uri;
-        if (coap_split_uri(reinterpret_cast<const uint8_t*>(multicast_uri.c_str()), 
-                          multicast_uri.length(), &uri) < 0) {
-            return future_type(std::make_exception_ptr(
-                coap_network_error("Failed to parse multicast URI: " + multicast_uri)));
-        }
-        
-        // Set up multicast address
-        coap_address_t multicast_addr;
-        coap_address_init(&multicast_addr);
-        multicast_addr.addr.sin.sin_family = AF_INET;
-        multicast_addr.addr.sin.sin_port = htons(multicast_port);
-        
-        if (inet_pton(AF_INET, multicast_address.c_str(), &multicast_addr.addr.sin.sin_addr) != 1) {
-            return future_type(std::make_exception_ptr(
-                coap_network_error("Failed to parse multicast address: " + multicast_address)));
-        }
-        multicast_addr.size = sizeof(struct sockaddr_in);
-        
-        // Create multicast session (non-confirmable for multicast)
-        coap_session_t* session = coap_new_client_session(_coap_context, nullptr, &multicast_addr, COAP_PROTO_UDP);
-        if (!session) {
-            return future_type(std::make_exception_ptr(
-                coap_network_error("Failed to create multicast session to: " + multicast_uri)));
-        }
-        
-        // Set session as multicast
-        coap_session_set_type(session, COAP_SESSION_TYPE_CLIENT);
-        
-        // Create CoAP PDU for multicast (always non-confirmable)
-        coap_pdu_t* pdu = coap_pdu_init(
-            COAP_MESSAGE_NON,  // Multicast messages are always non-confirmable
-            COAP_REQUEST_CODE_POST,
-            coap_new_message_id(session),
-            coap_session_max_pdu_size(session)
-        );
-        
-        if (!pdu) {
-            coap_session_release(session);
-            return future_type(std::make_exception_ptr(
-                coap_transport_error("Failed to create multicast CoAP PDU")));
-        }
-        
-        // Generate token for response correlation
-        auto token = generate_message_token();
-        if (!coap_add_token(pdu, token.length(), 
-                           reinterpret_cast<const uint8_t*>(token.c_str()))) {
-            coap_delete_pdu(pdu);
-            coap_session_release(session);
-            return future_type(std::make_exception_ptr(
-                coap_transport_error("Failed to add token to multicast PDU")));
-        }
-        
-        // Add URI path (skip leading '/')
-        if (!coap_add_option(pdu, COAP_OPTION_URI_PATH, 
-                            resource_path.length() - 1,
-                            reinterpret_cast<const uint8_t*>(resource_path.c_str() + 1))) {
-            coap_delete_pdu(pdu);
-            coap_session_release(session);
-            return future_type(std::make_exception_ptr(
-                coap_transport_error("Failed to add URI path to multicast PDU")));
-        }
-        
-        // Add Content-Format option
-        auto content_format = coap_utils::get_content_format_for_serializer(_serializer.name());
-        uint16_t format_value = static_cast<uint16_t>(content_format);
-        if (!coap_add_option(pdu, COAP_OPTION_CONTENT_FORMAT, 
-                            sizeof(format_value), 
-                            reinterpret_cast<const uint8_t*>(&format_value))) {
-            coap_delete_pdu(pdu);
-            coap_session_release(session);
-            return future_type(std::make_exception_ptr(
-                coap_transport_error("Failed to add Content-Format to multicast PDU")));
-        }
-        
-        // Add payload
-        if (!payload.empty()) {
-            if (!coap_add_data(pdu, payload.size(), 
-                              reinterpret_cast<const uint8_t*>(payload.data()))) {
-                coap_delete_pdu(pdu);
-                coap_session_release(session);
-                return future_type(std::make_exception_ptr(
-                    coap_transport_error("Failed to add payload to multicast PDU")));
-            }
-        }
-        
-        // Create multicast response collector
-        auto promise = std::make_shared<typename future_type::promise_type>();
-        auto future = promise->getFuture();
-        
-        auto collector = std::make_shared<multicast_response_collector>(
-            token,
-            timeout,
-            [promise](std::vector<std::vector<std::byte>> responses) {
-                promise->setValue(std::move(responses));
-            },
-            [promise](std::exception_ptr ex) {
-                promise->setException(ex);
-            }
-        );
-        
-        // Store multicast request for response collection
-        {
-            std::lock_guard<std::mutex> lock(_mutex);
-            _multicast_requests[token] = collector;
-        }
-        
-        // Send multicast message
-        coap_mid_t mid = coap_send(session, pdu);
-        if (mid == COAP_INVALID_MID) {
-            // Remove from multicast requests
-            {
-                std::lock_guard<std::mutex> lock(_mutex);
-                _multicast_requests.erase(token);
-            }
-            coap_session_release(session);
-            return future_type(std::make_exception_ptr(
-                coap_transport_error("Failed to send multicast CoAP PDU")));
-        }
-        
-        // Set up timeout for response collection
-        // In a real implementation, this would use a timer to finalize collection
-        // For now, we'll rely on cleanup_expired_multicast_requests()
-        
-        _logger.info("Multicast CoAP message sent successfully", {
-            {"multicast_address", multicast_address},
-            {"multicast_port", std::to_string(multicast_port)},
-            {"resource_path", resource_path},
-            {"token", token},
-            {"message_id", std::to_string(mid)},
-            {"timeout_ms", std::to_string(timeout.count())}
-        });
-        
-        // Record metrics
-        _metrics.add_dimension("message_type", "multicast");
-        _metrics.add_dimension("multicast_address", multicast_address);
-        _metrics.add_one();
-        _metrics.emit();
-        
-        // Release session (multicast is fire-and-forget)
-        coap_session_release(session);
-        
-        return std::move(future);
-        
-    } catch (const std::exception& e) {
-        _logger.error("Error sending multicast message", {
-            {"error", e.what()},
-            {"multicast_address", multicast_address},
-            {"multicast_port", std::to_string(multicast_port)}
-        });
-        return future_type(std::make_exception_ptr(
-            coap_transport_error("Multicast send failed: " + std::string(e.what()))));
-    }
-#else
-    // Stub implementation when libcoap is not available
-    _logger.warning("libcoap not available, using stub multicast implementation");
-    
-    // For stub implementation, immediately return empty response collection
-    return future_type(std::vector<std::vector<std::byte>>{});
-#endif
-}
-
-template<typename Types>
-requires kythira::transport_types<Types>
-auto coap_client<Types>::is_valid_multicast_address(const std::string& address) -> bool {
-    // Validate IPv4 multicast address (224.0.0.0 to 239.255.255.255)
-    if (address.empty()) {
-        return false;
-    }
-    
-    // Simple validation for IPv4 multicast range
-    if (address.length() < 8) { // Minimum "224.0.0.0"
-        return false;
-    }
-    
-    // Check if it starts with valid multicast prefix
-    if (address.substr(0, 4) == "224." || 
-        address.substr(0, 4) == "225." ||
-        address.substr(0, 4) == "226." ||
-        address.substr(0, 4) == "227." ||
-        address.substr(0, 4) == "228." ||
-        address.substr(0, 4) == "229." ||
-        address.substr(0, 4) == "230." ||
-        address.substr(0, 4) == "231." ||
-        address.substr(0, 4) == "232." ||
-        address.substr(0, 4) == "233." ||
-        address.substr(0, 4) == "234." ||
-        address.substr(0, 4) == "235." ||
-        address.substr(0, 4) == "236." ||
-        address.substr(0, 4) == "237." ||
-        address.substr(0, 4) == "238." ||
-        address.substr(0, 4) == "239.") {
-        return true;
-    }
-    
-    return false;
-}
-
-template<typename Types>
-requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_multicast_response(
     const std::string& token,
     const std::vector<std::byte>& response_data,
@@ -6889,7 +6529,7 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
         auto now = std::chrono::steady_clock::now();
         if (now - entry.created < _config.cache_ttl) {
             entry.access_count++;
-            entry.last_access = now;
+            entry.last_accessed = now;
             
             _metrics.increment_counter("coap_serialization_cache_hits");
             _logger.debug("Serialization cache hit", {
@@ -6934,11 +6574,11 @@ auto coap_client<Types>::cache_serialization_result(
     if (_serialization_cache.size() >= _config.max_cache_entries) {
         // Implement LRU eviction
         auto oldest_it = _serialization_cache.begin();
-        auto oldest_time = oldest_it->second.last_access;
+        auto oldest_time = oldest_it->second.last_accessed;
         
         for (auto it = _serialization_cache.begin(); it != _serialization_cache.end(); ++it) {
-            if (it->second.last_access < oldest_time) {
-                oldest_time = it->second.last_access;
+            if (it->second.last_accessed < oldest_time) {
+                oldest_time = it->second.last_accessed;
                 oldest_it = it;
             }
         }
@@ -6959,7 +6599,7 @@ auto coap_client<Types>::cache_serialization_result(
         entry.serialized_data.push_back(static_cast<std::byte>(b));
     }
     entry.created = std::chrono::steady_clock::now();
-    entry.last_access = entry.created;
+    entry.last_accessed = entry.created;
     entry.access_count = 1;
     
     _serialization_cache[hash] = std::move(entry);
@@ -7088,7 +6728,7 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
             break;
             
         // 5.xx Server Error codes
-        case COAP_RESPONSE_CODE_INTERNAL_ERROR:
+        case COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR:
             info.error_class = "server_error";
             info.description = "Internal Server Error - The server encountered an unexpected condition";
             info.is_retryable = true;
@@ -7151,7 +6791,7 @@ auto coap_client<Types>::should_retry_on_error(const coap_error_info& error_info
             // These errors are often temporary, retry with backoff
             return true;
             
-        case COAP_RESPONSE_CODE_INTERNAL_ERROR:
+        case COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR:
             // Internal errors might be temporary, but be more conservative
             return attempt_count < (_config.max_retransmissions / 2);
             

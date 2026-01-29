@@ -124,7 +124,8 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
         
         // Create leader node (node 2, which is in both configurations)
         constexpr std::uint64_t leader_id = 2;
-        auto leader_sim_node = simulator.create_node(leader_id);
+    const std::string leader_addr = std::to_string(leader_id);
+        auto leader_sim_node = simulator.create_node(leader_addr);
         
         // Create configuration
         auto config = kythira::raft_configuration{};

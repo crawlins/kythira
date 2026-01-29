@@ -310,6 +310,9 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     // Test connection operations when simulator is started
     simulator.start();
     
+    // Give simulator time to fully start
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
     // Server bind should work when started
     auto bind_future = node_b->bind(8080, medium_timeout);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -320,6 +323,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     BOOST_CHECK(listener->is_listening());
     
     // Client connect should work when started
+    BOOST_TEST_MESSAGE("Attempting connect from " << test_node_a << " to " << test_node_b << ":8080");
+    
     auto connect_future = node_a->connect(test_node_b, 8080, medium_timeout);
     std::this_thread::sleep_for(default_latency + std::chrono::milliseconds(50));
     

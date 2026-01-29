@@ -11,7 +11,7 @@
 #include <string>
 #include <set>
 
-using namespace raft;
+using namespace kythira;
 
 namespace {
     constexpr std::size_t test_iterations = 15;

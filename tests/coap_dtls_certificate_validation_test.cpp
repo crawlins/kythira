@@ -99,9 +99,9 @@ lA==
         using executor_type = folly::Executor;
         
         template<typename T>
-        using future_template = folly::Future<T>;
+        using future_template = kythira::Future<T>;
         
-        using future_type = folly::Future<std::vector<std::byte>>;
+        using future_type = kythira::Future<std::vector<std::byte>>;
     };
 }
 

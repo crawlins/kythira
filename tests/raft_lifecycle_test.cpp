@@ -30,6 +30,7 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
     constexpr std::uint64_t test_node_id = 1;
+    const std::string test_node_addr = std::to_string(test_node_id);
     constexpr std::uint64_t test_term = 5;
     constexpr std::uint64_t test_log_index = 10;
 }
@@ -41,7 +42,7 @@ BOOST_AUTO_TEST_CASE(test_node_lifecycle) {
     simulator.start();
     
     // Create network node
-    auto sim_node = simulator.create_node(test_node_id);
+    auto sim_node = simulator.create_node(test_node_addr);
     
     // Create components
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
@@ -94,7 +95,7 @@ BOOST_AUTO_TEST_CASE(test_state_recovery) {
     simulator.start();
     
     // Create network node
-    auto sim_node = simulator.create_node(test_node_id);
+    auto sim_node = simulator.create_node(test_node_addr);
     
     // Create persistence engine and save some state
     auto persistence = kythira::memory_persistence_engine<>{};
@@ -153,7 +154,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_start_stop_cycles) {
     simulator.start();
     
     // Create network node
-    auto sim_node = simulator.create_node(test_node_id);
+    auto sim_node = simulator.create_node(test_node_addr);
     
     // Create components
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
@@ -198,7 +199,7 @@ BOOST_AUTO_TEST_CASE(test_idempotent_start_stop) {
     simulator.start();
     
     // Create network node
-    auto sim_node = simulator.create_node(test_node_id);
+    auto sim_node = simulator.create_node(test_node_addr);
     
     // Create components
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};

@@ -26,6 +26,22 @@ namespace {
     constexpr std::chrono::milliseconds test_timeout{1000};
 }
 
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
+
 BOOST_AUTO_TEST_SUITE(coap_future_resolution_property_tests)
 
 // **Feature: coap-transport, Property 18: Future resolution on completion**
@@ -58,9 +74,8 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
             
             // Create metrics and client
             kythira::noop_metrics metrics;
-            kythira::console_logger logger;
-            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-                std::move(endpoints), config, metrics, std::move(logger));
+            kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
             
             // Test interface validation for all RPC types
             kythira::request_vote_request<> rv_request;
@@ -109,12 +124,6 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
                 // Create future for testing (stub implementation will return immediately)
                 auto future = client.send_append_entries(target_node, request, test_timeout);
                 
-                if (!future.valid()) {
-                    failures++;
-                    BOOST_TEST_MESSAGE("AppendEntries future is invalid at iteration " << i);
-                    continue;
-                }
-                
                 // Future should resolve
                 bool future_resolved = false;
                 try {
@@ -145,12 +154,6 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, * boost::unit_tes
                 
                 // Create future for testing (stub implementation will return immediately)
                 auto future = client.send_install_snapshot(target_node, request, test_timeout);
-                
-                if (!future.valid()) {
-                    failures++;
-                    BOOST_TEST_MESSAGE("InstallSnapshot future is invalid at iteration " << i);
-                    continue;
-                }
                 
                 // Future should resolve
                 bool future_resolved = false;
@@ -190,9 +193,8 @@ BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution, * boost::unit_te
     endpoints[1] = test_coap_endpoint;
     
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
     
     kythira::request_vote_request<> request;
     request._term = 1;
@@ -218,9 +220,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution, * boost::unit_test::time
     endpoints[2] = "coap://127.0.0.1:5684";
     
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
     
     // Test interface validation for multiple concurrent requests
     std::size_t successful_requests = 0;

@@ -24,6 +24,7 @@
 #include <random>
 #include <mutex>
 #include <atomic>
+#include <format>
 
 namespace kythira {
 
@@ -2080,8 +2081,8 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
         // Send the RPC (this returns a future, but we'll handle response asynchronously)
         auto response_future = _network_client.send_append_entries(target, request, timeout);
         
-        // Handle response asynchronously
-        response_future.then([this, target, next_idx, entries_to_send, start_time](auto try_response) {
+        // Handle response asynchronously using thenTry to get folly::Try<response>
+        std::move(response_future).thenTry([this, target, next_idx, entries_to_send, start_time](auto try_response) {
             std::lock_guard<std::mutex> lock(_mutex);
             
             // Calculate RPC latency
@@ -2096,11 +2097,10 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
             
             if (try_response.hasException()) {
                 // RPC failed - log error and mark follower as unresponsive
-                _logger.warning("AppendEntries RPC failed", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"target", node_id_to_string(target)},
-                    {"error", "exception"}
-                });
+                auto error_msg = std::format("AppendEntries RPC failed: node_id={}, target={}",
+                    node_id_to_string(_node_id),
+                    node_id_to_string(target));
+                _logger.warning(error_msg);
                 
                 _unresponsive_followers.insert(target);
                 
@@ -2117,11 +2117,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
             
             // Check if we've been deposed
             if (response.term() > _current_term) {
-                _logger.info("Discovered higher term in AppendEntries response, stepping down", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"old_term", std::to_string(_current_term)},
-                    {"new_term", std::to_string(response.term())}
-                });
+                auto msg = std::format(
+                    "Discovered higher term in AppendEntries response, stepping down: node_id={}, old_term={}, new_term={}",
+                    node_id_to_string(_node_id),
+                    _current_term,
+                    response.term()
+                );
+                _logger.info(msg);
                 
                 become_follower(response.term());
                 return;
@@ -2282,24 +2284,16 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
             auto response_future = _network_client.send_install_snapshot(target, request, timeout);
             
             // Wait for response synchronously (snapshot transfer is sequential)
-            auto try_response = response_future.get();
-            
-            auto end_time = std::chrono::steady_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            
-            _metrics.set_metric_name("raft_install_snapshot_chunk_latency");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
-            _metrics.emit();
-            
-            if (try_response.hasException()) {
-                _logger.error("InstallSnapshot RPC failed", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"target", node_id_to_string(target)},
-                    {"chunk", std::to_string(chunk_num + 1)},
-                    {"error", "exception"}
-                });
+            // Wrap in try-catch to handle exceptions
+            install_snapshot_response_type response;
+            try {
+                response = std::move(response_future).get();
+            } catch (const std::exception& e) {
+                _logger.error(std::format("InstallSnapshot RPC failed: node_id={}, target={}, chunk={}, error={}",
+                    node_id_to_string(_node_id),
+                    node_id_to_string(target),
+                    chunk_num + 1,
+                    e.what()));
                 
                 _metrics.set_metric_name("raft_install_snapshot_failed");
                 _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2310,15 +2304,24 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
                 return;
             }
             
-            auto response = try_response.value();
+            auto end_time = std::chrono::steady_clock::now();
+            auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            _metrics.set_metric_name("raft_install_snapshot_chunk_latency");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_dimension("target", node_id_to_string(target));
+            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
+            _metrics.emit();
             
             // Check if we've been deposed
             if (response.term() > _current_term) {
-                _logger.info("Discovered higher term in InstallSnapshot response, stepping down", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"old_term", std::to_string(_current_term)},
-                    {"new_term", std::to_string(response.term())}
-                });
+                auto msg = std::format(
+                    "Discovered higher term in InstallSnapshot response, stepping down: node_id={}, old_term={}, new_term={}",
+                    node_id_to_string(_node_id),
+                    _current_term,
+                    response.term()
+                );
+                _logger.info(msg);
                 
                 become_follower(response.term());
                 return;
@@ -2433,7 +2436,7 @@ auto node<Types>::advance_commit_index() -> void {
                 apply_committed_entries();
                 
                 // Notify commit waiter about newly committed entries
-                _commit_waiter.notify_committed(_commit_index);
+                _commit_waiter.notify_committed_and_applied(_commit_index);
             } else {
                 // Entry is from a previous term, cannot commit directly
                 // Will be committed indirectly when an entry from current term is committed

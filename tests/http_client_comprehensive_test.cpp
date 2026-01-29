@@ -5,6 +5,7 @@
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 
 namespace {
     constexpr const char* test_http_url = "http://localhost:8080";
@@ -12,6 +13,13 @@ namespace {
     constexpr std::uint64_t test_node_id_1 = 1;
     constexpr std::uint64_t test_node_id_2 = 2;
     constexpr std::uint64_t test_node_id_3 = 3;
+    
+    // Define transport types for testing
+    using test_transport_types = kythira::http_transport_types<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics,
+        folly::CPUThreadPoolExecutor
+    >;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_comprehensive_tests)
@@ -35,10 +43,7 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction) {
     kythira::noop_metrics metrics;
     
     // Test construction with multiple nodes
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
 }
@@ -51,10 +56,7 @@ BOOST_AUTO_TEST_CASE(test_empty_node_map_construction) {
     kythira::noop_metrics metrics;
     
     // Should be able to construct with empty map
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(empty_node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(empty_node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
 }
@@ -72,10 +74,7 @@ BOOST_AUTO_TEST_CASE(test_various_url_formats) {
     kythira::noop_metrics metrics;
     
     // Test construction with various URL formats
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
 }
@@ -95,10 +94,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases) {
         
         kythira::noop_metrics metrics;
         
-        kythira::cpp_httplib_client<
-            kythira::json_rpc_serializer<std::vector<std::byte>>,
-            kythira::noop_metrics
-        > client(node_map, config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
     }
@@ -113,10 +109,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases) {
         
         kythira::noop_metrics metrics;
         
-        kythira::cpp_httplib_client<
-            kythira::json_rpc_serializer<std::vector<std::byte>>,
-            kythira::noop_metrics
-        > client(node_map, config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
     }
@@ -135,10 +128,7 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration) {
         
         kythira::noop_metrics metrics;
         
-        kythira::cpp_httplib_client<
-            kythira::json_rpc_serializer<std::vector<std::byte>>,
-            kythira::noop_metrics
-        > client(node_map, config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
     }
@@ -151,10 +141,7 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration) {
         
         kythira::noop_metrics metrics;
         
-        kythira::cpp_httplib_client<
-            kythira::json_rpc_serializer<std::vector<std::byte>>,
-            kythira::noop_metrics
-        > client(node_map, config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
         
         BOOST_CHECK(true);  // Construction succeeded
     }
@@ -170,10 +157,7 @@ BOOST_AUTO_TEST_CASE(test_user_agent_configuration) {
     
     kythira::noop_metrics metrics;
     
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction succeeded
 }
@@ -188,10 +172,7 @@ BOOST_AUTO_TEST_CASE(test_move_semantics) {
     
     // Test move construction
     auto create_client = [&]() {
-        return kythira::cpp_httplib_client<
-            kythira::json_rpc_serializer<std::vector<std::byte>>,
-            kythira::noop_metrics
-        >(node_map, config, metrics);
+        return kythira::cpp_httplib_client<test_transport_types>(node_map, config, metrics);
     };
     
     auto client = create_client();
@@ -212,10 +193,7 @@ BOOST_AUTO_TEST_CASE(test_large_node_map) {
     
     kythira::noop_metrics metrics;
     
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(large_node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(large_node_map, config, metrics);
     
     BOOST_CHECK(true);  // Construction with large node map succeeded
 }

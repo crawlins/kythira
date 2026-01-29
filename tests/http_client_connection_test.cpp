@@ -5,11 +5,19 @@
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/metrics.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 
 namespace {
     constexpr const char* test_server_url = "http://httpbin.org";  // Public test server
     constexpr std::uint64_t test_node_id = 1;
     constexpr auto test_timeout = std::chrono::milliseconds{5000};
+    
+    // Define transport types for testing
+    using test_transport_types = kythira::http_transport_types<
+        kythira::json_rpc_serializer<std::vector<std::byte>>,
+        kythira::noop_metrics,
+        folly::CPUThreadPoolExecutor
+    >;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_connection_tests)
@@ -25,10 +33,7 @@ BOOST_AUTO_TEST_CASE(test_actual_http_request_handling) {
     
     kythira::noop_metrics metrics;
     
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
     
     // Create a test RequestVote request
     kythira::request_vote_request<> request;
@@ -83,10 +88,7 @@ BOOST_AUTO_TEST_CASE(test_connection_to_nonexistent_server) {
     
     kythira::noop_metrics metrics;
     
-    kythira::cpp_httplib_client<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics
-    > client(node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
     
     // Create a test RequestVote request
     kythira::request_vote_request<> request;

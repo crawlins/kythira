@@ -1837,3 +1837,382 @@ The following tasks complete the placeholder implementations identified during c
 6. Complete snapshot operations (tasks 314-315)
 7. Complete cluster management (tasks 316-317)
 8. Run validation and testing (tasks 318-321)
+
+
+## Phase 3: Fixing Failing Tests (Tasks 400-421)
+
+The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_STATUS.md. These tests are currently failing because they test advanced features that are not yet fully implemented.
+
+### Retry Logic with Exponential Backoff (4 failing tests)
+
+- [ ] 400. Implement exponential backoff delay logic in ErrorHandler
+  - Locate ErrorHandler class implementation in include/raft/error_handler.hpp
+  - Replace placeholder delay logic that returns 0ms delays
+  - Implement exponential backoff calculation: delay = initial_delay * (backoff_multiplier ^ attempt)
+  - Cap maximum delay at max_delay from retry_policy
+  - Add jitter to prevent thundering herd: delay += random(-jitter, +jitter)
+  - Implement actual delay using std::this_thread::sleep_for or async timer
+  - Ensure delays are applied before retry attempts
+  - Add logging for retry attempts with delay information
+  - Add metrics for retry counts and cumulative delay
+  - _Requirements: 18.1, 18.2, 18.3, 18.4_
+  - _Tests Fixed: raft_heartbeat_retry_backoff_property_test, raft_append_entries_retry_handling_property_test, raft_snapshot_transfer_retry_property_test, raft_vote_request_failure_handling_property_test_
+  - _Priority: High_
+
+- [ ] 400.1 Write unit test for exponential backoff calculation
+  - Test delay calculation for multiple retry attempts
+  - Verify delay caps at max_delay
+  - Test jitter application
+  - Verify delays are actually applied (not 0ms)
+
+- [ ] 401. Integrate exponential backoff into heartbeat retry logic
+  - Locate heartbeat sending code in node implementation
+  - Wrap heartbeat RPC calls with ErrorHandler::execute_with_retry
+  - Configure retry_policy for heartbeats (initial_delay=100ms, max_delay=5000ms, backoff_multiplier=2.0)
+  - Ensure heartbeat failures trigger retry with exponential backoff
+  - Add comprehensive logging for heartbeat retry attempts
+  - Add metrics for heartbeat retry counts
+  - _Requirements: 18.1_
+  - _Tests Fixed: raft_heartbeat_retry_backoff_property_test_
+  - _Priority: High_
+
+- [ ] 401.1 Verify raft_heartbeat_retry_backoff_property_test passes
+  - Run test and verify it passes with exponential backoff implementation
+  - Verify retry delays follow expected pattern (100ms, 200ms, 400ms, etc.)
+  - Document any remaining issues
+
+- [ ] 402. Integrate exponential backoff into AppendEntries retry logic
+  - Locate AppendEntries RPC sending code in replicate_to_followers
+  - Wrap AppendEntries RPC calls with ErrorHandler::execute_with_retry
+  - Configure retry_policy for AppendEntries (initial_delay=100ms, max_delay=5000ms, backoff_multiplier=2.0)
+  - Ensure AppendEntries failures trigger retry with exponential backoff
+  - Add comprehensive logging for AppendEntries retry attempts
+  - Add metrics for AppendEntries retry counts
+  - _Requirements: 18.2_
+  - _Tests Fixed: raft_append_entries_retry_handling_property_test_
+  - _Priority: High_
+
+- [ ] 402.1 Verify raft_append_entries_retry_handling_property_test passes
+  - Run test and verify it passes with exponential backoff implementation
+  - Verify retry delays follow expected pattern
+  - Document any remaining issues
+
+- [ ] 403. Integrate exponential backoff into InstallSnapshot retry logic
+  - Locate InstallSnapshot RPC sending code in send_install_snapshot_to
+  - Wrap InstallSnapshot RPC calls with ErrorHandler::execute_with_retry
+  - Configure retry_policy for InstallSnapshot (initial_delay=200ms, max_delay=10000ms, backoff_multiplier=2.0)
+  - Ensure InstallSnapshot failures trigger retry with exponential backoff
+  - Implement resume capability for partial snapshot transfers
+  - Add comprehensive logging for snapshot transfer retry attempts
+  - Add metrics for snapshot transfer retry counts
+  - _Requirements: 18.3_
+  - _Tests Fixed: raft_snapshot_transfer_retry_property_test_
+  - _Priority: High_
+
+- [ ] 403.1 Verify raft_snapshot_transfer_retry_property_test passes
+  - Run test and verify it passes with exponential backoff implementation
+  - Verify retry delays follow expected pattern
+  - Verify resume capability works for partial transfers
+  - Document any remaining issues
+
+- [ ] 404. Integrate exponential backoff into RequestVote retry logic
+  - Locate RequestVote RPC sending code in start_election
+  - Wrap RequestVote RPC calls with ErrorHandler::execute_with_retry
+  - Configure retry_policy for RequestVote (initial_delay=100ms, max_delay=3000ms, backoff_multiplier=2.0)
+  - Ensure RequestVote failures trigger retry with exponential backoff
+  - Add comprehensive logging for vote request retry attempts
+  - Add metrics for vote request retry counts
+  - _Requirements: 18.4_
+  - _Tests Fixed: raft_vote_request_failure_handling_property_test_
+  - _Priority: High_
+
+- [ ] 404.1 Verify raft_vote_request_failure_handling_property_test passes
+  - Run test and verify it passes with exponential backoff implementation
+  - Verify retry delays follow expected pattern
+  - Document any remaining issues
+
+### Async Command Submission Pipeline (1 failing test)
+
+- [ ] 405. Implement async command submission with proper commit waiting
+  - Locate submit_command implementation in node class
+  - Remove placeholder implementation that returns immediately completed future
+  - Implement proper async pipeline:
+    1. Append command to leader's log
+    2. Register operation with CommitWaiter before replication
+    3. Trigger replication to followers
+    4. Return future that completes when entry is committed AND applied
+  - Ensure future doesn't complete until state machine application succeeds
+  - Handle leadership loss by rejecting pending operations
+  - Handle timeout by cancelling operation and returning timeout error
+  - Add comprehensive logging for command submission pipeline
+  - Add metrics for command latency (submission to completion)
+  - _Requirements: 15.1, 15.2, 15.3, 15.4, 25.1, 25.5_
+  - _Tests Fixed: raft_commit_waiting_completion_property_test_
+  - _Priority: High_
+
+- [ ] 405.1 Write integration test for async command submission pipeline
+  - Test command submission with various replication scenarios
+  - Verify future doesn't complete until commit and application
+  - Test leadership loss during command processing
+  - Test timeout handling
+  - Verify proper ordering of concurrent commands
+
+- [ ] 406. Integrate CommitWaiter with state machine application
+  - Locate apply_committed_entries implementation
+  - After successfully applying each entry to state machine:
+    1. Call CommitWaiter::notify_committed_and_applied with entry index
+    2. Fulfill pending futures for that entry
+  - Ensure notification happens after successful application
+  - Handle application failures by propagating error to pending futures
+  - Add comprehensive logging for commit notification
+  - Add metrics for commit-to-application latency
+  - _Requirements: 15.2, 19.3_
+  - _Tests Fixed: raft_commit_waiting_completion_property_test_
+  - _Priority: High_
+
+- [ ] 406.1 Verify raft_commit_waiting_completion_property_test passes
+  - Run test and verify it passes with async command submission
+  - Verify futures complete only after commit and application
+  - Verify proper error propagation
+  - Document any remaining issues
+
+### Application Logic (2 failing tests)
+
+- [ ] 407. Implement application failure handling and recovery
+  - Locate apply_committed_entries implementation
+  - Implement proper error handling for state machine application failures:
+    1. Catch exceptions from state machine apply method
+    2. Log detailed error information with entry context
+    3. Propagate error to pending futures via CommitWaiter
+    4. Decide on recovery strategy (halt, retry, skip)
+  - Implement configurable failure handling policy
+  - Add option to halt further application on failure (safe default)
+  - Add option to retry application with exponential backoff
+  - Add option to skip failed entry and continue (dangerous)
+  - Add comprehensive logging for application failures
+  - Add metrics for application failure rate
+  - _Requirements: 15.3, 19.4_
+  - _Tests Fixed: raft_application_failure_handling_property_test_
+  - _Priority: High_
+
+- [ ] 407.1 Write unit test for application failure handling
+  - Test exception handling from state machine
+  - Test error propagation to pending futures
+  - Test different failure handling policies
+  - Verify proper logging and metrics
+
+- [ ] 408. Implement applied index catchup mechanism
+  - Locate commit index advancement code
+  - Implement catchup logic when applied_index lags behind commit_index:
+    1. Detect lag condition (commit_index > applied_index)
+    2. Apply entries sequentially from applied_index + 1 to commit_index
+    3. Batch application for efficiency when lag is large
+    4. Rate limit catchup to prevent overwhelming state machine
+  - Implement background catchup task that runs periodically
+  - Add throttling to prevent catchup from blocking other operations
+  - Add comprehensive logging for catchup progress
+  - Add metrics for catchup lag and throughput
+  - _Requirements: 19.5_
+  - _Tests Fixed: raft_applied_index_catchup_property_test_
+  - _Priority: High_
+
+- [ ] 408.1 Write unit test for applied index catchup
+  - Test catchup when applied_index lags behind commit_index
+  - Test batching for large lags
+  - Test rate limiting
+  - Verify proper sequencing of entries
+
+- [ ] 409. Verify application logic tests pass
+  - Run raft_application_failure_handling_property_test and verify it passes
+  - Run raft_applied_index_catchup_property_test and verify it passes
+  - Verify proper error handling and recovery
+  - Verify catchup mechanism works correctly
+  - Document any remaining issues
+  - _Tests Fixed: raft_application_failure_handling_property_test, raft_applied_index_catchup_property_test_
+  - _Priority: High_
+
+### Timeout Classification (1 failing test)
+
+- [ ] 410. Implement timeout classification logic
+  - Locate ErrorHandler class implementation
+  - Implement timeout classification method that distinguishes:
+    1. **Network delay**: Slow response but connection alive
+    2. **Network timeout**: No response within timeout period
+    3. **Connection failure**: Connection dropped or refused
+    4. **Serialization timeout**: Timeout during message encoding/decoding
+  - Use heuristics to classify timeouts:
+    - Check if partial response received (network delay)
+    - Check if connection is still open (network timeout vs connection failure)
+    - Check if timeout occurred during serialization (serialization timeout)
+  - Return classification enum with timeout type
+  - Add comprehensive logging for timeout classification
+  - Add metrics for timeout types
+  - _Requirements: 18.6_
+  - _Tests Fixed: raft_timeout_classification_property_test_
+  - _Priority: Medium_
+
+- [ ] 410.1 Write unit test for timeout classification
+  - Test classification of network delays
+  - Test classification of network timeouts
+  - Test classification of connection failures
+  - Test classification of serialization timeouts
+  - Verify proper logging and metrics
+
+- [ ] 411. Integrate timeout classification into error handling
+  - Locate RPC error handling code in ErrorHandler
+  - Use timeout classification to determine appropriate retry strategy:
+    - Network delay: Retry immediately with same timeout
+    - Network timeout: Retry with exponential backoff and increased timeout
+    - Connection failure: Retry with exponential backoff and connection reset
+    - Serialization timeout: Don't retry (likely a bug)
+  - Add comprehensive logging for classification-based retry decisions
+  - Add metrics for retry strategy selection
+  - _Requirements: 18.6_
+  - _Tests Fixed: raft_timeout_classification_property_test_
+  - _Priority: Medium_
+
+- [ ] 411.1 Verify raft_timeout_classification_property_test passes
+  - Run test and verify it passes with timeout classification
+  - Verify proper classification of different timeout types
+  - Verify appropriate retry strategies are selected
+  - Document any remaining issues
+
+### Integration and Validation
+
+- [ ] 412. Run all 8 previously failing tests
+  - Run raft_heartbeat_retry_backoff_property_test
+  - Run raft_append_entries_retry_handling_property_test
+  - Run raft_snapshot_transfer_retry_property_test
+  - Run raft_vote_request_failure_handling_property_test
+  - Run raft_commit_waiting_completion_property_test
+  - Run raft_application_failure_handling_property_test
+  - Run raft_applied_index_catchup_property_test
+  - Run raft_timeout_classification_property_test
+  - Verify all 8 tests now pass
+  - Document any remaining failures
+  - _Priority: High_
+
+- [ ] 413. Write integration test for retry logic with exponential backoff
+  - Test heartbeat retry under network failures
+  - Test AppendEntries retry with various failure patterns
+  - Test InstallSnapshot retry with partial transfers
+  - Test RequestVote retry during elections
+  - Verify exponential backoff delays are applied
+  - Verify retry limits are respected
+  - _Requirements: 18.1, 18.2, 18.3, 18.4_
+
+- [ ] 414. Write integration test for async command submission
+  - Test command submission with replication delays
+  - Test concurrent command submissions
+  - Test leadership changes during command processing
+  - Test timeout handling for slow commits
+  - Verify proper ordering and linearizability
+  - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5_
+
+- [ ] 415. Write integration test for application failure recovery
+  - Test state machine application failures
+  - Test error propagation to clients
+  - Test different failure handling policies
+  - Test applied index catchup after lag
+  - Verify system remains consistent after failures
+  - _Requirements: 19.3, 19.4, 19.5_
+
+- [ ] 416. Write integration test for timeout classification
+  - Test classification of different timeout types
+  - Test retry strategy selection based on classification
+  - Test proper handling of each timeout type
+  - Verify logging and metrics for timeout events
+  - _Requirements: 18.6_
+
+- [ ] 417. Update example programs to demonstrate new features
+  - Update error_handling_example.cpp to show exponential backoff
+  - Update commit_waiting_example.cpp to show async command submission
+  - Add application_failure_example.cpp to demonstrate error recovery
+  - Add timeout_classification_example.cpp to demonstrate timeout handling
+  - Follow example program guidelines (run all scenarios, clear pass/fail, exit codes)
+  - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.6, 15.1, 15.2, 15.3, 15.4, 19.3, 19.4, 19.5_
+
+- [ ] 418. Update documentation for implemented features
+  - Document exponential backoff retry logic
+  - Document async command submission pipeline
+  - Document application failure handling policies
+  - Document timeout classification system
+  - Update API reference with new methods and parameters
+  - Add troubleshooting guide for retry and timeout issues
+  - _Requirements: All requirements_
+
+- [ ] 419. Performance testing for new features
+  - Benchmark retry overhead with exponential backoff
+  - Benchmark async command submission latency
+  - Benchmark application failure recovery time
+  - Benchmark timeout classification overhead
+  - Identify and optimize any performance bottlenecks
+  - _Requirements: All requirements_
+
+- [ ] 420. Final checkpoint - Verify all 8 tests pass
+  - Confirm all 8 previously failing tests now pass
+  - Verify no regressions in previously passing tests (49 tests)
+  - Run full Raft test suite (83 tests total)
+  - Verify overall test pass rate improves
+  - Document final test results
+  - _Requirements: All requirements_
+  - _Priority: High_
+
+- [ ] 421. Update RAFT_TESTS_FINAL_STATUS.md with results
+  - Update test counts (passing, failing, not run)
+  - Document which features were implemented
+  - Update recommendations section
+  - Add notes on remaining work (26 not run tests)
+  - Update conclusion with new status
+  - _Priority: High_
+
+## Summary of Phase 3
+
+### Task Breakdown
+- **Retry Logic (5 tasks)**: 400-404 + subtasks
+- **Async Command Submission (2 tasks)**: 405-406 + subtasks
+- **Application Logic (3 tasks)**: 407-409 + subtasks
+- **Timeout Classification (2 tasks)**: 410-411 + subtasks
+- **Integration & Validation (10 tasks)**: 412-421
+
+**Total: 22 main tasks + subtasks**
+
+### Tests Fixed
+1. raft_heartbeat_retry_backoff_property_test ✅
+2. raft_append_entries_retry_handling_property_test ✅
+3. raft_snapshot_transfer_retry_property_test ✅
+4. raft_vote_request_failure_handling_property_test ✅
+5. raft_commit_waiting_completion_property_test ✅
+6. raft_application_failure_handling_property_test ✅
+7. raft_applied_index_catchup_property_test ✅
+8. raft_timeout_classification_property_test ✅
+
+### Expected Outcome
+- **Before**: 49 passing, 8 failing, 26 not run (59% pass rate)
+- **After**: 57 passing, 0 failing, 26 not run (69% pass rate)
+- **Improvement**: +8 passing tests, +10% pass rate
+
+### Priority Distribution
+- **High Priority**: 16 tasks (400-409, 412, 420-421)
+- **Medium Priority**: 6 tasks (410-411, 413-419)
+
+### Estimated Effort
+2-3 weeks of focused development
+
+### Requirements Coverage
+All requirements related to:
+- Retry logic and error handling (18.1-18.6)
+- Async command submission (15.1-15.5)
+- State machine application (19.3-19.5)
+- Timeout handling (23.1)
+
+### Next Steps
+1. Start with task 400 (implement exponential backoff)
+2. Complete retry logic integration (tasks 401-404)
+3. Implement async command submission (tasks 405-406)
+4. Implement application logic (tasks 407-409)
+5. Implement timeout classification (tasks 410-411)
+6. Run integration tests (tasks 412-416)
+7. Update examples and documentation (tasks 417-418)
+8. Performance testing (task 419)
+9. Final verification (tasks 420-421)

@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
                           << reachable_nodes.size() << " nodes reachable");
         
         // Track error patterns for partition detection
-        std::vector<typename error_handler<int>::error_classification> recent_errors;
+        std::vector<kythira::error_classification> recent_errors;
         std::unordered_map<std::uint64_t, std::size_t> node_failure_counts;
         
         // Simulate operations to multiple nodes with partition
@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         std::vector<std::uint64_t> partition_a = {1, 2};
         std::vector<std::uint64_t> partition_b = {3, 4, 5};
         
-        std::vector<typename error_handler<int>::error_classification> split_errors;
+        std::vector<kythira::error_classification> split_errors;
         
         // Simulate cross-partition communication failures
         for (std::uint64_t node_a : partition_a) {
@@ -209,7 +209,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
         // Simulate gradual failures (should not be detected as partition initially)
-        std::vector<typename error_handler<int>::error_classification> gradual_errors;
+        std::vector<kythira::error_classification> gradual_errors;
         
         // Single node failure
         auto single_failure = handler.classify_error(std::runtime_error("Network timeout occurred"));
@@ -236,7 +236,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
         // Start with partition errors
-        std::vector<typename error_handler<int>::error_classification> recovery_errors;
+        std::vector<kythira::error_classification> recovery_errors;
         
         // Initial partition
         for (int i = 0; i < 4; ++i) {
@@ -263,7 +263,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
         // Simulate asymmetric partition where A can't reach B, but B can reach A
-        std::vector<typename error_handler<int>::error_classification> asymmetric_errors;
+        std::vector<kythira::error_classification> asymmetric_errors;
         
         // Node 1 can't reach nodes 2,3,4,5
         for (int i = 0; i < 4; ++i) {
@@ -282,7 +282,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         BOOST_TEST_MESSAGE("Test 5: Flapping network detection");
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
-        std::vector<typename error_handler<int>::error_classification> flapping_errors;
+        std::vector<kythira::error_classification> flapping_errors;
         
         // Simulate intermittent failures
         std::vector<std::string> intermittent_errors = {
@@ -335,18 +335,18 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
             
             // Property: Network-related errors should be classified appropriately
             if (contributes_to_partition) {
-                BOOST_CHECK(classification.type == error_handler<int>::error_type::network_timeout ||
-                           classification.type == error_handler<int>::error_type::network_unreachable ||
-                           classification.type == error_handler<int>::error_type::connection_refused ||
-                           classification.type == error_handler<int>::error_type::temporary_failure);
+                BOOST_CHECK(classification.type == kythira::error_type::network_timeout ||
+                           classification.type == kythira::error_type::network_unreachable ||
+                           classification.type == kythira::error_type::connection_refused ||
+                           classification.type == kythira::error_type::temporary_failure);
             } else {
-                BOOST_CHECK(classification.type == error_handler<int>::error_type::serialization_error ||
-                           classification.type == error_handler<int>::error_type::protocol_error);
+                BOOST_CHECK(classification.type == kythira::error_type::serialization_error ||
+                           classification.type == kythira::error_type::protocol_error);
             }
         }
         
         // Test partition detection with only network errors
-        std::vector<typename error_handler<int>::error_classification> network_only_errors;
+        std::vector<kythira::error_classification> network_only_errors;
         for (const auto& [error_msg, contributes] : error_types) {
             if (contributes) {
                 auto classification = handler.classify_error(std::runtime_error(error_msg));
@@ -359,7 +359,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         BOOST_TEST_MESSAGE("✓ Network-only errors correctly detected as partition");
         
         // Test with mixed errors (should still detect partition)
-        std::vector<typename error_handler<int>::error_classification> mixed_errors = network_only_errors;
+        std::vector<kythira::error_classification> mixed_errors = network_only_errors;
         for (const auto& [error_msg, contributes] : error_types) {
             if (!contributes) {
                 auto classification = handler.classify_error(std::runtime_error(error_msg));

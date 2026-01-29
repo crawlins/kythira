@@ -109,7 +109,7 @@ auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     
@@ -154,7 +154,7 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_tes
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -196,7 +196,7 @@ BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_te
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     
@@ -257,7 +257,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -362,7 +362,7 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     
@@ -401,7 +401,7 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::uni
  */
 BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t failures = 0;
     

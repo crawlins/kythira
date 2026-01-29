@@ -30,7 +30,7 @@ using namespace kythira;
 
 // Test types for CoAP transport
 struct test_types {
-    using future_type = folly::Future<std::vector<std::byte>>;
+    using future_type = kythira::Future<std::vector<std::byte>>;
     using serializer_type = json_serializer;
     using logger_type = console_logger;
     using metrics_type = noop_metrics;

@@ -69,7 +69,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
         // Property: All timeout messages should be classified as network timeouts
         auto classification = handler.classify_error(std::runtime_error(selected_timeout));
         
-        BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+        BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
         BOOST_CHECK(classification.should_retry);
         BOOST_CHECK(!classification.description.empty());
         
@@ -86,15 +86,15 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
         BOOST_TEST_MESSAGE("Test 1: Timeout vs other network errors");
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
-        std::vector<std::pair<std::string, typename error_handler<int>::error_type>> error_scenarios = {
-            {"Network timeout occurred", error_handler<int>::error_type::network_timeout},
-            {"Connection timeout", error_handler<int>::error_type::network_timeout},
-            {"RPC timeout after 1000ms", error_handler<int>::error_type::network_timeout},
-            {"Operation timed out", error_handler<int>::error_type::network_timeout},
-            {"Connection refused", error_handler<int>::error_type::connection_refused},
-            {"Network is unreachable", error_handler<int>::error_type::network_unreachable},
-            {"No route to host", error_handler<int>::error_type::network_unreachable},
-            {"Temporary failure", error_handler<int>::error_type::temporary_failure}
+        std::vector<std::pair<std::string, typename kythira::error_type>> error_scenarios = {
+            {"Network timeout occurred", kythira::error_type::network_timeout},
+            {"Connection timeout", kythira::error_type::network_timeout},
+            {"RPC timeout after 1000ms", kythira::error_type::network_timeout},
+            {"Operation timed out", kythira::error_type::network_timeout},
+            {"Connection refused", kythira::error_type::connection_refused},
+            {"Network is unreachable", kythira::error_type::network_unreachable},
+            {"No route to host", kythira::error_type::network_unreachable},
+            {"Temporary failure", kythira::error_type::temporary_failure}
         };
         
         for (const auto& [error_msg, expected_type] : error_scenarios) {
@@ -128,7 +128,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             auto classification = handler.classify_error(std::runtime_error(timeout_msg));
             
             // Property: Timeouts with duration info should still be classified as timeouts
-            BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+            BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK(classification.should_retry);
             
             // Property: Description should contain relevant information
@@ -160,11 +160,11 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             
             if (is_timeout) {
                 // Property: Timeouts should be retryable
-                BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+                BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
                 BOOST_CHECK(classification.should_retry);
             } else {
                 // Property: Permanent failures should not be retryable
-                BOOST_CHECK_NE(classification.type, error_handler<int>::error_type::network_timeout);
+                BOOST_CHECK_NE(classification.type, kythira::error_type::network_timeout);
                 BOOST_CHECK(!classification.should_retry);
             }
             
@@ -260,7 +260,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             auto classification = handler.classify_error(std::runtime_error(timeout_msg));
             
             // Property: Context-specific timeouts should be classified consistently
-            BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+            BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK(classification.should_retry);
             
             BOOST_TEST_MESSAGE("✓ " << context << " timeout classified correctly");
@@ -290,7 +290,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             auto classification = handler.classify_error(std::runtime_error(pattern));
             
             // Property: All timeout patterns should be recognized
-            BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+            BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK(classification.should_retry);
             
             BOOST_TEST_MESSAGE("✓ Pattern recognized: " << pattern);
@@ -303,22 +303,22 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
         
         // Test errors that might be confused with timeouts but aren't
-        std::vector<std::pair<std::string, typename error_handler<int>::error_type>> non_timeout_errors = {
-            {"Connection refused", error_handler<int>::error_type::connection_refused},
-            {"Network is unreachable", error_handler<int>::error_type::network_unreachable},
-            {"serialization error", error_handler<int>::error_type::serialization_error},
-            {"protocol violation", error_handler<int>::error_type::protocol_error},
-            {"invalid format", error_handler<int>::error_type::serialization_error},
-            {"parse error", error_handler<int>::error_type::serialization_error},
-            {"Temporary failure", error_handler<int>::error_type::temporary_failure},
-            {"try again later", error_handler<int>::error_type::temporary_failure}
+        std::vector<std::pair<std::string, typename kythira::error_type>> non_timeout_errors = {
+            {"Connection refused", kythira::error_type::connection_refused},
+            {"Network is unreachable", kythira::error_type::network_unreachable},
+            {"serialization error", kythira::error_type::serialization_error},
+            {"protocol violation", kythira::error_type::protocol_error},
+            {"invalid format", kythira::error_type::serialization_error},
+            {"parse error", kythira::error_type::serialization_error},
+            {"Temporary failure", kythira::error_type::temporary_failure},
+            {"try again later", kythira::error_type::temporary_failure}
         };
         
         for (const auto& [error_msg, expected_type] : non_timeout_errors) {
             auto classification = handler.classify_error(std::runtime_error(error_msg));
             
             // Property: Non-timeout errors should not be classified as timeouts
-            BOOST_CHECK_NE(classification.type, error_handler<int>::error_type::network_timeout);
+            BOOST_CHECK_NE(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK_EQUAL(classification.type, expected_type);
             
             BOOST_TEST_MESSAGE("✓ Non-timeout error: " << error_msg 
@@ -338,7 +338,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             auto classification = handler.classify_error(std::runtime_error(consistent_timeout));
             
             // Property: Classification should be consistent across calls
-            BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+            BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK(classification.should_retry);
             BOOST_CHECK_EQUAL(classification.description, "Network operation timed out");
         }
@@ -374,15 +374,15 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             
             if (should_be_timeout) {
                 // Property: Should be classified as timeout
-                BOOST_CHECK_EQUAL(classification.type, error_handler<int>::error_type::network_timeout);
+                BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
                 BOOST_CHECK(classification.should_retry);
             } else {
                 // Property: Should not be classified as timeout
-                BOOST_CHECK_NE(classification.type, error_handler<int>::error_type::network_timeout);
+                BOOST_CHECK_NE(classification.type, kythira::error_type::network_timeout);
             }
             
             BOOST_TEST_MESSAGE("Edge case: " << error_msg 
-                              << " -> timeout=" << (classification.type == error_handler<int>::error_type::network_timeout));
+                              << " -> timeout=" << (classification.type == kythira::error_type::network_timeout));
         }
     }
     

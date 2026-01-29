@@ -71,12 +71,13 @@ namespace {
         using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
         
         // Component types with proper template parameters
-        using network_client_type = kythira::simulator_network_client<future_type, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<future_type, serializer_type, serialized_data_type>;
+        using network_client_type = kythira::simulator_network_client<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
+        using network_server_type = kythira::simulator_network_server<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
         using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
         using logger_type = kythira::console_logger;
         using metrics_type = kythira::noop_metrics;
         using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
         
         // Configuration type
         using configuration_type = kythira::raft_configuration;

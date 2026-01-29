@@ -18,13 +18,18 @@
 
 // Define test types for the transport
 struct TestTypes {
-    using future_type = kythira::Future<void>;
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;
     using address_type = std::string;
     using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
 namespace {
@@ -94,9 +99,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 kythira::noop_metrics metrics;
                 
                 try {
-                    kythira::console_logger logger;
                     kythira::coap_client<TestTypes> client(
-                        std::move(node_endpoints), client_config, metrics, std::move(logger));
+                        std::move(node_endpoints), client_config, metrics);
                     
                     // Test validation with various invalid certificates
                     std::string invalid_cert;
@@ -157,9 +161,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 kythira::noop_metrics server_metrics;
                 
                 try {
-                    kythira::console_logger server_logger;
                     kythira::coap_server<TestTypes> server(
-                        test_bind_address, test_bind_port, server_config, server_metrics, std::move(server_logger));
+                        test_bind_address, test_bind_port, server_config, server_metrics);
                     
                     // Test validation with various invalid client certificates
                     std::string invalid_client_cert;
@@ -222,9 +225,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 kythira::noop_metrics no_verify_metrics;
                 
                 try {
-                    kythira::console_logger no_verify_logger;
                     kythira::coap_client<TestTypes> no_verify_client(
-                        std::move(no_verify_endpoints), no_verify_config, no_verify_metrics, std::move(no_verify_logger));
+                        std::move(no_verify_endpoints), no_verify_config, no_verify_metrics);
                     
                     // When verification is disabled, even invalid certificates should be accepted
                     std::string invalid_cert = invalid_certificates[cert_index_dist(rng)];
@@ -261,9 +263,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 kythira::noop_metrics no_dtls_metrics;
                 
                 try {
-                    kythira::console_logger no_dtls_logger;
                     kythira::coap_client<TestTypes> no_dtls_client(
-                        std::move(no_dtls_endpoints), no_dtls_config, no_dtls_metrics, std::move(no_dtls_logger));
+                        std::move(no_dtls_endpoints), no_dtls_config, no_dtls_metrics);
                     
                     // When DTLS is disabled, certificate validation should always succeed
                     std::string any_cert = invalid_certificates[cert_index_dist(rng)];
@@ -311,9 +312,8 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         kythira::noop_metrics metrics;
         
         try {
-            kythira::console_logger logger;
             kythira::coap_client<TestTypes> client(
-                std::move(endpoints), config, metrics, std::move(logger));
+                        std::move(endpoints), config, metrics);
             
             bool exception_thrown = false;
             try {
@@ -348,9 +348,8 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         kythira::noop_metrics metrics;
         
         try {
-            kythira::console_logger logger;
             kythira::coap_client<TestTypes> client(
-                std::move(endpoints), config, metrics, std::move(logger));
+                        std::move(endpoints), config, metrics);
             
             bool validation_result = false;
             bool exception_thrown = false;
@@ -386,9 +385,8 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         kythira::noop_metrics metrics;
         
         try {
-            kythira::console_logger logger;
             kythira::coap_server<TestTypes> server(
-                test_bind_address, test_bind_port, config, metrics, std::move(logger));
+                        test_bind_address, test_bind_port, config, metrics);
             
             // Test various invalid client certificates
             for (const auto& invalid_cert : invalid_certificates) {

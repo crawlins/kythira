@@ -568,7 +568,7 @@ public:
     template<typename F>
     auto thenError(F&& func) -> Future<T> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
-            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 if constexpr (std::is_void_v<T>) {
                     func(ex);
                     return folly::Unit{};
@@ -577,7 +577,7 @@ public:
                 }
             }));
         } else {
-            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 if constexpr (std::is_void_v<T>) {
                     func(detail::to_std_exception_ptr(ex));
                     return folly::Unit{};
@@ -728,12 +728,12 @@ public:
     template<typename F>
     auto thenError(F&& func) -> Future<void> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
-            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 func(ex);
                 return folly::Unit{};
             }));
         } else {
-            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) {
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 func(detail::to_std_exception_ptr(ex));
                 return folly::Unit{};
             }));

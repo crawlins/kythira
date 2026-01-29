@@ -11,6 +11,7 @@
 #include <queue>
 #include <unordered_set>
 #include <unordered_map>
+#include <arpa/inet.h>
 
 #ifdef FOLLY_FUTURES_AVAILABLE
 #include <folly/futures/Future.h>
@@ -22,6 +23,35 @@
 #include <thread>
 
 namespace network_simulator {
+
+// Helper function to convert address to string
+template<typename AddressType>
+inline auto address_to_string(const AddressType& addr) -> std::string {
+    if constexpr (std::is_same_v<AddressType, std::string>) {
+        return addr;
+    } else if constexpr (std::is_same_v<AddressType, IPv4Address>) {
+        char buf[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &addr.get(), buf, INET_ADDRSTRLEN);
+        return std::string(buf);
+    } else if constexpr (std::is_same_v<AddressType, IPv6Address>) {
+        char buf[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &addr.get(), buf, INET6_ADDRSTRLEN);
+        return std::string(buf);
+    } else {
+        // For other types, try to use std::to_string
+        return std::to_string(addr);
+    }
+}
+
+// Helper function to convert port to string
+template<typename PortType>
+inline auto port_to_string(const PortType& port) -> std::string {
+    if constexpr (std::is_same_v<PortType, std::string>) {
+        return port;
+    } else {
+        return std::to_string(port);
+    }
+}
 
 // NetworkSimulator Implementation
 
@@ -555,15 +585,16 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         // Check if there's a route between the addresses using path finding
         auto path = find_path(src_addr, dst_addr);
         if (path.empty()) {
+            std::string src_str = address_to_string(src_addr);
+            std::string dst_str = address_to_string(dst_addr);
+            std::string error_msg = "No route from " + src_str + " to " + dst_str;
 #ifdef FOLLY_FUTURES_AVAILABLE
             // For folly::Future, return exception for no route
             return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(NoRouteException("No route from " + src_addr + " to " + dst_addr, 
-                                                         "No route from " + src_addr + " to " + dst_addr)));
+                folly::exception_wrapper(NoRouteException(error_msg, error_msg)));
 #else
             return future_connection_type(std::make_exception_ptr(
-                NoRouteException("No route from " + src_addr + " to " + dst_addr, 
-                               "No route from " + src_addr + " to " + dst_addr)));
+                NoRouteException(error_msg, error_msg)));
 #endif
         }
     }
@@ -581,9 +612,9 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             // Debug: Print available listeners
             std::string available_listeners;
             for (const auto& [ep, l] : _listeners) {
-                available_listeners += "(" + ep.address + ":" + std::to_string(ep.port) + ") ";
+                available_listeners += "(" + address_to_string(ep.address) + ":" + port_to_string(ep.port) + ") ";
             }
-            std::string error_msg = "Connection refused: no listener on " + dst_addr + ":" + std::to_string(dst_port) + 
+            std::string error_msg = "Connection refused: no listener on " + address_to_string(dst_addr) + ":" + port_to_string(dst_port) + 
                                   ". Available listeners: " + available_listeners;
 #ifdef FOLLY_FUTURES_AVAILABLE
             // For folly::Future, return exception for no listener - this should cause timeout
@@ -710,12 +741,13 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     
     // Check if port is already in use using ListenerManager
     if (_listener_manager && !_listener_manager->is_port_available(addr, port)) {
+        std::string port_str = port_to_string(port);
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(PortInUseException("Port " + std::to_string(port) + " is already in use")));
+            folly::exception_wrapper(PortInUseException("Port " + port_str + " is already in use")));
 #else
         return future_listener_type(std::make_exception_ptr(
-            PortInUseException("Port " + std::to_string(port) + " is already in use")));
+            PortInUseException("Port " + port_str + " is already in use")));
 #endif
     }
     
@@ -727,12 +759,13 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
             _listeners.erase(it);
         } else {
             // Port is still in use by an active listener
+            std::string port_str = port_to_string(port);
 #ifdef FOLLY_FUTURES_AVAILABLE
             return folly::makeFuture<std::shared_ptr<listener_type>>(
-                folly::exception_wrapper(PortInUseException("Port " + std::to_string(port) + " is already in use")));
+                folly::exception_wrapper(PortInUseException("Port " + port_str + " is already in use")));
 #else
             return future_listener_type(std::make_exception_ptr(
-                PortInUseException("Port " + std::to_string(port) + " is already in use")));
+                PortInUseException("Port " + port_str + " is already in use")));
 #endif
         }
     }

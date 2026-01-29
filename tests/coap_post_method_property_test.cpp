@@ -25,6 +25,22 @@ namespace {
     constexpr std::chrono::milliseconds test_timeout{5000};
 }
 
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
+
 BOOST_AUTO_TEST_SUITE(coap_post_method_property_tests)
 
 // **Feature: coap-transport, Property 2: CoAP POST method for all RPCs**
@@ -58,9 +74,8 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
             kythira::noop_metrics metrics;
             
             // Create CoAP client
-            kythira::console_logger logger;
-            kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-                std::move(endpoints), config, metrics, std::move(logger));
+            kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
             
             // Test RequestVote RPC - should use POST method
             {
@@ -155,10 +170,9 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
     
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+        std::move(endpoints), config, metrics);
     
     // Verify all RPC methods exist and can be called
     kythira::request_vote_request<> rv_req;
@@ -196,10 +210,9 @@ BOOST_AUTO_TEST_CASE(test_invalid_endpoint_handling, * boost::unit_test::timeout
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
     
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+        std::move(endpoints), config, metrics);
     
     // Try to send to a node that doesn't exist in the endpoint map
     kythira::request_vote_request<> request;

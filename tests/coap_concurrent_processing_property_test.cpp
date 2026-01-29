@@ -15,7 +15,7 @@
 #include <chrono>
 #include <raft/future.hpp>
 
-using namespace raft;
+using namespace kythira;
 
 namespace {
     constexpr const char* test_client_id = "test_client";
@@ -23,7 +23,22 @@ namespace {
     constexpr const char* test_endpoint = "coap://localhost:5683";
     constexpr std::size_t test_concurrent_requests = 50;
     constexpr std::chrono::milliseconds test_timeout{5000};
-}
+
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
 
 BOOST_AUTO_TEST_SUITE(coap_concurrent_processing_property_tests)
 

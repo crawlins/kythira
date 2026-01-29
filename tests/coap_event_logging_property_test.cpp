@@ -148,6 +148,22 @@ private:
 static_assert(kythira::diagnostic_logger<test_logger>,
     "test_logger must satisfy diagnostic_logger concept");
 
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = test_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
+
 BOOST_AUTO_TEST_SUITE(coap_event_logging_property_tests)
 
 /**
@@ -191,15 +207,10 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
             // The fact that this compiles and runs successfully demonstrates that
             // the logging infrastructure is properly integrated
             {
-                auto client = kythira::coap_client<
-                    kythira::json_rpc_serializer<std::vector<std::byte>>,
-                    kythira::noop_metrics,
-                    test_logger
-                >{
+                auto client = kythira::coap_client<test_transport_types>{
                     std::move(endpoints),
                     std::move(config),
-                    std::move(metrics),
-                    std::move(logger)
+                    std::move(metrics)
                 };
                 
                 // The client was created successfully, which means logging is working
@@ -251,16 +262,11 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::tim
             config.max_concurrent_sessions = max_concurrent_sessions;
             
             // Create CoAP server - this should generate initialization logs
-            auto server = kythira::coap_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                kythira::noop_metrics,
-                test_logger
-            >{
+            auto server = kythira::coap_server<test_transport_types>{
                 test_bind_address,
                 port,
                 std::move(config),
-                std::move(metrics),
-                std::move(logger)
+                std::move(metrics)
             };
             
             // Test server lifecycle operations - these should generate logs
@@ -317,15 +323,10 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
             endpoints[test_node_id] = test_endpoint;
             
             // Create CoAP client
-            auto client = kythira::coap_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                kythira::noop_metrics,
-                test_logger
-            >{
+            auto client = kythira::coap_client<test_transport_types>{
                 std::move(endpoints),
                 std::move(config),
-                std::move(metrics),
-                std::move(logger)
+                std::move(metrics)
             };
             
             // Create a RequestVote request
@@ -391,15 +392,10 @@ BOOST_AUTO_TEST_CASE(test_coap_error_logging, * boost::unit_test::timeout(30)) {
             endpoints[test_node_id] = endpoint;
             
             // Create CoAP client - this tests that logging infrastructure can handle various endpoints
-            auto client = kythira::coap_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                kythira::noop_metrics,
-                test_logger
-            >{
+            auto client = kythira::coap_client<test_transport_types>{
                 std::move(endpoints),
                 std::move(config),
-                std::move(metrics),
-                std::move(logger)
+                std::move(metrics)
             };
             
             // Attempt to establish DTLS connection - this should generate appropriate logs

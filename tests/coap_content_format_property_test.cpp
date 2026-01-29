@@ -21,6 +21,22 @@ namespace {
     constexpr std::uint64_t max_node_id = 100;
     constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
     constexpr std::chrono::milliseconds test_timeout{5000};
+
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
     
     // CoAP Content-Format values (RFC 7252)
     constexpr std::uint16_t coap_content_format_json = 50;
@@ -53,9 +69,8 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
         endpoints[1] = test_coap_endpoint;
         
         kythira::noop_metrics metrics;
-        kythira::console_logger logger;
-        kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-            std::move(endpoints), config, metrics, std::move(logger));
+        kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
         
         // Test RequestVote with JSON serializer
         kythira::request_vote_request<> request;
@@ -67,7 +82,7 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
         auto future = client.send_request_vote(1, request, std::chrono::milliseconds{100});
         
         // Verify the future was created (interface test for stub implementation)
-        BOOST_TEST(future.valid());
+        BOOST_TEST(future.isReady());
         
         BOOST_TEST_MESSAGE("JSON serializer Content-Format test passed");
         
@@ -123,17 +138,14 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics client_metrics;
-    kythira::console_logger client_logger;
     
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), client_config, client_metrics, std::move(client_logger));
+    kythira::coap_client<test_transport_types> client(
+        std::move(endpoints), client_config, client_metrics);
     
     kythira::coap_server_config server_config;
     kythira::noop_metrics server_metrics;
-    kythira::console_logger server_logger;
-    
-    kythira::coap_server<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> server(
-        "127.0.0.1", 5683, server_config, server_metrics, std::move(server_logger));
+    kythira::coap_server<test_transport_types> server(
+        "127.0.0.1", 5683, server_config, server_metrics);
     
     // Test that both client and server can be created with the same serializer
     // In a real implementation, this would verify:
@@ -151,7 +163,7 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
     request._last_log_term = 0;
     
     auto future = client.send_request_vote(1, request, test_timeout);
-    BOOST_TEST(future.valid());
+    BOOST_TEST(future.isReady());
     
     // For stub implementation, just verify the interface works
     // Don't call future.get() as it might hang in the stub implementation
@@ -173,10 +185,8 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
-    
-    kythira::coap_client<kythira::json_rpc_serializer<std::vector<std::byte>>, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+                std::move(endpoints), config, metrics);
     
     // Test different RPC types to ensure Accept option is set consistently
     std::vector<std::string> rpc_types = {"RequestVote", "AppendEntries", "InstallSnapshot"};
@@ -191,7 +201,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
                 request._last_log_term = 0;
                 
                 auto future = client.send_request_vote(1, request, test_timeout);
-                BOOST_TEST(future.valid());
+                BOOST_TEST(future.isReady());
                 
             } else if (rpc_type == "AppendEntries") {
                 kythira::append_entries_request<> request;
@@ -202,7 +212,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
                 request._leader_commit = 0;
                 
                 auto future = client.send_append_entries(1, request, test_timeout);
-                BOOST_TEST(future.valid());
+                BOOST_TEST(future.isReady());
                 
                 // For stub implementation, just verify the interface works
                 // Don't call future.get() as it might hang in the stub implementation
@@ -217,7 +227,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
                 request._done = true;
                 
                 auto future = client.send_install_snapshot(1, request, test_timeout);
-                BOOST_TEST(future.valid());
+                BOOST_TEST(future.isReady());
                 
                 // For stub implementation, just verify the interface works
                 // Don't call future.get() as it might hang in the stub implementation

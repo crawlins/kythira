@@ -34,8 +34,11 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
     constexpr std::uint64_t node_1_id = 1;
+    const std::string node_1_addr = std::to_string(node_1_id);
     constexpr std::uint64_t node_2_id = 2;
+    const std::string node_2_addr = std::to_string(node_2_id);
     constexpr std::uint64_t node_3_id = 3;
+    const std::string node_3_addr = std::to_string(node_3_id);
     
     constexpr std::chrono::milliseconds election_timeout_min{150};
     constexpr std::chrono::milliseconds election_timeout_max{300};
@@ -50,9 +53,9 @@ BOOST_AUTO_TEST_CASE(test_leader_sends_heartbeats) {
     simulator.start();
     
     // Create nodes in the simulator
-    auto node_1 = simulator.create_node(node_1_id);
-    auto node_2 = simulator.create_node(node_2_id);
-    auto node_3 = simulator.create_node(node_3_id);
+    auto node_1 = simulator.create_node(node_1_addr);
+    auto node_2 = simulator.create_node(node_2_addr);
+    auto node_3 = simulator.create_node(node_3_addr);
     
     // Create Raft configuration
     kythira::raft_configuration config;
@@ -158,7 +161,7 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_mechanism_for_leader) {
     simulator.start();
     
     // Create node in the simulator
-    auto node_1 = simulator.create_node(node_1_id);
+    auto node_1 = simulator.create_node(node_1_addr);
     
     // Create Raft configuration with short heartbeat interval
     kythira::raft_configuration config;
@@ -231,7 +234,7 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_timeout_elapsed) {
     simulator.start();
     
     // Create node in the simulator
-    auto node_1 = simulator.create_node(node_1_id);
+    auto node_1 = simulator.create_node(node_1_addr);
     
     // Create Raft configuration with short heartbeat interval
     kythira::raft_configuration config;

@@ -6,13 +6,14 @@
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_utils.hpp>
+#include <raft/coap_config_validation.hpp>
 #include <raft/coap_exceptions.hpp>
 
 #include <chrono>
 #include <vector>
 #include <string>
 
-using namespace raft;
+using namespace kythira;
 using namespace kythira::coap_utils;
 
 // Stream operator for coap_content_format (for testing)
@@ -191,7 +192,6 @@ BOOST_AUTO_TEST_CASE(test_valid_server_config) {
     config.max_request_size = 64 * 1024;
     config.session_timeout = valid_session_timeout;
     config.max_block_size = valid_block_size;
-    config.exponential_backoff_factor = valid_backoff_factor;
     
     BOOST_CHECK_NO_THROW(validate_server_config(config));
 }

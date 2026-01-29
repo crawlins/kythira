@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Note: folly is required for the full implementation
 # For now, we'll make it optional to allow initial build
 find_package(folly QUIET)
-find_package(Boost QUIET COMPONENTS system thread unit_test_framework)
+find_package(Boost QUIET COMPONENTS system thread unit_test_framework json)
 find_package(httplib QUIET)
 find_package(OpenSSL QUIET)
 
@@ -61,6 +61,10 @@ if(Boost_FOUND)
         Boost::system
         Boost::thread
     )
+    # Create boost_json alias if Boost::json exists
+    if(TARGET Boost::json AND NOT TARGET boost_json)
+        add_library(boost_json ALIAS Boost::json)
+    endif()
 endif()
 
 if(httplib_FOUND)

@@ -48,7 +48,7 @@ auto string_to_bytes(const std::string& str) -> std::vector<std::byte> {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
  * rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -125,7 +125,7 @@ BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
  * rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
  * with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     
@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -240,7 +240,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
  */
 BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
     std::mt19937 rng(std::random_device{}());
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     std::uniform_int_distribution<std::size_t> size_dist(1, max_random_bytes);
@@ -272,7 +272,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
  * the deserializer rejects it with an appropriate error.
  */
 BOOST_AUTO_TEST_CASE(property_invalid_entry_data_rejection) {
-    kythira::json_rpc_serializer<> serializer;
+    kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
     
     std::size_t rejection_count = 0;
     

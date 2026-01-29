@@ -14,7 +14,7 @@
 #include <atomic>
 #include <chrono>
 
-using namespace raft;
+using namespace kythira;
 
 namespace {
     constexpr const char* test_endpoint_1 = "coap://node1.example.com:5683";
@@ -23,6 +23,23 @@ namespace {
     constexpr std::size_t test_pool_size = 10;
     constexpr std::size_t test_request_count = 50;
 }
+
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
+
 
 BOOST_AUTO_TEST_SUITE(coap_connection_reuse_property_tests)
 

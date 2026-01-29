@@ -10,8 +10,49 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <iostream>
 
 namespace kythira {
+
+/**
+ * @brief Error type classification for different handling strategies
+ */
+enum class error_type {
+    network_timeout,        // Network operation timed out
+    network_unreachable,    // Target node unreachable
+    connection_refused,     // Connection actively refused
+    serialization_error,    // Message serialization/deserialization failed
+    protocol_error,         // Raft protocol violation
+    temporary_failure,      // Temporary failure, should retry
+    permanent_failure,      // Permanent failure, should not retry
+    unknown_error          // Unclassified error
+};
+
+/**
+ * @brief Stream output operator for error_type
+ */
+inline auto operator<<(std::ostream& os, error_type type) -> std::ostream& {
+    switch (type) {
+        case error_type::network_timeout: return os << "network_timeout";
+        case error_type::network_unreachable: return os << "network_unreachable";
+        case error_type::connection_refused: return os << "connection_refused";
+        case error_type::serialization_error: return os << "serialization_error";
+        case error_type::protocol_error: return os << "protocol_error";
+        case error_type::temporary_failure: return os << "temporary_failure";
+        case error_type::permanent_failure: return os << "permanent_failure";
+        case error_type::unknown_error: return os << "unknown_error";
+        default: return os << "unknown(" << static_cast<int>(type) << ")";
+    }
+}
+
+/**
+ * @brief Error classification result
+ */
+struct error_classification {
+    error_type type;
+    bool should_retry;
+    std::string description;
+};
 
 /**
  * @brief Comprehensive error handling system for Raft operations
@@ -43,29 +84,6 @@ public:
                    jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
                    max_attempts > 0;
         }
-    };
-    
-    /**
-     * @brief Error classification for different handling strategies
-     */
-    enum class error_type {
-        network_timeout,        // Network operation timed out
-        network_unreachable,    // Target node unreachable
-        connection_refused,     // Connection actively refused
-        serialization_error,    // Message serialization/deserialization failed
-        protocol_error,         // Raft protocol violation
-        temporary_failure,      // Temporary failure, should retry
-        permanent_failure,      // Permanent failure, should not retry
-        unknown_error          // Unclassified error
-    };
-    
-    /**
-     * @brief Error classification result
-     */
-    struct error_classification {
-        error_type type;
-        bool should_retry;
-        std::string description;
     };
     
     /**
@@ -333,21 +351,34 @@ private:
     ) -> kythira::Future<Result> {
         return std::forward<Operation>(op)()
             .thenError([this, operation_name, op = std::forward<Operation>(op), policy, attempt]
-                      (const std::exception& e) mutable -> kythira::Future<Result> {
+                      (std::exception_ptr eptr) mutable -> Result {
                 
-                auto classification = classify_error(e);
-                
-                // If we shouldn't retry this error type, or we've exhausted attempts, fail
-                if (!classification.should_retry || attempt >= policy.max_attempts) {
-                    return kythira::FutureFactory::makeExceptionalFuture<Result>(e);
+                // Convert exception_ptr to exception for classification
+                try {
+                    if (eptr) {
+                        std::rethrow_exception(eptr);
+                    }
+                } catch (const std::exception& e) {
+                    auto classification = classify_error(e);
+                    
+                    // If we shouldn't retry this error type, or we've exhausted attempts, rethrow
+                    if (!classification.should_retry || attempt >= policy.max_attempts) {
+                        std::rethrow_exception(eptr);
+                    }
+                    
+                    // Calculate delay with exponential backoff and jitter
+                    auto delay = calculate_delay(policy, attempt);
+                    
+                    // Retry by calling execute_with_retry_impl recursively and getting the result
+                    // This will block, but that's okay for the retry logic
+                    return execute_with_retry_impl(operation_name, std::move(op), policy, attempt + 1).get();
+                } catch (...) {
+                    // Unknown exception type, don't retry - rethrow
+                    throw;
                 }
                 
-                // Calculate delay with exponential backoff and jitter
-                auto delay = calculate_delay(policy, attempt);
-                
-                // For now, just retry immediately without delay to avoid complex async scheduling
-                // In a production system, you would want to implement proper delay
-                return execute_with_retry_impl(operation_name, std::move(op), policy, attempt + 1);
+                // Should never reach here
+                throw std::runtime_error("Unexpected error in retry logic");
             });
     }
     

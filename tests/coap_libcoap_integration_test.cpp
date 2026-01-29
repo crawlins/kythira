@@ -12,21 +12,13 @@
 
 using namespace kythira;
 
-// Test transport types
-struct test_transport_types {
-    using serializer_type = json_rpc_serializer<std::vector<std::byte>>;
-    using rpc_serializer_type = json_rpc_serializer<std::vector<std::byte>>;
-    using metrics_type = noop_metrics;
-    using logger_type = console_logger;
-    using address_type = std::string;
-    using port_type = std::uint16_t;
-    using executor_type = folly::Executor;
-    
-    template<typename T>
-    using future_template = folly::Future<T>;
-    
-    using future_type = folly::Future<std::vector<std::byte>>;
-};
+// Test transport types using default_transport_types
+using test_transport_types = kythira::default_transport_types<
+    kythira::Future<kythira::request_vote_response<>>,
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    kythira::console_logger
+>;
 
 BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(30)) {
     noop_metrics metrics;
@@ -45,12 +37,10 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(
 #ifdef LIBCOAP_AVAILABLE
     // Test real libcoap context creation
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         // Verify context was created
@@ -61,12 +51,10 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(
 #else
     // Test stub implementation
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         logger.warning("Using stub implementation - libcoap not available");
@@ -91,12 +79,10 @@ BOOST_AUTO_TEST_CASE(test_session_management, * boost::unit_test::timeout(30)) {
     logger.info("Testing session management");
     
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         // Test session creation and reuse
@@ -119,12 +105,10 @@ BOOST_AUTO_TEST_CASE(test_serialization_caching, * boost::unit_test::timeout(30)
     logger.info("Testing serialization caching");
     
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         // Test caching functionality
@@ -150,12 +134,10 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration, * boost::unit_test::timeout(30)) {
     logger.info("Testing DTLS configuration");
     
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         // Test DTLS setup
@@ -174,13 +156,11 @@ BOOST_AUTO_TEST_CASE(test_server_context_creation, * boost::unit_test::timeout(3
     logger.info("Testing server context creation");
     
     BOOST_CHECK_NO_THROW({
-        console_logger server_logger;
         coap_server<test_transport_types> server(
             "127.0.0.1",
             5683,
             config,
-            metrics,
-            std::move(server_logger)
+            metrics
         );
         
         // Test server initialization
@@ -203,12 +183,10 @@ BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, * boost::unit_test::timeout(3
     logger.info("Testing enhanced error handling");
     
     BOOST_CHECK_NO_THROW({
-        console_logger client_logger;
         coap_client<test_transport_types> client(
             std::move(endpoints),
             config,
-            metrics,
-            std::move(client_logger)
+            metrics
         );
         
         // Test error handling during initialization

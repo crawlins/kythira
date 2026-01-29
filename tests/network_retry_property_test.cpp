@@ -41,6 +41,8 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
     constexpr std::uint64_t client_node_id = 1;
     constexpr std::uint64_t server_node_id = 2;
+    const std::string client_node_addr = std::to_string(client_node_id);
+    const std::string server_node_addr = std::to_string(server_node_id);
     constexpr std::chrono::milliseconds rpc_timeout{500};
     constexpr std::chrono::milliseconds retry_delay{100};
     constexpr int max_retries = 5;
@@ -96,28 +98,28 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
-        simulator.add_node(client_node_id);
-        simulator.add_node(server_node_id);
+        simulator.add_node(client_node_addr);
+        simulator.add_node(server_node_addr);
         
         // Add unreliable bidirectional edges (30% reliability)
         network_simulator::NetworkEdge unreliable_edge{
             std::chrono::milliseconds{10},
             unreliable_network_reliability
         };
-        simulator.add_edge(client_node_id, server_node_id, unreliable_edge);
-        simulator.add_edge(server_node_id, client_node_id, unreliable_edge);
+        simulator.add_edge(client_node_addr, server_node_addr, unreliable_edge);
+        simulator.add_edge(server_node_addr, client_node_addr, unreliable_edge);
         
         // Create nodes
-        auto client_node = simulator.create_node(client_node_id);
-        auto server_node = simulator.create_node(server_node_id);
+        auto client_node = simulator.create_node(client_node_addr);
+        auto server_node = simulator.create_node(server_node_addr);
         
         // Start simulator
         simulator.start();
         
         // Create network client and server
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
-        kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
         server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
@@ -209,21 +211,21 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
         network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
-        simulator.add_node(client_node_id);
-        simulator.add_node(server_node_id);
+        simulator.add_node(client_node_addr);
+        simulator.add_node(server_node_addr);
         
         // DO NOT add edges - no route exists (permanent failure)
         
         // Create nodes
-        auto client_node = simulator.create_node(client_node_id);
-        auto server_node = simulator.create_node(server_node_id);
+        auto client_node = simulator.create_node(client_node_addr);
+        auto server_node = simulator.create_node(server_node_addr);
         
         // Start simulator
         simulator.start();
         
         // Create network client
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
         
         // Create request
         kythira::request_vote_request<> request;
@@ -285,28 +287,28 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately) {
         network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes> simulator;
         
         // Add nodes to topology
-        simulator.add_node(client_node_id);
-        simulator.add_node(server_node_id);
+        simulator.add_node(client_node_addr);
+        simulator.add_node(server_node_addr);
         
         // Add reliable bidirectional edges (100% reliability)
         network_simulator::NetworkEdge reliable_edge{
             std::chrono::milliseconds{10},
             reliable_network_reliability
         };
-        simulator.add_edge(client_node_id, server_node_id, reliable_edge);
-        simulator.add_edge(server_node_id, client_node_id, reliable_edge);
+        simulator.add_edge(client_node_addr, server_node_addr, reliable_edge);
+        simulator.add_edge(server_node_addr, client_node_addr, reliable_edge);
         
         // Create nodes
-        auto client_node = simulator.create_node(client_node_id);
-        auto server_node = simulator.create_node(server_node_id);
+        auto client_node = simulator.create_node(client_node_addr);
+        auto server_node = simulator.create_node(server_node_addr);
         
         // Start simulator
         simulator.start();
         
         // Create network client and server
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<serializer_type, std::vector<std::byte>> client(client_node);
-        kythira::simulator_network_server<serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> server(server_node);
         
         // Register handler on server
         server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
