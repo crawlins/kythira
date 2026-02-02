@@ -242,7 +242,20 @@ public:
     auto thenValue(F&& func) -> Future<std::invoke_result_t<F, T>>;
     
     template<typename F>
+    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<T>>>;
+    
+    // Future-returning callback overloads (for async retry patterns)
+    template<typename F>
+    auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
+        requires(detail::is_future<std::invoke_result_t<F, Try<T>>>::value);
+    
+    template<typename F>
     auto thenError(F&& func) -> Future<T>;
+    
+    // Future-returning callback overload (for async error recovery)
+    template<typename F>
+    auto thenError(F&& func) -> Future<T>
+        requires(detail::is_future<std::invoke_result_t<F, folly::exception_wrapper>>::value);
     
     template<typename F>
     auto ensure(F&& func) -> Future<T>;
@@ -302,7 +315,51 @@ auto scheduled_future = kythira::Future<int>(100)
     .thenValue([](int value) {
         return value * 2;
     });
+
+// Async retry pattern with Future-returning callbacks
+auto retry_operation() -> kythira::Future<int> {
+    return perform_operation()
+        .thenTry([attempt = 0](kythira::Try<int> result) mutable 
+            -> kythira::Future<int> {
+            
+            if (result.hasValue()) {
+                return kythira::FutureFactory::makeFuture(result.value());
+            }
+            
+            if (attempt >= 3) {
+                // Max retries reached
+                return kythira::FutureFactory::makeExceptionalFuture<int>(
+                    result.exception()
+                );
+            }
+            
+            // Retry with exponential backoff (non-blocking)
+            auto delay = std::chrono::milliseconds(100 * (1 << attempt));
+            attempt++;
+            
+            return kythira::FutureFactory::makeFuture(folly::Unit{})
+                .delay(delay)
+                .thenValue([]() -> kythira::Future<int> {
+                    return perform_operation();
+                });
+        });
+}
+
+// Async error recovery with Future-returning callbacks
+auto fetch_with_fallback() -> kythira::Future<std::string> {
+    return fetch_from_primary()
+        .thenError([](folly::exception_wrapper ex) -> kythira::Future<std::string> {
+            // Primary failed - try backup after delay (non-blocking)
+            return kythira::FutureFactory::makeFuture(folly::Unit{})
+                .delay(std::chrono::milliseconds(50))
+                .thenValue([]() -> kythira::Future<std::string> {
+                    return fetch_from_backup();
+                });
+        });
+}
 ```
+
+**Note:** For comprehensive async retry patterns including exponential backoff with jitter, selective retry based on error type, circuit breaker patterns, and performance comparisons, see the [Async Retry Patterns](async_retry_patterns.md) documentation.
 
 ### Executor - Executor Wrapper
 
@@ -888,6 +945,7 @@ auto result = process_async_result(std::move(folly_wrapper)); // Returns 42
 
 ## See Also
 
+- [Async Retry Patterns](async_retry_patterns.md) - Non-blocking retry patterns with Future-returning callbacks
 - [Concepts Documentation](concepts_documentation.md) - C++20 concepts reference
 - [Concepts API Reference](concepts_api_reference.md) - Complete API documentation
 - [Concepts Migration Guide](concepts_migration_guide.md) - Migration from older versions

@@ -382,3 +382,39 @@ This specification defines the requirements for enhancing the C++20 concepts in 
 3. WHEN compilation is performed THEN the system SHALL build successfully with no future-related errors
 4. WHEN tests are executed THEN the system SHALL pass all existing tests
 5. WHEN the conversion is validated THEN the system SHALL demonstrate equivalent performance characteristics
+
+### Requirement 30
+
+**User Story:** As a developer implementing async retry logic, I want `thenTry` to support Future-returning callbacks with automatic flattening, so that I can chain async operations in error handling paths without blocking threads.
+
+#### Acceptance Criteria
+
+1. WHEN a developer uses thenTry with a callback that returns Future<U> THEN the system SHALL return Future<U> instead of Future<Future<U>>
+2. WHEN a developer chains async operations in thenTry THEN the system SHALL automatically flatten nested futures
+3. WHEN a developer uses thenTry with Future-returning callbacks THEN the system SHALL maintain proper error propagation
+4. WHEN a developer uses thenTry with Future-returning callbacks THEN the system SHALL support both success and error cases in the Try parameter
+5. WHEN a developer uses thenTry with Future-returning callbacks THEN the system SHALL work with both void and non-void future types
+
+### Requirement 31
+
+**User Story:** As a developer implementing async retry logic, I want `thenError` to support Future-returning callbacks with automatic flattening, so that I can implement non-blocking retry delays in error handlers.
+
+#### Acceptance Criteria
+
+1. WHEN a developer uses thenError with a callback that returns Future<T> THEN the system SHALL return Future<T> instead of attempting to convert Future<T> to T
+2. WHEN a developer chains async operations in thenError THEN the system SHALL automatically flatten nested futures
+3. WHEN a developer uses thenError with Future-returning callbacks THEN the system SHALL maintain proper error recovery semantics
+4. WHEN a developer uses thenError with Future-returning callbacks THEN the system SHALL support async delay operations before retry
+5. WHEN a developer uses thenError with Future-returning callbacks THEN the system SHALL work with both void and non-void future types
+
+### Requirement 32
+
+**User Story:** As a developer implementing retry logic, I want to use async delays instead of blocking sleep, so that threads are not blocked during retry backoff periods.
+
+#### Acceptance Criteria
+
+1. WHEN retry logic calculates a delay THEN the system SHALL use Future.delay() instead of std::this_thread::sleep_for
+2. WHEN retry logic chains operations THEN the system SHALL use thenTry or thenError with Future-returning callbacks
+3. WHEN retry logic executes THEN the system SHALL not block any threads during delay periods
+4. WHEN retry logic handles errors THEN the system SHALL maintain proper exception propagation through async chains
+5. WHEN retry logic completes THEN the system SHALL return results asynchronously without blocking

@@ -522,3 +522,82 @@
   - Validate performance characteristics
   - Confirm backward compatibility maintained
   - _Requirements: All requirements_
+
+## Phase 3: Async Retry Support
+
+**Note**: These tasks add support for Future-returning callbacks in `thenTry` and `thenError` to enable non-blocking async retry patterns.
+
+- [x] 56. Add thenTry overload for Future-returning callbacks
+  - Add template overload that detects Future-returning callbacks using SFINAE/concepts
+  - Implement automatic future flattening by extracting folly::Future from wrapper
+  - Handle both void and non-void future types correctly
+  - Ensure proper error propagation through async chains
+  - Maintain compatibility with existing thenTry overload
+  - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5_
+
+- [x] 56.1 Write property test for thenTry with Future-returning callbacks
+  - **Property 25: Future-Returning Callback Support in thenTry**
+  - **Validates: Requirements 30.1, 30.2, 30.3, 30.4, 30.5**
+
+- [x] 57. Add thenError overload for Future-returning callbacks
+  - Add template overload that detects Future-returning callbacks using SFINAE/concepts
+  - Implement automatic future flattening by extracting folly::Future from wrapper
+  - Handle both void and non-void future types correctly
+  - Ensure proper error recovery semantics
+  - Maintain compatibility with existing thenError overload
+  - _Requirements: 31.1, 31.2, 31.3, 31.4, 31.5_
+
+- [x] 57.1 Write property test for thenError with Future-returning callbacks
+  - **Property 26: Future-Returning Callback Support in thenError**
+  - **Validates: Requirements 31.1, 31.2, 31.3, 31.4, 31.5**
+
+- [x] 58. Add void specialization support for Future-returning callbacks
+  - Ensure thenTry overload works with Future<void> callbacks
+  - Ensure thenError overload works with Future<void> callbacks
+  - Handle Unit/void conversions correctly in async chains
+  - Test with both void and non-void future types
+  - _Requirements: 30.5, 31.5_
+
+- [x] 59. Refactor ErrorHandler to use async retry pattern
+  - Replace std::this_thread::sleep_for with Future.delay()
+  - Use thenTry with Future-returning callback for retry logic
+  - Ensure no threads are blocked during retry delays
+  - Maintain proper exception propagation through async chains
+  - Update error handler tests to validate async behavior
+  - _Requirements: 32.1, 32.2, 32.3, 32.4, 32.5_
+
+- [x] 59.1 Write property test for async retry without blocking
+  - **Property 27: Async Retry Without Blocking**
+  - **Validates: Requirements 32.1, 32.2, 32.3, 32.4, 32.5**
+
+- [x] 60. Update error handler unit tests for async behavior
+  - Modify existing unit tests to work with async delays
+  - Verify delays are still applied correctly
+  - Ensure exponential backoff calculation remains correct
+  - Validate jitter is still applied properly
+  - Confirm no threads are blocked during delays
+  - _Requirements: 32.1, 32.2, 32.3_
+
+- [x] 61. Validate async retry with property tests
+  - Run raft_heartbeat_retry_backoff_property_test with async implementation
+  - Run raft_append_entries_retry_handling_property_test with async implementation
+  - Run raft_snapshot_transfer_retry_property_test with async implementation
+  - Run raft_vote_request_failure_handling_property_test with async implementation
+  - Ensure all property tests pass with async retry logic
+  - _Requirements: 32.1, 32.2, 32.3, 32.4, 32.5_
+
+- [x] 62. Add documentation for async retry patterns
+  - Document the new thenTry and thenError overloads
+  - Provide examples of async retry patterns
+  - Explain benefits of async vs blocking approach
+  - Add migration guide for converting blocking retry to async
+  - Document performance characteristics
+  - _Requirements: 30.1, 31.1, 32.1_
+
+- [x] 63. Final async retry validation
+  - Ensure all tests pass with async retry implementation
+  - Verify no threads are blocked during retry delays
+  - Validate performance improvements over blocking approach
+  - Confirm backward compatibility maintained
+  - Document the async retry architecture
+  - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 31.1, 31.2, 31.3, 31.4, 31.5, 32.1, 32.2, 32.3, 32.4, 32.5_

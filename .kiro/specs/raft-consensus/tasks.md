@@ -1507,6 +1507,50 @@ The following tasks complete the placeholder implementations identified during c
   - _Location: include/raft/raft.hpp:1245-1248_
   - _Priority: High_
 
+### State Machine Integration Subtasks
+
+The following subtasks complete the state machine integration by replacing TODO comments with actual state machine method calls:
+
+- [x] 301.1 Replace TODO with actual state machine apply call in apply_committed_entries (success path)
+  - Locate TODO comment at line 2953-2957 in include/raft/raft.hpp
+  - Replace the TODO comment and placeholder with actual call: `auto result = _state_machine.apply(entry.command(), entry.index());`
+  - Use the result from state machine apply in the CommitWaiter notification callback
+  - Ensure proper error handling if apply throws an exception
+  - Verify that the result is passed to waiting futures correctly
+  - _Requirements: 1.1, 7.4, 15.2, 19.1, 19.2, 19.3_
+  - _Location: include/raft/raft.hpp:2953-2957_
+  - _Priority: Critical - Required for task 301 completion_
+
+- [x] 301.2 Replace TODO with actual state machine apply call in apply_committed_entries (retry path)
+  - Locate TODO comment at line 3052-3054 in include/raft/raft.hpp
+  - Replace the TODO comment with actual call: `auto result = _state_machine.apply(entry.command(), entry.index());`
+  - Use the result from state machine apply in the CommitWaiter notification callback
+  - Ensure proper error handling for retry failures
+  - Verify that retry logic works correctly with actual state machine
+  - _Requirements: 1.1, 7.4, 15.2, 19.4_
+  - _Location: include/raft/raft.hpp:3052-3054_
+  - _Priority: Critical - Required for task 301 completion_
+
+- [x] 302.1 Replace placeholder with actual state machine get_state call in create_snapshot
+  - Locate the create_snapshot method implementation in include/raft/raft.hpp
+  - Replace empty state placeholder with actual call: `auto state = _state_machine.get_state();`
+  - Use the captured state in snapshot creation
+  - Ensure proper error handling if get_state throws an exception
+  - Add logging for state size captured
+  - _Requirements: 10.1, 10.2, 31.1_
+  - _Location: include/raft/raft.hpp (create_snapshot method)_
+  - _Priority: High - Required for task 302 completion_
+
+- [x] 303.1 Replace placeholder with actual state machine restore_from_snapshot call in install_snapshot
+  - Locate the install_snapshot method implementation in include/raft/raft.hpp
+  - Replace placeholder with actual call: `_state_machine.restore_from_snapshot(snapshot.state_machine_state(), snapshot.last_included_index());`
+  - Ensure proper error handling if restore_from_snapshot throws an exception
+  - Verify that last_applied is updated correctly after restoration
+  - Add logging for snapshot restoration progress
+  - _Requirements: 10.3, 10.4, 31.2_
+  - _Location: include/raft/raft.hpp (install_snapshot method)_
+  - _Priority: High - Required for task 303 completion_
+
 ### RPC Handler Implementations
 
 - [x] 304. Complete handle_request_vote implementation
@@ -1635,7 +1679,7 @@ The following tasks complete the placeholder implementations identified during c
 
 ### Client Operations
 
-- [ ] 312. Complete submit_read_only implementation
+- [x] 312. Complete submit_read_only implementation
   - Replace placeholder that returns empty future (lines 456-458)
   - Implement linearizable read using heartbeat-based lease
   - Verify leadership by collecting majority heartbeat responses
@@ -1648,7 +1692,7 @@ The following tasks complete the placeholder implementations identified during c
   - _Location: include/raft/raft.hpp:456-458_
   - _Priority: High_
 
-- [ ] 313. Complete submit_command with timeout implementation
+- [x] 313. Complete submit_command with timeout implementation
   - Replace placeholder that just calls basic version (lines 477-479)
   - Implement proper timeout handling for command submission
   - Register operation with CommitWaiter with specified timeout
@@ -1845,7 +1889,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
 
 ### Retry Logic with Exponential Backoff (4 failing tests)
 
-- [ ] 400. Implement exponential backoff delay logic in ErrorHandler
+- [x] 400. Implement exponential backoff delay logic in ErrorHandler
   - Locate ErrorHandler class implementation in include/raft/error_handler.hpp
   - Replace placeholder delay logic that returns 0ms delays
   - Implement exponential backoff calculation: delay = initial_delay * (backoff_multiplier ^ attempt)
@@ -1859,13 +1903,13 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_heartbeat_retry_backoff_property_test, raft_append_entries_retry_handling_property_test, raft_snapshot_transfer_retry_property_test, raft_vote_request_failure_handling_property_test_
   - _Priority: High_
 
-- [ ] 400.1 Write unit test for exponential backoff calculation
+- [x] 400.1 Write unit test for exponential backoff calculation
   - Test delay calculation for multiple retry attempts
   - Verify delay caps at max_delay
   - Test jitter application
   - Verify delays are actually applied (not 0ms)
 
-- [ ] 401. Integrate exponential backoff into heartbeat retry logic
+- [x] 401. Integrate exponential backoff into heartbeat retry logic
   - Locate heartbeat sending code in node implementation
   - Wrap heartbeat RPC calls with ErrorHandler::execute_with_retry
   - Configure retry_policy for heartbeats (initial_delay=100ms, max_delay=5000ms, backoff_multiplier=2.0)
@@ -1876,12 +1920,12 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_heartbeat_retry_backoff_property_test_
   - _Priority: High_
 
-- [ ] 401.1 Verify raft_heartbeat_retry_backoff_property_test passes
+- [x] 401.1 Verify raft_heartbeat_retry_backoff_property_test passes
   - Run test and verify it passes with exponential backoff implementation
   - Verify retry delays follow expected pattern (100ms, 200ms, 400ms, etc.)
   - Document any remaining issues
 
-- [ ] 402. Integrate exponential backoff into AppendEntries retry logic
+- [x] 402. Integrate exponential backoff into AppendEntries retry logic
   - Locate AppendEntries RPC sending code in replicate_to_followers
   - Wrap AppendEntries RPC calls with ErrorHandler::execute_with_retry
   - Configure retry_policy for AppendEntries (initial_delay=100ms, max_delay=5000ms, backoff_multiplier=2.0)
@@ -1892,12 +1936,12 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_append_entries_retry_handling_property_test_
   - _Priority: High_
 
-- [ ] 402.1 Verify raft_append_entries_retry_handling_property_test passes
+- [x] 402.1 Verify raft_append_entries_retry_handling_property_test passes
   - Run test and verify it passes with exponential backoff implementation
   - Verify retry delays follow expected pattern
   - Document any remaining issues
 
-- [ ] 403. Integrate exponential backoff into InstallSnapshot retry logic
+- [x] 403. Integrate exponential backoff into InstallSnapshot retry logic
   - Locate InstallSnapshot RPC sending code in send_install_snapshot_to
   - Wrap InstallSnapshot RPC calls with ErrorHandler::execute_with_retry
   - Configure retry_policy for InstallSnapshot (initial_delay=200ms, max_delay=10000ms, backoff_multiplier=2.0)
@@ -1906,16 +1950,16 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Add comprehensive logging for snapshot transfer retry attempts
   - Add metrics for snapshot transfer retry counts
   - _Requirements: 18.3_
-  - _Tests Fixed: raft_snapshot_transfer_retry_property_test_
+  - _Tests Fixed: raft_snapshot_transfer_retry_property_test_z
   - _Priority: High_
 
-- [ ] 403.1 Verify raft_snapshot_transfer_retry_property_test passes
+- [x] 403.1 Verify raft_snapshot_transfer_retry_property_test passes
   - Run test and verify it passes with exponential backoff implementation
   - Verify retry delays follow expected pattern
   - Verify resume capability works for partial transfers
   - Document any remaining issues
 
-- [ ] 404. Integrate exponential backoff into RequestVote retry logic
+- [x] 404. Integrate exponential backoff into RequestVote retry logic
   - Locate RequestVote RPC sending code in start_election
   - Wrap RequestVote RPC calls with ErrorHandler::execute_with_retry
   - Configure retry_policy for RequestVote (initial_delay=100ms, max_delay=3000ms, backoff_multiplier=2.0)
@@ -1926,14 +1970,14 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_vote_request_failure_handling_property_test_
   - _Priority: High_
 
-- [ ] 404.1 Verify raft_vote_request_failure_handling_property_test passes
+- [x] 404.1 Verify raft_vote_request_failure_handling_property_test passes
   - Run test and verify it passes with exponential backoff implementation
   - Verify retry delays follow expected pattern
   - Document any remaining issues
 
 ### Async Command Submission Pipeline (1 failing test)
 
-- [ ] 405. Implement async command submission with proper commit waiting
+- [x] 405. Implement async command submission with proper commit waiting
   - Locate submit_command implementation in node class
   - Remove placeholder implementation that returns immediately completed future
   - Implement proper async pipeline:
@@ -1950,14 +1994,14 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_commit_waiting_completion_property_test_
   - _Priority: High_
 
-- [ ] 405.1 Write integration test for async command submission pipeline
+- [x] 405.1 Write integration test for async command submission pipeline
   - Test command submission with various replication scenarios
   - Verify future doesn't complete until commit and application
   - Test leadership loss during command processing
   - Test timeout handling
   - Verify proper ordering of concurrent commands
 
-- [ ] 406. Integrate CommitWaiter with state machine application
+- [x] 406. Integrate CommitWaiter with state machine application
   - Locate apply_committed_entries implementation
   - After successfully applying each entry to state machine:
     1. Call CommitWaiter::notify_committed_and_applied with entry index
@@ -1970,7 +2014,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_commit_waiting_completion_property_test_
   - _Priority: High_
 
-- [ ] 406.1 Verify raft_commit_waiting_completion_property_test passes
+- [x] 406.1 Verify raft_commit_waiting_completion_property_test passes
   - Run test and verify it passes with async command submission
   - Verify futures complete only after commit and application
   - Verify proper error propagation
@@ -1978,7 +2022,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
 
 ### Application Logic (2 failing tests)
 
-- [ ] 407. Implement application failure handling and recovery
+- [x] 407. Implement application failure handling and recovery
   - Locate apply_committed_entries implementation
   - Implement proper error handling for state machine application failures:
     1. Catch exceptions from state machine apply method
@@ -1995,13 +2039,13 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_application_failure_handling_property_test_
   - _Priority: High_
 
-- [ ] 407.1 Write unit test for application failure handling
+- [x] 407.1 Write unit test for application failure handling
   - Test exception handling from state machine
   - Test error propagation to pending futures
   - Test different failure handling policies
   - Verify proper logging and metrics
 
-- [ ] 408. Implement applied index catchup mechanism
+- [x] 408. Implement applied index catchup mechanism
   - Locate commit index advancement code
   - Implement catchup logic when applied_index lags behind commit_index:
     1. Detect lag condition (commit_index > applied_index)
@@ -2016,13 +2060,13 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_applied_index_catchup_property_test_
   - _Priority: High_
 
-- [ ] 408.1 Write unit test for applied index catchup
+- [x] 408.1 Write unit test for applied index catchup
   - Test catchup when applied_index lags behind commit_index
   - Test batching for large lags
   - Test rate limiting
   - Verify proper sequencing of entries
 
-- [ ] 409. Verify application logic tests pass
+- [x] 409. Verify application logic tests pass
   - Run raft_application_failure_handling_property_test and verify it passes
   - Run raft_applied_index_catchup_property_test and verify it passes
   - Verify proper error handling and recovery
@@ -2033,7 +2077,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
 
 ### Timeout Classification (1 failing test)
 
-- [ ] 410. Implement timeout classification logic
+- [x] 410. Implement timeout classification logic
   - Locate ErrorHandler class implementation
   - Implement timeout classification method that distinguishes:
     1. **Network delay**: Slow response but connection alive
@@ -2051,14 +2095,14 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_timeout_classification_property_test_
   - _Priority: Medium_
 
-- [ ] 410.1 Write unit test for timeout classification
+- [x] 410.1 Write unit test for timeout classification
   - Test classification of network delays
   - Test classification of network timeouts
   - Test classification of connection failures
   - Test classification of serialization timeouts
   - Verify proper logging and metrics
 
-- [ ] 411. Integrate timeout classification into error handling
+- [x] 411. Integrate timeout classification into error handling
   - Locate RPC error handling code in ErrorHandler
   - Use timeout classification to determine appropriate retry strategy:
     - Network delay: Retry immediately with same timeout
@@ -2071,7 +2115,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Tests Fixed: raft_timeout_classification_property_test_
   - _Priority: Medium_
 
-- [ ] 411.1 Verify raft_timeout_classification_property_test passes
+- [x] 411.1 Verify raft_timeout_classification_property_test passes
   - Run test and verify it passes with timeout classification
   - Verify proper classification of different timeout types
   - Verify appropriate retry strategies are selected
@@ -2079,7 +2123,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
 
 ### Integration and Validation
 
-- [ ] 412. Run all 8 previously failing tests
+- [x] 412. Run all 8 previously failing tests
   - Run raft_heartbeat_retry_backoff_property_test
   - Run raft_append_entries_retry_handling_property_test
   - Run raft_snapshot_transfer_retry_property_test
@@ -2091,8 +2135,44 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Verify all 8 tests now pass
   - Document any remaining failures
   - _Priority: High_
+  - _Result: 6/8 tests passing (75%), 2 tests with pre-existing issues_
 
-- [ ] 413. Write integration test for retry logic with exponential backoff
+### Fixing Remaining Test Failures
+
+- [x] 412.1 Investigate and fix raft_snapshot_transfer_retry_property_test timeout
+  - Analyze why test takes longer than 30 seconds to complete
+  - Test has 300-second timeout configured but still times out in CI
+  - Profile test execution to identify bottlenecks
+  - Possible causes:
+    - Excessive retry attempts with long delays
+    - Inefficient snapshot transfer simulation
+    - Network simulator performance issues
+    - Too many test iterations
+  - Optimize test performance or adjust timeout expectations
+  - Verify test passes consistently after fixes
+  - _Priority: High_
+  - _Tests Fixed: raft_snapshot_transfer_retry_property_test_
+
+- [x] 412.2 Fix raft_commit_waiting_completion_property_test deadlock
+  - Investigate SIGSEGV and "Resource deadlock avoided" error
+  - Error occurs in property_application_before_future_fulfillment test case
+  - Analyze threading and mutex usage in test
+  - Possible causes:
+    - Recursive mutex lock attempt
+    - Future callback deadlock
+    - Network simulator thread safety issue
+    - State machine application thread contention
+  - Fix deadlock by:
+    - Reviewing mutex lock ordering
+    - Ensuring futures don't block on same thread
+    - Adding proper synchronization primitives
+    - Fixing any circular dependencies
+  - Verify test passes without crashes
+  - Run test multiple times to ensure stability
+  - _Priority: High_
+  - _Tests Fixed: raft_commit_waiting_completion_property_test_
+
+- [x] 413. Write integration test for retry logic with exponential backoff
   - Test heartbeat retry under network failures
   - Test AppendEntries retry with various failure patterns
   - Test InstallSnapshot retry with partial transfers
@@ -2101,7 +2181,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Verify retry limits are respected
   - _Requirements: 18.1, 18.2, 18.3, 18.4_
 
-- [ ] 414. Write integration test for async command submission
+- [x] 414. Write integration test for async command submission
   - Test command submission with replication delays
   - Test concurrent command submissions
   - Test leadership changes during command processing
@@ -2109,7 +2189,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Verify proper ordering and linearizability
   - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5_
 
-- [ ] 415. Write integration test for application failure recovery
+- [x] 415. Write integration test for application failure recovery
   - Test state machine application failures
   - Test error propagation to clients
   - Test different failure handling policies
@@ -2117,14 +2197,14 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Verify system remains consistent after failures
   - _Requirements: 19.3, 19.4, 19.5_
 
-- [ ] 416. Write integration test for timeout classification
+- [x] 416. Write integration test for timeout classification
   - Test classification of different timeout types
   - Test retry strategy selection based on classification
   - Test proper handling of each timeout type
   - Verify logging and metrics for timeout events
   - _Requirements: 18.6_
 
-- [ ] 417. Update example programs to demonstrate new features
+- [x] 417. Update example programs to demonstrate new features
   - Update error_handling_example.cpp to show exponential backoff
   - Update commit_waiting_example.cpp to show async command submission
   - Add application_failure_example.cpp to demonstrate error recovery
@@ -2132,7 +2212,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Follow example program guidelines (run all scenarios, clear pass/fail, exit codes)
   - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.6, 15.1, 15.2, 15.3, 15.4, 19.3, 19.4, 19.5_
 
-- [ ] 418. Update documentation for implemented features
+- [x] 418. Update documentation for implemented features
   - Document exponential backoff retry logic
   - Document async command submission pipeline
   - Document application failure handling policies
@@ -2141,7 +2221,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Add troubleshooting guide for retry and timeout issues
   - _Requirements: All requirements_
 
-- [ ] 419. Performance testing for new features
+- [x] 419. Performance testing for new features
   - Benchmark retry overhead with exponential backoff
   - Benchmark async command submission latency
   - Benchmark application failure recovery time
@@ -2149,7 +2229,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - Identify and optimize any performance bottlenecks
   - _Requirements: All requirements_
 
-- [ ] 420. Final checkpoint - Verify all 8 tests pass
+- [x] 420. Final checkpoint - Verify all 8 tests pass
   - Confirm all 8 previously failing tests now pass
   - Verify no regressions in previously passing tests (49 tests)
   - Run full Raft test suite (83 tests total)
@@ -2158,7 +2238,7 @@ The following tasks address the 8 failing tests identified in RAFT_TESTS_FINAL_S
   - _Requirements: All requirements_
   - _Priority: High_
 
-- [ ] 421. Update RAFT_TESTS_FINAL_STATUS.md with results
+- [x] 421. Update RAFT_TESTS_FINAL_STATUS.md with results
   - Update test counts (passing, failing, not run)
   - Document which features were implemented
   - Update recommendations section

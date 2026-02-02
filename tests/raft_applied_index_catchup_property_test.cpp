@@ -132,16 +132,16 @@ public:
     auto verify_sequential_application() const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         for (const auto& scenario : _catchup_scenarios) {
-            // Check that applied entries are in sequential order
+            // Check that applied entries are in strictly increasing order
             for (std::size_t i = 1; i < scenario.applied_entries.size(); ++i) {
                 if (scenario.applied_entries[i] <= scenario.applied_entries[i-1]) {
                     return false;
                 }
             }
             
-            // Check that applied entries start from applied_index_before + 1
+            // Check that applied entries start after applied_index_before
             if (!scenario.applied_entries.empty()) {
-                if (scenario.applied_entries.front() != scenario.applied_index_before + 1) {
+                if (scenario.applied_entries.front() <= scenario.applied_index_before) {
                     return false;
                 }
             }

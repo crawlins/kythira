@@ -171,6 +171,72 @@ Enhanced Future class with additional methods:
 - `within()`: Add timeout behavior
 - `ensure()`: Add cleanup functionality
 
+### Async Retry Support Extensions
+
+**Enhanced thenTry with Future-Returning Callbacks**:
+```cpp
+template<typename F>
+auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
+    requires(detail::is_future<std::invoke_result_t<F, Try<T>>>::value) {
+    using FutureReturnType = std::invoke_result_t<F, Try<T>>;
+    using InnerType = typename FutureReturnType::value_type;
+    
+    // Use folly's automatic future flattening
+    return FutureReturnType(std::move(_folly_future).thenTry(
+        [func = std::forward<F>(func)](folly::Try<T> folly_try) mutable {
+            Try<T> kythira_try(std::move(folly_try));
+            // Call the lambda which returns Future<U>
+            auto inner_future = func(std::move(kythira_try));
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
+}
+```
+
+**Enhanced thenError with Future-Returning Callbacks**:
+```cpp
+template<typename F>
+auto thenError(F&& func) -> Future<T>
+    requires(detail::is_future<std::invoke_result_t<F, folly::exception_wrapper>>::value) {
+    
+    // Use folly's automatic future flattening
+    return Future<T>(std::move(_folly_future).thenError(
+        [func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
+            // Call the lambda which returns Future<T>
+            auto inner_future = func(ex);
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
+}
+```
+
+**Async Retry Pattern**:
+```cpp
+// Non-blocking retry with exponential backoff
+return operation()
+    .thenTry([this, attempt](Try<Result> result) -> Future<Result> {
+        if (result.hasValue()) {
+            return makeFuture(result.value());
+        }
+        
+        // Calculate delay based on attempt number
+        auto delay = calculate_exponential_backoff(attempt);
+        
+        // Non-blocking delay followed by retry
+        return makeFuture(Unit{})
+            .delay(delay)
+            .thenValue([this]() -> Future<Result> {
+                return retry_operation();
+            });
+    });
+```
+
+**Benefits**:
+- No thread blocking during retry delays
+- Better resource utilization
+- Scalable to many concurrent retry operations
+- Consistent with Folly's async programming model
+
 ## Data Models
 
 ### Type Conversion Strategy
@@ -311,6 +377,18 @@ The design ensures proper resource management:
 **Property 24: Complete Conversion Validation**
 *For any* search of the codebase, there should be no remaining `std::future` or direct `folly::Future` usage in public interfaces (excluding kythira::Future implementation)
 **Validates: Requirements 29.1, 29.2**
+
+**Property 25: Future-Returning Callback Support in thenTry**
+*For any* callback passed to thenTry that returns Future<U>, the result should be Future<U> with automatic flattening, not Future<Future<U>>
+**Validates: Requirements 30.1, 30.2, 30.3, 30.4, 30.5**
+
+**Property 26: Future-Returning Callback Support in thenError**
+*For any* callback passed to thenError that returns Future<T>, the result should be Future<T> with automatic flattening and proper error recovery semantics
+**Validates: Requirements 31.1, 31.2, 31.3, 31.4, 31.5**
+
+**Property 27: Async Retry Without Blocking**
+*For any* retry operation with delay, the system should use Future.delay() and Future-returning callbacks instead of blocking sleep, ensuring no threads are blocked during retry backoff
+**Validates: Requirements 32.1, 32.2, 32.3, 32.4, 32.5**
 
 ## Error Handling
 

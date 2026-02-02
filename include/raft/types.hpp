@@ -389,6 +389,13 @@ concept raft_configuration_type = requires(const T& config) {
     { config.get_validation_errors() } -> std::same_as<std::vector<std::string>>;
 };
 
+// Application failure handling policy
+enum class application_failure_policy : std::uint8_t {
+    halt,    // Stop applying further entries on failure (safe default)
+    retry,   // Retry application with exponential backoff
+    skip     // Skip failed entry and continue (dangerous - can lead to inconsistency)
+};
+
 // Default raft configuration implementation
 struct raft_configuration {
     // Basic timing configuration
@@ -449,6 +456,13 @@ struct raft_configuration {
         .sample_window_size = 10
     };
     
+    // Application failure handling configuration
+    application_failure_policy _application_failure_policy{application_failure_policy::halt};
+    std::size_t _application_retry_max_attempts{3};
+    std::chrono::milliseconds _application_retry_initial_delay{100};
+    std::chrono::milliseconds _application_retry_max_delay{5000};
+    double _application_retry_backoff_multiplier{2.0};
+    
     // Accessor methods
     auto election_timeout_min() const -> std::chrono::milliseconds { return _election_timeout_min; }
     auto election_timeout_max() const -> std::chrono::milliseconds { return _election_timeout_max; }
@@ -465,6 +479,11 @@ struct raft_configuration {
     auto request_vote_retry_policy() const -> const retry_policy_config& { return _request_vote_retry_policy; }
     auto install_snapshot_retry_policy() const -> const retry_policy_config& { return _install_snapshot_retry_policy; }
     auto get_adaptive_timeout_config() const -> const adaptive_timeout_config& { return _adaptive_timeout_config; }
+    auto get_application_failure_policy() const -> application_failure_policy { return _application_failure_policy; }
+    auto application_retry_max_attempts() const -> std::size_t { return _application_retry_max_attempts; }
+    auto application_retry_initial_delay() const -> std::chrono::milliseconds { return _application_retry_initial_delay; }
+    auto application_retry_max_delay() const -> std::chrono::milliseconds { return _application_retry_max_delay; }
+    auto application_retry_backoff_multiplier() const -> double { return _application_retry_backoff_multiplier; }
     
     // Configuration validation
     auto validate() const -> bool {

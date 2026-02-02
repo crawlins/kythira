@@ -106,8 +106,12 @@ public:
             applied_index_before,
             applied_index_before  // Applied index doesn't advance on failure
         });
-        _failure_occurred = true;
-        _failure_at_index = log_index;
+        
+        // Only record the first failure index
+        if (!_failure_occurred) {
+            _failure_occurred = true;
+            _failure_at_index = log_index;
+        }
     }
     
     auto get_attempts() const -> std::vector<ApplicationAttempt> {

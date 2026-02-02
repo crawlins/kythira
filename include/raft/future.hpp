@@ -96,6 +96,30 @@ struct is_future : std::false_type {};
 template<typename T>
 struct is_future<Future<T>> : std::true_type {};
 
+// Helper to check if F returns a Future when called with folly::exception_wrapper
+template<typename F, typename = void>
+struct returns_future_with_exception_wrapper : std::false_type {};
+
+template<typename F>
+struct returns_future_with_exception_wrapper<F, std::void_t<
+    std::enable_if_t<std::is_invocable_v<F, folly::exception_wrapper>>
+>> : is_future<std::invoke_result_t<F, folly::exception_wrapper>> {};
+
+// Helper to check if F returns a Future when called with std::exception_ptr
+template<typename F, typename = void>
+struct returns_future_with_exception_ptr : std::false_type {};
+
+template<typename F>
+struct returns_future_with_exception_ptr<F, std::void_t<
+    std::enable_if_t<std::is_invocable_v<F, std::exception_ptr>>
+>> : is_future<std::invoke_result_t<F, std::exception_ptr>> {};
+
+// Combined helper trait
+template<typename F>
+inline constexpr bool returns_future_on_exception_v = 
+    returns_future_with_exception_wrapper<F>::value ||
+    returns_future_with_exception_ptr<F>::value;
+
 // Safe type casting utilities
 template<typename To, typename From>
 constexpr auto safe_cast(From&& from) -> To {
@@ -547,8 +571,10 @@ public:
     }
     
     // Chain continuation with Try (concept compliance)
+    // This overload handles lambdas that return non-Future types
     template<typename F>
-    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<T>>> requires(!std::is_void_v<T>) {
+    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<T>>> 
+        requires(!std::is_void_v<T> && !detail::is_future<std::invoke_result_t<F, Try<T>>>::value) {
         using ReturnType = std::invoke_result_t<F, Try<T>>;
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
@@ -564,9 +590,30 @@ public:
         }
     }
     
-    // Error handling (concept compliance)
+    // Chain continuation with Try - Future-returning overload (automatic flattening)
+    // This overload handles lambdas that return Future<U>, automatically flattening to Future<U>
     template<typename F>
-    auto thenError(F&& func) -> Future<T> {
+    auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
+        requires(!std::is_void_v<T> && detail::is_future<std::invoke_result_t<F, Try<T>>>::value) {
+        using FutureReturnType = std::invoke_result_t<F, Try<T>>;
+        using InnerType = typename FutureReturnType::value_type;
+        
+        // Use folly's automatic future flattening
+        return FutureReturnType(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) mutable {
+            Try<T> kythira_try(std::move(folly_try));
+            // Call the lambda which returns Future<U>
+            auto inner_future = func(std::move(kythira_try));
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
+    }
+    
+    // Error handling (concept compliance)
+    // This overload handles lambdas that return non-Future types
+    template<typename F>
+    auto thenError(F&& func) -> std::enable_if_t<
+        !detail::returns_future_on_exception_v<F>,
+        Future<T>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
             return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 if constexpr (std::is_void_v<T>) {
@@ -584,6 +631,31 @@ public:
                 } else {
                     return func(detail::to_std_exception_ptr(ex));
                 }
+            }));
+        }
+    }
+    
+    // Error handling with Future-returning callback (automatic flattening)
+    // This overload handles lambdas that return Future<T>, automatically flattening to Future<T>
+    template<typename F>
+    auto thenError(F&& func) -> std::enable_if_t<
+        detail::returns_future_on_exception_v<F>,
+        Future<T>> {
+        if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
+            // Use folly's automatic future flattening
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
+                // Call the lambda which returns Future<T>
+                auto inner_future = func(ex);
+                // Extract the folly::Future from our wrapper
+                return std::move(inner_future).get_folly_future();
+            }));
+        } else {
+            // Use folly's automatic future flattening with std::exception_ptr
+            return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
+                // Call the lambda which returns Future<T>
+                auto inner_future = func(detail::to_std_exception_ptr(ex));
+                // Extract the folly::Future from our wrapper
+                return std::move(inner_future).get_folly_future();
             }));
         }
     }
@@ -707,8 +779,10 @@ public:
     }
     
     // Chain continuation with Try (concept compliance)
+    // This overload handles lambdas that return non-Future types
     template<typename F>
-    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<void>>> {
+    auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<void>>> 
+        requires(!detail::is_future<std::invoke_result_t<F, Try<void>>>::value) {
         using ReturnType = std::invoke_result_t<F, Try<void>>;
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) {
@@ -724,9 +798,30 @@ public:
         }
     }
     
-    // Error handling (concept compliance)
+    // Chain continuation with Try - Future-returning overload (automatic flattening)
+    // This overload handles lambdas that return Future<U>, automatically flattening to Future<U>
     template<typename F>
-    auto thenError(F&& func) -> Future<void> {
+    auto thenTry(F&& func) -> std::invoke_result_t<F, Try<void>>
+        requires(detail::is_future<std::invoke_result_t<F, Try<void>>>::value) {
+        using FutureReturnType = std::invoke_result_t<F, Try<void>>;
+        using InnerType = typename FutureReturnType::value_type;
+        
+        // Use folly's automatic future flattening
+        return FutureReturnType(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) mutable {
+            Try<void> kythira_try(std::move(folly_try));
+            // Call the lambda which returns Future<U>
+            auto inner_future = func(std::move(kythira_try));
+            // Extract the folly::Future from our wrapper
+            return std::move(inner_future).get_folly_future();
+        }));
+    }
+    
+    // Error handling (concept compliance)
+    // This overload handles lambdas that return non-Future types
+    template<typename F>
+    auto thenError(F&& func) -> std::enable_if_t<
+        !detail::returns_future_on_exception_v<F>,
+        Future<void>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
             return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 func(ex);
@@ -736,6 +831,31 @@ public:
             return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
                 func(detail::to_std_exception_ptr(ex));
                 return folly::Unit{};
+            }));
+        }
+    }
+    
+    // Error handling with Future-returning callback (automatic flattening)
+    // This overload handles lambdas that return Future<void>, automatically flattening to Future<void>
+    template<typename F>
+    auto thenError(F&& func) -> std::enable_if_t<
+        detail::returns_future_on_exception_v<F>,
+        Future<void>> {
+        if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
+            // Use folly's automatic future flattening
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
+                // Call the lambda which returns Future<void>
+                auto inner_future = func(ex);
+                // Extract the folly::Future from our wrapper
+                return std::move(inner_future).get_folly_future();
+            }));
+        } else {
+            // Use folly's automatic future flattening with std::exception_ptr
+            return Future<void>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
+                // Call the lambda which returns Future<void>
+                auto inner_future = func(detail::to_std_exception_ptr(ex));
+                // Extract the folly::Future from our wrapper
+                return std::move(inner_future).get_folly_future();
             }));
         }
     }

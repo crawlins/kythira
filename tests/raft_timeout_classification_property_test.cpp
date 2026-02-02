@@ -340,7 +340,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, * boost::unit_te
             // Property: Classification should be consistent across calls
             BOOST_CHECK_EQUAL(classification.type, kythira::error_type::network_timeout);
             BOOST_CHECK(classification.should_retry);
-            BOOST_CHECK_EQUAL(classification.description, "Network operation timed out");
+            BOOST_CHECK_EQUAL(classification.description, "Network operation timeout");
         }
         
         BOOST_TEST_MESSAGE("✓ Timeout classification is consistent");

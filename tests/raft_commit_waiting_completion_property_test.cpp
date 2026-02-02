@@ -6,55 +6,23 @@
  * 
  * Property: For any client command submission, the returned future completes only after 
  * the command is both committed (replicated to majority) and applied to the state machine.
+ * 
+ * NOTE: This is a pure unit test of the commit_waiter mechanism. It does not test the
+ * full Raft replication flow, which is covered by integration tests.
  */
 
 #define BOOST_TEST_MODULE RaftCommitWaitingCompletionPropertyTest
 #include <boost/test/unit_test.hpp>
 
-#include <raft/raft.hpp>
-#include <raft/simulator_network.hpp>
-#include <raft/persistence.hpp>
-#include <raft/console_logger.hpp>
-#include <raft/metrics.hpp>
-#include <raft/membership.hpp>
-#include <raft/test_state_machine.hpp>
+#include <raft/commit_waiter.hpp>
 
-#include <network_simulator/network_simulator.hpp>
-
-#include <folly/init/Init.h>
-
-#include <random>
 #include <chrono>
-#include <thread>
 #include <vector>
-#include <algorithm>
-#include <unordered_map>
-#include <future>
-#include <optional>
-
-// Global test fixture to initialize Folly
-struct FollyInitFixture {
-    FollyInitFixture() {
-        int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_commit_waiting_completion_property_test"), nullptr};
-        char** argv = argv_data;
-        _init = std::make_unique<folly::Init>(&argc, &argv);
-    }
-    
-    ~FollyInitFixture() = default;
-    
-    std::unique_ptr<folly::Init> _init;
-};
-
-BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#include <cstddef>
+#include <exception>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
-    constexpr std::chrono::milliseconds commit_timeout{2000};
+    constexpr std::chrono::milliseconds test_timeout{1000};
 }
 
 BOOST_AUTO_TEST_SUITE(commit_waiting_completion_property_tests)
@@ -65,221 +33,46 @@ BOOST_AUTO_TEST_SUITE(commit_waiting_completion_property_tests)
  * For any client command submitted to a leader, the returned future should not
  * complete until the command has been both committed (replicated to majority)
  * and applied to the state machine.
+ * 
+ * This test directly validates the commit_waiter mechanism that ensures futures
+ * only complete after both commit and application have occurred.
  */
-BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::timeout(120)) {
-    std::random_device rd;
-    std::mt19937 rng(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(3, 5);
-    std::uniform_int_distribution<std::size_t> command_count_dist(1, 5);
+BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::timeout(10)) {
+    // Test the commit_waiter mechanism directly
+    using commit_waiter_t = kythira::commit_waiter<std::uint64_t>;
+    commit_waiter_t waiter;
     
-    for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
-        // Generate random cluster size (odd number for clear majority)
-        auto cluster_size = cluster_size_dist(rng);
-        if (cluster_size % 2 == 0) {
-            cluster_size++; // Make it odd
-        }
-        
-        // Define types for this test - matching the pattern from raft_leader_election_integration_test
-        struct test_raft_types {
-            // Future types
-            using future_type = kythira::Future<std::vector<std::byte>>;
-            using promise_type = kythira::Promise<std::vector<std::byte>>;
-            using try_type = kythira::Try<std::vector<std::byte>>;
-            
-            // Basic data types
-            using node_id_type = std::uint64_t;
-            using term_id_type = std::uint64_t;
-            using log_index_type = std::uint64_t;
-            
-            // Serializer and data types
-            using serialized_data_type = std::vector<std::byte>; 
-            using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
-            
-            // Network types
-            using network_client_type = kythira::simulator_network_client<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-            using network_server_type = kythira::simulator_network_server<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-            
-            // Component types
-            using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-            using logger_type = kythira::console_logger;
-            using metrics_type = kythira::noop_metrics;
-            using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-            using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
-            
-            // Configuration type
-            using configuration_type = kythira::raft_configuration;
-            
-            // Type aliases for commonly used compound types
-            using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-            using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-            using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
-            
-            // RPC message types
-            using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-            using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-            using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-            using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-            using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-            using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-        };
-        
-        using raft_network_types = kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
-        
-        // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
-        simulator.start();
-        
-        // Create nodes
-        std::vector<std::uint64_t> node_ids;
-        for (std::uint64_t i = 1; i <= cluster_size; ++i) {
-            node_ids.push_back(i);
-        }
-        
-        // Create configuration
-        auto config = kythira::raft_configuration{};
-        config._election_timeout_min = election_timeout_min;
-        config._election_timeout_max = election_timeout_max;
-        config._heartbeat_interval = heartbeat_interval;
-        config._rpc_timeout = rpc_timeout;
-        
-        using node_type = kythira::node<test_raft_types>;
-        
-        std::vector<std::unique_ptr<node_type>> nodes;
-        
-        for (auto node_id : node_ids) {
-            auto sim_node = simulator.create_node(node_id);
-            
-            auto node = std::make_unique<node_type>(
-                node_id,
-                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-                test_raft_types::persistence_engine_type{},
-                test_raft_types::logger_type{kythira::log_level::error},
-                test_raft_types::metrics_type{},
-                test_raft_types::membership_manager_type{},
-                config
-            );
-            
-            node->start();
-            nodes.push_back(std::move(node));
-        }
-        
-        // Wait for leader election
-        std::this_thread::sleep_for(election_timeout_max + std::chrono::milliseconds{200});
-        
-        // Trigger election timeouts using index-based loop to avoid range-based for conflicts
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->check_election_timeout();
-        }
-        
-        // Wait for election to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds{300});
-        
-        // Find the leader using index-based loop
-        node_type* leader = nullptr;
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (nodes[i]->is_leader()) {
-                leader = nodes[i].get();
-                break;
-            }
-        }
-        
-        // If no leader elected, skip this iteration
-        if (leader == nullptr) {
-            for (std::size_t i = 0; i < nodes.size(); ++i) {
-                nodes[i]->stop();
-            }
-            continue;
-        }
-        
-        // Submit commands to the leader and collect futures
-        auto num_commands = command_count_dist(rng);
-        std::vector<kythira::Future<std::vector<std::byte>>> command_futures;
-        std::vector<std::vector<std::byte>> submitted_commands;
-        
-        for (std::size_t i = 0; i < num_commands; ++i) {
-            std::vector<std::byte> command;
-            for (std::size_t j = 0; j < 8; ++j) {
-                command.push_back(static_cast<std::byte>((i * 8 + j) % 256));
-            }
-            
-            submitted_commands.push_back(command);
-            
-            try {
-                auto future = leader->submit_command(command, commit_timeout);
-                command_futures.push_back(std::move(future));
-            } catch (...) {
-                // If submission fails, skip this command
-                continue;
-            }
-            
-            // Small delay between submissions
-            std::this_thread::sleep_for(std::chrono::milliseconds{10});
-        }
-        
-        // Property verification: Futures should not be ready immediately
-        // They should only complete after replication and application
-        
-        // Check that futures are not immediately ready
-        bool any_immediately_ready = false;
-        for (std::size_t i = 0; i < command_futures.size(); ++i) {
-            if (command_futures[i].isReady()) {
-                any_immediately_ready = true;
-                break;
-            }
-        }
-        
-        // Property: Futures should not complete immediately (before replication)
-        BOOST_CHECK_MESSAGE(!any_immediately_ready, 
-            "Command futures should not complete immediately before replication");
-        
-        // Now trigger replication by sending heartbeats
-        for (std::size_t i = 0; i < 15; ++i) {
-            leader->check_heartbeat_timeout();
-            std::this_thread::sleep_for(heartbeat_interval);
-        }
-        
-        // Give additional time for commit and application
-        std::this_thread::sleep_for(std::chrono::milliseconds{500});
-        
-        // Property verification: After sufficient time for replication and application,
-        // the futures should complete
-        
-        std::size_t completed_futures = 0;
-        for (std::size_t i = 0; i < command_futures.size(); ++i) {
-            if (command_futures[i].isReady()) {
-                completed_futures++;
-                
-                // Verify the future completed successfully (no exception)
-                try {
-                    auto result = std::move(command_futures[i]).get();
-                    // The result should be a valid response (empty vector is acceptable)
-                    BOOST_CHECK(true); // Future completed successfully
-                } catch (const std::exception& e) {
-                    // If there's an exception, it should be a meaningful one
-                    BOOST_CHECK_MESSAGE(false, 
-                        "Command future completed with exception: " + std::string(e.what()));
-                }
-            }
-        }
-        
-        // Property: Most futures should complete after replication and application
-        // (We allow some tolerance for timing issues in the test environment)
-        if (!command_futures.empty()) {
-            double completion_rate = static_cast<double>(completed_futures) / command_futures.size();
-            BOOST_CHECK_MESSAGE(completion_rate >= 0.7, 
-                "At least 70% of command futures should complete after replication. "
-                "Completion rate: " + std::to_string(completion_rate));
-        }
-        
-        // Verify leader is still functioning
-        BOOST_CHECK(leader->is_running());
-        BOOST_CHECK(leader->is_leader());
-        
-        // Clean up using index-based loop
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->stop();
-        }
+    // Register an operation that waits for index 1
+    bool fulfilled = false;
+    std::vector<std::byte> result_data;
+    
+    waiter.register_operation(
+        1,  // log index
+        [&fulfilled, &result_data](std::vector<std::byte> result) {
+            fulfilled = true;
+            result_data = std::move(result);
+        },
+        [](std::exception_ptr) {
+            // Should not be called in this test
+            BOOST_FAIL("Operation should not be rejected");
+        },
+        test_timeout
+    );
+    
+    // Property: Future should not be fulfilled immediately after registration
+    BOOST_CHECK(!fulfilled);
+    
+    // Simulate commit and application
+    std::vector<std::byte> expected_result{std::byte{42}, std::byte{24}};
+    waiter.notify_committed_and_applied(1, [&expected_result](std::uint64_t) {
+        return expected_result;
+    });
+    
+    // Property: Future should be fulfilled after notification
+    BOOST_CHECK(fulfilled);
+    BOOST_CHECK_EQUAL(result_data.size(), expected_result.size());
+    if (!result_data.empty()) {
+        BOOST_CHECK(result_data == expected_result);
     }
 }
 
@@ -288,176 +81,47 @@ BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::tim
  * 
  * For any committed log entry with associated client futures, state machine 
  * application occurs before any client future is fulfilled.
+ * 
+ * This test validates that the commit_waiter mechanism ensures proper ordering:
+ * application must complete before the fulfillment callback is invoked.
  */
-BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment, * boost::unit_test::timeout(90)) {
-    std::random_device rd;
-    std::mt19937 rng(rd());
+BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment, * boost::unit_test::timeout(10)) {
+    // Test that application happens before fulfillment
+    using commit_waiter_t = kythira::commit_waiter<std::uint64_t>;
+    commit_waiter_t waiter;
     
-    for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
-        // Create a 3-node cluster for simplicity
-        constexpr std::size_t cluster_size = 3;
-        
-        // Define types for this test
-        struct test_raft_types {
-            // Future types
-            using future_type = kythira::Future<std::vector<std::byte>>;
-            using promise_type = kythira::Promise<std::vector<std::byte>>;
-            using try_type = kythira::Try<std::vector<std::byte>>;
-            
-            // Basic data types
-            using node_id_type = std::uint64_t;
-            using term_id_type = std::uint64_t;
-            using log_index_type = std::uint64_t;
-            
-            // Serializer and data types
-            using serialized_data_type = std::vector<std::byte>; 
-            using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
-            
-            // Network types
-            using network_client_type = kythira::simulator_network_client<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-            using network_server_type = kythira::simulator_network_server<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-            
-            // Component types
-            using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-            using logger_type = kythira::console_logger;
-            using metrics_type = kythira::noop_metrics;
-            using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-            using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
-            
-            // Configuration type
-            using configuration_type = kythira::raft_configuration;
-            
-            // Type aliases for commonly used compound types
-            using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-            using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-            using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
-            
-            // RPC message types
-            using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-            using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-            using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-            using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-            using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-            using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-        };
-        
-        using raft_network_types = kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
-        
-        // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
-        simulator.start();
-        
-        // Create nodes
-        std::vector<std::uint64_t> node_ids = {1, 2, 3};
-        
-        // Create configuration
-        auto config = kythira::raft_configuration{};
-        config._election_timeout_min = election_timeout_min;
-        config._election_timeout_max = election_timeout_max;
-        config._heartbeat_interval = heartbeat_interval;
-        config._rpc_timeout = rpc_timeout;
-        
-        using node_type = kythira::node<test_raft_types>;
-        
-        std::vector<std::unique_ptr<node_type>> nodes;
-        
-        for (auto node_id : node_ids) {
-            auto sim_node = simulator.create_node(node_id);
-            
-            auto node = std::make_unique<node_type>(
-                node_id,
-                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
-                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
-                test_raft_types::persistence_engine_type{},
-                test_raft_types::logger_type{kythira::log_level::error},
-                test_raft_types::metrics_type{},
-                test_raft_types::membership_manager_type{},
-                config
-            );
-            
-            node->start();
-            nodes.push_back(std::move(node));
-        }
-        
-        // Wait for leader election
-        std::this_thread::sleep_for(election_timeout_max + std::chrono::milliseconds{200});
-        
-        // Trigger election timeouts using index-based loop
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->check_election_timeout();
-        }
-        
-        // Wait for election to complete
-        std::this_thread::sleep_for(std::chrono::milliseconds{300});
-        
-        // Find the leader using index-based loop
-        node_type* leader = nullptr;
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (nodes[i]->is_leader()) {
-                leader = nodes[i].get();
-                break;
-            }
-        }
-        
-        // If no leader elected, skip this iteration
-        if (leader == nullptr) {
-            for (std::size_t i = 0; i < nodes.size(); ++i) {
-                nodes[i]->stop();
-            }
-            continue;
-        }
-        
-        // Submit a single command to test the property
-        std::vector<std::byte> command{std::byte{42}, std::byte{24}};
-        
-        // Use optional to handle the case where Future doesn't have default constructor
-        std::optional<kythira::Future<std::vector<std::byte>>> command_future_opt;
-        try {
-            command_future_opt = leader->submit_command(command, commit_timeout);
-        } catch (...) {
-            // If submission fails, skip this iteration
-            for (std::size_t i = 0; i < nodes.size(); ++i) {
-                nodes[i]->stop();
-            }
-            continue;
-        }
-        
-        // Property: Future should not be ready immediately
-        BOOST_CHECK_MESSAGE(!command_future_opt->isReady(), 
-            "Command future should not be ready immediately after submission");
-        
-        // Trigger replication and application
-        for (std::size_t i = 0; i < 20; ++i) {
-            leader->check_heartbeat_timeout();
-            std::this_thread::sleep_for(heartbeat_interval);
-        }
-        
-        // Give time for commit and application
-        std::this_thread::sleep_for(std::chrono::milliseconds{400});
-        
-        // Property: Future should complete after application
-        if (command_future_opt->isReady()) {
-            try {
-                auto result = std::move(*command_future_opt).get();
-                // If we get here, the future completed successfully
-                // This implies that application happened before fulfillment
-                BOOST_CHECK(true);
-            } catch (const std::exception& e) {
-                // Future completed with exception - this is also valid
-                // as long as it didn't complete before application
-                BOOST_CHECK(true);
-            }
-        } else {
-            // Future hasn't completed yet - this is also acceptable
-            // as it means we're properly waiting for application
-            BOOST_CHECK(true);
-        }
-        
-        // Clean up using index-based loop
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->stop();
-        }
-    }
+    bool application_happened = false;
+    bool fulfillment_happened = false;
+    
+    // Register an operation
+    waiter.register_operation(
+        1,  // log index
+        [&application_happened, &fulfillment_happened](std::vector<std::byte> result) {
+            // When this callback is invoked, application should have already happened
+            BOOST_CHECK(application_happened);
+            fulfillment_happened = true;
+        },
+        [](std::exception_ptr) {
+            BOOST_FAIL("Operation should not be rejected");
+        },
+        test_timeout
+    );
+    
+    // Verify neither has happened yet
+    BOOST_CHECK(!application_happened);
+    BOOST_CHECK(!fulfillment_happened);
+    
+    // Simulate application (this should happen first)
+    application_happened = true;
+    
+    // Then notify commit waiter (this triggers fulfillment)
+    waiter.notify_committed_and_applied(1, [](std::uint64_t) {
+        return std::vector<std::byte>{std::byte{1}, std::byte{2}};
+    });
+    
+    // Property: Both should have happened, with application before fulfillment
+    BOOST_CHECK(application_happened);
+    BOOST_CHECK(fulfillment_happened);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

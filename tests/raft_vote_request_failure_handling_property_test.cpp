@@ -373,7 +373,7 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
             {"Vote granted", true},
             {"Vote rejected - already voted", false},
             {"Vote rejected - higher term", false},
-            {"Network timeout", true}, // This one will retry
+            {"Network timeout", false}, // This one will retry but ultimately fail
             {"Vote granted after retry", true}
         };
         

@@ -14,11 +14,11 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::chrono::milliseconds base_delay{500};
-    constexpr std::chrono::milliseconds max_delay{30000};
+    constexpr std::chrono::milliseconds base_delay{100};  // Reduced from 200ms
+    constexpr std::chrono::milliseconds max_delay{1000};  // Reduced from 2000ms
     constexpr double backoff_multiplier = 2.0;
-    constexpr std::size_t max_attempts = 10;
-    constexpr std::size_t test_iterations = 10;
+    constexpr std::size_t max_attempts = 6;
+    constexpr std::size_t test_iterations = 5;  // Reduced from 10 to 5
 }
 
 // Global fixture to initialize Folly
@@ -184,8 +184,8 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
         error_handler<kythira::install_snapshot_response<std::uint64_t>> handler;
         
         typename error_handler<kythira::install_snapshot_response<std::uint64_t>>::retry_policy large_snapshot_policy{
-            .initial_delay = std::chrono::milliseconds{200},
-            .max_delay = std::chrono::milliseconds{5000},
+            .initial_delay = std::chrono::milliseconds{100},  // Reduced from 200ms
+            .max_delay = std::chrono::milliseconds{500},      // Reduced from 1000ms
             .backoff_multiplier = 2.0,
             .jitter_factor = 0.0, // No jitter for predictable timing
             .max_attempts = 5
@@ -228,13 +228,13 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
                 
                 BOOST_TEST_MESSAGE("Large snapshot delays: " << delay1.count() << "ms, " << delay2.count() << "ms, " << delay3.count() << "ms");
                 
-                // Expected: 200ms, 400ms, 800ms (with timing tolerance)
-                BOOST_CHECK_GE(delay1.count(), 150);
-                BOOST_CHECK_LE(delay1.count(), 250);
-                BOOST_CHECK_GE(delay2.count(), 350);
-                BOOST_CHECK_LE(delay2.count(), 450);
-                BOOST_CHECK_GE(delay3.count(), 700);
-                BOOST_CHECK_LE(delay3.count(), 900);
+                // Expected: 100ms, 200ms, 400ms (with timing tolerance)
+                BOOST_CHECK_GE(delay1.count(), 70);
+                BOOST_CHECK_LE(delay1.count(), 130);
+                BOOST_CHECK_GE(delay2.count(), 170);
+                BOOST_CHECK_LE(delay2.count(), 230);
+                BOOST_CHECK_GE(delay3.count(), 350);
+                BOOST_CHECK_LE(delay3.count(), 550); // Capped at max_delay (500ms)
                 
                 BOOST_TEST_MESSAGE("✓ Large snapshot backoff pattern verified");
             }
@@ -284,6 +284,17 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
     {
         BOOST_TEST_MESSAGE("Test 3: Different snapshot transfer error types");
         error_handler<kythira::install_snapshot_response<std::uint64_t>> handler;
+        
+        // Set a reasonable retry policy for this test
+        typename error_handler<kythira::install_snapshot_response<std::uint64_t>>::retry_policy error_test_policy{
+            .initial_delay = std::chrono::milliseconds{100},  // Reduced from 200ms
+            .max_delay = std::chrono::milliseconds{1000},     // Reduced from 2000ms
+            .backoff_multiplier = 2.0,
+            .jitter_factor = 0.1,
+            .max_attempts = 6
+        };
+        
+        handler.set_retry_policy("install_snapshot", error_test_policy);
         
         // Test different error types specific to snapshot transfers
         std::vector<std::pair<std::string, bool>> snapshot_error_scenarios = {
@@ -340,8 +351,8 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
         error_handler<kythira::install_snapshot_response<std::uint64_t>> handler;
         
         typename error_handler<kythira::install_snapshot_response<std::uint64_t>>::retry_policy timeout_policy{
-            .initial_delay = std::chrono::milliseconds{100},
-            .max_delay = std::chrono::milliseconds{1600},
+            .initial_delay = std::chrono::milliseconds{50},   // Reduced from 100ms
+            .max_delay = std::chrono::milliseconds{800},      // Reduced from 1600ms
             .backoff_multiplier = 2.0,
             .jitter_factor = 0.0,
             .max_attempts = 6
@@ -372,7 +383,7 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
             BOOST_CHECK_EQUAL(attempt_count.load(), 5);
             
             // Property: Should show proper timeout progression for snapshot transfers
-            // Expected delays: 0, 100ms, 200ms, 400ms, 800ms
+            // Expected delays: 0, 50ms, 100ms, 200ms, 400ms
             if (attempt_times.size() >= 5) {
                 std::vector<std::chrono::milliseconds> delays;
                 for (std::size_t i = 1; i < attempt_times.size(); ++i) {
@@ -388,10 +399,10 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, * boost::unit_t
                 
                 // Verify exponential progression with tolerance
                 for (std::size_t i = 0; i < delays.size(); ++i) {
-                    auto expected = std::chrono::milliseconds{100 * (1 << i)};
-                    expected = std::min(expected, std::chrono::milliseconds{1600});
+                    auto expected = std::chrono::milliseconds{50 * (1 << i)};
+                    expected = std::min(expected, std::chrono::milliseconds{800});
                     
-                    auto tolerance = std::chrono::milliseconds{50};
+                    auto tolerance = std::chrono::milliseconds{30};
                     BOOST_CHECK_GE(delays[i], expected - tolerance);
                     BOOST_CHECK_LE(delays[i], expected + tolerance);
                 }

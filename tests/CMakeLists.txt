@@ -63,6 +63,10 @@ add_network_test(kythira_future_collector_concept_compliance_property_test kythi
 add_network_test(kythira_future_collector_collection_operations_property_test kythira_future_collector_collection_operations_property_test.cpp)
 add_network_test(kythira_future_continuation_operations_property_test kythira_future_continuation_operations_property_test.cpp)
 add_network_test(kythira_future_transformation_operations_property_test kythira_future_transformation_operations_property_test.cpp)
+add_network_test(future_then_try_future_returning_callback_property_test future_then_try_future_returning_callback_property_test.cpp)
+add_network_test(future_then_error_future_returning_callback_property_test future_then_error_future_returning_callback_property_test.cpp)
+add_network_test(future_void_specialization_future_returning_callback_test future_void_specialization_future_returning_callback_test.cpp)
+add_network_test(void_future_demo void_future_demo.cpp)
 add_network_test(future_concept_requirements_property_test future_concept_requirements_property_test.cpp)
 add_network_test(executor_attachment_support_property_test executor_attachment_support_property_test.cpp)
 add_network_test(folly_concept_wrappers_comprehensive_compliance_property_test folly_concept_wrappers_comprehensive_compliance_property_test.cpp)
@@ -151,6 +155,8 @@ add_raft_completion_test(raft_timeout_handling_collections_property_test raft_ti
 add_raft_completion_test(raft_collection_cancellation_cleanup_property_test raft_collection_cancellation_cleanup_property_test.cpp)
 
 # Raft completion property tests - error handling mechanism
+add_raft_completion_test(error_handler_exponential_backoff_unit_test error_handler_exponential_backoff_unit_test.cpp)
+add_raft_completion_test(error_handler_async_retry_property_test error_handler_async_retry_property_test.cpp)
 add_raft_completion_test(raft_heartbeat_retry_backoff_property_test raft_heartbeat_retry_backoff_property_test.cpp)
 add_raft_completion_test(raft_append_entries_retry_handling_property_test raft_append_entries_retry_handling_property_test.cpp)
 add_raft_completion_test(raft_snapshot_transfer_retry_property_test raft_snapshot_transfer_retry_property_test.cpp)
@@ -987,6 +993,62 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_commit_waiting_integration_test PRIVATE cxx_std_23)
 add_test(NAME raft_commit_waiting_integration_test COMMAND raft_commit_waiting_integration_test)
+set_tests_properties(raft_commit_waiting_integration_test PROPERTIES
+    TIMEOUT 180
+    LABELS "integration;raft;commit"
+)
+
+# Async command submission integration test
+add_executable(raft_async_command_submission_integration_test raft_async_command_submission_integration_test.cpp)
+target_link_libraries(raft_async_command_submission_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_async_command_submission_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_async_command_submission_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_async_command_submission_integration_test COMMAND raft_async_command_submission_integration_test)
+set_tests_properties(raft_async_command_submission_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;async;command_submission"
+)
+
+# Application failure recovery integration test
+add_executable(raft_application_failure_recovery_integration_test raft_application_failure_recovery_integration_test.cpp)
+target_link_libraries(raft_application_failure_recovery_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_application_failure_recovery_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_application_failure_recovery_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_application_failure_recovery_integration_test COMMAND raft_application_failure_recovery_integration_test)
+set_tests_properties(raft_application_failure_recovery_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;application;failure_recovery"
+)
+
+# Timeout classification integration test
+add_executable(raft_timeout_classification_integration_test raft_timeout_classification_integration_test.cpp)
+target_link_libraries(raft_timeout_classification_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_timeout_classification_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_timeout_classification_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_timeout_classification_integration_test COMMAND raft_timeout_classification_integration_test)
+set_tests_properties(raft_timeout_classification_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;timeout;classification"
+)
+
 
 # Future collection integration test
 add_executable(raft_future_collection_integration_test raft_future_collection_integration_test.cpp)
@@ -1026,6 +1088,23 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(raft_comprehensive_error_handling_integration_test PRIVATE cxx_std_23)
 add_test(NAME raft_comprehensive_error_handling_integration_test COMMAND raft_comprehensive_error_handling_integration_test)
+
+# Retry logic with exponential backoff integration test
+add_executable(raft_retry_logic_exponential_backoff_integration_test raft_retry_logic_exponential_backoff_integration_test.cpp)
+target_link_libraries(raft_retry_logic_exponential_backoff_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_retry_logic_exponential_backoff_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_retry_logic_exponential_backoff_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_retry_logic_exponential_backoff_integration_test COMMAND raft_retry_logic_exponential_backoff_integration_test)
+set_tests_properties(raft_retry_logic_exponential_backoff_integration_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;retry;exponential_backoff"
+)
 
 # State machine synchronization integration test
 add_executable(raft_state_machine_synchronization_integration_test raft_state_machine_synchronization_integration_test.cpp)
