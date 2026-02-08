@@ -17,10 +17,17 @@ find_package(Boost QUIET COMPONENTS system thread unit_test_framework json)
 find_package(httplib QUIET)
 find_package(OpenSSL QUIET)
 
-# Find libcoap using PkgConfig
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LIBCOAP QUIET libcoap-3)
+# Find libcoap using CMake config (vcpkg) or PkgConfig (system)
+find_package(libcoap QUIET CONFIG)
+if(NOT libcoap_FOUND)
+    # Fallback to PkgConfig for system installations
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBCOAP QUIET libcoap-3)
+    endif()
+else()
+    # Set LIBCOAP_FOUND for consistency with pkg-config path
+    set(LIBCOAP_FOUND TRUE)
 endif()
 
 if(NOT folly_FOUND)

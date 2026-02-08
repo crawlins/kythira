@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE FollyConceptWrappersGenericTemplateCompatibilityPropertyTest
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
+#include <folly/init/Init.h>
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
 #include <exception>
@@ -16,6 +17,22 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 using namespace kythira;
+
+// Global fixture to initialize Folly
+struct FollyInitFixture {
+    FollyInitFixture() {
+        static bool initialized = false;
+        if (!initialized) {
+            int argc = 1;
+            char* argv_data[] = {const_cast<char*>("test"), nullptr};
+            char** argv = argv_data;
+            folly::init(&argc, &argv);
+            initialized = true;
+        }
+    }
+};
+
+BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
 
 // Test constants
 namespace {
@@ -270,14 +287,15 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test, * boost::unit
         auto future_int = FutureFactory::makeFuture(test_value);
         auto delayed_future = add_delay_to_future<Future<int>, int>(std::move(future_int), std::chrono::milliseconds(10));
         
-        // The future should still be ready since it was already resolved
-        BOOST_CHECK(delayed_future.isReady());
+        // The future should NOT be ready immediately - delay() adds actual delay
+        BOOST_CHECK(!delayed_future.isReady());
+        // Wait for the delay to complete
         BOOST_CHECK_EQUAL(delayed_future.get(), test_value);
         
         auto future_str = FutureFactory::makeFuture(std::string("delayed"));
         auto delayed_str_future = add_delay_to_future<Future<std::string>, std::string>(std::move(future_str), std::chrono::milliseconds(10));
         
-        BOOST_CHECK(delayed_str_future.isReady());
+        // Wait for the delay to complete
         BOOST_CHECK_EQUAL(delayed_str_future.get(), "delayed");
         
         BOOST_TEST_MESSAGE("Generic future continuation operations work with Future wrapper");

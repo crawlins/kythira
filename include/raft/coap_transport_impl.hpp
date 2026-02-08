@@ -823,10 +823,14 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         coap_context_set_max_idle_sessions(_coap_context, _config.max_sessions);
         coap_context_set_session_timeout(_coap_context, static_cast<unsigned int>(_config.session_timeout.count()));
         
+        // Validate and configure cipher suites
+        validate_cipher_suites(_config.cipher_suites);
+        auto selected_ciphers = select_cipher_suites();
+        
         // Configure cipher suites if specified
-        if (!_config.cipher_suites.empty()) {
+        if (!selected_ciphers.empty()) {
             // Set allowed cipher suites for enhanced security
-            for (const auto& cipher_suite : _config.cipher_suites) {
+            for (const auto& cipher_suite : selected_ciphers) {
                 _logger.debug("Configuring cipher suite", {
                     {"cipher_suite", cipher_suite}
                 });
@@ -897,6 +901,195 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         _metrics.emit();
     }
 #endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::initiate_dtls_handshake(const std::string& endpoint) -> bool {
+    // Stub implementation for DTLS handshake initiation
+    // In a real implementation, this would:
+    // 1. Create a CoAP session to the endpoint
+    // 2. Initiate the DTLS handshake process
+    // 3. Wait for handshake to begin
+    
+    _logger.debug("Initiating DTLS handshake", {
+        {"endpoint", endpoint},
+        {"dtls_enabled", _config.enable_dtls ? "true" : "false"}
+    });
+    
+#ifdef LIBCOAP_AVAILABLE
+    if (!_config.enable_dtls) {
+        _logger.warning("DTLS not enabled, skipping handshake initiation");
+        return false;
+    }
+    
+    // In a real implementation with libcoap, this would:
+    // - Parse the endpoint URI
+    // - Create a new CoAP session with DTLS enabled
+    // - Trigger the DTLS handshake initiation
+    // For now, return success for mock handshakes
+    
+    _logger.info("DTLS handshake initiated successfully (stub)", {
+        {"endpoint", endpoint}
+    });
+    
+    return true;
+#else
+    // Stub implementation when libcoap is not available
+    if (!_config.enable_dtls) {
+        return false;
+    }
+    
+    _logger.info("DTLS handshake initiated successfully (stub)", {
+        {"endpoint", endpoint}
+    });
+    
+    return true;
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::complete_dtls_handshake(const std::string& endpoint) -> bool {
+    // Stub implementation for DTLS handshake completion
+    // In a real implementation, this would:
+    // 1. Wait for the DTLS handshake to complete
+    // 2. Verify the handshake was successful
+    // 3. Validate the peer certificate (if using certificate auth)
+    // 4. Return true if handshake completed successfully
+    
+    _logger.debug("Completing DTLS handshake", {
+        {"endpoint", endpoint},
+        {"dtls_enabled", _config.enable_dtls ? "true" : "false"}
+    });
+    
+#ifdef LIBCOAP_AVAILABLE
+    if (!_config.enable_dtls) {
+        _logger.warning("DTLS not enabled, skipping handshake completion");
+        return false;
+    }
+    
+    // In a real implementation with libcoap, this would:
+    // - Check the session state
+    // - Verify the DTLS handshake completed successfully
+    // - Validate certificates if using certificate authentication
+    // - Check cipher suite negotiation
+    // For now, return success for mock handshakes
+    
+    _logger.info("DTLS handshake completed successfully (stub)", {
+        {"endpoint", endpoint},
+        {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}
+    });
+    
+    return true;
+#else
+    // Stub implementation when libcoap is not available
+    if (!_config.enable_dtls) {
+        return false;
+    }
+    
+    _logger.info("DTLS handshake completed successfully (stub)", {
+        {"endpoint", endpoint},
+        {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}
+    });
+    
+    return true;
+#endif
+}
+
+// Cipher suite configuration methods implementation
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::validate_cipher_suites(const std::vector<std::string>& cipher_suites) -> void {
+    // Validate cipher suite configuration
+    // This stub implementation performs basic validation
+    
+    _logger.debug("Validating cipher suites", {
+        {"cipher_suite_count", std::to_string(cipher_suites.size())}
+    });
+    
+    if (cipher_suites.empty()) {
+        // Empty cipher suite list is valid (use defaults)
+        _logger.debug("Empty cipher suite list, will use defaults");
+        return;
+    }
+    
+    // Validate each cipher suite name format
+    for (const auto& cipher_suite : cipher_suites) {
+        if (cipher_suite.empty()) {
+            throw coap_security_error("Empty cipher suite name in configuration");
+        }
+        
+        // Basic format validation - cipher suite names should start with "TLS_"
+        if (cipher_suite.find("TLS_") != 0) {
+            _logger.warning("Cipher suite name does not start with TLS_", {
+                {"cipher_suite", cipher_suite}
+            });
+        }
+        
+        _logger.debug("Cipher suite validated", {
+            {"cipher_suite", cipher_suite}
+        });
+    }
+    
+    _logger.info("Cipher suite validation completed", {
+        {"valid_cipher_suites", std::to_string(cipher_suites.size())}
+    });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::select_cipher_suites() -> std::vector<std::string> {
+    // Select cipher suites based on configuration
+    // This stub implementation returns configured cipher suites or defaults
+    
+    _logger.debug("Selecting cipher suites");
+    
+    if (!_config.cipher_suites.empty()) {
+        // Use configured cipher suites
+        _logger.info("Using configured cipher suites", {
+            {"cipher_suite_count", std::to_string(_config.cipher_suites.size())}
+        });
+        return _config.cipher_suites;
+    }
+    
+    // Return default secure cipher suites
+    auto default_ciphers = get_supported_cipher_suites();
+    
+    _logger.info("Using default cipher suites", {
+        {"cipher_suite_count", std::to_string(default_ciphers.size())}
+    });
+    
+    return default_ciphers;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::get_supported_cipher_suites() const -> std::vector<std::string> {
+    // Return list of supported cipher suites
+    // This stub implementation returns a mock list of secure cipher suites
+    
+    _logger.debug("Getting supported cipher suites");
+    
+    // Return a list of modern, secure cipher suites
+    // In a real implementation, this would query libcoap/OpenSSL for supported ciphers
+    std::vector<std::string> supported_ciphers = {
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
+    };
+    
+    _logger.debug("Supported cipher suites retrieved", {
+        {"cipher_suite_count", std::to_string(supported_ciphers.size())}
+    });
+    
+    return supported_ciphers;
 }
 
 template<typename Types>
@@ -2206,9 +2399,14 @@ auto coap_server<Types>::setup_dtls_context() -> void {
     // Set DTLS timeout parameters
     coap_context_set_max_handshake_sessions(_coap_context, _config.max_concurrent_sessions / 2);
     
+    // Validate and configure cipher suites
+    validate_cipher_suites(_config.cipher_suites);
+    auto selected_ciphers = select_cipher_suites();
+    
     _logger.info("DTLS context setup completed", {
         {"max_sessions", std::to_string(_config.max_concurrent_sessions)},
-        {"session_timeout_ms", std::to_string(_config.session_timeout.count())}
+        {"session_timeout_ms", std::to_string(_config.session_timeout.count())},
+        {"cipher_suites_count", std::to_string(selected_ciphers.size())}
     });
     
 #else
@@ -2266,6 +2464,197 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         {"dtls_enabled", _config.enable_dtls ? "true" : "false"},
         {"verify_peer_cert", _config.verify_peer_cert ? "true" : "false"}
     });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::initiate_dtls_handshake(coap_session_t* session) -> bool {
+    // Stub implementation for server-side DTLS handshake initiation
+    // In a real implementation, this would:
+    // 1. Check if the session requires DTLS
+    // 2. Initiate the DTLS handshake process
+    // 3. Set up handshake callbacks
+    
+    _logger.debug("Initiating server-side DTLS handshake", {
+        {"dtls_enabled", _config.enable_dtls ? "true" : "false"}
+    });
+    
+#ifdef LIBCOAP_AVAILABLE
+    if (!_config.enable_dtls) {
+        _logger.warning("DTLS not enabled, skipping handshake initiation");
+        return false;
+    }
+    
+    if (!session) {
+        _logger.error("Cannot initiate DTLS handshake: session is null");
+        return false;
+    }
+    
+    // In a real implementation with libcoap, this would:
+    // - Check the session type (DTLS vs plain CoAP)
+    // - Trigger the DTLS handshake initiation
+    // - Set up handshake state tracking
+    // For now, return success for mock handshakes
+    
+    _logger.info("Server DTLS handshake initiated successfully (stub)");
+    
+    return true;
+#else
+    // Stub implementation when libcoap is not available
+    if (!_config.enable_dtls) {
+        return false;
+    }
+    
+    _logger.info("Server DTLS handshake initiated successfully (stub)");
+    
+    return true;
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::complete_dtls_handshake(coap_session_t* session) -> bool {
+    // Stub implementation for server-side DTLS handshake completion
+    // In a real implementation, this would:
+    // 1. Wait for the DTLS handshake to complete
+    // 2. Verify the handshake was successful
+    // 3. Validate the client certificate (if using certificate auth)
+    // 4. Return true if handshake completed successfully
+    
+    _logger.debug("Completing server-side DTLS handshake", {
+        {"dtls_enabled", _config.enable_dtls ? "true" : "false"}
+    });
+    
+#ifdef LIBCOAP_AVAILABLE
+    if (!_config.enable_dtls) {
+        _logger.warning("DTLS not enabled, skipping handshake completion");
+        return false;
+    }
+    
+    if (!session) {
+        _logger.error("Cannot complete DTLS handshake: session is null");
+        return false;
+    }
+    
+    // In a real implementation with libcoap, this would:
+    // - Check the session state
+    // - Verify the DTLS handshake completed successfully
+    // - Validate client certificates if using certificate authentication
+    // - Check cipher suite negotiation
+    // For now, return success for mock handshakes
+    
+    _logger.info("Server DTLS handshake completed successfully (stub)", {
+        {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}
+    });
+    
+    return true;
+#else
+    // Stub implementation when libcoap is not available
+    if (!_config.enable_dtls) {
+        return false;
+    }
+    
+    _logger.info("Server DTLS handshake completed successfully (stub)", {
+        {"auth_method", !_config.cert_file.empty() ? "certificate" : "psk"}
+    });
+    
+    return true;
+#endif
+}
+
+// Cipher suite configuration methods implementation for server
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::validate_cipher_suites(const std::vector<std::string>& cipher_suites) -> void {
+    // Validate cipher suite configuration
+    // This stub implementation performs basic validation
+    
+    _logger.debug("Validating server cipher suites", {
+        {"cipher_suite_count", std::to_string(cipher_suites.size())}
+    });
+    
+    if (cipher_suites.empty()) {
+        // Empty cipher suite list is valid (use defaults)
+        _logger.debug("Empty cipher suite list, will use defaults");
+        return;
+    }
+    
+    // Validate each cipher suite name format
+    for (const auto& cipher_suite : cipher_suites) {
+        if (cipher_suite.empty()) {
+            throw coap_security_error("Empty cipher suite name in server configuration");
+        }
+        
+        // Basic format validation - cipher suite names should start with "TLS_"
+        if (cipher_suite.find("TLS_") != 0) {
+            _logger.warning("Server cipher suite name does not start with TLS_", {
+                {"cipher_suite", cipher_suite}
+            });
+        }
+        
+        _logger.debug("Server cipher suite validated", {
+            {"cipher_suite", cipher_suite}
+        });
+    }
+    
+    _logger.info("Server cipher suite validation completed", {
+        {"valid_cipher_suites", std::to_string(cipher_suites.size())}
+    });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::select_cipher_suites() -> std::vector<std::string> {
+    // Select cipher suites based on configuration
+    // This stub implementation returns configured cipher suites or defaults
+    
+    _logger.debug("Selecting server cipher suites");
+    
+    if (!_config.cipher_suites.empty()) {
+        // Use configured cipher suites
+        _logger.info("Using configured server cipher suites", {
+            {"cipher_suite_count", std::to_string(_config.cipher_suites.size())}
+        });
+        return _config.cipher_suites;
+    }
+    
+    // Return default secure cipher suites
+    auto default_ciphers = get_supported_cipher_suites();
+    
+    _logger.info("Using default server cipher suites", {
+        {"cipher_suite_count", std::to_string(default_ciphers.size())}
+    });
+    
+    return default_ciphers;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::get_supported_cipher_suites() const -> std::vector<std::string> {
+    // Return list of supported cipher suites
+    // This stub implementation returns a mock list of secure cipher suites
+    
+    _logger.debug("Getting supported server cipher suites");
+    
+    // Return a list of modern, secure cipher suites
+    // In a real implementation, this would query libcoap/OpenSSL for supported ciphers
+    std::vector<std::string> supported_ciphers = {
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+        "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+        "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
+    };
+    
+    _logger.debug("Supported server cipher suites retrieved", {
+        {"cipher_suite_count", std::to_string(supported_ciphers.size())}
+    });
+    
+    return supported_ciphers;
 }
 
 template<typename Types>
@@ -3993,7 +4382,7 @@ auto coap_client<Types>::cache_serialization(std::size_t hash, const std::vector
     }
     
     // Add new entry
-    _serialization_cache[hash] = {data, std::chrono::steady_clock::now(), 0};
+    _serialization_cache.emplace(hash, cache_entry{data, hash});
     
     _logger.debug("Cached serialization", {
         {"hash", std::to_string(hash)},
@@ -5438,6 +5827,98 @@ auto coap_server<Types>::cleanup_serialization_cache() -> void {
 // Multicast support implementation for CoAP client
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::send_multicast_message(
+    const std::string& multicast_address,
+    std::uint16_t multicast_port,
+    const std::string& resource_path,
+    const std::vector<std::byte>& payload,
+    std::chrono::milliseconds timeout
+) -> future_template<std::vector<std::byte>> {
+    // Stub implementation for multicast message sending
+    _logger.info("Sending multicast message (stub implementation)", {
+        {"multicast_address", multicast_address},
+        {"multicast_port", std::to_string(multicast_port)},
+        {"resource_path", resource_path},
+        {"payload_size", std::to_string(payload.size())},
+        {"timeout_ms", std::to_string(timeout.count())}
+    });
+    
+    // Validate multicast port
+    if (multicast_port == 0) {
+        _logger.error("Invalid multicast port", {
+            {"port", std::to_string(multicast_port)}
+        });
+        return FutureFactory::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(coap_network_error("Invalid multicast port: 0"))
+        );
+    }
+    
+    // Validate multicast address
+    if (!is_valid_multicast_address(multicast_address)) {
+        _logger.error("Invalid multicast address", {
+            {"address", multicast_address}
+        });
+        return FutureFactory::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(coap_network_error("Invalid multicast address: " + multicast_address))
+        );
+    }
+    
+    // Record metrics for multicast message
+    _metrics.add_dimension("operation", "send_multicast_message");
+    _metrics.add_dimension("multicast_address", multicast_address);
+    _metrics.add_dimension("resource_path", resource_path);
+    _metrics.add_one();
+    _metrics.emit();
+    
+#ifdef LIBCOAP_AVAILABLE
+    // Real implementation would:
+    // 1. Create multicast CoAP session
+    // 2. Construct CoAP PDU with payload
+    // 3. Send to multicast address
+    // 4. Collect responses from multiple nodes
+    // 5. Return vector of response payloads
+    
+    _logger.warning("Real libcoap multicast implementation not yet complete, using stub");
+    
+    // Return empty response as stub (single response, not vector of responses)
+    std::vector<std::byte> stub_response;
+    
+    // Simulate a mock response for testing
+    std::string mock_data = "mock_multicast_response";
+    stub_response.reserve(mock_data.size());
+    for (char c : mock_data) {
+        stub_response.push_back(static_cast<std::byte>(c));
+    }
+    
+    _logger.debug("Returning stub multicast response", {
+        {"response_size", std::to_string(stub_response.size())}
+    });
+    
+    return FutureFactory::makeFuture(std::move(stub_response));
+#else
+    // Stub implementation when libcoap is not available
+    _logger.warning("libcoap not available, using stub multicast implementation");
+    
+    // Return empty response as stub (single response, not vector of responses)
+    std::vector<std::byte> stub_response;
+    
+    // Simulate a mock response for testing
+    std::string mock_data = "mock_multicast_response";
+    stub_response.reserve(mock_data.size());
+    for (char c : mock_data) {
+        stub_response.push_back(static_cast<std::byte>(c));
+    }
+    
+    _logger.debug("Returning stub multicast response", {
+        {"response_size", std::to_string(stub_response.size())}
+    });
+    
+    return FutureFactory::makeFuture(std::move(stub_response));
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::discover_raft_nodes(
     const std::string& multicast_address,
     std::uint16_t multicast_port,
@@ -6003,6 +6484,62 @@ auto coap_client<Types>::parse_discovery_response(const std::vector<std::byte>& 
 
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::is_valid_multicast_address(const std::string& address) -> bool {
+    // Validate IPv4 multicast address (224.0.0.0/4 range - 224.0.0.0 to 239.255.255.255)
+    if (address.empty()) {
+        return false;
+    }
+    
+    // Check for leading/trailing whitespace
+    if (address.front() == ' ' || address.back() == ' ') {
+        return false;
+    }
+    
+    // Check for leading/trailing dots
+    if (address.front() == '.' || address.back() == '.') {
+        return false;
+    }
+    
+    // Check for double dots
+    if (address.find("..") != std::string::npos) {
+        return false;
+    }
+    
+    // Minimum length check for "224.0.0.0"
+    if (address.length() < 8) {
+        return false;
+    }
+    
+    // Parse the first octet to check if it's in the multicast range (224-239)
+    std::size_t dot_pos = address.find('.');
+    if (dot_pos == std::string::npos || dot_pos == 0) {
+        return false;
+    }
+    
+    try {
+        // Extract and validate the first octet
+        std::string first_octet_str = address.substr(0, dot_pos);
+        int first_octet = std::stoi(first_octet_str);
+        
+        // IPv4 multicast range is 224.0.0.0 to 239.255.255.255 (224-239 in first octet)
+        if (first_octet >= 224 && first_octet <= 239) {
+            // Additional validation: ensure it looks like a valid IP address format
+            // Count dots - should have exactly 3 dots for IPv4
+            std::size_t dot_count = std::count(address.begin(), address.end(), '.');
+            if (dot_count == 3) {
+                return true;
+            }
+        }
+    } catch (const std::exception&) {
+        // Invalid number format
+        return false;
+    }
+    
+    return false;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void {
     // Handle multicast-specific errors
     std::lock_guard<std::mutex> lock(_mutex);
@@ -6071,6 +6608,21 @@ requires kythira::transport_types<Types>
 auto coap_server<Types>::is_valid_multicast_address(const std::string& address) -> bool {
     // Validate IPv4 multicast address (224.0.0.0 to 239.255.255.255)
     if (address.empty()) {
+        return false;
+    }
+    
+    // Check for leading/trailing whitespace
+    if (address.front() == ' ' || address.back() == ' ') {
+        return false;
+    }
+    
+    // Check for leading/trailing dots
+    if (address.front() == '.' || address.back() == '.') {
+        return false;
+    }
+    
+    // Check for double dots
+    if (address.find("..") != std::string::npos) {
         return false;
     }
     

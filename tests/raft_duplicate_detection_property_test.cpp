@@ -17,6 +17,7 @@
 #include <raft/console_logger.hpp>
 #include <raft/metrics.hpp>
 #include <raft/membership.hpp>
+#include <raft/test_state_machine.hpp>
 
 #include <network_simulator/network_simulator.hpp>
 
@@ -48,9 +49,86 @@ namespace {
     constexpr std::size_t property_test_iterations = 10;
     constexpr std::chrono::milliseconds election_timeout_min{50};
     constexpr std::chrono::milliseconds election_timeout_max{100};
+
+    // Types for simulator-based testing
+    struct test_raft_types {
+        // Future types
+        using future_type = kythira::Future<std::vector<std::byte>>;
+        using promise_type = kythira::Promise<std::vector<std::byte>>;
+        using try_type = kythira::Try<std::vector<std::byte>>;
+        
+        // Basic data types
+        using node_id_type = std::uint64_t;
+        using term_id_type = std::uint64_t;
+        using log_index_type = std::uint64_t;
+        
+        // Serializer and data types
+        using serialized_data_type = std::vector<std::byte>;
+        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+        
+        // Network types
+        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
+        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+        
+        // Component types
+        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+        using logger_type = kythira::console_logger;
+        using metrics_type = kythira::noop_metrics;
+        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+        
+        // Configuration type
+        using configuration_type = kythira::raft_configuration;
+        
+        // Type aliases for commonly used compound types
+        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+        
+        // RPC message types
+        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
+        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+    };
     constexpr std::chrono::milliseconds heartbeat_interval{25};
     constexpr std::chrono::milliseconds rpc_timeout{200};
     constexpr std::uint64_t test_client_id = 12345;
+    
+    // Helper function to create a properly formatted PUT command for test_key_value_state_machine
+    auto create_put_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
+        std::vector<std::byte> command;
+        
+        // Command type (PUT = 1)
+        command.push_back(std::byte{1});
+        
+        // Key length (4 bytes)
+        std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
+        std::size_t offset = command.size();
+        command.resize(offset + sizeof(std::uint32_t));
+        std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
+        
+        // Key
+        offset = command.size();
+        command.resize(offset + key.size());
+        std::memcpy(command.data() + offset, key.data(), key.size());
+        
+        // Value length (4 bytes)
+        std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
+        offset = command.size();
+        command.resize(offset + sizeof(std::uint32_t));
+        std::memcpy(command.data() + offset, &value_length, sizeof(std::uint32_t));
+        
+        // Value
+        offset = command.size();
+        command.resize(offset + value.size());
+        std::memcpy(command.data() + offset, value.data(), value.size());
+        
+        return command;
+    }
 }
 
 BOOST_AUTO_TEST_SUITE(duplicate_detection_property_tests)
@@ -67,12 +145,12 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -81,20 +159,14 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -111,7 +183,7 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         BOOST_REQUIRE(node.is_leader());
         
         // Submit a command with serial number 1
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         constexpr std::uint64_t serial_number = 1;
         
         auto first_future = node.submit_command_with_session(
@@ -165,12 +237,12 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -179,20 +251,14 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -210,7 +276,7 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
         
         // Submit multiple commands with increasing serial numbers
         constexpr std::size_t num_commands = 5;
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         
         for (std::uint64_t serial = 1; serial <= num_commands; ++serial) {
             auto future = node.submit_command_with_session(
@@ -257,12 +323,12 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -271,20 +337,14 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -301,7 +361,7 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
         BOOST_REQUIRE(node.is_leader());
         
         // Try to submit with serial number != 1 for a new client
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         constexpr std::uint64_t new_client_id = 99999;
         constexpr std::uint64_t invalid_serial = 5;
         
@@ -347,12 +407,12 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -361,20 +421,14 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -391,7 +445,7 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         BOOST_REQUIRE(node.is_leader());
         
         // Submit command with serial number 1
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         
         auto first_future = node.submit_command_with_session(
             test_client_id,
@@ -447,12 +501,12 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -461,20 +515,14 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -493,7 +541,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         // Submit commands from client 1
         constexpr std::uint64_t client_1 = 100;
         constexpr std::uint64_t client_2 = 200;
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         
         // Client 1 submits with serial 1
         auto client1_future1 = node.submit_command_with_session(
@@ -563,12 +611,12 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
     
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create single node
         constexpr std::uint64_t node_id = 1;
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create configuration
         auto config = kythira::raft_configuration{};
@@ -577,20 +625,14 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
         config._heartbeat_interval = heartbeat_interval;
         config._rpc_timeout = rpc_timeout;
         
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::memory_persistence_engine<>{},
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::persistence_engine_type{},
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{},
             config
         };
         
@@ -607,7 +649,7 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
         BOOST_REQUIRE(node.is_leader());
         
         // Submit initial command
-        std::vector<std::byte> command{std::byte{42}};
+        auto command = create_put_command("test_key", "test_value");
         constexpr std::uint64_t serial_number = 1;
         
         auto first_future = node.submit_command_with_session(

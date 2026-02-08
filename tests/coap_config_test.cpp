@@ -531,8 +531,12 @@ BOOST_AUTO_TEST_CASE(test_is_valid_block_size) {
 }
 
 BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
-    // Test parsing and encoding of block options
-    std::uint32_t option_value = (1 << 23) | (2 << 20) | 42; // More=1, SZX=2, Block=42
+    // Test parsing and encoding of block options according to RFC 7959
+    // RFC 7959 format: NUM (upper bits) | M (bit 3) | SZX (bits 0-2)
+    
+    // Example: Block number 42, More=1, SZX=2 (64 bytes)
+    // Encoding: (42 << 4) | (1 << 3) | 2 = 672 + 8 + 2 = 682
+    std::uint32_t option_value = (42 << 4) | (1 << 3) | 2;
     
     auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 42);
@@ -544,7 +548,10 @@ BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
 }
 
 BOOST_AUTO_TEST_CASE(test_block_option_no_more_blocks) {
-    std::uint32_t option_value = (0 << 23) | (3 << 20) | 10; // More=0, SZX=3, Block=10
+    // RFC 7959 format: NUM (upper bits) | M (bit 3) | SZX (bits 0-2)
+    // Example: Block number 10, More=0, SZX=3 (128 bytes)
+    // Encoding: (10 << 4) | (0 << 3) | 3 = 160 + 0 + 3 = 163
+    std::uint32_t option_value = (10 << 4) | (0 << 3) | 3;
     
     auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 10);

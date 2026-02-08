@@ -169,14 +169,24 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
     std::size_t conflict_detected_tests = 0;
     std::size_t no_conflict_tests = 0;
     
-    for (std::size_t i = 0; i < property_test_iterations; ++i) {
+    // Use stratified sampling to ensure both conflict and no-conflict scenarios are tested
+    // Split iterations: 50% conflict, 50% no-conflict
+    const std::size_t conflict_iterations = property_test_iterations / 2;
+    const std::size_t no_conflict_iterations = property_test_iterations - conflict_iterations;
+    
+    // Test conflict scenarios (different terms)
+    for (std::size_t i = 0; i < conflict_iterations; ++i) {
         auto entry_index = generate_random_log_index(rng);
         if (entry_index == 0) entry_index = 1;  // Ensure valid index
         
         auto existing_term = generate_random_term(rng);
-        auto new_term = generate_random_term(rng);
+        // Ensure different term for conflict
+        auto new_term = existing_term;
+        while (new_term == existing_term) {
+            new_term = generate_random_term(rng);
+        }
         
-        bool has_conflict = existing_term != new_term;
+        bool has_conflict = true;  // Guaranteed by construction
         
         if (has_conflict) {
             ++conflict_detected_tests;
@@ -184,7 +194,29 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
             // 1. Delete the conflicting entry and all following entries
             // 2. Persist the truncation
             // 3. Append the new entries
-        } else {
+        }
+        
+        ++tests_passed;
+        
+        if (i < 5) {
+            BOOST_TEST_MESSAGE("Conflict iteration " << i << ": "
+                << "entry_index=" << entry_index << ", "
+                << "existing_term=" << existing_term << ", new_term=" << new_term << ", "
+                << "has_conflict=" << has_conflict);
+        }
+    }
+    
+    // Test no-conflict scenarios (same terms)
+    for (std::size_t i = 0; i < no_conflict_iterations; ++i) {
+        auto entry_index = generate_random_log_index(rng);
+        if (entry_index == 0) entry_index = 1;  // Ensure valid index
+        
+        auto existing_term = generate_random_term(rng);
+        auto new_term = existing_term;  // Same term - no conflict
+        
+        bool has_conflict = false;  // Guaranteed by construction
+        
+        if (!has_conflict) {
             ++no_conflict_tests;
             // Property: When no conflict (terms match):
             // 1. Skip the entry (already in log)
@@ -193,8 +225,8 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
         
         ++tests_passed;
         
-        if (i < 10) {
-            BOOST_TEST_MESSAGE("Iteration " << i << ": "
+        if (i < 5) {
+            BOOST_TEST_MESSAGE("No-conflict iteration " << i << ": "
                 << "entry_index=" << entry_index << ", "
                 << "existing_term=" << existing_term << ", new_term=" << new_term << ", "
                 << "has_conflict=" << has_conflict);

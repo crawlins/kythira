@@ -675,10 +675,8 @@ auto node<Types>::submit_command(
     });
     
     // Step 3: Trigger replication to followers
-    // Note: replicate_to_followers is called asynchronously by the leader's heartbeat/replication loop
-    // For immediate replication, we could call it here, but the existing implementation
-    // relies on the periodic replication mechanism
-    // TODO: Call replicate_to_followers() here for immediate replication once type issues are resolved
+    // Call replicate_to_followers() for immediate replication
+    replicate_to_followers();
     
     // Emit replication trigger metric
     _metrics.set_metric_name("replication_triggered");
@@ -700,8 +698,146 @@ auto node<Types>::submit_command_with_session(
     const std::vector<std::byte>& command,
     std::chrono::milliseconds timeout
 ) -> future_type {
-    // Placeholder implementation
-    return submit_command(command, timeout);
+    std::lock_guard<std::mutex> lock(_mutex);
+    
+    // Only leaders can accept client commands
+    if (_state != kythira::server_state::leader) {
+        _logger.debug("Rejected command with session: not leader", {
+            {"node_id", node_id_to_string(_node_id)},
+            {"client_id", std::to_string(client_id)},
+            {"serial_number", std::to_string(serial_number)}
+        });
+        
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::make_exception_ptr(
+            std::runtime_error("Not leader")));
+        return future;
+    }
+    
+    // Check if this is a new client or existing client
+    auto session_it = _client_sessions.find(client_id);
+    
+    if (session_it == _client_sessions.end()) {
+        // New client - must start with serial number 1
+        if (serial_number != 1) {
+            _logger.warning("Rejected command: new client must start with serial number 1", {
+                {"node_id", node_id_to_string(_node_id)},
+                {"client_id", std::to_string(client_id)},
+                {"serial_number", std::to_string(serial_number)}
+            });
+            
+            _metrics.set_metric_name("session_validation_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_dimension("reason", "invalid_initial_serial");
+            _metrics.add_one();
+            _metrics.emit();
+            
+            promise_type promise;
+            auto future = promise.getFuture();
+            promise.setException(std::make_exception_ptr(
+                std::invalid_argument("New client must start with serial number 1")));
+            return future;
+        }
+        
+        // Create new session for this client
+        _client_sessions[client_id] = client_session{};
+        
+        _logger.debug("Created new client session", {
+            {"node_id", node_id_to_string(_node_id)},
+            {"client_id", std::to_string(client_id)}
+        });
+    } else {
+        // Existing client - validate serial number
+        auto& session = session_it->second;
+        
+        if (serial_number <= session.last_serial_number) {
+            // Duplicate or old request - return cached response
+            _logger.debug("Returning cached response for duplicate/old request", {
+                {"node_id", node_id_to_string(_node_id)},
+                {"client_id", std::to_string(client_id)},
+                {"serial_number", std::to_string(serial_number)},
+                {"last_serial_number", std::to_string(session.last_serial_number)}
+            });
+            
+            _metrics.set_metric_name("duplicate_request_detected");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_one();
+            _metrics.emit();
+            
+            promise_type promise;
+            auto future = promise.getFuture();
+            promise.setValue(session.last_response);
+            return future;
+        } else if (serial_number > session.last_serial_number + 1) {
+            // Skipped serial numbers - reject
+            _logger.warning("Rejected command: skipped serial numbers", {
+                {"node_id", node_id_to_string(_node_id)},
+                {"client_id", std::to_string(client_id)},
+                {"serial_number", std::to_string(serial_number)},
+                {"expected_serial_number", std::to_string(session.last_serial_number + 1)}
+            });
+            
+            _metrics.set_metric_name("session_validation_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_dimension("reason", "skipped_serial_numbers");
+            _metrics.add_one();
+            _metrics.emit();
+            
+            promise_type promise;
+            auto future = promise.getFuture();
+            promise.setException(std::make_exception_ptr(
+                std::invalid_argument(std::format("Serial numbers must be sequential. Expected {}, got {}",
+                    session.last_serial_number + 1, serial_number))));
+            return future;
+        }
+        
+        // serial_number == session.last_serial_number + 1 - valid new request
+    }
+    
+    // Valid request - submit command and cache response
+    _logger.debug("Processing command with session", {
+        {"node_id", node_id_to_string(_node_id)},
+        {"client_id", std::to_string(client_id)},
+        {"serial_number", std::to_string(serial_number)}
+    });
+    
+    // Release lock before calling submit_command (which will acquire it again)
+    lock.~lock_guard();
+    
+    // Submit the command
+    auto command_future = submit_command(command, timeout);
+    
+    // Create a continuation to cache the response
+    auto shared_client_id = client_id;
+    auto shared_serial_number = serial_number;
+    auto& sessions_ref = _client_sessions;
+    auto& mutex_ref = _mutex;
+    auto& logger_ref = _logger;
+    auto& metrics_ref = _metrics;
+    auto node_id = _node_id;
+    
+    return command_future.thenValue([shared_client_id, shared_serial_number, &sessions_ref, &mutex_ref, &logger_ref, &metrics_ref, node_id](std::vector<std::byte> result) {
+        // Cache the response
+        std::lock_guard<std::mutex> cache_lock(mutex_ref);
+        
+        auto& session = sessions_ref[shared_client_id];
+        session.last_serial_number = shared_serial_number;
+        session.last_response = result;
+        
+        logger_ref.debug("Cached response for client session", {
+            {"node_id", node_id_to_string(node_id)},
+            {"client_id", std::to_string(shared_client_id)},
+            {"serial_number", std::to_string(shared_serial_number)}
+        });
+        
+        metrics_ref.set_metric_name("session_response_cached");
+        metrics_ref.add_dimension("node_id", node_id_to_string(node_id));
+        metrics_ref.add_one();
+        metrics_ref.emit();
+        
+        return result;
+    });
 }
 
 template<raft_types Types>
@@ -2635,6 +2771,8 @@ auto node<Types>::replicate_to_followers() -> void {
         _logger.debug("No followers to replicate to", {
             {"node_id", node_id_to_string(_node_id)}
         });
+        // For single-node clusters, still need to advance commit index
+        advance_commit_index();
         return;
     }
     

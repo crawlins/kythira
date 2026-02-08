@@ -370,31 +370,39 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
     
     typename test_transport_types::metrics_type metrics;
     
-    // Test 1: Server fails to start without valid certificates
+    // Test 1: Server fails to construct/start without valid certificates
     {
-        BOOST_TEST_MESSAGE("Testing server startup failure with invalid certificates");
+        BOOST_TEST_MESSAGE("Testing server failure with invalid certificates");
         
-        kythira::cpp_httplib_server<test_transport_types> server(
-            test_bind_address, unique_port, server_config, metrics);
-        
-        // Register a simple handler
-        server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
-            kythira::request_vote_response<> resp;
-            resp._term = req.term() + 1;
-            resp._vote_granted = true;
-            return resp;
-        });
-        
-        // Server should fail to start due to missing certificates
         try {
-            server.start();
-            // If we get here, the server started despite missing certificates
-            // This might happen if the implementation falls back to HTTP
-            BOOST_TEST_MESSAGE("Server started despite missing certificates - may have fallen back to HTTP");
-            server.stop();
+            kythira::cpp_httplib_server<test_transport_types> server(
+                test_bind_address, unique_port, server_config, metrics);
+            
+            // Register a simple handler
+            server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
+                kythira::request_vote_response<> resp;
+                resp._term = req.term() + 1;
+                resp._vote_granted = true;
+                return resp;
+            });
+            
+            // Server should fail to start due to missing certificates
+            try {
+                server.start();
+                // If we get here, the server started despite missing certificates
+                // This might happen if the implementation falls back to HTTP
+                BOOST_TEST_MESSAGE("Server started despite missing certificates - may have fallen back to HTTP");
+                server.stop();
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE("Expected: Server failed to start due to missing certificates: " << e.what());
+                // This is the expected behavior
+            }
+        } catch (const kythira::ssl_configuration_error& e) {
+            // Expected: Server constructor validates certificates and throws
+            BOOST_TEST_MESSAGE("Expected: Server construction failed due to missing certificates: " << e.what());
         } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("Expected: Server failed to start due to missing certificates: " << e.what());
-            // This is the expected behavior
+            // Also acceptable: any SSL-related error during construction
+            BOOST_TEST_MESSAGE("Expected: Server construction failed: " << e.what());
         }
     }
     
@@ -402,35 +410,43 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
     {
         BOOST_TEST_MESSAGE("Testing client certificate validation failure");
         
-        // For this test, we'll create a client that tries to connect to HTTPS
-        // but will fail due to certificate validation issues
-        std::unordered_map<std::uint64_t, std::string> node_urls;
-        node_urls[test_node_id] = server_url;  // HTTPS URL
-        
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
-        
-        // Try to send a request - should fail due to connection/certificate issues
-        kythira::request_vote_request<> request;
-        request._term = 5;
-        request._candidate_id = 42;
-        request._last_log_index = 10;
-        request._last_log_term = 4;
-        
         try {
-            auto future = client.send_request_vote(test_node_id, request, std::chrono::milliseconds{2000});
-            auto response = std::move(future).get();
+            // For this test, we'll create a client that tries to connect to HTTPS
+            // but will fail due to certificate validation issues
+            std::unordered_map<std::uint64_t, std::string> node_urls;
+            node_urls[test_node_id] = server_url;  // HTTPS URL
             
-            // If we get here, the request succeeded unexpectedly
-            BOOST_TEST_MESSAGE("Unexpected: HTTPS request succeeded without proper server");
-            BOOST_TEST(false, "HTTPS request should have failed");
+            kythira::cpp_httplib_client<test_transport_types> client(
+                std::move(node_urls), client_config, metrics);
             
-        } catch (const kythira::http_transport_error& e) {
-            BOOST_TEST_MESSAGE("Expected: HTTPS request failed with transport error: " << e.what());
-            // This is expected - connection should fail
+            // Try to send a request - should fail due to connection/certificate issues
+            kythira::request_vote_request<> request;
+            request._term = 5;
+            request._candidate_id = 42;
+            request._last_log_index = 10;
+            request._last_log_term = 4;
+            
+            try {
+                auto future = client.send_request_vote(test_node_id, request, std::chrono::milliseconds{2000});
+                auto response = std::move(future).get();
+                
+                // If we get here, the request succeeded unexpectedly
+                BOOST_TEST_MESSAGE("Unexpected: HTTPS request succeeded without proper server");
+                BOOST_TEST(false, "HTTPS request should have failed");
+                
+            } catch (const kythira::http_transport_error& e) {
+                BOOST_TEST_MESSAGE("Expected: HTTPS request failed with transport error: " << e.what());
+                // This is expected - connection should fail
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE("Expected: HTTPS request failed with exception: " << e.what());
+                // This is also expected - various connection errors possible
+            }
+        } catch (const kythira::ssl_configuration_error& e) {
+            // Expected: Client constructor validates certificates and throws
+            BOOST_TEST_MESSAGE("Expected: Client construction failed due to missing certificates: " << e.what());
         } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("Expected: HTTPS request failed with exception: " << e.what());
-            // This is also expected - various connection errors possible
+            // Also acceptable: any SSL-related error during construction
+            BOOST_TEST_MESSAGE("Expected: Client construction failed: " << e.what());
         }
     }
     
@@ -447,10 +463,15 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
         https_urls[1] = "https://example.com:443";
         https_urls[2] = "https://secure.example.com:8443";
         
-        // Client should accept HTTPS URLs in configuration
+        // Client should accept HTTPS URLs in configuration (without SSL verification for this test)
         try {
+            kythira::cpp_httplib_client_config no_verify_config;
+            no_verify_config.connection_timeout = std::chrono::milliseconds{2000};
+            no_verify_config.request_timeout = std::chrono::milliseconds{5000};
+            no_verify_config.enable_ssl_verification = false;  // Disable verification for this test
+            
             kythira::cpp_httplib_client<test_transport_types> https_client(
-                std::move(https_urls), client_config, metrics);
+                std::move(https_urls), no_verify_config, metrics);
             
             BOOST_TEST_MESSAGE("HTTPS client created successfully with HTTPS URLs");
             

@@ -537,6 +537,11 @@ public:
         return std::move(_folly_future).get();
     }
     
+    // Get value (blocking) - alias for get() for compatibility
+    auto value() -> T requires(!std::is_void_v<T>) {
+        return std::move(_folly_future).get();
+    }
+    
     // Chain continuation with value (concept compliance)
     // This overload handles lambdas that return non-Future types
     template<typename F>
@@ -693,6 +698,16 @@ public:
     // Check if ready (concept compliance)
     auto isReady() const -> bool {
         return _folly_future.isReady();
+    }
+    
+    // Check if has value (requires future to be ready)
+    auto hasValue() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasValue();
+    }
+    
+    // Check if has exception (requires future to be ready)
+    auto hasException() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasException();
     }
     
     // Wait with timeout (concept compliance)
@@ -893,6 +908,16 @@ public:
     // Check if ready (concept compliance)
     auto isReady() const -> bool {
         return _folly_future.isReady();
+    }
+    
+    // Check if has value (requires future to be ready)
+    auto hasValue() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasValue();
+    }
+    
+    // Check if has exception (requires future to be ready)
+    auto hasException() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasException();
     }
     
     // Wait with timeout (concept compliance)

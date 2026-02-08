@@ -33,6 +33,22 @@ namespace {
     using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 }
 
+// Define test types for CoAP transport
+struct test_transport_types {
+    using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using metrics_type = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+    
+    template<typename T>
+    using future_template = kythira::Future<T>;
+    
+    using future_type = kythira::Future<std::vector<std::byte>>;
+};
+
 /**
  * **Feature: coap-transport, Property 11: Multicast message delivery**
  * **Validates: Requirements 2.5**
@@ -72,10 +88,9 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
                 endpoints[1] = std::format("coap://{}:{}", address, port);
                 
                 kythira::noop_metrics metrics;
-                kythira::console_logger logger;
                 
-                kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
-                    std::move(endpoints), client_config, metrics, std::move(logger));
+                kythira::coap_client<test_transport_types> client(
+                    std::move(endpoints), client_config, metrics);
                 
                 // Test multicast address validation
                 bool is_valid = client.is_valid_multicast_address(address);
@@ -129,10 +144,9 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_t
     endpoints[1] = "coap://224.0.1.187:5683";
     
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
     
-    kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), client_config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+        std::move(endpoints), client_config, metrics);
     
     // Test valid multicast addresses
     std::vector<std::string> valid_addresses = {
@@ -197,10 +211,9 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
     for (const auto& config : configs) {
         try {
             kythira::noop_metrics metrics;
-            kythira::console_logger logger;
             
-            kythira::coap_server<test_serializer, kythira::noop_metrics, kythira::console_logger> server(
-                "0.0.0.0", 5683, config, metrics, std::move(logger));
+            kythira::coap_server<test_transport_types> server(
+                "0.0.0.0", 5683, config, metrics);
             
             // Test multicast address validation
             bool is_valid = server.is_valid_multicast_address(config.multicast_address);
@@ -232,10 +245,9 @@ BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, * boost::unit_test:
     endpoints[1] = "coap://224.0.1.187:5683";
     
     kythira::noop_metrics metrics;
-    kythira::console_logger logger;
     
-    kythira::coap_client<test_serializer, kythira::noop_metrics, kythira::console_logger> client(
-        std::move(endpoints), client_config, metrics, std::move(logger));
+    kythira::coap_client<test_transport_types> client(
+        std::move(endpoints), client_config, metrics);
     
     // Test error conditions
     std::vector<std::byte> test_payload;

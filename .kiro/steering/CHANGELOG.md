@@ -7,6 +7,52 @@ inclusion: manual
 
 This document tracks changes to the steering documents in this directory.
 
+## 2026-02-04: Added Efficient Test Execution with Output Storage
+
+### test-execution-standards.md
+
+Added new section: **Efficient Test Execution with Output Storage**
+
+**Key Points:**
+- When running large test suites (>10 tests), ALWAYS store output in a file first
+- Analyze stored output multiple times instead of re-running tests
+- Use `tee` to view output while storing it
+- Use timestamped filenames to preserve test history
+- Prevents wasting time and resources on redundant test runs
+
+**The Golden Rule:**
+```bash
+# ✅ CORRECT - Store once, analyze many times
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee test_results.txt
+
+# Now analyze as needed without re-running
+grep "Failed" test_results.txt
+tail -50 test_results.txt
+head -100 test_results.txt
+
+# ❌ INCORRECT - Running tests multiple times
+ctest ... | head -100    # First run
+ctest ... | tail -50     # Second run (wastes time!)
+ctest ... | grep Failed  # Third run (wastes time!)
+```
+
+**Benefits:**
+- Time efficiency - Large test suites can take minutes to hours
+- Resource conservation - Avoid unnecessary CPU and memory usage
+- Consistency - Analyze the same test run results multiple times
+- Debugging - Preserve test output for later investigation
+- CI/CD optimization - Reduce pipeline execution time
+
+### QUICK_REFERENCE.md
+
+Added new section: **Test Execution**
+
+**Key Points:**
+- Quick reference for CTest usage
+- Store output workflow for large test suites
+- Test filtering examples
+- Added test execution items to checklist
+
 ## 2024-12-15: Updated to Two-Argument BOOST_AUTO_TEST_CASE Requirement
 
 ### All Steering Documents

@@ -8,6 +8,7 @@
 #include "raft/metrics.hpp"
 #include "raft/membership.hpp"
 #include "raft/types.hpp"
+#include "raft/test_state_machine.hpp"
 
 #include "network_simulator/network_simulator.hpp"
 
@@ -33,6 +34,51 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 #include <chrono>
 
 namespace {
+    // Types for simulator-based testing
+    struct test_raft_types {
+        // Future types
+        using future_type = kythira::Future<std::vector<std::byte>>;
+        using promise_type = kythira::Promise<std::vector<std::byte>>;
+        using try_type = kythira::Try<std::vector<std::byte>>;
+        
+        // Basic data types
+        using node_id_type = std::uint64_t;
+        using term_id_type = std::uint64_t;
+        using log_index_type = std::uint64_t;
+        
+        // Serializer and data types
+        using serialized_data_type = std::vector<std::byte>;
+        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+        
+        // Network types
+        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
+        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+        
+        // Component types
+        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+        using logger_type = kythira::console_logger;
+        using metrics_type = kythira::noop_metrics;
+        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+        
+        // Configuration type
+        using configuration_type = kythira::raft_configuration;
+        
+        // Type aliases for commonly used compound types
+        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+        
+        // RPC message types
+        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
+        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+    };
+    
     constexpr std::uint64_t node_1_id = 1;
     const std::string node_1_addr = std::to_string(node_1_id);
     constexpr std::uint64_t node_2_id = 2;
@@ -49,7 +95,7 @@ namespace {
 
 BOOST_AUTO_TEST_CASE(test_leader_sends_heartbeats) {
     // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+    auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     simulator.start();
     
     // Create nodes in the simulator
@@ -70,36 +116,36 @@ BOOST_AUTO_TEST_CASE(test_leader_sends_heartbeats) {
     auto serializer_3 = kythira::json_rpc_serializer<std::vector<std::byte>>{};
     
     // Create Raft nodes
-    auto raft_node_1 = kythira::node{
+    auto raft_node_1 = kythira::node<test_raft_types>{
         node_1_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer_1},
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer_1},
-        kythira::memory_persistence_engine<>{},
+        test_raft_types::network_client_type{node_1, serializer_1},
+        test_raft_types::network_server_type{node_1, serializer_1},
+        test_raft_types::persistence_engine_type{},
         kythira::console_logger{},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
         config
     };
     
-    auto raft_node_2 = kythira::node{
+    auto raft_node_2 = kythira::node<test_raft_types>{
         node_2_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_2, serializer_2},
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_2, serializer_2},
-        kythira::memory_persistence_engine<>{},
+        test_raft_types::network_client_type{node_2, serializer_2},
+        test_raft_types::network_server_type{node_2, serializer_2},
+        test_raft_types::persistence_engine_type{},
         kythira::console_logger{},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
         config
     };
     
-    auto raft_node_3 = kythira::node{
+    auto raft_node_3 = kythira::node<test_raft_types>{
         node_3_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_3, serializer_3},
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_3, serializer_3},
-        kythira::memory_persistence_engine<>{},
+        test_raft_types::network_client_type{node_3, serializer_3},
+        test_raft_types::network_server_type{node_3, serializer_3},
+        test_raft_types::persistence_engine_type{},
         kythira::console_logger{},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
         config
     };
     
@@ -157,7 +203,7 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_mechanism_for_leader) {
     // by checking that check_heartbeat_timeout() triggers heartbeat sending
     
     // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+    auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     simulator.start();
     
     // Create node in the simulator
@@ -174,14 +220,14 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_mechanism_for_leader) {
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
     
     // Create Raft node
-    auto raft_node = kythira::node{
+    auto raft_node = kythira::node<test_raft_types>{
         node_1_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer},
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer},
-        kythira::memory_persistence_engine<>{},
+        test_raft_types::network_client_type{node_1, serializer},
+        test_raft_types::network_server_type{node_1, serializer},
+        test_raft_types::persistence_engine_type{},
         kythira::console_logger{},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
         config
     };
     
@@ -230,7 +276,7 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_mechanism_for_leader) {
 
 BOOST_AUTO_TEST_CASE(test_heartbeat_timeout_elapsed) {
     // Create network simulator
-    auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+    auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     simulator.start();
     
     // Create node in the simulator
@@ -247,14 +293,14 @@ BOOST_AUTO_TEST_CASE(test_heartbeat_timeout_elapsed) {
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
     
     // Create Raft node
-    auto raft_node = kythira::node{
+    auto raft_node = kythira::node<test_raft_types>{
         node_1_id,
-        kythira::simulator_network_client<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer},
-        kythira::simulator_network_server<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>{node_1, serializer},
-        kythira::memory_persistence_engine<>{},
+        test_raft_types::network_client_type{node_1, serializer},
+        test_raft_types::network_server_type{node_1, serializer},
+        test_raft_types::persistence_engine_type{},
         kythira::console_logger{},
-        kythira::noop_metrics{},
-        kythira::default_membership_manager<>{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
         config
     };
     

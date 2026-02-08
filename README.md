@@ -345,20 +345,39 @@ See [RAFT_TESTS_FINAL_STATUS.md](RAFT_TESTS_FINAL_STATUS.md) for comprehensive t
 
 ### Running Tests
 
+**Important**: For large test suites, always store output first, then analyze. See [Test Execution Standards](.kiro/steering/test-execution-standards.md) for details.
+
 ```bash
-# Run all tests
-cd build
-ctest
+# Recommended: Use the efficient test script
+./scripts/run_tests_efficiently.sh
 
-# Run Raft tests only
-ctest -R "^raft_"
+# Or manually with output storage
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee "test_results/test_results_${TIMESTAMP}.txt"
 
-# Run specific test with verbose output
-ctest -R raft_leader_election --verbose --output-on-failure
+# Then analyze the stored output
+grep "Failed" test_results/test_results_${TIMESTAMP}.txt
+tail -50 test_results/test_results_${TIMESTAMP}.txt
 
-# Run tests in parallel
-ctest -j$(nproc)
+# Run specific test pattern
+ctest --test-dir build -R "^raft_" --output-on-failure
+
+# Run tests by category
+ctest --test-dir build -L unit          # Unit tests only
+ctest --test-dir build -L integration   # Integration tests only
+ctest --test-dir build -LE slow         # Exclude slow tests
+
+# Re-run only failed tests
+ctest --test-dir build --rerun-failed --output-on-failure
 ```
+
+**Why store output?**
+- Large test suites can take minutes to run
+- Analyze results multiple times without re-running
+- Preserve test history for comparison
+- More efficient use of resources
+
+See [test_results/README.md](test_results/README.md) for more analysis examples.
 
 ### Property-Based Testing
 

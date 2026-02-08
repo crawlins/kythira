@@ -375,6 +375,8 @@ public:
     // DTLS support
     auto is_dtls_enabled() const -> bool;
     auto establish_dtls_connection(const std::string& endpoint) -> bool;
+    auto initiate_dtls_handshake(const std::string& endpoint) -> bool;
+    auto complete_dtls_handshake(const std::string& endpoint) -> bool;
     
     // Certificate validation (exposed for testing)
     auto validate_peer_certificate(const std::string& peer_cert_data) -> bool;
@@ -383,6 +385,10 @@ public:
     auto is_valid_multicast_address(const std::string& address) -> bool;
     auto create_discovery_message(const std::string& node_id = "") -> std::vector<std::byte>;
     auto parse_discovery_response(const std::vector<std::byte>& response_data) -> std::optional<std::string>;
+    
+    // Concurrent processing control (exposed for testing)
+    auto acquire_concurrent_slot() -> bool;
+    auto release_concurrent_slot() -> void;
 
 private:
     serializer_type _serializer;
@@ -468,8 +474,6 @@ private:
     auto get_cached_serialization(std::size_t hash) -> std::optional<std::vector<std::byte>>;
     auto cache_serialization(std::size_t hash, const std::vector<std::byte>& data) -> void;
     auto cleanup_serialization_cache() -> void;
-    auto acquire_concurrent_slot() -> bool;
-    auto release_concurrent_slot() -> void;
     
     // Enhanced serialization caching methods
     template<typename Request>
@@ -488,6 +492,11 @@ private:
     auto finalize_multicast_response_collection(const std::string& token) -> void;
     auto cleanup_expired_multicast_requests() -> void;
     auto handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void;
+    
+    // Cipher suite configuration methods
+    auto validate_cipher_suites(const std::vector<std::string>& cipher_suites) -> void;
+    auto select_cipher_suites() -> std::vector<std::string>;
+    auto get_supported_cipher_suites() const -> std::vector<std::string>;
 };
 
 // CoAP server class declaration
@@ -533,9 +542,18 @@ public:
     
     // DTLS support
     auto is_dtls_enabled() const -> bool;
+    auto initiate_dtls_handshake(coap_session_t* session) -> bool;
+    auto complete_dtls_handshake(coap_session_t* session) -> bool;
     
     // Certificate validation (exposed for testing)
     auto validate_client_certificate(const std::string& client_cert_data) -> bool;
+    
+    // Multicast helper methods (exposed for testing)
+    auto is_valid_multicast_address(const std::string& address) -> bool;
+    
+    // Concurrent processing control (exposed for testing)
+    auto acquire_concurrent_slot() -> bool;
+    auto release_concurrent_slot() -> void;
 
 private:
     serializer_type _serializer;
@@ -612,18 +630,20 @@ private:
     auto get_cached_serialization(std::size_t hash) -> std::optional<std::vector<std::byte>>;
     auto cache_serialization(std::size_t hash, const std::vector<std::byte>& data) -> void;
     auto cleanup_serialization_cache() -> void;
-    auto acquire_concurrent_slot() -> bool;
-    auto release_concurrent_slot() -> void;
     
     // Multicast methods
     auto setup_multicast_listener() -> void;
-    auto is_valid_multicast_address(const std::string& address) -> bool;
     auto handle_multicast_message(const std::vector<std::byte>& message_data, const std::string& resource_path, const std::string& sender_address) -> void;
     auto handle_multicast_request_vote(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
     auto handle_multicast_append_entries(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
     auto handle_multicast_install_snapshot(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
     auto send_multicast_response(const std::string& target_address, const std::vector<std::byte>& response_data) -> void;
     auto cleanup_expired_multicast_groups() -> void;
+    
+    // Cipher suite configuration methods
+    auto validate_cipher_suites(const std::vector<std::string>& cipher_suites) -> void;
+    auto select_cipher_suites() -> std::vector<std::string>;
+    auto get_supported_cipher_suites() const -> std::vector<std::string>;
 };
 
 } // namespace kythira

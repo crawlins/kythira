@@ -1,9 +1,26 @@
 #define BOOST_TEST_MODULE error_handler_exponential_backoff_unit_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
+#include <folly/init/Init.h>
 #include <raft/error_handler.hpp>
 #include <chrono>
 #include <thread>
 #include <iostream>
+
+// Global fixture to initialize Folly
+struct FollyInitFixture {
+    FollyInitFixture() {
+        static bool initialized = false;
+        if (!initialized) {
+            int argc = 1;
+            char* argv_data[] = {const_cast<char*>("test"), nullptr};
+            char** argv = argv_data;
+            folly::init(&argc, &argv);
+            initialized = true;
+        }
+    }
+};
+
+BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
     constexpr std::size_t test_max_attempts = 5;

@@ -53,14 +53,51 @@ set_tests_properties(custom_types_example_test PROPERTIES
 # Generic future architecture examples
 add_network_example(generic_future_example generic_future_example.cpp)
 add_network_example(generic_future_transport_example generic_future_transport_example.cpp)
-add_network_example(generic_future_network_simulator_example generic_future_network_simulator_example.cpp)
 add_network_example(migration_guide_example migration_guide_example.cpp)
+
+# Register generic future examples as tests
+add_test(NAME generic_future_example_test COMMAND generic_future_example)
+set_tests_properties(generic_future_example_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;future;unit"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
+add_test(NAME generic_future_transport_example_test COMMAND generic_future_transport_example)
+set_tests_properties(generic_future_transport_example_test PROPERTIES
+    TIMEOUT 120
+    LABELS "example;future;transport;integration"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
+add_test(NAME migration_guide_example_test COMMAND migration_guide_example)
+set_tests_properties(migration_guide_example_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;migration;unit"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
 
 # Performance benchmark report
 add_network_example(performance_benchmark_report performance_benchmark_report.cpp)
 
+# Register performance benchmark as test
+add_test(NAME performance_benchmark_report_test COMMAND performance_benchmark_report)
+set_tests_properties(performance_benchmark_report_test PROPERTIES
+    TIMEOUT 180
+    LABELS "example;performance;benchmark"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
 # Concepts usage examples
 add_network_example(concepts_usage_examples concepts_usage_examples.cpp)
+
+# Register concepts usage example as test
+add_test(NAME concepts_usage_examples_test COMMAND concepts_usage_examples)
+set_tests_properties(concepts_usage_examples_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;concepts;unit"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
 
 # Helper function for creating folly wrapper example executables
 function(add_folly_wrapper_example example_name source_file)

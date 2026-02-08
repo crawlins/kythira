@@ -17,6 +17,7 @@
 #include <raft/console_logger.hpp>
 #include <raft/metrics.hpp>
 #include <raft/membership.hpp>
+#include <raft/test_state_machine.hpp>
 
 #include <network_simulator/network_simulator.hpp>
 
@@ -48,6 +49,51 @@ namespace {
     constexpr std::uint64_t max_log_entries = 100;
     constexpr std::uint64_t max_node_id = 100;
     constexpr std::size_t max_state_size = 10000;
+
+    // Types for simulator-based testing
+    struct test_raft_types {
+        // Future types
+        using future_type = kythira::Future<std::vector<std::byte>>;
+        using promise_type = kythira::Promise<std::vector<std::byte>>;
+        using try_type = kythira::Try<std::vector<std::byte>>;
+        
+        // Basic data types
+        using node_id_type = std::uint64_t;
+        using term_id_type = std::uint64_t;
+        using log_index_type = std::uint64_t;
+        
+        // Serializer and data types
+        using serialized_data_type = std::vector<std::byte>;
+        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+        
+        // Network types
+        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
+        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+        
+        // Component types
+        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+        using logger_type = kythira::console_logger;
+        using metrics_type = kythira::noop_metrics;
+        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+        
+        // Configuration type
+        using configuration_type = kythira::raft_configuration;
+        
+        // Type aliases for commonly used compound types
+        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+        
+        // RPC message types
+        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
+        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+    };
 }
 
 // Helper to generate random term
@@ -132,7 +178,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
         };
         
         // Save to persistence
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -173,7 +219,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
         };
         
         // Save to persistence
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -214,7 +260,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_t
         };
         
         // Save to persistence
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -264,7 +310,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
         };
         
         // Save to persistence
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence
@@ -308,14 +354,14 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
         auto log_count = generate_random_log_count(rng);
         
         // Create network simulator
-        auto simulator = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>{};
+        auto simulator = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
         simulator.start();
         
         // Create network node
-        auto sim_node = simulator.create_node(node_id);
+        auto sim_node = simulator.create_node(std::to_string(node_id));
         
         // Create persistence engine with log entries
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_current_term(term);
         
         // Add log entries
@@ -329,20 +375,14 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
         }
         
         // Create and start node
-        auto node = kythira::node{
+        auto node = kythira::node<test_raft_types>{
             node_id,
-            kythira::simulator_network_client<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            kythira::simulator_network_server<
-                kythira::json_rpc_serializer<std::vector<std::byte>>,
-                std::vector<std::byte>
-            >{sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
             std::move(persistence),
-            kythira::console_logger{kythira::log_level::error},
-            kythira::noop_metrics{},
-            kythira::default_membership_manager<>{}
+            test_raft_types::logger_type{kythira::log_level::error},
+            test_raft_types::metrics_type{},
+            test_raft_types::membership_manager_type{}
         };
         
         node.start();
@@ -381,7 +421,7 @@ BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout
         };
         
         // Save to persistence
-        auto persistence = kythira::memory_persistence_engine<>{};
+        auto persistence = test_raft_types::persistence_engine_type{};
         persistence.save_snapshot(original_snapshot);
         
         // Load from persistence

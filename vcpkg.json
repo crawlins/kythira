@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "kythira",
+  "version": "0.1.0",
+  "description": "Kythira - A C++ Raft consensus implementation with pluggable components",
+  "homepage": "https://github.com/yourusername/kythira",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "boost-algorithm",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "boost-asio",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "boost-json",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "boost-system",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "boost-thread",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "boost-test",
+      "version>=": "1.89.0"
+    },
+    {
+      "name": "folly",
+      "version>=": "2025.05.19.00"
+    },
+    {
+      "name": "cpp-httplib",
+      "version>=": "0.18.3"
+    },
+    {
+      "name": "openssl",
+      "version>=": "3.0.8"
+    },
+    {
+      "name": "libcoap",
+      "version>=": "4.3.5",
+      "features": ["dtls"]
+    }
+  ],
+  "builtin-baseline": "9a7f7340a6c5f11f24c3d59f85e07143feb84e06"
+}

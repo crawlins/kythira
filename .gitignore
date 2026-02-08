@@ -25,10 +25,12 @@ cmake_install.cmake
 Makefile
 *.cmake
 !CMakeLists.txt
+vcpkg_installed/
 
 # Test outputs
 Testing/
 CTestTestfile.cmake
+test_results/
 
 # Documentation build
 doc/html/

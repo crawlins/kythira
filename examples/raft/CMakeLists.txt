@@ -99,19 +99,14 @@ add_raft_example(failure_scenarios failure_scenarios.cpp)
 add_raft_example(membership_changes membership_changes.cpp)
 add_raft_example(snapshot_example snapshot_example.cpp)
 
-# Unified types template parameter system example
-add_raft_example(unified_types_example unified_types_example.cpp)
-
 # Transport layer examples
 add_raft_example(http_transport_example http_transport_example.cpp)
 
 # CoAP transport examples - demonstrate CoAP/DTLS integration
 add_raft_example(coap_transport_basic_example coap_transport_basic_example.cpp)
-add_raft_example(coap_transport_basic_example_fixed coap_transport_basic_example_fixed.cpp)
 add_raft_example(coap_dtls_security_example coap_dtls_security_example.cpp)
 add_raft_example(coap_multicast_example coap_multicast_example.cpp)
 add_raft_example(coap_block_transfer_example coap_block_transfer_example.cpp)
-add_raft_example(coap_raft_integration_example coap_raft_integration_example.cpp)
 add_raft_example(coap_performance_validation_example coap_performance_validation_example.cpp)
 add_raft_example(coap_final_integration_validation coap_final_integration_validation.cpp)
 

@@ -4,13 +4,13 @@
 #include <network_simulator/simulator.hpp>
 #include <network_simulator/types.hpp>
 #include <network_simulator/exceptions.hpp>
+#include <raft/future.hpp>
 
 #include <chrono>
 #include <string>
 #include <vector>
 #include <thread>
 #include <set>
-#include <future>
 
 using namespace network_simulator;
 
@@ -337,7 +337,7 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, * boost::unit_test::
     
     // All senders send messages concurrently
     constexpr std::size_t messages_per_sender = 2;  // Reduced for simpler test
-    std::vector<std::future<bool>> send_futures;
+    std::vector<kythira::Future<bool>> send_futures;
     
     for (std::size_t sender_idx = 0; sender_idx < sender_count; ++sender_idx) {
         for (std::size_t msg_idx = 0; msg_idx < messages_per_sender; ++msg_idx) {
@@ -355,22 +355,20 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, * boost::unit_test::
                 payload
             );
             
-            // Use std::async to send messages concurrently
-            send_futures.push_back(std::async(std::launch::async, [&senders, sender_idx, msg]() mutable {
-                return std::move(senders[sender_idx]->send(msg)).get();
-            }));
+            // Send messages and collect futures
+            send_futures.push_back(senders[sender_idx]->send(msg));
         }
     }
     
-    // Wait for all sends to complete
-    std::vector<bool> send_results;
-    for (auto& future : send_futures) {
-        send_results.push_back(future.get());
-    }
+    // Wait for all sends to complete using kythira::wait_for_all
+    auto all_results = kythira::wait_for_all(std::move(send_futures)).get();
     
     // Verify all sends succeeded
-    for (const auto& result : send_results) {
-        BOOST_TEST(result);
+    for (const auto& result : all_results) {
+        BOOST_TEST(result.hasValue());
+        if (result.hasValue()) {
+            BOOST_TEST(result.value());
+        }
     }
     
     // Receiver should get all messages

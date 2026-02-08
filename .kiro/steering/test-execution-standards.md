@@ -488,6 +488,268 @@ If you have scripts that directly execute tests:
 3. **Add CMakeLists.txt configuration examples**
 4. **Include proper timeout and label configuration**
 
+## Efficient Test Execution with Output Storage
+
+### The Golden Rule for Large Test Suites
+
+**When running a large group of tests (more than 10 tests), ALWAYS store the output in a file first, then analyze the stored output. NEVER run the same test suite multiple times without making changes.**
+
+### Rationale
+
+1. **Time Efficiency** - Large test suites can take minutes to hours to run
+2. **Resource Conservation** - Avoid unnecessary CPU and memory usage
+3. **Consistency** - Analyze the same test run results multiple times
+4. **Debugging** - Preserve test output for later investigation
+5. **CI/CD Optimization** - Reduce pipeline execution time
+
+### Correct Pattern: Store and Analyze
+
+**✅ CORRECT - Store output once, analyze multiple times:**
+
+```bash
+# Step 1: Run tests ONCE and store output
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee test_results.txt
+
+# Step 2: Analyze the stored output as needed
+grep "Test.*Failed" test_results.txt
+grep "Test.*Passed" test_results.txt
+tail -50 test_results.txt
+head -100 test_results.txt
+
+# Step 3: Extract specific information
+grep -E "Test #[0-9]+.*Failed" test_results.txt | wc -l  # Count failures
+grep -E "Test #[0-9]+.*Passed" test_results.txt | wc -l  # Count passes
+```
+
+**❌ INCORRECT - Running tests multiple times:**
+
+```bash
+# WRONG - Running tests multiple times to get different views
+ctest --test-dir build 2>&1 | head -100
+ctest --test-dir build 2>&1 | tail -50
+ctest --test-dir build 2>&1 | grep "Failed"
+# This runs the entire test suite 3 times unnecessarily!
+```
+
+### Recommended Workflow
+
+#### 1. Initial Test Run with Storage
+
+```bash
+# Create a timestamped test results file
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+TEST_OUTPUT="test_results_${TIMESTAMP}.txt"
+
+# Run tests and store output
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee "${TEST_OUTPUT}"
+
+echo "Test results stored in: ${TEST_OUTPUT}"
+```
+
+#### 2. Analyze Stored Results
+
+```bash
+# Get test summary
+tail -20 "${TEST_OUTPUT}"
+
+# Count test results
+echo "Total tests: $(grep -c "Test #" "${TEST_OUTPUT}")"
+echo "Passed: $(grep -c "Passed" "${TEST_OUTPUT}")"
+echo "Failed: $(grep -c "Failed" "${TEST_OUTPUT}")"
+
+# List failed tests
+echo "Failed tests:"
+grep "Test.*Failed" "${TEST_OUTPUT}"
+
+# Extract specific test output
+grep -A 50 "test_name" "${TEST_OUTPUT}"
+```
+
+#### 3. Generate Test Report
+
+```bash
+# Create a summary report from stored output
+cat > test_summary.md << EOF
+# Test Execution Summary
+
+**Date**: $(date)
+**Test Output File**: ${TEST_OUTPUT}
+
+## Results
+
+$(tail -20 "${TEST_OUTPUT}")
+
+## Failed Tests
+
+$(grep "Test.*Failed" "${TEST_OUTPUT}" || echo "No failures")
+
+## Statistics
+
+- Total Tests: $(grep -c "Test #" "${TEST_OUTPUT}")
+- Passed: $(grep -c "Passed" "${TEST_OUTPUT}")
+- Failed: $(grep -c "Failed" "${TEST_OUTPUT}")
+EOF
+
+echo "Summary report created: test_summary.md"
+```
+
+### Advanced Analysis Patterns
+
+#### Extract Test Timing Information
+
+```bash
+# Find slowest tests
+grep "sec$" "${TEST_OUTPUT}" | sort -k4 -n -r | head -20
+```
+
+#### Filter by Test Category
+
+```bash
+# Analyze only Raft tests
+grep "raft_.*test" "${TEST_OUTPUT}"
+
+# Analyze only property tests
+grep "property_test" "${TEST_OUTPUT}"
+```
+
+#### Compare Test Runs
+
+```bash
+# Store multiple test runs
+ctest --test-dir build 2>&1 | tee test_run_1.txt
+# Make changes...
+ctest --test-dir build 2>&1 | tee test_run_2.txt
+
+# Compare results
+diff test_run_1.txt test_run_2.txt
+```
+
+### Integration with Development Workflow
+
+#### Before Making Changes
+
+```bash
+# Establish baseline
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee baseline_tests.txt
+```
+
+#### After Making Changes
+
+```bash
+# Run tests again and compare
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee after_changes_tests.txt
+
+# Quick comparison
+diff <(grep "Test.*Failed" baseline_tests.txt) <(grep "Test.*Failed" after_changes_tests.txt)
+```
+
+#### Focused Re-testing
+
+```bash
+# Only re-run tests that failed in the stored output
+FAILED_TESTS=$(grep "Test.*Failed" "${TEST_OUTPUT}" | sed 's/.*Test #\([0-9]*\).*/\1/')
+for test_num in $FAILED_TESTS; do
+    ctest --test-dir build -I $test_num,$test_num --output-on-failure
+done
+```
+
+### Best Practices
+
+1. **Always use `tee`** - Allows viewing output while storing it
+   ```bash
+   ctest ... 2>&1 | tee output.txt
+   ```
+
+2. **Use timestamped filenames** - Prevents overwriting previous results
+   ```bash
+   TEST_OUTPUT="test_results_$(date +%Y%m%d_%H%M%S).txt"
+   ```
+
+3. **Store both stdout and stderr** - Use `2>&1` to capture all output
+   ```bash
+   ctest ... 2>&1 | tee output.txt
+   ```
+
+4. **Document test runs** - Add metadata to stored output
+   ```bash
+   {
+       echo "=== Test Run Metadata ==="
+       echo "Date: $(date)"
+       echo "Git Commit: $(git rev-parse HEAD)"
+       echo "Git Branch: $(git branch --show-current)"
+       echo "========================"
+       ctest --test-dir build --output-on-failure -j$(nproc)
+   } 2>&1 | tee test_results.txt
+   ```
+
+5. **Clean up old test outputs** - Prevent disk space issues
+   ```bash
+   # Keep only last 10 test result files
+   ls -t test_results_*.txt | tail -n +11 | xargs rm -f
+   ```
+
+### Anti-Patterns to Avoid
+
+#### ❌ Running Tests Multiple Times for Different Views
+
+```bash
+# WRONG - Wastes time and resources
+ctest ... | head -100    # First run
+ctest ... | tail -50     # Second run (unnecessary!)
+ctest ... | grep Failed  # Third run (unnecessary!)
+```
+
+#### ❌ Not Storing Output Before Analysis
+
+```bash
+# WRONG - Can't analyze later
+ctest ... | grep "something"
+# If you need to check something else, you have to run tests again!
+```
+
+#### ❌ Overwriting Previous Results
+
+```bash
+# WRONG - Loses historical data
+ctest ... > test_results.txt  # Overwrites every time
+```
+
+### Correct Patterns
+
+#### ✅ Store Once, Analyze Many Times
+
+```bash
+# CORRECT - Single test run, multiple analyses
+ctest ... 2>&1 | tee test_results.txt
+
+# Now analyze as much as needed
+grep "Failed" test_results.txt
+grep "Passed" test_results.txt
+tail -50 test_results.txt
+head -100 test_results.txt
+# No additional test runs needed!
+```
+
+#### ✅ Preserve Test History
+
+```bash
+# CORRECT - Keep historical results
+ctest ... 2>&1 | tee "test_results_$(date +%Y%m%d_%H%M%S).txt"
+```
+
+#### ✅ Efficient Re-testing
+
+```bash
+# CORRECT - Only re-run what's needed
+ctest ... 2>&1 | tee full_results.txt
+
+# Identify failures
+FAILED=$(grep "Test.*Failed" full_results.txt)
+
+# Re-run only failed tests
+ctest --rerun-failed --output-on-failure
+```
+
 ## Summary
 
 - **ALWAYS use CTest** for test execution
@@ -496,5 +758,8 @@ If you have scripts that directly execute tests:
 - **USE proper labels** to categorize tests
 - **SET appropriate timeouts** for different test types
 - **LEVERAGE parallel execution** for faster feedback
+- **STORE test output** when running large test suites
+- **ANALYZE stored output** instead of re-running tests
+- **USE timestamped filenames** to preserve test history
 
 Following these standards ensures consistent, reliable, and maintainable test execution across all environments.

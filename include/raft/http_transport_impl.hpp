@@ -23,6 +23,7 @@
 #include <openssl/x509v3.h>
 #include <openssl/pem.h>
 #include <openssl/err.h>
+#include <openssl/asn1.h>
 #endif
 
 namespace kythira {
@@ -36,11 +37,11 @@ namespace {
     constexpr const char* header_content_length = "Content-Length";
     constexpr const char* header_user_agent = "User-Agent";
     
+    // SSL certificate validation helpers
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     // Forward declaration for ASN1_TIME helper function
     auto ASN1_TIME_to_time_t(ASN1_TIME* asn1_time) -> time_t;
     
-    // SSL certificate validation helpers
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     auto validate_certificate_file(const std::string& cert_path) -> void {
         if (cert_path.empty()) {
             return; // Empty path is valid (optional certificate)
@@ -590,6 +591,61 @@ namespace {
     }
 #endif
     
+    // TLS version validation (works without OpenSSL)
+    auto validate_tls_version_string(const std::string& version) -> void {
+        if (version.empty()) {
+            return; // Empty is valid (use defaults)
+        }
+        
+        if (version != "TLSv1.0" && version != "TLSv1.1" && 
+            version != "TLSv1.2" && version != "TLSv1.3") {
+            throw kythira::ssl_configuration_error(
+                std::format("Invalid TLS version string: {}", version));
+        }
+    }
+    
+    auto get_tls_version_number(const std::string& version) -> int {
+        if (version.empty()) return 0;
+        if (version == "TLSv1.0") return 10;
+        if (version == "TLSv1.1") return 11;
+        if (version == "TLSv1.2") return 12;
+        if (version == "TLSv1.3") return 13;
+        throw kythira::ssl_configuration_error(
+            std::format("Invalid TLS version: {}", version));
+    }
+    
+    auto validate_tls_version_range_simple(const std::string& min_version, const std::string& max_version) -> void {
+        // Validate version strings
+        validate_tls_version_string(min_version);
+        validate_tls_version_string(max_version);
+        
+        if (min_version.empty() && max_version.empty()) {
+            return; // Both empty is valid (use defaults)
+        }
+        
+        // Check if min > max
+        if (!min_version.empty() && !max_version.empty()) {
+            int min_ver = get_tls_version_number(min_version);
+            int max_ver = get_tls_version_number(max_version);
+            
+            if (min_ver > max_ver) {
+                throw kythira::ssl_configuration_error(
+                    std::format("Minimum TLS version ({}) is higher than maximum TLS version ({})", 
+                               min_version, max_version));
+            }
+        }
+        
+        // Ensure minimum security standards (TLS 1.2 or higher)
+        if (!min_version.empty()) {
+            int min_ver = get_tls_version_number(min_version);
+            if (min_ver < 12) { // TLS 1.2
+                throw kythira::ssl_configuration_error(
+                    std::format("Minimum TLS version ({}) is below security requirements (TLS 1.2 minimum)", 
+                               min_version));
+            }
+        }
+    }
+    
     // Helper function to create futures with exceptions
     template<typename Types, typename Response>
     auto make_future_with_exception(const std::exception& e) -> typename Types::template future_template<Response> {
@@ -653,11 +709,14 @@ cpp_httplib_client<Types>::~cpp_httplib_client() = default;
 template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::validate_certificate_files() const -> void {
+    // Always validate TLS version range (works without OpenSSL)
+    validate_tls_version_range_simple(_config.min_tls_version, _config.max_tls_version);
+    
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     // Validate cipher suites configuration
     validate_cipher_suites(_config.cipher_suites);
     
-    // Validate TLS version range
+    // Validate TLS version range (with OpenSSL)
     validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
     
     // Validate CA certificate if provided
@@ -1152,12 +1211,17 @@ cpp_httplib_server<Types>::~cpp_httplib_server() {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::validate_certificate_files() const -> void {
+    // Always validate TLS version range (works without OpenSSL)
+    if (_config.enable_ssl) {
+        validate_tls_version_range_simple(_config.min_tls_version, _config.max_tls_version);
+    }
+    
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     if (_config.enable_ssl) {
         // Validate cipher suites configuration
         validate_cipher_suites(_config.cipher_suites);
         
-        // Validate TLS version range
+        // Validate TLS version range (with OpenSSL)
         validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
         
         // Server certificate and key are required for SSL

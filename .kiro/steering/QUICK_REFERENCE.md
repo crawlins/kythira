@@ -271,6 +271,65 @@ BOOST_AUTO_TEST_CASE(my_test) {
 - Property tests: 60-120 seconds
 - Network tests: 60-180 seconds
 
+## Test Execution
+
+### Always Use CTest
+
+```bash
+# ✅ CORRECT - Run tests through CTest
+ctest --test-dir build --output-on-failure -j$(nproc)
+
+# ❌ INCORRECT - Direct test execution
+./build/tests/my_test
+```
+
+### Store Output for Large Test Suites
+
+**Rule**: When running many tests (>10), ALWAYS store output first, then analyze.
+
+```bash
+# ✅ CORRECT - Store once, analyze many times
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee test_results.txt
+
+# Now analyze the stored output
+grep "Failed" test_results.txt
+tail -50 test_results.txt
+grep "Test.*Passed" test_results.txt | wc -l
+
+# ❌ INCORRECT - Running tests multiple times
+ctest ... | head -100    # First run
+ctest ... | tail -50     # Second run (wastes time!)
+ctest ... | grep Failed  # Third run (wastes time!)
+```
+
+### Recommended Test Workflow
+
+```bash
+# 1. Store test results with timestamp
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee "test_results_${TIMESTAMP}.txt"
+
+# 2. Analyze stored results
+tail -20 "test_results_${TIMESTAMP}.txt"
+grep "Test.*Failed" "test_results_${TIMESTAMP}.txt"
+
+# 3. Re-run only failed tests
+ctest --test-dir build --rerun-failed --output-on-failure
+```
+
+### Test Filtering
+
+```bash
+# Run specific test pattern
+ctest -R "raft.*test"
+
+# Run tests by label
+ctest -L unit
+
+# Exclude slow tests
+ctest -LE slow
+```
+
 ## Quick Checklist
 
 Before committing code, verify:
@@ -284,6 +343,8 @@ Before committing code, verify:
 - [ ] [[nodiscard]] on functions returning values
 - [ ] All Boost.Test cases use two-argument `BOOST_AUTO_TEST_CASE` with timeout
 - [ ] Test timeouts are appropriate for test type
+- [ ] Tests executed through CTest (not directly)
+- [ ] Large test suite output stored in file for analysis
 - [ ] Example programs run all scenarios
 - [ ] Example programs return correct exit codes
 - [ ] Clear pass/fail indication in output
@@ -293,5 +354,6 @@ Before committing code, verify:
 ## See Also
 
 - [Full C++ Coding Standards](cpp-coding-standards.md)
+- [Test Execution Standards](test-execution-standards.md)
 - [Example Program Guidelines](example-programs.md)
 - [Changelog](CHANGELOG.md)
