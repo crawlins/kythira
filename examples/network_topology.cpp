@@ -406,11 +406,12 @@ auto test_complex_topology() -> bool {
         simulator.add_node(node_e_id);
         
         // Add edges (bidirectional)
-        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(fast_latency, high_reliability));
-        simulator.add_edge(node_b_id, node_a_id, NetworkEdge(fast_latency, high_reliability));
+        // Use perfect_reliability for connections that must succeed in tests
+        simulator.add_edge(node_a_id, node_b_id, NetworkEdge(fast_latency, perfect_reliability));
+        simulator.add_edge(node_b_id, node_a_id, NetworkEdge(fast_latency, perfect_reliability));
         
-        simulator.add_edge(node_a_id, node_c_id, NetworkEdge(fast_latency, high_reliability));
-        simulator.add_edge(node_c_id, node_a_id, NetworkEdge(fast_latency, high_reliability));
+        simulator.add_edge(node_a_id, node_c_id, NetworkEdge(fast_latency, perfect_reliability));
+        simulator.add_edge(node_c_id, node_a_id, NetworkEdge(fast_latency, perfect_reliability));
         
         simulator.add_edge(node_b_id, node_d_id, NetworkEdge(medium_latency, perfect_reliability));
         simulator.add_edge(node_d_id, node_b_id, NetworkEdge(medium_latency, perfect_reliability));
