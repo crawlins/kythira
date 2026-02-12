@@ -48,6 +48,13 @@ add_network_test(folly_executor_concept_compliance_property_test folly_executor_
 add_network_test(kythira_executor_concept_compliance_property_test kythira_executor_concept_compliance_property_test.cpp)
 add_network_test(kythira_executor_work_submission_property_test kythira_executor_work_submission_property_test.cpp)
 add_network_test(folly_future_concept_compliance_property_test folly_future_concept_compliance_property_test.cpp)
+
+# State machine tests
+add_raft_completion_test(state_machine_snapshot_round_trip_property_test state_machine_snapshot_round_trip_property_test.cpp)
+add_raft_completion_test(state_machine_idempotency_property_test state_machine_idempotency_property_test.cpp)
+add_raft_completion_test(state_machine_determinism_property_test state_machine_determinism_property_test.cpp)
+add_raft_completion_test(state_machine_performance_benchmark state_machine_performance_benchmark.cpp)
+add_raft_completion_test(state_machine_apply_performance_property_test state_machine_apply_performance_property_test.cpp)
 add_network_test(kythira_future_concept_compliance_test kythira_future_concept_compliance_test.cpp)
 add_network_test(kythira_future_concept_compliance_property_test kythira_future_concept_compliance_property_test.cpp)
 add_network_test(try_concept_requirements_property_test try_concept_requirements_property_test.cpp)
@@ -1247,3 +1254,46 @@ if(TARGET Folly::folly)
 endif()
 target_compile_features(debug_accept_test PRIVATE cxx_std_23)
 # Note: debug_accept_test is not added to CTest as it's for manual debugging only
+
+# Counter state machine test (example state machine)
+add_executable(counter_state_machine_test counter_state_machine_test.cpp)
+target_link_libraries(counter_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(counter_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME counter_state_machine_test COMMAND counter_state_machine_test)
+set_tests_properties(counter_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
+# Register state machine test (example state machine)
+add_executable(register_state_machine_test register_state_machine_test.cpp)
+target_link_libraries(register_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(register_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME register_state_machine_test COMMAND register_state_machine_test)
+set_tests_properties(register_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
+# State machine integration test (end-to-end command application)
+add_executable(raft_state_machine_integration_test raft_state_machine_integration_test.cpp)
+target_link_libraries(raft_state_machine_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_state_machine_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_state_machine_integration_test PRIVATE cxx_std_23)
+add_test(NAME raft_state_machine_integration_test COMMAND raft_state_machine_integration_test)
+set_tests_properties(raft_state_machine_integration_test PROPERTIES
+    TIMEOUT 60
+    LABELS "integration;state_machine;raft"
+)

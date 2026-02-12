@@ -392,6 +392,135 @@ auto remove_server(NodeId old_node) -> kythira::Future<bool>;
 3. Waits for joint consensus commit before proceeding to final configuration
 4. Returns future that completes when configuration change is done
 
+### Session-Based Command Submission
+
+The `submit_command_with_session()` method provides duplicate detection through client session tracking:
+
+```cpp
+auto submit_command_with_session(
+    const std::vector<std::byte>& command,
+    const std::string& client_id,
+    std::uint64_t serial_number,
+    std::chrono::milliseconds timeout
+) -> kythira::Future<std::vector<std::byte>>;
+```
+
+**Parameters:**
+- `command`: The command to submit
+- `client_id`: Unique identifier for the client
+- `serial_number`: Sequential serial number for this client (must be last_serial + 1)
+- `timeout`: Maximum time to wait for commit and application
+
+**Behavior:**
+1. Validates that serial_number is sequential (must be last_serial + 1 for existing clients)
+2. For new clients, serial_number must be 1
+3. Caches the response for duplicate detection
+4. Returns cached response if the same (client_id, serial_number) is submitted again
+5. Rejects requests with invalid serial numbers with `invalid_serial_number_exception`
+
+**Serial Number Validation Rules:**
+- **New clients**: First request must use serial_number = 1
+- **Existing clients**: Each request must use serial_number = last_serial_number + 1
+- **Duplicate requests**: Same (client_id, serial_number) returns cached response
+- **Invalid serial numbers**: Throws `invalid_serial_number_exception` with details
+
+**Example Usage:**
+
+```cpp
+// First request from a new client
+auto future1 = node.submit_command_with_session(
+    command_data,
+    "client_123",
+    1,  // First serial number must be 1
+    std::chrono::seconds(30)
+);
+
+// Second request from the same client
+auto future2 = node.submit_command_with_session(
+    command_data,
+    "client_123",
+    2,  // Must be sequential (previous + 1)
+    std::chrono::seconds(30)
+);
+
+// Duplicate request (returns cached response)
+auto future3 = node.submit_command_with_session(
+    command_data,
+    "client_123",
+    2,  // Same serial number - returns cached result
+    std::chrono::seconds(30)
+);
+
+// Invalid request (throws exception)
+try {
+    auto future4 = node.submit_command_with_session(
+        command_data,
+        "client_123",
+        5,  // Invalid - skips serial numbers 3 and 4
+        std::chrono::seconds(30)
+    );
+} catch (const invalid_serial_number_exception& e) {
+    std::cerr << "Invalid serial number: " << e.what() << std::endl;
+    std::cerr << "Expected: " << e.expected_serial_number() << std::endl;
+    std::cerr << "Received: " << e.received_serial_number() << std::endl;
+}
+```
+
+**Exception: invalid_serial_number_exception**
+
+```cpp
+class invalid_serial_number_exception : public raft_exception {
+public:
+    auto client_id() const -> const std::string&;
+    auto expected_serial_number() const -> std::uint64_t;
+    auto received_serial_number() const -> std::uint64_t;
+};
+```
+
+Thrown when a client submits a command with an invalid serial number.
+
+**Methods:**
+- `client_id()`: Returns the client ID that submitted the invalid request
+- `expected_serial_number()`: Returns the expected serial number (last_serial + 1)
+- `received_serial_number()`: Returns the serial number that was received
+
+**Client Session Management Best Practices:**
+
+1. **Initialize with serial number 1**: Always start a new client session with serial_number = 1
+2. **Increment sequentially**: Each subsequent request must increment the serial number by exactly 1
+3. **Handle retries correctly**: If a request times out or fails, retry with the SAME serial number to get the cached response
+4. **Track last successful serial**: Clients should track the last successfully completed serial number
+5. **Session persistence**: Client sessions persist across leadership changes (stored in Raft log)
+6. **Independent sessions**: Each client has an independent session with its own serial number sequence
+
+**Error Handling:**
+
+```cpp
+try {
+    auto future = node.submit_command_with_session(
+        command, client_id, serial_number, timeout
+    );
+    
+    auto result = future.get();
+    // Success - update last_serial_number
+    
+} catch (const invalid_serial_number_exception& e) {
+    // Invalid serial number - check expected vs received
+    std::cerr << "Serial number mismatch for client " << e.client_id() << std::endl;
+    std::cerr << "Expected: " << e.expected_serial_number() << std::endl;
+    std::cerr << "Received: " << e.received_serial_number() << std::endl;
+    
+} catch (const commit_timeout_exception& e) {
+    // Timeout - retry with SAME serial number
+    std::cerr << "Commit timeout for entry " << e.get_entry_index() << std::endl;
+    
+} catch (const leadership_lost_exception& e) {
+    // Leadership lost - retry with SAME serial number on new leader
+    std::cerr << "Leadership lost (term " << e.get_old_term() 
+              << " -> " << e.get_new_term() << ")" << std::endl;
+}
+```
+
 ## Thread Safety
 
 All completion components are thread-safe:

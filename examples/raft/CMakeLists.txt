@@ -116,6 +116,10 @@ add_raft_example(commit_waiting_example commit_waiting_example.cpp)
 add_raft_example(configuration_sync_example configuration_sync_example.cpp)
 add_raft_example(error_handling_example error_handling_example.cpp)
 
+# State machine examples - demonstrate state machine patterns
+add_raft_example(state_machine_example state_machine_example.cpp)
+add_raft_example(state_machine_migration_example state_machine_migration_example.cpp)
+
 # Additional CTest targets for completion examples
 # These can be run separately to validate completion functionality:
 #

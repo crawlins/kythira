@@ -84,6 +84,43 @@ ctest
 
 ## Quick Start
 
+### Implementing Your State Machine
+
+The first step is to implement your application-specific state machine:
+
+```cpp
+#include <raft/types.hpp>
+
+class KeyValueStore {
+public:
+    // Apply a command to the state machine
+    auto apply(const std::vector<std::byte>& command, std::uint64_t index) -> std::vector<std::byte> {
+        // Parse command (e.g., "PUT key value", "GET key", "DEL key")
+        // Apply to your data structure
+        // Return result to client
+        return result;
+    }
+    
+    // Capture current state for snapshot
+    auto get_state() const -> std::vector<std::byte> {
+        // Serialize your state machine's data
+        return serialized_state;
+    }
+    
+    // Restore state from snapshot
+    auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t last_index) -> void {
+        // Deserialize and restore your state machine's data
+    }
+};
+```
+
+**See [State Machine Examples](include/raft/examples/)** for complete implementations:
+- **Counter**: Simple atomic counter
+- **Register**: Single-value register with versioning
+- **Replicated Log**: Append-only log
+- **Distributed Lock**: Lock service with timeouts
+- **Key-Value Store**: Full-featured KV store (test implementation)
+
 ### Basic Raft Cluster
 
 ```cpp
@@ -93,11 +130,7 @@ ctest
 #include <raft/console_logger.hpp>
 #include <raft/metrics.hpp>
 
-// Define your state machine
-class KeyValueStore {
-public:
-    auto apply(const std::vector<std::byte>& command) -> std::vector<std::byte> {
-        // Apply command to state machine
+// Use your state machine
         return result;
     }
     
