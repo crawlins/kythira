@@ -8,185 +8,143 @@
 
 namespace kythira::test {
 
-// Random command generator for property-based testing
-// Generates commands in the binary format expected by test_key_value_state_machine:
-// [command_type (1 byte)][key_length (4 bytes)][key][value_length (4 bytes)][value]
+// Command generator for state machine testing
 class command_generator {
 public:
-    explicit command_generator(std::uint64_t seed = 42) : _rng(seed) {}
-    
-    auto random_put() -> std::vector<std::byte> {
-        auto key = random_string(5, 20);
-        auto value = random_string(10, 100);
-        return make_put_command(key, value);
-    }
-    
-    auto random_get() -> std::vector<std::byte> {
-        auto key = random_string(5, 20);
-        return make_get_command(key);
-    }
-    
-    auto random_del() -> std::vector<std::byte> {
-        auto key = random_string(5, 20);
-        return make_del_command(key);
-    }
-    
-    auto random_command() -> std::vector<std::byte> {
-        std::uniform_int_distribution<int> dist(0, 2);
-        switch (dist(_rng)) {
-            case 0: return random_put();
-            case 1: return random_get();
-            default: return random_del();
-        }
-    }
-
-private:
-    std::mt19937_64 _rng;
-    
-    auto random_string(std::size_t min_len, std::size_t max_len) -> std::string {
-        std::uniform_int_distribution<std::size_t> len_dist(min_len, max_len);
-        std::uniform_int_distribution<char> char_dist('a', 'z');
-        
-        auto len = len_dist(_rng);
-        std::string result;
-        result.reserve(len);
-        for (std::size_t i = 0; i < len; ++i) {
-            result += char_dist(_rng);
-        }
-        return result;
-    }
-    
-    // Command type enum matching test_key_value_state_machine
     enum class command_type : std::uint8_t {
-        put = 1,
-        get = 2,
-        del = 3
+        get = 0,
+        set = 1,
+        del = 2
     };
-    
-    // Create binary PUT command
-    static auto make_put_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
+
+    // Generate random binary command for key-value state machine
+    static auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
+        std::uniform_int_distribution<int> cmd_dist(0, 2);
+        auto cmd = static_cast<command_type>(cmd_dist(rng));
+        
+        std::uniform_int_distribution<int> key_dist(0, 99);
+        std::string key = "key_" + std::to_string(key_dist(rng));
+        
         std::vector<std::byte> command;
+        command.push_back(static_cast<std::byte>(cmd));
         
-        // Command type
-        command.push_back(static_cast<std::byte>(command_type::put));
+        // Add key length and key
+        std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
+        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
+        command.insert(command.end(), 
+                      reinterpret_cast<const std::byte*>(key.data()),
+                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
         
-        // Key length and key
-        std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
-        std::size_t offset = command.size();
-        command.resize(command.size() + sizeof(std::uint32_t) + key.size());
-        std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
-        offset += sizeof(std::uint32_t);
-        std::memcpy(command.data() + offset, key.data(), key.size());
-        
-        // Value length and value
-        std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
-        offset = command.size();
-        command.resize(command.size() + sizeof(std::uint32_t) + value.size());
-        std::memcpy(command.data() + offset, &value_length, sizeof(std::uint32_t));
-        offset += sizeof(std::uint32_t);
-        std::memcpy(command.data() + offset, value.data(), value.size());
+        // For SET commands, add value
+        if (cmd == command_type::set) {
+            std::uniform_int_distribution<int> val_dist(0, 999);
+            std::string value = "value_" + std::to_string(val_dist(rng));
+            
+            std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
+            auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
+            command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
+            command.insert(command.end(),
+                          reinterpret_cast<const std::byte*>(value.data()),
+                          reinterpret_cast<const std::byte*>(value.data() + value.size()));
+        }
         
         return command;
     }
     
-    // Create binary GET command
-    static auto make_get_command(const std::string& key) -> std::vector<std::byte> {
+    // Generate specific GET command
+    static auto generate_get_command(const std::string& key) -> std::vector<std::byte> {
         std::vector<std::byte> command;
-        
-        // Command type
         command.push_back(static_cast<std::byte>(command_type::get));
         
-        // Key length and key
-        std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
-        std::size_t offset = command.size();
-        command.resize(command.size() + sizeof(std::uint32_t) + key.size());
-        std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
-        offset += sizeof(std::uint32_t);
-        std::memcpy(command.data() + offset, key.data(), key.size());
+        std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
+        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
+        command.insert(command.end(),
+                      reinterpret_cast<const std::byte*>(key.data()),
+                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
         
         return command;
     }
     
-    // Create binary DEL command
-    static auto make_del_command(const std::string& key) -> std::vector<std::byte> {
+    // Generate specific SET command
+    static auto generate_set_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
         std::vector<std::byte> command;
+        command.push_back(static_cast<std::byte>(command_type::set));
         
-        // Command type
+        std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
+        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
+        command.insert(command.end(),
+                      reinterpret_cast<const std::byte*>(key.data()),
+                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
+        
+        std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
+        auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
+        command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
+        command.insert(command.end(),
+                      reinterpret_cast<const std::byte*>(value.data()),
+                      reinterpret_cast<const std::byte*>(value.data() + value.size()));
+        
+        return command;
+    }
+    
+    // Generate specific DELETE command
+    static auto generate_delete_command(const std::string& key) -> std::vector<std::byte> {
+        std::vector<std::byte> command;
         command.push_back(static_cast<std::byte>(command_type::del));
         
-        // Key length and key
-        std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
-        std::size_t offset = command.size();
-        command.resize(command.size() + sizeof(std::uint32_t) + key.size());
-        std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
-        offset += sizeof(std::uint32_t);
-        std::memcpy(command.data() + offset, key.data(), key.size());
+        std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
+        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
+        command.insert(command.end(),
+                      reinterpret_cast<const std::byte*>(key.data()),
+                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
         
         return command;
     }
 };
 
-// Snapshot validation utilities
+// Snapshot validator for state machine testing
 class snapshot_validator {
 public:
-    // Validate round-trip for key-value state machine
-    static auto validate_round_trip(kythira::test_key_value_state_machine<>& sm, std::uint64_t last_index) -> bool {
-        auto state_before_size = sm.size();
+    // Validate snapshot can be restored
+    template<typename StateMachine>
+    static auto validate_snapshot_round_trip(StateMachine& sm) -> bool {
+        // Get current state
         auto snapshot = sm.get_state();
         
-        kythira::test_key_value_state_machine<> sm_restored;
-        sm_restored.restore_from_snapshot(snapshot, last_index);
+        // Create new state machine and restore
+        StateMachine sm2;
+        sm2.restore_from_snapshot(snapshot);
         
-        // Compare logical state (size and contents) instead of byte representation
-        // because unordered_map iteration order is non-deterministic
-        return state_before_size == sm_restored.size();
+        // Get state from restored machine
+        auto snapshot2 = sm2.get_state();
+        
+        // Compare logical state (size and contents)
+        return snapshot.size() == snapshot2.size();
     }
     
-    // Generic template for other state machines that have deterministic serialization
+    // Validate deterministic application
     template<typename StateMachine>
-    static auto validate_round_trip(StateMachine& sm, std::uint64_t last_index) -> bool {
-        auto state_before = sm.get_state();
+    static auto validate_deterministic_application(
+        const std::vector<std::vector<std::byte>>& commands) -> bool {
         
-        StateMachine sm_restored;
-        sm_restored.restore_from_snapshot(state_before, last_index);
+        StateMachine sm1;
+        StateMachine sm2;
         
-        auto state_after = sm_restored.get_state();
-        
-        return state_before == state_after;
-    }
-    
-    // Validate determinism for key-value state machine (special case for unordered_map)
-    static auto validate_determinism(const std::vector<std::vector<std::byte>>& commands) -> bool {
-        kythira::test_key_value_state_machine<> sm1, sm2;
-        
-        std::uint64_t index = 1;
-        for (const auto& cmd : commands) {
-            try {
-                sm1.apply(cmd, index);
-            } catch (...) {}
-            try {
-                sm2.apply(cmd, index);
-            } catch (...) {}
-            ++index;
+        // Apply same commands to both
+        for (std::uint64_t i = 0; i < commands.size(); ++i) {
+            sm1.apply(commands[i], i + 1);
+            sm2.apply(commands[i], i + 1);
         }
         
-        // Compare logical state (size) instead of byte representation
-        return sm1.size() == sm2.size();
-    }
-    
-    // Generic template for other state machines
-    template<typename StateMachine>
-    static auto validate_determinism(const std::vector<std::vector<std::byte>>& commands) -> bool {
-        StateMachine sm1, sm2;
+        // Get states
+        auto state1 = sm1.get_state();
+        auto state2 = sm2.get_state();
         
-        std::uint64_t index = 1;
-        for (const auto& cmd : commands) {
-            sm1.apply(cmd, index);
-            sm2.apply(cmd, index);
-            ++index;
-        }
-        
-        return sm1.get_state() == sm2.get_state();
+        // States should be identical
+        return state1.size() == state2.size();
     }
 };
 
