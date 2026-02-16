@@ -1297,3 +1297,26 @@ set_tests_properties(raft_state_machine_integration_test PROPERTIES
     TIMEOUT 60
     LABELS "integration;state_machine;raft"
 )
+
+# State machine commutativity property test
+add_executable(state_machine_commutativity_property_test state_machine_commutativity_property_test.cpp)
+target_link_libraries(state_machine_commutativity_property_test PRIVATE
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(state_machine_commutativity_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(state_machine_commutativity_property_test PRIVATE cxx_std_23)
+add_test(NAME state_machine_commutativity_property_test COMMAND state_machine_commutativity_property_test)
+
+# State machine crash recovery property test
+add_executable(state_machine_crash_recovery_property_test state_machine_crash_recovery_property_test.cpp)
+target_link_libraries(state_machine_crash_recovery_property_test PRIVATE
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(state_machine_crash_recovery_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(state_machine_crash_recovery_property_test PRIVATE cxx_std_23)
+add_test(NAME state_machine_crash_recovery_property_test COMMAND state_machine_crash_recovery_property_test)
+
