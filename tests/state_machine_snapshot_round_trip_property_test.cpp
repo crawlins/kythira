@@ -6,7 +6,8 @@
 #include "state_machine_test_utilities.hpp"
 
 BOOST_AUTO_TEST_CASE(property_kv_snapshot_round_trip, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen;
+    std::random_device rd;
+    std::mt19937 rng(rd());
     
     for (int iteration = 0; iteration < 100; ++iteration) {
         kythira::test_key_value_state_machine sm;
@@ -14,12 +15,12 @@ BOOST_AUTO_TEST_CASE(property_kv_snapshot_round_trip, * boost::unit_test::timeou
         // Apply random commands
         for (int i = 0; i < 50; ++i) {
             try {
-                sm.apply(gen.random_command(), i + 1);
+                sm.apply(kythira::test::command_generator::generate_random_command(rng), i + 1);
             } catch (...) {} // Ignore errors (e.g., GET on non-existent key)
         }
         
         // Validate round-trip
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_round_trip(sm, 50));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_snapshot_round_trip(sm));
     }
 }
 
@@ -44,7 +45,7 @@ BOOST_AUTO_TEST_CASE(property_counter_snapshot_round_trip, * boost::unit_test::t
         }
         
         // Validate round-trip
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_round_trip(sm, 50));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_snapshot_round_trip(sm));
     }
 }
 
@@ -64,13 +65,13 @@ BOOST_AUTO_TEST_CASE(property_register_snapshot_round_trip, * boost::unit_test::
         }
         
         // Validate round-trip
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_round_trip(sm, 50));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_snapshot_round_trip(sm));
     }
 }
 
 BOOST_AUTO_TEST_CASE(property_empty_state_snapshot, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine sm;
-    BOOST_CHECK(kythira::test::snapshot_validator::validate_round_trip(sm, 0));
+    BOOST_CHECK(kythira::test::snapshot_validator::validate_snapshot_round_trip(sm));
 }
 
 BOOST_AUTO_TEST_CASE(property_large_state_snapshot, * boost::unit_test::timeout(30)) {
@@ -84,5 +85,5 @@ BOOST_AUTO_TEST_CASE(property_large_state_snapshot, * boost::unit_test::timeout(
         sm.apply(cmd, i + 1);
     }
     
-    BOOST_CHECK(kythira::test::snapshot_validator::validate_round_trip(sm, 1000));
+    BOOST_CHECK(kythira::test::snapshot_validator::validate_snapshot_round_trip(sm));
 }

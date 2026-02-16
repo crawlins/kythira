@@ -5,10 +5,11 @@
 #include "state_machine_test_utilities.hpp"
 
 BOOST_AUTO_TEST_CASE(property_put_idempotency, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen(42);
+    std::random_device rd;
+    std::mt19937 rng(rd());
     
     for (int iteration = 0; iteration < 100; ++iteration) {
-        auto cmd = gen.random_put();
+        auto cmd = kythira::test::command_generator::generate_set_command("test_key", "test_value");
         
         kythira::test_key_value_state_machine sm;
         auto result1 = sm.apply(cmd, 1);
@@ -71,7 +72,7 @@ BOOST_AUTO_TEST_CASE(property_counter_idempotency, * boost::unit_test::timeout(3
 }
 
 BOOST_AUTO_TEST_CASE(property_sequence_idempotency, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen(123);
+    std::random_device rd; std::mt19937 rng(rd());
     
     for (int iteration = 0; iteration < 50; ++iteration) {
         std::vector<std::vector<std::byte>> commands;

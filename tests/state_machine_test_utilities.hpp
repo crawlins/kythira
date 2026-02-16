@@ -116,7 +116,7 @@ public:
         
         // Create new state machine and restore
         StateMachine sm2;
-        sm2.restore_from_snapshot(snapshot);
+        sm2.restore_from_snapshot(snapshot, 0);
         
         // Get state from restored machine
         auto snapshot2 = sm2.get_state();
