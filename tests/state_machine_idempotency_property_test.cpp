@@ -72,12 +72,13 @@ BOOST_AUTO_TEST_CASE(property_counter_idempotency, * boost::unit_test::timeout(3
 }
 
 BOOST_AUTO_TEST_CASE(property_sequence_idempotency, * boost::unit_test::timeout(30)) {
-    std::random_device rd; std::mt19937 rng(rd());
+    std::random_device rd; 
+    std::mt19937 rng(rd());
     
     for (int iteration = 0; iteration < 50; ++iteration) {
         std::vector<std::vector<std::byte>> commands;
         for (int i = 0; i < 10; ++i) {
-            commands.push_back(gen.random_command());
+            commands.push_back(kythira::test::command_generator::generate_random_command(rng));
         }
         
         // Apply sequence twice

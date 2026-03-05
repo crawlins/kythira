@@ -6,12 +6,13 @@
 #include <chrono>
 
 BOOST_AUTO_TEST_CASE(property_apply_completes_quickly, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen;
+    std::random_device rd;
+    std::mt19937 rng(rd());
     constexpr auto max_latency_us = 1000; // 1ms
     
     for (int iteration = 0; iteration < 100; ++iteration) {
         kythira::test_key_value_state_machine sm;
-        auto cmd = gen.random_command();
+        auto cmd = kythira::test::command_generator::generate_random_command(rng);
         
         auto start = std::chrono::high_resolution_clock::now();
         try {

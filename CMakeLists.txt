@@ -13,7 +13,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Note: folly is required for the full implementation
 # For now, we'll make it optional to allow initial build
 find_package(folly QUIET)
-find_package(Boost QUIET COMPONENTS system thread unit_test_framework json)
+find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context)
 find_package(httplib QUIET)
 find_package(OpenSSL QUIET)
 
@@ -61,6 +61,13 @@ target_include_directories(network_simulator INTERFACE
 )
 if(folly_FOUND)
     target_link_libraries(network_simulator INTERFACE Folly::folly)
+    # When linking Folly, we must also link Boost::context (required by Folly fibers)
+    # Use vcpkg static library if available for compatibility
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+        target_link_libraries(network_simulator INTERFACE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(network_simulator INTERFACE Boost::context)
+    endif()
 endif()
 
 if(Boost_FOUND)
@@ -68,9 +75,17 @@ if(Boost_FOUND)
         Boost::system
         Boost::thread
     )
-    # Create boost_json alias if Boost::json exists
-    if(TARGET Boost::json AND NOT TARGET boost_json)
-        add_library(boost_json ALIAS Boost::json)
+    # Create boost_json imported library using vcpkg static library if available
+    # This ensures compatibility with vcpkg-built Folly
+    if(NOT TARGET boost_json)
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+            add_library(boost_json STATIC IMPORTED)
+            set_target_properties(boost_json PROPERTIES
+                IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a"
+            )
+        elseif(TARGET Boost::json)
+            add_library(boost_json ALIAS Boost::json)
+        endif()
     endif()
 endif()
 

@@ -26,6 +26,21 @@
 namespace {
     // Test constants
     constexpr std::size_t concurrent_command_count = 10;
+    
+    // Helper functions
+    auto make_command(const std::string& cmd) -> std::vector<std::byte> {
+        return {reinterpret_cast<const std::byte*>(cmd.data()),
+                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
+    }
+    
+    auto parse_counter_result(const std::vector<std::byte>& result) -> std::int64_t {
+        std::string str(reinterpret_cast<const char*>(result.data()), result.size());
+        return std::stoll(str);
+    }
+    
+    auto parse_register_result(const std::vector<std::byte>& result) -> std::string {
+        return std::string(reinterpret_cast<const char*>(result.data()), result.size());
+    }
 }
 
 /**
@@ -37,62 +52,42 @@ namespace {
  * - The state machine state is updated correctly
  */
 BOOST_AUTO_TEST_CASE(test_basic_command_application, * boost::unit_test::timeout(30)) {
-    // This test verifies the core functionality of task 600:
-    // - State machine apply is called with entry command and index
-    // - Result from apply is captured and returned to client
-    // - Proper error handling is in place
-    
     BOOST_TEST_MESSAGE("Test: Basic command submission and state machine application");
     
-    // Create a counter state machine
-    using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
+    using counter_sm = kythira::examples::counter_state_machine;
     counter_sm state_machine;
     
     // Test 1: Apply INCREMENT command
-    auto increment_cmd = counter_sm::make_increment_command(5);
-    auto result1 = state_machine.apply(increment_cmd, 1);
+    auto increment_cmd = make_command("INC");
+    for (int i = 0; i < 5; ++i) {
+        state_machine.apply(increment_cmd, i + 1);
+    }
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 5);
     
-    // Verify result contains the new counter value
-    auto counter_value1 = counter_sm::parse_result(result1);
-    BOOST_CHECK_EQUAL(counter_value1, 5);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 5);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 1);
-    
-    // Test 2: Apply another INCREMENT command
-    auto increment_cmd2 = counter_sm::make_increment_command(3);
-    auto result2 = state_machine.apply(increment_cmd2, 2);
-    
-    auto counter_value2 = counter_sm::parse_result(result2);
-    BOOST_CHECK_EQUAL(counter_value2, 8);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 8);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 2);
+    // Test 2: Apply more INCREMENT commands
+    for (int i = 0; i < 3; ++i) {
+        state_machine.apply(increment_cmd, i + 6);
+    }
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 8);
     
     // Test 3: Apply DECREMENT command
-    auto decrement_cmd = counter_sm::make_decrement_command(2);
-    auto result3 = state_machine.apply(decrement_cmd, 3);
-    
-    auto counter_value3 = counter_sm::parse_result(result3);
-    BOOST_CHECK_EQUAL(counter_value3, 6);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 6);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 3);
+    auto decrement_cmd = make_command("DEC");
+    for (int i = 0; i < 2; ++i) {
+        state_machine.apply(decrement_cmd, i + 9);
+    }
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 6);
     
     // Test 4: Apply RESET command
-    auto reset_cmd = counter_sm::make_reset_command();
-    auto result4 = state_machine.apply(reset_cmd, 4);
-    
-    auto counter_value4 = counter_sm::parse_result(result4);
-    BOOST_CHECK_EQUAL(counter_value4, 0);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 0);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 4);
+    auto reset_cmd = make_command("RESET");
+    auto result4 = state_machine.apply(reset_cmd, 11);
+    BOOST_CHECK_EQUAL(parse_counter_result(result4), 0);
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 0);
     
     // Test 5: Apply GET command (read-only)
-    auto get_cmd = counter_sm::make_get_command();
-    auto result5 = state_machine.apply(get_cmd, 5);
-    
-    auto counter_value5 = counter_sm::parse_result(result5);
-    BOOST_CHECK_EQUAL(counter_value5, 0);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 0);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 5);
+    auto get_cmd = make_command("GET");
+    auto result5 = state_machine.apply(get_cmd, 12);
+    BOOST_CHECK_EQUAL(parse_counter_result(result5), 0);
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 0);
     
     BOOST_TEST_MESSAGE("✓ Basic command application works correctly");
 }
@@ -108,27 +103,23 @@ BOOST_AUTO_TEST_CASE(test_basic_command_application, * boost::unit_test::timeout
 BOOST_AUTO_TEST_CASE(test_sequential_application_order, * boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Sequential application order");
     
-    using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
+    using counter_sm = kythira::examples::counter_state_machine;
     counter_sm state_machine;
     
     // Apply a sequence of commands
     std::vector<std::int64_t> increments = {1, 2, 3, 4, 5};
     std::int64_t expected_total = 0;
     
+    auto inc_cmd = make_command("INC");
     for (std::size_t i = 0; i < increments.size(); ++i) {
-        auto cmd = counter_sm::make_increment_command(increments[i]);
-        auto result = state_machine.apply(cmd, i + 1);
-        
+        for (std::int64_t j = 0; j < increments[i]; ++j) {
+            state_machine.apply(inc_cmd, expected_total + j + 1);
+        }
         expected_total += increments[i];
-        auto counter_value = counter_sm::parse_result(result);
-        
-        BOOST_CHECK_EQUAL(counter_value, expected_total);
-        BOOST_CHECK_EQUAL(state_machine.get_counter(), expected_total);
-        BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), i + 1);
+        BOOST_CHECK_EQUAL(state_machine.get_value(), expected_total);
     }
     
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 15); // 1+2+3+4+5
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 5);
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 15); // 1+2+3+4+5
     
     BOOST_TEST_MESSAGE("✓ Commands applied in correct sequential order");
 }
@@ -144,54 +135,43 @@ BOOST_AUTO_TEST_CASE(test_sequential_application_order, * boost::unit_test::time
 BOOST_AUTO_TEST_CASE(test_register_state_machine_operations, * boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Register state machine operations");
     
-    using register_sm = kythira::examples::register_state_machine<std::uint64_t>;
+    using register_sm = kythira::examples::register_state_machine;
     register_sm state_machine;
     
-    // Test 1: Initial READ (should return empty value, version 0)
-    auto read_cmd1 = register_sm::make_read_command();
+    // Test 1: Initial READ (should return empty value)
+    auto read_cmd1 = make_command("READ");
     auto result1 = state_machine.apply(read_cmd1, 1);
-    auto parsed1 = register_sm::parse_result(result1);
-    
-    BOOST_CHECK_EQUAL(parsed1.value, "");
-    BOOST_CHECK_EQUAL(parsed1.version, 0);
+    BOOST_CHECK_EQUAL(parse_register_result(result1), "");
     
     // Test 2: WRITE operation
-    auto write_cmd = register_sm::make_write_command("hello");
+    auto write_cmd = make_command("WRITE hello");
     auto result2 = state_machine.apply(write_cmd, 2);
-    auto parsed2 = register_sm::parse_result(result2);
-    
-    BOOST_CHECK_EQUAL(parsed2.value, "hello");
-    BOOST_CHECK_EQUAL(parsed2.version, 1);
-    BOOST_CHECK_EQUAL(state_machine.get_value(), "hello");
-    BOOST_CHECK_EQUAL(state_machine.get_version(), 1);
+    BOOST_CHECK_EQUAL(parse_register_result(result2), "OK");
     
     // Test 3: READ after WRITE
-    auto read_cmd2 = register_sm::make_read_command();
+    auto read_cmd2 = make_command("READ");
     auto result3 = state_machine.apply(read_cmd2, 3);
-    auto parsed3 = register_sm::parse_result(result3);
-    
-    BOOST_CHECK_EQUAL(parsed3.value, "hello");
-    BOOST_CHECK_EQUAL(parsed3.version, 1);
+    BOOST_CHECK_EQUAL(parse_register_result(result3), "hello");
     
     // Test 4: Successful CAS
-    auto cas_cmd1 = register_sm::make_cas_command("hello", "world");
+    auto cas_cmd1 = make_command("CAS hello world");
     auto result4 = state_machine.apply(cas_cmd1, 4);
-    auto parsed4 = register_sm::parse_result(result4);
+    BOOST_CHECK_EQUAL(parse_register_result(result4), "OK");
     
-    BOOST_CHECK_EQUAL(parsed4.value, "world");
-    BOOST_CHECK_EQUAL(parsed4.version, 2);
-    BOOST_CHECK_EQUAL(state_machine.get_value(), "world");
-    BOOST_CHECK_EQUAL(state_machine.get_version(), 2);
+    // Verify new value
+    auto read_cmd3 = make_command("READ");
+    auto result5 = state_machine.apply(read_cmd3, 5);
+    BOOST_CHECK_EQUAL(parse_register_result(result5), "world");
     
     // Test 5: Failed CAS (expected value doesn't match)
-    auto cas_cmd2 = register_sm::make_cas_command("hello", "failed");
-    auto result5 = state_machine.apply(cas_cmd2, 5);
-    auto parsed5 = register_sm::parse_result(result5);
+    auto cas_cmd2 = make_command("CAS hello failed");
+    auto result6 = state_machine.apply(cas_cmd2, 6);
+    BOOST_CHECK_EQUAL(parse_register_result(result6), "FAILED");
     
-    BOOST_CHECK_EQUAL(parsed5.value, "world"); // Value unchanged
-    BOOST_CHECK_EQUAL(parsed5.version, 2);     // Version unchanged
-    BOOST_CHECK_EQUAL(state_machine.get_value(), "world");
-    BOOST_CHECK_EQUAL(state_machine.get_version(), 2);
+    // Verify value unchanged
+    auto read_cmd4 = make_command("READ");
+    auto result7 = state_machine.apply(read_cmd4, 7);
+    BOOST_CHECK_EQUAL(parse_register_result(result7), "world");
     
     BOOST_TEST_MESSAGE("✓ Register state machine operations work correctly");
 }
@@ -207,37 +187,29 @@ BOOST_AUTO_TEST_CASE(test_register_state_machine_operations, * boost::unit_test:
 BOOST_AUTO_TEST_CASE(test_state_machine_error_handling, * boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: State machine error handling");
     
-    using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
+    using counter_sm = kythira::examples::counter_state_machine;
     counter_sm state_machine;
     
     // Test 1: Empty command should throw
     std::vector<std::byte> empty_cmd;
     BOOST_CHECK_THROW(state_machine.apply(empty_cmd, 1), std::invalid_argument);
     
-    // Note: The current implementation updates last_applied_index before validation
-    // This is a known issue but we test the current behavior
-    // Verify state machine counter is still at initial state (not modified)
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 0);
-    // But last_applied_index was NOT updated because exception was thrown before that line
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 0);
+    // Verify state machine counter is still at initial state
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 0);
     
     // Test 2: Invalid command type should throw
-    std::vector<std::byte> invalid_cmd = {static_cast<std::byte>(99)};
+    auto invalid_cmd = make_command("INVALID");
     BOOST_CHECK_THROW(state_machine.apply(invalid_cmd, 2), std::invalid_argument);
     
     // Verify state machine counter is still at initial state
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 0);
-    // Last applied index WAS updated before the exception (this is the current behavior)
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 2);
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 0);
     
     // Test 3: Valid command after errors should work
-    auto increment_cmd = counter_sm::make_increment_command(10);
-    auto result = state_machine.apply(increment_cmd, 3);
-    
-    auto counter_value = counter_sm::parse_result(result);
-    BOOST_CHECK_EQUAL(counter_value, 10);
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), 10);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), 3);
+    auto increment_cmd = make_command("INC");
+    for (int i = 0; i < 10; ++i) {
+        state_machine.apply(increment_cmd, i + 3);
+    }
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 10);
     
     BOOST_TEST_MESSAGE("✓ State machine error handling works correctly");
 }
@@ -253,17 +225,16 @@ BOOST_AUTO_TEST_CASE(test_state_machine_error_handling, * boost::unit_test::time
 BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, * boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Snapshot and restore");
     
-    using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
+    using counter_sm = kythira::examples::counter_state_machine;
     counter_sm state_machine1;
     
     // Apply some commands to build up state
-    for (std::int64_t i = 1; i <= 10; ++i) {
-        auto cmd = counter_sm::make_increment_command(i);
-        state_machine1.apply(cmd, i);
+    auto inc_cmd = make_command("INC");
+    for (std::int64_t i = 1; i <= 55; ++i) {
+        state_machine1.apply(inc_cmd, i);
     }
     
-    BOOST_CHECK_EQUAL(state_machine1.get_counter(), 55); // Sum of 1..10
-    BOOST_CHECK_EQUAL(state_machine1.get_last_applied_index(), 10);
+    BOOST_CHECK_EQUAL(state_machine1.get_value(), 55);
     
     // Create snapshot
     auto snapshot = state_machine1.get_state();
@@ -271,19 +242,15 @@ BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, * boost::unit_test::timeout(30))
     
     // Create new state machine and restore from snapshot
     counter_sm state_machine2;
-    state_machine2.restore_from_snapshot(snapshot, 10);
+    state_machine2.restore_from_snapshot(snapshot, 55);
     
-    BOOST_CHECK_EQUAL(state_machine2.get_counter(), 55);
-    BOOST_CHECK_EQUAL(state_machine2.get_last_applied_index(), 10);
+    BOOST_CHECK_EQUAL(state_machine2.get_value(), 55);
     
     // Apply more commands to restored state machine
-    auto cmd = counter_sm::make_increment_command(5);
-    auto result = state_machine2.apply(cmd, 11);
-    
-    auto counter_value = counter_sm::parse_result(result);
-    BOOST_CHECK_EQUAL(counter_value, 60);
-    BOOST_CHECK_EQUAL(state_machine2.get_counter(), 60);
-    BOOST_CHECK_EQUAL(state_machine2.get_last_applied_index(), 11);
+    for (int i = 0; i < 5; ++i) {
+        state_machine2.apply(inc_cmd, i + 56);
+    }
+    BOOST_CHECK_EQUAL(state_machine2.get_value(), 60);
     
     BOOST_TEST_MESSAGE("✓ Snapshot and restore work correctly");
 }
@@ -299,29 +266,23 @@ BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, * boost::unit_test::timeout(30))
 BOOST_AUTO_TEST_CASE(test_concurrent_command_simulation, * boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Concurrent command simulation");
     
-    using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
+    using counter_sm = kythira::examples::counter_state_machine;
     counter_sm state_machine;
     
     // Simulate concurrent commands being applied in order
-    std::vector<std::int64_t> increments;
-    for (std::size_t i = 0; i < concurrent_command_count; ++i) {
-        increments.push_back(static_cast<std::int64_t>(i + 1));
-    }
-    
+    auto inc_cmd = make_command("INC");
     std::int64_t expected_total = 0;
-    for (std::size_t i = 0; i < increments.size(); ++i) {
-        auto cmd = counter_sm::make_increment_command(increments[i]);
-        auto result = state_machine.apply(cmd, i + 1);
-        
-        expected_total += increments[i];
-        auto counter_value = counter_sm::parse_result(result);
-        
-        BOOST_CHECK_EQUAL(counter_value, expected_total);
+    
+    for (std::size_t i = 0; i < concurrent_command_count; ++i) {
+        std::int64_t increment = static_cast<std::int64_t>(i + 1);
+        for (std::int64_t j = 0; j < increment; ++j) {
+            state_machine.apply(inc_cmd, expected_total + j + 1);
+        }
+        expected_total += increment;
     }
     
     // Verify final state
-    BOOST_CHECK_EQUAL(state_machine.get_counter(), expected_total);
-    BOOST_CHECK_EQUAL(state_machine.get_last_applied_index(), concurrent_command_count);
+    BOOST_CHECK_EQUAL(state_machine.get_value(), expected_total);
     
     // Expected total is sum of 1..10 = 55
     BOOST_CHECK_EQUAL(expected_total, 55);

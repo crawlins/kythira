@@ -6,16 +6,17 @@
 #include "state_machine_test_utilities.hpp"
 
 BOOST_AUTO_TEST_CASE(property_kv_determinism, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen(42);
+    std::random_device rd;
+    std::mt19937 rng(rd());
     
     for (int iteration = 0; iteration < 100; ++iteration) {
         std::vector<std::vector<std::byte>> commands;
         for (int i = 0; i < 50; ++i) {
-            commands.push_back(gen.random_command());
+            commands.push_back(kythira::test::command_generator::generate_random_command(rng));
         }
         
-        // Use non-template version for key-value state machine
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_determinism(commands));
+        // Use validate_deterministic_application
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::test_key_value_state_machine<std::uint64_t>>(commands));
     }
 }
 
@@ -37,7 +38,7 @@ BOOST_AUTO_TEST_CASE(property_counter_determinism, * boost::unit_test::timeout(3
                                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
         }
         
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_determinism<kythira::examples::counter_state_machine>(commands));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::examples::counter_state_machine>(commands));
     }
 }
 
@@ -54,16 +55,17 @@ BOOST_AUTO_TEST_CASE(property_register_determinism, * boost::unit_test::timeout(
                                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
         }
         
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_determinism<kythira::examples::register_state_machine>(commands));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::examples::register_state_machine>(commands));
     }
 }
 
 BOOST_AUTO_TEST_CASE(property_multiple_runs_determinism, * boost::unit_test::timeout(30)) {
-    kythira::test::command_generator gen(999);
+    std::random_device rd;
+    std::mt19937 rng(rd());
     
     std::vector<std::vector<std::byte>> commands;
     for (int i = 0; i < 100; ++i) {
-        commands.push_back(gen.random_command());
+        commands.push_back(kythira::test::command_generator::generate_random_command(rng));
     }
     
     // Run 5 times and verify all produce same size (not byte-for-byte due to unordered_map)
