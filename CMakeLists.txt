@@ -9,6 +9,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Code coverage support
+option(ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
+
+if(ENABLE_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(WARNING "Coverage instrumentation is only supported with GCC or Clang "
+                        "(current: ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+        message(STATUS "ENABLE_COVERAGE: forcing CMAKE_BUILD_TYPE=Debug")
+    endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-arcs -ftest-coverage")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
+    message(STATUS "Coverage instrumentation enabled")
+endif()
+
 # Find dependencies
 # Note: folly is required for the full implementation
 # For now, we'll make it optional to allow initial build
@@ -165,3 +183,73 @@ install(EXPORT network_simulator_targets
     DESTINATION lib/cmake/network_simulator
 )
 # Thread safety test was removed after verification
+
+# Coverage targets — only available when configured with -DENABLE_COVERAGE=ON
+if(ENABLE_COVERAGE)
+    include(ProcessorCount)
+    ProcessorCount(PROCESSOR_COUNT)
+    if(PROCESSOR_COUNT EQUAL 0)
+        set(PROCESSOR_COUNT 4)
+    endif()
+
+    find_program(GCOVR_EXECUTABLE gcovr
+        HINTS "$ENV{HOME}/.local/bin" /usr/local/bin /usr/bin
+    )
+
+    if(NOT GCOVR_EXECUTABLE)
+        message(WARNING "gcovr not found — coverage targets unavailable. "
+                        "Install with: pip3 install gcovr")
+        foreach(_t coverage coverage-html coverage-reset)
+            add_custom_target(${_t}
+                COMMAND ${CMAKE_COMMAND} -E echo
+                    "ERROR: gcovr not found. Install with: pip3 install gcovr"
+                COMMAND ${CMAKE_COMMAND} -E false
+            )
+        endforeach()
+    else()
+        set(COVERAGE_REPORT "${CMAKE_BINARY_DIR}/coverage-report")
+
+        # gcovr exclusion patterns (Python regex applied to source paths)
+        set(GCOVR_EXCLUDES
+            --exclude ".*build-coverage.*"
+            --exclude ".*vcpkg_installed.*"
+            --exclude ".*/usr/.*"
+            --gcov-ignore-parse-errors=negative_hits.warn
+        )
+
+        add_custom_target(coverage-reset
+            COMMAND ${CMAKE_COMMAND} -E echo "Resetting coverage counters..."
+            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Resetting coverage counters"
+        )
+
+        add_custom_target(coverage
+            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
+            COMMAND ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
+            COMMAND ${GCOVR_EXECUTABLE}
+                    --root ${CMAKE_SOURCE_DIR}
+                    --object-directory ${CMAKE_BINARY_DIR}
+                    ${GCOVR_EXCLUDES}
+                    --print-summary
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Running full test suite and collecting coverage"
+        )
+
+        add_custom_target(coverage-html
+            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
+            COMMAND ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${COVERAGE_REPORT}
+            COMMAND ${GCOVR_EXECUTABLE}
+                    --root ${CMAKE_SOURCE_DIR}
+                    --object-directory ${CMAKE_BINARY_DIR}
+                    ${GCOVR_EXCLUDES}
+                    --print-summary
+                    --html-details ${COVERAGE_REPORT}/index.html
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "HTML report: ${COVERAGE_REPORT}/index.html"
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Running full test suite and generating HTML coverage report"
+        )
+    endif()
+endif()

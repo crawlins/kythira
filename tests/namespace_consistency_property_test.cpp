@@ -20,15 +20,16 @@ namespace {
     // Get the source directory from the build directory
     auto get_source_directory() -> std::filesystem::path {
         auto current_path = std::filesystem::current_path();
-        // If we're in build/tests, go up two levels to get to source root
-        if (current_path.filename() == "tests" && current_path.parent_path().filename() == "build") {
-            return current_path.parent_path().parent_path();
+        // Walk up until we find a directory containing CMakeLists.txt (the source root)
+        auto p = current_path;
+        for (int i = 0; i < 5; ++i) {
+            if (std::filesystem::exists(p / "CMakeLists.txt")) {
+                return p;
+            }
+            auto parent = p.parent_path();
+            if (parent == p) break;
+            p = parent;
         }
-        // If we're in build, go up one level
-        if (current_path.filename() == "build") {
-            return current_path.parent_path();
-        }
-        // Otherwise assume we're already in source root
         return current_path;
     }
 

@@ -412,6 +412,52 @@ ctest --test-dir build --rerun-failed --output-on-failure
 
 See [test_results/README.md](test_results/README.md) for more analysis examples.
 
+## Code Coverage
+
+### Quick start
+
+```bash
+# 1. Configure the instrumented build (one-time)
+cmake -S . -B build-coverage \
+      -DENABLE_COVERAGE=ON \
+      -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_PREFIX_PATH="$(pwd)/vcpkg_installed/x64-linux"
+
+# 2. Build
+cmake --build build-coverage -j$(nproc)
+
+# 3. Run tests and print a summary
+cmake --build build-coverage --target coverage
+
+# 4. (Optional) Generate an HTML report
+cmake --build build-coverage --target coverage-html
+# → opens build-coverage/coverage-report/index.html
+```
+
+### How the ratchet works
+
+`coverage_floor.txt` at the repo root stores the minimum acceptable line-coverage
+percentage. The pre-commit hook measures coverage after every commit and:
+
+- **Raises** the floor when coverage improves (and stages the updated file)
+- **Allows** the commit when coverage is unchanged
+- **Blocks** the commit when coverage would fall below the floor
+
+The floor only ever moves up. To skip the check on a WIP commit:
+
+```bash
+SKIP_COVERAGE_CHECK=1 git commit -m "wip: ..."
+```
+
+### Installing the hook
+
+```bash
+bash scripts/install-hooks.sh
+```
+
+Run this once after cloning. It symlinks `scripts/pre-commit-coverage.sh` to
+`.git/hooks/pre-commit`.
+
 ### Property-Based Testing
 
 The implementation uses property-based testing to validate Raft safety properties:
