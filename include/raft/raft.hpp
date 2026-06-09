@@ -224,8 +224,8 @@ private:
     using commit_waiter_t = kythira::commit_waiter<log_index_type>;
     commit_waiter_t _commit_waiter;
 
-    // Configuration synchronizer for safe configuration changes using generic future types
-    using config_synchronizer_t = kythira::configuration_synchronizer<node_id_type, log_index_type, future_type>;
+    // Configuration synchronizer for safe configuration changes (always uses Future<bool> internally)
+    using config_synchronizer_t = kythira::configuration_synchronizer<node_id_type, log_index_type>;
     config_synchronizer_t _config_synchronizer;
 
     // ========================================================================
@@ -1296,7 +1296,7 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Return the future from configuration synchronizer
     // It will complete when the configuration change is committed
-    return config_future.then([this, new_node, old_config = _configuration, new_config](auto try_result) {
+    return config_future.thenTry([this, new_node, old_config = _configuration, new_config](auto try_result) {
         if (try_result.hasException()) {
             _logger.error("Add server failed", {
                 {"node_id", node_id_to_string(_node_id)},
@@ -1309,7 +1309,7 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
             _metrics.add_one();
             _metrics.emit();
 
-            throw try_result.exception();
+            std::rethrow_exception(try_result.exception());
         }
 
         _logger.info("Add server completed successfully", {
@@ -1434,7 +1434,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     _metrics.emit();
 
     // Return the future from configuration synchronizer
-    return config_future.then([this, old_node, removing_self, old_config = _configuration, new_config](auto try_result) {
+    return config_future.thenTry([this, old_node, removing_self, old_config = _configuration, new_config](auto try_result) {
         if (try_result.hasException()) {
             _logger.error("Remove server failed", {
                 {"node_id", node_id_to_string(_node_id)},
@@ -1447,7 +1447,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
             _metrics.add_one();
             _metrics.emit();
 
-            throw try_result.exception();
+            std::rethrow_exception(try_result.exception());
         }
 
         _logger.info("Remove server completed successfully", {

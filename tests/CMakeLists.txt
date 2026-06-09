@@ -854,6 +854,23 @@ endif()
 target_compile_features(raft_heartbeat_test PRIVATE cxx_std_23)
 add_test(NAME raft_heartbeat_test COMMAND raft_heartbeat_test)
 
+# Direct node unit tests (exercises raft.hpp code paths)
+add_executable(raft_node_unit_test raft_node_unit_test.cpp)
+target_link_libraries(raft_node_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(raft_node_unit_test PRIVATE Folly::folly)
+endif()
+target_compile_features(raft_node_unit_test PRIVATE cxx_std_23)
+add_test(NAME raft_node_unit_test COMMAND raft_node_unit_test)
+set_tests_properties(raft_node_unit_test PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;raft"
+)
+
 # Leader append-only property test
 add_executable(raft_leader_append_only_property_test raft_leader_append_only_property_test.cpp)
 target_link_libraries(raft_leader_append_only_property_test PRIVATE
