@@ -13,6 +13,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### What Changed (June 9, 2026)
 
+- **Code coverage infrastructure**: `ENABLE_COVERAGE` CMake option + gcovr targets
+  (`coverage`, `coverage-html`, `coverage-reset`); `coverage_floor.txt` baseline
+  at 84.8%; pre-commit ratchet hook enforces non-decreasing coverage.
 - **Membership API refactored**: `handle_node_removal(node_id)` replaced by
   `handle_cluster_membership_change(old_config, new_config)` — provides full
   context for both add and remove operations; notification fires after commit.
@@ -44,8 +47,8 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   `format`/`format-check` targets; wire into pre-commit hook
 - [ ] **clang-tidy integration** — add `.clang-tidy` config and CMake
   `static-analysis` target; configure checks and suppressions
-- [ ] **Code coverage** — CMake `ENABLE_COVERAGE` option with gcov/lcov targets
-  and HTML report generation
+- [x] **Code coverage** — CMake `ENABLE_COVERAGE` option with gcovr targets,
+  HTML reports, and pre-commit ratchet hook (`coverage_floor.txt` = 84.8%)
 - [ ] **Remove unused includes** — `#include <future>` in
   `http_transport_impl.hpp`, duplicate folly includes in `simulator_impl.hpp`
 - [ ] **Folly CMake detection** — improve `find_package` logic so builds
