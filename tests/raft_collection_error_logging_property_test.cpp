@@ -29,12 +29,12 @@ public:
         std::string message;
         std::vector<std::pair<std::string, std::string>> key_value_pairs;
     };
-    
+
     auto log(kythira::log_level level, std::string_view message) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _entries.emplace_back(log_entry{level, std::string(message), {}});
     }
-    
+
     auto log(
         kythira::log_level level,
         std::string_view message,
@@ -47,7 +47,7 @@ public:
         }
         _entries.emplace_back(log_entry{level, std::string(message), std::move(converted_pairs)});
     }
-    
+
     // Convenience methods for each log level
     auto trace(std::string_view message) -> void { log(kythira::log_level::trace, message); }
     auto debug(std::string_view message) -> void { log(kythira::log_level::debug, message); }
@@ -55,7 +55,7 @@ public:
     auto warning(std::string_view message) -> void { log(kythira::log_level::warning, message); }
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
-    
+
     auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::trace, message, kvp);
     }
@@ -74,17 +74,17 @@ public:
     auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::critical, message, kvp);
     }
-    
+
     [[nodiscard]] auto get_entries() const -> std::vector<log_entry> {
         std::lock_guard<std::mutex> lock(_mutex);
         return _entries;
     }
-    
+
     auto clear() -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _entries.clear();
     }
-    
+
     [[nodiscard]] auto has_warning_log_with_context(
         const std::string& expected_message_part,
         const std::string& operation_type,
@@ -92,22 +92,22 @@ public:
         std::size_t total_count
     ) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
-        
+
         for (const auto& entry : _entries) {
             if (entry.level != kythira::log_level::warning) {
                 continue;
             }
-            
+
             if (entry.message.find(expected_message_part) == std::string::npos) {
                 continue;
             }
-            
+
             // Check for required key-value pairs
             bool has_operation_type = false;
             bool has_failed_count = false;
             bool has_total_count = false;
             bool has_node_id = false;
-            
+
             for (const auto& [key, value] : entry.key_value_pairs) {
                 if (key == "operation_type" && value == operation_type) {
                     has_operation_type = true;
@@ -119,12 +119,12 @@ public:
                     has_node_id = true;
                 }
             }
-            
+
             if (has_operation_type && has_failed_count && has_total_count && has_node_id) {
                 return true;
             }
         }
-        
+
         return false;
     }
 
@@ -147,7 +147,7 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 
 /**
  * **Feature: raft-completion, Property 50: Collection Error Logging**
- * 
+ *
  * For any future collection operation that encounters errors, which futures failed and why are logged.
  */
 BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_test::timeout(60)) {
@@ -155,22 +155,22 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
     std::mt19937 gen(rd());
     std::uniform_int_distribution<std::size_t> failed_dist(1, test_max_failed_futures);
     std::uniform_int_distribution<std::size_t> total_dist(3, 15);
-    
+
     std::vector<std::string> operation_types = {
         "heartbeat_collection", "election_votes", "replication_acks", "snapshot_transfer"
     };
-    
+
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
-        
+
         // Generate random test parameters
         auto total_count = total_dist(gen);
         auto failed_count = std::min(failed_dist(gen), total_count);
         auto operation_type = operation_types[iteration % operation_types.size()];
-        
+
         // Create capturing logger
         capturing_logger logger;
-        
+
         // Simulate future collection error logging that should occur in the Raft implementation
         // First log the overall collection error summary
         logger.warning("Future collection operation encountered errors", {
@@ -180,13 +180,13 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
             {"total_futures", std::to_string(total_count)},
             {"success_rate", std::to_string((total_count - failed_count) * 100 / total_count) + "%"}
         });
-        
+
         // Then log individual future failures with specific reasons (as the property requires)
         std::vector<std::string> failure_reasons = {
-            "network_timeout", "connection_refused", "serialization_error", 
+            "network_timeout", "connection_refused", "serialization_error",
             "invalid_response", "peer_unavailable", "rpc_cancelled"
         };
-        
+
         for (std::size_t i = 0; i < failed_count; ++i) {
             auto reason = failure_reasons[i % failure_reasons.size()];
             logger.warning("Individual future failed in collection", {
@@ -197,7 +197,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
                 {"collection_id", std::to_string(iteration)} // To group related failures
             });
         }
-        
+
         // Verify that the warning was logged with proper context
         BOOST_CHECK(logger.has_warning_log_with_context(
             "Future collection operation encountered errors",
@@ -205,12 +205,12 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
             failed_count,
             total_count
         ));
-        
+
         // Verify that all required context fields are present
         auto entries = logger.get_entries();
         bool found_complete_log = false;
         std::size_t individual_failure_logs = 0;
-        
+
         for (const auto& entry : entries) {
             if (entry.level == kythira::log_level::warning) {
                 if (entry.message.find("Future collection operation encountered errors") != std::string::npos) {
@@ -218,13 +218,13 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
                         "node_id", "operation_type", "failed_futures", "total_futures", "success_rate"
                     };
                     std::set<std::string> found_keys;
-                    
+
                     for (const auto& [key, value] : entry.key_value_pairs) {
                         if (required_keys.count(key)) {
                             found_keys.insert(key);
                         }
                     }
-                    
+
                     if (found_keys == required_keys) {
                         found_complete_log = true;
                     }
@@ -234,27 +234,27 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
                         "node_id", "operation_type", "future_index", "failure_reason", "collection_id"
                     };
                     std::set<std::string> found_individual_keys;
-                    
+
                     for (const auto& [key, value] : entry.key_value_pairs) {
                         if (required_individual_keys.count(key)) {
                             found_individual_keys.insert(key);
                         }
                     }
-                    
+
                     if (found_individual_keys == required_individual_keys) {
                         individual_failure_logs++;
                     }
                 }
             }
         }
-        
+
         BOOST_CHECK(found_complete_log);
         // Property: Each failed future should have its own log entry with failure reason
         BOOST_CHECK_EQUAL(individual_failure_logs, failed_count);
-        
+
         // Test that the logger correctly formats the warning messages
         BOOST_CHECK_EQUAL(entries.size(), 1 + failed_count); // Summary + individual failures
-        
+
         // Verify the summary log entry
         bool found_summary = false;
         for (const auto& entry : entries) {
@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, * boost::unit_
             }
         }
         BOOST_CHECK(found_summary);
-        
+
         // Clear logger for next iteration
         logger.clear();
     }

@@ -24,24 +24,24 @@ concept persistence_engine = requires(
     requires log_index<LogIndex>;
     requires log_entry_type<LogEntry, TermId, LogIndex>;
     requires snapshot_type<Snapshot, NodeId, TermId, LogIndex>;
-    
+
     // Persistent state operations - currentTerm
     { engine.save_current_term(term) } -> std::same_as<void>;
     { engine.load_current_term() } -> std::same_as<TermId>;
-    
+
     // Persistent state operations - votedFor
     { engine.save_voted_for(node) } -> std::same_as<void>;
     { engine.load_voted_for() } -> std::same_as<std::optional<NodeId>>;
-    
+
     // Log operations - append and retrieve
     { engine.append_log_entry(entry) } -> std::same_as<void>;
     { engine.get_log_entry(index) } -> std::same_as<std::optional<LogEntry>>;
     { engine.get_log_entries(index, index) } -> std::same_as<std::vector<LogEntry>>;
     { engine.get_last_log_index() } -> std::same_as<LogIndex>;
-    
+
     // Log operations - truncation
     { engine.truncate_log(index) } -> std::same_as<void>;
-    
+
     // Snapshot operations
     { engine.save_snapshot(snap) } -> std::same_as<void>;
     { engine.load_snapshot() } -> std::same_as<std::optional<Snapshot>>;
@@ -56,30 +56,30 @@ class memory_persistence_engine {
 public:
     using log_entry_t = log_entry<TermId, LogIndex>;
     using snapshot_t = snapshot<NodeId, TermId, LogIndex>;
-    
+
     // Persistent state operations - currentTerm
     auto save_current_term(TermId term) -> void {
         _current_term = term;
     }
-    
+
     auto load_current_term() -> TermId {
         return _current_term;
     }
-    
+
     // Persistent state operations - votedFor
     auto save_voted_for(NodeId node) -> void {
         _voted_for = node;
     }
-    
+
     auto load_voted_for() -> std::optional<NodeId> {
         return _voted_for;
     }
-    
+
     // Log operations - append and retrieve
     auto append_log_entry(const log_entry_t& entry) -> void {
         _log[entry.index()] = entry;
     }
-    
+
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         auto it = _log.find(index);
         if (it != _log.end()) {
@@ -87,7 +87,7 @@ public:
         }
         return std::nullopt;
     }
-    
+
     auto get_log_entries(LogIndex start, LogIndex end) -> std::vector<log_entry_t> {
         std::vector<log_entry_t> result;
         for (LogIndex i = start; i <= end; ++i) {
@@ -98,7 +98,7 @@ public:
         }
         return result;
     }
-    
+
     auto get_last_log_index() -> LogIndex {
         if (_log.empty()) {
             return LogIndex{0};
@@ -111,7 +111,7 @@ public:
         }
         return max_index;
     }
-    
+
     // Log operations - truncation
     auto truncate_log(LogIndex index) -> void {
         auto it = _log.begin();
@@ -123,16 +123,16 @@ public:
             }
         }
     }
-    
+
     // Snapshot operations
     auto save_snapshot(const snapshot_t& snap) -> void {
         _snapshot = snap;
     }
-    
+
     auto load_snapshot() -> std::optional<snapshot_t> {
         return _snapshot;
     }
-    
+
     auto delete_log_entries_before(LogIndex index) -> void {
         auto it = _log.begin();
         while (it != _log.end()) {
@@ -143,7 +143,7 @@ public:
             }
         }
     }
-    
+
 private:
     TermId _current_term{0};
     std::optional<NodeId> _voted_for;

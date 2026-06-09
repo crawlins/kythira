@@ -15,23 +15,23 @@ BOOST_AUTO_TEST_CASE(test_default_raft_configuration_satisfies_concept) {
 // Test that default values are reasonable
 BOOST_AUTO_TEST_CASE(test_default_raft_configuration_values) {
     kythira::raft_configuration config;
-    
+
     // Test election timeout range
     BOOST_CHECK_EQUAL(config.election_timeout_min().count(), 150);
     BOOST_CHECK_EQUAL(config.election_timeout_max().count(), 300);
     BOOST_CHECK(config.election_timeout_min() < config.election_timeout_max());
-    
+
     // Test heartbeat interval
     BOOST_CHECK_EQUAL(config.heartbeat_interval().count(), 50);
     // Heartbeat should be less than minimum election timeout
     BOOST_CHECK(config.heartbeat_interval() < config.election_timeout_min());
-    
+
     // Test RPC timeout
     BOOST_CHECK_EQUAL(config.rpc_timeout().count(), 100);
-    
+
     // Test batch size
     BOOST_CHECK_EQUAL(config.max_entries_per_append(), 100);
-    
+
     // Test snapshot thresholds
     BOOST_CHECK_EQUAL(config.snapshot_threshold_bytes(), 10'000'000);
     BOOST_CHECK_EQUAL(config.snapshot_chunk_size(), 1'000'000);
@@ -51,7 +51,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
         std::size_t _max_entries_per_append{50};
         std::size_t _snapshot_threshold_bytes{5'000'000};
         std::size_t _snapshot_chunk_size{500'000};
-        
+
         kythira::retry_policy_config _heartbeat_retry_policy{
             .initial_delay = std::chrono::milliseconds{50},
             .max_delay = std::chrono::milliseconds{1000},
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             .jitter_factor = 0.1,
             .max_attempts = 3
         };
-        
+
         kythira::retry_policy_config _append_entries_retry_policy{
             .initial_delay = std::chrono::milliseconds{100},
             .max_delay = std::chrono::milliseconds{5000},
@@ -67,7 +67,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             .jitter_factor = 0.1,
             .max_attempts = 5
         };
-        
+
         kythira::retry_policy_config _request_vote_retry_policy{
             .initial_delay = std::chrono::milliseconds{100},
             .max_delay = std::chrono::milliseconds{2000},
@@ -75,7 +75,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             .jitter_factor = 0.1,
             .max_attempts = 3
         };
-        
+
         kythira::retry_policy_config _install_snapshot_retry_policy{
             .initial_delay = std::chrono::milliseconds{500},
             .max_delay = std::chrono::milliseconds{30000},
@@ -83,7 +83,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             .jitter_factor = 0.1,
             .max_attempts = 10
         };
-        
+
         kythira::adaptive_timeout_config _adaptive_timeout_config{
             .enabled = false,
             .min_timeout = std::chrono::milliseconds{50},
@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             .adaptation_factor = 1.2,
             .sample_window_size = 10
         };
-        
+
         auto election_timeout_min() const -> std::chrono::milliseconds { return _election_timeout_min; }
         auto election_timeout_max() const -> std::chrono::milliseconds { return _election_timeout_max; }
         auto heartbeat_interval() const -> std::chrono::milliseconds { return _heartbeat_interval; }
@@ -107,11 +107,11 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
         auto request_vote_retry_policy() const -> const kythira::retry_policy_config& { return _request_vote_retry_policy; }
         auto install_snapshot_retry_policy() const -> const kythira::retry_policy_config& { return _install_snapshot_retry_policy; }
         auto get_adaptive_timeout_config() const -> const kythira::adaptive_timeout_config& { return _adaptive_timeout_config; }
-        
+
         auto validate() const -> bool {
             return get_validation_errors().empty();
         }
-        
+
         auto get_validation_errors() const -> std::vector<std::string> {
             std::vector<std::string> errors;
             if (_election_timeout_min <= std::chrono::milliseconds{0}) {
@@ -123,10 +123,10 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
             return errors;
         }
     };
-    
+
     static_assert(kythira::raft_configuration_type<custom_raft_configuration>,
                   "Custom configuration should satisfy raft_configuration_type concept");
-    
+
     custom_raft_configuration config;
     BOOST_CHECK_EQUAL(config.election_timeout_min().count(), 200);
     BOOST_CHECK_EQUAL(config.election_timeout_max().count(), 400);
@@ -140,7 +140,7 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, * boost::unit_test::timeout
 // Test that configuration values can be modified
 BOOST_AUTO_TEST_CASE(test_modifiable_raft_configuration) {
     kythira::raft_configuration config;
-    
+
     // Modify values
     config._election_timeout_min = std::chrono::milliseconds{250};
     config._election_timeout_max = std::chrono::milliseconds{500};
@@ -149,7 +149,7 @@ BOOST_AUTO_TEST_CASE(test_modifiable_raft_configuration) {
     config._max_entries_per_append = 200;
     config._snapshot_threshold_bytes = 20'000'000;
     config._snapshot_chunk_size = 2'000'000;
-    
+
     // Verify modified values
     BOOST_CHECK_EQUAL(config.election_timeout_min().count(), 250);
     BOOST_CHECK_EQUAL(config.election_timeout_max().count(), 500);

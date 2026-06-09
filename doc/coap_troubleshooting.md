@@ -88,7 +88,7 @@ iptables -L | grep 5683
    # Allow CoAP traffic
    iptables -A INPUT -p udp --dport 5683 -j ACCEPT
    iptables -A OUTPUT -p udp --sport 5683 -j ACCEPT
-   
+
    # Allow CoAPS traffic
    iptables -A INPUT -p udp --dport 5684 -j ACCEPT
    iptables -A OUTPUT -p udp --sport 5684 -j ACCEPT
@@ -110,7 +110,7 @@ iptables -L | grep 5683
    ```bash
    # Test DNS resolution
    nslookup target_host
-   
+
    # Use IP addresses if DNS fails
    std::unordered_map<std::uint64_t, std::string> endpoints = {
        {1, "coap://192.168.1.10:5683"},  // Use IP instead of hostname
@@ -142,11 +142,11 @@ iperf3 -c target_host -u -b 10M
 1. **Adjust Timeout Settings**
    ```cpp
    coap_client_config config;
-   
+
    // For high-latency networks
    config.ack_timeout = std::chrono::milliseconds{5000};  // Increase from 2000ms
    config.max_retransmit = 6;  // Increase from 4
-   
+
    // For low-latency networks
    config.ack_timeout = std::chrono::milliseconds{500};   // Decrease to 500ms
    config.max_retransmit = 2;  // Decrease to 2
@@ -193,7 +193,7 @@ openssl verify -CAfile ca-cert.pem cert.pem
    ```bash
    # Check certificate expiration
    openssl x509 -in cert.pem -dates -noout
-   
+
    # Verify certificate matches hostname
    openssl x509 -in cert.pem -text -noout | grep -A 1 "Subject Alternative Name"
    ```
@@ -212,7 +212,7 @@ openssl verify -CAfile ca-cert.pem cert.pem
    ```bash
    # Ensure system clocks are synchronized
    ntpdate -s time.nist.gov
-   
+
    # Enable NTP daemon
    systemctl enable ntp
    systemctl start ntp
@@ -224,7 +224,7 @@ openssl verify -CAfile ca-cert.pem cert.pem
    coap_client_config config;
    config.enable_dtls = true;
    config.psk_identity = "exact-same-identity";  // Must match exactly
-   
+
    // Verify PSK key format
    std::string psk_hex = "deadbeef12345678";
    config.psk_key.clear();
@@ -267,7 +267,7 @@ openssl verify -CAfile ca-cert.pem cert.pem
    ```bash
    # Verify CA certificate is correct
    openssl x509 -in ca-cert.pem -text -noout
-   
+
    # Check if CA signed the server certificate
    openssl verify -CAfile ca-cert.pem server-cert.pem
    ```
@@ -313,7 +313,7 @@ try {
        auto content_format() const -> std::uint16_t {
            return 50;  // JSON content format
        }
-       
+
        template<typename T>
        auto serialize(const T& obj) const -> std::vector<std::byte> {
            // Add debug logging
@@ -360,7 +360,7 @@ perf report
    coap_client_config config;
    config.max_sessions = 200;  // Increase session pool
    config.max_block_size = 2048;  // Larger blocks for better throughput
-   
+
    coap_server_config server_config;
    server_config.max_concurrent_sessions = 500;  // Handle more concurrent requests
    ```
@@ -370,7 +370,7 @@ perf report
    # Increase UDP buffer sizes
    echo 'net.core.rmem_max = 16777216' >> /etc/sysctl.conf
    echo 'net.core.wmem_max = 16777216' >> /etc/sysctl.conf
-   
+
    # Increase file descriptor limits
    echo '* soft nofile 65536' >> /etc/security/limits.conf
    echo '* hard nofile 65536' >> /etc/security/limits.conf
@@ -380,7 +380,7 @@ perf report
    ```cpp
    // Use efficient serializer
    auto client = coap_client<cbor_serializer>(endpoints, config, metrics);
-   
+
    // Batch operations where possible
    std::vector<folly::Future<request_vote_response<>>> futures;
    for (auto target : targets) {
@@ -421,7 +421,7 @@ valgrind --tool=memcheck --leak-check=full ./raft_node
    class managed_coap_client {
    private:
        std::unordered_map<token_t, std::unique_ptr<pending_request>> _pending;
-       
+
    public:
        void periodic_cleanup() {
            auto now = std::chrono::steady_clock::now();
@@ -469,7 +469,7 @@ ip link show eth0 | grep mtu
    coap_client_config config;
    config.enable_block_transfer = true;
    config.max_block_size = 512;  // Smaller blocks for unreliable networks
-   
+
    // Or larger blocks for high-bandwidth networks
    config.max_block_size = 4096;
    ```
@@ -488,7 +488,7 @@ ip link show eth0 | grep mtu
    ```bash
    # Check and adjust MTU
    ip link set dev eth0 mtu 1500
-   
+
    # Test path MTU discovery
    tracepath target_host
    ```
@@ -511,14 +511,14 @@ public:
     void record_request_sent(const std::string& rpc_type, std::uint64_t target) override {
         std::cout << "Sending " << rpc_type << " to node " << target << std::endl;
     }
-    
-    void record_request_completed(const std::string& rpc_type, 
+
+    void record_request_completed(const std::string& rpc_type,
                                  std::chrono::milliseconds duration,
                                  bool success) override {
-        std::cout << rpc_type << " completed in " << duration.count() 
+        std::cout << rpc_type << " completed in " << duration.count()
                   << "ms, success: " << success << std::endl;
     }
-    
+
     void record_error(const std::string& error_type, const std::string& details) {
         std::cerr << "Error [" << error_type << "]: " << details << std::endl;
     }
@@ -541,7 +541,7 @@ public:
             return false;
         }
     }
-    
+
     // Test DTLS handshake
     bool test_dtls_handshake(const std::string& endpoint) {
         try {
@@ -552,7 +552,7 @@ public:
             return false;
         }
     }
-    
+
     // Test serialization
     bool test_serialization() {
         try {
@@ -583,13 +583,13 @@ public:
         try {
             // Test all RPC types
             request_vote_request<> vote_req{.term = 1, .candidate_id = 1};
-            auto vote_resp = client.send_request_vote(target, vote_req, 
+            auto vote_resp = client.send_request_vote(target, vote_req,
                                                      std::chrono::seconds{5}).get();
-            
+
             append_entries_request<> append_req{.term = 1, .leader_id = 1};
-            auto append_resp = client.send_append_entries(target, append_req, 
+            auto append_resp = client.send_append_entries(target, append_req,
                                                          std::chrono::seconds{5}).get();
-            
+
             std::cout << "All RPC tests passed" << std::endl;
             return true;
         } catch (const std::exception& e) {
@@ -610,8 +610,8 @@ public:
     void record_request_sent(const std::string& rpc_type, std::uint64_t target) override {
         _requests_sent.increment({{"rpc_type", rpc_type}, {"target", std::to_string(target)}});
     }
-    
-    void record_request_completed(const std::string& rpc_type, 
+
+    void record_request_completed(const std::string& rpc_type,
                                  std::chrono::milliseconds duration,
                                  bool success) override {
         _request_duration.record(duration.count(), {{"rpc_type", rpc_type}});
@@ -619,15 +619,15 @@ public:
             _request_failures.increment({{"rpc_type", rpc_type}});
         }
     }
-    
+
     void record_dtls_handshake_failure(const std::string& reason) {
         _dtls_failures.increment({{"reason", reason}});
     }
-    
+
     void record_timeout(const std::string& rpc_type, std::uint64_t target) {
         _timeouts.increment({{"rpc_type", rpc_type}, {"target", std::to_string(target)}});
     }
-    
+
 private:
     prometheus::Counter _requests_sent;
     prometheus::Histogram _request_duration;
@@ -656,30 +656,30 @@ public:
         std::vector<std::string> issues;
         std::unordered_map<std::string, double> metrics;
     };
-    
+
     auto check_health(coap_client<json_serializer>& client,
                      const std::vector<std::uint64_t>& targets) -> health_status {
         health_status status;
         status.overall_healthy = true;
-        
+
         for (auto target : targets) {
             try {
                 auto start = std::chrono::steady_clock::now();
                 request_vote_request<> request{.term = 1, .candidate_id = 1};
-                auto response = client.send_request_vote(target, request, 
+                auto response = client.send_request_vote(target, request,
                                                         std::chrono::seconds{2}).get();
                 auto duration = std::chrono::steady_clock::now() - start;
-                
-                status.metrics["latency_to_" + std::to_string(target)] = 
+
+                status.metrics["latency_to_" + std::to_string(target)] =
                     std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-                    
+
             } catch (const std::exception& e) {
                 status.overall_healthy = false;
-                status.issues.push_back("Failed to reach node " + std::to_string(target) + 
+                status.issues.push_back("Failed to reach node " + std::to_string(target) +
                                        ": " + e.what());
             }
         }
-        
+
         return status;
     }
 };
@@ -693,10 +693,10 @@ public:
    ```bash
    # Restart the service
    systemctl restart raft-node
-   
+
    # Check service status
    systemctl status raft-node
-   
+
    # Monitor logs
    journalctl -u raft-node -f
    ```

@@ -151,7 +151,7 @@ private:
     auto configure_ssl_client(httplib::Client* client) -> void;
     auto load_client_certificates() -> void;
     auto validate_certificate_files() const -> void;
-    
+
     template<typename Request, typename Response>
     auto send_rpc(
         std::uint64_t target,
@@ -219,7 +219,7 @@ private:
     auto configure_ssl_server() -> void;
     auto load_server_certificates() -> void;
     auto validate_certificate_files() const -> void;
-    
+
     template<typename Request, typename Response>
     auto handle_rpc_endpoint(
         const httplib::Request& http_req,

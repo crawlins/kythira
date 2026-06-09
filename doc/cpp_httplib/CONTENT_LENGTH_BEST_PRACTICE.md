@@ -33,7 +33,7 @@ headers.emplace(header_user_agent, _config.user_agent);
 // Error responses
 http_resp.set_header(header_content_length, std::to_string(http_resp.body.size()));
 
-// Success responses  
+// Success responses
 http_resp.set_header(header_content_length, std::to_string(http_resp.body.size()));
 ```
 
@@ -49,7 +49,7 @@ http_resp.set_header(header_content_length, std::to_string(http_resp.body.size()
 ## Locations Updated
 
 1. **Line ~163**: Client request headers - Removed manual Content-Length setting
-2. **Line ~469**: Server error response - Removed manual Content-Length setting  
+2. **Line ~469**: Server error response - Removed manual Content-Length setting
 3. **Line ~523**: Server success response - Removed manual Content-Length setting
 4. **Line ~591**: Server error response - Removed manual Content-Length setting
 
@@ -58,7 +58,7 @@ http_resp.set_header(header_content_length, std::to_string(http_resp.body.size()
 ### ✅ All Tests Pass (100% Success Rate)
 
 - **http_exceptions_test**: ✅ PASSED
-- **http_config_test**: ✅ PASSED  
+- **http_config_test**: ✅ PASSED
 - **http_server_test**: ✅ PASSED
 - **http_server_property_tests**: ✅ PASSED
 - **http_integration_test**: ✅ PASSED

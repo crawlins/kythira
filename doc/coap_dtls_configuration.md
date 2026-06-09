@@ -353,10 +353,10 @@ config.verify_peer_cert = true;
    ```bash
    # Verify certificate validity
    openssl x509 -in cert.pem -text -noout
-   
+
    # Check certificate chain
    openssl verify -CAfile ca-cert.pem cert.pem
-   
+
    # Verify certificate dates
    openssl x509 -in cert.pem -dates -noout
    ```

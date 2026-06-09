@@ -45,25 +45,25 @@ template<typename T>
 class Try {
 public:
     using value_type = T;
-    
+
     // Constructors
     Try() = default;
     explicit Try(folly::Try<detail::void_to_unit_t<T>> ft);
     explicit Try(T&& value) requires(!std::is_void_v<T>);
     explicit Try(folly::exception_wrapper ex);
     explicit Try(std::exception_ptr ex);
-    
+
     // Value access (non-void types only)
     auto value() -> T& requires(!std::is_void_v<T>);
     auto value() const -> const T& requires(!std::is_void_v<T>);
-    
+
     // State checking
     auto hasValue() const -> bool;
     auto hasException() const -> bool;
-    
+
     // Exception access
     auto exception() const -> std::exception_ptr;
-    
+
     // Folly interop
     auto get_folly_try() -> folly::Try<detail::void_to_unit_t<T>>&;
 };
@@ -119,23 +119,23 @@ template<typename T>
 class SemiPromise {
 public:
     using value_type = T;
-    
+
     // Constructors (move-only)
     SemiPromise() = default;
     explicit SemiPromise(folly::Promise<detail::void_to_unit_t<T>> fp);
-    
+
     // Value setting
     auto setValue(T&& value) -> void requires(!std::is_void_v<T>);
     auto setValue(folly::Unit) -> void; // For void specialization
     auto setValue() -> void; // Convenience for void
-    
+
     // Exception setting
     auto setException(folly::exception_wrapper ex) -> void;
     auto setException(std::exception_ptr ex) -> void;
-    
+
     // State checking
     auto isFulfilled() const -> bool;
-    
+
     // Folly interop
     auto get_folly_promise() -> folly::Promise<detail::void_to_unit_t<T>>&;
 };
@@ -178,7 +178,7 @@ template<typename T>
 class Promise : public SemiPromise<T> {
 public:
     // Inherits all SemiPromise functionality
-    
+
     // Future access
     auto getFuture() -> Future<T>;
     auto getSemiFuture() -> Future<T>;
@@ -195,13 +195,13 @@ public:
 auto create_async_computation() -> kythira::Future<int> {
     kythira::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     // Start async work
     std::thread([p = std::move(promise)]() mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         p.setValue(42);
     }).detach();
-    
+
     return future;
 }
 
@@ -221,50 +221,50 @@ template<typename T>
 class Future {
 public:
     using value_type = T;
-    
+
     // Constructors
     Future() = default;
     explicit Future(folly::Future<detail::void_to_unit_t<T>> ff);
     explicit Future(T&& value) requires(!std::is_void_v<T>);
     explicit Future(folly::exception_wrapper ex);
     explicit Future(std::exception_ptr ex);
-    
+
     // Value retrieval (move semantics required)
     auto get() -> T requires(!std::is_void_v<T>);
     auto get() -> void; // Void specialization
-    
+
     // Status checking
     auto isReady() const -> bool;
     auto wait(std::chrono::milliseconds timeout) -> bool;
-    
+
     // Transformation operations
     template<typename F>
     auto thenValue(F&& func) -> Future<std::invoke_result_t<F, T>>;
-    
+
     template<typename F>
     auto thenTry(F&& func) -> Future<std::invoke_result_t<F, Try<T>>>;
-    
+
     // Future-returning callback overloads (for async retry patterns)
     template<typename F>
     auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
         requires(detail::is_future<std::invoke_result_t<F, Try<T>>>::value);
-    
+
     template<typename F>
     auto thenError(F&& func) -> Future<T>;
-    
+
     // Future-returning callback overload (for async error recovery)
     template<typename F>
     auto thenError(F&& func) -> Future<T>
         requires(detail::is_future<std::invoke_result_t<F, folly::exception_wrapper>>::value);
-    
+
     template<typename F>
     auto ensure(F&& func) -> Future<T>;
-    
+
     // Continuation operations
     auto via(folly::Executor* executor) -> Future<T>;
     auto delay(std::chrono::milliseconds duration) -> Future<T>;
     auto within(std::chrono::milliseconds timeout) -> Future<T>;
-    
+
     // Folly interop
     auto get_folly_future() && -> folly::Future<detail::void_to_unit_t<T>>;
 };
@@ -319,24 +319,24 @@ auto scheduled_future = kythira::Future<int>(100)
 // Async retry pattern with Future-returning callbacks
 auto retry_operation() -> kythira::Future<int> {
     return perform_operation()
-        .thenTry([attempt = 0](kythira::Try<int> result) mutable 
+        .thenTry([attempt = 0](kythira::Try<int> result) mutable
             -> kythira::Future<int> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= 3) {
                 // Max retries reached
                 return kythira::FutureFactory::makeExceptionalFuture<int>(
                     result.exception()
                 );
             }
-            
+
             // Retry with exponential backoff (non-blocking)
             auto delay = std::chrono::milliseconds(100 * (1 << attempt));
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([]() -> kythira::Future<int> {
@@ -373,17 +373,17 @@ public:
     // Constructors
     Executor() = default; // Creates invalid executor
     explicit Executor(folly::Executor* executor);
-    
+
     // Work execution
     template<typename F>
     auto add(F&& func) -> void;
-    
+
     // State checking
     auto is_valid() const -> bool;
-    
+
     // Accessor
     auto get() const -> folly::Executor*;
-    
+
     // KeepAlive creation
     auto getKeepAliveToken() -> KeepAlive;
 };
@@ -427,22 +427,22 @@ Adapts `folly::Executor::KeepAlive` to satisfy the `keep_alive` concept.
 class KeepAlive {
 public:
     using folly_type = folly::Executor::KeepAlive<>;
-    
+
     // Constructors
     KeepAlive() = default;
     explicit KeepAlive(folly_type ka);
     explicit KeepAlive(folly::Executor* executor);
-    
+
     // Executor access
     auto get() const -> folly::Executor*;
-    
+
     // Work delegation
     template<typename F>
     auto add(F&& func) -> void;
-    
+
     // State checking
     auto is_valid() const -> bool;
-    
+
     // Folly interop
     auto get_folly_keep_alive() -> folly_type&;
 };
@@ -472,7 +472,7 @@ schedule_safe_work(keep_alive);
 {
     folly::CPUThreadPoolExecutor local_executor(2);
     kythira::KeepAlive local_keep_alive(&local_executor);
-    
+
     // Schedule work that may outlive local_executor
     std::thread([ka = std::move(local_keep_alive)]() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -480,7 +480,7 @@ schedule_safe_work(keep_alive);
             std::cout << "Delayed work still executes safely" << std::endl;
         });
     }).detach();
-    
+
     // local_executor destructor called here, but KeepAlive keeps it alive
 }
 ```
@@ -499,19 +499,19 @@ public:
     // Value-based factory methods
     template<typename T>
     static auto makeFuture(T&& value) -> Future<std::decay_t<T>>;
-    
+
     static auto makeFuture() -> Future<void>; // Void future
-    
+
     // Exception-based factory methods
     template<typename T>
     static auto makeExceptionalFuture(folly::exception_wrapper ex) -> Future<T>;
-    
+
     template<typename T>
     static auto makeExceptionalFuture(std::exception_ptr ex) -> Future<T>;
-    
+
     // Ready future factory methods
     static auto makeReadyFuture() -> Future<folly::Unit>;
-    
+
     template<typename T>
     static auto makeReadyFuture(T&& value) -> Future<std::decay_t<T>>;
 };
@@ -557,18 +557,18 @@ class FutureCollector {
 public:
     // Collect all futures
     template<typename T>
-    static auto collectAll(std::vector<Future<T>> futures) 
+    static auto collectAll(std::vector<Future<T>> futures)
         -> Future<std::vector<Try<T>>>;
-    
+
     // Collect first completed future
     template<typename T>
     static auto collectAny(std::vector<Future<T>> futures)
         -> Future<std::tuple<std::size_t, Try<T>>>;
-    
+
     // Collect first successful future
     template<typename T>
     static auto collectAnyWithoutException(std::vector<Future<T>> futures) -> auto;
-    
+
     // Collect first N completed futures
     template<typename T>
     static auto collectN(std::vector<Future<T>> futures, std::size_t n)
@@ -639,7 +639,7 @@ The wrapper implementation includes comprehensive type conversion utilities in t
 namespace kythira::detail {
     // Convert folly::exception_wrapper to std::exception_ptr
     auto to_std_exception_ptr(const folly::exception_wrapper& ew) -> std::exception_ptr;
-    
+
     // Convert std::exception_ptr to folly::exception_wrapper
     auto to_folly_exception_wrapper(std::exception_ptr ep) -> folly::exception_wrapper;
 }
@@ -654,26 +654,26 @@ namespace kythira::detail {
     struct void_to_unit {
         using type = T;
     };
-    
+
     template<>
     struct void_to_unit<void> {
         using type = folly::Unit;
     };
-    
+
     template<typename T>
     using void_to_unit_t = typename void_to_unit<T>::type;
-    
+
     // Map folly::Unit back to void for return types
     template<typename T>
     struct unit_to_void {
         using type = T;
     };
-    
+
     template<>
     struct unit_to_void<folly::Unit> {
         using type = void;
     };
-    
+
     template<typename T>
     using unit_to_void_t = typename unit_to_void<T>::type;
 }
@@ -712,7 +712,7 @@ All wrappers use RAII for proper resource management:
 {
     kythira::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     // Resources automatically cleaned up here
 } // Promise and Future destructors called
 ```

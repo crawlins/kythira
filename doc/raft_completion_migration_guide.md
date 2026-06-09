@@ -63,7 +63,7 @@ future.thenValue([](std::vector<std::byte> result) {
         std::cerr << "Commit timed out for entry " << timeout_ex->get_entry_index() << std::endl;
     } else if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
         // Handle leadership loss
-        std::cerr << "Leadership lost: " << leadership_ex->get_old_term() 
+        std::cerr << "Leadership lost: " << leadership_ex->get_old_term()
                   << " -> " << leadership_ex->get_new_term() << std::endl;
     }
 });
@@ -161,7 +161,7 @@ future.thenValue([](bool success) {
 try {
     // Handle commit timeout
 } catch (const raft::commit_timeout_exception<>& e) {
-    std::cerr << "Entry " << e.get_entry_index() 
+    std::cerr << "Entry " << e.get_entry_index()
               << " timed out after " << e.get_timeout().count() << "ms" << std::endl;
     // Retry logic or user notification
 }
@@ -173,7 +173,7 @@ try {
 try {
     // Handle leadership loss
 } catch (const raft::leadership_lost_exception<>& e) {
-    std::cerr << "Leadership lost: term " << e.get_old_term() 
+    std::cerr << "Leadership lost: term " << e.get_old_term()
               << " -> " << e.get_new_term() << std::endl;
     // Redirect to new leader or retry
 }
@@ -185,7 +185,7 @@ try {
 try {
     // Handle collection failures
 } catch (const raft::future_collection_exception& e) {
-    std::cerr << "Operation " << e.get_operation() 
+    std::cerr << "Operation " << e.get_operation()
               << " failed: " << e.get_failed_count() << " futures failed" << std::endl;
     // Network issue handling
 }
@@ -197,7 +197,7 @@ try {
 try {
     // Handle configuration change failures
 } catch (const raft::configuration_change_exception& e) {
-    std::cerr << "Configuration change failed in " << e.get_phase() 
+    std::cerr << "Configuration change failed in " << e.get_phase()
               << ": " << e.get_reason() << std::endl;
     // Rollback or retry logic
 }
@@ -211,13 +211,13 @@ try {
 namespace raft_timeouts {
     // Client operations - account for full commit cycle
     constexpr auto CLIENT_COMMAND_TIMEOUT = std::chrono::seconds(30);
-    
+
     // Read operations - account for heartbeat round-trip
     constexpr auto CLIENT_READ_TIMEOUT = std::chrono::seconds(5);
-    
+
     // Configuration changes - account for two-phase protocol
     constexpr auto CONFIGURATION_CHANGE_TIMEOUT = std::chrono::seconds(60);
-    
+
     // Internal RPC operations
     constexpr auto RPC_TIMEOUT = std::chrono::seconds(5);
     constexpr auto HEARTBEAT_TIMEOUT = std::chrono::milliseconds(1000);
@@ -237,7 +237,7 @@ config.election_timeout_max = std::chrono::milliseconds(4000);
 
 // Create node with configuration
 auto node = raft::node(
-    node_id, network_client, network_server, 
+    node_id, network_client, network_server,
     persistence, logger, metrics, membership, config
 );
 ```
@@ -251,24 +251,24 @@ class RaftClient {
 private:
     static constexpr int MAX_RETRIES = 3;
     static constexpr auto RETRY_DELAY = std::chrono::milliseconds(100);
-    
+
 public:
     auto submit_command_with_retry(
         const std::vector<std::byte>& command
     ) -> kythira::Future<std::vector<std::byte>> {
         return submit_command_with_retry_impl(command, 0);
     }
-    
+
 private:
     auto submit_command_with_retry_impl(
         const std::vector<std::byte>& command,
         int attempt
     ) -> kythira::Future<std::vector<std::byte>> {
-        
+
         return node.submit_command(command, raft_timeouts::CLIENT_COMMAND_TIMEOUT)
-            .thenError([this, command, attempt](const std::exception& e) 
+            .thenError([this, command, attempt](const std::exception& e)
                 -> kythira::Future<std::vector<std::byte>> {
-                
+
                 // Check if we should retry
                 bool should_retry = false;
                 if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
@@ -276,7 +276,7 @@ private:
                 } else if (auto timeout_ex = dynamic_cast<const raft::commit_timeout_exception<>*>(&e)) {
                     should_retry = (attempt < MAX_RETRIES);  // Retry timeouts with limit
                 }
-                
+
                 if (should_retry && attempt < MAX_RETRIES) {
                     // Wait before retry
                     return kythira::FutureFactory::makeFuture()
@@ -301,27 +301,27 @@ class RaftClusterClient {
 private:
     std::vector<NodeId> cluster_nodes;
     std::optional<NodeId> current_leader;
-    
+
 public:
-    auto submit_command(const std::vector<std::byte>& command) 
+    auto submit_command(const std::vector<std::byte>& command)
         -> kythira::Future<std::vector<std::byte>> {
-        
+
         if (current_leader) {
             return try_submit_to_leader(*current_leader, command);
         } else {
             return discover_leader_and_submit(command);
         }
     }
-    
+
 private:
     auto try_submit_to_leader(NodeId leader_id, const std::vector<std::byte>& command)
         -> kythira::Future<std::vector<std::byte>> {
-        
+
         auto node = get_node_connection(leader_id);
         return node->submit_command(command, raft_timeouts::CLIENT_COMMAND_TIMEOUT)
-            .thenError([this, command](const std::exception& e) 
+            .thenError([this, command](const std::exception& e)
                 -> kythira::Future<std::vector<std::byte>> {
-                
+
                 if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
                     // Leader changed, clear cached leader and retry
                     current_leader.reset();
@@ -333,10 +333,10 @@ private:
                 }
             });
     }
-    
+
     auto discover_leader_and_submit(const std::vector<std::byte>& command)
         -> kythira::Future<std::vector<std::byte>> {
-        
+
         // Try each node until we find the leader
         return try_nodes_sequentially(cluster_nodes.begin(), command);
     }
@@ -381,13 +381,13 @@ TEST_CASE("submit_command returns immediately") {
 // After - test proper completion
 TEST_CASE("submit_command waits for commit and application") {
     auto future = node.submit_command(command, std::chrono::seconds(30));
-    
+
     // Should not be ready immediately
     REQUIRE_FALSE(future.isReady());
-    
+
     // Simulate commit and application
     simulate_replication_and_commit();
-    
+
     // Now should be ready
     auto result = future.get();
     REQUIRE_FALSE(result.empty());
@@ -400,14 +400,14 @@ TEST_CASE("submit_command waits for commit and application") {
 TEST_CASE("end-to-end client operation") {
     // Create cluster
     auto cluster = create_test_cluster(3);
-    
+
     // Submit command to leader
     auto leader = cluster.get_leader();
     auto future = leader->submit_command(test_command, std::chrono::seconds(30));
-    
+
     // Verify completion after commit
     auto result = future.get();
-    
+
     // Verify state machine application
     auto state = leader->read_state(std::chrono::seconds(5)).get();
     REQUIRE(state_contains_command_result(state, result));

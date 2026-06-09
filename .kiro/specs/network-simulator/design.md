@@ -77,21 +77,21 @@ concept network_simulator_types = requires {
     typename T::message_type;
     typename T::connection_type;
     typename T::listener_type;
-    
+
     // Future types for specific operations
     typename T::future_bool_type;
     typename T::future_message_type;
     typename T::future_connection_type;
     typename T::future_listener_type;
     typename T::future_bytes_type;
-    
+
     // Type constraints
     requires address<typename T::address_type>;
     requires port<typename T::port_type>;
     requires message<typename T::message_type, typename T::address_type, typename T::port_type>;
     requires connection<typename T::connection_type>;
     requires listener<typename T::listener_type, typename T::connection_type>;
-    
+
     // Future constraints
     requires future<typename T::future_bool_type, bool>;
     requires future<typename T::future_message_type, typename T::message_type>;
@@ -111,11 +111,11 @@ concept address = requires(T a, T b) {
     // Must be copyable and movable
     { T(a) } -> std::same_as<T>;
     { T(std::move(a)) } -> std::same_as<T>;
-    
+
     // Must support equality comparison
     { a == b } -> std::convertible_to<bool>;
     { a != b } -> std::convertible_to<bool>;
-    
+
     // Must be hashable for use in maps
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
 };
@@ -135,11 +135,11 @@ concept port = requires(T p, T q) {
     // Must be copyable and movable
     { T(p) } -> std::same_as<T>;
     { T(std::move(p)) } -> std::same_as<T>;
-    
+
     // Must support equality comparison
     { p == q } -> std::convertible_to<bool>;
     { p != q } -> std::convertible_to<bool>;
-    
+
     // Must be hashable
     { std::hash<T>{}(p) } -> std::convertible_to<std::size_t>;
 };
@@ -155,16 +155,16 @@ template<typename F, typename T>
 concept future = requires(F f) {
     // Must provide value access (blocking)
     { f.get() } -> std::same_as<T>;
-    
+
     // Must support then() for chaining
     { f.then([](T val) { return val; }) } -> future<T>;
-    
+
     // Must support error handling
     { f.on_error([](std::exception_ptr) {}) } -> future<T>;
-    
+
     // Must be able to check if ready
     { f.is_ready() } -> std::convertible_to<bool>;
-    
+
     // Must support timeout
     { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
 };
@@ -177,16 +177,16 @@ template<typename M, typename Addr, typename Port>
 concept message = requires(M msg) {
     // Must provide source address
     { msg.source_address() } -> std::same_as<Addr>;
-    
+
     // Must provide source port
     { msg.source_port() } -> std::same_as<Port>;
-    
+
     // Must provide destination address
     { msg.destination_address() } -> std::same_as<Addr>;
-    
+
     // Must provide destination port
     { msg.destination_port() } -> std::same_as<Port>;
-    
+
     // Must provide payload access
     { msg.payload() } -> std::same_as<std::vector<std::byte>>;
 };
@@ -200,14 +200,14 @@ concept connection = requires(C conn, std::vector<std::byte> data) {
     // Must support reading data
     { conn.read() } -> std::same_as<FutureBytes>;
     { conn.read(std::chrono::milliseconds{100}) } -> std::same_as<FutureBytes>;
-    
+
     // Must support writing data
     { conn.write(data) } -> std::same_as<FutureBool>;
     { conn.write(data, std::chrono::milliseconds{100}) } -> std::same_as<FutureBool>;
-    
+
     // Must be closeable
     { conn.close() } -> std::same_as<void>;
-    
+
     // Must provide connection state
     { conn.is_open() } -> std::convertible_to<bool>;
 };
@@ -221,10 +221,10 @@ concept listener = requires(L lstn) {
     // Must support accepting connections
     { lstn.accept() } -> std::same_as<FutureConn>;
     { lstn.accept(std::chrono::milliseconds{100}) } -> std::same_as<FutureConn>;
-    
+
     // Must be closeable
     { lstn.close() } -> std::same_as<void>;
-    
+
     // Must provide listener state
     { lstn.is_listening() } -> std::convertible_to<bool>;
 };
@@ -237,7 +237,7 @@ template<typename E>
 concept network_edge = requires(E edge) {
     // Must provide latency
     { edge.latency() } -> std::same_as<std::chrono::milliseconds>;
-    
+
     // Must provide reliability (0.0 to 1.0)
     { edge.reliability() } -> std::convertible_to<double>;
 };
@@ -247,24 +247,24 @@ concept network_edge = requires(E edge) {
 
 ```cpp
 template<typename N, typename Types>
-concept network_node = requires(N node, typename Types::message_type msg, 
+concept network_node = requires(N node, typename Types::message_type msg,
                                 typename Types::address_type addr, typename Types::port_type port) {
     // Connectionless operations
     { node.send(msg) } -> std::same_as<typename Types::future_bool_type>;
     { node.send(msg, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_bool_type>;
     { node.receive() } -> std::same_as<typename Types::future_message_type>;
     { node.receive(std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_message_type>;
-    
+
     // Connection-oriented client operations
     { node.connect(addr, port) } -> std::same_as<typename Types::future_connection_type>;
     { node.connect(addr, port, port) } -> std::same_as<typename Types::future_connection_type>;  // with source port
     { node.connect(addr, port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_connection_type>;
-    
+
     // Connection-oriented server operations
     { node.bind() } -> std::same_as<typename Types::future_listener_type>;  // bind to random port
     { node.bind(port) } -> std::same_as<typename Types::future_listener_type>;  // bind to specific port
     { node.bind(port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_listener_type>;
-    
+
     // Node identity
     { node.address() } -> std::same_as<typename Types::address_type>;
 };
@@ -280,10 +280,10 @@ concept network_simulator = requires(S sim, typename Types::address_type addr, N
     { sim.remove_node(addr) } -> std::same_as<void>;
     { sim.add_edge(addr, addr, edge) } -> std::same_as<void>;
     { sim.remove_edge(addr, addr) } -> std::same_as<void>;
-    
+
     // Node creation
     { sim.create_node(addr) } -> std::same_as<std::shared_ptr<typename Types::node_type>>;
-    
+
     // Simulation control
     { sim.start() } -> std::same_as<void>;
     { sim.stop() } -> std::same_as<void>;
@@ -305,7 +305,7 @@ struct DefaultNetworkTypes {
     using connection_type = Connection<address_type, port_type>;
     using listener_type = Listener<address_type, port_type>;
     using node_type = NetworkNode<DefaultNetworkTypes>;
-    
+
     // Future types (using folly::Future as base)
     using future_bool_type = folly::Future<bool>;
     using future_message_type = folly::Future<message_type>;
@@ -326,17 +326,17 @@ class Message {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
-    
-    Message(address_type src_addr, port_type src_port, 
+
+    Message(address_type src_addr, port_type src_port,
             address_type dst_addr, port_type dst_port,
             std::vector<std::byte> payload = {});
-    
+
     auto source_address() const -> address_type;
     auto source_port() const -> port_type;
     auto destination_address() const -> address_type;
     auto destination_port() const -> port_type;
     auto payload() const -> const std::vector<std::byte>&;
-    
+
 private:
     address_type _source_address;
     port_type _source_port;
@@ -352,10 +352,10 @@ private:
 struct NetworkEdge {
     std::chrono::milliseconds latency;
     double reliability;  // 0.0 to 1.0
-    
+
     NetworkEdge(std::chrono::milliseconds lat, double rel)
         : latency(lat), reliability(rel) {}
-        
+
     auto latency() const -> std::chrono::milliseconds { return latency; }
     auto reliability() const -> double { return reliability; }
 };
@@ -368,10 +368,10 @@ template<typename Types>
 struct Endpoint {
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
-    
+
     address_type address;
     port_type port;
-    
+
     auto operator==(const Endpoint&) const -> bool = default;
 };
 
@@ -401,61 +401,61 @@ public:
     using listener_type = typename Types::listener_type;
     using node_type = typename Types::node_type;
     using endpoint_type = Endpoint<Types>;
-    
+
     // Future type aliases
     using future_bool_type = typename Types::future_bool_type;
     using future_message_type = typename Types::future_message_type;
     using future_connection_type = typename Types::future_connection_type;
     using future_listener_type = typename Types::future_listener_type;
     using future_bytes_type = typename Types::future_bytes_type;
-    
+
     // Topology configuration
     auto add_node(address_type address) -> void;
     auto remove_node(address_type address) -> void;
     auto add_edge(address_type from, address_type to, NetworkEdge edge) -> void;
     auto remove_edge(address_type from, address_type to) -> void;
-    
+
     // Node creation
     auto create_node(address_type address) -> std::shared_ptr<node_type>;
-    
+
     // Simulation control
     auto start() -> void;
     auto stop() -> void;
     auto reset() -> void;
-    
+
     // Query methods for testing
     auto has_node(address_type address) const -> bool;
     auto has_edge(address_type from, address_type to) const -> bool;
     auto get_edge(address_type from, address_type to) const -> NetworkEdge;
-    
+
 private:
     // Directed graph: adjacency list representation
     std::unordered_map<address_type, std::unordered_map<address_type, NetworkEdge>> _topology;
-    
+
     // Active nodes
     std::unordered_map<address_type, std::shared_ptr<node_type>> _nodes;
-    
+
     // Message queues per node
     std::unordered_map<address_type, std::queue<message_type>> _message_queues;
-    
+
     // Connection state
     std::unordered_map<endpoint_type, std::shared_ptr<connection_type>> _connections;
-    
+
     // Listeners
     std::unordered_map<endpoint_type, std::shared_ptr<listener_type>> _listeners;
-    
+
     // Thread pool for async operations
     std::unique_ptr<folly::Executor> _executor;
-    
+
     // Random number generator for reliability simulation
     std::mt19937 _rng;
-    
+
     // Simulation state
     std::atomic<bool> _started{false};
-    
+
     // Mutex for thread safety
     mutable std::shared_mutex _mutex;
-    
+
     // Internal routing and delivery
     auto route_message(message_type msg) -> future_bool_type;
     auto deliver_message(message_type msg) -> void;
@@ -463,15 +463,15 @@ private:
     auto check_reliability(address_type from, address_type to) -> bool;
     auto retrieve_message(address_type address) -> future_message_type;
     auto retrieve_message(address_type address, std::chrono::milliseconds timeout) -> future_message_type;
-    
+
     // Connection establishment
-    auto establish_connection(address_type src_addr, port_type src_port, 
+    auto establish_connection(address_type src_addr, port_type src_port,
                              address_type dst_addr, port_type dst_port) -> future_connection_type;
-    
+
     // Listener establishment
     auto create_listener(address_type addr, port_type port) -> future_listener_type;
     auto create_listener(address_type addr) -> future_listener_type;  // Random port
-    auto create_listener(address_type addr, port_type port, 
+    auto create_listener(address_type addr, port_type port,
                         std::chrono::milliseconds timeout) -> future_listener_type;
 };
 ```
@@ -491,38 +491,38 @@ public:
     using connection_type = typename Types::connection_type;
     using listener_type = typename Types::listener_type;
     using simulator_type = NetworkSimulator<Types>;
-    
+
     // Future type aliases
     using future_bool_type = typename Types::future_bool_type;
     using future_message_type = typename Types::future_message_type;
     using future_connection_type = typename Types::future_connection_type;
     using future_listener_type = typename Types::future_listener_type;
-    
+
     explicit NetworkNode(address_type addr, simulator_type* simulator);
-    
+
     // Connectionless operations
     auto send(message_type msg) -> future_bool_type;
     auto send(message_type msg, std::chrono::milliseconds timeout) -> future_bool_type;
     auto receive() -> future_message_type;
     auto receive(std::chrono::milliseconds timeout) -> future_message_type;
-    
+
     // Connection-oriented client operations
     auto connect(address_type dst_addr, port_type dst_port) -> future_connection_type;
     auto connect(address_type dst_addr, port_type dst_port, port_type src_port) -> future_connection_type;
     auto connect(address_type dst_addr, port_type dst_port, std::chrono::milliseconds timeout) -> future_connection_type;
-    
+
     // Connection-oriented server operations
     auto bind() -> future_listener_type;  // bind to random port
     auto bind(port_type port) -> future_listener_type;  // bind to specific port
     auto bind(port_type port, std::chrono::milliseconds timeout) -> future_listener_type;
-    
+
     // Node identity
     auto address() const -> address_type { return _address; }
-    
+
 private:
     address_type _address;
     simulator_type* _simulator;
-    
+
     // Ephemeral port allocation
     auto allocate_ephemeral_port() -> port_type;
     std::unordered_set<port_type> _used_ports;
@@ -545,33 +545,33 @@ public:
     using simulator_type = NetworkSimulator<Types>;
     using future_bool_type = typename Types::future_bool_type;
     using future_bytes_type = typename Types::future_bytes_type;
-    
-    Connection(endpoint_type local, 
+
+    Connection(endpoint_type local,
                endpoint_type remote,
                simulator_type* simulator);
-    
+
     auto read() -> future_bytes_type;
     auto read(std::chrono::milliseconds timeout) -> future_bytes_type;
-    
+
     auto write(std::vector<std::byte> data) -> future_bool_type;
     auto write(std::vector<std::byte> data, std::chrono::milliseconds timeout) -> future_bool_type;
-    
+
     auto close() -> void;
     auto is_open() const -> bool;
-    
+
     auto local_endpoint() const -> endpoint_type { return _local; }
     auto remote_endpoint() const -> endpoint_type { return _remote; }
-    
+
     // Internal method for simulator to deliver data
     auto deliver_data(std::vector<std::byte> data) -> void;
-    
+
 private:
     endpoint_type _local;
     endpoint_type _remote;
     simulator_type* _simulator;
-    
+
     std::atomic<bool> _open{true};
-    
+
     // Buffered data for this connection
     std::queue<std::vector<std::byte>> _read_buffer;
     mutable std::mutex _buffer_mutex;
@@ -592,27 +592,27 @@ public:
     using connection_type = typename Types::connection_type;
     using simulator_type = NetworkSimulator<Types>;
     using future_connection_type = typename Types::future_connection_type;
-    
+
     Listener(endpoint_type local_endpoint,
              simulator_type* simulator);
-    
+
     auto accept() -> future_connection_type;
     auto accept(std::chrono::milliseconds timeout) -> future_connection_type;
-    
+
     auto close() -> void;
     auto is_listening() const -> bool;
-    
+
     auto local_endpoint() const -> endpoint_type { return _local; }
-    
+
     // Internal method for simulator to queue pending connections
     auto queue_pending_connection(std::shared_ptr<connection_type> connection) -> void;
-    
+
 private:
     endpoint_type _local;
     simulator_type* _simulator;
-    
+
     std::atomic<bool> _listening{true};
-    
+
     // Queue of pending connections
     std::queue<std::shared_ptr<connection_type>> _pending_connections;
     mutable std::mutex _queue_mutex;
@@ -712,25 +712,25 @@ private:
         std::chrono::steady_clock::time_point start_time;
         std::chrono::milliseconds timeout;
         folly::Promise<std::shared_ptr<connection_type>> promise;
-        
+
         bool is_expired() const {
             return std::chrono::steady_clock::now() - start_time > timeout;
         }
     };
-    
+
     // Pending connection requests with timeout tracking
     std::vector<ConnectionRequest> _pending_connections;
     std::mutex _connection_requests_mutex;
-    
+
     // Timer for connection timeout processing
     std::unique_ptr<folly::TimerManager> _timer_manager;
-    
+
     auto establish_connection_with_timeout(
-        endpoint_type source, 
+        endpoint_type source,
         endpoint_type destination,
         std::chrono::milliseconds timeout
     ) -> future_connection_type;
-    
+
     auto process_connection_timeouts() -> void;
     auto cancel_expired_connections() -> void;
 };
@@ -758,28 +758,28 @@ public:
         std::chrono::steady_clock::time_point last_used;
         std::chrono::steady_clock::time_point created;
         bool is_healthy;
-        
+
         bool is_stale(std::chrono::milliseconds max_age) const {
             return std::chrono::steady_clock::now() - last_used > max_age;
         }
     };
-    
+
     struct PoolConfig {
         std::size_t max_connections_per_endpoint = 10;
         std::chrono::milliseconds max_idle_time{300000}; // 5 minutes
         std::chrono::milliseconds max_connection_age{3600000}; // 1 hour
         bool enable_health_checks = true;
     };
-    
+
 private:
     // Pool organized by destination endpoint
     std::unordered_map<endpoint_type, std::vector<PooledConnection>> _connection_pools;
     PoolConfig _config;
     mutable std::shared_mutex _pool_mutex;
-    
+
     // Background cleanup timer
     std::unique_ptr<folly::TimerManager> _cleanup_timer;
-    
+
 public:
     auto get_or_create_connection(endpoint_type destination) -> future_connection_type;
     auto return_connection(std::shared_ptr<connection_type> conn) -> void;
@@ -811,20 +811,20 @@ public:
         std::chrono::steady_clock::time_point created;
         std::vector<std::shared_ptr<connection_type>> pending_connections;
         std::atomic<bool> is_active{true};
-        
+
         // Resource tracking
         std::vector<std::unique_ptr<folly::TimerManager>> timers;
         std::vector<folly::Future<folly::Unit>> pending_operations;
     };
-    
+
 private:
     std::unordered_map<endpoint_type, ListenerResource> _active_listeners;
     mutable std::shared_mutex _listeners_mutex;
-    
+
     // Port allocation tracking
     std::unordered_set<port_type> _allocated_ports;
     std::mutex _port_allocation_mutex;
-    
+
 public:
     auto create_listener(endpoint_type endpoint) -> future_listener_type;
     auto close_listener(endpoint_type endpoint) -> void;
@@ -868,27 +868,27 @@ public:
         std::size_t messages_received = 0;
         std::optional<std::string> last_error;
     };
-    
+
     struct ConnectionInfo {
         endpoint_type local_endpoint;
         endpoint_type remote_endpoint;
         ConnectionState state;
         ConnectionStats stats;
         std::weak_ptr<connection_type> connection_ref;
-        
+
         // Optional observer callback
         std::function<void(ConnectionState, ConnectionState)> state_change_callback;
     };
-    
+
 private:
     std::unordered_map<endpoint_type, ConnectionInfo> _connection_info;
     mutable std::shared_mutex _info_mutex;
-    
+
     // Keep-alive and idle timeout management
     std::chrono::milliseconds _keep_alive_interval{30000}; // 30 seconds
     std::chrono::milliseconds _idle_timeout{300000}; // 5 minutes
     std::unique_ptr<folly::TimerManager> _keep_alive_timer;
-    
+
 public:
     auto register_connection(std::shared_ptr<connection_type> conn) -> void;
     auto update_connection_state(endpoint_type endpoint, ConnectionState new_state) -> void;
@@ -896,7 +896,7 @@ public:
     auto get_connection_info(endpoint_type endpoint) const -> std::optional<ConnectionInfo>;
     auto get_all_connections() const -> std::vector<ConnectionInfo>;
     auto cleanup_connection(endpoint_type endpoint) -> void;
-    
+
     // Keep-alive and idle management
     auto configure_keep_alive(std::chrono::milliseconds interval) -> void;
     auto configure_idle_timeout(std::chrono::milliseconds timeout) -> void;
@@ -926,7 +926,7 @@ private:
     std::unique_ptr<ConnectionPool<Types>> _connection_pool;
     std::unique_ptr<ListenerManager<Types>> _listener_manager;
     std::unique_ptr<ConnectionTracker<Types>> _connection_tracker;
-    
+
     // Configuration
     struct ConnectionConfig {
         std::chrono::milliseconds default_connect_timeout{30000}; // 30 seconds
@@ -935,7 +935,7 @@ private:
         bool enable_connection_tracking = true;
         bool enable_keep_alive = false;
     } _connection_config;
-    
+
 public:
     auto configure_connection_management(ConnectionConfig config) -> void;
     auto get_connection_pool() -> ConnectionPool<Types>&;
@@ -968,7 +968,7 @@ public:
 
 class PortInUseException : public NetworkException {
 public:
-    explicit PortInUseException(const std::string& port) 
+    explicit PortInUseException(const std::string& port)
         : NetworkException("Port already in use: " + port) {}
 };
 

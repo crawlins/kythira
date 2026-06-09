@@ -47,7 +47,7 @@ auto operation_with_retry() -> kythira::Future<int> {
                 // Success case - return the value
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             // Error case - retry after delay
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(std::chrono::milliseconds(100))
@@ -104,20 +104,20 @@ Retry an operation after a fixed delay on any error.
 ```cpp
 auto simple_retry(int max_attempts = 3) -> kythira::Future<Result> {
     return attempt_operation()
-        .thenTry([max_attempts, attempt = 1](kythira::Try<Result> result) mutable 
+        .thenTry([max_attempts, attempt = 1](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= max_attempts) {
                 // Max attempts reached - propagate error
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             // Retry after fixed delay
             attempt++;
             return kythira::FutureFactory::makeFuture(folly::Unit{})
@@ -148,22 +148,22 @@ auto calculate_backoff_delay(int attempt) -> std::chrono::milliseconds {
 
 auto exponential_backoff_retry() -> kythira::Future<Result> {
     return attempt_operation()
-        .thenTry([attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= max_retry_attempts) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             auto delay = calculate_backoff_delay(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([attempt]() -> kythira::Future<Result> {
@@ -191,14 +191,14 @@ auto calculate_backoff_with_jitter(int attempt) -> std::chrono::milliseconds {
     // Base exponential backoff
     auto base = base_delay * (1 << attempt);
     base = std::min(base, max_delay);
-    
+
     // Add random jitter
     static thread_local std::mt19937 rng{std::random_device{}()};
     std::uniform_real_distribution<double> dist(
-        1.0 - jitter_factor, 
+        1.0 - jitter_factor,
         1.0 + jitter_factor
     );
-    
+
     return std::chrono::milliseconds(
         static_cast<long long>(base.count() * dist(rng))
     );
@@ -206,22 +206,22 @@ auto calculate_backoff_with_jitter(int attempt) -> std::chrono::milliseconds {
 
 auto jittered_backoff_retry() -> kythira::Future<Result> {
     return attempt_operation()
-        .thenTry([attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= max_retry_attempts) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             auto delay = calculate_backoff_with_jitter(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([attempt]() -> kythira::Future<Result> {
@@ -247,46 +247,46 @@ auto classify_error(const folly::exception_wrapper& ex) -> ErrorCategory {
         ex.is_compatible_with<TemporaryUnavailableException>()) {
         return ErrorCategory::transient;
     }
-    
+
     if (ex.is_compatible_with<AuthenticationException>() ||
         ex.is_compatible_with<InvalidRequestException>()) {
         return ErrorCategory::permanent;
     }
-    
+
     return ErrorCategory::unknown;
 }
 
 auto selective_retry() -> kythira::Future<Result> {
     return attempt_operation()
-        .thenTry([attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             // Classify the error
             auto ex = kythira::detail::to_folly_exception_wrapper(result.exception());
             auto category = classify_error(ex);
-            
+
             // Don't retry permanent errors
             if (category == ErrorCategory::permanent) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             // Check retry limit
             if (attempt >= max_retry_attempts) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             // Retry transient errors with backoff
             auto delay = calculate_backoff_with_jitter(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([attempt]() -> kythira::Future<Result> {
@@ -309,15 +309,15 @@ namespace {
 
 auto retry_with_timeout() -> kythira::Future<Result> {
     auto start_time = std::chrono::steady_clock::now();
-    
+
     return attempt_operation()
-        .thenTry([start_time, attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([start_time, attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             // Check overall timeout
             auto elapsed = std::chrono::steady_clock::now() - start_time;
             if (elapsed >= overall_timeout) {
@@ -327,17 +327,17 @@ auto retry_with_timeout() -> kythira::Future<Result> {
                     )
                 );
             }
-            
+
             // Check retry limit
             if (attempt >= max_retry_attempts) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             auto delay = calculate_backoff_delay(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([start_time, attempt]() -> kythira::Future<Result> {
@@ -356,16 +356,16 @@ Implement circuit breaker pattern to prevent cascading failures.
 class CircuitBreaker {
 public:
     enum class State { closed, open, half_open };
-    
+
     auto is_open() const -> bool {
         return _state == State::open;
     }
-    
+
     auto record_success() -> void {
         _failure_count = 0;
         _state = State::closed;
     }
-    
+
     auto record_failure() -> void {
         _failure_count++;
         if (_failure_count >= _failure_threshold) {
@@ -373,12 +373,12 @@ public:
             _open_time = std::chrono::steady_clock::now();
         }
     }
-    
+
     auto should_attempt() -> bool {
         if (_state == State::closed) {
             return true;
         }
-        
+
         if (_state == State::open) {
             auto elapsed = std::chrono::steady_clock::now() - _open_time;
             if (elapsed >= _reset_timeout) {
@@ -387,11 +387,11 @@ public:
             }
             return false;
         }
-        
+
         // half_open state - allow one attempt
         return true;
     }
-    
+
 private:
     State _state{State::closed};
     int _failure_count{0};
@@ -408,27 +408,27 @@ auto circuit_breaker_retry(CircuitBreaker& breaker) -> kythira::Future<Result> {
             )
         );
     }
-    
+
     return attempt_operation()
-        .thenTry([&breaker, attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([&breaker, attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 breaker.record_success();
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             breaker.record_failure();
-            
+
             if (!breaker.should_attempt() || attempt >= max_retry_attempts) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             auto delay = calculate_backoff_delay(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([&breaker, attempt]() -> kythira::Future<Result> {
@@ -452,7 +452,7 @@ auto blocking_retry() -> Result {
             if (attempt == max_attempts - 1) {
                 throw; // Last attempt failed
             }
-            
+
             // BLOCKS THREAD during backoff
             auto delay = calculate_backoff_delay(attempt);
             std::this_thread::sleep_for(delay);
@@ -474,23 +474,23 @@ auto blocking_retry() -> Result {
 // ✅ Non-blocking async retry
 auto async_retry() -> kythira::Future<Result> {
     return attempt_operation()
-        .thenTry([attempt = 0](kythira::Try<Result> result) mutable 
+        .thenTry([attempt = 0](kythira::Try<Result> result) mutable
             -> kythira::Future<Result> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= max_attempts - 1) {
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
                     result.exception()
                 );
             }
-            
+
             // NON-BLOCKING delay
             auto delay = calculate_backoff_delay(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay)
                 .thenValue([attempt]() -> kythira::Future<Result> {
@@ -560,7 +560,7 @@ auto retry_with_backoff(Operation&& op) -> decltype(op()) {
             return op();
         } catch (const std::exception& e) {
             if (attempt == max_attempts - 1) throw;
-            
+
             auto delay = calculate_backoff(attempt);
             std::this_thread::sleep_for(delay); // BLOCKS
         }
@@ -571,24 +571,24 @@ auto retry_with_backoff(Operation&& op) -> decltype(op()) {
 template<typename Operation>
 auto retry_with_backoff(Operation&& op) -> kythira::Future<typename std::invoke_result_t<Operation>::value_type> {
     using ResultType = typename std::invoke_result_t<Operation>::value_type;
-    
+
     return op()
-        .thenTry([op, attempt = 0](kythira::Try<ResultType> result) mutable 
+        .thenTry([op, attempt = 0](kythira::Try<ResultType> result) mutable
             -> kythira::Future<ResultType> {
-            
+
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
+
             if (attempt >= max_attempts - 1) {
                 return kythira::FutureFactory::makeExceptionalFuture<ResultType>(
                     result.exception()
                 );
             }
-            
+
             auto delay = calculate_backoff(attempt);
             attempt++;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(delay) // NON-BLOCKING
                 .thenValue([op, attempt]() -> kythira::Future<ResultType> {
@@ -629,10 +629,10 @@ auto async_retry_with_logging() -> kythira::Future<Result> {
             if (result.hasValue()) {
                 return kythira::FutureFactory::makeFuture(result.value());
             }
-            
-            std::cout << "Scheduling retry with async delay (thread not blocked)" 
+
+            std::cout << "Scheduling retry with async delay (thread not blocked)"
                       << std::endl;
-            
+
             return kythira::FutureFactory::makeFuture(folly::Unit{})
                 .delay(std::chrono::milliseconds(100))
                 .thenValue([]() -> kythira::Future<Result> {

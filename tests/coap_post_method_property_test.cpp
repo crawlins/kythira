@@ -34,10 +34,10 @@ struct test_transport_types {
     using address_type = std::string;
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
-    
+
     template<typename T>
     using future_template = kythira::Future<T>;
-    
+
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_SUITE(coap_post_method_property_tests)
 
 // **Feature: coap-transport, Property 2: CoAP POST method for all RPCs**
 // **Validates: Requirements 1.2**
-// Property: For any Raft RPC request (RequestVote, AppendEntries, or InstallSnapshot), 
+// Property: For any Raft RPC request (RequestVote, AppendEntries, or InstallSnapshot),
 // the CoAP client should use the POST method.
 BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test::timeout(45)) {
     std::random_device rd;
@@ -54,9 +54,9 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
     std::uniform_int_distribution<std::uint64_t> index_dist(1, max_index);
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Create CoAP client configuration
@@ -64,19 +64,19 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
             config.ack_timeout = std::chrono::milliseconds{2000};
             config.max_retransmit = 4;
             config.enable_dtls = false;
-            
+
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             std::uint64_t target_node = node_dist(rng);
             endpoints[target_node] = test_coap_endpoint;
-            
+
             // Create metrics and serializer
             kythira::noop_metrics metrics;
-            
+
             // Create CoAP client
             kythira::coap_client<test_transport_types> client(
                 std::move(endpoints), config, metrics);
-            
+
             // Test RequestVote RPC - should use POST method
             {
                 kythira::request_vote_request<> request;
@@ -84,24 +84,24 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
                 request._candidate_id = node_dist(rng);
                 request._last_log_index = index_dist(rng);
                 request._last_log_term = term_dist(rng);
-                
+
                 // Note: Since this is a stub implementation, we can't actually verify
                 // the HTTP method used. In a real implementation, this test would:
                 // 1. Mock the CoAP library calls
                 // 2. Verify that coap_pdu_set_code() is called with COAP_REQUEST_POST
                 // 3. Verify the resource path is set correctly
-                
+
                 // For now, we verify that the method exists and can be called
                 // Note: We don't actually call send_request_vote to avoid network hangs
                 // The fact that we can create the client and request validates the interface
-                
+
                 // Interface validation - no actual network call needed
-                
+
                 // In a real test, we would verify the CoAP method here
                 // For the stub implementation, we just verify the interface works
                 BOOST_TEST_MESSAGE("RequestVote RPC interface test " << i << " passed");
             }
-            
+
             // Test AppendEntries RPC - should use POST method
             {
                 kythira::append_entries_request<> request;
@@ -110,7 +110,7 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
                 request._prev_log_index = index_dist(rng);
                 request._prev_log_term = term_dist(rng);
                 request._leader_commit = index_dist(rng);
-                
+
                 // Add some random entries
                 for (std::size_t j = 0; j < 3; ++j) {
                     kythira::log_entry<> entry;
@@ -119,13 +119,13 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
                     entry._command = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
                     request._entries.push_back(entry);
                 }
-                
+
                 // Note: We don't actually call send_append_entries to avoid network hangs
                 // The fact that we can create the client and request validates the interface
-                
+
                 BOOST_TEST_MESSAGE("AppendEntries RPC interface test " << i << " passed");
             }
-            
+
             // Test InstallSnapshot RPC - should use POST method
             {
                 kythira::install_snapshot_request<> request;
@@ -135,25 +135,25 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, * boost::unit_test:
                 request._last_included_term = term_dist(rng);
                 request._offset = 0;
                 request._done = bool_dist(rng) == 1;
-                
+
                 // Add some random snapshot data
                 request._data = {std::byte{0x10}, std::byte{0x20}, std::byte{0x30}, std::byte{0x40}};
-                
+
                 // Note: We don't actually call send_install_snapshot to avoid network hangs
                 // The fact that we can create the client and request validates the interface
-                
+
                 BOOST_TEST_MESSAGE("InstallSnapshot RPC interface test " << i << " passed");
             }
-            
+
         } catch (const std::exception& e) {
             failures++;
             BOOST_TEST_MESSAGE("Exception during CoAP POST method test " << i << ": " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("CoAP POST method usage: " 
+
+    BOOST_TEST_MESSAGE("CoAP POST method usage: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
-    
+
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -162,35 +162,35 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
     // This test verifies that the correct resource paths are used for each RPC type
     // In a real implementation, this would verify:
     // - RequestVote uses "/raft/request_vote"
-    // - AppendEntries uses "/raft/append_entries" 
+    // - AppendEntries uses "/raft/append_entries"
     // - InstallSnapshot uses "/raft/install_snapshot"
-    
+
     // For the stub implementation, we verify the interface exists
     kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    
+
     kythira::coap_client<test_transport_types> client(
         std::move(endpoints), config, metrics);
-    
+
     // Verify all RPC methods exist and can be called
     kythira::request_vote_request<> rv_req;
     rv_req._term = 1;
     rv_req._candidate_id = 1;
     rv_req._last_log_index = 0;
     rv_req._last_log_term = 0;
-    
+
     // Note: We don't actually call the RPC methods to avoid network hangs
     // The fact that we can create the client and requests validates the interface
-    
+
     kythira::append_entries_request<> ae_req;
     ae_req._term = 1;
     ae_req._leader_id = 1;
     ae_req._prev_log_index = 0;
     ae_req._prev_log_term = 0;
     ae_req._leader_commit = 0;
-    
+
     kythira::install_snapshot_request<> is_req;
     is_req._term = 1;
     is_req._leader_id = 1;
@@ -198,9 +198,9 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, * boost::unit_test::timeout(30)) 
     is_req._last_included_term = 0;
     is_req._offset = 0;
     is_req._done = true;
-    
+
     // Interface validation - all request types can be created
-    
+
     BOOST_TEST_MESSAGE("CoAP resource path test passed");
 }
 
@@ -210,22 +210,22 @@ BOOST_AUTO_TEST_CASE(test_invalid_endpoint_handling, * boost::unit_test::timeout
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    
+
     kythira::coap_client<test_transport_types> client(
         std::move(endpoints), config, metrics);
-    
+
     // Try to send to a node that doesn't exist in the endpoint map
     kythira::request_vote_request<> request;
     request._term = 1;
     request._candidate_id = 1;
     request._last_log_index = 0;
     request._last_log_term = 0;
-    
+
     // Note: We don't actually call send_request_vote to avoid network hangs
     // The fact that we can create the client validates the interface
     // In a real implementation, this would test that invalid endpoints are handled properly
     BOOST_TEST_MESSAGE("Invalid endpoint interface validation completed");
-    
+
     BOOST_TEST_MESSAGE("Invalid endpoint handling test passed");
 }
 

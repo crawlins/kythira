@@ -19,7 +19,7 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Include constraints for address_type, port_type, message_type, connection_type, listener_type
     - Include constraints for all future types (future_bool_type, future_message_type, etc.)
     - _Requirements: 2.1-2.15, 10.1_
-  
+
   - [x] 2.2 Implement individual type concepts
     - Define address concept with equality, hashing, copy/move semantics
     - Define port concept with equality, hashing, copy/move semantics
@@ -44,12 +44,12 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement constructor with source/destination address/port and optional payload
     - Implement accessor methods returning correct types from Types
     - _Requirements: 9.1-9.5_
-  
+
   - [x] 3.2 Implement NetworkEdge struct
     - Create NetworkEdge with latency and reliability fields
     - Implement latency() and reliability() accessor methods
     - _Requirements: 1.1, 1.2_
-  
+
   - [x] 3.3 Implement Endpoint struct template
     - Create Endpoint<Types> template with typename Types::address_type and typename Types::port_type
     - Implement equality operators and hash specialization
@@ -76,18 +76,18 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement topology management (add_node, remove_node, add_edge, remove_edge)
     - Initialize internal data structures using Types-defined types
     - _Requirements: 1.1, 1.2, 11.1-11.6_
-  
+
   - [x] 4.2 Implement simulation control methods
     - Implement start(), stop(), reset() methods
     - Set up thread pool executor for async operations
     - _Requirements: 12.1-12.5_
-  
+
   - [x] 4.3 Implement message routing logic
     - Implement route_message() returning typename Types::future_bool_type
     - Implement apply_latency() to calculate delays from edge weights
     - Implement check_reliability() using random number generation
     - _Requirements: 1.3, 1.4, 1.5_
-  
+
   - [x] 4.4 Implement message delivery
     - Implement deliver_message() to queue messages at destination nodes
     - Handle message queuing with thread safety
@@ -116,17 +116,17 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement constructor with address and simulator reference
     - Implement address() accessor
     - _Requirements: 2.1-2.15_
-  
+
   - [x] 5.2 Implement connectionless send operation
     - Implement send() methods returning typename Types::future_bool_type
     - Handle timeout by returning false
     - _Requirements: 4.1-4.4_
-  
+
   - [x] 5.3 Implement connectionless receive operation
     - Implement receive() methods returning typename Types::future_message_type
     - Handle timeout by throwing TimeoutException
     - _Requirements: 5.1-5.3_
-  
+
   - [x] 5.4 Implement ephemeral port allocation
     - Implement allocate_ephemeral_port() to assign unique unused ports
     - Track used ports to avoid conflicts
@@ -251,7 +251,7 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Use timer-based scheduling for message delivery delays
     - Apply edge latency weights to message routing
     - _Requirements: 1.3_
-  
+
   - [x] 11.2 Implement reliability simulation
     - Use std::bernoulli_distribution for probabilistic message drops
     - Apply edge reliability weights to message routing
@@ -286,12 +286,12 @@ This implementation plan tracks the development of a C++ network simulator that 
     - **Property 22: Topology Management Operations**
     - **Validates: Requirements 11.1, 11.2, 11.4, 11.5**
     - **Status: PASSING** ✅
-  
+
   - [x] 13.2 Write property test for simulation lifecycle
     - **Property 23: Simulation Lifecycle Control**
     - **Validates: Requirements 12.1, 12.2, 12.4**
     - **Status: PASSING** ✅
-  
+
   - [x] 13.3 Write property test for simulation reset
     - **Property 24: Simulation Reset**
     - **Validates: Requirements 12.3**
@@ -303,27 +303,27 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Show timeout handling
     - Follow example program guidelines (run all scenarios, clear pass/fail, exit codes)
     - _Requirements: 4.1-4.4, 5.1-5.3_
-  
+
   - [x] 14.2 Create connection-oriented client-server example
     - Demonstrate bind/listen/accept on server using DefaultNetworkTypes
     - Demonstrate connect on client
     - Show read/write operations
     - Follow example program guidelines
     - _Requirements: 6.1-6.5, 7.1-7.8, 8.1-8.6_
-  
+
   - [x] 14.3 Create network topology example
     - Demonstrate topology configuration with latency/reliability
     - Show message routing through multi-hop paths
     - Demonstrate reliability-based message drops
     - Follow example program guidelines
     - _Requirements: 1.1-1.5_
-  
+
   - [x] 14.4 Create custom Types implementation example
     - Demonstrate creating a custom Types struct with different address/port types
     - Show how to use IPv4 addresses and string ports
     - Verify concept satisfaction
     - _Requirements: 2.1-2.15_
-  
+
   - [x] 14.5 Add examples to CMake build system
     - Create examples/CMakeLists.txt
     - Add executable targets for each example
@@ -337,13 +337,13 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Fix future resolution issues in connection establishment
     - Ensure proper async operation handling
     - _Requirements: 6.1-6.5, 7.1-7.8_
-  
+
   - [x] 15.2 Fix connection data transfer issues
     - Debug read/write operations that are hanging or failing
     - Ensure proper data routing through simulator for connections
     - Fix connection state management and lifecycle
     - _Requirements: 8.1-8.6_
-  
+
   - [x] 15.3 Fix listener accept operations
     - Debug accept operations that are not completing properly
     - Ensure proper connection queuing and delivery
@@ -356,7 +356,7 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Check if routing logic supports multi-hop or only direct connections
     - Fix message delivery to ensure proper addressing
     - _Requirements: 1.5_
-  
+
   - [x] 16.2 Fix message content preservation
     - Debug why received messages have empty addresses and ports
     - Ensure message fields are properly preserved during routing
@@ -369,7 +369,7 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Fix bind timeout handling that should throw TimeoutException
     - Ensure proper connection lifecycle management
     - _Requirements: 6.1-6.5, 7.1-7.8, 8.1-8.6_
-  
+
   - [x] 17.2 Fix multi-node topology integration test
     - Resolve message routing failures in complex topologies
     - Fix connection-oriented operations in multi-hop scenarios
@@ -382,7 +382,7 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Ensure all property tests pass
     - Ensure all integration tests pass
     - _Requirements: All_
-  
+
   - [x] 18.2 Validate example programs
     - Ensure all example programs run successfully
     - Verify example programs demonstrate intended functionality
@@ -395,17 +395,17 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement pending connection request management
     - Add timer-based cleanup of expired requests
     - _Requirements: 15.1, 15.2, 15.3_
-  
+
   - [x] 19.2 Implement connection establishment timeout logic
     - Add proper timeout handling for connection establishment
     - Implement cancellation support for pending operations
     - Add detailed error reporting for timeout conditions
     - _Requirements: 15.1, 15.2, 15.3, 15.5_
-  
+
   - [x] 19.3 Write property test for connection establishment timeout
     - **Property 25: Connection Establishment Timeout Handling**
     - **Validates: Requirements 15.1, 15.2, 15.3**
-  
+
   - [x] 19.4 Write property test for connection establishment cancellation
     - **Property 26: Connection Establishment Cancellation**
     - **Validates: Requirements 15.5**
@@ -416,21 +416,21 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement get_or_create_connection with reuse logic
     - Add connection health checking and validation
     - _Requirements: 16.1, 16.2, 16.4_
-  
+
   - [x] 20.2 Implement connection pool management
     - Add LRU eviction when pool reaches capacity
     - Implement background cleanup of stale connections
     - Add configurable pool limits and timeouts
     - _Requirements: 16.3, 16.4, 16.5_
-  
+
   - [x] 20.3 Write property test for connection pool reuse
     - **Property 27: Connection Pool Reuse**
     - **Validates: Requirements 16.2**
-  
+
   - [x] 20.4 Write property test for connection pool eviction
     - **Property 28: Connection Pool Eviction**
     - **Validates: Requirements 16.3**
-  
+
   - [x] 20.5 Write property test for connection pool cleanup
     - **Property 29: Connection Pool Cleanup**
     - **Validates: Requirements 16.4**
@@ -441,17 +441,17 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement create_listener and close_listener methods
     - Add port allocation and release management
     - _Requirements: 17.1, 17.2, 17.6_
-  
+
   - [x] 21.2 Implement listener resource cleanup
     - Add automatic cleanup on simulator stop/reset
     - Implement proper handling of pending accept operations
     - Add resource leak prevention and detection
     - _Requirements: 17.3, 17.4, 17.5_
-  
+
   - [x] 21.3 Write property test for listener resource cleanup
     - **Property 30: Listener Resource Cleanup**
     - **Validates: Requirements 17.2, 17.3, 17.4**
-  
+
   - [x] 21.4 Write property test for listener port release
     - **Property 31: Listener Port Release**
     - **Validates: Requirements 17.6**
@@ -462,21 +462,21 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Implement connection registration and state updates
     - Add statistics collection for data transfer
     - _Requirements: 18.1, 18.2, 18.3_
-  
+
   - [x] 22.2 Implement connection lifecycle management
     - Add observer pattern for state change notifications
     - Implement keep-alive and idle timeout mechanisms
     - Add proper resource cleanup for closed connections
     - _Requirements: 18.4, 18.5, 18.6_
-  
+
   - [x] 22.3 Write property test for connection state tracking
     - **Property 32: Connection State Tracking**
     - **Validates: Requirements 18.1, 18.2**
-  
+
   - [x] 22.4 Write property test for connection state updates
     - **Property 33: Connection State Updates**
     - **Validates: Requirements 18.2, 18.4**
-  
+
   - [x] 22.5 Write property test for connection resource cleanup
     - **Property 34: Connection Resource Cleanup**
     - **Validates: Requirements 18.6**
@@ -487,20 +487,20 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Created `establish_connection_internal()` as the actual connection creation logic
     - Connection pool automatically handles reuse when enabled via configuration
     - _Requirements: 16.1-16.6_
-  
+
   - [x] 23.2 Integrate ListenerManager with NetworkSimulator
     - ListenerManager already integrated for port availability checking
     - Listener registration happens in `create_listener()`
     - Cleanup happens automatically in `stop()` and `reset()` via `cleanup_all_listeners()`
     - Port allocation tracking prevents port conflicts
     - _Requirements: 17.1-17.6_
-  
+
   - [x] 23.3 Integrate ConnectionTracker with NetworkSimulator
     - Add ConnectionTracker as member of NetworkSimulator
     - Modify connection operations to update tracker state
     - Add configuration options for connection tracking
     - _Requirements: 18.1-18.7_
-  
+
   - [x] 23.4 Add connection management configuration
     - Create ConnectionConfig struct with timeout and pool settings
     - Implement configure_connection_management method
@@ -513,19 +513,19 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Verify proper cleanup of timed-out connection attempts
     - Test cancellation of pending connection operations
     - _Requirements: 15.1-15.6_
-  
+
   - [x] 24.2 Write connection pooling integration test
     - Test connection reuse across multiple operations
     - Verify pool eviction and cleanup behavior
     - Test pool configuration and limits
     - _Requirements: 16.1-16.6_
-  
+
   - [x] 24.3 Write listener management integration test
     - Test listener creation, cleanup, and port management
     - Verify resource cleanup on simulator stop/reset
     - Test handling of pending accept operations during cleanup
     - _Requirements: 17.1-17.6_
-  
+
   - [x] 24.4 Write connection lifecycle integration test
     - Test connection state tracking across full lifecycle
     - Verify statistics collection and observer notifications
@@ -538,14 +538,14 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Show connection reuse and pool management
     - Follow example program guidelines
     - _Requirements: 16.1-16.6_
-  
+
   - [x] 25.2 Create connection lifecycle monitoring example
     - Demonstrate connection state tracking and statistics
     - Show observer pattern usage for state changes
     - Demonstrate keep-alive and timeout configuration
     - Follow example program guidelines
     - _Requirements: 18.1-18.7_
-  
+
   - [x] 25.3 Update existing examples for enhanced timeout handling
     - Update connection-oriented examples to use new timeout features
     - Demonstrate proper error handling for timeout conditions
@@ -558,13 +558,13 @@ This implementation plan tracks the development of a C++ network simulator that 
     - Ensure all integration tests pass
     - Verify no regressions in existing functionality
     - _Requirements: 15.1-18.7_
-  
+
   - [x] 26.2 Validate connection management example programs
     - Ensure all new example programs run successfully
     - Verify examples demonstrate intended connection management features
     - Check example program exit codes and error handling
     - _Requirements: 15.1-18.7_
-  
+
   - [x] 26.3 Performance validation of connection management
     - Benchmark connection establishment with timeout handling
     - Measure connection pool performance and overhead

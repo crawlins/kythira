@@ -193,7 +193,7 @@ BOOST_AUTO_TEST_CASE(network_communication_test) {
 ```cpp
 BOOST_AUTO_TEST_CASE(network_communication_test) {
     BOOST_TEST_TIMEOUT(45);  // 45 second timeout
-    
+
     auto client = create_client();
     auto result = client.send_request("test_data");
     BOOST_CHECK(!result.empty());
@@ -311,7 +311,7 @@ All new code and examples must:
 auto test_network() -> void {
     auto client = fixture.create("client");
     auto server = fixture.create("server");
-    
+
     for (int i = 0; i < 100; ++i) {
         fixture.send("client", "server", Message("msg", "client", "server", "data"));
     }
@@ -331,11 +331,11 @@ namespace {
 auto test_network() -> void {
     auto client = fixture.create(client_id);
     auto server = fixture.create(server_id);
-    
+
     for (std::size_t i = 0; i < message_count; ++i) {
         fixture.send(
-            client_id, 
-            server_id, 
+            client_id,
+            server_id,
             Message("msg", client_id, server_id, test_payload)
         );
     }

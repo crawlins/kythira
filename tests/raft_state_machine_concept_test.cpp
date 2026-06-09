@@ -13,12 +13,12 @@ namespace {
     constexpr std::uint64_t test_index_3 = 3;
     constexpr std::uint64_t test_index_10 = 10;
     constexpr std::uint64_t test_index_100 = 100;
-    
+
     constexpr const char* test_key_foo = "foo";
     constexpr const char* test_key_bar = "bar";
     constexpr const char* test_key_baz = "baz";
     constexpr const char* test_key_missing = "missing";
-    
+
     constexpr const char* test_value_hello = "hello";
     constexpr const char* test_value_world = "world";
     constexpr const char* test_value_test = "test";
@@ -34,10 +34,10 @@ BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(30))
     // Verify that test_key_value_state_machine satisfies the state_machine concept
     static_assert(kythira::state_machine<kythira::test_key_value_state_machine<std::uint64_t>, std::uint64_t>,
                   "test_key_value_state_machine must satisfy state_machine concept");
-    
+
     // Create an instance to verify it compiles
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     BOOST_CHECK(true); // If we get here, concept is satisfied
 }
 
@@ -45,17 +45,17 @@ BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(30))
 // Validates: Requirements 7.4, 15.2, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_apply_method_signature, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // Create a simple PUT command
     auto command = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
-    
+
     // Apply should return std::vector<std::byte>
     auto result = sm.apply(command, test_index_1);
-    
+
     // Verify return type
     static_assert(std::is_same_v<decltype(result), std::vector<std::byte>>,
                   "apply must return std::vector<std::byte>");
-    
+
     BOOST_CHECK(sm.contains(test_key_foo));
     BOOST_CHECK_EQUAL(sm.get_value(test_key_foo).value(), test_value_hello);
 }
@@ -64,18 +64,18 @@ BOOST_AUTO_TEST_CASE(test_apply_method_signature, * boost::unit_test::timeout(30
 // Validates: Requirements 10.1-10.4, 31.1-31.2
 BOOST_AUTO_TEST_CASE(test_get_state_method_signature, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // Add some data
     auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put_cmd, test_index_1);
-    
+
     // Get state should return std::vector<std::byte>
     auto state = sm.get_state();
-    
+
     // Verify return type
     static_assert(std::is_same_v<decltype(state), std::vector<std::byte>>,
                   "get_state must return std::vector<std::byte>");
-    
+
     BOOST_CHECK(!state.empty());
 }
 
@@ -84,21 +84,21 @@ BOOST_AUTO_TEST_CASE(test_get_state_method_signature, * boost::unit_test::timeou
 BOOST_AUTO_TEST_CASE(test_restore_from_snapshot_method_signature, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm1;
     kythira::test_key_value_state_machine<std::uint64_t> sm2;
-    
+
     // Add data to sm1
     auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm1.apply(put_cmd, test_index_1);
-    
+
     // Get snapshot
     auto snapshot = sm1.get_state();
-    
+
     // Restore sm2 from snapshot - should return void
     sm2.restore_from_snapshot(snapshot, test_index_1);
-    
+
     // Verify return type is void
     static_assert(std::is_same_v<decltype(sm2.restore_from_snapshot(snapshot, test_index_1)), void>,
                   "restore_from_snapshot must return void");
-    
+
     BOOST_CHECK(sm2.contains(test_key_foo));
     BOOST_CHECK_EQUAL(sm2.get_value(test_key_foo).value(), test_value_hello);
 }
@@ -112,10 +112,10 @@ BOOST_AUTO_TEST_SUITE(state_machine_functionality)
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_basic_put_operation, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     auto result = sm.apply(put_cmd, test_index_1);
-    
+
     BOOST_CHECK(result.empty()); // PUT returns empty
     BOOST_CHECK(sm.contains(test_key_foo));
     BOOST_CHECK_EQUAL(sm.get_value(test_key_foo).value(), test_value_hello);
@@ -126,15 +126,15 @@ BOOST_AUTO_TEST_CASE(test_basic_put_operation, * boost::unit_test::timeout(30)) 
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_basic_get_operation, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // First PUT a value
     auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put_cmd, test_index_1);
-    
+
     // Then GET it
     auto get_cmd = kythira::test_key_value_state_machine<>::make_get_command(test_key_foo);
     auto result = sm.apply(get_cmd, test_index_2);
-    
+
     BOOST_CHECK(!result.empty());
     std::string value(reinterpret_cast<const char*>(result.data()), result.size());
     BOOST_CHECK_EQUAL(value, test_value_hello);
@@ -145,10 +145,10 @@ BOOST_AUTO_TEST_CASE(test_basic_get_operation, * boost::unit_test::timeout(30)) 
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_get_missing_key, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     auto get_cmd = kythira::test_key_value_state_machine<>::make_get_command(test_key_missing);
     auto result = sm.apply(get_cmd, test_index_1);
-    
+
     BOOST_CHECK(result.empty()); // Missing key returns empty
 }
 
@@ -156,16 +156,16 @@ BOOST_AUTO_TEST_CASE(test_get_missing_key, * boost::unit_test::timeout(30)) {
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_basic_del_operation, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // First PUT a value
     auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put_cmd, test_index_1);
     BOOST_CHECK(sm.contains(test_key_foo));
-    
+
     // Then DEL it
     auto del_cmd = kythira::test_key_value_state_machine<>::make_del_command(test_key_foo);
     auto result = sm.apply(del_cmd, test_index_2);
-    
+
     BOOST_CHECK(result.empty()); // DEL returns empty
     BOOST_CHECK(!sm.contains(test_key_foo));
     BOOST_CHECK_EQUAL(sm.get_last_applied_index(), test_index_2);
@@ -175,17 +175,17 @@ BOOST_AUTO_TEST_CASE(test_basic_del_operation, * boost::unit_test::timeout(30)) 
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_multiple_operations, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // PUT multiple keys
     auto put1 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put1, test_index_1);
-    
+
     auto put2 = kythira::test_key_value_state_machine<>::make_put_command(test_key_bar, test_value_world);
     sm.apply(put2, test_index_2);
-    
+
     auto put3 = kythira::test_key_value_state_machine<>::make_put_command(test_key_baz, test_value_test);
     sm.apply(put3, test_index_3);
-    
+
     BOOST_CHECK_EQUAL(sm.size(), 3);
     BOOST_CHECK(sm.contains(test_key_foo));
     BOOST_CHECK(sm.contains(test_key_bar));
@@ -197,12 +197,12 @@ BOOST_AUTO_TEST_CASE(test_multiple_operations, * boost::unit_test::timeout(30)) 
 // Validates: Requirements 7.4, 19.1-19.5
 BOOST_AUTO_TEST_CASE(test_update_existing_key, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // PUT initial value
     auto put1 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put1, test_index_1);
     BOOST_CHECK_EQUAL(sm.get_value(test_key_foo).value(), test_value_hello);
-    
+
     // PUT updated value
     auto put2 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_updated);
     sm.apply(put2, test_index_2);
@@ -219,9 +219,9 @@ BOOST_AUTO_TEST_SUITE(snapshot_operations)
 // Validates: Requirements 10.1-10.4, 31.1-31.2
 BOOST_AUTO_TEST_CASE(test_snapshot_empty_state, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     auto snapshot = sm.get_state();
-    
+
     // Empty state machine should produce a valid snapshot
     BOOST_CHECK(!snapshot.empty()); // Contains at least the entry count (0)
 }
@@ -230,16 +230,16 @@ BOOST_AUTO_TEST_CASE(test_snapshot_empty_state, * boost::unit_test::timeout(30))
 // Validates: Requirements 10.1-10.4, 31.1-31.2
 BOOST_AUTO_TEST_CASE(test_snapshot_with_data, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // Add some data
     auto put1 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm.apply(put1, test_index_1);
-    
+
     auto put2 = kythira::test_key_value_state_machine<>::make_put_command(test_key_bar, test_value_world);
     sm.apply(put2, test_index_2);
-    
+
     auto snapshot = sm.get_state();
-    
+
     BOOST_CHECK(!snapshot.empty());
     // Snapshot should contain: entry count + 2 key-value pairs
 }
@@ -249,18 +249,18 @@ BOOST_AUTO_TEST_CASE(test_snapshot_with_data, * boost::unit_test::timeout(30)) {
 BOOST_AUTO_TEST_CASE(test_restore_from_empty_snapshot, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm1;
     kythira::test_key_value_state_machine<std::uint64_t> sm2;
-    
+
     // Get snapshot of empty state machine
     auto snapshot = sm1.get_state();
-    
+
     // Add data to sm2
     auto put = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm2.apply(put, test_index_1);
     BOOST_CHECK_EQUAL(sm2.size(), 1);
-    
+
     // Restore sm2 from empty snapshot
     sm2.restore_from_snapshot(snapshot, test_index_10);
-    
+
     BOOST_CHECK_EQUAL(sm2.size(), 0);
     BOOST_CHECK_EQUAL(sm2.get_last_applied_index(), test_index_10);
 }
@@ -270,23 +270,23 @@ BOOST_AUTO_TEST_CASE(test_restore_from_empty_snapshot, * boost::unit_test::timeo
 BOOST_AUTO_TEST_CASE(test_snapshot_round_trip, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm1;
     kythira::test_key_value_state_machine<std::uint64_t> sm2;
-    
+
     // Add data to sm1
     auto put1 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm1.apply(put1, test_index_1);
-    
+
     auto put2 = kythira::test_key_value_state_machine<>::make_put_command(test_key_bar, test_value_world);
     sm1.apply(put2, test_index_2);
-    
+
     auto put3 = kythira::test_key_value_state_machine<>::make_put_command(test_key_baz, test_value_test);
     sm1.apply(put3, test_index_3);
-    
+
     // Create snapshot
     auto snapshot = sm1.get_state();
-    
+
     // Restore to sm2
     sm2.restore_from_snapshot(snapshot, test_index_100);
-    
+
     // Verify sm2 has same data as sm1
     BOOST_CHECK_EQUAL(sm2.size(), sm1.size());
     BOOST_CHECK(sm2.contains(test_key_foo));
@@ -303,24 +303,24 @@ BOOST_AUTO_TEST_CASE(test_snapshot_round_trip, * boost::unit_test::timeout(30)) 
 BOOST_AUTO_TEST_CASE(test_restore_clears_existing_state, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm1;
     kythira::test_key_value_state_machine<std::uint64_t> sm2;
-    
+
     // Add data to sm1
     auto put1 = kythira::test_key_value_state_machine<>::make_put_command(test_key_foo, test_value_hello);
     sm1.apply(put1, test_index_1);
-    
+
     // Add different data to sm2
     auto put2 = kythira::test_key_value_state_machine<>::make_put_command(test_key_bar, test_value_world);
     sm2.apply(put2, test_index_1);
-    
+
     auto put3 = kythira::test_key_value_state_machine<>::make_put_command(test_key_baz, test_value_test);
     sm2.apply(put3, test_index_2);
-    
+
     BOOST_CHECK_EQUAL(sm2.size(), 2);
-    
+
     // Restore sm2 from sm1's snapshot
     auto snapshot = sm1.get_state();
     sm2.restore_from_snapshot(snapshot, test_index_10);
-    
+
     // sm2 should now match sm1, not have its old data
     BOOST_CHECK_EQUAL(sm2.size(), 1);
     BOOST_CHECK(sm2.contains(test_key_foo));
@@ -338,9 +338,9 @@ BOOST_AUTO_TEST_SUITE(error_handling)
 // Validates: Requirements 19.4
 BOOST_AUTO_TEST_CASE(test_apply_empty_command, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     std::vector<std::byte> empty_command;
-    
+
     BOOST_CHECK_THROW(sm.apply(empty_command, test_index_1), std::invalid_argument);
 }
 
@@ -348,10 +348,10 @@ BOOST_AUTO_TEST_CASE(test_apply_empty_command, * boost::unit_test::timeout(30)) 
 // Validates: Requirements 19.4
 BOOST_AUTO_TEST_CASE(test_apply_invalid_command_format, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // Command with only command type, no key
     std::vector<std::byte> invalid_command = {std::byte{1}};
-    
+
     BOOST_CHECK_THROW(sm.apply(invalid_command, test_index_1), std::invalid_argument);
 }
 
@@ -359,10 +359,10 @@ BOOST_AUTO_TEST_CASE(test_apply_invalid_command_format, * boost::unit_test::time
 // Validates: Requirements 31.4
 BOOST_AUTO_TEST_CASE(test_restore_from_invalid_snapshot, * boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine<std::uint64_t> sm;
-    
+
     // Invalid snapshot with incomplete data
     std::vector<std::byte> invalid_snapshot = {std::byte{1}, std::byte{2}};
-    
+
     BOOST_CHECK_THROW(sm.restore_from_snapshot(invalid_snapshot, test_index_1), std::invalid_argument);
 }
 

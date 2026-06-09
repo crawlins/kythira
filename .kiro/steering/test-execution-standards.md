@@ -68,7 +68,7 @@ ctest --output-on-failure
    ```cmake
    # BEFORE - Basic test registration
    add_test(NAME my_test COMMAND my_test)
-   
+
    # AFTER - Test with arguments
    add_test(NAME my_test COMMAND my_test --config=test.json --verbose)
    set_tests_properties(my_test PROPERTIES
@@ -89,15 +89,15 @@ ctest --output-on-failure
 
 #### Configuration Files
 ```cmake
-add_test(NAME network_test COMMAND network_test 
+add_test(NAME network_test COMMAND network_test
     --config=${CMAKE_SOURCE_DIR}/test_configs/network.json)
 ```
 
 #### Multiple Parameters
 ```cmake
-add_test(NAME performance_test COMMAND performance_test 
-    --threads=4 
-    --duration=30s 
+add_test(NAME performance_test COMMAND performance_test
+    --threads=4
+    --duration=30s
     --output=${CMAKE_BINARY_DIR}/perf_results.txt)
 ```
 
@@ -119,9 +119,9 @@ set_tests_properties(file_test PROPERTIES
 
 #### Complex Example
 ```cmake
-add_test(NAME coap_integration_test COMMAND coap_integration_test 
-    --server-port=5683 
-    --client-count=10 
+add_test(NAME coap_integration_test COMMAND coap_integration_test
+    --server-port=5683
+    --client-count=10
     --duration=60s
     --config=${CMAKE_SOURCE_DIR}/test_configs/coap.json)
 set_tests_properties(coap_integration_test PROPERTIES
@@ -142,7 +142,7 @@ Use consistent labels to categorize tests:
 # Unit tests
 set_tests_properties(unit_test PROPERTIES LABELS "unit;fast")
 
-# Integration tests  
+# Integration tests
 set_tests_properties(integration_test PROPERTIES LABELS "integration;slow")
 
 # Property-based tests

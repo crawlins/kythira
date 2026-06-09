@@ -73,7 +73,7 @@ Files that already use the correct pattern (for reference):
 
 ### Medium Priority (Test Files):
 1. **tests/http_client_test.cpp** - 1 static assertion issue
-2. **tests/http_server_test.cpp** - 1 static assertion issue  
+2. **tests/http_server_test.cpp** - 1 static assertion issue
 3. **tests/coap_concept_conformance_test.cpp** - 1 static assertion issue
 4. **tests/raft_follower_acknowledgment_tracking_property_test.cpp** - 2 type alias issues
 

@@ -37,7 +37,7 @@ auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
     requires(detail::is_future<std::invoke_result_t<F, Try<T>>>::value) {
     using FutureReturnType = std::invoke_result_t<F, Try<T>>;
     using InnerType = typename FutureReturnType::value_type;
-    
+
     // Use folly's automatic future flattening
     return FutureReturnType(std::move(_folly_future).thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
         Try<T> kythira_try(std::move(folly_try));
@@ -62,7 +62,7 @@ auto thenError(F&& func) -> Future<T>
 template<typename F>
 auto thenError(F&& func) -> Future<T>
     requires(detail::is_future<std::invoke_result_t<F, folly::exception_wrapper>>::value) {
-    
+
     // Use folly's automatic future flattening
     return Future<T>(std::move(_folly_future).thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
         // Call the lambda which returns Future<T>

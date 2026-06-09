@@ -306,16 +306,16 @@ BOOST_AUTO_TEST_CASE(test_enhanced_concepts_migration, * boost::unit_test::timeo
     // Test promise fulfillment with enhanced concepts
     folly::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     // This should work with enhanced concepts
     promise.setValue(42);
     BOOST_CHECK_EQUAL(std::move(future).get(), 42);
-    
+
     // Test exception handling
     folly::Promise<int> error_promise;
     auto error_future = error_promise.getFuture();
     error_promise.setException(folly::exception_wrapper(std::runtime_error("test")));
-    
+
     BOOST_CHECK_THROW(std::move(error_future).get(), std::runtime_error);
 }
 ```
@@ -328,10 +328,10 @@ Test with actual Folly types in realistic scenarios:
 BOOST_AUTO_TEST_CASE(test_folly_integration, * boost::unit_test::timeout(60)) {
     // Test with folly::CPUThreadPoolExecutor
     folly::CPUThreadPoolExecutor executor(4);
-    
+
     // This should satisfy the executor concept
     static_assert(kythira::executor<folly::CPUThreadPoolExecutor>);
-    
+
     // Test executor usage
     std::atomic<int> counter{0};
     for (int i = 0; i < 10; ++i) {
@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(test_folly_integration, * boost::unit_test::timeout(60)) {
             counter.fetch_add(1);
         });
     }
-    
+
     // Wait for completion
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     BOOST_CHECK_EQUAL(counter.load(), 10);

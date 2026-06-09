@@ -236,7 +236,7 @@ server_config.max_request_size = 64 * 1024;   // Limit per-request memory
 class optimized_coap_client {
 private:
     std::unordered_map<token_t, std::unique_ptr<pending_request>> _pending;
-    
+
 public:
     void cleanup_expired_requests() {
         auto now = std::chrono::steady_clock::now();
@@ -265,14 +265,14 @@ public:
         const std::vector<log_entry>& entries,
         std::chrono::milliseconds timeout
     ) -> folly::Future<append_entries_response<>> {
-        
+
         // Combine multiple entries into single request
         append_entries_request<> request;
         request.entries = entries;  // Send all entries at once
-        
+
         return _client.send_append_entries(target, request, timeout);
     }
-    
+
 private:
     coap_client<cbor_serializer> _client;
 };
@@ -288,17 +288,17 @@ public:
         std::uint64_t target,
         const std::vector<request_vote_request<>>& requests
     ) -> folly::Future<std::vector<request_vote_response<>>> {
-        
+
         std::vector<folly::Future<request_vote_response<>>> futures;
-        
+
         // All requests reuse the same session
         for (const auto& request : requests) {
             futures.push_back(_client.send_request_vote(target, request, timeout));
         }
-        
+
         return folly::collectAll(futures);
     }
-    
+
 private:
     coap_client<cbor_serializer> _client;
 };
@@ -322,7 +322,7 @@ public:
         // Implement custom binary format for maximum efficiency
         return serialize_binary(obj);
     }
-    
+
     auto content_format() const -> std::uint16_t {
         return 42;  // Custom content format
     }
@@ -340,23 +340,23 @@ public:
         _requests_sent.increment({{"rpc_type", rpc_type}, {"target", std::to_string(target)}});
         _request_start_times[generate_request_id()] = std::chrono::steady_clock::now();
     }
-    
-    void record_request_completed(const std::string& rpc_type, 
+
+    void record_request_completed(const std::string& rpc_type,
                                  std::chrono::milliseconds duration,
                                  bool success) override {
         _request_duration.record(duration.count(), {{"rpc_type", rpc_type}, {"success", success ? "true" : "false"}});
         _requests_completed.increment({{"rpc_type", rpc_type}, {"success", success ? "true" : "false"}});
     }
-    
+
     void record_dtls_handshake(std::chrono::milliseconds duration, bool success) {
         _dtls_handshake_duration.record(duration.count(), {{"success", success ? "true" : "false"}});
     }
-    
+
     void record_block_transfer(std::size_t total_size, std::size_t block_count) {
         _block_transfer_size.record(total_size);
         _block_transfer_count.record(block_count);
     }
-    
+
 private:
     prometheus::Counter _requests_sent;
     prometheus::Counter _requests_completed;
@@ -450,7 +450,7 @@ public:
         std::chrono::milliseconds p95_latency;
         std::chrono::milliseconds p99_latency;
     };
-    
+
     auto run_load_test(
         coap_client<cbor_serializer>& client,
         std::uint64_t target_node,
@@ -458,44 +458,44 @@ public:
         std::size_t concurrent_requests,
         std::chrono::milliseconds test_duration
     ) -> test_results {
-        
+
         std::atomic<std::size_t> completed_requests{0};
         std::atomic<std::size_t> failed_requests{0};
         std::vector<std::chrono::milliseconds> latencies;
         std::mutex latencies_mutex;
-        
+
         auto start_time = std::chrono::steady_clock::now();
         auto end_time = start_time + test_duration;
-        
+
         std::vector<std::thread> workers;
         for (std::size_t i = 0; i < concurrent_requests; ++i) {
             workers.emplace_back([&]() {
                 while (std::chrono::steady_clock::now() < end_time) {
                     auto request_start = std::chrono::steady_clock::now();
-                    
+
                     request_vote_request<> request{
                         .term = 1,
                         .candidate_id = 1,
                         .last_log_index = 0,
                         .last_log_term = 0
                     };
-                    
+
                     try {
                         auto response = client.send_request_vote(
-                            target_node, 
-                            request, 
+                            target_node,
+                            request,
                             std::chrono::milliseconds{5000}
                         ).get();
-                        
+
                         auto request_end = std::chrono::steady_clock::now();
                         auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
                             request_end - request_start);
-                        
+
                         {
                             std::lock_guard<std::mutex> lock(latencies_mutex);
                             latencies.push_back(latency);
                         }
-                        
+
                         completed_requests++;
                     } catch (const std::exception& e) {
                         failed_requests++;
@@ -503,25 +503,25 @@ public:
                 }
             });
         }
-        
+
         for (auto& worker : workers) {
             worker.join();
         }
-        
+
         auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_time);
-        
+
         // Calculate percentiles
         std::sort(latencies.begin(), latencies.end());
         auto p95_index = static_cast<std::size_t>(latencies.size() * 0.95);
         auto p99_index = static_cast<std::size_t>(latencies.size() * 0.99);
-        
+
         return test_results{
             .total_requests = completed_requests + failed_requests,
             .successful_requests = completed_requests,
             .failed_requests = failed_requests,
             .total_duration = total_duration,
-            .avg_latency = std::accumulate(latencies.begin(), latencies.end(), 
+            .avg_latency = std::accumulate(latencies.begin(), latencies.end(),
                                          std::chrono::milliseconds{0}) / latencies.size(),
             .p95_latency = latencies.empty() ? std::chrono::milliseconds{0} : latencies[p95_index],
             .p99_latency = latencies.empty() ? std::chrono::milliseconds{0} : latencies[p99_index]
@@ -575,7 +575,7 @@ auto results = tester.run_load_test(
     std::chrono::minutes{5}
 );
 
-std::cout << "Success rate: " << 
+std::cout << "Success rate: " <<
     (100.0 * results.successful_requests / results.total_requests) << "%" << std::endl;
 ```
 

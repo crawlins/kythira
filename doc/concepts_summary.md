@@ -239,7 +239,7 @@ Create domain-specific concepts by combining base concepts:
 
 ```cpp
 template<typename F, typename T>
-concept http_future = future<F, T> && 
+concept http_future = future<F, T> &&
                      future_continuation<F, T> &&
                      requires(F f) {
     { f.timeout(std::chrono::seconds{}) };

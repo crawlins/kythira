@@ -30,68 +30,68 @@ BOOST_AUTO_TEST_SUITE(folly_executor_concept_compliance_property_tests)
  */
 BOOST_AUTO_TEST_CASE(property_folly_executor_concept_compliance, * boost::unit_test::timeout(30)) {
     // Test folly::CPUThreadPoolExecutor satisfies executor concept
-    static_assert(kythira::executor<folly::CPUThreadPoolExecutor>, 
+    static_assert(kythira::executor<folly::CPUThreadPoolExecutor>,
                   "folly::CPUThreadPoolExecutor must satisfy executor concept");
-    
+
     // Test folly::InlineExecutor satisfies executor concept
-    static_assert(kythira::executor<folly::InlineExecutor>, 
+    static_assert(kythira::executor<folly::InlineExecutor>,
                   "folly::InlineExecutor must satisfy executor concept");
-    
+
     // Test folly::ManualExecutor satisfies executor concept
-    static_assert(kythira::executor<folly::ManualExecutor>, 
+    static_assert(kythira::executor<folly::ManualExecutor>,
                   "folly::ManualExecutor must satisfy executor concept");
-    
+
     // Test folly::QueuedImmediateExecutor satisfies executor concept
-    static_assert(kythira::executor<folly::QueuedImmediateExecutor>, 
+    static_assert(kythira::executor<folly::QueuedImmediateExecutor>,
                   "folly::QueuedImmediateExecutor must satisfy executor concept");
-    
+
     BOOST_TEST_MESSAGE("All folly::Executor implementations satisfy executor concept");
-    
+
     // Property-based test: Test executor behavior across multiple iterations
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> task_count_dist(1, 5);
-    
+
     for (std::size_t i = 0; i < 10; ++i) { // Reduced iterations to avoid timeout
         // Test InlineExecutor (safe, executes immediately)
         {
             folly::InlineExecutor executor;
-            
+
             bool task_executed = false;
             executor.add([&task_executed]() {
                 task_executed = true;
             });
-            
+
             // InlineExecutor executes immediately
             BOOST_CHECK(task_executed);
-            
+
             // Test getKeepAliveToken using folly function
             auto keep_alive = folly::getKeepAliveToken(executor);
             BOOST_CHECK(keep_alive.get() != nullptr);
         }
-        
+
         // Test ManualExecutor (safe, manual control)
         {
             folly::ManualExecutor executor;
-            
+
             bool task_executed = false;
             executor.add([&task_executed]() {
                 task_executed = true;
             });
-            
+
             // ManualExecutor requires manual execution
             BOOST_CHECK(!task_executed);
-            
+
             // Run pending tasks
             executor.run();
             BOOST_CHECK(task_executed);
-            
+
             // Test getKeepAliveToken using folly function
             auto keep_alive = folly::getKeepAliveToken(executor);
             BOOST_CHECK(keep_alive.get() != nullptr);
         }
     }
-    
+
     BOOST_TEST_MESSAGE("Property test completed: All folly::Executor implementations behave correctly");
 }
 
@@ -102,24 +102,24 @@ BOOST_AUTO_TEST_CASE(test_folly_executor_keep_alive_behavior, * boost::unit_test
     // Test that KeepAlive tokens work correctly with InlineExecutor (safe)
     {
         folly::InlineExecutor executor;
-        
+
         // Get keep alive token using folly function
         auto keep_alive = folly::getKeepAliveToken(executor);
-        
+
         // Test that keep_alive satisfies keep_alive concept
-        static_assert(kythira::keep_alive<decltype(keep_alive)>, 
+        static_assert(kythira::keep_alive<decltype(keep_alive)>,
                       "folly::Executor::KeepAlive must satisfy keep_alive concept");
-        
+
         // Test get method
         BOOST_CHECK(keep_alive.get() != nullptr);
         BOOST_CHECK_EQUAL(keep_alive.get(), &executor);
-        
+
         // Test copy construction
         auto keep_alive_copy = keep_alive;
         BOOST_CHECK(keep_alive_copy.get() != nullptr);
         BOOST_CHECK_EQUAL(keep_alive_copy.get(), &executor);
     }
-    
+
     BOOST_TEST_MESSAGE("folly::Executor::KeepAlive behavior matches keep_alive concept requirements");
 }
 

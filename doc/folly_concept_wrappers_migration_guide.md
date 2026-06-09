@@ -27,10 +27,10 @@ void process_folly_types() {
     // Direct Folly usage
     folly::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     promise.setValue(42);
     auto result = std::move(future).get();
-    
+
     std::cout << "Result: " << result << std::endl;
 }
 ```
@@ -43,10 +43,10 @@ void process_wrapper_types() {
     // Wrapper usage - same interface, concept compliant
     kythira::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     promise.setValue(42);
     auto result = std::move(future).get();
-    
+
     std::cout << "Result: " << result << std::endl;
 }
 ```
@@ -70,7 +70,7 @@ auto process_future(FutureType future) -> auto {
 }
 
 // SFINAE-based constraints (complex and error-prone)
-template<typename F, 
+template<typename F,
          typename = std::enable_if_t<
              std::is_same_v<F, folly::Future<int>>
          >>
@@ -119,13 +119,13 @@ public:
     auto get(const std::string& url) -> folly::Future<Response> {
         folly::Promise<Response> promise;
         auto future = promise.getFuture();
-        
+
         // Async HTTP request implementation
         make_request(url, std::move(promise));
-        
+
         return future;
     }
-    
+
 private:
     void make_request(const std::string& url, folly::Promise<Response> promise) {
         // Implementation using Folly types
@@ -142,18 +142,18 @@ template<template<typename> class FutureType = kythira::Future,
          template<typename> class PromiseType = kythira::Promise>
 class HttpClient {
 public:
-    auto get(const std::string& url) -> FutureType<Response> 
+    auto get(const std::string& url) -> FutureType<Response>
         requires kythira::future<FutureType<Response>, Response> {
-        
+
         PromiseType<Response> promise;
         auto future = promise.getFuture();
-        
+
         // Same async HTTP request implementation
         make_request(url, std::move(promise));
-        
+
         return future;
     }
-    
+
 private:
     template<kythira::promise<Response> P>
     void make_request(const std::string& url, P promise) {
@@ -294,12 +294,12 @@ static_assert(kythira::try_type<kythira::Try<int>, int>);
 folly::Future<std::string> fetch_data(const std::string& url) {
     folly::Promise<std::string> promise;
     auto future = promise.getFuture();
-    
+
     // Async operation
     start_async_fetch(url, [p = std::move(promise)](const std::string& data) mutable {
         p.setValue(data);
     });
-    
+
     return future;
 }
 ```
@@ -311,15 +311,15 @@ template<template<typename> class FutureType = kythira::Future,
 auto fetch_data(const std::string& url) -> FutureType<std::string>
     requires kythira::future<FutureType<std::string>, std::string> &&
              kythira::promise<PromiseType<std::string>, std::string> {
-    
+
     PromiseType<std::string> promise;
     auto future = promise.getFuture();
-    
+
     // Same async operation
     start_async_fetch(url, [p = std::move(promise)](const std::string& data) mutable {
         p.setValue(data);
     });
-    
+
     return future;
 }
 
@@ -424,7 +424,7 @@ auto collect_results() -> folly::Future<std::vector<folly::Try<int>>> {
     for (int i = 0; i < 5; ++i) {
         futures.push_back(folly::makeFuture(i));
     }
-    
+
     return folly::collectAll(futures.begin(), futures.end());
 }
 ```
@@ -436,7 +436,7 @@ auto collect_results() -> kythira::Future<std::vector<kythira::Try<int>>> {
     for (int i = 0; i < 5; ++i) {
         futures.push_back(kythira::FutureFactory::makeFuture(i));
     }
-    
+
     return kythira::FutureCollector::collectAll(std::move(futures));
 }
 ```
@@ -475,12 +475,12 @@ public:
     auto fetch_folly(const std::string& id) -> folly::Future<Data> {
         return fetch_impl(id).get_folly_future();
     }
-    
+
     // New wrapper interface
     auto fetch(const std::string& id) -> kythira::Future<Data> {
         return fetch_impl(id);
     }
-    
+
 private:
     auto fetch_impl(const std::string& id) -> kythira::Future<Data> {
         // Implementation using wrappers
@@ -505,7 +505,7 @@ public:
             return process_impl(input);
         }
     }
-    
+
 private:
     auto process_impl(const Input& input) -> kythira::Future<Output> {
         // Implementation using wrappers
@@ -531,15 +531,15 @@ BOOST_AUTO_TEST_CASE(test_wrapper_migration, * boost::unit_test::timeout(30)) {
     // Test basic promise/future functionality
     kythira::Promise<int> promise;
     auto future = promise.getFuture();
-    
+
     promise.setValue(42);
     BOOST_CHECK_EQUAL(std::move(future).get(), 42);
-    
+
     // Test exception handling
     kythira::Promise<int> error_promise;
     auto error_future = error_promise.getFuture();
     error_promise.setException(folly::exception_wrapper(std::runtime_error("test")));
-    
+
     BOOST_CHECK_THROW(std::move(error_future).get(), std::runtime_error);
 }
 
@@ -548,12 +548,12 @@ BOOST_AUTO_TEST_CASE(test_concept_compliance, * boost::unit_test::timeout(30)) {
     static_assert(kythira::future<kythira::Future<int>, int>);
     static_assert(kythira::promise<kythira::Promise<int>, int>);
     static_assert(kythira::try_type<kythira::Try<int>, int>);
-    
+
     // Test with concept-constrained function
     auto test_function = []<kythira::future<int> F>(F future) -> int {
         return std::move(future).get();
     };
-    
+
     kythira::Future<int> wrapper_future(42);
     BOOST_CHECK_EQUAL(test_function(std::move(wrapper_future)), 42);
 }
@@ -569,7 +569,7 @@ BOOST_AUTO_TEST_CASE(test_folly_interop, * boost::unit_test::timeout(60)) {
     folly::Future<int> folly_future = folly::makeFuture(42);
     kythira::Future<int> wrapper_future(std::move(folly_future));
     BOOST_CHECK_EQUAL(std::move(wrapper_future).get(), 42);
-    
+
     // Test conversion from wrapper to Folly
     kythira::Future<int> wrapper_future2(84);
     folly::Future<int> folly_future2 = std::move(wrapper_future2).get_folly_future();
@@ -584,7 +584,7 @@ Verify no performance regression:
 ```cpp
 BOOST_AUTO_TEST_CASE(test_performance_equivalence, * boost::unit_test::timeout(120)) {
     constexpr int iterations = 10000;
-    
+
     // Benchmark direct Folly usage
     auto start_folly = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; ++i) {
@@ -593,7 +593,7 @@ BOOST_AUTO_TEST_CASE(test_performance_equivalence, * boost::unit_test::timeout(1
         (void)result; // Suppress unused variable warning
     }
     auto end_folly = std::chrono::high_resolution_clock::now();
-    
+
     // Benchmark wrapper usage
     auto start_wrapper = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; ++i) {
@@ -602,14 +602,14 @@ BOOST_AUTO_TEST_CASE(test_performance_equivalence, * boost::unit_test::timeout(1
         (void)result; // Suppress unused variable warning
     }
     auto end_wrapper = std::chrono::high_resolution_clock::now();
-    
+
     auto folly_duration = end_folly - start_folly;
     auto wrapper_duration = end_wrapper - start_wrapper;
-    
+
     // Wrapper should be within 10% of Folly performance
     auto ratio = static_cast<double>(wrapper_duration.count()) / folly_duration.count();
     BOOST_CHECK_LT(ratio, 1.1);
-    
+
     std::cout << "Folly time: " << folly_duration.count() << "ns" << std::endl;
     std::cout << "Wrapper time: " << wrapper_duration.count() << "ns" << std::endl;
     std::cout << "Ratio: " << ratio << std::endl;

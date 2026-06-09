@@ -13,7 +13,7 @@ namespace {
     constexpr std::uint64_t test_node_id_1 = 1;
     constexpr std::uint64_t test_node_id_2 = 2;
     constexpr std::uint64_t test_node_id_3 = 3;
-    
+
     // Define transport types for testing
     using test_transport_types = kythira::http_transport_types<
         kythira::json_rpc_serializer<std::vector<std::byte>>,
@@ -35,7 +35,7 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction, * boost::unit_test::timeout(3
     node_map[test_node_id_2] = "http://localhost:8081";
 #endif
     node_map[test_node_id_3] = "http://remote.example.com:9090";
-    
+
     kythira::cpp_httplib_client_config config;
     config.connection_pool_size = 15;
     config.connection_timeout = std::chrono::milliseconds{2000};
@@ -49,25 +49,25 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction, * boost::unit_test::timeout(3
     config.ca_cert_path = "";
 #endif
     config.user_agent = "raft-test-client/1.0";
-    
+
     kythira::noop_metrics metrics;
-    
+
     // Test construction with multiple nodes
     kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-    
+
     BOOST_CHECK(true);  // Construction succeeded
 }
 
 // Test client with empty node map
 BOOST_AUTO_TEST_CASE(test_empty_node_map_construction, * boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> empty_node_map;
-    
+
     kythira::cpp_httplib_client_config config;
     kythira::noop_metrics metrics;
-    
+
     // Should be able to construct with empty map
     kythira::cpp_httplib_client<test_transport_types> client(empty_node_map, config, metrics);
-    
+
     BOOST_CHECK(true);  // Construction succeeded
 }
 
@@ -87,13 +87,13 @@ BOOST_AUTO_TEST_CASE(test_various_url_formats, * boost::unit_test::timeout(30)) 
     node_map[4] = "http://example.com:8080";
 #endif
     node_map[5] = "http://node-5.cluster.local:8080";
-    
+
     kythira::cpp_httplib_client_config config;
     kythira::noop_metrics metrics;
-    
+
     // Test construction with various URL formats
     kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-    
+
     BOOST_CHECK(true);  // Construction succeeded
 }
 
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(test_various_url_formats, * boost::unit_test::timeout(30)) 
 BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, * boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
-    
+
     // Test with minimal timeouts
     {
         kythira::cpp_httplib_client_config config;
@@ -109,14 +109,14 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, * boost::unit_test::timeout(
         config.connection_timeout = std::chrono::milliseconds{1};
         config.request_timeout = std::chrono::milliseconds{1};
         config.keep_alive_timeout = std::chrono::milliseconds{1};
-        
+
         kythira::noop_metrics metrics;
-        
+
         kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-        
+
         BOOST_CHECK(true);  // Construction succeeded
     }
-    
+
     // Test with maximum timeouts
     {
         kythira::cpp_httplib_client_config config;
@@ -124,11 +124,11 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, * boost::unit_test::timeout(
         config.connection_timeout = std::chrono::milliseconds{60000};
         config.request_timeout = std::chrono::milliseconds{300000};
         config.keep_alive_timeout = std::chrono::milliseconds{600000};
-        
+
         kythira::noop_metrics metrics;
-        
+
         kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-        
+
         BOOST_CHECK(true);  // Construction succeeded
     }
 }
@@ -138,30 +138,30 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration, * boost::unit_test::timeout(30)) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_https_url;
-    
+
     // Test with SSL verification enabled
     {
         kythira::cpp_httplib_client_config config;
         config.enable_ssl_verification = true;
         config.ca_cert_path = "/etc/ssl/certs/ca-certificates.crt";
-        
+
         kythira::noop_metrics metrics;
-        
+
         kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-        
+
         BOOST_CHECK(true);  // Construction succeeded
     }
-    
+
     // Test with SSL verification disabled
     {
         kythira::cpp_httplib_client_config config;
         config.enable_ssl_verification = false;
         config.ca_cert_path = "";  // Empty path
-        
+
         kythira::noop_metrics metrics;
-        
+
         kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-        
+
         BOOST_CHECK(true);  // Construction succeeded
     }
 #else
@@ -174,14 +174,14 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration, * boost::unit_test::timeout(30)) {
 BOOST_AUTO_TEST_CASE(test_user_agent_configuration, * boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
-    
+
     kythira::cpp_httplib_client_config config;
     config.user_agent = "custom-raft-client/2.1.0 (Linux; x86_64)";
-    
+
     kythira::noop_metrics metrics;
-    
+
     kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
-    
+
     BOOST_CHECK(true);  // Construction succeeded
 }
 
@@ -189,15 +189,15 @@ BOOST_AUTO_TEST_CASE(test_user_agent_configuration, * boost::unit_test::timeout(
 BOOST_AUTO_TEST_CASE(test_move_semantics, * boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
-    
+
     kythira::cpp_httplib_client_config config;
     kythira::noop_metrics metrics;
-    
+
     // Test move construction
     auto create_client = [&]() {
         return kythira::cpp_httplib_client<test_transport_types>(node_map, config, metrics);
     };
-    
+
     auto client = create_client();
     BOOST_CHECK(true);  // Move construction succeeded
 }
@@ -205,19 +205,19 @@ BOOST_AUTO_TEST_CASE(test_move_semantics, * boost::unit_test::timeout(30)) {
 // Test client with large node maps
 BOOST_AUTO_TEST_CASE(test_large_node_map, * boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> large_node_map;
-    
+
     // Create a map with 100 nodes
     for (std::uint64_t i = 1; i <= 100; ++i) {
         large_node_map[i] = "http://node-" + std::to_string(i) + ".cluster.local:8080";
     }
-    
+
     kythira::cpp_httplib_client_config config;
     config.connection_pool_size = 50;  // Smaller than node count
-    
+
     kythira::noop_metrics metrics;
-    
+
     kythira::cpp_httplib_client<test_transport_types> client(large_node_map, config, metrics);
-    
+
     BOOST_CHECK(true);  // Construction with large node map succeeded
 }
 

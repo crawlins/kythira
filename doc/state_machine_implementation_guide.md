@@ -29,13 +29,13 @@ concept state_machine = requires(
     LogIndex index
 ) {
     requires log_index<LogIndex>;
-    
+
     // Apply a committed log entry to the state machine
     { sm.apply(command, index) } -> std::same_as<std::vector<std::byte>>;
-    
+
     // Get the current state for snapshot creation
     { sm.get_state() } -> std::same_as<std::vector<std::byte>>;
-    
+
     // Restore state from a snapshot
     { sm.restore_from_snapshot(snapshot_data, index) } -> std::same_as<void>;
 };
@@ -44,7 +44,7 @@ concept state_machine = requires(
 ### Required Methods
 
 1. **`apply(command, index)`**: Apply a committed log entry to the state machine
-   - **Parameters**: 
+   - **Parameters**:
      - `command`: The command to execute (as bytes)
      - `index`: The log index of this command
    - **Returns**: Result of the command execution (as bytes)
@@ -74,13 +74,13 @@ requires kythira::log_index<LogIndex>
 class my_state_machine {
 public:
     my_state_machine() = default;
-    
-    auto apply(const std::vector<std::byte>& command, LogIndex index) 
+
+    auto apply(const std::vector<std::byte>& command, LogIndex index)
         -> std::vector<std::byte>;
-    
+
     auto get_state() const -> std::vector<std::byte>;
-    
-    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, 
+
+    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
                                LogIndex index) -> void;
 
 private:
@@ -101,20 +101,20 @@ static_assert(kythira::state_machine<my_state_machine<std::uint64_t>, std::uint6
 The `apply` method is called for each committed log entry in order:
 
 ```cpp
-auto my_state_machine::apply(const std::vector<std::byte>& command, LogIndex index) 
-    -> std::vector<std::byte> 
+auto my_state_machine::apply(const std::vector<std::byte>& command, LogIndex index)
+    -> std::vector<std::byte>
 {
     // 1. Validate command format
     if (command.empty()) {
         throw std::invalid_argument("Empty command");
     }
-    
+
     // 2. Update last applied index
     _last_applied_index = index;
-    
+
     // 3. Parse command type and parameters
     auto cmd_type = parse_command_type(command);
-    
+
     // 4. Execute command based on type
     switch (cmd_type) {
         case command_type::operation1:
@@ -142,7 +142,7 @@ The `get_state` method captures the complete state for snapshot creation:
 ```cpp
 auto my_state_machine::get_state() const -> std::vector<std::byte> {
     std::vector<std::byte> state;
-    
+
     // Serialize all state machine state
     // Example: Serialize a map
     serialize_uint64(state, _my_map.size());
@@ -150,7 +150,7 @@ auto my_state_machine::get_state() const -> std::vector<std::byte> {
         serialize_string(state, key);
         serialize_string(state, value);
     }
-    
+
     return state;
 }
 ```
@@ -167,28 +167,28 @@ The `restore_from_snapshot` method restores state from a snapshot:
 
 ```cpp
 auto my_state_machine::restore_from_snapshot(
-    const std::vector<std::byte>& snapshot_data, 
-    LogIndex index) -> void 
+    const std::vector<std::byte>& snapshot_data,
+    LogIndex index) -> void
 {
     // 1. Clear current state
     _my_map.clear();
     _last_applied_index = index;
-    
+
     // 2. Handle empty snapshot
     if (snapshot_data.empty()) {
         return; // Empty state is valid
     }
-    
+
     // 3. Deserialize state
     std::size_t offset = 0;
     auto map_size = deserialize_uint64(snapshot_data, offset);
-    
+
     for (std::uint64_t i = 0; i < map_size; ++i) {
         auto key = deserialize_string(snapshot_data, offset);
         auto value = deserialize_string(snapshot_data, offset);
         _my_map[key] = value;
     }
-    
+
     // 4. Validate restored state
     if (offset != snapshot_data.size()) {
         throw std::invalid_argument("Invalid snapshot: extra data");
@@ -219,24 +219,24 @@ enum class command_type : std::uint8_t {
 };
 
 // Helper to create PUT command
-static auto make_put_command(const std::string& key, const std::string& value) 
-    -> std::vector<std::byte> 
+static auto make_put_command(const std::string& key, const std::string& value)
+    -> std::vector<std::byte>
 {
     std::vector<std::byte> command;
-    
+
     // Command type
     command.push_back(static_cast<std::byte>(command_type::put));
-    
+
     // Key length and key
     std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
     append_uint32(command, key_length);
     append_bytes(command, key.data(), key.size());
-    
+
     // Value length and value
     std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
     append_uint32(command, value_length);
     append_bytes(command, value.data(), value.size());
-    
+
     return command;
 }
 ```
@@ -256,18 +256,18 @@ auto parse_command(const std::vector<std::byte>& command) -> parsed_command {
     if (command.empty()) {
         throw std::invalid_argument("Empty command");
     }
-    
+
     std::size_t offset = 0;
-    
+
     // Parse command type
     if (offset + 1 > command.size()) {
         throw std::invalid_argument("Missing command type");
     }
     auto cmd_type = static_cast<command_type>(command[offset++]);
-    
+
     // Parse parameters based on type
     // ... validate sizes before reading
-    
+
     return parsed_command{cmd_type, /* ... */};
 }
 ```
@@ -290,19 +290,19 @@ Snapshots reduce log size and speed up recovery. Create snapshots when:
 
 auto get_state() const -> std::vector<std::byte> {
     std::vector<std::byte> state;
-    
+
     // Version for future compatibility
     state.push_back(std::byte{1});
-    
+
     // Number of entries
     append_uint64(state, _store.size());
-    
+
     // Serialize each entry
     for (const auto& [key, value] : _store) {
         append_string(state, key);
         append_string(state, value);
     }
-    
+
     return state;
 }
 ```
@@ -317,15 +317,15 @@ auto get_state() const -> std::vector<std::byte> {
 ### Snapshot Validation
 
 ```cpp
-auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, 
-                          LogIndex index) -> void 
+auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
+                          LogIndex index) -> void
 {
     if (snapshot_data.empty()) {
         return; // Empty snapshot is valid
     }
-    
+
     std::size_t offset = 0;
-    
+
     // Validate version
     if (offset + 1 > snapshot_data.size()) {
         throw std::invalid_argument("Invalid snapshot: missing version");
@@ -334,7 +334,7 @@ auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
     if (version != 1) {
         throw std::invalid_argument("Unsupported snapshot version");
     }
-    
+
     // ... continue parsing with validation
 }
 ```
@@ -344,20 +344,20 @@ auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
 ### Command Validation
 
 ```cpp
-auto apply(const std::vector<std::byte>& command, LogIndex index) 
-    -> std::vector<std::byte> 
+auto apply(const std::vector<std::byte>& command, LogIndex index)
+    -> std::vector<std::byte>
 {
     try {
         // Validate command format
         validate_command_format(command);
-        
+
         // Execute command
         return execute_command(command, index);
-        
+
     } catch (const std::invalid_argument& e) {
         // Log error with context
         log_error("Invalid command at index {}: {}", index, e.what());
-        
+
         // Return error result to client
         return make_error_result(e.what());
     }
@@ -375,12 +375,12 @@ auto apply(const std::vector<std::byte>& command, LogIndex index)
 ### Exception Safety
 
 ```cpp
-auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, 
-                          LogIndex index) -> void 
+auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
+                          LogIndex index) -> void
 {
     // Use RAII for exception safety
     auto temp_state = parse_snapshot(snapshot_data);
-    
+
     // Only update state if parsing succeeds
     _store = std::move(temp_state);
     _last_applied_index = index;
@@ -398,14 +398,14 @@ auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data,
 
 ```cpp
 // Good: Efficient apply implementation
-auto apply(const std::vector<std::byte>& command, LogIndex index) 
-    -> std::vector<std::byte> 
+auto apply(const std::vector<std::byte>& command, LogIndex index)
+    -> std::vector<std::byte>
 {
     _last_applied_index = index;
-    
+
     // Parse command (no allocations)
     auto [cmd_type, key, value] = parse_command_view(command);
-    
+
     // Execute command efficiently
     switch (cmd_type) {
         case command_type::put:
@@ -431,7 +431,7 @@ private:
     // Use memory pool for frequent allocations
     std::pmr::monotonic_buffer_resource _buffer;
     std::pmr::unordered_map<std::string, std::string> _store{&_buffer};
-    
+
     // Periodically reset buffer to reclaim memory
     auto compact_memory() -> void {
         if (_buffer.bytes_allocated() > threshold) {
@@ -452,10 +452,10 @@ private:
 ```cpp
 BOOST_AUTO_TEST_CASE(test_apply_put_command, * boost::unit_test::timeout(10)) {
     my_state_machine sm;
-    
+
     auto cmd = my_state_machine::make_put_command("key1", "value1");
     auto result = sm.apply(cmd, 1);
-    
+
     BOOST_CHECK(sm.contains("key1"));
     BOOST_CHECK_EQUAL(sm.get_value("key1"), "value1");
 }
@@ -466,18 +466,18 @@ BOOST_AUTO_TEST_CASE(test_apply_put_command, * boost::unit_test::timeout(10)) {
 ```cpp
 BOOST_AUTO_TEST_CASE(test_snapshot_round_trip, * boost::unit_test::timeout(10)) {
     my_state_machine sm1;
-    
+
     // Populate state machine
     sm1.apply(make_put_command("key1", "value1"), 1);
     sm1.apply(make_put_command("key2", "value2"), 2);
-    
+
     // Create snapshot
     auto snapshot = sm1.get_state();
-    
+
     // Restore to new state machine
     my_state_machine sm2;
     sm2.restore_from_snapshot(snapshot, 2);
-    
+
     // Verify state matches
     BOOST_CHECK_EQUAL(sm2.get_value("key1"), "value1");
     BOOST_CHECK_EQUAL(sm2.get_value("key2"), "value2");
@@ -490,14 +490,14 @@ BOOST_AUTO_TEST_CASE(test_snapshot_round_trip, * boost::unit_test::timeout(10)) 
 BOOST_AUTO_TEST_CASE(test_determinism_property, * boost::unit_test::timeout(60)) {
     // Generate random command sequence
     auto commands = generate_random_commands(100);
-    
+
     // Apply to two state machines
     my_state_machine sm1, sm2;
     for (std::size_t i = 0; i < commands.size(); ++i) {
         sm1.apply(commands[i], i + 1);
         sm2.apply(commands[i], i + 1);
     }
-    
+
     // Verify same final state
     BOOST_CHECK_EQUAL(sm1.get_state(), sm2.get_state());
 }
@@ -521,13 +521,13 @@ struct my_raft_types {
 // Create Raft node
 auto create_raft_node(const std::string& node_id) {
     my_raft_types::state_machine_type state_machine;
-    
+
     kythira::node<my_raft_types> raft_node(
         node_id,
         std::move(state_machine),
         // ... other components
     );
-    
+
     return raft_node;
 }
 ```
@@ -538,12 +538,12 @@ auto create_raft_node(const std::string& node_id) {
 // Submit command to Raft cluster
 auto submit_put_command(kythira::node<my_raft_types>& node,
                        const std::string& key,
-                       const std::string& value) 
+                       const std::string& value)
 {
     auto command = my_state_machine::make_put_command(key, value);
-    
+
     auto future = node.submit_command(command, std::chrono::seconds(5));
-    
+
     return future.then([](const std::vector<std::byte>& result) {
         // Handle result
         return parse_result(result);

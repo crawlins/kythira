@@ -203,16 +203,16 @@ ctest -R "scalability" --verbose
 auto benchmark_throughput() {
     auto start = std::chrono::steady_clock::now();
     std::size_t operations = 0;
-    
+
     // Submit commands for 60 seconds
     while (std::chrono::steady_clock::now() - start < std::chrono::seconds(60)) {
         raft.submit_command(generate_command());
         ++operations;
     }
-    
+
     auto duration = std::chrono::steady_clock::now() - start;
     auto ops_per_sec = operations / std::chrono::duration<double>(duration).count();
-    
+
     std::cout << "Throughput: " << ops_per_sec << " ops/sec\n";
 }
 ```
@@ -221,21 +221,21 @@ auto benchmark_throughput() {
 ```cpp
 auto benchmark_latency() {
     std::vector<std::chrono::nanoseconds> latencies;
-    
+
     for (int i = 0; i < 1000; ++i) {
         auto start = std::chrono::steady_clock::now();
         raft.submit_command(generate_command()).wait();
         auto end = std::chrono::steady_clock::now();
-        
+
         latencies.push_back(end - start);
     }
-    
+
     // Calculate percentiles
     std::sort(latencies.begin(), latencies.end());
     auto p50 = latencies[latencies.size() * 50 / 100];
     auto p95 = latencies[latencies.size() * 95 / 100];
     auto p99 = latencies[latencies.size() * 99 / 100];
-    
+
     std::cout << "P50: " << p50.count() / 1e6 << "ms\n";
     std::cout << "P95: " << p95.count() / 1e6 << "ms\n";
     std::cout << "P99: " << p99.count() / 1e6 << "ms\n";

@@ -33,11 +33,11 @@ auto wait_for_all_futures(std::vector<kythira::Future<T>> futures) -> std::vecto
     auto results = kythira::wait_for_all(std::move(futures)).get();
     std::vector<T> values;
     values.reserve(results.size());
-    
+
     for (const auto& result : results) {
         values.push_back(result.value());
     }
-    
+
     return values;
 }
 
@@ -49,11 +49,11 @@ template<typename T>
 auto create_ready_futures(const std::vector<T>& values) -> std::vector<kythira::Future<T>> {
     std::vector<kythira::Future<T>> futures;
     futures.reserve(values.size());
-    
+
     for (const auto& value : values) {
         futures.emplace_back(kythira::Future<T>(value));
     }
-    
+
     return futures;
 }
 
@@ -71,7 +71,7 @@ auto is_future_ready(const kythira::Future<T>& future) -> bool {
  * This demonstrates timeout handling in test utilities
  */
 template<typename T>
-auto wait_for_future_with_timeout(kythira::Future<T>& future, 
+auto wait_for_future_with_timeout(kythira::Future<T>& future,
                                   std::chrono::milliseconds timeout) -> bool {
     return future.wait(timeout);
 }

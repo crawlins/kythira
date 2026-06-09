@@ -22,10 +22,10 @@ This guide helps diagnose and resolve common SSL/TLS configuration issues with t
    ```bash
    # Ubuntu/Debian
    sudo apt-get install libssl-dev
-   
+
    # CentOS/RHEL
    sudo yum install openssl-devel
-   
+
    # macOS
    brew install openssl
    ```
@@ -82,10 +82,10 @@ This guide helps diagnose and resolve common SSL/TLS configuration issues with t
    ```bash
    # Generate new private key
    openssl genrsa -out private_key.pem 2048
-   
+
    # Generate certificate signing request
    openssl req -new -key private_key.pem -out certificate.csr
-   
+
    # Self-sign for testing (use proper CA for production)
    openssl x509 -req -days 365 -in certificate.csr -signkey private_key.pem -out certificate.pem
    ```
@@ -222,7 +222,7 @@ pkg_check_modules(OPENSSL REQUIRED openssl>=1.1.1)
 target_link_libraries(your_target PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
 # Add version-specific definitions
-target_compile_definitions(your_target PRIVATE 
+target_compile_definitions(your_target PRIVATE
     OPENSSL_VERSION_NUMBER=${OPENSSL_VERSION_NUMBER}
 )
 ```
@@ -271,7 +271,7 @@ openssl ciphers -v -tls1_3
 **Recommended cipher suites**:
 ```cpp
 // Strong cipher suites (prefer ECDHE for forward secrecy)
-const char* strong_ciphers = 
+const char* strong_ciphers =
     "ECDHE-ECDSA-AES256-GCM-SHA384:"
     "ECDHE-RSA-AES256-GCM-SHA384:"
     "ECDHE-ECDSA-AES128-GCM-SHA256:"
@@ -346,20 +346,20 @@ auto verify_callback = [](bool preverified, X509_STORE_CTX* ctx) -> bool {
     X509* cert = X509_STORE_CTX_get_current_cert(ctx);
     int depth = X509_STORE_CTX_get_error_depth(ctx);
     int err = X509_STORE_CTX_get_error(ctx);
-    
+
     // Log certificate details
     char subject[256];
     X509_NAME_oneline(X509_get_subject_name(cert), subject, sizeof(subject));
-    
+
     std::cout << "Certificate verification:" << std::endl;
     std::cout << "  Subject: " << subject << std::endl;
     std::cout << "  Depth: " << depth << std::endl;
     std::cout << "  Preverified: " << preverified << std::endl;
-    
+
     if (!preverified) {
         std::cout << "  Error: " << X509_verify_cert_error_string(err) << std::endl;
     }
-    
+
     return preverified;
 };
 ```
@@ -375,7 +375,7 @@ auto verify_callback = [](bool preverified, X509_STORE_CTX* ctx) -> bool {
 **Cipher Suite Performance**:
 ```cpp
 // Performance-optimized cipher suites (AES-NI hardware acceleration)
-const char* fast_ciphers = 
+const char* fast_ciphers =
     "ECDHE-RSA-AES128-GCM-SHA256:"    // Fast with AES-NI
     "ECDHE-RSA-AES256-GCM-SHA384:"    // Strong but slower
     "ECDHE-RSA-CHACHA20-POLY1305";    // Good for mobile/ARM

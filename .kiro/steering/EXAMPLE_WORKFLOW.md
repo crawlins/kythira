@@ -52,16 +52,16 @@ auto print_separator(const std::string& title) -> void {
 
 auto test_scenario_1() -> bool {
     print_separator("Test 1: Basic Feature Usage");
-    
+
     try {
         LocalNetworkFixture fixture;
         fixture.start();
-        
+
         auto node_a = fixture.create(node_a_id);
         auto node_b = fixture.create(node_b_id);
-        
+
         // Test logic here
-        
+
         std::cout << "  ✓ Scenario passed\n";
         return true;
     } catch (const std::exception& e) {
@@ -72,10 +72,10 @@ auto test_scenario_1() -> bool {
 
 auto test_scenario_2() -> bool {
     print_separator("Test 2: Advanced Feature Usage");
-    
+
     try {
         // Test logic here
-        
+
         std::cout << "  ✓ Scenario passed\n";
         return true;
     } catch (const std::exception& e) {
@@ -87,26 +87,26 @@ auto test_scenario_2() -> bool {
 int main() {
     std::cout << "My Feature Example\n";
     std::cout << "==================\n";
-    
+
     int failed_scenarios = 0;
-    
+
     // Run all scenarios
     if (!test_scenario_1()) failed_scenarios++;
     if (!test_scenario_2()) failed_scenarios++;
-    
+
     // Print summary
     print_separator("Summary");
-    
+
     if (failed_scenarios > 0) {
         std::cerr << "❌ " << failed_scenarios << " scenario(s) failed\n";
         return 1;
     }
-    
+
     std::cout << "✅ All scenarios passed!\n";
     std::cout << "\nKey Features Demonstrated:\n";
     std::cout << "  • Feature capability 1\n";
     std::cout << "  • Feature capability 2\n";
-    
+
     return 0;
 }
 ```
@@ -119,7 +119,7 @@ Add your example to the appropriate CMakeLists.txt file:
 
 ```cmake
 # Add after existing examples
-add_network_example(my_feature_example 
+add_network_example(my_feature_example
     network-test-fixture/my_feature_example.cpp
     network-test-fixture)
 ```
@@ -128,7 +128,7 @@ add_network_example(my_feature_example
 
 ```cmake
 add_executable(my_raft_example my_raft_example.cpp)
-target_link_libraries(my_raft_example PRIVATE 
+target_link_libraries(my_raft_example PRIVATE
     raft
     network_fixture
     Folly::folly
@@ -260,7 +260,7 @@ for example in build/examples/*/*; do
         echo "=========================================="
         echo "Running: $(basename $example)"
         echo "=========================================="
-        
+
         if ! "$example"; then
             echo "FAILED: $example"
             failed=$((failed + 1))
@@ -286,7 +286,7 @@ fi
 
 **Problem**: CMake can't find the example target
 
-**Solution**: 
+**Solution**:
 1. Verify the example is added to CMakeLists.txt
 2. Reconfigure CMake: `cmake -S . -B build`
 3. Check for typos in target name

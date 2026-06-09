@@ -1,7 +1,7 @@
 /**
  * @file concepts_usage_examples.cpp
  * @brief Comprehensive examples demonstrating the usage of enhanced C++20 concepts
- * 
+ *
  * This file provides practical examples of how to use the concepts defined in
  * include/concepts/future.hpp with both Folly types and custom implementations.
  */
@@ -55,12 +55,12 @@ auto extract_value_safely(const TryType& try_obj, int default_value) -> int {
 
 auto demonstrate_try_concept() -> void {
     std::cout << "\n=== Try Concept Example ===\n";
-    
+
     // Success case
     kythira::Try<int> success_try = kythira::Try<int>(example_value);
     auto result1 = extract_value_safely(success_try, 0);
     std::cout << "Success case result: " << result1 << "\n";
-    
+
     // Error case
     kythira::Try<int> error_try = kythira::Try<int>(
         folly::exception_wrapper(std::runtime_error(example_error_message))
@@ -79,7 +79,7 @@ auto demonstrate_try_concept() -> void {
 template<kythira::future<int> FutureType>
 auto process_async_result(FutureType future) -> int {
     std::cout << "Processing future...\n";
-    
+
     if (future.isReady()) {
         std::cout << "Future is ready, getting result immediately\n";
         return std::move(future).get();
@@ -96,23 +96,23 @@ auto process_async_result(FutureType future) -> int {
 
 auto demonstrate_future_concept() -> void {
     std::cout << "\n=== Future Concept Example ===\n";
-    
+
     // Ready future
     auto ready_future = kythira::Future<int>(example_value);
     auto result1 = process_async_result(std::move(ready_future));
     std::cout << "Ready future result: " << result1 << "\n";
-    
+
     // Future with continuation
     folly::Promise<int> promise;
     auto folly_future = promise.getFuture();
     auto future = kythira::Future<int>(std::move(folly_future));
-    
+
     // Fulfill promise in background thread
     std::thread([p = std::move(promise)]() mutable {
         std::this_thread::sleep_for(example_delay);
         p.setValue(example_value / 2);
     }).detach();
-    
+
     auto result2 = process_async_result(std::move(future));
     std::cout << "Async future result: " << result2 << "\n";
 }
@@ -129,7 +129,7 @@ auto create_greeting_future(PromiseType promise, const std::string& name) -> kyt
     // Get future before fulfilling promise
     auto folly_future = promise.getFuture();
     auto future = kythira::Future<std::string>(std::move(folly_future));
-    
+
     // Fulfill promise asynchronously
     std::thread([p = std::move(promise), name]() mutable {
         std::this_thread::sleep_for(example_delay);
@@ -137,7 +137,7 @@ auto create_greeting_future(PromiseType promise, const std::string& name) -> kyt
             p.setValue("Hello, " + name + "!");
         }
     }).detach();
-    
+
     return future;
 }
 
@@ -160,13 +160,13 @@ auto fulfill_computation(SemiPromiseType& promise, int input) -> void {
 
 auto demonstrate_promise_concepts() -> void {
     std::cout << "\n=== Promise Concepts Example ===\n";
-    
+
     // Promise concept example
     folly::Promise<std::string> greeting_promise;
     auto greeting_future = create_greeting_future(std::move(greeting_promise), "World");
     auto greeting = std::move(greeting_future).get();
     std::cout << "Greeting: " << greeting << "\n";
-    
+
     // Semi-promise concept example
     folly::Promise<int> computation_promise;
     auto computation_folly_future = computation_promise.getFuture();
@@ -186,11 +186,11 @@ auto demonstrate_promise_concepts() -> void {
 template<kythira::executor ExecutorType>
 auto schedule_parallel_work(ExecutorType& executor, int num_tasks) -> void {
     std::cout << "Scheduling " << num_tasks << " parallel tasks\n";
-    
+
     for (int i = 0; i < num_tasks; ++i) {
         executor.add([i]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            std::cout << "Task " << i << " completed on thread " 
+            std::cout << "Task " << i << " completed on thread "
                       << std::this_thread::get_id() << "\n";
         });
     }
@@ -202,7 +202,7 @@ auto schedule_parallel_work(ExecutorType& executor, int num_tasks) -> void {
 template<kythira::keep_alive KeepAliveType>
 auto schedule_safe_work(KeepAliveType keep_alive, const std::string& work_name) -> void {
     std::cout << "Scheduling safe work: " << work_name << "\n";
-    
+
     // The keep-alive ensures executor lifetime during work execution
     std::move(keep_alive).add([work_name](auto&&) {
         std::this_thread::sleep_for(example_delay);
@@ -212,18 +212,18 @@ auto schedule_safe_work(KeepAliveType keep_alive, const std::string& work_name) 
 
 auto demonstrate_executor_concepts() -> void {
     std::cout << "\n=== Executor Concepts Example ===\n";
-    
+
     // Executor concept example
     folly::CPUThreadPoolExecutor thread_pool(thread_pool_size);
     schedule_parallel_work(thread_pool, 3);
-    
+
     // Wait for tasks to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
+
     // KeepAlive concept example - use static method
     auto keep_alive = folly::Executor::getKeepAliveToken(&thread_pool);
     schedule_safe_work(std::move(keep_alive), "Critical Task");
-    
+
     // Wait for safe work to complete
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 }
@@ -235,54 +235,54 @@ auto demonstrate_executor_concepts() -> void {
 /**
  * Complex example combining multiple concepts
  */
-template<kythira::future<int> FutureType, 
+template<kythira::future<int> FutureType,
          kythira::executor ExecutorType>
 auto process_batch_async(std::vector<int> inputs, ExecutorType& executor) -> std::vector<int> {
     std::cout << "Processing batch of " << inputs.size() << " items\n";
-    
+
     std::vector<kythira::Future<int>> futures;
     futures.reserve(inputs.size());
-    
+
     // Create futures for each input
     for (int input : inputs) {
         folly::Promise<int> promise;
         auto folly_future = promise.getFuture();
         auto future = kythira::Future<int>(std::move(folly_future));
-        
+
         // Schedule work on executor
         executor.add([p = std::move(promise), input]() mutable {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             p.setValue(input * input);
         });
-        
+
         futures.push_back(std::move(future));
     }
-    
+
     // Collect all results (simplified - would use collectAll in real code)
     std::vector<int> results;
     results.reserve(futures.size());
-    
+
     for (auto& future : futures) {
         results.push_back(std::move(future).get());
     }
-    
+
     return results;
 }
 
 auto demonstrate_advanced_concepts() -> void {
     std::cout << "\n=== Advanced Concepts Example ===\n";
-    
+
     // Batch processing example
     folly::CPUThreadPoolExecutor executor(thread_pool_size);
     std::vector<int> inputs = {1, 2, 3, 4, 5};
     auto results = process_batch_async<kythira::Future<int>>(inputs, executor);
-    
+
     std::cout << "Batch results: ";
     for (int result : results) {
         std::cout << result << " ";
     }
     std::cout << "\n";
-    
+
     // Simple future creation example
     std::cout << "Simple future creation demonstrated\n";
     auto simple_future = kythira::Future<int>(36);
@@ -296,26 +296,26 @@ auto demonstrate_advanced_concepts() -> void {
 
 auto demonstrate_concept_validation() -> void {
     std::cout << "\n=== Concept Validation Example ===\n";
-    
+
     // Static assertions to verify Folly types satisfy concepts
     static_assert(kythira::try_type<kythira::Try<int>, int>);
     static_assert(kythira::try_type<kythira::Try<std::string>, std::string>);
     // Note: kythira::Try<void> is supported
     static_assert(kythira::try_type<kythira::Try<void>, void>);
-    
+
     static_assert(kythira::future<kythira::Future<int>, int>);
     static_assert(kythira::future<kythira::Future<std::string>, std::string>);
     // Note: kythira::Future<void> is supported
     static_assert(kythira::future<kythira::Future<void>, void>);
-    
+
     static_assert(kythira::semi_promise<folly::Promise<int>, int>);
     static_assert(kythira::promise<folly::Promise<int>, int>);
-    
+
     static_assert(kythira::executor<folly::CPUThreadPoolExecutor>);
-    
+
     using KeepAliveType = folly::Executor::KeepAlive<folly::CPUThreadPoolExecutor>;
     static_assert(kythira::keep_alive<KeepAliveType>);
-    
+
     std::cout << "All static assertions passed!\n";
     std::cout << "Kythira wrapper types successfully satisfy the enhanced concepts.\n";
     std::cout << "Note: Kythira wrappers support void types properly.\n";
@@ -330,7 +330,7 @@ auto demonstrate_concept_validation() -> void {
 auto main() -> int {
     std::cout << "Enhanced C++20 Concepts Usage Examples\n";
     std::cout << "======================================\n";
-    
+
     try {
         examples::demonstrate_try_concept();
         examples::demonstrate_future_concept();
@@ -338,10 +338,10 @@ auto main() -> int {
         examples::demonstrate_executor_concepts();
         examples::demonstrate_advanced_concepts();
         examples::demonstrate_concept_validation();
-        
+
         std::cout << "\n=== All Examples Completed Successfully ===\n";
         return 0;
-        
+
     } catch (const std::exception& e) {
         std::cerr << "Example failed with exception: " << e.what() << "\n";
         return 1;

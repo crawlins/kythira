@@ -15,7 +15,7 @@ public:
     // Commands: WRITE <value>, READ, CAS <expected> <new>
     auto apply(const std::vector<std::byte>& command, std::uint64_t) -> std::vector<std::byte> {
         std::string cmd(reinterpret_cast<const char*>(command.data()), command.size());
-        
+
         if (cmd.starts_with("WRITE ")) {
             _value = cmd.substr(6);
             ++_version;
@@ -33,13 +33,13 @@ public:
         }
         throw std::invalid_argument("Unknown command type");
     }
-    
+
     auto get_state() const -> std::vector<std::byte> {
         std::string state = std::to_string(_version) + ":" + _value;
         return {reinterpret_cast<const std::byte*>(state.data()),
                 reinterpret_cast<const std::byte*>(state.data() + state.size())};
     }
-    
+
     auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t) -> void {
         std::string s(reinterpret_cast<const char*>(state.data()), state.size());
         auto pos = s.find(':');
@@ -52,7 +52,7 @@ public:
 private:
     std::string _value;
     std::uint64_t _version = 0;
-    
+
     static auto split(const std::string& s) -> std::vector<std::string> {
         std::vector<std::string> result;
         std::size_t start = 0, end;
@@ -63,7 +63,7 @@ private:
         if (start < s.size()) result.push_back(s.substr(start));
         return result;
     }
-    
+
     static auto to_bytes(const std::string& s) -> std::vector<std::byte> {
         return {reinterpret_cast<const std::byte*>(s.data()),
                 reinterpret_cast<const std::byte*>(s.data() + s.size())};

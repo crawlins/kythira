@@ -18,15 +18,15 @@ using test_transport_types = kythira::default_transport_types<
 struct coap_multicast_validation_fixture {
     using client_type = kythira::coap_client<test_transport_types>;
     using server_type = kythira::coap_server<test_transport_types>;
-    
+
     kythira::coap_client_config client_config;
     kythira::coap_server_config server_config;
-    
+
     coap_multicast_validation_fixture() {
         // Configure client
         client_config.enable_dtls = false;
         client_config.max_sessions = 10;
-        
+
         // Configure server
         server_config.enable_dtls = false;
         server_config.enable_multicast = true;
@@ -41,7 +41,7 @@ BOOST_FIXTURE_TEST_SUITE(coap_multicast_address_validation_suite, coap_multicast
 BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses, * boost::unit_test::timeout(15)) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
-    
+
     // Test valid multicast addresses in the 224.0.0.0/4 range
     BOOST_CHECK(client.is_valid_multicast_address("224.0.0.0"));
     BOOST_CHECK(client.is_valid_multicast_address("224.0.1.187"));
@@ -56,7 +56,7 @@ BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses, * boost::unit_test::timeout
 BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses, * boost::unit_test::timeout(15)) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
-    
+
     // Test invalid addresses
     BOOST_CHECK(!client.is_valid_multicast_address(""));  // Empty string
     BOOST_CHECK(!client.is_valid_multicast_address("192.168.1.1"));  // Unicast address
@@ -75,15 +75,15 @@ BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses, * boost::unit_test::timeo
 BOOST_AUTO_TEST_CASE(test_multicast_address_edge_cases, * boost::unit_test::timeout(15)) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
-    
+
     // Test boundary values
     BOOST_CHECK(client.is_valid_multicast_address("224.0.0.0"));  // Lower bound
     BOOST_CHECK(client.is_valid_multicast_address("239.255.255.255"));  // Upper bound
-    
+
     // Test just outside boundaries
     BOOST_CHECK(!client.is_valid_multicast_address("223.255.255.255"));  // Just below
     BOOST_CHECK(!client.is_valid_multicast_address("240.0.0.0"));  // Just above
-    
+
     // Test malformed addresses
     BOOST_CHECK(!client.is_valid_multicast_address("224.0.0."));  // Trailing dot
     BOOST_CHECK(!client.is_valid_multicast_address(".224.0.0.0"));  // Leading dot
@@ -99,13 +99,13 @@ BOOST_AUTO_TEST_CASE(test_server_multicast_validation, * boost::unit_test::timeo
     config.enable_multicast = true;
     config.multicast_address = "224.0.1.187";
     config.multicast_port = 5683;
-    
+
     server_type server("0.0.0.0", 5683, config, test_transport_types::metrics_type{});
-    
+
     // Test valid multicast addresses
     BOOST_CHECK(server.is_valid_multicast_address("224.0.1.187"));
     BOOST_CHECK(server.is_valid_multicast_address("239.255.255.255"));
-    
+
     // Test invalid addresses
     BOOST_CHECK(!server.is_valid_multicast_address("192.168.1.1"));
     BOOST_CHECK(!server.is_valid_multicast_address(""));

@@ -18,7 +18,7 @@ struct parsed_endpoint {
     std::string host;        // hostname or IP address
     std::uint16_t port;      // port number
     std::string path;        // resource path (optional)
-    
+
     parsed_endpoint() = default;
     parsed_endpoint(std::string s, std::string h, std::uint16_t p, std::string path = "")
         : scheme(std::move(s)), host(std::move(h)), port(p), path(std::move(path)) {}
@@ -26,11 +26,11 @@ struct parsed_endpoint {
 
 inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint {
     parsed_endpoint result;
-    
+
     if (endpoint.empty()) {
         throw coap_network_error("Empty endpoint");
     }
-    
+
     // Parse scheme
     std::string rest;
     if (endpoint.find("coaps://") == 0) {
@@ -42,7 +42,7 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
     } else {
         throw coap_network_error("Invalid scheme - must be coap:// or coaps://");
     }
-    
+
     // Parse path if present
     auto slash_pos = rest.find('/');
     std::string host_port;
@@ -52,7 +52,7 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
     } else {
         host_port = rest;
     }
-    
+
     // Parse host and port
     auto colon_pos = host_port.find(':');
     if (colon_pos != std::string::npos) {
@@ -71,7 +71,7 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
         result.host = host_port;
         result.port = (result.scheme == "coaps") ? 5684 : 5683; // Default ports
     }
-    
+
     return result;
 }
 
@@ -85,7 +85,7 @@ inline auto format_coap_endpoint(const parsed_endpoint& endpoint) -> std::string
     if (endpoint.port == 0) {
         throw coap_network_error("Invalid port - must be non-zero");
     }
-    
+
     return endpoint.scheme + "://" + endpoint.host + ":" + std::to_string(endpoint.port) + endpoint.path;
 }
 
@@ -93,11 +93,11 @@ inline auto is_valid_coap_endpoint(const std::string& endpoint) -> bool {
     if (endpoint.empty()) {
         return false;
     }
-    
+
     if (endpoint.find("coap://") != 0 && endpoint.find("coaps://") != 0) {
         return false;
     }
-    
+
     // Try to parse and validate
     try {
         auto parsed = parse_coap_endpoint(endpoint);
@@ -115,18 +115,18 @@ inline auto generate_coap_token(std::size_t length = 4) -> std::vector<std::byte
     if (length > 8) {
         throw coap_transport_error("Token length must be at most 8 bytes");
     }
-    
+
     std::vector<std::byte> token(length);
-    
+
     // Use current time and random number for token generation
     static std::random_device rd;
     static std::mt19937 gen(rd());
     std::uniform_int_distribution<std::uint8_t> dis(0, 255);
-    
+
     for (std::size_t i = 0; i < length; ++i) {
         token[i] = static_cast<std::byte>(dis(gen));
     }
-    
+
     return token;
 }
 
@@ -147,12 +147,12 @@ enum class coap_content_format : std::uint16_t {
 
 inline auto get_content_format_for_serializer(const std::string& serializer_name) -> coap_content_format {
     // Check for JSON variants
-    if (serializer_name.find("json") != std::string::npos || 
+    if (serializer_name.find("json") != std::string::npos ||
         serializer_name.find("JSON") != std::string::npos) {
         return coap_content_format::application_json;
     }
     // Check for CBOR variants
-    if (serializer_name.find("cbor") != std::string::npos || 
+    if (serializer_name.find("cbor") != std::string::npos ||
         serializer_name.find("CBOR") != std::string::npos) {
         return coap_content_format::application_cbor;
     }
@@ -164,7 +164,7 @@ inline auto get_content_format_for_serializer(const std::string& serializer_name
     if (serializer_name == "text" || serializer_name == "TEXT") {
         return coap_content_format::text_plain;
     }
-    
+
     // Default to CBOR for unknown serializers
     return coap_content_format::application_cbor;
 }
@@ -218,7 +218,7 @@ inline auto calculate_block_size_szx(std::size_t block_size) -> std::uint8_t {
     if ((block_size & (block_size - 1)) != 0) {
         throw coap_transport_error("Block size must be a power of 2");
     }
-    
+
     // Calculate SZX from block size (SZX = log2(block_size) - 4)
     std::uint8_t szx = 0;
     std::size_t size = block_size;
@@ -234,7 +234,7 @@ inline auto szx_to_block_size(std::uint8_t szx) -> std::size_t {
     if (szx > 6) {
         throw coap_transport_error("SZX value must be 0-6 (block sizes 16-1024)");
     }
-    
+
     // Convert SZX to block size (block_size = 2^(SZX+4))
     return 1U << (szx + 4);
 }

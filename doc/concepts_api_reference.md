@@ -48,7 +48,7 @@ A type `T` satisfies `try_type<T, ValueType>` if it provides:
 ValueType& value();                    // Non-const value access
 const ValueType& value() const;        // Const value access
 
-// State checking methods  
+// State checking methods
 bool hasValue() const;                 // Check if contains value
 bool hasException() const;             // Check if contains exception
 
@@ -147,7 +147,7 @@ auto process_result(FutureType fut) -> int {
     if (fut.isReady()) {
         return std::move(fut).get();
     }
-    
+
     return std::move(fut)
         .thenValue([](int value) { return value * 2; })
         .get();
@@ -261,12 +261,12 @@ auto getSemiFuture();                  // Get associated semi-future
 template<promise<int> PromiseType>
 auto create_async_computation(PromiseType promise) -> auto {
     auto future = promise.getFuture();
-    
+
     std::thread([p = std::move(promise)]() mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         p.setValue(42);
     }).detach();
-    
+
     return future;
 }
 
@@ -401,7 +401,7 @@ A type `Factory` satisfies `future_factory<Factory>` if it provides static metho
 template<typename T>
 static auto makeFuture(T value);      // Create future from value
 
-template<typename T>  
+template<typename T>
 static auto makeExceptionalFuture(std::exception_ptr ex); // Create future from exception
 
 static auto makeReadyFuture();        // Create ready void future
@@ -424,12 +424,12 @@ struct MyFutureFactory {
     static auto makeFuture(T value) -> folly::Future<T> {
         return folly::makeFuture(std::move(value));
     }
-    
+
     template<typename T>
     static auto makeExceptionalFuture(std::exception_ptr ex) -> folly::Future<T> {
         return folly::makeFuture<T>(folly::exception_wrapper(ex));
     }
-    
+
     static auto makeReadyFuture() -> folly::Future<void> {
         return folly::makeFuture();
     }
@@ -468,7 +468,7 @@ A type `C` satisfies `future_collector<C>` if it provides static methods:
 ```cpp
 // Collection methods
 template<typename T>
-static auto collect_all(std::vector<Future<T>> futures) 
+static auto collect_all(std::vector<Future<T>> futures)
     -> future<std::vector<Try<T>>>;    // Collect all futures
 
 template<typename T>
@@ -476,7 +476,7 @@ static auto collect_any(std::vector<Future<T>> futures)
     -> future<std::tuple<std::size_t, Try<T>>>; // Collect first completion
 
 template<typename T>
-static auto collect_all_timeout(std::vector<Future<T>> futures, 
+static auto collect_all_timeout(std::vector<Future<T>> futures,
                                std::chrono::milliseconds timeout); // Collect with timeout
 ```
 
@@ -485,19 +485,19 @@ static auto collect_all_timeout(std::vector<Future<T>> futures,
 ```cpp
 struct MyFutureCollector {
     template<typename T>
-    static auto collect_all(std::vector<folly::Future<T>> futures) 
+    static auto collect_all(std::vector<folly::Future<T>> futures)
         -> folly::Future<std::vector<folly::Try<T>>> {
         return folly::collectAll(futures.begin(), futures.end());
     }
-    
+
     template<typename T>
     static auto collect_any(std::vector<folly::Future<T>> futures)
         -> folly::Future<std::tuple<std::size_t, folly::Try<T>>> {
         return folly::collectAny(futures.begin(), futures.end());
     }
-    
+
     template<typename T>
-    static auto collect_all_timeout(std::vector<folly::Future<T>> futures, 
+    static auto collect_all_timeout(std::vector<folly::Future<T>> futures,
                                    std::chrono::milliseconds timeout) -> auto {
         return folly::collectAll(futures.begin(), futures.end()).within(timeout);
     }

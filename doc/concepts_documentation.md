@@ -98,7 +98,7 @@ auto process_async_result(FutureType fut) -> int {
     if (fut.isReady()) {
         return std::move(fut).get();
     }
-    
+
     // Chain continuation
     return std::move(fut)
         .thenValue([](int value) { return value * 2; })
@@ -193,13 +193,13 @@ template<promise<int> PromiseType>
 auto create_async_computation(PromiseType promise) -> auto {
     // Get the future before fulfilling
     auto future = promise.getFuture();
-    
+
     // Fulfill the promise asynchronously
     std::thread([p = std::move(promise)]() mutable {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         p.setValue(42);
     }).detach();
-    
+
     return future;
 }
 
@@ -318,7 +318,7 @@ concept future_factory = /* implementation details */;
 #### Requirements
 
 - **Value Construction**: `makeFuture(value)` static method
-- **Exception Construction**: `makeExceptionalFuture<T>(exception)` static method  
+- **Exception Construction**: `makeExceptionalFuture<T>(exception)` static method
 - **Ready Construction**: `makeReadyFuture()` static method
 
 #### Usage Examples
@@ -330,12 +330,12 @@ struct MyFutureFactory {
     static auto makeFuture(T value) -> folly::Future<T> {
         return folly::makeFuture(std::move(value));
     }
-    
+
     template<typename T>
     static auto makeExceptionalFuture(std::exception_ptr ex) -> folly::Future<T> {
         return folly::makeFuture<T>(folly::exception_wrapper(ex));
     }
-    
+
     static auto makeReadyFuture() -> folly::Future<void> {
         return folly::makeFuture();
     }
@@ -376,19 +376,19 @@ concept future_collector = /* implementation details */;
 // Example collector implementation
 struct MyFutureCollector {
     template<typename T>
-    static auto collect_all(std::vector<folly::Future<T>> futures) 
+    static auto collect_all(std::vector<folly::Future<T>> futures)
         -> folly::Future<std::vector<folly::Try<T>>> {
         return folly::collectAll(futures.begin(), futures.end());
     }
-    
+
     template<typename T>
     static auto collect_any(std::vector<folly::Future<T>> futures)
         -> folly::Future<std::tuple<std::size_t, folly::Try<T>>> {
         return folly::collectAny(futures.begin(), futures.end());
     }
-    
+
     template<typename T>
-    static auto collect_all_timeout(std::vector<folly::Future<T>> futures, 
+    static auto collect_all_timeout(std::vector<folly::Future<T>> futures,
                                    std::chrono::milliseconds timeout) -> auto {
         return folly::collectAll(futures.begin(), futures.end())
             .within(timeout);
@@ -479,7 +479,7 @@ Replace ad-hoc template constraints with concepts:
 
 ```cpp
 // Before - Manual SFINAE
-template<typename F, 
+template<typename F,
          typename = std::enable_if_t<
              std::is_same_v<F, folly::Future<int>>
          >>
@@ -500,7 +500,7 @@ template<future<Response> FutureType>
 class HttpClient {
 public:
     auto send_request(const Request& req) -> FutureType;
-    
+
 private:
     template<promise<Response> PromiseType>
     void fulfill_request(PromiseType promise, const Request& req);
@@ -521,7 +521,7 @@ Combine concepts for more specific requirements:
 
 ```cpp
 template<typename F, typename T>
-concept async_processor = future<F, T> && 
+concept async_processor = future<F, T> &&
                          future_continuation<F, T> &&
                          requires(F f) {
     { f.isReady() } -> std::convertible_to<bool>;

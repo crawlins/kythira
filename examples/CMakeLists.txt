@@ -8,7 +8,7 @@ function(add_network_example example_name source_file)
         target_link_libraries(${example_name} PRIVATE Folly::folly)
     endif()
     target_compile_features(${example_name} PRIVATE cxx_std_23)
-    
+
     # Set output directory for the executable
     set_target_properties(${example_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
@@ -109,14 +109,14 @@ function(add_folly_wrapper_example example_name source_file)
         target_link_libraries(${example_name} PRIVATE Folly::folly)
     endif()
     target_compile_features(${example_name} PRIVATE cxx_std_23)
-    
+
     # Add compiler flags for better debugging and optimization
     target_compile_options(${example_name} PRIVATE
         $<$<CONFIG:Debug>:-g -O0 -Wall -Wextra>
         $<$<CONFIG:Release>:-O3 -DNDEBUG>
         $<$<CONFIG:RelWithDebInfo>:-O2 -g -DNDEBUG>
     )
-    
+
     # Set output directory for the executable
     set_target_properties(${example_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples/folly-wrappers"

@@ -1,7 +1,7 @@
 # Raft Performance Benchmarking Framework - Implementation Summary
 
-**Date**: February 2026  
-**Task**: 610 - Create performance benchmarking framework  
+**Date**: February 2026
+**Task**: 610 - Create performance benchmarking framework
 **Requirements**: 13.1, 13.2, 13.3, 13.4, 13.5
 
 ## Overview

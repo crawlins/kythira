@@ -28,10 +28,10 @@ concept diagnostic_logger = requires(
 ) {
     // Basic logging with level and message
     { logger.log(level, message) } -> std::same_as<void>;
-    
+
     // Structured logging with key-value pairs
     { logger.log(level, message, key_value_pairs) } -> std::same_as<void>;
-    
+
     // Convenience methods for each log level
     { logger.trace(message) } -> std::same_as<void>;
     { logger.debug(message) } -> std::same_as<void>;

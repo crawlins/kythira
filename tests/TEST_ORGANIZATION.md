@@ -24,7 +24,7 @@ This document describes the hierarchical organization of test source files into 
 - Future concept tests and wrappers
 - Network, logger, metrics, and persistence concepts
 
-**Timeout**: 120 seconds  
+**Timeout**: 120 seconds
 **Labels**: `concepts`, `unit`
 
 **Key Files**:
@@ -47,7 +47,7 @@ This document describes the hierarchical organization of test source files into 
 - Listener management
 - Integration scenarios
 
-**Timeout**: 180 seconds  
+**Timeout**: 180 seconds
 **Labels**: `network`, `simulator`, `unit`, `integration`
 
 **Key Files**:
@@ -71,7 +71,7 @@ This document describes the hierarchical organization of test source files into 
 - RPC handlers
 - Persistence
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `core`, `unit`, `property`
 
 **Key Files**:
@@ -93,7 +93,7 @@ This document describes the hierarchical organization of test source files into 
 - Retry mechanisms
 - Partition handling
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `replication`, `property`
 
 **Key Files**:
@@ -113,7 +113,7 @@ This document describes the hierarchical organization of test source files into 
 - Applied index catchup
 - Batch entry application
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `commit`, `state_machine`, `property`
 
 **Key Files**:
@@ -132,7 +132,7 @@ This document describes the hierarchical organization of test source files into 
 - Timeout handling in collections
 - Cancellation and cleanup
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `future`, `collection`, `property`
 
 **Key Files**:
@@ -150,7 +150,7 @@ This document describes the hierarchical organization of test source files into 
 - Timeout classification
 - Error logging (RPC, commit, configuration, etc.)
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `error`, `retry`, `property`
 
 **Key Files**:
@@ -171,7 +171,7 @@ This document describes the hierarchical organization of test source files into 
 - Concurrent read efficiency
 - Heartbeat-based read state
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `reads`, `linearizable`, `property`
 
 **Key Files**:
@@ -192,7 +192,7 @@ This document describes the hierarchical organization of test source files into 
 - Shutdown and cleanup
 - Resource leak prevention
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `raft`, `configuration`, `lifecycle`, `property`
 
 **Key Files**:
@@ -219,7 +219,7 @@ This document describes the hierarchical organization of test source files into 
 - Client operations
 - Cluster management
 
-**Timeout**: 600 seconds  
+**Timeout**: 600 seconds
 **Labels**: `raft`, `integration`
 
 **Key Files**:
@@ -240,7 +240,7 @@ This document describes the hierarchical organization of test source files into 
 - Certificate loading
 - Mutual TLS
 
-**Timeout**: 180 seconds  
+**Timeout**: 180 seconds
 **Labels**: `http`, `transport`, `unit`, `property`, `integration`
 
 **Key Files**:
@@ -262,7 +262,7 @@ This document describes the hierarchical organization of test source files into 
 - Event logging
 - Error handling
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `coap`, `transport`, `unit`, `property`
 
 **Key Files**:
@@ -282,7 +282,7 @@ This document describes the hierarchical organization of test source files into 
 - Handshake procedures
 - Cipher suite configuration
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `coap`, `dtls`, `security`, `property`
 
 **Key Files**:
@@ -301,7 +301,7 @@ This document describes the hierarchical organization of test source files into 
 - Group communication
 - Response aggregation
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `coap`, `multicast`, `property`
 
 **Key Files**:
@@ -316,7 +316,7 @@ This document describes the hierarchical organization of test source files into 
 - Real block transfer
 - Enhanced block transfer
 
-**Timeout**: 300 seconds  
+**Timeout**: 300 seconds
 **Labels**: `coap`, `block_transfer`, `property`
 
 **Key Files**:
@@ -334,7 +334,7 @@ This document describes the hierarchical organization of test source files into 
 - Performance benchmarks
 - Production readiness
 
-**Timeout**: 900 seconds  
+**Timeout**: 900 seconds
 **Labels**: `coap`, `integration`, `performance`
 
 **Key Files**:
@@ -354,7 +354,7 @@ This document describes the hierarchical organization of test source files into 
 - Serializer concept compliance
 - Malformed message handling
 
-**Timeout**: 120 seconds  
+**Timeout**: 120 seconds
 **Labels**: `rpc`, `serialization`, `unit`, `property`
 
 **Key Files**:
@@ -376,7 +376,7 @@ This document describes the hierarchical organization of test source files into 
 - Behavioral preservation
 - Performance benchmarks
 
-**Timeout**: 120 seconds  
+**Timeout**: 120 seconds
 **Labels**: `quality`, `consistency`, `unit`
 
 **Key Files**:
@@ -530,15 +530,15 @@ jobs:
           - http_transport_test
           - coap_transport_test
           - coap_integration_test
-    
+
     steps:
       - uses: actions/checkout@v2
-      
+
       - name: Build
         run: |
           cmake -B build
           cmake --build build
-      
+
       - name: Run ${{ matrix.test_group }}
         run: |
           cd build

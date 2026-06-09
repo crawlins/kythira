@@ -18,13 +18,13 @@ concept state_machine = requires(
     LogIndex index
 ) {
     requires log_index<LogIndex>;
-    
+
     // Apply a committed log entry to the state machine
     { sm.apply(command, index) } -> std::same_as<std::vector<std::byte>>;
-    
+
     // Get the current state of the state machine for snapshot creation
     { const_sm.get_state() } -> std::same_as<std::vector<std::byte>>;
-    
+
     // Restore the state machine from a snapshot
     { sm.restore_from_snapshot(snapshot_data, index) } -> std::same_as<void>;
 };
@@ -177,19 +177,19 @@ template<typename LogIndex = std::uint64_t>
 requires log_index<LogIndex>
 class my_state_machine {
 public:
-    auto apply(const std::vector<std::byte>& command, LogIndex index) 
+    auto apply(const std::vector<std::byte>& command, LogIndex index)
         -> std::vector<std::byte> {
         // Parse command
         // Update internal state
         // Return result
     }
-    
+
     auto get_state() const -> std::vector<std::byte> {
         // Serialize internal state
         // Return snapshot data
     }
-    
-    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, LogIndex index) 
+
+    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, LogIndex index)
         -> void {
         // Clear existing state
         // Deserialize snapshot data

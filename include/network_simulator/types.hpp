@@ -17,36 +17,36 @@ namespace network_simulator {
 // Wrapper for in_addr to satisfy address concept
 struct IPv4Address {
     in_addr _addr;
-    
+
     IPv4Address() : _addr{} {}
     explicit IPv4Address(in_addr addr) : _addr(addr) {}
-    
+
     auto operator==(const IPv4Address& other) const -> bool {
         return _addr.s_addr == other._addr.s_addr;
     }
-    
+
     auto operator!=(const IPv4Address& other) const -> bool {
         return !(*this == other);
     }
-    
+
     auto get() const -> const in_addr& { return _addr; }
 };
 
 // Wrapper for in6_addr to satisfy address concept
 struct IPv6Address {
     in6_addr _addr;
-    
+
     IPv6Address() : _addr{} {}
     explicit IPv6Address(in6_addr addr) : _addr(addr) {}
-    
+
     auto operator==(const IPv6Address& other) const -> bool {
         return std::memcmp(&_addr, &other._addr, sizeof(in6_addr)) == 0;
     }
-    
+
     auto operator!=(const IPv6Address& other) const -> bool {
         return !(*this == other);
     }
-    
+
     auto get() const -> const in6_addr& { return _addr; }
 };
 
@@ -57,14 +57,14 @@ public:
     SimpleFuture() = default;
     explicit SimpleFuture(T value) : _value(std::move(value)), _ready(true) {}
     explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
-    
+
     auto get() -> T {
         if (_exception) {
             std::rethrow_exception(_exception);
         }
         return _value;
     }
-    
+
     template<typename F>
     auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F, T>> {
         if (_exception) {
@@ -76,7 +76,7 @@ public:
             return SimpleFuture<std::invoke_result_t<F, T>>(std::current_exception());
         }
     }
-    
+
     template<typename F>
     auto onError(F&& func) -> SimpleFuture<T> {
         if (_exception) {
@@ -88,14 +88,14 @@ public:
         }
         return *this;
     }
-    
+
     auto isReady() const -> bool { return _ready; }
-    
+
     auto wait(std::chrono::milliseconds timeout) -> bool {
         // Simple implementation - always ready for now
         return _ready;
     }
-    
+
 private:
     T _value{};
     std::exception_ptr _exception;
@@ -108,13 +108,13 @@ class SimpleFuture<void> {
 public:
     SimpleFuture() : _ready(true) {}
     explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
-    
+
     auto get() -> void {
         if (_exception) {
             std::rethrow_exception(_exception);
         }
     }
-    
+
     template<typename F>
     auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F>> {
         if (_exception) {
@@ -131,7 +131,7 @@ public:
             return SimpleFuture<std::invoke_result_t<F>>(std::current_exception());
         }
     }
-    
+
     template<typename F>
     auto onError(F&& func) -> SimpleFuture<void> {
         if (_exception) {
@@ -143,14 +143,14 @@ public:
         }
         return *this;
     }
-    
+
     auto isReady() const -> bool { return _ready; }
-    
+
     auto wait(std::chrono::milliseconds timeout) -> bool {
         // Simple implementation - always ready for now
         return _ready;
     }
-    
+
 private:
     std::exception_ptr _exception;
     bool _ready = false;
@@ -178,11 +178,11 @@ class Message {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
-    
+
     // Default constructor for empty messages
     Message() = default;
-    
-    Message(address_type src_addr, port_type src_port, 
+
+    Message(address_type src_addr, port_type src_port,
             address_type dst_addr, port_type dst_port,
             std::vector<std::byte> payload = {})
         : _source_address(std::move(src_addr))
@@ -191,13 +191,13 @@ public:
         , _destination_port(std::move(dst_port))
         , _payload(std::move(payload))
     {}
-    
+
     auto source_address() const -> address_type { return _source_address; }
     auto source_port() const -> port_type { return _source_port; }
     auto destination_address() const -> address_type { return _destination_address; }
     auto destination_port() const -> port_type { return _destination_port; }
     auto payload() const -> std::vector<std::byte> { return _payload; }
-    
+
 private:
     address_type _source_address;
     port_type _source_port;
@@ -210,12 +210,12 @@ private:
 struct NetworkEdge {
     std::chrono::milliseconds _latency;
     double _reliability;  // 0.0 to 1.0
-    
+
     NetworkEdge() : _latency(0), _reliability(1.0) {}
-    
+
     NetworkEdge(std::chrono::milliseconds lat, double rel)
         : _latency(lat), _reliability(rel) {}
-    
+
     auto latency() const -> std::chrono::milliseconds { return _latency; }
     auto reliability() const -> double { return _reliability; }
 };
@@ -225,13 +225,13 @@ template<typename Types>
 struct Endpoint {
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
-    
+
     address_type address;
     port_type port;
-    
+
     Endpoint(address_type addr, port_type prt)
         : address(std::move(addr)), port(std::move(prt)) {}
-    
+
     auto operator==(const Endpoint&) const -> bool = default;
 };
 
@@ -240,16 +240,16 @@ template<typename Types>
 struct ConnectionId {
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
-    
+
     address_type src_addr;
     port_type src_port;
     address_type dst_addr;
     port_type dst_port;
-    
+
     ConnectionId(address_type src_a, port_type src_p, address_type dst_a, port_type dst_p)
         : src_addr(std::move(src_a)), src_port(std::move(src_p))
         , dst_addr(std::move(dst_a)), dst_port(std::move(dst_p)) {}
-    
+
     auto operator==(const ConnectionId&) const -> bool = default;
 };
 
@@ -262,7 +262,7 @@ struct DefaultNetworkTypes {
     using connection_type = Connection<DefaultNetworkTypes>;
     using listener_type = Listener<DefaultNetworkTypes>;
     using node_type = NetworkNode<DefaultNetworkTypes>;
-    
+
     // Future types - use kythira::Future since we included it
 #ifdef KYTHIRA_FUTURES_AVAILABLE
     using future_bool_type = kythira::Future<bool>;

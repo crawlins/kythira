@@ -334,7 +334,7 @@ struct coap_client_config {
     std::chrono::milliseconds nstart{1};
     std::chrono::milliseconds default_leisure{5000};
     std::chrono::milliseconds probing_rate{1000};
-    
+
     // DTLS Configuration
     bool enable_dtls{false};
     std::string psk_identity{};
@@ -343,11 +343,11 @@ struct coap_client_config {
     std::string key_file{};
     std::string ca_file{};
     bool verify_peer_cert{true};
-    
+
     // Block Transfer
     std::size_t max_block_size{1024};
     bool enable_block_transfer{true};
-    
+
     // Connection Management
     std::size_t max_sessions{100};
     std::chrono::seconds session_timeout{300};
@@ -377,7 +377,7 @@ struct coap_server_config {
     std::size_t max_concurrent_sessions{200};
     std::size_t max_request_size{64 * 1024};  // 64 KB
     std::chrono::seconds session_timeout{300};
-    
+
     // DTLS Configuration
     bool enable_dtls{false};
     std::string psk_identity{};
@@ -386,11 +386,11 @@ struct coap_server_config {
     std::string key_file{};
     std::string ca_file{};
     bool verify_peer_cert{true};
-    
+
     // Block Transfer
     std::size_t max_block_size{1024};
     bool enable_block_transfer{true};
-    
+
     // Multicast Support
     bool enable_multicast{false};
     std::string multicast_address{"224.0.1.187"};
@@ -488,10 +488,10 @@ class my_serializer {
 public:
     template<typename T>
     auto serialize(const T& obj) const -> std::vector<std::byte>;
-    
+
     template<typename T>
     auto deserialize(const std::vector<std::byte>& data) const -> T;
-    
+
     auto content_format() const -> std::uint16_t;
 };
 
@@ -508,13 +508,13 @@ public:
     void record_request_sent(const std::string& rpc_type, std::uint64_t target) override {
         // Record outgoing request metrics
     }
-    
-    void record_request_completed(const std::string& rpc_type, 
+
+    void record_request_completed(const std::string& rpc_type,
                                  std::chrono::milliseconds duration,
                                  bool success) override {
         // Record request completion metrics
     }
-    
+
     void record_request_received(const std::string& rpc_type) override {
         // Record incoming request metrics
     }
@@ -637,24 +637,24 @@ int main() {
     coap_client_config client_config;
     client_config.ack_timeout = std::chrono::milliseconds{1000};
     client_config.max_retransmit = 3;
-    
+
     coap_server_config server_config;
     server_config.max_concurrent_sessions = 100;
-    
+
     std::unordered_map<std::uint64_t, std::string> endpoints = {
         {1, "coap://node1:5683"},
         {2, "coap://node2:5683"},
         {3, "coap://node3:5683"}
     };
-    
+
     auto metrics = std::make_shared<console_metrics>();
-    
+
     // Create transport components
     auto client = std::make_shared<coap_client<json_serializer>>(
         endpoints, client_config, metrics);
     auto server = std::make_shared<coap_server<json_serializer>>(
         "0.0.0.0", 5683, server_config, metrics);
-    
+
     // Create Raft node
     auto node = raft_node<
         coap_client<json_serializer>,
@@ -670,16 +670,16 @@ int main() {
         std::make_shared<console_logger>(),
         metrics
     );
-    
+
     // Start the node
     node.start();
-    
+
     // Node is now participating in Raft consensus over CoAP
     std::cout << "Raft node started with CoAP transport" << std::endl;
-    
+
     // Keep running
     std::this_thread::sleep_for(std::chrono::hours{1});
-    
+
     return 0;
 }
 ```

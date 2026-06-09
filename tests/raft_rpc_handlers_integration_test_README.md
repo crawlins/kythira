@@ -37,19 +37,19 @@ BOOST_AUTO_TEST_CASE(test_name, * boost::unit_test::timeout(120)) {
     // 1. Setup: Create network simulator and cluster
     NetworkSimulator<DefaultNetworkTypes> sim;
     // Configure topology, latency, reliability
-    
+
     // 2. Create nodes with network components
     auto node1 = create_test_node(node_1_id, sim);
     auto node2 = create_test_node(node_2_id, sim);
     auto node3 = create_test_node(node_3_id, sim);
-    
+
     // 3. Trigger behavior (election, command submission, etc.)
     // Use check_election_timeout(), submit_command(), etc.
-    
+
     // 4. Observe results through public API
     BOOST_CHECK_EQUAL(node1->get_state(), server_state::leader);
     BOOST_CHECK(node1->is_leader());
-    
+
     // 5. Cleanup
     node1->stop();
     node2->stop();
@@ -214,13 +214,13 @@ To convert placeholders to full implementations:
 // Direct handler invocation (Option 2 - NOT USED)
 BOOST_AUTO_TEST_CASE(request_vote_handler_direct) {
     auto node = create_node();
-    
+
     request_vote_request req;
     req.term = 5;
     req.candidate_id = 2;
-    
+
     auto response = node->handle_request_vote(req);  // Direct call
-    
+
     BOOST_CHECK(response.vote_granted);
 }
 ```

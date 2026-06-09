@@ -17,13 +17,13 @@ template<kythira::metrics M>
 class operation_tracker {
 public:
     explicit operation_tracker(M& metric) : _metric(metric) {}
-    
+
     auto track_operation(std::string_view name, std::int64_t count) -> void {
         _metric.set_metric_name(name);
         _metric.add_count(count);
         _metric.emit();
     }
-    
+
 private:
     M& _metric;
 };
@@ -31,13 +31,13 @@ private:
 int main() {
     // Test that noop_metrics works with template functions
     kythira::noop_metrics metrics;
-    
+
     record_operation(metrics, "test_operation", std::chrono::milliseconds{100});
-    
+
     // Test that noop_metrics works with template classes
     operation_tracker<kythira::noop_metrics> tracker(metrics);
     tracker.track_operation("tracked_operation", 42);
-    
+
     // All operations should complete without error and with zero overhead
     return 0;
 }

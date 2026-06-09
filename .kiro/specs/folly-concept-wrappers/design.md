@@ -36,13 +36,13 @@ concept try_type = requires(T t, const T ct) {
     // Access value (throws if contains exception)
     { t.value() } -> std::same_as<ValueType&>;
     { ct.value() } -> std::same_as<const ValueType&>;
-    
+
     // Check if contains value (folly naming)
     { t.hasValue() } -> std::convertible_to<bool>;
-    
+
     // Check if contains exception (folly naming)
     { t.hasException() } -> std::convertible_to<bool>;
-    
+
     // Access exception (folly::Try uses exception_wrapper)
     { t.exception() }; // Returns folly::exception_wrapper or similar
 };
@@ -54,10 +54,10 @@ template<typename P, typename T>
 concept semi_promise = requires(P p, T value, folly::exception_wrapper ex) {
     // Set value - handle void specialization
     requires std::is_void_v<T> ? requires { p.setValue(); } : requires { p.setValue(std::move(value)); };
-    
+
     // Set exception
     { p.setException(ex) } -> std::same_as<void>;
-    
+
     // Check if fulfilled
     { p.isFulfilled() } -> std::convertible_to<bool>;
 };
@@ -69,7 +69,7 @@ template<typename P, typename T>
 concept promise = semi_promise<P, T> && requires(P p) {
     // Get associated future
     { p.getFuture() }; // Returns folly::Future<T> or similar
-    
+
     // Get associated semi-future
     { p.getSemiFuture() }; // Returns folly::SemiFuture<T> or similar
 };
@@ -96,9 +96,9 @@ concept promise = semi_promise<P, T> && requires(P p) {
 namespace kythira {
 
 template<typename FutureType, typename RPC_Serializer, typename Metrics>
-requires 
+requires
     future<FutureType, request_vote_response<>> &&
-    rpc_serializer<RPC_Serializer, std::vector<std::byte>> && 
+    rpc_serializer<RPC_Serializer, std::vector<std::byte>> &&
     metrics<Metrics>
 class cpp_httplib_client {
     auto send_request_vote(...) -> FutureType;
@@ -180,7 +180,7 @@ auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
     requires(detail::is_future<std::invoke_result_t<F, Try<T>>>::value) {
     using FutureReturnType = std::invoke_result_t<F, Try<T>>;
     using InnerType = typename FutureReturnType::value_type;
-    
+
     // Use folly's automatic future flattening
     return FutureReturnType(std::move(_folly_future).thenTry(
         [func = std::forward<F>(func)](folly::Try<T> folly_try) mutable {
@@ -198,7 +198,7 @@ auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
 template<typename F>
 auto thenError(F&& func) -> Future<T>
     requires(detail::is_future<std::invoke_result_t<F, folly::exception_wrapper>>::value) {
-    
+
     // Use folly's automatic future flattening
     return Future<T>(std::move(_folly_future).thenError(
         [func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
@@ -218,10 +218,10 @@ return operation()
         if (result.hasValue()) {
             return makeFuture(result.value());
         }
-        
+
         // Calculate delay based on attempt number
         auto delay = calculate_exponential_backoff(attempt);
-        
+
         // Non-blocking delay followed by retry
         return makeFuture(Unit{})
             .delay(delay)

@@ -41,15 +41,15 @@ auto generate_random_node_id(std::mt19937& rng) -> std::uint64_t {
 auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
     std::uniform_int_distribution<std::size_t> size_dist(1, max_command_size);
     std::uniform_int_distribution<int> byte_dist(0, 255);
-    
+
     std::size_t size = size_dist(rng);
     std::vector<std::byte> command;
     command.reserve(size);
-    
+
     for (std::size_t i = 0; i < size; ++i) {
         command.push_back(static_cast<std::byte>(byte_dist(rng)));
     }
-    
+
     return command;
 }
 
@@ -66,29 +66,29 @@ auto generate_random_log_entry(std::mt19937& rng) -> kythira::log_entry<> {
 auto generate_random_cluster_configuration(std::mt19937& rng) -> kythira::cluster_configuration<> {
     std::uniform_int_distribution<std::size_t> count_dist(1, max_config_nodes);
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     std::size_t node_count = count_dist(rng);
     std::vector<std::uint64_t> nodes;
     nodes.reserve(node_count);
-    
+
     for (std::size_t i = 0; i < node_count; ++i) {
         nodes.push_back(generate_random_node_id(rng));
     }
-    
+
     bool is_joint = bool_dist(rng) == 1;
     std::optional<std::vector<std::uint64_t>> old_nodes;
-    
+
     if (is_joint) {
         std::size_t old_node_count = count_dist(rng);
         std::vector<std::uint64_t> old_nodes_vec;
         old_nodes_vec.reserve(old_node_count);
-        
+
         for (std::size_t i = 0; i < old_node_count; ++i) {
             old_nodes_vec.push_back(generate_random_node_id(rng));
         }
         old_nodes = old_nodes_vec;
     }
-    
+
     return kythira::cluster_configuration<>{nodes, is_joint, old_nodes};
 }
 
@@ -96,15 +96,15 @@ auto generate_random_cluster_configuration(std::mt19937& rng) -> kythira::cluste
 auto generate_random_snapshot_data(std::mt19937& rng) -> std::vector<std::byte> {
     std::uniform_int_distribution<std::size_t> size_dist(1, max_snapshot_data_size);
     std::uniform_int_distribution<int> byte_dist(0, 255);
-    
+
     std::size_t size = size_dist(rng);
     std::vector<std::byte> data;
     data.reserve(size);
-    
+
     for (std::size_t i = 0; i < size; ++i) {
         data.push_back(static_cast<std::byte>(byte_dist(rng)));
     }
-    
+
     return data;
 }
 
@@ -120,14 +120,14 @@ auto generate_random_snapshot(std::mt19937& rng) -> kythira::snapshot<> {
 
 // Helper to compare log entries
 auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>& b) -> bool {
-    return a.term() == b.term() && 
-           a.index() == b.index() && 
+    return a.term() == b.term() &&
+           a.index() == b.index() &&
            a.command() == b.command();
 }
 
 // Helper to compare cluster configurations
 auto cluster_configurations_equal(
-    const kythira::cluster_configuration<>& a, 
+    const kythira::cluster_configuration<>& a,
     const kythira::cluster_configuration<>& b
 ) -> bool {
     if (a.nodes() != b.nodes()) {
@@ -153,30 +153,30 @@ auto snapshots_equal(const kythira::snapshot<>& a, const kythira::snapshot<>& b)
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
- * Property: For any term value, saving then loading the term produces 
+ *
+ * Property: For any term value, saving then loading the term produces
  * the same value.
  */
 BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate random term
         auto original_term = generate_random_term(rng);
-        
+
         try {
             // Save then load
             engine.save_current_term(original_term);
             auto loaded_term = engine.load_current_term();
-            
+
             // Verify they match
             if (loaded_term != original_term) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Term mismatch - original: " 
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Term mismatch - original: "
                     << original_term << ", loaded: " << loaded_term);
             }
         } catch (const std::exception& e) {
@@ -184,8 +184,8 @@ BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Current term round-trip: " 
+
+    BOOST_TEST_MESSAGE("Current term round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -193,26 +193,26 @@ BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
- * Property: For any node ID, saving then loading votedFor produces 
+ *
+ * Property: For any node ID, saving then loading votedFor produces
  * the same value.
  */
 BOOST_AUTO_TEST_CASE(property_voted_for_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate random node ID
         auto original_node_id = generate_random_node_id(rng);
-        
+
         try {
             // Save then load
             engine.save_voted_for(original_node_id);
             auto loaded_node_id = engine.load_voted_for();
-            
+
             // Verify they match
             if (!loaded_node_id.has_value() || *loaded_node_id != original_node_id) {
                 ++failures;
@@ -223,8 +223,8 @@ BOOST_AUTO_TEST_CASE(property_voted_for_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("VotedFor round-trip: " 
+
+    BOOST_TEST_MESSAGE("VotedFor round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -232,26 +232,26 @@ BOOST_AUTO_TEST_CASE(property_voted_for_round_trip) {
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
- * Property: For any log entry, appending then retrieving the entry produces 
+ *
+ * Property: For any log entry, appending then retrieving the entry produces
  * an equivalent entry with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_log_entry_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate random log entry
         auto original_entry = generate_random_log_entry(rng);
-        
+
         try {
             // Append then retrieve
             engine.append_log_entry(original_entry);
             auto loaded_entry = engine.get_log_entry(original_entry.index());
-            
+
             // Verify they match
             if (!loaded_entry.has_value() || !log_entries_equal(*loaded_entry, original_entry)) {
                 ++failures;
@@ -262,8 +262,8 @@ BOOST_AUTO_TEST_CASE(property_log_entry_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Log entry round-trip: " 
+
+    BOOST_TEST_MESSAGE("Log entry round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -271,24 +271,24 @@ BOOST_AUTO_TEST_CASE(property_log_entry_round_trip) {
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
- * Property: For any sequence of log entries, appending then retrieving 
+ *
+ * Property: For any sequence of log entries, appending then retrieving
  * the range produces equivalent entries with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
     std::uniform_int_distribution<std::size_t> count_dist(1, max_log_entries);
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate random log entries with sequential indices
         std::size_t entry_count = count_dist(rng);
         std::vector<kythira::log_entry<>> original_entries;
         original_entries.reserve(entry_count);
-        
+
         std::uint64_t start_index = generate_random_log_index(rng);
         for (std::size_t j = 0; j < entry_count; ++j) {
             kythira::log_entry<> entry;
@@ -297,20 +297,20 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
             entry._command = generate_random_command(rng);
             original_entries.push_back(entry);
         }
-        
+
         try {
             // Append all entries
             for (const auto& entry : original_entries) {
                 engine.append_log_entry(entry);
             }
-            
+
             // Retrieve the range
             auto loaded_entries = engine.get_log_entries(start_index, start_index + entry_count - 1);
-            
+
             // Verify they match
             if (loaded_entries.size() != original_entries.size()) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Entry count mismatch - expected: " 
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Entry count mismatch - expected: "
                     << original_entries.size() << ", got: " << loaded_entries.size());
             } else {
                 bool all_match = true;
@@ -330,8 +330,8 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Log entries range round-trip: " 
+
+    BOOST_TEST_MESSAGE("Log entries range round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -339,26 +339,26 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
- * Property: For any snapshot, saving then loading the snapshot produces 
+ *
+ * Property: For any snapshot, saving then loading the snapshot produces
  * an equivalent snapshot with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate random snapshot
         auto original_snapshot = generate_random_snapshot(rng);
-        
+
         try {
             // Save then load
             engine.save_snapshot(original_snapshot);
             auto loaded_snapshot = engine.load_snapshot();
-            
+
             // Verify they match
             if (!loaded_snapshot.has_value() || !snapshots_equal(*loaded_snapshot, original_snapshot)) {
                 ++failures;
@@ -369,8 +369,8 @@ BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Snapshot round-trip: " 
+
+    BOOST_TEST_MESSAGE("Snapshot round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -378,28 +378,28 @@ BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
 /**
  * Feature: raft-consensus, Property 10: Persistence Round-Trip
  * Validates: Requirements 5.6
- * 
+ *
  * Property: For any complete Raft state (term, votedFor, log entries, snapshot),
  * saving then loading all state produces equivalent state.
  */
 BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
     std::mt19937 rng(std::random_device{}());
-    
+
     std::size_t failures = 0;
     std::uniform_int_distribution<std::size_t> count_dist(1, max_log_entries);
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         kythira::memory_persistence_engine<> engine;
-        
+
         // Generate complete random state
         auto original_term = generate_random_term(rng);
         auto original_node_id = generate_random_node_id(rng);
         auto original_snapshot = generate_random_snapshot(rng);
-        
+
         std::size_t entry_count = count_dist(rng);
         std::vector<kythira::log_entry<>> original_entries;
         original_entries.reserve(entry_count);
-        
+
         std::uint64_t start_index = generate_random_log_index(rng);
         for (std::size_t j = 0; j < entry_count; ++j) {
             kythira::log_entry<> entry;
@@ -408,7 +408,7 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
             entry._command = generate_random_command(rng);
             original_entries.push_back(entry);
         }
-        
+
         try {
             // Save all state
             engine.save_current_term(original_term);
@@ -417,31 +417,31 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
             for (const auto& entry : original_entries) {
                 engine.append_log_entry(entry);
             }
-            
+
             // Load all state
             auto loaded_term = engine.load_current_term();
             auto loaded_node_id = engine.load_voted_for();
             auto loaded_snapshot = engine.load_snapshot();
             auto loaded_entries = engine.get_log_entries(start_index, start_index + entry_count - 1);
-            
+
             // Verify everything matches
             bool state_matches = true;
-            
+
             if (loaded_term != original_term) {
                 state_matches = false;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Term mismatch");
             }
-            
+
             if (!loaded_node_id.has_value() || *loaded_node_id != original_node_id) {
                 state_matches = false;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": VotedFor mismatch");
             }
-            
+
             if (!loaded_snapshot.has_value() || !snapshots_equal(*loaded_snapshot, original_snapshot)) {
                 state_matches = false;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Snapshot mismatch");
             }
-            
+
             if (loaded_entries.size() != original_entries.size()) {
                 state_matches = false;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Entry count mismatch");
@@ -454,7 +454,7 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
                     }
                 }
             }
-            
+
             if (!state_matches) {
                 ++failures;
             }
@@ -463,8 +463,8 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Complete state round-trip: " 
+
+    BOOST_TEST_MESSAGE("Complete state round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }

@@ -21,10 +21,10 @@ This document lists the dependencies required to build and use the network simul
   ```bash
   # Ubuntu/Debian
   sudo apt-get install libfolly-dev
-  
+
   # macOS (Homebrew)
   brew install folly
-  
+
   # From source
   git clone https://github.com/facebook/folly.git
   cd folly
@@ -42,7 +42,7 @@ This document lists the dependencies required to build and use the network simul
   ```bash
   # Ubuntu/Debian
   sudo apt-get install libboost-all-dev
-  
+
   # macOS (Homebrew)
   brew install boost
   ```

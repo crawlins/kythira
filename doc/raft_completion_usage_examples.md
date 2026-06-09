@@ -15,17 +15,17 @@ This document provides practical examples of using the Raft completion component
 class RaftClient {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
 public:
-    auto submit_user_command(const std::string& command_data) 
+    auto submit_user_command(const std::string& command_data)
         -> kythira::Future<std::string> {
-        
+
         // Convert command to bytes
         std::vector<std::byte> command_bytes;
         std::transform(command_data.begin(), command_data.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         // Submit with 30-second timeout
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) -> std::string {
@@ -40,7 +40,7 @@ public:
                 // Handle specific error types
                 if (auto timeout_ex = dynamic_cast<const raft::commit_timeout_exception<>*>(&e)) {
                     throw std::runtime_error(
-                        "Command timed out after " + 
+                        "Command timed out after " +
                         std::to_string(timeout_ex->get_timeout().count()) + "ms");
                 } else if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
                     throw std::runtime_error(
@@ -59,7 +59,7 @@ public:
 class RaftReader {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
 public:
     auto read_current_state() -> kythira::Future<std::map<std::string, std::string>> {
         return raft_node->read_state(std::chrono::seconds(5))
@@ -70,16 +70,16 @@ public:
             .thenError([](const std::exception& e) -> std::map<std::string, std::string> {
                 if (auto collection_ex = dynamic_cast<const raft::future_collection_exception*>(&e)) {
                     throw std::runtime_error(
-                        "Failed to verify leadership: " + 
+                        "Failed to verify leadership: " +
                         std::to_string(collection_ex->get_failed_count()) + " nodes unreachable");
                 } else {
                     throw std::runtime_error("Read failed: " + std::string(e.what()));
                 }
             });
     }
-    
+
 private:
-    auto deserialize_state_map(const std::vector<std::byte>& bytes) 
+    auto deserialize_state_map(const std::vector<std::byte>& bytes)
         -> std::map<std::string, std::string> {
         // Implementation depends on your serialization format
         // This is a simplified example
@@ -98,51 +98,51 @@ private:
 class RaftClusterManager {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
 public:
-    auto add_server_to_cluster(std::uint64_t new_node_id) 
+    auto add_server_to_cluster(std::uint64_t new_node_id)
         -> kythira::Future<bool> {
-        
+
         return raft_node->add_server(new_node_id)
             .thenValue([new_node_id](bool success) -> bool {
                 if (success) {
-                    std::cout << "Successfully added server " << new_node_id 
+                    std::cout << "Successfully added server " << new_node_id
                               << " to cluster" << std::endl;
                 } else {
-                    std::cout << "Failed to add server " << new_node_id 
+                    std::cout << "Failed to add server " << new_node_id
                               << " to cluster" << std::endl;
                 }
                 return success;
             })
             .thenError([new_node_id](const std::exception& e) -> bool {
                 if (auto config_ex = dynamic_cast<const raft::configuration_change_exception*>(&e)) {
-                    std::cerr << "Configuration change failed in phase " 
-                              << config_ex->get_phase() << ": " 
+                    std::cerr << "Configuration change failed in phase "
+                              << config_ex->get_phase() << ": "
                               << config_ex->get_reason() << std::endl;
                 } else {
-                    std::cerr << "Failed to add server " << new_node_id 
+                    std::cerr << "Failed to add server " << new_node_id
                               << ": " << e.what() << std::endl;
                 }
                 return false;
             });
     }
-    
-    auto remove_server_from_cluster(std::uint64_t node_id) 
+
+    auto remove_server_from_cluster(std::uint64_t node_id)
         -> kythira::Future<bool> {
-        
+
         return raft_node->remove_server(node_id)
             .thenValue([node_id](bool success) -> bool {
                 if (success) {
-                    std::cout << "Successfully removed server " << node_id 
+                    std::cout << "Successfully removed server " << node_id
                               << " from cluster" << std::endl;
                 } else {
-                    std::cout << "Failed to remove server " << node_id 
+                    std::cout << "Failed to remove server " << node_id
                               << " from cluster" << std::endl;
                 }
                 return success;
             })
             .thenError([node_id](const std::exception& e) -> bool {
-                std::cerr << "Failed to remove server " << node_id 
+                std::cerr << "Failed to remove server " << node_id
                           << ": " << e.what() << std::endl;
                 return false;
             });
@@ -158,25 +158,25 @@ public:
 class RaftBatchClient {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
 public:
     auto submit_batch_commands(const std::vector<std::string>& commands)
         -> kythira::Future<std::vector<std::string>> {
-        
+
         // Submit all commands concurrently
         std::vector<kythira::Future<std::string>> command_futures;
         command_futures.reserve(commands.size());
-        
+
         for (const auto& command : commands) {
             auto future = submit_single_command(command);
             command_futures.push_back(std::move(future));
         }
-        
+
         // Wait for all commands to complete
         return kythira::FutureCollector::collectAll(std::move(command_futures))
             .thenValue([](std::vector<kythira::Try<std::string>> results) {
                 std::vector<std::string> successful_results;
-                
+
                 for (auto& try_result : results) {
                     if (try_result.hasValue()) {
                         successful_results.push_back(std::move(try_result.value()));
@@ -185,20 +185,20 @@ public:
                         std::cerr << "Command failed: " << try_result.exception() << std::endl;
                     }
                 }
-                
+
                 return successful_results;
             });
     }
-    
+
 private:
-    auto submit_single_command(const std::string& command) 
+    auto submit_single_command(const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         std::vector<std::byte> command_bytes;
         std::transform(command.begin(), command.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) {
                 std::string result_str;
@@ -218,22 +218,22 @@ class ResilientRaftClient {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
     static constexpr int MAX_RETRIES = 3;
-    
+
 public:
     auto submit_command_with_retry(const std::string& command)
         -> kythira::Future<std::string> {
         return submit_command_with_retry_impl(command, 0);
     }
-    
+
 private:
     auto submit_command_with_retry_impl(const std::string& command, int attempt)
         -> kythira::Future<std::string> {
-        
+
         std::vector<std::byte> command_bytes;
         std::transform(command.begin(), command.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) {
                 std::string result_str;
@@ -242,11 +242,11 @@ private:
                               [](std::byte b) { return static_cast<char>(b); });
                 return result_str;
             })
-            .thenError([this, command, attempt](const std::exception& e) 
+            .thenError([this, command, attempt](const std::exception& e)
                 -> kythira::Future<std::string> {
-                
+
                 bool should_retry = false;
-                
+
                 // Determine if we should retry based on error type
                 if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
                     should_retry = true;  // Always retry on leadership loss
@@ -255,14 +255,14 @@ private:
                 } else if (auto collection_ex = dynamic_cast<const raft::future_collection_exception*>(&e)) {
                     should_retry = (attempt < MAX_RETRIES);  // Retry collection failures
                 }
-                
+
                 if (should_retry && attempt < MAX_RETRIES) {
                     // Calculate delay with exponential backoff
                     auto delay = std::chrono::milliseconds(100 * (1 << attempt));  // 100ms, 200ms, 400ms
-                    
-                    std::cout << "Retrying command (attempt " << (attempt + 1) 
+
+                    std::cout << "Retrying command (attempt " << (attempt + 1)
                               << ") after " << delay.count() << "ms delay" << std::endl;
-                    
+
                     // Wait before retry
                     return kythira::FutureFactory::makeFuture()
                         .delayed(delay)
@@ -286,29 +286,29 @@ class RaftClusterClient {
 private:
     std::vector<std::shared_ptr<raft::node</* template params */>>> cluster_nodes;
     std::optional<std::size_t> current_leader_index;
-    
+
 public:
-    auto submit_command(const std::string& command) 
+    auto submit_command(const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         if (current_leader_index && *current_leader_index < cluster_nodes.size()) {
             return try_submit_to_node(*current_leader_index, command);
         } else {
             return discover_leader_and_submit(command);
         }
     }
-    
+
 private:
     auto try_submit_to_node(std::size_t node_index, const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         auto& node = cluster_nodes[node_index];
-        
+
         std::vector<std::byte> command_bytes;
         std::transform(command.begin(), command.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) {
                 std::string result_str;
@@ -317,9 +317,9 @@ private:
                               [](std::byte b) { return static_cast<char>(b); });
                 return result_str;
             })
-            .thenError([this, command](const std::exception& e) 
+            .thenError([this, command](const std::exception& e)
                 -> kythira::Future<std::string> {
-                
+
                 if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
                     // Leader changed, clear cached leader and retry
                     current_leader_index.reset();
@@ -332,25 +332,25 @@ private:
                 }
             });
     }
-    
+
     auto discover_leader_and_submit(const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         return try_nodes_sequentially(0, command);
     }
-    
+
     auto try_nodes_sequentially(std::size_t node_index, const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         if (node_index >= cluster_nodes.size()) {
             return kythira::FutureFactory::makeExceptionalFuture<std::string>(
                 std::runtime_error("No leader found in cluster"));
         }
-        
+
         return try_submit_to_node(node_index, command)
-            .thenError([this, node_index, command](const std::exception& e) 
+            .thenError([this, node_index, command](const std::exception& e)
                 -> kythira::Future<std::string> {
-                
+
                 // If this node is not the leader, try the next one
                 std::cout << "Node " << node_index << " is not leader, trying next..." << std::endl;
                 return try_nodes_sequentially(node_index + 1, command);
@@ -368,19 +368,19 @@ class KeyValueStateMachine {
 private:
     std::map<std::string, std::string> data;
     mutable std::shared_mutex mutex;
-    
+
 public:
     // Apply a command to the state machine
-    auto apply_command(const std::vector<std::byte>& command) 
+    auto apply_command(const std::vector<std::byte>& command)
         -> std::vector<std::byte> {
-        
+
         // Deserialize command
         auto cmd = deserialize_command(command);
-        
+
         std::unique_lock<std::shared_mutex> lock(mutex);
-        
+
         std::vector<std::byte> result;
-        
+
         if (cmd.type == "SET") {
             data[cmd.key] = cmd.value;
             result = serialize_response("OK");
@@ -397,23 +397,23 @@ public:
         } else {
             result = serialize_response("UNKNOWN_COMMAND");
         }
-        
+
         return result;
     }
-    
+
     // Get current state for reads
     auto get_state() const -> std::vector<std::byte> {
         std::shared_lock<std::shared_mutex> lock(mutex);
         return serialize_state(data);
     }
-    
+
 private:
     struct Command {
         std::string type;
         std::string key;
         std::string value;
     };
-    
+
     auto deserialize_command(const std::vector<std::byte>& bytes) -> Command {
         // Implementation depends on your serialization format
         // This is a simplified example using JSON-like format
@@ -421,7 +421,7 @@ private:
         // ... deserialization logic ...
         return cmd;
     }
-    
+
     auto serialize_response(const std::string& response) -> std::vector<std::byte> {
         std::vector<std::byte> result;
         std::transform(response.begin(), response.end(),
@@ -429,8 +429,8 @@ private:
                       [](char c) { return static_cast<std::byte>(c); });
         return result;
     }
-    
-    auto serialize_state(const std::map<std::string, std::string>& state) 
+
+    auto serialize_state(const std::map<std::string, std::string>& state)
         -> std::vector<std::byte> {
         // Serialize entire state map
         std::string state_str = "{";
@@ -441,7 +441,7 @@ private:
             first = false;
         }
         state_str += "}";
-        
+
         std::vector<std::byte> result;
         std::transform(state_str.begin(), state_str.end(),
                       std::back_inserter(result),
@@ -458,18 +458,18 @@ class RaftKeyValueServer {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
     KeyValueStateMachine state_machine;
-    
+
 public:
     auto set_value(const std::string& key, const std::string& value)
         -> kythira::Future<std::string> {
-        
+
         // Create SET command
         std::string command_str = "SET " + key + " " + value;
         std::vector<std::byte> command_bytes;
         std::transform(command_str.begin(), command_str.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) {
                 std::string result_str;
@@ -479,10 +479,10 @@ public:
                 return result_str;
             });
     }
-    
-    auto get_value(const std::string& key) 
+
+    auto get_value(const std::string& key)
         -> kythira::Future<std::string> {
-        
+
         // For reads, we can use read_state for linearizable consistency
         return raft_node->read_state(std::chrono::seconds(5))
             .thenValue([key](std::vector<std::byte> state_bytes) {
@@ -491,7 +491,7 @@ public:
                 std::transform(state_bytes.begin(), state_bytes.end(),
                               std::back_inserter(state_str),
                               [](std::byte b) { return static_cast<char>(b); });
-                
+
                 // Simple JSON-like parsing (in production, use proper JSON library)
                 auto key_pos = state_str.find("\"" + key + "\":");
                 if (key_pos != std::string::npos) {
@@ -504,17 +504,17 @@ public:
                 return std::string("NOT_FOUND");
             });
     }
-    
+
     auto delete_value(const std::string& key)
         -> kythira::Future<std::string> {
-        
+
         // Create DELETE command
         std::string command_str = "DELETE " + key;
         std::vector<std::byte> command_bytes;
         std::transform(command_str.begin(), command_str.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([](std::vector<std::byte> result) {
                 std::string result_str;
@@ -537,41 +537,41 @@ public:
     template<typename T>
     static auto handle_raft_error(const std::exception& e) -> std::string {
         if (auto timeout_ex = dynamic_cast<const raft::commit_timeout_exception<>*>(&e)) {
-            return "Commit timeout for entry " + 
-                   std::to_string(timeout_ex->get_entry_index()) + 
+            return "Commit timeout for entry " +
+                   std::to_string(timeout_ex->get_entry_index()) +
                    " after " + std::to_string(timeout_ex->get_timeout().count()) + "ms";
-                   
+
         } else if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
-            return "Leadership lost: term changed from " + 
-                   std::to_string(leadership_ex->get_old_term()) + 
+            return "Leadership lost: term changed from " +
+                   std::to_string(leadership_ex->get_old_term()) +
                    " to " + std::to_string(leadership_ex->get_new_term());
-                   
+
         } else if (auto collection_ex = dynamic_cast<const raft::future_collection_exception*>(&e)) {
-            return "Future collection failed for operation '" + 
-                   collection_ex->get_operation() + "': " + 
+            return "Future collection failed for operation '" +
+                   collection_ex->get_operation() + "': " +
                    std::to_string(collection_ex->get_failed_count()) + " futures failed";
-                   
+
         } else if (auto config_ex = dynamic_cast<const raft::configuration_change_exception*>(&e)) {
-            return "Configuration change failed in phase '" + 
+            return "Configuration change failed in phase '" +
                    config_ex->get_phase() + "': " + config_ex->get_reason();
-                   
+
         } else if (auto completion_ex = dynamic_cast<const raft::raft_completion_exception*>(&e)) {
             return "Raft completion error: " + std::string(completion_ex->what());
-            
+
         } else {
             return "Unknown error: " + std::string(e.what());
         }
     }
-    
+
     template<typename T>
     static auto create_error_handler() {
         return [](const std::exception& e) -> T {
             auto error_msg = handle_raft_error<T>(e);
             std::cerr << "Raft operation failed: " << error_msg << std::endl;
-            
+
             // Log error details for debugging
             // logger.error("Raft error", {{"error", error_msg}, {"type", typeid(e).name()}});
-            
+
             // Re-throw with more context
             throw std::runtime_error("Raft operation failed: " + error_msg);
         };
@@ -585,14 +585,14 @@ public:
 class RaftCircuitBreaker {
 private:
     enum class State { CLOSED, OPEN, HALF_OPEN };
-    
+
     State state{State::CLOSED};
     std::size_t failure_count{0};
     std::chrono::steady_clock::time_point last_failure_time;
-    
+
     static constexpr std::size_t FAILURE_THRESHOLD = 5;
     static constexpr auto TIMEOUT_DURATION = std::chrono::seconds(30);
-    
+
 public:
     template<typename Operation>
     auto execute(Operation&& op) -> decltype(op()) {
@@ -604,33 +604,33 @@ public:
                 throw std::runtime_error("Circuit breaker is OPEN");
             }
         }
-        
+
         try {
             auto result = op();
-            
+
             // Success - reset failure count
             if (state == State::HALF_OPEN) {
                 state = State::CLOSED;
                 std::cout << "Circuit breaker transitioning to CLOSED" << std::endl;
             }
             failure_count = 0;
-            
+
             return result;
-            
+
         } catch (const std::exception& e) {
             failure_count++;
             last_failure_time = std::chrono::steady_clock::now();
-            
+
             if (failure_count >= FAILURE_THRESHOLD) {
                 state = State::OPEN;
-                std::cout << "Circuit breaker transitioning to OPEN after " 
+                std::cout << "Circuit breaker transitioning to OPEN after "
                           << failure_count << " failures" << std::endl;
             }
-            
+
             throw;  // Re-throw the exception
         }
     }
-    
+
     auto get_state() const -> State { return state; }
     auto get_failure_count() const -> std::size_t { return failure_count; }
 };
@@ -644,36 +644,36 @@ public:
 class RaftMetricsCollector {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
     // Metrics storage (in production, use proper metrics library)
     std::atomic<std::size_t> total_commands{0};
     std::atomic<std::size_t> successful_commands{0};
     std::atomic<std::size_t> failed_commands{0};
     std::atomic<std::size_t> timeout_commands{0};
     std::atomic<std::size_t> leadership_lost_commands{0};
-    
+
 public:
     auto submit_command_with_metrics(const std::string& command)
         -> kythira::Future<std::string> {
-        
+
         total_commands++;
         auto start_time = std::chrono::steady_clock::now();
-        
+
         std::vector<std::byte> command_bytes;
         std::transform(command.begin(), command.end(),
                       std::back_inserter(command_bytes),
                       [](char c) { return static_cast<std::byte>(c); });
-        
+
         return raft_node->submit_command(command_bytes, std::chrono::seconds(30))
             .thenValue([this, start_time](std::vector<std::byte> result) {
                 successful_commands++;
-                
+
                 auto duration = std::chrono::steady_clock::now() - start_time;
                 auto duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-                
+
                 // Record latency metric
                 record_latency_metric(duration_ms.count());
-                
+
                 std::string result_str;
                 std::transform(result.begin(), result.end(),
                               std::back_inserter(result_str),
@@ -682,18 +682,18 @@ public:
             })
             .thenError([this](const std::exception& e) -> std::string {
                 failed_commands++;
-                
+
                 // Record specific error types
                 if (auto timeout_ex = dynamic_cast<const raft::commit_timeout_exception<>*>(&e)) {
                     timeout_commands++;
                 } else if (auto leadership_ex = dynamic_cast<const raft::leadership_lost_exception<>*>(&e)) {
                     leadership_lost_commands++;
                 }
-                
+
                 throw;  // Re-throw
             });
     }
-    
+
     auto get_metrics() const -> std::map<std::string, std::size_t> {
         return {
             {"total_commands", total_commands.load()},
@@ -703,7 +703,7 @@ public:
             {"leadership_lost_commands", leadership_lost_commands.load()}
         };
     }
-    
+
 private:
     auto record_latency_metric(long latency_ms) -> void {
         // In production, use proper histogram/percentile tracking
@@ -718,7 +718,7 @@ private:
 class RaftHealthChecker {
 private:
     std::shared_ptr<raft::node</* template params */>> raft_node;
-    
+
 public:
     struct HealthStatus {
         bool is_healthy{false};
@@ -726,11 +726,11 @@ public:
         std::string status_message;
         std::chrono::milliseconds last_operation_latency{0};
     };
-    
+
     auto check_health() -> kythira::Future<HealthStatus> {
         HealthStatus status;
         status.is_leader = raft_node->is_leader();
-        
+
         if (status.is_leader) {
             // For leaders, test a simple read operation
             return check_leader_health();
@@ -741,22 +741,22 @@ public:
             return kythira::FutureFactory::makeFuture(status);
         }
     }
-    
+
 private:
     auto check_leader_health() -> kythira::Future<HealthStatus> {
         auto start_time = std::chrono::steady_clock::now();
-        
+
         return raft_node->read_state(std::chrono::seconds(5))
             .thenValue([start_time](std::vector<std::byte> state) {
                 HealthStatus status;
                 status.is_healthy = true;
                 status.is_leader = true;
                 status.status_message = "Leader healthy";
-                
+
                 auto duration = std::chrono::steady_clock::now() - start_time;
-                status.last_operation_latency = 
+                status.last_operation_latency =
                     std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-                
+
                 return status;
             })
             .thenError([](const std::exception& e) {

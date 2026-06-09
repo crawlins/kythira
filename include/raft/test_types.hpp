@@ -15,7 +15,7 @@ template<typename Serializer>
 struct test_transport_types {
     template<typename T>
     using future_template = folly::Future<T>;
-    
+
     using serializer_type = Serializer;
     using rpc_serializer_type = Serializer;
     using metrics_type = kythira::noop_metrics;

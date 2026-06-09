@@ -102,10 +102,10 @@ class NetworkFixture {
 public:
     // Const member function
     [[nodiscard]] auto stats() const -> NetworkStats;
-    
+
     // Noexcept when guaranteed
     [[nodiscard]] auto is_started() const noexcept -> bool;
-    
+
     // Const reference parameter
     auto configure(const LatencyConfig& config) -> void;
 };
@@ -118,18 +118,18 @@ public:
 ```cpp
 int main() {
     int failed_scenarios = 0;
-    
+
     // Run all scenarios
     if (!test_scenario_1()) failed_scenarios++;
     if (!test_scenario_2()) failed_scenarios++;
     if (!test_scenario_3()) failed_scenarios++;
-    
+
     // Report results
     if (failed_scenarios > 0) {
         std::cerr << "❌ " << failed_scenarios << " scenario(s) failed\n";
         return 1;
     }
-    
+
     std::cout << "✅ All scenarios passed!\n";
     return 0;
 }
@@ -152,7 +152,7 @@ function(add_network_example example_name source_file output_dir)
 endfunction()
 
 # Add example
-add_network_example(my_example 
+add_network_example(my_example
     network-test-fixture/my_example.cpp
     network-test-fixture)
 ```
@@ -169,9 +169,9 @@ auto test_basic_communication() -> bool {
     try {
         auto node_a = fixture.create(test_node_a);
         auto node_b = fixture.create(test_node_b);
-        
+
         // Test logic here
-        
+
         std::cout << "  ✓ Test passed\n";
         return true;
     } catch (const std::exception& e) {
@@ -232,7 +232,7 @@ inline constexpr std::size_t default_value = 100;
 class ClassName {
 public:
     // Public interface
-    
+
 private:
     // Private members
 };
@@ -267,7 +267,7 @@ BOOST_AUTO_TEST_CASE(my_test) {
 
 **Timeout Guidelines**:
 - Unit tests: 10-30 seconds
-- Integration tests: 30-60 seconds  
+- Integration tests: 30-60 seconds
 - Property tests: 60-120 seconds
 - Network tests: 60-180 seconds
 

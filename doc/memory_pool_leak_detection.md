@@ -13,8 +13,8 @@ The memory pool now supports configurable leak detection through constructor par
 ```cpp
 // Constructor with leak detection configuration
 memory_pool(
-    std::size_t pool_size, 
-    std::size_t block_size, 
+    std::size_t pool_size,
+    std::size_t block_size,
     std::chrono::seconds reset_interval = std::chrono::seconds{0},
     bool enable_leak_detection = false,  // NEW: Enable/disable leak detection
     std::chrono::seconds leak_threshold = std::chrono::seconds{60}  // NEW: Leak threshold
@@ -68,8 +68,8 @@ struct memory_leak_info {
 
 auto leaks = pool.detect_leaks();
 for (const auto& leak : leaks) {
-    std::cout << "Leak at " << leak.address 
-              << ", size: " << leak.size 
+    std::cout << "Leak at " << leak.address
+              << ", size: " << leak.size
               << ", age: " << leak.age.count() << "s"
               << ", context: " << leak.allocation_context
               << ", thread: " << leak.thread_id << "\n";
@@ -205,7 +205,7 @@ The memory pool leak detection integrates with the CoAP transport layer:
 // In coap_client and coap_server configuration
 struct coap_server_config {
     // ... other config ...
-    
+
     // Memory Pool Configuration
     std::size_t memory_pool_size{1024 * 1024};
     std::size_t memory_pool_block_size{4096};

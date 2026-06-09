@@ -18,7 +18,7 @@ function(add_network_test test_name source_file)
         target_link_libraries(${test_name} PRIVATE Boost::context)
     endif()
     target_compile_features(${test_name} PRIVATE cxx_std_23)
-    
+
     # Add test to CTest
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
@@ -47,7 +47,7 @@ function(add_raft_completion_test test_name source_file)
         target_link_libraries(${test_name} PRIVATE Boost::context)
     endif()
     target_compile_features(${test_name} PRIVATE cxx_std_23)
-    
+
     # Add test to CTest
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
@@ -77,7 +77,7 @@ add_raft_completion_test(state_machine_apply_performance_property_test state_mac
 # Comprehensive Raft performance benchmarking framework (Requirements 13.1-13.5)
 add_raft_completion_test(raft_comprehensive_performance_benchmark raft_comprehensive_performance_benchmark.cpp)
 # Configure test to output detailed benchmark results
-add_test(NAME raft_comprehensive_performance_benchmark_verbose 
+add_test(NAME raft_comprehensive_performance_benchmark_verbose
     COMMAND raft_comprehensive_performance_benchmark --log_level=test_suite --report_level=detailed)
 set_tests_properties(raft_comprehensive_performance_benchmark PROPERTIES
     TIMEOUT 600
@@ -1376,7 +1376,7 @@ set_tests_properties(raft_multi_node_fixture_test PROPERTIES
 # This is an optional enhancement test (task 701) that has issues with the
 # simulator network implementation. The core Raft implementation is complete
 # and all 78 required tests pass.
-# 
+#
 # Cluster initialization integration test (disabled due to network simulator issues)
 # This test is known to have memory access violations due to network simulator bugs.
 # The functionality is validated through:

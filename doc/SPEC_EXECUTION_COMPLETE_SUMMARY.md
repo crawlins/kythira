@@ -1,7 +1,7 @@
 # Raft Consensus Spec - Execution Complete Summary
 
-**Date**: Current  
-**Spec**: raft-consensus  
+**Date**: Current
+**Spec**: raft-consensus
 **Status**: ✅ ALL TASKS COMPLETED
 
 ## Overview

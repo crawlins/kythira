@@ -7,7 +7,7 @@ This document specifies the requirements for fixing template parameter mismatche
 ## Glossary
 
 - **network_client**: A concept defined in the `kythira` namespace that requires two template parameters: the client type and the future type
-- **network_server**: A concept defined in the `kythira` namespace that requires two template parameters: the server type and the future type  
+- **network_server**: A concept defined in the `kythira` namespace that requires two template parameters: the server type and the future type
 - **Template Parameter Mismatch**: When a concept is used with an incorrect number of template parameters
 - **Namespace Mismatch**: When a concept is referenced from the wrong namespace (e.g., `raft::` instead of `kythira::`)
 - **Future Type**: The generic future type used for asynchronous operations (e.g., `kythira::Future<T>`)

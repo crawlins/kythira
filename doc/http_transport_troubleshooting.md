@@ -37,10 +37,10 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    raft::cpp_httplib_server<transport_types> server(
        "0.0.0.0",  // Bind to all interfaces, not just localhost
        8080,       // Ensure port matches client URLs
-       config, 
+       config,
        metrics
    );
-   
+
    // Check client URLs
    std::unordered_map<std::uint64_t, std::string> node_urls;
    node_urls[1] = "http://192.168.1.10:8080";  // Use correct IP/hostname
@@ -128,7 +128,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ```cpp
    // For development only - never in production
    client_config.enable_ssl_verification = false;
-   
+
    // For production - use proper CA-signed certificates
    client_config.enable_ssl_verification = true;
    client_config.ca_cert_path = "/etc/ssl/certs/ca-certificates.crt";
@@ -150,7 +150,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ```bash
    # Check certificate validity
    openssl x509 -in server.crt -text -noout | grep -A2 "Validity"
-   
+
    # Check remote certificate
    openssl s_client -connect server_host:8443 -servername server_host
    ```
@@ -204,7 +204,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ```bash
    # Verify certificate format
    openssl x509 -in server.crt -text -noout
-   
+
    # Convert if necessary
    openssl x509 -in server.crt -outform PEM -out server.pem
    ```
@@ -229,7 +229,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ```cpp
    // Increase connection pool size
    client_config.connection_pool_size = 50;
-   
+
    // Enable keep-alive
    client_config.keep_alive_timeout = std::chrono::milliseconds{300000};
    ```
@@ -298,7 +298,7 @@ This guide helps diagnose and resolve common issues with the HTTP transport impl
    ```cpp
    // Reduce keep-alive timeout
    client_config.keep_alive_timeout = std::chrono::milliseconds{30000};
-   
+
    // Limit connection pool size
    client_config.connection_pool_size = 10;
    ```
@@ -438,12 +438,12 @@ public:
     void record_request_sent(const std::string& rpc_type, std::uint64_t target) override {
         std::cout << "Sending " << rpc_type << " to node " << target << std::endl;
     }
-    
-    void record_request_latency(const std::string& rpc_type, 
+
+    void record_request_latency(const std::string& rpc_type,
                                std::chrono::milliseconds latency) override {
         std::cout << rpc_type << " latency: " << latency.count() << "ms" << std::endl;
     }
-    
+
     void record_error(const std::string& error_type, const std::string& details) override {
         std::cerr << "Error [" << error_type << "]: " << details << std::endl;
     }

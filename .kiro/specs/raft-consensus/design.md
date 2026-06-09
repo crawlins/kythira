@@ -74,7 +74,7 @@ concept raft_types = requires {
     typename T::future_type;
     typename T::promise_type;
     typename T::try_type;
-    
+
     // Component types
     typename T::network_client_type;
     typename T::network_server_type;
@@ -82,12 +82,12 @@ concept raft_types = requires {
     typename T::logger_type;
     typename T::metrics_type;
     typename T::membership_manager_type;
-    
+
     // Data types
     typename T::node_id_type;
     typename T::term_id_type;
     typename T::log_index_type;
-    
+
     // Concept validation
     requires future<typename T::future_type, std::vector<std::byte>>;
     requires network_client<typename T::network_client_type, typename T::future_type>;
@@ -103,14 +103,14 @@ struct default_raft_types {
     using future_type = kythira::Future<std::vector<std::byte>>;
     using promise_type = kythira::Promise<std::vector<std::byte>>;
     using try_type = kythira::Try<std::vector<std::byte>>;
-    
+
     using network_client_type = kythira::simulator_network_client<future_type, json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
     using network_server_type = kythira::simulator_network_server<future_type, json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
     using persistence_engine_type = memory_persistence_engine;
     using logger_type = console_logger;
     using metrics_type = noop_metrics;
     using membership_manager_type = default_membership_manager;
-    
+
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
@@ -124,12 +124,12 @@ class node {
     using network_client_type = typename Types::network_client_type;
     using network_server_type = typename Types::network_server_type;
     // ... other type aliases
-    
+
 private:
     network_client_type _network_client;
     network_server_type _network_server;
     // ... other components
-    
+
 public:
     // Clean interface using deduced types
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout) -> future_type;
@@ -154,16 +154,16 @@ template<typename F, typename T>
 concept future = requires(F f) {
     // Get value (blocking)
     { f.get() } -> std::same_as<T>;
-    
+
     // Check if ready
     { f.isReady() } -> std::convertible_to<bool>;
-    
+
     // Wait with timeout
     { f.wait(std::chrono::milliseconds{}) } -> std::convertible_to<bool>;
-    
+
     // Chain continuation
     { f.then(std::declval<std::function<void(T)>>()) };
-    
+
     // Error handling
     { f.onError(std::declval<std::function<T(std::exception_ptr)>>()) };
 };
@@ -178,7 +178,7 @@ The `rpc_serializer` concept defines the interface for serializing and deseriali
 ```cpp
 // Concept for serialized data - must be a range of std::byte
 template<typename T>
-concept serialized_data = std::ranges::range<T> && 
+concept serialized_data = std::ranges::range<T> &&
     std::same_as<std::ranges::range_value_t<T>, std::byte>;
 
 template<typename S, typename Data, typename NodeId,
@@ -197,10 +197,10 @@ concept rpc_serializer = requires(
 ) {
     // Data must satisfy serialized_data concept
     requires serialized_data<Data>;
-    
+
     // NodeId must satisfy node_id concept
     requires node_id<NodeId>;
-    
+
     // RPC message types must satisfy their respective concepts
     requires request_vote_request_type<RequestVoteRequest, NodeId>;
     requires request_vote_response_type<RequestVoteResponse>;
@@ -208,19 +208,19 @@ concept rpc_serializer = requires(
     requires append_entries_response_type<AppendEntriesResponse>;
     requires install_snapshot_request_type<InstallSnapshotRequest, NodeId>;
     requires install_snapshot_response_type<InstallSnapshotResponse>;
-    
+
     // Serialize RequestVote RPC
     { serializer.serialize(request_vote_req) } -> std::same_as<Data>;
     { serializer.deserialize_request_vote_request(data) } -> std::same_as<RequestVoteRequest>;
     { serializer.serialize(request_vote_resp) } -> std::same_as<Data>;
     { serializer.deserialize_request_vote_response(data) } -> std::same_as<RequestVoteResponse>;
-    
+
     // Serialize AppendEntries RPC
     { serializer.serialize(append_entries_req) } -> std::same_as<Data>;
     { serializer.deserialize_append_entries_request(data) } -> std::same_as<AppendEntriesRequest>;
     { serializer.serialize(append_entries_resp) } -> std::same_as<Data>;
     { serializer.deserialize_append_entries_response(data) } -> std::same_as<AppendEntriesResponse>;
-    
+
     // Serialize InstallSnapshot RPC
     { serializer.serialize(install_snapshot_req) } -> std::same_as<Data>;
     { serializer.deserialize_install_snapshot_request(data) } -> std::same_as<InstallSnapshotRequest>;
@@ -252,15 +252,15 @@ concept network_client = requires(
 ) {
     requires node_id<NodeId>;
     requires future<FutureType, request_vote_response>;
-    
+
     // Send RequestVote RPC - returns a generic future
-    { client.send_request_vote(target, rvr, timeout) } 
+    { client.send_request_vote(target, rvr, timeout) }
         -> std::same_as<FutureType>;
-    
+
     // Send AppendEntries RPC - returns a generic future
     { client.send_append_entries(target, aer, timeout) }
         -> std::same_as<FutureType>;
-    
+
     // Send InstallSnapshot RPC - returns a generic future
     { client.send_install_snapshot(target, isr, timeout) }
         -> std::same_as<FutureType>;
@@ -291,12 +291,12 @@ concept network_server = requires(
     std::function<install_snapshot_response(const install_snapshot_request&)> is_handler
 ) {
     requires future<FutureType, void>;
-    
+
     // Register RPC handlers
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;
     { server.register_append_entries_handler(ae_handler) } -> std::same_as<void>;
     { server.register_install_snapshot_handler(is_handler) } -> std::same_as<void>;
-    
+
     // Server lifecycle
     { server.start() } -> std::same_as<void>;
     { server.stop() } -> std::same_as<void>;
@@ -330,17 +330,17 @@ concept persistence_engine = requires(
     // Persistent state operations
     { engine.save_current_term(term) } -> std::same_as<void>;
     { engine.load_current_term() } -> std::same_as<term_id>;
-    
+
     { engine.save_voted_for(node) } -> std::same_as<void>;
     { engine.load_voted_for() } -> std::same_as<std::optional<node_id>>;
-    
+
     // Log operations
     { engine.append_log_entry(entry) } -> std::same_as<void>;
     { engine.get_log_entry(index) } -> std::same_as<std::optional<log_entry>>;
     { engine.get_log_entries(index, index) } -> std::same_as<std::vector<log_entry>>;
     { engine.get_last_log_index() } -> std::same_as<log_index>;
     { engine.truncate_log(index) } -> std::same_as<void>;
-    
+
     // Snapshot operations
     { engine.save_snapshot(snap) } -> std::same_as<void>;
     { engine.load_snapshot() } -> std::same_as<std::optional<snapshot>>;
@@ -376,12 +376,12 @@ concept diagnostic_logger = requires(
 ) {
     // Basic logging
     { logger.log(level, message) } -> std::same_as<void>;
-    
+
     // Structured logging with key-value pairs
-    { logger.log(level, message, 
-        std::vector<std::pair<std::string_view, std::string_view>>{}) } 
+    { logger.log(level, message,
+        std::vector<std::pair<std::string_view, std::string_view>>{}) }
         -> std::same_as<void>;
-    
+
     // Convenience methods
     { logger.trace(message) } -> std::same_as<void>;
     { logger.debug(message) } -> std::same_as<void>;
@@ -411,13 +411,13 @@ concept membership_manager = requires(
     // Node validation
     { manager.validate_new_node(node) } -> std::convertible_to<bool>;
     { manager.authenticate_node(node) } -> std::convertible_to<bool>;
-    
+
     // Configuration management
-    { manager.create_joint_configuration(config, config) } 
+    { manager.create_joint_configuration(config, config) }
         -> std::same_as<cluster_configuration>;
-    { manager.is_node_in_configuration(node, config) } 
+    { manager.is_node_in_configuration(node, config) }
         -> std::convertible_to<bool>;
-    
+
     // Cleanup
     { manager.handle_node_removal(node) } -> std::same_as<void>;
 };
@@ -441,13 +441,13 @@ concept membership_manager = requires(
     // Node validation
     { manager.validate_new_node(node) } -> std::convertible_to<bool>;
     { manager.authenticate_node(node) } -> std::convertible_to<bool>;
-    
+
     // Configuration management
-    { manager.create_joint_configuration(config, config) } 
+    { manager.create_joint_configuration(config, config) }
         -> std::same_as<cluster_configuration>;
-    { manager.is_node_in_configuration(node, config) } 
+    { manager.is_node_in_configuration(node, config) }
         -> std::convertible_to<bool>;
-    
+
     // Cleanup
     { manager.handle_node_removal(node) } -> std::same_as<void>;
 };
@@ -475,13 +475,13 @@ concept metrics = requires(
     // Metric configuration
     { metric.set_metric_name(name) } -> std::same_as<void>;
     { metric.add_dimension(dimension_name, dimension_value) } -> std::same_as<void>;
-    
+
     // Recording methods
     { metric.add_one() } -> std::same_as<void>;
     { metric.add_count(count) } -> std::same_as<void>;
     { metric.add_duration(duration) } -> std::same_as<void>;
     { metric.add_value(value) } -> std::same_as<void>;
-    
+
     // Metric emission
     { metric.emit() } -> std::same_as<void>;
 };
@@ -507,24 +507,24 @@ concept raft_node = requires(
     std::chrono::milliseconds timeout
 ) {
     requires future<FutureType, std::vector<std::byte>>;
-    
+
     // Client operations - return generic futures
-    { node.submit_command(command, timeout) } 
+    { node.submit_command(command, timeout) }
         -> std::same_as<FutureType>;
-    { node.read_state(timeout) } 
+    { node.read_state(timeout) }
         -> std::same_as<FutureType>;
-    
+
     // Node lifecycle
     { node.start() } -> std::same_as<void>;
     { node.stop() } -> std::same_as<void>;
     { node.is_running() } -> std::convertible_to<bool>;
-    
+
     // Node state queries
     { node.get_node_id() } -> std::same_as<node_id>;
     { node.get_current_term() } -> std::same_as<term_id>;
     { node.get_state() } -> std::same_as<server_state>;
     { node.is_leader() } -> std::convertible_to<bool>;
-    
+
     // Cluster operations - return generic futures
     { node.add_server(node_id{}) } -> std::same_as<FutureType>;
     { node.remove_server(node_id{}) } -> std::same_as<FutureType>;
@@ -556,21 +556,21 @@ private:
         std::chrono::steady_clock::time_point submitted_at;
         std::optional<std::chrono::milliseconds> timeout;
     };
-    
+
     std::unordered_map<log_index, std::vector<pending_operation>> _pending_operations;
     std::mutex _mutex;
-    
+
 public:
     // Register a new operation that waits for commit
-    auto register_operation(log_index index, std::chrono::milliseconds timeout) 
+    auto register_operation(log_index index, std::chrono::milliseconds timeout)
         -> FutureType;
-    
+
     // Notify that entries up to commit_index are committed and applied
     auto notify_committed_and_applied(log_index commit_index) -> void;
-    
+
     // Cancel all pending operations (e.g., on leadership loss)
     auto cancel_all_operations(const std::string& reason) -> void;
-    
+
     // Cancel operations that have timed out
     auto cancel_timed_out_operations() -> void;
 };
@@ -596,13 +596,13 @@ public:
         std::vector<FutureType> futures,
         std::chrono::milliseconds timeout
     ) -> FutureType;
-    
+
     // Collect all futures with timeout handling
     auto collect_all_with_timeout(
         std::vector<FutureType> futures,
         std::chrono::milliseconds timeout
     ) -> FutureType;
-    
+
     // Cancel all futures in a collection
     auto cancel_collection(std::vector<FutureType>& futures) -> void;
 };
@@ -628,27 +628,27 @@ private:
         joint_consensus,
         final_configuration
     };
-    
+
     config_change_phase _current_phase{config_change_phase::none};
     std::optional<cluster_configuration> _target_configuration;
     std::optional<typename FutureType::promise_type> _change_promise;
-    
+
 public:
     // Start a configuration change with proper synchronization
     auto start_configuration_change(
         const cluster_configuration& new_config,
         std::chrono::milliseconds timeout
     ) -> FutureType;
-    
+
     // Notify that a configuration entry has been committed
     auto notify_configuration_committed(
         const cluster_configuration& config,
         log_index committed_index
     ) -> void;
-    
+
     // Cancel ongoing configuration change
     auto cancel_configuration_change(const std::string& reason) -> void;
-    
+
     // Check if a configuration change is in progress
     auto is_configuration_change_in_progress() const -> bool;
 };
@@ -675,9 +675,9 @@ private:
         double backoff_multiplier{2.0};
         std::size_t max_attempts{5};
     };
-    
+
     std::unordered_map<std::string, retry_policy> _retry_policies;
-    
+
 public:
     // Execute operation with retry and error handling
     template<typename Operation>
@@ -686,12 +686,12 @@ public:
         Operation&& op,
         const retry_policy& policy = {}
     ) -> FutureType;
-    
+
     // Handle specific error types
     auto handle_network_error(const std::exception& e) -> bool;
     auto handle_timeout_error(const std::exception& e) -> bool;
     auto handle_serialization_error(const std::exception& e) -> bool;
-    
+
     // Configure retry policies for different operations
     auto set_retry_policy(const std::string& operation, const retry_policy& policy) -> void;
 };
@@ -829,7 +829,7 @@ struct request_vote_request {
     node_id _candidate_id;
     log_index _last_log_index;
     term_id _last_log_term;
-    
+
     auto term() const -> term_id { return _term; }
     auto candidate_id() const -> node_id { return _candidate_id; }
     auto last_log_index() const -> log_index { return _last_log_index; }
@@ -839,7 +839,7 @@ struct request_vote_request {
 struct request_vote_response {
     term_id _term;
     bool _vote_granted;
-    
+
     auto term() const -> term_id { return _term; }
     auto vote_granted() const -> bool { return _vote_granted; }
 };
@@ -852,7 +852,7 @@ struct append_entries_request {
     term_id _prev_log_term;
     std::vector<log_entry> _entries;
     log_index _leader_commit;
-    
+
     auto term() const -> term_id { return _term; }
     auto leader_id() const -> node_id { return _leader_id; }
     auto prev_log_index() const -> log_index { return _prev_log_index; }
@@ -866,7 +866,7 @@ struct append_entries_response {
     bool _success;
     std::optional<log_index> _conflict_index;  // Optimization
     std::optional<term_id> _conflict_term;     // Optimization
-    
+
     auto term() const -> term_id { return _term; }
     auto success() const -> bool { return _success; }
     auto conflict_index() const -> std::optional<log_index> { return _conflict_index; }
@@ -882,7 +882,7 @@ struct install_snapshot_request {
     std::size_t _offset;
     std::vector<std::byte> _data;
     bool _done;
-    
+
     auto term() const -> term_id { return _term; }
     auto leader_id() const -> node_id { return _leader_id; }
     auto last_included_index() const -> log_index { return _last_included_index; }
@@ -894,7 +894,7 @@ struct install_snapshot_request {
 
 struct install_snapshot_response {
     term_id _term;
-    
+
     auto term() const -> term_id { return _term; }
 };
 ```
@@ -919,22 +919,22 @@ class node {
     using node_id_type = typename Types::node_id_type;
     using term_id_type = typename Types::term_id_type;
     using log_index_type = typename Types::log_index_type;
-    
+
 private:
     // Existing persistent state (stored before responding to RPCs)
     term_id_type _current_term;
     std::optional<node_id_type> _voted_for;
     std::vector<log_entry> _log;
-    
+
     // Existing volatile state (all servers)
     log_index_type _commit_index;
     log_index_type _last_applied;
     server_state _state;
-    
+
     // Existing volatile state (leaders only)
     std::unordered_map<node_id_type, log_index_type> _next_index;
     std::unordered_map<node_id_type, log_index_type> _match_index;
-    
+
     // Components using types from unified Types parameter
     network_client_type _network_client;
     network_server_type _network_server;
@@ -942,7 +942,7 @@ private:
     logger_type _logger;
     metrics_type _metrics;
     membership_manager_type _membership;
-    
+
     // New async coordination components using unified types
     commit_waiter<future_type> _commit_waiter;
     future_collector<future_type, append_entries_response> _heartbeat_collector;
@@ -951,23 +951,23 @@ private:
     error_handler<future_type, append_entries_response> _append_entries_error_handler;
     error_handler<future_type, request_vote_response> _vote_error_handler;
     error_handler<future_type, install_snapshot_response> _snapshot_error_handler;
-    
+
     // Enhanced state tracking
     std::unordered_map<log_index_type, std::chrono::steady_clock::time_point> _entry_timestamps;
     std::unordered_set<node_id_type> _unresponsive_followers;
-    
+
     // Existing timing
     std::chrono::milliseconds _election_timeout;
     std::chrono::milliseconds _heartbeat_interval;
     std::chrono::steady_clock::time_point _last_heartbeat;
-    
+
     // Enhanced configuration
     cluster_configuration _configuration;
     node_id_type _node_id;
     std::chrono::milliseconds _commit_timeout{30000};
     std::chrono::milliseconds _rpc_timeout{5000};
     std::chrono::milliseconds _heartbeat_lease_duration{1000};
-    
+
 public:
     // Clean interface using unified types
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout) -> future_type;
@@ -984,16 +984,16 @@ public:
     error_handler<append_entries_response> _append_entries_error_handler;
     error_handler<request_vote_response> _vote_error_handler;
     error_handler<install_snapshot_response> _snapshot_error_handler;
-    
+
     // Enhanced state tracking
     std::unordered_map<log_index, std::chrono::steady_clock::time_point> _entry_timestamps;
     std::unordered_set<NodeId> _unresponsive_followers;
-    
+
     // Existing timing
     std::chrono::milliseconds _election_timeout;
     std::chrono::milliseconds _heartbeat_interval;
     std::chrono::steady_clock::time_point _last_heartbeat;
-    
+
     // Enhanced configuration
     cluster_configuration _configuration;
     node_id _node_id;
@@ -1014,7 +1014,7 @@ struct pending_client_operation {
     std::chrono::steady_clock::time_point submitted_at;
     std::chrono::milliseconds timeout;
     kythira::Promise<std::vector<std::byte>> promise;
-    
+
     auto is_timed_out() const -> bool {
         auto elapsed = std::chrono::steady_clock::now() - submitted_at;
         return elapsed > timeout;
@@ -1033,7 +1033,7 @@ struct configuration_change_state {
         final_configuration_pending,
         final_configuration_committed
     };
-    
+
     phase current_phase{phase::none};
     cluster_configuration old_configuration;
     cluster_configuration new_configuration;
@@ -1085,7 +1085,7 @@ public:
     commit_timeout_exception(log_index index, std::chrono::milliseconds timeout);
     auto get_entry_index() const -> log_index { return _entry_index; }
     auto get_timeout() const -> std::chrono::milliseconds { return _timeout; }
-    
+
 private:
     log_index _entry_index;
     std::chrono::milliseconds _timeout;
@@ -1096,7 +1096,7 @@ public:
     leadership_lost_exception(term_id old_term, term_id new_term);
     auto get_old_term() const -> term_id { return _old_term; }
     auto get_new_term() const -> term_id { return _new_term; }
-    
+
 private:
     term_id _old_term;
     term_id _new_term;
@@ -1107,7 +1107,7 @@ public:
     future_collection_exception(const std::string& operation, std::size_t failed_count);
     auto get_operation() const -> const std::string& { return _operation; }
     auto get_failed_count() const -> std::size_t { return _failed_count; }
-    
+
 private:
     std::string _operation;
     std::size_t _failed_count;
@@ -1118,7 +1118,7 @@ public:
     configuration_change_exception(const std::string& phase, const std::string& reason);
     auto get_phase() const -> const std::string& { return _phase; }
     auto get_reason() const -> const std::string& { return _reason; }
-    
+
 private:
     std::string _phase;
     std::string _reason;
@@ -1219,7 +1219,7 @@ struct raft_configuration {
     std::size_t _max_entries_per_append{100};
     std::size_t _snapshot_threshold_bytes{10'000'000};
     std::size_t _snapshot_chunk_size{1'000'000};
-    
+
     auto election_timeout_min() const -> std::chrono::milliseconds { return _election_timeout_min; }
     auto election_timeout_max() const -> std::chrono::milliseconds { return _election_timeout_max; }
     auto heartbeat_interval() const -> std::chrono::milliseconds { return _heartbeat_interval; }
@@ -1741,7 +1741,7 @@ struct log_entry {
     TermId _term;
     LogIndex _index;
     std::vector<std::byte> _command;
-    
+
     auto term() const -> TermId { return _term; }
     auto index() const -> LogIndex { return _index; }
     auto command() const -> const std::vector<std::byte>& { return _command; }
@@ -1753,7 +1753,7 @@ struct cluster_configuration {
     std::vector<NodeId> _nodes;
     bool _is_joint_consensus;
     std::optional<std::vector<NodeId>> _old_nodes;
-    
+
     auto nodes() const -> const std::vector<NodeId>& { return _nodes; }
     auto is_joint_consensus() const -> bool { return _is_joint_consensus; }
     auto old_nodes() const -> std::optional<std::vector<NodeId>> { return _old_nodes; }
@@ -1766,7 +1766,7 @@ struct snapshot {
     TermId _last_included_term;
     cluster_configuration<NodeId> _configuration;
     std::vector<std::byte> _state_machine_state;
-    
+
     auto last_included_index() const -> LogIndex { return _last_included_index; }
     auto last_included_term() const -> TermId { return _last_included_term; }
     auto configuration() const -> const cluster_configuration<NodeId>& { return _configuration; }
@@ -1818,12 +1818,12 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
         return future_factory::make_exception_future<std::vector<std::byte>>(
             leadership_lost_exception(_current_term, _current_term));
     }
-    
+
     // Send heartbeats to all followers
     std::vector<future_type> heartbeat_futures;
     for (const auto& follower : _configuration.nodes()) {
         if (follower == _node_id) continue;  // Skip self
-        
+
         auto heartbeat_future = _network_client.send_append_entries(
             follower,
             create_heartbeat_request(),
@@ -1831,7 +1831,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
         );
         heartbeat_futures.push_back(std::move(heartbeat_future));
     }
-    
+
     // Collect majority of heartbeat responses
     return _heartbeat_collector.collect_majority(
         std::move(heartbeat_futures),
@@ -1844,7 +1844,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                 throw leadership_lost_exception(_current_term, response.term());
             }
         }
-        
+
         // Leader validity confirmed, return current state
         return get_state_machine_state();
     });
@@ -1881,17 +1881,17 @@ auto node<Types>::add_server(node_id_type server_id) -> future_type {
         return future_factory::make_exception_future<bool>(
             leadership_lost_exception(_current_term, _current_term));
     }
-    
+
     // Check if configuration change is already in progress
     if (_config_synchronizer.is_configuration_change_in_progress()) {
         return future_factory::make_exception_future<bool>(
             configuration_change_exception("add_server", "Configuration change already in progress"));
     }
-    
+
     // Create new configuration with added server
     cluster_configuration new_config = _configuration;
     new_config.add_node(server_id);
-    
+
     // Start configuration change with synchronization
     return _config_synchronizer.start_configuration_change(
         new_config,
@@ -1932,7 +1932,7 @@ struct rpc_timeout_configuration {
     std::chrono::milliseconds append_entries_timeout{100};
     std::chrono::milliseconds install_snapshot_timeout{5000};
     std::chrono::milliseconds heartbeat_timeout{50};
-    
+
     // Validation: ensure timeouts are compatible with election timeout
     auto validate(std::chrono::milliseconds election_timeout_min) const -> bool {
         return heartbeat_timeout * 3 < election_timeout_min &&
@@ -1976,10 +1976,10 @@ auto node<Types>::create_snapshot() -> void {
     if (log_size < _config.snapshot_threshold_bytes()) {
         return;
     }
-    
+
     // Capture state machine state
     auto state = _state_machine.capture_state();
-    
+
     // Create snapshot with metadata
     snapshot snap{
         .last_included_index = _last_applied,
@@ -1987,13 +1987,13 @@ auto node<Types>::create_snapshot() -> void {
         .configuration = _configuration,
         .state_machine_state = std::move(state)
     };
-    
+
     // Persist snapshot
     _persistence.save_snapshot(snap);
-    
+
     // Compact log (delete entries covered by snapshot)
     _persistence.delete_log_entries_before(_last_applied);
-    
+
     _logger.info("Snapshot created", {
         {"last_included_index", std::to_string(_last_applied)},
         {"log_size_before", std::to_string(log_size)},
@@ -2011,18 +2011,18 @@ auto node<Types>::install_snapshot(const snapshot& snap) -> void {
         });
         return;
     }
-    
+
     // Apply snapshot to state machine
     _state_machine.restore_state(snap.state_machine_state());
-    
+
     // Update Raft state
     _last_applied = snap.last_included_index();
     _commit_index = std::max(_commit_index, snap.last_included_index());
     _configuration = snap.configuration();
-    
+
     // Compact log
     _persistence.delete_log_entries_before(snap.last_included_index());
-    
+
     _logger.info("Snapshot installed", {
         {"last_included_index", std::to_string(snap.last_included_index())},
         {"last_included_term", std::to_string(snap.last_included_term())}

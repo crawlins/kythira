@@ -19,31 +19,31 @@ namespace {
  */
 BOOST_AUTO_TEST_CASE(debug_leak_detection, * boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
-    
+
     std::cout << "Pool created with leak detection enabled\n";
     std::cout << "Leak threshold: " << short_leak_threshold.count() << " seconds\n";
     std::cout << "Is leak detection enabled: " << pool.is_leak_detection_enabled() << "\n";
-    
+
     // Allocate a single block
     void* ptr = pool.allocate(test_block_size / 2, "debug_allocation");
     BOOST_CHECK(ptr != nullptr);
     std::cout << "Allocated block at: " << ptr << "\n";
-    
+
     // Check leaks immediately (should be 0)
     auto leaks_before = pool.detect_leaks();
     std::cout << "Leaks before threshold: " << leaks_before.size() << "\n";
     BOOST_CHECK_EQUAL(leaks_before.size(), 0);
-    
+
     // Wait for threshold + buffer
     std::cout << "Waiting for leak threshold...\n";
     std::this_thread::sleep_for(short_leak_threshold + std::chrono::milliseconds{500});
-    
+
     // Check leaks after threshold (should be 1)
     std::cout << "Calling detect_leaks()...\n";
     auto leaks_after = pool.detect_leaks();
     std::cout << "Leaks after threshold: " << leaks_after.size() << "\n";
     std::cout << "Leak threshold setting: " << pool.get_leak_threshold().count() << " seconds\n";
-    
+
     if (leaks_after.size() > 0) {
         for (const auto& leak : leaks_after) {
             std::cout << "Leak detected:\n";
@@ -55,7 +55,7 @@ BOOST_AUTO_TEST_CASE(debug_leak_detection, * boost::unit_test::timeout(test_time
         }
     } else {
         std::cout << "ERROR: No leaks detected!\n";
-        
+
         // Debug: Check pool metrics
         auto metrics = pool.get_metrics();
         std::cout << "Pool metrics:\n";
@@ -65,9 +65,9 @@ BOOST_AUTO_TEST_CASE(debug_leak_detection, * boost::unit_test::timeout(test_time
         std::cout << "  Allocation count: " << metrics.allocation_count << "\n";
         std::cout << "  Deallocation count: " << metrics.deallocation_count << "\n";
     }
-    
+
     BOOST_CHECK_EQUAL(leaks_after.size(), 1);
-    
+
     // Clean up
     pool.deallocate(ptr);
 }

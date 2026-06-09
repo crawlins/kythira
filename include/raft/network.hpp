@@ -19,13 +19,13 @@ concept network_client = requires(
     std::chrono::milliseconds timeout
 ) {
     // Send RequestVote RPC - returns Future<request_vote_response<>>
-    { client.send_request_vote(target, rvr, timeout) } 
+    { client.send_request_vote(target, rvr, timeout) }
         -> std::same_as<kythira::Future<kythira::request_vote_response<>>>;
-    
+
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
     { client.send_append_entries(target, aer, timeout) }
         -> std::same_as<kythira::Future<kythira::append_entries_response<>>>;
-    
+
     // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
     { client.send_install_snapshot(target, isr, timeout) }
         -> std::same_as<kythira::Future<kythira::install_snapshot_response<>>>;
@@ -43,7 +43,7 @@ concept network_server = requires(
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;
     { server.register_append_entries_handler(ae_handler) } -> std::same_as<void>;
     { server.register_install_snapshot_handler(is_handler) } -> std::same_as<void>;
-    
+
     // Server lifecycle
     { server.start() } -> std::convertible_to<void>;
     { server.stop() } -> std::convertible_to<void>;

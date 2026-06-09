@@ -100,13 +100,13 @@ public:
         // Return result to client
         return result;
     }
-    
+
     // Capture current state for snapshot
     auto get_state() const -> std::vector<std::byte> {
         // Serialize your state machine's data
         return serialized_state;
     }
-    
+
     // Restore state from snapshot
     auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t last_index) -> void {
         // Deserialize and restore your state machine's data
@@ -133,12 +133,12 @@ public:
 // Use your state machine
         return result;
     }
-    
+
     auto create_snapshot() -> std::vector<std::byte> {
         // Create snapshot of current state
         return snapshot_data;
     }
-    
+
     auto restore_snapshot(const std::vector<std::byte>& data) -> void {
         // Restore state from snapshot
     }
@@ -423,7 +423,7 @@ BOOST_AUTO_TEST_CASE(property_election_safety, * boost::unit_test::timeout(60)) 
     for (std::size_t i = 0; i < 100; ++i) {
         auto cluster = create_random_cluster();
         cluster.run_election();
-        
+
         auto leaders = cluster.count_leaders_in_term(cluster.current_term());
         BOOST_CHECK_LE(leaders, 1);  // At most one leader
     }
@@ -512,19 +512,19 @@ The implementation has been tested with multiple transport layers:
 
 ### What's Ready
 
-✅ **Core Raft Algorithm**: Leader election, log replication, commit advancement  
-✅ **Async Operations**: Commit waiting, future collections, error handling  
-✅ **HTTP/HTTPS Transport**: Production-ready with TLS and connection pooling  
-✅ **Error Handling**: Exponential backoff retry, timeout classification  
-✅ **Resource Management**: Proper cleanup, cancellation, leak prevention  
-✅ **Testing**: 100% pass rate for built tests, comprehensive property testing  
+✅ **Core Raft Algorithm**: Leader election, log replication, commit advancement
+✅ **Async Operations**: Commit waiting, future collections, error handling
+✅ **HTTP/HTTPS Transport**: Production-ready with TLS and connection pooling
+✅ **Error Handling**: Exponential backoff retry, timeout classification
+✅ **Resource Management**: Proper cleanup, cancellation, leak prevention
+✅ **Testing**: 100% pass rate for built tests, comprehensive property testing
 
 ### What's In Progress
 
-⚠️ **Integration Tests**: 9 integration tests not yet built  
-⚠️ **Safety Properties**: 6 core safety property tests not yet built  
-⚠️ **Membership Changes**: Implementation exists but integration tests pending  
-⚠️ **Snapshots**: Core functionality exists but full integration tests pending  
+⚠️ **Integration Tests**: 9 integration tests not yet built
+⚠️ **Safety Properties**: 6 core safety property tests not yet built
+⚠️ **Membership Changes**: Implementation exists but integration tests pending
+⚠️ **Snapshots**: Core functionality exists but full integration tests pending
 
 ### Production Checklist
 

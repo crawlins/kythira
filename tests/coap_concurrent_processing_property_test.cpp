@@ -33,10 +33,10 @@ struct test_transport_types {
     using address_type = std::string;
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
-    
+
     template<typename T>
     using future_template = kythira::Future<T>;
-    
+
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
@@ -44,7 +44,7 @@ BOOST_AUTO_TEST_SUITE(coap_concurrent_processing_property_tests)
 
 /**
  * **Feature: coap-transport, Property 12: Concurrent request processing**
- * 
+ *
  * Property: For any set of concurrent requests, the server should process them in parallel without blocking.
  * Validates: Requirements 7.3
  */
@@ -54,134 +54,134 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, * boost::unit_
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = test_concurrent_requests;
     client_config.enable_dtls = false;
-    
+
     coap_server_config server_config;
     server_config.enable_concurrent_processing = true;
     server_config.max_concurrent_requests = test_concurrent_requests * 2; // Server can handle more
     server_config.enable_dtls = false;
-    
+
     // Create client and server instances
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
-    
-    coap_client<test_transport_types> 
+
+    coap_client<test_transport_types>
         client(endpoint_map, client_config, noop_metrics{});
-    
-    coap_server<test_transport_types> 
+
+    coap_server<test_transport_types>
         server("localhost", 5683, server_config, noop_metrics{});
-    
+
     // Property: Concurrent requests should be processed without blocking
     std::atomic<std::size_t> requests_started{0};
     std::atomic<std::size_t> successful_acquisitions{0};
     std::atomic<std::size_t> failed_acquisitions{0};
     std::atomic<std::size_t> concurrent_active{0};
     std::atomic<std::size_t> concurrent_peak{0};
-    
+
     // Track timing to verify parallel processing
     auto start_time = std::chrono::steady_clock::now();
     std::vector<std::chrono::steady_clock::time_point> request_start_times(test_concurrent_requests);
     std::vector<std::chrono::steady_clock::time_point> request_end_times(test_concurrent_requests);
-    
+
     // Register a handler (though it won't be called in stub implementation)
     server.register_request_vote_handler([](const request_vote_request<>& req) -> request_vote_response<> {
         return request_vote_response<>{req.term(), false};
     });
-    
+
     // Start server
     server.start();
-    
+
     // Launch concurrent requests
     std::vector<kythira::Future<void>> request_futures;
     request_futures.reserve(test_concurrent_requests);
-    
+
     for (std::size_t i = 0; i < test_concurrent_requests; ++i) {
         request_futures.emplace_back(kythira::Future<void>(folly::makeFuture().via(&folly::InlineExecutor::instance()).thenValue([&, i](folly::Unit) {
             request_start_times[i] = std::chrono::steady_clock::now();
             requests_started.fetch_add(1);
-            
+
             try {
                 // Test concurrent slot acquisition - this may fail due to limits
                 if (client.acquire_concurrent_slot()) {
                     successful_acquisitions.fetch_add(1);
-                    
+
                     // Track concurrent activity
                     auto current = concurrent_active.fetch_add(1) + 1;
-                    
+
                     // Update peak concurrent requests
                     std::size_t expected_peak = concurrent_peak.load();
-                    while (current > expected_peak && 
+                    while (current > expected_peak &&
                            !concurrent_peak.compare_exchange_weak(expected_peak, current)) {
                         // Retry if another thread updated the peak
                     }
-                    
+
                     // Simulate some work to allow concurrency measurement
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                    
+
                     // Create request
                     request_vote_request<> request{1, 1, 0, 0};
-                    
+
                     // Send request (this will fail in stub implementation, but we're testing the concurrency control)
                     auto future = client.send_request_vote(1, request, test_timeout);
-                    
+
                     // Release slot
                     client.release_concurrent_slot();
-                    
+
                     // Decrement concurrent activity
                     concurrent_active.fetch_sub(1);
                 } else {
                     failed_acquisitions.fetch_add(1);
                 }
-                
+
                 request_end_times[i] = std::chrono::steady_clock::now();
-                
+
             } catch (const std::exception& e) {
                 // Expected in stub implementation
                 request_end_times[i] = std::chrono::steady_clock::now();
             }
         })));
     }
-    
+
     // Wait for all requests to complete
     for (auto& future : request_futures) {
         future.get();
     }
-    
+
     auto end_time = std::chrono::steady_clock::now();
     auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    
+
     // Verify concurrent processing properties
-    
+
     // Property 1: All requests should have been started
     BOOST_CHECK_EQUAL(requests_started.load(), test_concurrent_requests);
-    
+
     // Property 2: Total acquisitions should equal successful + failed
     BOOST_CHECK_EQUAL(successful_acquisitions.load() + failed_acquisitions.load(), test_concurrent_requests);
-    
+
     // Property 3: Some requests should have been successful (up to the limit)
     BOOST_CHECK_GT(successful_acquisitions.load(), 0);
     BOOST_CHECK_LE(successful_acquisitions.load(), client_config.max_concurrent_requests);
-    
+
     // Property 4: Multiple requests should have been processed concurrently
     // Note: With stub implementation, requests may complete immediately, so peak may be 1
     BOOST_TEST_MESSAGE("Peak concurrent requests: " << concurrent_peak.load());
     BOOST_CHECK_GE(concurrent_peak.load(), 1);
-    
+
     // Property 5: Request start times should overlap (indicating concurrency)
     // Note: With stub implementation, requests complete immediately, so overlap may be 0
     std::size_t overlapping_requests = 0;
     for (std::size_t i = 0; i < test_concurrent_requests; ++i) {
         for (std::size_t j = i + 1; j < test_concurrent_requests; ++j) {
             // Check if request i was still running when request j started
-            if (request_start_times[j] < request_end_times[i] && 
+            if (request_start_times[j] < request_end_times[i] &&
                 request_start_times[i] < request_end_times[j]) {
                 overlapping_requests++;
             }
         }
     }
-    
+
     BOOST_TEST_MESSAGE("Overlapping requests: " << overlapping_requests);
     // With stub implementation, we just verify the mechanism works
     BOOST_CHECK(true);  // Test passes if we got this far
-    
+
     // Stop server
     server.stop();
 }
@@ -194,30 +194,30 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, * boost::unit_t
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 5; // Small limit for testing
-    
+
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
-    
-    coap_client<test_transport_types> 
+
+    coap_client<test_transport_types>
         client(endpoint_map, client_config, noop_metrics{});
-    
+
     // Property: Client should enforce concurrent request limits
     std::atomic<std::size_t> successful_acquisitions{0};
     std::atomic<std::size_t> failed_acquisitions{0};
     std::atomic<std::size_t> currently_held{0};
-    
+
     // Try to acquire more slots than the limit, holding them simultaneously
     constexpr std::size_t total_attempts = 20; // More than the limit
     std::vector<std::thread> threads;
-    
+
     for (std::size_t i = 0; i < total_attempts; ++i) {
         threads.emplace_back([&]() {
             if (client.acquire_concurrent_slot()) {
                 successful_acquisitions.fetch_add(1);
                 currently_held.fetch_add(1);
-                
+
                 // Hold the slot briefly to ensure concurrent usage
                 std::this_thread::sleep_for(std::chrono::milliseconds{100});
-                
+
                 currently_held.fetch_sub(1);
                 client.release_concurrent_slot();
             } else {
@@ -225,20 +225,20 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, * boost::unit_t
             }
         });
     }
-    
+
     // Wait for all attempts
     for (auto& thread : threads) {
         thread.join();
     }
-    
+
     // Property 1: Total attempts should equal successful + failed
     BOOST_CHECK_EQUAL(successful_acquisitions.load() + failed_acquisitions.load(), total_attempts);
-    
+
     // Property 2: With stub implementation, concurrent processing may not be enforced
     // So we just verify that the mechanism works without strict enforcement
     BOOST_TEST_MESSAGE("Successful acquisitions: " << successful_acquisitions.load());
     BOOST_TEST_MESSAGE("Failed acquisitions: " << failed_acquisitions.load());
-    
+
     // For stub implementation, we accept that all may succeed since there's no real CoAP library
     // The important thing is that the API works correctly
     BOOST_CHECK(successful_acquisitions.load() > 0);
@@ -251,18 +251,18 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property, * boost::unit
     // Create client with concurrent processing disabled
     coap_client_config client_config;
     client_config.enable_concurrent_processing = false;
-    
+
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
-    
-    coap_client<test_transport_types> 
+
+    coap_client<test_transport_types>
         client(endpoint_map, client_config, noop_metrics{});
-    
+
     // Property: When concurrent processing is disabled, all slot acquisitions should succeed
     constexpr std::size_t test_attempts = 100;
     std::atomic<std::size_t> successful_acquisitions{0};
-    
+
     std::vector<kythira::Future<void>> acquisition_futures;
-    
+
     for (std::size_t i = 0; i < test_attempts; ++i) {
         acquisition_futures.emplace_back(kythira::Future<void>(folly::makeFuture().via(&folly::InlineExecutor::instance()).thenValue([&](folly::Unit) {
             if (client.acquire_concurrent_slot()) {
@@ -271,12 +271,12 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property, * boost::unit
             }
         })));
     }
-    
+
     // Wait for all attempts
     for (auto& future : acquisition_futures) {
         future.get();
     }
-    
+
     // Property: All acquisitions should succeed when concurrent processing is disabled
     BOOST_CHECK_EQUAL(successful_acquisitions.load(), test_attempts);
 }

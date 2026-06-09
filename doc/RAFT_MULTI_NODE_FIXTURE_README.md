@@ -4,8 +4,8 @@
 
 The Raft multi-node test fixture provides infrastructure for testing Raft consensus with multiple nodes in a simulated network environment. This fixture is designed to support future integration testing of Raft clusters with controlled network conditions.
 
-**Task**: 700 - Create multi-node test fixture  
-**Requirements**: 1.1, 1.2, 1.3, 2.1  
+**Task**: 700 - Create multi-node test fixture
+**Requirements**: 1.1, 1.2, 1.3, 2.1
 **Status**: Infrastructure Complete ✅
 
 ## Features

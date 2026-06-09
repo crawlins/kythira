@@ -221,7 +221,7 @@ struct coap_client_config {
     std::chrono::milliseconds nstart{1};
     std::chrono::milliseconds default_leisure{5000};
     std::chrono::milliseconds probing_rate{1000};
-    
+
     // DTLS Configuration
     bool enable_dtls{false};
     std::string psk_identity{};
@@ -230,11 +230,11 @@ struct coap_client_config {
     std::string key_file{};
     std::string ca_file{};
     bool verify_peer_cert{true};
-    
+
     // Block Transfer
     std::size_t max_block_size{1024};
     bool enable_block_transfer{true};
-    
+
     // Connection Management
     std::size_t max_sessions{100};
     std::chrono::seconds session_timeout{300};
@@ -248,7 +248,7 @@ struct coap_server_config {
     std::size_t max_concurrent_sessions{200};
     std::size_t max_request_size{64 * 1024};  // 64 KB
     std::chrono::seconds session_timeout{300};
-    
+
     // DTLS Configuration
     bool enable_dtls{false};
     std::string psk_identity{};
@@ -257,16 +257,16 @@ struct coap_server_config {
     std::string key_file{};
     std::string ca_file{};
     bool verify_peer_cert{true};
-    
+
     // Block Transfer
     std::size_t max_block_size{1024};
     bool enable_block_transfer{true};
-    
+
     // Multicast Support
     bool enable_multicast{false};
     std::string multicast_address{"224.0.1.187"};
     std::uint16_t multicast_port{5683};
-    
+
     // Memory Pool Configuration
     std::size_t memory_pool_size{1024 * 1024};  // 1 MB default
     std::size_t memory_pool_block_size{4096};   // 4 KB blocks
@@ -308,13 +308,13 @@ class memory_pool {
 public:
     memory_pool(std::size_t pool_size, std::size_t block_size);
     ~memory_pool();
-    
+
     auto allocate(std::size_t size) -> void*;
     auto deallocate(void* ptr) -> void;
     auto reset() -> void;
     auto get_metrics() const -> memory_pool_metrics;
     auto detect_leaks() -> std::vector<memory_leak_info>;
-    
+
 private:
     std::vector<std::byte> _pool_memory;
     std::unordered_map<void*, std::size_t> _allocations;
@@ -838,7 +838,7 @@ The current CoAP transport implementation provides comprehensive stub functional
 #### Block-wise Transfer Implementation
 - **Current State**: Basic block transfer interface with stub implementation
 - **Production Need**: Proper block reassembly, sequencing, and Block1/Block2 option handling
-- **Implementation**: 
+- **Implementation**:
   - Real block size negotiation with libcoap
   - Block transfer timeout and retry mechanisms
   - Block option parsing and validation

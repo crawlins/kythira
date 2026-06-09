@@ -2,14 +2,14 @@
 
 /**
  * Multi-Node Test Fixture for Raft Consensus Testing
- * 
+ *
  * This fixture provides infrastructure for testing Raft consensus with multiple nodes:
  * - Dynamic cluster size support (3, 5, 7, 9 nodes)
  * - Node lifecycle management (start, stop, restart)
  * - Network simulator integration for controlled communication
  * - Simulated network failures and partitions
  * - Cluster initialization and configuration
- * 
+ *
  * Requirements: 1.1, 1.2, 1.3, 2.1
  * Task: 700 - Create multi-node test fixture
  */
@@ -42,7 +42,7 @@ struct cluster_config {
 
 /**
  * Multi-node test fixture for Raft consensus testing
- * 
+ *
  * Manages a cluster of Raft nodes with simulated network communication.
  * Provides control over network conditions, node lifecycle, and cluster configuration.
  */
@@ -53,12 +53,12 @@ public:
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
     using state_machine_type = kythira::examples::counter_state_machine;
-    
+
     // Network simulator types
     using network_types = network_simulator::DefaultNetworkTypes;
     using simulator_type = network_simulator::NetworkSimulator<network_types>;
     using network_node_type = network_simulator::NetworkNode<network_types>;
-    
+
     /**
      * Constructor - initializes the fixture with specified configuration
      */
@@ -71,7 +71,7 @@ public:
             throw std::invalid_argument("Node count must be odd and between 3 and 9");
         }
     }
-    
+
     /**
      * Initialize the cluster with the configured number of nodes
      * Creates all nodes and sets up network topology
@@ -79,20 +79,20 @@ public:
     auto initialize_cluster() -> void {
         // Start the network simulator
         _simulator->start();
-        
+
         // Create nodes
         for (std::size_t i = 0; i < _config.node_count; ++i) {
             auto node_id = generate_node_id(i);
             create_node(node_id);
         }
-        
+
         // Configure network topology (fully connected mesh)
         configure_network_topology();
-        
+
         // Note: Cluster configuration would be set here for actual Raft nodes
         // This is infrastructure for future integration
     }
-    
+
     /**
      * Start all nodes in the cluster
      */
@@ -104,7 +104,7 @@ public:
             }
         }
     }
-    
+
     /**
      * Stop all nodes in the cluster
      */
@@ -116,7 +116,7 @@ public:
             }
         }
     }
-    
+
     /**
      * Start a specific node
      */
@@ -125,13 +125,13 @@ public:
         if (it == _nodes.end()) {
             throw std::invalid_argument("Node not found: " + node_id);
         }
-        
+
         if (!it->second.is_running) {
             // Note: Would call it->second.raft_node->start() for actual Raft nodes
             it->second.is_running = true;
         }
     }
-    
+
     /**
      * Stop a specific node
      */
@@ -140,13 +140,13 @@ public:
         if (it == _nodes.end()) {
             throw std::invalid_argument("Node not found: " + node_id);
         }
-        
+
         if (it->second.is_running) {
             // Note: Would call it->second.raft_node->stop() for actual Raft nodes
             it->second.is_running = false;
         }
     }
-    
+
     /**
      * Restart a specific node
      */
@@ -156,14 +156,14 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         start_node(node_id);
     }
-    
+
     /**
      * Get the number of nodes in the cluster
      */
     [[nodiscard]] auto get_node_count() const -> std::size_t {
         return _nodes.size();
     }
-    
+
     /**
      * Get all node IDs in the cluster
      */
@@ -175,7 +175,7 @@ public:
         }
         return ids;
     }
-    
+
     /**
      * Check if a node is running
      */
@@ -186,7 +186,7 @@ public:
         }
         return it->second.is_running;
     }
-    
+
     /**
      * Get the current leader node ID (if any)
      */
@@ -195,14 +195,14 @@ public:
         // For now, return nullopt as this is infrastructure only
         return std::nullopt;
     }
-    
+
     /**
      * Wait for a leader to be elected
      * Returns the leader node ID or nullopt if timeout
      */
     auto wait_for_leader(std::chrono::milliseconds timeout) -> std::optional<node_id_type> {
         auto start = std::chrono::steady_clock::now();
-        
+
         while (std::chrono::steady_clock::now() - start < timeout) {
             auto leader = get_leader();
             if (leader.has_value()) {
@@ -210,10 +210,10 @@ public:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        
+
         return std::nullopt;
     }
-    
+
     /**
      * Simulate network partition between two groups of nodes
      */
@@ -229,14 +229,14 @@ public:
             }
         }
     }
-    
+
     /**
      * Heal network partition (restore full connectivity)
      */
     auto heal_network_partition() -> void {
         configure_network_topology();
     }
-    
+
     /**
      * Simulate network delay for a specific node
      */
@@ -253,7 +253,7 @@ public:
             }
         }
     }
-    
+
     /**
      * Simulate packet loss for a specific node
      */
@@ -270,7 +270,7 @@ public:
             }
         }
     }
-    
+
     /**
      * Trigger election timeout check for all nodes
      */
@@ -282,7 +282,7 @@ public:
             (void)node_info;  // Suppress unused variable warning
         }
     }
-    
+
     /**
      * Trigger heartbeat timeout check for all nodes
      */
@@ -294,7 +294,7 @@ public:
             (void)node_info;  // Suppress unused variable warning
         }
     }
-    
+
     /**
      * Advance time by triggering timeouts
      */
@@ -306,7 +306,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
-    
+
     /**
      * Cleanup - stop all nodes and reset simulator
      */
@@ -315,7 +315,7 @@ public:
         _nodes.clear();
         _simulator->reset();
     }
-    
+
     /**
      * Destructor - ensure cleanup
      */
@@ -333,43 +333,43 @@ private:
         state_machine_type state_machine;
         bool is_running{false};
     };
-    
+
     /**
      * Generate a node ID from an index
      */
     auto generate_node_id(std::size_t index) const -> node_id_type {
         return "node_" + std::to_string(index);
     }
-    
+
     /**
      * Create a single node
      */
     auto create_node(const node_id_type& node_id) -> void {
         // Add node to simulator topology
         _simulator->add_node(node_id);
-        
+
         // Create network node
         auto network_node = _simulator->create_node(node_id);
-        
+
         // Create node info
         node_info info;
         info.network_node = network_node;
         info.is_running = false;
-        
+
         // Note: Full Raft node creation would happen here
         // This requires implementing network client/server adapters
         // for the network simulator
-        
+
         _nodes[node_id] = std::move(info);
     }
-    
+
     /**
      * Configure network topology (fully connected mesh)
      */
     auto configure_network_topology() -> void {
         auto latency = _config.enable_network_delays ? _config.network_latency : std::chrono::milliseconds(0);
         network_simulator::NetworkEdge edge(latency, _config.network_reliability);
-        
+
         // Create fully connected mesh
         for (const auto& [from_id, _] : _nodes) {
             for (const auto& [to_id, __] : _nodes) {
@@ -379,16 +379,16 @@ private:
             }
         }
     }
-    
+
     // Configuration
     cluster_config _config;
-    
+
     // Network simulator
     std::shared_ptr<simulator_type> _simulator;
-    
+
     // Nodes in the cluster
     std::unordered_map<node_id_type, node_info> _nodes;
-    
+
     // Random number generator
     std::mt19937 _rng;
 };

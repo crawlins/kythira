@@ -46,15 +46,15 @@ auto generate_random_string_node_id(std::mt19937& rng) -> std::string {
 auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
     std::uniform_int_distribution<std::size_t> size_dist(1, max_command_size);
     std::uniform_int_distribution<int> byte_dist(0, 255);
-    
+
     std::size_t size = size_dist(rng);
     std::vector<std::byte> command;
     command.reserve(size);
-    
+
     for (std::size_t i = 0; i < size; ++i) {
         command.push_back(static_cast<std::byte>(byte_dist(rng)));
     }
-    
+
     return command;
 }
 
@@ -62,10 +62,10 @@ auto generate_random_command(std::mt19937& rng) -> std::vector<std::byte> {
 auto generate_random_log_entries(std::mt19937& rng) -> std::vector<kythira::log_entry<>> {
     std::uniform_int_distribution<std::size_t> count_dist(0, max_entries);
     std::size_t count = count_dist(rng);
-    
+
     std::vector<kythira::log_entry<>> entries;
     entries.reserve(count);
-    
+
     for (std::size_t i = 0; i < count; ++i) {
         kythira::log_entry<> entry;
         entry._term = generate_random_term(rng);
@@ -73,7 +73,7 @@ auto generate_random_log_entries(std::mt19937& rng) -> std::vector<kythira::log_
         entry._command = generate_random_command(rng);
         entries.push_back(entry);
     }
-    
+
     return entries;
 }
 
@@ -81,38 +81,38 @@ auto generate_random_log_entries(std::mt19937& rng) -> std::vector<kythira::log_
 auto generate_random_snapshot_data(std::mt19937& rng) -> std::vector<std::byte> {
     std::uniform_int_distribution<std::size_t> size_dist(1, max_snapshot_data_size);
     std::uniform_int_distribution<int> byte_dist(0, 255);
-    
+
     std::size_t size = size_dist(rng);
     std::vector<std::byte> data;
     data.reserve(size);
-    
+
     for (std::size_t i = 0; i < size; ++i) {
         data.push_back(static_cast<std::byte>(byte_dist(rng)));
     }
-    
+
     return data;
 }
 
 // Helper to compare log entries
 auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>& b) -> bool {
-    return a.term() == b.term() && 
-           a.index() == b.index() && 
+    return a.term() == b.term() &&
+           a.index() == b.index() &&
            a.command() == b.command();
 }
 
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid RequestVote request, serializing then deserializing 
+ *
+ * Property: For any valid RequestVote request, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random RequestVote request
         kythira::request_vote_request<> original;
@@ -120,12 +120,12 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_tes
         original._candidate_id = generate_random_node_id(rng);
         original._last_log_index = generate_random_log_index(rng);
         original._last_log_term = generate_random_term(rng);
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_request_vote_request(serialized);
-            
+
             // Verify all fields match
             if (deserialized.term() != original.term() ||
                 deserialized.candidate_id() != original.candidate_id() ||
@@ -139,8 +139,8 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_tes
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("RequestVote request round-trip: " 
+
+    BOOST_TEST_MESSAGE("RequestVote request round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -148,28 +148,28 @@ BOOST_AUTO_TEST_CASE(property_request_vote_request_round_trip, * boost::unit_tes
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid RequestVote response, serializing then deserializing 
+ *
+ * Property: For any valid RequestVote response, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random RequestVote response
         kythira::request_vote_response<> original;
         original._term = generate_random_term(rng);
         original._vote_granted = bool_dist(rng) == 1;
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_request_vote_response(serialized);
-            
+
             // Verify all fields match
             if (deserialized.term() != original.term() ||
                 deserialized.vote_granted() != original.vote_granted()) {
@@ -181,8 +181,8 @@ BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_te
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("RequestVote response round-trip: " 
+
+    BOOST_TEST_MESSAGE("RequestVote response round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -190,16 +190,16 @@ BOOST_AUTO_TEST_CASE(property_request_vote_response_round_trip, * boost::unit_te
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid AppendEntries request, serializing then deserializing 
+ *
+ * Property: For any valid AppendEntries request, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random AppendEntries request
         kythira::append_entries_request<> original;
@@ -209,12 +209,12 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
         original._prev_log_term = generate_random_term(rng);
         original._entries = generate_random_log_entries(rng);
         original._leader_commit = generate_random_log_index(rng);
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_append_entries_request(serialized);
-            
+
             // Verify all fields match
             bool entries_match = true;
             if (deserialized.entries().size() != original.entries().size()) {
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
                     }
                 }
             }
-            
+
             if (deserialized.term() != original.term() ||
                 deserialized.leader_id() != original.leader_id() ||
                 deserialized.prev_log_index() != original.prev_log_index() ||
@@ -242,8 +242,8 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("AppendEntries request round-trip: " 
+
+    BOOST_TEST_MESSAGE("AppendEntries request round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -251,23 +251,23 @@ BOOST_AUTO_TEST_CASE(property_append_entries_request_round_trip, * boost::unit_t
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid AppendEntries response, serializing then deserializing 
+ *
+ * Property: For any valid AppendEntries response, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random AppendEntries response
         kythira::append_entries_response<> original;
         original._term = generate_random_term(rng);
         original._success = bool_dist(rng) == 1;
-        
+
         // Randomly include conflict info
         if (bool_dist(rng) == 1) {
             original._conflict_index = generate_random_log_index(rng);
@@ -275,12 +275,12 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_
         if (bool_dist(rng) == 1) {
             original._conflict_term = generate_random_term(rng);
         }
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_append_entries_response(serialized);
-            
+
             // Verify all fields match
             if (deserialized.term() != original.term() ||
                 deserialized.success() != original.success() ||
@@ -294,8 +294,8 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("AppendEntries response round-trip: " 
+
+    BOOST_TEST_MESSAGE("AppendEntries response round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -303,18 +303,18 @@ BOOST_AUTO_TEST_CASE(property_append_entries_response_round_trip, * boost::unit_
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid InstallSnapshot request, serializing then deserializing 
+ *
+ * Property: For any valid InstallSnapshot request, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
     std::uniform_int_distribution<int> bool_dist(0, 1);
     std::uniform_int_distribution<std::size_t> offset_dist(0, 1000000);
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random InstallSnapshot request
         kythira::install_snapshot_request<> original;
@@ -325,12 +325,12 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
         original._offset = offset_dist(rng);
         original._data = generate_random_snapshot_data(rng);
         original._done = bool_dist(rng) == 1;
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_install_snapshot_request(serialized);
-            
+
             // Verify all fields match
             if (deserialized.term() != original.term() ||
                 deserialized.leader_id() != original.leader_id() ||
@@ -347,8 +347,8 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("InstallSnapshot request round-trip: " 
+
+    BOOST_TEST_MESSAGE("InstallSnapshot request round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -356,26 +356,26 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_request_round_trip, * boost::unit
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid InstallSnapshot response, serializing then deserializing 
+ *
+ * Property: For any valid InstallSnapshot response, serializing then deserializing
  * the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Generate random InstallSnapshot response
         kythira::install_snapshot_response<> original;
         original._term = generate_random_term(rng);
-        
+
         try {
             // Serialize then deserialize
             auto serialized = serializer.serialize(original);
             auto deserialized = serializer.deserialize_install_snapshot_response(serialized);
-            
+
             // Verify all fields match
             if (deserialized.term() != original.term()) {
                 ++failures;
@@ -386,8 +386,8 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::uni
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("InstallSnapshot response round-trip: " 
+
+    BOOST_TEST_MESSAGE("InstallSnapshot response round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
@@ -395,16 +395,16 @@ BOOST_AUTO_TEST_CASE(property_install_snapshot_response_round_trip, * boost::uni
 /**
  * Feature: raft-consensus, Property 6: RPC Serialization Round-Trip
  * Validates: Requirements 2.5
- * 
- * Property: For any valid RPC message with string node IDs, serializing then 
+ *
+ * Property: For any valid RPC message with string node IDs, serializing then
  * deserializing the message produces an equivalent message with all fields preserved.
  */
 BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         // Test RequestVote with string node IDs
         kythira::request_vote_request<std::string> rv_original;
@@ -412,11 +412,11 @@ BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::tim
         rv_original._candidate_id = generate_random_string_node_id(rng);
         rv_original._last_log_index = generate_random_log_index(rng);
         rv_original._last_log_term = generate_random_term(rng);
-        
+
         try {
             auto serialized = serializer.serialize(rv_original);
             auto deserialized = serializer.deserialize_request_vote_request<std::string>(serialized);
-            
+
             if (deserialized.term() != rv_original.term() ||
                 deserialized.candidate_id() != rv_original.candidate_id() ||
                 deserialized.last_log_index() != rv_original.last_log_index() ||
@@ -429,8 +429,8 @@ BOOST_AUTO_TEST_CASE(property_string_node_id_round_trip, * boost::unit_test::tim
             BOOST_TEST_MESSAGE("Iteration " << i << ": Exception: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("String node ID round-trip: " 
+
+    BOOST_TEST_MESSAGE("String node ID round-trip: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }

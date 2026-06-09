@@ -34,10 +34,10 @@ struct test_transport_types {
     using address_type = std::string;
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
-    
+
     template<typename T>
     using future_template = kythira::Future<T>;
-    
+
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)
 
 // **Feature: coap-transport, Property 5: Duplicate message detection**
 // **Validates: Requirements 3.2**
-// Property: For any CoAP message with the same Message ID received multiple times, 
+// Property: For any CoAP message with the same Message ID received multiple times,
 // only the first occurrence should be processed.
 //
 // REWRITTEN: Tests behavior through public API - sends duplicate requests and verifies handling
@@ -54,54 +54,54 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Test client-side duplicate detection through public API
             {
                 // Create client configuration
                 kythira::coap_client_config config;
-                
+
                 // Create endpoint mapping
                 std::unordered_map<std::uint64_t, std::string> endpoints;
                 std::uint64_t target_node = node_dist(rng);
                 endpoints[target_node] = "coap://127.0.0.1:5683";
-                
+
                 // Create client
                 kythira::noop_metrics metrics;
                 kythira::coap_client<test_transport_types> client(
                     std::move(endpoints), config, metrics);
-                
+
                 // Create identical requests
                 kythira::request_vote_request<> request;
                 request._term = 1;
                 request._candidate_id = target_node;
                 request._last_log_index = 0;
                 request._last_log_term = 0;
-                
+
                 // Send the same request multiple times
                 // Duplicate detection should handle this transparently
                 auto future1 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
                 auto future2 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
                 auto future3 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
-                
+
                 // All sends should succeed (duplicate detection is internal)
                 // Note: We don't call .get() because server isn't running
                 // The test verifies that duplicate sends don't cause errors
             }
-            
+
             // Test server-side duplicate detection through public API
             {
                 // Create server configuration
                 kythira::coap_server_config config;
-                
+
                 // Create server
                 kythira::noop_metrics metrics;
                 kythira::coap_server<test_transport_types>
                     server("127.0.0.1", 5683, config, metrics);
-                
+
                 // Register a handler that tracks calls
                 std::atomic<int> call_count{0};
                 server.register_request_vote_handler([&call_count](const kythira::request_vote_request<>& req) {
@@ -111,21 +111,21 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
                     response._vote_granted = false;
                     return response;
                 });
-                
+
                 // Server should handle duplicate messages internally
                 // (This is verified through the handler not being called multiple times for duplicates)
                 BOOST_CHECK(server.is_running() == false); // Server not started in test
             }
-            
+
         } catch (const std::exception& e) {
             failures++;
             BOOST_TEST_MESSAGE("Exception during duplicate detection test " << i << ": " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Duplicate message detection: " 
+
+    BOOST_TEST_MESSAGE("Duplicate message detection: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
-    
+
     BOOST_CHECK_EQUAL(failures, 0);
 }
 

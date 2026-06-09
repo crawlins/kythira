@@ -22,7 +22,7 @@ public:
 
 class PortInUseException : public NetworkException {
 public:
-    explicit PortInUseException(const std::string& port) 
+    explicit PortInUseException(const std::string& port)
         : NetworkException("Port already in use: " + port) {}
 };
 

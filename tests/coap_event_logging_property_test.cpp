@@ -35,14 +35,14 @@ public:
         std::string message;
         std::vector<std::pair<std::string, std::string>> key_value_pairs;
     };
-    
+
     // Default constructor
     test_logger() = default;
-    
+
     // Move constructor
-    test_logger(test_logger&& other) noexcept 
+    test_logger(test_logger&& other) noexcept
         : _entries(std::move(other._entries)) {}
-    
+
     // Move assignment
     test_logger& operator=(test_logger&& other) noexcept {
         if (this != &other) {
@@ -52,16 +52,16 @@ public:
         }
         return *this;
     }
-    
+
     // Delete copy constructor and assignment
     test_logger(const test_logger&) = delete;
     test_logger& operator=(const test_logger&) = delete;
-    
+
     auto log(kythira::log_level level, std::string_view message) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _entries.emplace_back(log_entry{level, std::string{message}, {}});
     }
-    
+
     auto log(
         kythira::log_level level,
         std::string_view message,
@@ -74,7 +74,7 @@ public:
         }
         _entries.emplace_back(log_entry{level, std::string{message}, std::move(converted_pairs)});
     }
-    
+
     // Convenience methods for each log level
     auto trace(std::string_view message) -> void { log(kythira::log_level::trace, message); }
     auto debug(std::string_view message) -> void { log(kythira::log_level::debug, message); }
@@ -82,7 +82,7 @@ public:
     auto warning(std::string_view message) -> void { log(kythira::log_level::warning, message); }
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
-    
+
     auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
         log(kythira::log_level::trace, message, key_value_pairs);
     }
@@ -101,17 +101,17 @@ public:
     auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs) -> void {
         log(kythira::log_level::critical, message, key_value_pairs);
     }
-    
+
     [[nodiscard]] auto get_entries() const -> std::vector<log_entry> {
         std::lock_guard<std::mutex> lock(_mutex);
         return _entries;
     }
-    
+
     auto clear() -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _entries.clear();
     }
-    
+
     [[nodiscard]] auto has_log_with_message(const std::string& message) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         return std::any_of(_entries.begin(), _entries.end(),
@@ -119,7 +119,7 @@ public:
                 return entry.message.find(message) != std::string::npos;
             });
     }
-    
+
     [[nodiscard]] auto has_log_with_level(kythira::log_level level) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         return std::any_of(_entries.begin(), _entries.end(),
@@ -127,7 +127,7 @@ public:
                 return entry.level == level;
             });
     }
-    
+
     [[nodiscard]] auto has_log_with_key_value(const std::string& key, const std::string& value) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         return std::any_of(_entries.begin(), _entries.end(),
@@ -157,10 +157,10 @@ struct test_transport_types {
     using address_type = std::string;
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
-    
+
     template<typename T>
     using future_template = kythira::Future<T>;
-    
+
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
@@ -169,8 +169,8 @@ BOOST_AUTO_TEST_SUITE(coap_event_logging_property_tests)
 /**
  * **Feature: coap-transport, Property 20: Logging of significant events**
  * **Validates: Requirements 5.1, 5.2, 5.3**
- * 
- * Property: For any significant transport operation (message send/receive, connection events, errors), 
+ *
+ * Property: For any significant transport operation (message send/receive, connection events, errors),
  * appropriate log entries should be generated.
  */
 BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test::timeout(45)) {
@@ -179,9 +179,9 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
     std::uniform_int_distribution<std::uint16_t> port_dist(min_port, max_port);
     std::uniform_int_distribution<std::size_t> block_size_dist(min_block_size, max_block_size);
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     std::size_t successful_creations = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Generate random test parameters
@@ -189,20 +189,20 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
             auto enable_dtls = false; // Disable DTLS for logging test to avoid credential issues
             auto enable_block_transfer = bool_dist(rng) == 1;
             auto max_block_size = block_size_dist(rng);
-            
+
             auto logger = test_logger{};
             auto metrics = kythira::noop_metrics{};
-            
+
             // Create client configuration
             auto config = kythira::coap_client_config{};
             config.enable_dtls = enable_dtls;
             config.enable_block_transfer = enable_block_transfer;
             config.max_block_size = max_block_size;
-            
+
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[test_node_id] = "coap://127.0.0.1:" + std::to_string(port);
-            
+
             // Create CoAP client - this should generate initialization logs
             // The fact that this compiles and runs successfully demonstrates that
             // the logging infrastructure is properly integrated
@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
                     std::move(config),
                     std::move(metrics)
                 };
-                
+
                 // The client was created successfully, which means logging is working
                 successful_creations++;
             }
@@ -220,10 +220,10 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
             BOOST_TEST_MESSAGE("Iteration " << i << " failed: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("CoAP client initialization with logging: " 
+
+    BOOST_TEST_MESSAGE("CoAP client initialization with logging: "
         << successful_creations << "/" << property_test_iterations << " successful");
-    
+
     // Most iterations should succeed (allow for some random configuration failures)
     // Accept at least 80% success rate as reasonable for property-based testing
     auto min_expected_successes = static_cast<std::size_t>(property_test_iterations * 0.8);
@@ -233,8 +233,8 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, * boost::unit_test
 /**
  * **Feature: coap-transport, Property 20: Logging of significant events**
  * **Validates: Requirements 5.1, 5.2, 5.3**
- * 
- * Property: For any significant transport operation (server lifecycle events), 
+ *
+ * Property: For any significant transport operation (server lifecycle events),
  * appropriate log entries should be generated.
  */
 BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::timeout(60)) {
@@ -243,24 +243,24 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::tim
     std::uniform_int_distribution<std::uint16_t> port_dist(min_port, max_port);
     std::uniform_int_distribution<std::size_t> sessions_dist(1, 1000);
     std::uniform_int_distribution<int> bool_dist(0, 1);
-    
+
     std::size_t successful_operations = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Generate random test parameters
             auto port = port_dist(rng);
             auto enable_dtls = false; // Disable DTLS for logging test to avoid credential issues
             auto max_concurrent_sessions = sessions_dist(rng);
-            
+
             auto logger = test_logger{};
             auto metrics = kythira::noop_metrics{};
-            
+
             // Create server configuration
             auto config = kythira::coap_server_config{};
             config.enable_dtls = enable_dtls;
             config.max_concurrent_sessions = max_concurrent_sessions;
-            
+
             // Create CoAP server - this should generate initialization logs
             auto server = kythira::coap_server<test_transport_types>{
                 test_bind_address,
@@ -268,24 +268,24 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::tim
                 std::move(config),
                 std::move(metrics)
             };
-            
+
             // Test server lifecycle operations - these should generate logs
             server.start();
             BOOST_CHECK(server.is_running());
-            
+
             server.stop();
             BOOST_CHECK(!server.is_running());
-            
+
             successful_operations++;
-            
+
         } catch (const std::exception& e) {
             BOOST_TEST_MESSAGE("Iteration " << i << " failed: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("CoAP server lifecycle with logging: " 
+
+    BOOST_TEST_MESSAGE("CoAP server lifecycle with logging: "
         << successful_operations << "/" << property_test_iterations << " successful");
-    
+
     // Most iterations should succeed (allow for some random configuration failures)
     // Accept at least 80% success rate as reasonable for property-based testing
     auto min_expected_successes = static_cast<std::size_t>(property_test_iterations * 0.8);
@@ -295,7 +295,7 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, * boost::unit_test::tim
 /**
  * **Feature: coap-transport, Property 20: Logging of significant events**
  * **Validates: Requirements 5.1, 5.2, 5.3**
- * 
+ *
  * Property: For any RPC request sent via the client, appropriate debug log entries should be generated.
  */
 BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(30)) {
@@ -304,38 +304,38 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
     std::uniform_int_distribution<std::uint64_t> term_dist(1, 1000000);
     std::uniform_int_distribution<std::uint64_t> node_dist(1, 1000);
     std::uniform_int_distribution<std::uint32_t> timeout_dist(100, 30000);
-    
+
     std::size_t successful_requests = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Generate random test parameters
             auto term = term_dist(rng);
             auto candidate_id = node_dist(rng);
             auto timeout_ms = timeout_dist(rng);
-            
+
             auto logger = test_logger{};
             auto metrics = kythira::noop_metrics{};
             auto config = kythira::coap_client_config{};
-            
+
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[test_node_id] = test_endpoint;
-            
+
             // Create CoAP client
             auto client = kythira::coap_client<test_transport_types>{
                 std::move(endpoints),
                 std::move(config),
                 std::move(metrics)
             };
-            
+
             // Create a RequestVote request
             auto request = kythira::request_vote_request<>{};
             request._term = term;
             request._candidate_id = candidate_id;
             request._last_log_index = 0;
             request._last_log_term = 0;
-            
+
             // Test that the client was created successfully with logging infrastructure
             // This verifies that the logging system is properly integrated without
             // actually making network calls that could hang
@@ -348,15 +348,15 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
                 // Even exceptions are fine - we're testing logging integration
                 successful_requests++;
             }
-            
+
         } catch (const std::exception& e) {
             BOOST_TEST_MESSAGE("Iteration " << i << " failed: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("CoAP RPC request with logging: " 
+
+    BOOST_TEST_MESSAGE("CoAP RPC request with logging: "
         << successful_requests << "/" << property_test_iterations << " successful");
-    
+
     // All iterations should succeed since we're testing the logging infrastructure
     BOOST_CHECK_EQUAL(successful_requests, property_test_iterations);
 }
@@ -364,8 +364,8 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, * boost::unit_test::timeout(
 /**
  * **Feature: coap-transport, Property 20: Logging of significant events**
  * **Validates: Requirements 5.1, 5.2, 5.3**
- * 
- * Property: For any error condition encountered during transport operations, 
+ *
+ * Property: For any error condition encountered during transport operations,
  * appropriate error log entries should be generated.
  */
 BOOST_AUTO_TEST_CASE(test_coap_error_logging, * boost::unit_test::timeout(30)) {
@@ -378,43 +378,43 @@ BOOST_AUTO_TEST_CASE(test_coap_error_logging, * boost::unit_test::timeout(30)) {
         "coap://",               // Missing host/port
         ""                       // Empty endpoint
     };
-    
+
     std::size_t successful_tests = 0;
-    
+
     for (const auto& endpoint : test_endpoints) {
         try {
             auto logger = test_logger{};
             auto metrics = kythira::noop_metrics{};
             auto config = kythira::coap_client_config{};
-            
+
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
             endpoints[test_node_id] = endpoint;
-            
+
             // Create CoAP client - this tests that logging infrastructure can handle various endpoints
             auto client = kythira::coap_client<test_transport_types>{
                 std::move(endpoints),
                 std::move(config),
                 std::move(metrics)
             };
-            
+
             // Attempt to establish DTLS connection - this should generate appropriate logs
             try {
                 client.establish_dtls_connection(endpoint);
             } catch (const std::exception&) {
                 // Expected for invalid endpoints - the important thing is that logging works
             }
-            
+
             successful_tests++;
-            
+
         } catch (const std::exception& e) {
             BOOST_TEST_MESSAGE("Test with endpoint '" << endpoint << "' failed: " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("CoAP error logging infrastructure: " 
+
+    BOOST_TEST_MESSAGE("CoAP error logging infrastructure: "
         << successful_tests << "/" << test_endpoints.size() << " successful");
-    
+
     // All tests should succeed since we're testing the logging infrastructure, not endpoint validity
     BOOST_CHECK_EQUAL(successful_tests, test_endpoints.size());
 }

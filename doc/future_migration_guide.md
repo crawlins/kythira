@@ -231,7 +231,7 @@ folly::Future<std::vector<int>> collect_results() {
     futures.push_back(folly::makeFuture<int>(1));
     futures.push_back(folly::makeFuture<int>(2));
     futures.push_back(folly::makeFuture<int>(3));
-    
+
     return folly::collectAll(futures.begin(), futures.end())
         .thenValue([](std::vector<folly::Try<int>> results) {
             std::vector<int> values;
@@ -252,7 +252,7 @@ kythira::Future<std::vector<int>> collect_results() {
     futures.emplace_back(kythira::Future<int>(1));
     futures.emplace_back(kythira::Future<int>(2));
     futures.emplace_back(kythira::Future<int>(3));
-    
+
     return kythira::wait_for_all(std::move(futures))
         .then([](std::vector<kythira::Try<int>> results) {
             std::vector<int> values;
@@ -274,7 +274,7 @@ kythira::Future<std::vector<int>> collect_results() {
 
 void setup_http_client() {
     raft::cpp_httplib_client client(node_map, config);
-    
+
     auto future = client.send_request_vote(target, request, timeout);
     auto response = std::move(future).get();
 }
@@ -291,7 +291,7 @@ void setup_http_client() {
         raft::json_rpc_serializer<std::vector<std::byte>>,
         raft::noop_metrics
     > client(node_map, config, metrics);
-    
+
     auto future = client.send_request_vote(target, request, timeout);
     auto response = future.get();
 }
@@ -305,7 +305,7 @@ void setup_http_client() {
 
 void use_connection() {
     network_simulator::Connection<std::string, std::uint16_t> connection(local, remote, simulator);
-    
+
     auto read_future = connection.read();
     auto data = std::move(read_future).get();
 }
@@ -318,11 +318,11 @@ void use_connection() {
 
 void use_connection() {
     kythira::Connection<
-        std::string, 
-        std::uint16_t, 
+        std::string,
+        std::uint16_t,
         kythira::Future<std::vector<std::byte>>
     > connection(local, remote, simulator);
-    
+
     auto read_future = connection.read();
     auto data = read_future.get();
 }
@@ -340,7 +340,7 @@ void use_connection() {
 BOOST_AUTO_TEST_CASE(test_async_operation) {
     auto future = std::async(std::launch::async, []() { return 42; });
     BOOST_CHECK_EQUAL(future.get(), 42);
-    
+
     auto folly_future = folly::makeFuture<int>(24);
     BOOST_CHECK_EQUAL(std::move(folly_future).get(), 24);
 }
@@ -353,7 +353,7 @@ BOOST_AUTO_TEST_CASE(test_async_operation) {
 BOOST_AUTO_TEST_CASE(test_async_operation, * boost::unit_test::timeout(30)) {
     auto future = kythira::Future<int>(42);
     BOOST_CHECK_EQUAL(future.get(), 42);
-    
+
     auto another_future = kythira::Future<int>(24);
     BOOST_CHECK_EQUAL(another_future.get(), 24);
 }

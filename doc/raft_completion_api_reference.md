@@ -210,8 +210,8 @@ The `configuration_synchronizer` class manages safe two-phase configuration chan
 
 ```cpp
 template<
-    typename NodeId = std::uint64_t, 
-    typename LogIndex = std::uint64_t, 
+    typename NodeId = std::uint64_t,
+    typename LogIndex = std::uint64_t,
     typename FutureType = kythira::Future<bool>
 >
 requires raft::node_id<NodeId> && raft::log_index<LogIndex>
@@ -367,7 +367,7 @@ auto submit_command(
 The enhanced `read_state()` method uses future collection for heartbeat verification:
 
 ```cpp
-auto read_state(std::chrono::milliseconds timeout) 
+auto read_state(std::chrono::milliseconds timeout)
     -> kythira::Future<std::vector<std::byte>>;
 ```
 
@@ -500,23 +500,23 @@ try {
     auto future = node.submit_command_with_session(
         command, client_id, serial_number, timeout
     );
-    
+
     auto result = future.get();
     // Success - update last_serial_number
-    
+
 } catch (const invalid_serial_number_exception& e) {
     // Invalid serial number - check expected vs received
     std::cerr << "Serial number mismatch for client " << e.client_id() << std::endl;
     std::cerr << "Expected: " << e.expected_serial_number() << std::endl;
     std::cerr << "Received: " << e.received_serial_number() << std::endl;
-    
+
 } catch (const commit_timeout_exception& e) {
     // Timeout - retry with SAME serial number
     std::cerr << "Commit timeout for entry " << e.get_entry_index() << std::endl;
-    
+
 } catch (const leadership_lost_exception& e) {
     // Leadership lost - retry with SAME serial number on new leader
-    std::cerr << "Leadership lost (term " << e.get_old_term() 
+    std::cerr << "Leadership lost (term " << e.get_old_term()
               << " -> " << e.get_new_term() << ")" << std::endl;
 }
 ```
@@ -597,10 +597,10 @@ future.thenValue([](auto result) {
 void periodic_maintenance() {
     // Clean up timed-out operations
     auto cancelled_count = commit_waiter.cancel_timed_out_operations();
-    
+
     // Handle configuration change timeouts
     config_synchronizer.handle_timeout();
-    
+
     // Log cleanup statistics
     if (cancelled_count > 0) {
         logger.info("Cleaned up {} timed-out operations", cancelled_count);

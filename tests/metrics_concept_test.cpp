@@ -9,27 +9,27 @@ public:
     auto set_metric_name(std::string_view name) -> void {
         _name = name;
     }
-    
+
     auto add_dimension(std::string_view dimension_name, std::string_view dimension_value) -> void {
         // Store dimension
     }
-    
+
     auto add_one() -> void {
         _count += 1;
     }
-    
+
     auto add_count(std::int64_t count) -> void {
         _count += count;
     }
-    
+
     auto add_duration(std::chrono::nanoseconds duration) -> void {
         _total_duration += duration;
     }
-    
+
     auto add_value(double value) -> void {
         _value = value;
     }
-    
+
     auto emit() -> void {
         // Emit the metric
     }
@@ -63,6 +63,6 @@ int main() {
     m.add_duration(std::chrono::milliseconds{100});
     m.add_value(42.5);
     m.emit();
-    
+
     return 0;
 }

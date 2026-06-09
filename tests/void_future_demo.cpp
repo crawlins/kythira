@@ -1,7 +1,7 @@
 /**
  * @file void_future_demo.cpp
  * @brief Demonstration of void specialization with Future-returning callbacks
- * 
+ *
  * This program demonstrates that Future<void> properly supports Future-returning
  * callbacks in both thenTry and thenError methods, with proper Unit/void conversions.
  */
@@ -17,9 +17,9 @@ using namespace kythira;
 int main(int argc, char* argv[]) {
     folly::Init init(&argc, &argv);
     folly::CPUThreadPoolExecutor executor(2);
-    
+
     std::cout << "=== Void Future with Future-Returning Callbacks Demo ===" << std::endl;
-    
+
     // Demo 1: thenTry with Future<void> returning callback
     std::cout << "\n1. thenTry with Future<void> returning callback:" << std::endl;
     FutureFactory::makeFuture()
@@ -33,7 +33,7 @@ int main(int argc, char* argv[]) {
         .via(&executor)
         .get();
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     // Demo 2: thenTry with Future<int> returning callback
     std::cout << "\n2. thenTry with Future<int> returning callback:" << std::endl;
     auto result = FutureFactory::makeFuture()
@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
         .get();
     std::cout << "   - Result: " << result << std::endl;
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     // Demo 3: thenError with Future<void> returning callback
     std::cout << "\n3. thenError with Future<void> returning callback:" << std::endl;
     FutureFactory::makeExceptionalFuture<void>(
@@ -58,7 +58,7 @@ int main(int argc, char* argv[]) {
         .via(&executor)
         .get();
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     // Demo 4: thenValue with Future<void> returning callback
     std::cout << "\n4. thenValue with Future<void> returning callback:" << std::endl;
     FutureFactory::makeFuture()
@@ -69,7 +69,7 @@ int main(int argc, char* argv[]) {
         .via(&executor)
         .get();
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     // Demo 5: Chaining with delays
     std::cout << "\n5. Chaining with async delays:" << std::endl;
     auto start = std::chrono::steady_clock::now();
@@ -89,7 +89,7 @@ int main(int argc, char* argv[]) {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     std::cout << "   - Elapsed time: " << elapsed.count() << "ms" << std::endl;
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     // Demo 6: Type conversion chain (void -> int -> void)
     std::cout << "\n6. Type conversion chain (void -> int -> void):" << std::endl;
     FutureFactory::makeFuture()
@@ -104,8 +104,8 @@ int main(int argc, char* argv[]) {
         .via(&executor)
         .get();
     std::cout << "   ✓ Completed successfully" << std::endl;
-    
+
     std::cout << "\n=== All demos completed successfully ===" << std::endl;
-    
+
     return 0;
 }

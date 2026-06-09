@@ -87,13 +87,13 @@ concept transport_types = requires {
     // Required type members
     typename T::serializer_type;
     typename T::executor_type;
-    
+
     // Required template template parameter for futures
     template<typename ResponseType> typename T::template future_template<ResponseType>;
-    
+
     // Concept constraints
     requires rpc_serializer<typename T::serializer_type>;
-    
+
     // Validate that future_template can be instantiated with Raft response types
     requires future<typename T::template future_template<request_vote_response<>>, request_vote_response<>>;
     requires future<typename T::template future_template<append_entries_response<>>, append_entries_response<>>;

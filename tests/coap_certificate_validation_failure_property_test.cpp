@@ -25,10 +25,10 @@ struct TestTypes {
     using address_type = std::string;
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
-    
+
     template<typename T>
     using future_template = kythira::Future<T>;
-    
+
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
@@ -37,7 +37,7 @@ namespace {
     constexpr std::uint64_t test_node_id = 1;
     constexpr std::uint16_t test_bind_port = 5684;
     constexpr const char* test_bind_address = "127.0.0.1";
-    
+
     constexpr const char* valid_cert_content = R"(-----BEGIN CERTIFICATE-----
 MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOuMA0GCSqGSIb3DQEBBQUAMEUxCzAJBgNV
 BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
@@ -50,7 +50,7 @@ LlyaHCCUDI/3Y5HuW8Arf+TFgdnuTTj0+VoM8RcPp5sBjPiMpsIwPiMAKbJ5dF9J
 8q1k2JGfLy3B3n+OcB6g==
 -----END CERTIFICATE-----
 )";
-    
+
     // Various invalid certificate formats for testing
     const std::vector<std::string> invalid_certificates = {
         "",  // Empty certificate
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_SUITE(coap_certificate_validation_failure_property_tests)
 
 // **Feature: coap-transport, Property 10: Certificate validation failure handling**
 // **Validates: Requirements 6.2**
-// Property: For any invalid certificate presented during DTLS handshake, 
+// Property: For any invalid certificate presented during DTLS handshake,
 // the transport should reject the connection.
 BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::unit_test::timeout(90)) {
     std::random_device rd;
@@ -79,9 +79,9 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
     std::uniform_int_distribution<std::size_t> cert_index_dist(0, invalid_certificates.size() - 1);
     std::uniform_int_distribution<std::uint8_t> byte_dist(0, 255);
     std::uniform_int_distribution<std::size_t> corruption_count_dist(1, 10);
-    
+
     std::size_t failures = 0;
-    
+
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Test client certificate validation failure
@@ -92,26 +92,26 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 client_config.key_file = "/tmp/test_key.pem";
                 client_config.ca_file = "/tmp/test_ca.pem";
                 client_config.verify_peer_cert = true;  // Enable certificate verification
-                
+
                 std::unordered_map<std::uint64_t, std::string> node_endpoints;
                 node_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
-                
+
                 kythira::noop_metrics metrics;
-                
+
                 try {
                     kythira::coap_client<TestTypes> client(
                         std::move(node_endpoints), client_config, metrics);
-                    
+
                     // Test validation with various invalid certificates
                     std::string invalid_cert;
-                    
+
                     if (i < invalid_certificates.size()) {
                         // Use predefined invalid certificates
                         invalid_cert = invalid_certificates[i % invalid_certificates.size()];
                     } else {
                         // Generate corrupted version of valid certificate
                         invalid_cert = valid_cert_content;
-                        
+
                         // Randomly corrupt the certificate in a way that makes it obviously invalid
                         std::size_t corruption_count = corruption_count_dist(rng);
                         for (std::size_t j = 0; j < corruption_count; ++j) {
@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                             }
                         }
                     }
-                    
+
                     // Certificate validation should fail for invalid certificates
                     bool validation_failed = false;
                     try {
@@ -134,12 +134,12 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     } catch (const kythira::coap_security_error&) {
                         validation_failed = true;  // Expected behavior
                     }
-                    
+
                     if (!validation_failed) {
                         failures++;
                         BOOST_TEST_MESSAGE("Certificate validation should have failed for invalid certificate at iteration " << i);
                     }
-                    
+
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors during client creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during client creation at iteration " << i << ": " << e.what());
@@ -148,7 +148,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     failures++;
                 }
             }
-            
+
             // Test server certificate validation failure
             {
                 kythira::coap_server_config server_config;
@@ -157,23 +157,23 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 server_config.key_file = "/tmp/server_key.pem";
                 server_config.ca_file = "/tmp/server_ca.pem";
                 server_config.verify_peer_cert = true;  // Enable client certificate verification
-                
+
                 kythira::noop_metrics server_metrics;
-                
+
                 try {
                     kythira::coap_server<TestTypes> server(
                         test_bind_address, test_bind_port, server_config, server_metrics);
-                    
+
                     // Test validation with various invalid client certificates
                     std::string invalid_client_cert;
-                    
+
                     if (i < invalid_certificates.size()) {
                         // Use predefined invalid certificates
                         invalid_client_cert = invalid_certificates[cert_index_dist(rng)];
                     } else {
                         // Generate corrupted version of valid certificate
                         invalid_client_cert = valid_cert_content;
-                        
+
                         // Randomly corrupt the certificate in a way that makes it obviously invalid
                         std::size_t corruption_count = corruption_count_dist(rng);
                         for (std::size_t j = 0; j < corruption_count; ++j) {
@@ -185,7 +185,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                             }
                         }
                     }
-                    
+
                     // Client certificate validation should fail for invalid certificates
                     bool validation_failed = false;
                     try {
@@ -196,12 +196,12 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     } catch (const kythira::coap_security_error&) {
                         validation_failed = true;  // Expected behavior
                     }
-                    
+
                     if (!validation_failed) {
                         failures++;
                         BOOST_TEST_MESSAGE("Client certificate validation should have failed for invalid certificate at iteration " << i);
                     }
-                    
+
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors during server creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during server creation at iteration " << i << ": " << e.what());
@@ -210,7 +210,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     failures++;
                 }
             }
-            
+
             // Test certificate validation with verification disabled
             {
                 kythira::coap_client_config no_verify_config;
@@ -218,19 +218,19 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                 no_verify_config.cert_file = "/tmp/test_cert.pem";
                 no_verify_config.key_file = "/tmp/test_key.pem";
                 no_verify_config.verify_peer_cert = false;  // Disable certificate verification
-                
+
                 std::unordered_map<std::uint64_t, std::string> no_verify_endpoints;
                 no_verify_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
-                
+
                 kythira::noop_metrics no_verify_metrics;
-                
+
                 try {
                     kythira::coap_client<TestTypes> no_verify_client(
                         std::move(no_verify_endpoints), no_verify_config, no_verify_metrics);
-                    
+
                     // When verification is disabled, even invalid certificates should be accepted
                     std::string invalid_cert = invalid_certificates[cert_index_dist(rng)];
-                    
+
                     bool validation_result = false;
                     try {
                         validation_result = no_verify_client.validate_peer_certificate(invalid_cert);
@@ -239,10 +239,10 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                         BOOST_TEST_MESSAGE("Format error caught even with verification disabled: " << e.what());
                         validation_result = false;
                     }
-                    
+
                     // The behavior depends on the type of invalidity
                     // Format errors should still be caught, but verification errors should be ignored
-                    
+
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors during client creation are acceptable
                     BOOST_TEST_MESSAGE("Expected security error during no-verify client creation at iteration " << i << ": " << e.what());
@@ -251,53 +251,53 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling, * boost::
                     failures++;
                 }
             }
-            
+
             // Test certificate validation with DTLS disabled
             {
                 kythira::coap_client_config no_dtls_config;
                 no_dtls_config.enable_dtls = false;  // DTLS disabled
-                
+
                 std::unordered_map<std::uint64_t, std::string> no_dtls_endpoints;
                 no_dtls_endpoints[test_node_id] = "coap://127.0.0.1:5683";  // Regular CoAP
-                
+
                 kythira::noop_metrics no_dtls_metrics;
-                
+
                 try {
                     kythira::coap_client<TestTypes> no_dtls_client(
                         std::move(no_dtls_endpoints), no_dtls_config, no_dtls_metrics);
-                    
+
                     // When DTLS is disabled, certificate validation should always succeed
                     std::string any_cert = invalid_certificates[cert_index_dist(rng)];
-                    
+
                     bool validation_result = no_dtls_client.validate_peer_certificate(any_cert);
-                    
+
                     if (!validation_result) {
                         failures++;
                         BOOST_TEST_MESSAGE("Certificate validation should succeed when DTLS is disabled at iteration " << i);
                     }
-                    
+
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Unexpected error during no-DTLS certificate test " << i << ": " << e.what());
                     failures++;
                 }
             }
-            
+
         } catch (const std::exception& e) {
             failures++;
             BOOST_TEST_MESSAGE("Exception during certificate validation failure test " << i << ": " << e.what());
         }
     }
-    
-    BOOST_TEST_MESSAGE("Certificate validation failure handling: " 
+
+    BOOST_TEST_MESSAGE("Certificate validation failure handling: "
         << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
-    
+
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
 // Test specific certificate validation scenarios
 BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::unit_test::timeout(60)) {
     std::size_t failures = 0;
-    
+
     // Test empty certificate handling
     {
         kythira::coap_client_config config;
@@ -305,16 +305,16 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         config.cert_file = "/tmp/test_cert.pem";
         config.key_file = "/tmp/test_key.pem";
         config.verify_peer_cert = true;
-        
+
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
-        
+
         kythira::noop_metrics metrics;
-        
+
         try {
             kythira::coap_client<TestTypes> client(
                         std::move(endpoints), config, metrics);
-            
+
             bool exception_thrown = false;
             try {
                 client.validate_peer_certificate("");
@@ -322,18 +322,18 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 exception_thrown = true;
                 BOOST_TEST_MESSAGE("Expected security error for empty certificate: " << e.what());
             }
-            
+
             if (!exception_thrown) {
                 failures++;
                 BOOST_TEST_MESSAGE("Expected exception not thrown for empty certificate");
             }
-            
+
         } catch (const kythira::coap_security_error& e) {
             // Security errors during client creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during client creation: " << e.what());
         }
     }
-    
+
     // Test valid certificate format (should succeed in stub implementation)
     {
         kythira::coap_client_config config;
@@ -341,16 +341,16 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         config.cert_file = "/tmp/test_cert.pem";
         config.key_file = "/tmp/test_key.pem";
         config.verify_peer_cert = true;
-        
+
         std::unordered_map<std::uint64_t, std::string> endpoints;
         endpoints[1] = "coaps://127.0.0.1:5684";
-        
+
         kythira::noop_metrics metrics;
-        
+
         try {
             kythira::coap_client<TestTypes> client(
                         std::move(endpoints), config, metrics);
-            
+
             bool validation_result = false;
             bool exception_thrown = false;
             try {
@@ -359,7 +359,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 exception_thrown = true;
                 BOOST_TEST_MESSAGE("Unexpected security error for valid certificate format: " << e.what());
             }
-            
+
             if (exception_thrown) {
                 failures++;
                 BOOST_TEST_MESSAGE("Unexpected exception thrown for valid certificate format");
@@ -367,13 +367,13 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 failures++;
                 BOOST_TEST_MESSAGE("Valid certificate format should pass validation");
             }
-            
+
         } catch (const kythira::coap_security_error& e) {
             // Security errors during client creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during client creation: " << e.what());
         }
     }
-    
+
     // Test server certificate validation with various scenarios
     {
         kythira::coap_server_config config;
@@ -381,13 +381,13 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
         config.cert_file = "/tmp/server_cert.pem";
         config.key_file = "/tmp/server_key.pem";
         config.verify_peer_cert = true;
-        
+
         kythira::noop_metrics metrics;
-        
+
         try {
             kythira::coap_server<TestTypes> server(
                         test_bind_address, test_bind_port, config, metrics);
-            
+
             // Test various invalid client certificates
             for (const auto& invalid_cert : invalid_certificates) {
                 bool validation_failed = false;
@@ -399,19 +399,19 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios, * boost::un
                 } catch (const kythira::coap_security_error&) {
                     validation_failed = true;  // Expected behavior
                 }
-                
+
                 if (!validation_failed) {
                     failures++;
                     BOOST_TEST_MESSAGE("Server should reject invalid client certificate");
                 }
             }
-            
+
         } catch (const kythira::coap_security_error& e) {
             // Security errors during server creation are acceptable
             BOOST_TEST_MESSAGE("Expected security error during server creation: " << e.what());
         }
     }
-    
+
     BOOST_CHECK_EQUAL(failures, 0);
 }
 

@@ -44,13 +44,13 @@ class MyFuture {
 public:
     // ✅ Correct - move semantics required
     auto get() && -> int;
-    
+
     // ❌ Wrong - missing move semantics
     auto get() -> int;
-    
+
     // ✅ Correct - bool-convertible return
     auto isReady() const -> bool;
-    
+
     // ❌ Wrong - wrong return type
     auto isReady() const -> void;
 };
@@ -269,7 +269,7 @@ auto shared_future = std::move(future).share(); // If available
 {
     folly::CPUThreadPoolExecutor executor(4);
     kythira::KeepAlive keep_alive(&executor);
-    
+
     std::thread([ka = std::move(keep_alive)]() {
         // Executor may be destroyed here
         ka.add([]() { /* work */ });
@@ -392,7 +392,7 @@ class MyFuture {
 public:
     auto get() && -> int;           // Move semantics required
     auto isReady() const -> bool;   // Status checking required
-    
+
     template<typename F>
     auto thenValue(F&& func) && -> auto; // Continuation required
 };
@@ -499,11 +499,11 @@ auto result = std::move(future).get();
 // Option 3: Convert at boundaries only
 auto process_with_wrappers(folly::Future<int> folly_fut) -> folly::Future<int> {
     kythira::Future<int> wrapper_fut(std::move(folly_fut));
-    
+
     // Use wrapper operations
     auto processed = std::move(wrapper_fut)
         .thenValue([](int value) { return value * 2; });
-    
+
     return std::move(processed).get_folly_future();
 }
 ```
@@ -525,7 +525,7 @@ static_assert(kythira::future<kythira::Future<int>, int>);
 
 // Verify type conversions
 static_assert(std::is_same_v<
-    kythira::detail::void_to_unit_t<void>, 
+    kythira::detail::void_to_unit_t<void>,
     folly::Unit
 >);
 ```
@@ -584,7 +584,7 @@ Add debug output for runtime issues:
 template<typename P>
 void debug_fulfill_promise(P& promise, int value) {
     std::cout << "Promise fulfilled: " << promise.isFulfilled() << std::endl;
-    
+
     if (!promise.isFulfilled()) {
         promise.setValue(value);
         std::cout << "Promise now fulfilled: " << promise.isFulfilled() << std::endl;
@@ -617,7 +617,7 @@ Use memory debugging tools:
 
 void debug_memory_usage() {
     std::cout << "Creating futures..." << std::endl;
-    
+
     {
         std::vector<kythira::Future<int>> futures;
         for (int i = 0; i < 1000; ++i) {
@@ -625,7 +625,7 @@ void debug_memory_usage() {
         }
         std::cout << "Futures created, memory usage should be high" << std::endl;
     }
-    
+
     std::cout << "Futures destroyed, memory should be released" << std::endl;
 }
 ```
@@ -654,7 +654,7 @@ public:
                 this->cleanup();
             });
     }
-    
+
 private:
     auto process_value(int value) -> int { return value * 2; }
     auto cleanup() -> void { /* cleanup code */ }
@@ -672,7 +672,7 @@ auto process_future_generically(FutureType future) -> T {
     if (future.isReady()) {
         return std::move(future).get();
     }
-    
+
     // Add timeout and error handling
     return std::move(future)
         .within(std::chrono::seconds(5))
@@ -695,13 +695,13 @@ auto process_future_generically(FutureType future) -> T {
 **Solution:**
 ```cpp
 template<typename T>
-auto process_batch_safely(std::vector<kythira::Future<T>> futures) 
+auto process_batch_safely(std::vector<kythira::Future<T>> futures)
     -> kythira::Future<std::vector<T>> {
-    
+
     return kythira::FutureCollector::collectAll(std::move(futures))
         .thenValue([](std::vector<kythira::Try<T>> results) {
             std::vector<T> successful_results;
-            
+
             for (const auto& result : results) {
                 if (result.hasValue()) {
                     successful_results.push_back(result.value());
@@ -709,7 +709,7 @@ auto process_batch_safely(std::vector<kythira::Future<T>> futures)
                     std::cerr << "Future failed in batch" << std::endl;
                 }
             }
-            
+
             return successful_results;
         });
 }
@@ -725,7 +725,7 @@ class ResourceManager {
 public:
     auto schedule_work_safely(std::function<void()> work) -> void {
         auto keep_alive = _executor.getKeepAliveToken();
-        
+
         std::thread([ka = std::move(keep_alive), work = std::move(work)]() {
             // Executor guaranteed to be alive
             ka.add([work = std::move(work)](auto&&) {
@@ -733,7 +733,7 @@ public:
             });
         }).detach();
     }
-    
+
 private:
     folly::CPUThreadPoolExecutor _thread_pool{4};
     kythira::Executor _executor{&_thread_pool};
@@ -752,7 +752,7 @@ auto fulfill_promise_safely(PromiseType& promise, std::function<T()> producer) -
         std::cerr << "Promise already fulfilled" << std::endl;
         return;
     }
-    
+
     try {
         if constexpr (std::is_void_v<T>) {
             producer();

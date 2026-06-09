@@ -17,13 +17,13 @@ template<typename F, typename T>
 concept future = requires(F f) {
     // Get value (blocking)
     { f.get() } -> std::same_as<T>;
-    
+
     // Check if ready
     { f.isReady() } -> std::convertible_to<bool>;
-    
+
     // Wait with timeout
     { f.wait(std::chrono::milliseconds{}) } -> std::convertible_to<bool>;
-    
+
     // Chain continuation and error handling (with void specialization)
     // ...
 };
@@ -43,18 +43,18 @@ class Future {
 public:
     // Construct from value
     explicit Future(T value);
-    
+
     // Construct from exception
     explicit Future(folly::exception_wrapper ex);
-    
+
     // Future concept interface
     auto get() -> T;
     auto isReady() const -> bool;
     auto wait(std::chrono::milliseconds timeout) -> bool;
-    
+
     template<typename F>
     auto then(F&& func) -> Future<std::invoke_result_t<F, T>>;
-    
+
     template<typename F>
     auto onError(F&& func) -> Future<T>;
 };
@@ -257,7 +257,7 @@ auto any_result = kythira::wait_for_any(std::move(futures));
 auto [index, try_result] = any_result.get();
 
 if (try_result.has_value()) {
-    std::cout << "First completed future (index " << index << "): " 
+    std::cout << "First completed future (index " << index << "): "
               << try_result.value() << std::endl;
 }
 
@@ -412,11 +412,11 @@ All implementations include static assertions to verify concept compliance:
 
 ```cpp
 // Verify kythira::Future satisfies the future concept
-static_assert(kythira::future<kythira::Future<int>, int>, 
+static_assert(kythira::future<kythira::Future<int>, int>,
               "kythira::Future<int> must satisfy future concept");
 
 // Verify transport clients satisfy network_client concept
-static_assert(kythira::network_client<HttpClient, kythira::Future<raft::request_vote_response<>>>, 
+static_assert(kythira::network_client<HttpClient, kythira::Future<raft::request_vote_response<>>>,
               "HttpClient must satisfy network_client concept");
 ```
 

@@ -6,7 +6,7 @@
 - Added 23 missing Raft completion property tests to the build system
 - Tests are now properly organized by category:
   - Commit waiting mechanism tests
-  - State machine application tests  
+  - State machine application tests
   - Future collection mechanism tests
   - Error handling mechanism tests
   - Linearizable reads tests

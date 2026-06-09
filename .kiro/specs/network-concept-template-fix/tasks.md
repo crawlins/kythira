@@ -20,7 +20,7 @@
 
 - [x] 2.3 Fix transport implementation headers
   - Update coap_transport.hpp static assertions
-  - Update http_transport.hpp static assertions  
+  - Update http_transport.hpp static assertions
   - Update simulator_network.hpp static assertions
   - Ensure all use kythira namespace and correct template parameters
   - _Requirements: 1.3, 1.4, 3.2_

@@ -10,40 +10,40 @@ namespace {
 
 BOOST_AUTO_TEST_CASE(test_serialized_data_concept) {
     // Test that std::vector<std::byte> satisfies serialized_data concept
-    static_assert(kythira::serialized_data<std::vector<std::byte>>, 
+    static_assert(kythira::serialized_data<std::vector<std::byte>>,
                   "std::vector<std::byte> should satisfy serialized_data concept");
-    
+
     // Test that std::vector<char> does NOT satisfy serialized_data concept
-    static_assert(!kythira::serialized_data<std::vector<char>>, 
+    static_assert(!kythira::serialized_data<std::vector<char>>,
                   "std::vector<char> should NOT satisfy serialized_data concept");
-    
+
     // Test that std::string does NOT satisfy serialized_data concept
-    static_assert(!kythira::serialized_data<std::string>, 
+    static_assert(!kythira::serialized_data<std::string>,
                   "std::string should NOT satisfy serialized_data concept");
 }
 
 BOOST_AUTO_TEST_CASE(test_rpc_serializer_concept) {
     // Test that json_rpc_serializer satisfies rpc_serializer concept
-    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>, 
+    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>,
                   "json_rpc_serializer should satisfy rpc_serializer concept");
 }
 
 BOOST_AUTO_TEST_CASE(test_json_serializer_instantiation) {
     // Verify we can instantiate the serializer
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
-    
+
     // Create a simple request
     kythira::request_vote_request<> req{1, 2, 3, 4};
-    
+
     // Serialize it
     auto data = serializer.serialize(req);
-    
+
     // Verify we got some data
     BOOST_TEST(!data.empty());
-    
+
     // Deserialize it
     auto deserialized = serializer.deserialize_request_vote_request(data);
-    
+
     // Verify the data matches
     BOOST_TEST(deserialized.term() == req.term());
     BOOST_TEST(deserialized.candidate_id() == req.candidate_id());

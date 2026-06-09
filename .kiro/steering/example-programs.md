@@ -30,18 +30,18 @@ Example programs serve multiple purposes:
 ```cpp
 int main() {
     int failed_scenarios = 0;
-    
+
     // Run all scenarios
     if (!test_scenario_1()) failed_scenarios++;
     if (!test_scenario_2()) failed_scenarios++;
     if (!test_scenario_3()) failed_scenarios++;
-    
+
     // Report results
     if (failed_scenarios > 0) {
         std::cerr << failed_scenarios << " scenario(s) failed\n";
         return 1;  // Non-zero exit code
     }
-    
+
     std::cout << "All scenarios passed!\n";
     return 0;  // Success
 }
@@ -160,7 +160,7 @@ function(add_network_example example_name source_file output_dir)
         Folly::folly
     )
     target_compile_features(${example_name} PRIVATE cxx_std_23)
-    
+
     # Set output directory for the executable
     set_target_properties(${example_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples/${output_dir}"
@@ -168,11 +168,11 @@ function(add_network_example example_name source_file output_dir)
 endfunction()
 
 # Add example programs
-add_network_example(basic_usage_example 
+add_network_example(basic_usage_example
     network-test-fixture/basic_usage.cpp
     network-test-fixture)
 
-add_network_example(failure_injection_example 
+add_network_example(failure_injection_example
     network-test-fixture/failure_injection.cpp
     network-test-fixture)
 ```
@@ -328,7 +328,7 @@ BOOST_AUTO_TEST_CASE(example_network_communication, * boost::unit_test::timeout(
     // Demonstrate network communication - 120 second timeout for examples
     auto client = create_client();
     auto server = create_server();
-    
+
     // Run example scenarios
     demonstrate_basic_communication(client, server);
     demonstrate_error_handling(client, server);
@@ -350,7 +350,7 @@ BOOST_AUTO_TEST_CASE(example_with_deprecated_timeout) {
 
 **Timeout Guidelines for Examples**:
 - **Simple demonstrations**: 60-120 seconds
-- **Complex integration scenarios**: 120-300 seconds  
+- **Complex integration scenarios**: 120-300 seconds
 - **Performance demonstrations**: 300+ seconds (with justification)
 
 **IMPORTANT: Examples with Additional Arguments**:
@@ -470,12 +470,12 @@ std::cout << "Done\n";  // Did it work?
 struct TestResults {
     int passed = 0;
     int failed = 0;
-    
+
     void record(bool success) {
         if (success) passed++;
         else failed++;
     }
-    
+
     int exit_code() const {
         return failed > 0 ? 1 : 0;
     }
@@ -523,7 +523,7 @@ namespace {
 auto test_message_delivery() -> bool {
     auto node_a = fixture.create(test_node_a);
     auto node_b = fixture.create(test_node_b);
-    
+
     for (std::size_t i = 0; i < test_message_count; ++i) {
         Message msg(
             std::format("msg_{}", i),
@@ -533,7 +533,7 @@ auto test_message_delivery() -> bool {
         );
         fixture.send(test_node_a, test_node_b, std::move(msg));
     }
-    
+
     return true;
 }
 
@@ -541,7 +541,7 @@ auto test_message_delivery() -> bool {
 auto test_message_delivery() -> bool {
     auto node_a = fixture.create("node_a");  // Repeated literal
     auto node_b = fixture.create("node_b");  // Repeated literal
-    
+
     for (std::size_t i = 0; i < 100; ++i) {  // Magic number
         Message msg(
             std::format("msg_{}", i),
@@ -551,7 +551,7 @@ auto test_message_delivery() -> bool {
         );
         fixture.send("node_a", "node_b", std::move(msg));
     }
-    
+
     return true;
 }
 ```

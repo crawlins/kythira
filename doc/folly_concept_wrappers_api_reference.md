@@ -696,7 +696,7 @@ Static collector class that satisfies the `future_collector` concept.
 ```cpp
 // Collect all futures
 template<typename T>
-static auto collectAll(std::vector<Future<T>> futures) 
+static auto collectAll(std::vector<Future<T>> futures)
     -> Future<std::vector<Try<T>>>;
 
 // Collect any future (first completed)
@@ -720,7 +720,7 @@ static auto collectN(std::vector<Future<T>> futures, std::size_t n)
 
 ```cpp
 // For void futures: returns Future<std::size_t> (just the index)
-auto collectAnyWithoutException(std::vector<Future<void>> futures) 
+auto collectAnyWithoutException(std::vector<Future<void>> futures)
     -> Future<std::size_t>;
 
 // For non-void futures: returns Future<std::tuple<std::size_t, T>>
@@ -771,7 +771,7 @@ Located in the `kythira::detail` namespace.
 namespace kythira::detail {
     // Convert folly::exception_wrapper to std::exception_ptr
     inline auto to_std_exception_ptr(const folly::exception_wrapper& ew) -> std::exception_ptr;
-    
+
     // Convert std::exception_ptr to folly::exception_wrapper
     inline auto to_folly_exception_wrapper(std::exception_ptr ep) -> folly::exception_wrapper;
 }
@@ -786,26 +786,26 @@ namespace kythira::detail {
     struct void_to_unit {
         using type = T;
     };
-    
+
     template<>
     struct void_to_unit<void> {
         using type = folly::Unit;
     };
-    
+
     template<typename T>
     using void_to_unit_t = typename void_to_unit<T>::type;
-    
+
     // Map folly::Unit back to void for return types
     template<typename T>
     struct unit_to_void {
         using type = T;
     };
-    
+
     template<>
     struct unit_to_void<folly::Unit> {
         using type = void;
     };
-    
+
     template<typename T>
     using unit_to_void_t = typename unit_to_void<T>::type;
 }

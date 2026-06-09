@@ -23,7 +23,7 @@ The concepts are correctly defined in `include/raft/network.hpp`:
 namespace kythira {
     template<typename C, typename FutureType>
     concept network_client = requires(/* ... */);
-    
+
     template<typename S, typename FutureType>
     concept network_server = requires(/* ... */);
 }

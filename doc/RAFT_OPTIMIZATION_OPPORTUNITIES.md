@@ -1,6 +1,6 @@
 # Raft Performance Optimization Opportunities
 
-**Analysis Date:** February 26, 2026  
+**Analysis Date:** February 26, 2026
 **Benchmark Results:** See RAFT_PERFORMANCE_ANALYSIS.md
 
 ## Overview
@@ -47,7 +47,7 @@ for (std::size_t i = 0; i < warmup_rounds; ++i) {
     }
 }
 ```
-**Effort:** Low (1 hour)  
+**Effort:** Low (1 hour)
 **Impact:** Medium (reduces cold start variance)
 
 #### Action 1.2: Increase Measurement Duration
@@ -61,7 +61,7 @@ while (clock_type::now() < end_time) {
     ++operations;
 }
 ```
-**Effort:** Low (30 minutes)  
+**Effort:** Low (30 minutes)
 **Impact:** Medium (more stable averages)
 
 #### Action 1.3: CPU Affinity for Benchmarks
@@ -79,7 +79,7 @@ auto set_cpu_affinity(int cpu_id) -> void {
 // In benchmark
 set_cpu_affinity(0);  // Pin to CPU 0
 ```
-**Effort:** Medium (2 hours)  
+**Effort:** Medium (2 hours)
 **Impact:** High (eliminates scheduler variance)
 
 #### Action 1.4: Disable Frequency Scaling
@@ -92,7 +92,7 @@ echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governo
 # Restore
 echo powersave | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 ```
-**Effort:** Low (30 minutes)  
+**Effort:** Low (30 minutes)
 **Impact:** Medium (consistent CPU frequency)
 
 ### Expected Results
@@ -126,22 +126,22 @@ using duration_type = std::chrono::nanoseconds;  // Was: microseconds
 BOOST_TEST_MESSAGE("Command Application Latency (nanoseconds):");
 BOOST_TEST_MESSAGE(format_statistics(stats, "ns"));  // Was: "μs"
 ```
-**Effort:** Low (1 hour)  
+**Effort:** Low (1 hour)
 **Impact:** High (accurate sub-microsecond measurements)
 
 #### Action 2.2: Add Epsilon to CV Calculation
 ```cpp
 auto calculate_statistics(std::vector<double> values) -> statistics {
     // ... existing code ...
-    
+
     // Prevent division by zero in CV calculation
     constexpr double epsilon = 1e-9;
     double cv_safe_mean = std::max(mean, epsilon);
-    
+
     // Use cv_safe_mean for coefficient of variation calculations
 }
 ```
-**Effort:** Low (30 minutes)  
+**Effort:** Low (30 minutes)
 **Impact:** Medium (prevents NaN in statistics)
 
 #### Action 2.3: Add Nanosecond Baseline Thresholds
@@ -151,7 +151,7 @@ constexpr double max_p50_latency_ns = 50000.0;   // 50 μs = 50,000 ns
 constexpr double max_p99_latency_ns = 500000.0;  // 500 μs = 500,000 ns
 constexpr double max_p999_latency_ns = 2000000.0; // 2000 μs = 2,000,000 ns
 ```
-**Effort:** Low (30 minutes)  
+**Effort:** Low (30 minutes)
 **Impact:** Low (better threshold clarity)
 
 ### Expected Results
@@ -174,24 +174,24 @@ Performance already **far exceeds** requirements. Further optimization has dimin
 ### Potential Actions (Low Priority)
 
 #### Action 3.1: Lock-Free Data Structures
-**Current:** Standard mutex-based synchronization  
-**Opportunity:** Replace with lock-free queues/atomics  
-**Effort:** High (1-2 weeks)  
-**Impact:** Low (5-10% improvement at most)  
+**Current:** Standard mutex-based synchronization
+**Opportunity:** Replace with lock-free queues/atomics
+**Effort:** High (1-2 weeks)
+**Impact:** Low (5-10% improvement at most)
 **Recommendation:** **Not recommended** - complexity not justified
 
 #### Action 3.2: SIMD Optimization
-**Current:** Scalar operations  
-**Opportunity:** Vectorize batch operations  
-**Effort:** High (2-3 weeks)  
-**Impact:** Low (10-20% for specific operations)  
+**Current:** Scalar operations
+**Opportunity:** Vectorize batch operations
+**Effort:** High (2-3 weeks)
+**Impact:** Low (10-20% for specific operations)
 **Recommendation:** **Not recommended** - premature optimization
 
 #### Action 3.3: Memory Pool Tuning
-**Current:** Default allocator  
-**Opportunity:** Custom memory pools for hot paths  
-**Effort:** Medium (1 week)  
-**Impact:** Low (5-10% improvement)  
+**Current:** Default allocator
+**Opportunity:** Custom memory pools for hot paths
+**Effort:** Medium (1 week)
+**Impact:** Low (5-10% improvement)
 **Recommendation:** **Monitor first** - optimize if needed
 
 ### Recommendation
@@ -212,24 +212,24 @@ Memory usage is **optimal** for the counter state machine and **excellent** for 
 ### Potential Actions (Low Priority)
 
 #### Action 4.1: Snapshot Compression
-**Current:** Raw state serialization  
-**Opportunity:** Compress snapshots for large states  
-**Effort:** Medium (1 week)  
-**Impact:** Medium (50-90% reduction for large states)  
+**Current:** Raw state serialization
+**Opportunity:** Compress snapshots for large states
+**Effort:** Medium (1 week)
+**Impact:** Medium (50-90% reduction for large states)
 **Recommendation:** **Consider for production** - useful for network transfer
 
 #### Action 4.2: Incremental Snapshots
-**Current:** Full state snapshots  
-**Opportunity:** Delta-based snapshots  
-**Effort:** High (2-3 weeks)  
-**Impact:** High (90%+ reduction for incremental updates)  
+**Current:** Full state snapshots
+**Opportunity:** Delta-based snapshots
+**Effort:** High (2-3 weeks)
+**Impact:** High (90%+ reduction for incremental updates)
 **Recommendation:** **Future enhancement** - valuable for large state machines
 
 #### Action 4.3: Memory Pool for Log Entries
-**Current:** Individual allocations  
-**Opportunity:** Pre-allocated log entry pool  
-**Effort:** Medium (1 week)  
-**Impact:** Low (5-10% reduction in allocations)  
+**Current:** Individual allocations
+**Opportunity:** Pre-allocated log entry pool
+**Effort:** Medium (1 week)
+**Impact:** Low (5-10% reduction in allocations)
 **Recommendation:** **Monitor first** - optimize if profiling shows allocation hotspot
 
 ### Recommendation
@@ -250,24 +250,24 @@ Scalability is **excellent** for current use cases.
 ### Potential Actions (Low Priority)
 
 #### Action 5.1: Async Snapshot Creation
-**Current:** Synchronous snapshot creation  
-**Opportunity:** Background snapshot generation  
-**Effort:** Medium (1 week)  
-**Impact:** High (eliminates snapshot latency from critical path)  
+**Current:** Synchronous snapshot creation
+**Opportunity:** Background snapshot generation
+**Effort:** Medium (1 week)
+**Impact:** High (eliminates snapshot latency from critical path)
 **Recommendation:** **Consider for production** - important for large states
 
 #### Action 5.2: Parallel Log Application
-**Current:** Sequential log entry application  
-**Opportunity:** Parallel application for independent entries  
-**Effort:** High (2-3 weeks)  
-**Impact:** Medium (2-4x speedup for applicable workloads)  
+**Current:** Sequential log entry application
+**Opportunity:** Parallel application for independent entries
+**Effort:** High (2-3 weeks)
+**Impact:** Medium (2-4x speedup for applicable workloads)
 **Recommendation:** **Future enhancement** - requires careful state machine design
 
 #### Action 5.3: Read Scaling with Followers
-**Current:** Leader-only reads (linearizable)  
-**Opportunity:** Follower reads with lease mechanism  
-**Effort:** High (2-3 weeks)  
-**Impact:** High (Nx read throughput for N nodes)  
+**Current:** Leader-only reads (linearizable)
+**Opportunity:** Follower reads with lease mechanism
+**Effort:** High (2-3 weeks)
+**Impact:** High (Nx read throughput for N nodes)
 **Recommendation:** **Future enhancement** - valuable for read-heavy workloads
 
 ### Recommendation
@@ -303,7 +303,7 @@ echo powersave | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 # Parse and store results
 python3 scripts/parse_benchmark_results.py "benchmarks/results_${TIMESTAMP}.txt"
 ```
-**Effort:** Medium (1 day)  
+**Effort:** Medium (1 day)
 **Impact:** High (consistent benchmark execution)
 
 #### Action 6.2: Performance Tracking Database
@@ -322,7 +322,7 @@ def store_benchmark_result(commit_hash, test_name, metric_name, value):
     conn.commit()
     conn.close()
 ```
-**Effort:** Medium (2 days)  
+**Effort:** Medium (2 days)
 **Impact:** High (historical performance tracking)
 
 #### Action 6.3: CI/CD Integration
@@ -348,7 +348,7 @@ jobs:
       - name: Check Regression
         run: python3 scripts/check_regression.py
 ```
-**Effort:** Medium (1 day)  
+**Effort:** Medium (1 day)
 **Impact:** High (automatic regression detection)
 
 #### Action 6.4: Performance Dashboard
@@ -362,7 +362,7 @@ def generate_dashboard():
     # Generate HTML report
     pass
 ```
-**Effort:** High (1 week)  
+**Effort:** High (1 week)
 **Impact:** Medium (visualization and analysis)
 
 ### Recommendation

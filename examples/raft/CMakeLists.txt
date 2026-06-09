@@ -32,7 +32,7 @@ function(add_raft_example example_name source_file)
             target_link_libraries(${example_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         endif()
     endif()
-    
+
     # Add CoAP transport dependencies for CoAP examples
     if(${example_name} MATCHES "coap_.*_example")
         # Link libcoap if available
@@ -45,22 +45,22 @@ function(add_raft_example example_name source_file)
                 target_compile_definitions(${example_name} PRIVATE ${LIBCOAP_CFLAGS_OTHER})
             endif()
         endif()
-        
+
         # Link OpenSSL for DTLS support
         if(TARGET OpenSSL::SSL)
             target_link_libraries(${example_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         endif()
     endif()
     target_compile_features(${example_name} PRIVATE cxx_std_23)
-    
+
     # Set output directory for the executable
     set_target_properties(${example_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples/raft"
     )
-    
+
     # Register as a test so it can be run with ctest
     add_test(NAME ${example_name}_test COMMAND ${example_name})
-    
+
     # Set appropriate timeout and labels based on example type
     if(${example_name} MATCHES ".*_completion_.*|async_operations_.*|commit_waiting_.*|configuration_sync_.*|error_handling_.*")
         # Completion examples may take longer due to async operations and timeouts
@@ -128,7 +128,7 @@ add_raft_example(state_machine_migration_example state_machine_migration_example
 #
 # Run specific completion examples:
 #   ctest -R "async_operations_example_test"
-#   ctest -R "commit_waiting_example_test" 
+#   ctest -R "commit_waiting_example_test"
 #   ctest -R "configuration_sync_example_test"
 #
 # Run with verbose output to see example execution details:

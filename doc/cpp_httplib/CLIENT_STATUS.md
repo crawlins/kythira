@@ -266,7 +266,7 @@ headers.emplace(header_content_type, content_type_json);
 // Content-Length is handled automatically by cpp-httplib
 headers.emplace(header_user_agent, _config.user_agent);
 
-// Server side - Let cpp-httplib handle Content-Length automatically  
+// Server side - Let cpp-httplib handle Content-Length automatically
 http_resp.status = 200;
 http_resp.body = std::move(response_body);
 http_resp.set_header(header_content_type, content_type_json);

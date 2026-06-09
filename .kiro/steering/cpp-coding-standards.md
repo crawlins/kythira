@@ -32,7 +32,7 @@ template<typename T>
 concept virtualNode = requires(T node) { /* ... */ };  // camelCase
 ```
 
-**Rationale**: 
+**Rationale**:
 - Concepts are type constraints, similar to type traits
 - snake_case distinguishes them from class names
 - Consistent with standard library conventions (e.g., `std::integral`, `std::movable`)
@@ -131,7 +131,7 @@ auto send_message(std::string FromId, std::string toId) -> void {  // Mixed case
 
 ### Constants and Enumerations
 
-**Rule**: 
+**Rule**:
 - Enum class names use PascalCase
 - Enum values use snake_case
 - Constants use snake_case
@@ -236,7 +236,7 @@ public:
     auto send_message(std::string from, std::string to, Message msg) -> folly::Future<folly::Unit>;
     auto configure_latency(LatencyConfig config) -> void;
     [[nodiscard]] auto is_started() const noexcept -> bool;
-    
+
 private:
     // Member variables (snake_case with underscore prefix)
     NetworkTopology _topology;
@@ -244,7 +244,7 @@ private:
     FailureInjector _failure_injector;
     std::atomic<bool> _started{false};
     mutable std::shared_mutex _mutex;
-    
+
     // Private member functions (snake_case)
     auto deliver_message(Message msg) -> folly::Future<folly::Unit>;
     auto update_statistics() -> void;
@@ -262,13 +262,13 @@ auto LocalNetworkFixture::send_message(
     // Local variables (snake_case)
     auto connection_id = generate_id(from_id, to_id);
     auto start_time = std::chrono::steady_clock::now();
-    
+
     // Member variable access (with underscore)
     if (!_started) {
         return folly::makeFuture<folly::Unit>(
             std::runtime_error("Fixture not started"));
     }
-    
+
     return deliver_message(std::move(msg));
 }
 
@@ -388,7 +388,7 @@ namespace {
 BOOST_AUTO_TEST_CASE(test_message_delivery) {
     auto client = fixture.create(test_client_id);
     auto server = fixture.create(test_server_id);
-    
+
     for (std::size_t i = 0; i < test_message_count; ++i) {
         Message msg(
             std::format("msg_{}", i),
@@ -404,7 +404,7 @@ BOOST_AUTO_TEST_CASE(test_message_delivery) {
 BOOST_AUTO_TEST_CASE(test_message_delivery) {
     auto client = fixture.create("test_client");  // Repeated literal
     auto server = fixture.create("test_server");  // Repeated literal
-    
+
     for (std::size_t i = 0; i < 100; ++i) {  // Magic number
         Message msg(
             std::format("msg_{}", i),
