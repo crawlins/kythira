@@ -11,7 +11,7 @@
 #include <folly/ExceptionWrapper.h>
 
 namespace {
-    constexpr const char* test_name = "folly_promise_concept_compliance_test";
+constexpr const char* test_name = "folly_promise_concept_compliance_test";
 }
 
 BOOST_AUTO_TEST_SUITE(folly_promise_concept_compliance_tests)
@@ -20,7 +20,7 @@ BOOST_AUTO_TEST_SUITE(folly_promise_concept_compliance_tests)
  * Test that folly::Promise<T> satisfies promise concept
  * Requirements: 10.2
  */
-BOOST_AUTO_TEST_CASE(test_folly_promise_concept_compliance, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_folly_promise_concept_compliance, *boost::unit_test::timeout(30)) {
     // Test folly::Promise<int> satisfies promise concept
     static_assert(kythira::promise<folly::Promise<int>, int>,
                   "folly::Promise<int> must satisfy promise concept");
@@ -51,8 +51,9 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_concept_compliance, * boost::unit_test::
                   "folly::Promise<int*> must satisfy promise concept");
 
     // Test folly::Promise with reference wrapper
-    static_assert(kythira::promise<folly::Promise<std::reference_wrapper<int>>, std::reference_wrapper<int>>,
-                  "folly::Promise<std::reference_wrapper<int>> must satisfy promise concept");
+    static_assert(
+        kythira::promise<folly::Promise<std::reference_wrapper<int>>, std::reference_wrapper<int>>,
+        "folly::Promise<std::reference_wrapper<int>> must satisfy promise concept");
 
     BOOST_TEST_MESSAGE("All folly::Promise types satisfy promise concept");
 }
@@ -60,7 +61,7 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_concept_compliance, * boost::unit_test::
 /**
  * Test runtime behavior of folly::Promise with the promise concept interface
  */
-BOOST_AUTO_TEST_CASE(test_folly_promise_runtime_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_folly_promise_runtime_behavior, *boost::unit_test::timeout(30)) {
     // Test non-void Promise
     {
         folly::Promise<int> promise;
@@ -94,7 +95,7 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_runtime_behavior, * boost::unit_test::ti
 
         // Test that future is ready
         BOOST_CHECK(semi_future.isReady());
-        std::move(semi_future).get(); // Should not throw
+        std::move(semi_future).get();  // Should not throw
     }
 
     // Test exception setting with getFuture

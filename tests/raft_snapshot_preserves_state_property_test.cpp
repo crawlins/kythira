@@ -31,7 +31,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_snapshot_preserves_state_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_snapshot_preserves_state_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -44,56 +45,65 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_term = 1000;
-    constexpr std::uint64_t max_log_entries = 100;
-    constexpr std::uint64_t max_node_id = 100;
-    constexpr std::size_t max_state_size = 10000;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_term = 1000;
+constexpr std::uint64_t max_log_entries = 100;
+constexpr std::uint64_t max_node_id = 100;
+constexpr std::size_t max_state_size = 10000;
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
 }
 
 // Helper to generate random term
@@ -131,7 +141,8 @@ auto generate_random_state(std::mt19937& rng) -> std::vector<std::byte> {
 }
 
 // Helper to generate random cluster configuration
-auto generate_random_configuration(std::mt19937& rng) -> kythira::cluster_configuration<std::uint64_t> {
+auto generate_random_configuration(std::mt19937& rng)
+    -> kythira::cluster_configuration<std::uint64_t> {
     std::uniform_int_distribution<std::size_t> node_count_dist(1, 10);
     auto node_count = node_count_dist(rng);
 
@@ -144,11 +155,9 @@ auto generate_random_configuration(std::mt19937& rng) -> kythira::cluster_config
     std::sort(nodes.begin(), nodes.end());
     nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
 
-    return kythira::cluster_configuration<std::uint64_t>{
-        nodes,
-        false,  // not joint consensus
-        std::nullopt
-    };
+    return kythira::cluster_configuration<std::uint64_t>{nodes,
+                                                         false,  // not joint consensus
+                                                         std::nullopt};
 }
 
 BOOST_AUTO_TEST_SUITE(snapshot_preserves_state_property_tests)
@@ -158,7 +167,8 @@ BOOST_AUTO_TEST_SUITE(snapshot_preserves_state_property_tests)
  *
  * For any snapshot, saving and loading should preserve the last_included_index.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -171,11 +181,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
 
         // Create snapshot
         auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
-            last_included_index,
-            last_included_term,
-            configuration,
-            state
-        };
+            last_included_index, last_included_term, configuration, state};
 
         // Save to persistence
         auto persistence = test_raft_types::persistence_engine_type{};
@@ -190,7 +196,8 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
         const auto& loaded_snapshot = loaded_snapshot_opt.value();
 
         // Verify last_included_index is preserved
-        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_index(), original_snapshot.last_included_index());
+        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_index(),
+                          original_snapshot.last_included_index());
     }
 }
 
@@ -199,7 +206,8 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_index, * boost::
  *
  * For any snapshot, saving and loading should preserve the last_included_term.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -212,11 +220,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
 
         // Create snapshot
         auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
-            last_included_index,
-            last_included_term,
-            configuration,
-            state
-        };
+            last_included_index, last_included_term, configuration, state};
 
         // Save to persistence
         auto persistence = test_raft_types::persistence_engine_type{};
@@ -231,7 +235,8 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
         const auto& loaded_snapshot = loaded_snapshot_opt.value();
 
         // Verify last_included_term is preserved
-        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_term(), original_snapshot.last_included_term());
+        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_term(),
+                          original_snapshot.last_included_term());
     }
 }
 
@@ -240,7 +245,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_last_included_term, * boost::u
  *
  * For any snapshot, saving and loading should preserve the cluster configuration.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -253,11 +258,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_t
 
         // Create snapshot
         auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
-            last_included_index,
-            last_included_term,
-            configuration,
-            state
-        };
+            last_included_index, last_included_term, configuration, state};
 
         // Save to persistence
         auto persistence = test_raft_types::persistence_engine_type{};
@@ -290,7 +291,8 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_configuration, * boost::unit_t
  *
  * For any snapshot, saving and loading should preserve the state machine state exactly.
  */
-BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -303,11 +305,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
 
         // Create snapshot
         auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
-            last_included_index,
-            last_included_term,
-            configuration,
-            state
-        };
+            last_included_index, last_included_term, configuration, state};
 
         // Save to persistence
         auto persistence = test_raft_types::persistence_engine_type{};
@@ -329,10 +327,8 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
 
         // Verify byte-by-byte equality
         for (std::size_t i = 0; i < original_state.size(); ++i) {
-            BOOST_CHECK_EQUAL(
-                static_cast<unsigned char>(loaded_state[i]),
-                static_cast<unsigned char>(original_state[i])
-            );
+            BOOST_CHECK_EQUAL(static_cast<unsigned char>(loaded_state[i]),
+                              static_cast<unsigned char>(original_state[i]));
         }
     }
 }
@@ -343,7 +339,7 @@ BOOST_AUTO_TEST_CASE(snapshot_roundtrip_preserves_state_machine_state, * boost::
  * For any node with committed entries, creating a snapshot should preserve
  * the last applied index and term.
  */
-BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -367,10 +363,7 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
         // Add log entries
         for (std::uint64_t i = 1; i <= log_count; ++i) {
             auto entry = kythira::log_entry<std::uint64_t, std::uint64_t>{
-                term,
-                i,
-                std::vector<std::byte>{std::byte{static_cast<unsigned char>(i % 256)}}
-            };
+                term, i, std::vector<std::byte>{std::byte{static_cast<unsigned char>(i % 256)}}};
             persistence.append_log_entry(entry);
         }
 
@@ -382,8 +375,7 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
             std::move(persistence),
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
-            test_raft_types::membership_manager_type{}
-        };
+            test_raft_types::membership_manager_type{}};
 
         node.start();
 
@@ -401,7 +393,7 @@ BOOST_AUTO_TEST_CASE(snapshot_creation_preserves_metadata, * boost::unit_test::t
  *
  * For any snapshot with empty state, saving and loading should work correctly.
  */
-BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -414,11 +406,7 @@ BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout
 
         // Create snapshot
         auto original_snapshot = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>{
-            last_included_index,
-            last_included_term,
-            configuration,
-            empty_state
-        };
+            last_included_index, last_included_term, configuration, empty_state};
 
         // Save to persistence
         auto persistence = test_raft_types::persistence_engine_type{};
@@ -433,8 +421,10 @@ BOOST_AUTO_TEST_CASE(empty_state_snapshot_roundtrip, * boost::unit_test::timeout
         const auto& loaded_snapshot = loaded_snapshot_opt.value();
 
         // Verify all fields are preserved
-        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_index(), original_snapshot.last_included_index());
-        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_term(), original_snapshot.last_included_term());
+        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_index(),
+                          original_snapshot.last_included_index());
+        BOOST_CHECK_EQUAL(loaded_snapshot.last_included_term(),
+                          original_snapshot.last_included_term());
         BOOST_CHECK_EQUAL(loaded_snapshot.state_machine_state().size(), 0);
     }
 }

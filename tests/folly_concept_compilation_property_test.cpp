@@ -9,7 +9,7 @@
 #include <exception>
 
 namespace {
-    constexpr const char* test_name = "folly_concept_compilation_property_test";
+constexpr const char* test_name = "folly_concept_compilation_property_test";
 }
 
 BOOST_AUTO_TEST_SUITE(folly_concept_compilation_property_tests)
@@ -17,10 +17,11 @@ BOOST_AUTO_TEST_SUITE(folly_concept_compilation_property_tests)
 /**
  * **Feature: folly-concepts-enhancement, Property 1: Concept compilation validation**
  *
- * Property: For any C++ compiler, including the concepts header should result in successful compilation without syntax errors
+ * Property: For any C++ compiler, including the concepts header should result in successful
+ * compilation without syntax errors
  * **Validates: Requirements 1.1, 1.2, 1.3, 1.4**
  */
-BOOST_AUTO_TEST_CASE(property_concept_compilation_validation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_concept_compilation_validation, *boost::unit_test::timeout(60)) {
     // Test 1: Verify that all concepts are properly defined and accessible
     // This test validates Requirements 1.1 - concepts compile without syntax errors
 
@@ -72,12 +73,18 @@ BOOST_AUTO_TEST_CASE(property_concept_compilation_validation, * boost::unit_test
  * Test that concepts handle const correctness properly
  * **Validates: Requirements 1.2** - std::as_const syntax is correct
  */
-BOOST_AUTO_TEST_CASE(test_const_correctness_compilation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_const_correctness_compilation, *boost::unit_test::timeout(30)) {
     // Create mock types to test const correctness in concept requirements
 
     struct mock_try_type {
-        int& value() { static int val = 42; return val; }
-        const int& value() const { static int val = 42; return val; }
+        int& value() {
+            static int val = 42;
+            return val;
+        }
+        const int& value() const {
+            static int val = 42;
+            return val;
+        }
         std::exception_ptr exception() const { return std::exception_ptr{}; }
         bool has_value() const { return true; }
         bool has_exception() const { return false; }
@@ -104,7 +111,7 @@ BOOST_AUTO_TEST_CASE(test_const_correctness_compilation, * boost::unit_test::tim
  * Test that template parameter constraints use proper syntax
  * **Validates: Requirements 1.3, 1.4** - template constraints and parameter syntax
  */
-BOOST_AUTO_TEST_CASE(test_template_constraint_syntax, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_template_constraint_syntax, *boost::unit_test::timeout(30)) {
     // Test that concepts can be used in template constraints
 
     // Test with void specialization (common source of template issues)
@@ -153,7 +160,7 @@ BOOST_AUTO_TEST_CASE(test_template_constraint_syntax, * boost::unit_test::timeou
  * Test that concepts work with different value types including void
  * **Validates: Requirements 1.1, 1.4** - proper template parameter handling
  */
-BOOST_AUTO_TEST_CASE(test_void_specialization_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_specialization_handling, *boost::unit_test::timeout(30)) {
     // Test that concepts properly handle void specializations
     // This is a common source of compilation issues in template concepts
 
@@ -190,26 +197,17 @@ BOOST_AUTO_TEST_CASE(test_void_specialization_handling, * boost::unit_test::time
 }
 
 // Helper templates for SFINAE testing (must be at namespace scope)
-template<typename T>
-constexpr bool has_try_concept = requires {
-    kythira::try_type<T, int>;
-};
+template<typename T> constexpr bool has_try_concept = requires { kythira::try_type<T, int>; };
 
-template<typename T>
-constexpr bool has_future_concept = requires {
-    kythira::future<T, int>;
-};
+template<typename T> constexpr bool has_future_concept = requires { kythira::future<T, int>; };
 
-template<typename T>
-constexpr bool has_executor_concept = requires {
-    kythira::executor<T>;
-};
+template<typename T> constexpr bool has_executor_concept = requires { kythira::executor<T>; };
 
 /**
  * Test that all concept expressions are well-formed
  * **Validates: Requirements 1.1, 1.2, 1.3, 1.4** - overall compilation validation
  */
-BOOST_AUTO_TEST_CASE(test_concept_expression_wellformedness, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_concept_expression_wellformedness, *boost::unit_test::timeout(30)) {
     // Test that concept expressions themselves are well-formed
     // This catches issues with concept syntax, requires clauses, etc.
 
@@ -226,7 +224,7 @@ BOOST_AUTO_TEST_CASE(test_concept_expression_wellformedness, * boost::unit_test:
  * Test compilation with various standard library types
  * **Validates: Requirements 1.1, 1.2, 1.3, 1.4** - compatibility with standard types
  */
-BOOST_AUTO_TEST_CASE(test_standard_library_compatibility, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_standard_library_compatibility, *boost::unit_test::timeout(30)) {
     // Test that concepts work with standard library types
     // This validates that there are no syntax issues when used with common types
 
@@ -243,9 +241,9 @@ BOOST_AUTO_TEST_CASE(test_standard_library_compatibility, * boost::unit_test::ti
     using int_vector = std::vector<int>;
 
     // These should all compile without issues
-    void_func vf = [](){};
-    int_func if_ = [](int){};
-    exception_func ef = [](std::exception_ptr){};
+    void_func vf = []() {};
+    int_func if_ = [](int) {};
+    exception_func ef = [](std::exception_ptr) {};
     milliseconds ms{100};
     int_vector iv{1, 2, 3};
 
@@ -263,17 +261,24 @@ BOOST_AUTO_TEST_CASE(test_standard_library_compatibility, * boost::unit_test::ti
 /**
  * **Feature: folly-concepts-enhancement, Property 2: Concept constraint validation**
  *
- * Property: For any type, the concepts should correctly accept or reject the type based on its interface
+ * Property: For any type, the concepts should correctly accept or reject the type based on its
+ * interface
  * **Validates: Requirements 1.5**
  */
-BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, *boost::unit_test::timeout(60)) {
     // Test that concepts correctly validate type constraints
     // This validates Requirement 1.5 - concepts validate template arguments correctly
 
     // Test 1: Valid types should satisfy concepts
     struct valid_try_type {
-        int& value() { static int val = 42; return val; }
-        const int& value() const { static int val = 42; return val; }
+        int& value() {
+            static int val = 42;
+            return val;
+        }
+        const int& value() const {
+            static int val = 42;
+            return val;
+        }
         bool hasValue() const { return true; }
         bool hasException() const { return false; }
         folly::exception_wrapper exception() const { return folly::exception_wrapper{}; }

@@ -23,27 +23,20 @@
 namespace network_simulator {
 
 // Forward declarations
-template<typename Types>
-class NetworkNode;
+template<typename Types> class NetworkNode;
 
-template<typename Types>
-class Connection;
+template<typename Types> class Connection;
 
-template<typename Types>
-class Listener;
+template<typename Types> class Listener;
 
-template<typename Types>
-class ConnectionPool;
+template<typename Types> class ConnectionPool;
 
-template<typename Types>
-class ListenerManager;
+template<typename Types> class ListenerManager;
 
-template<typename Types>
-class ConnectionTracker;
+template<typename Types> class ConnectionTracker;
 
 // NetworkSimulator Class Template
-template<typename Types>
-class NetworkSimulator {
+template<typename Types> class NetworkSimulator {
 public:
     // Type aliases from Types template argument
     using address_type = typename Types::address_type;
@@ -64,8 +57,8 @@ public:
 
     // Connection management configuration
     struct ConnectionConfig {
-        std::chrono::milliseconds default_connect_timeout{30000}; // 30 seconds
-        std::chrono::milliseconds default_accept_timeout{60000};  // 60 seconds
+        std::chrono::milliseconds default_connect_timeout{30000};  // 30 seconds
+        std::chrono::milliseconds default_accept_timeout{60000};   // 60 seconds
         bool enable_connection_pooling = true;
         bool enable_connection_tracking = true;
         bool enable_keep_alive = false;
@@ -75,12 +68,11 @@ public:
     };
 
     NetworkSimulator()
-        : _rng(std::random_device{}())
-        , _started(false)
-        , _connection_pool(std::make_unique<ConnectionPool<Types>>())
-        , _listener_manager(std::make_unique<ListenerManager<Types>>())
-        , _connection_tracker(std::make_unique<ConnectionTracker<Types>>())
-    {}
+        : _rng(std::random_device{}()),
+          _started(false),
+          _connection_pool(std::make_unique<ConnectionPool<Types>>()),
+          _listener_manager(std::make_unique<ListenerManager<Types>>()),
+          _connection_tracker(std::make_unique<ConnectionTracker<Types>>()) {}
 
     ~NetworkSimulator() = default;
 
@@ -118,25 +110,29 @@ public:
     auto apply_latency(address_type from, address_type to) -> std::chrono::milliseconds;
     auto check_reliability(address_type from, address_type to) -> bool;
     auto retrieve_message(address_type address) -> future_message_type;
-    auto retrieve_message(address_type address, std::chrono::milliseconds timeout) -> future_message_type;
+    auto retrieve_message(address_type address, std::chrono::milliseconds timeout)
+        -> future_message_type;
 
     // Connection establishment
-    auto establish_connection(address_type src_addr, port_type src_port,
-                             address_type dst_addr, port_type dst_port) -> future_connection_type;
+    auto establish_connection(address_type src_addr, port_type src_port, address_type dst_addr,
+                              port_type dst_port) -> future_connection_type;
     auto establish_connection_internal(address_type src_addr, port_type src_port,
-                                      address_type dst_addr, port_type dst_port) -> future_connection_type;
+                                       address_type dst_addr, port_type dst_port)
+        -> future_connection_type;
     auto establish_connection_with_timeout(address_type src_addr, port_type src_port,
-                                          address_type dst_addr, port_type dst_port,
-                                          std::chrono::milliseconds timeout) -> future_connection_type;
+                                           address_type dst_addr, port_type dst_port,
+                                           std::chrono::milliseconds timeout)
+        -> future_connection_type;
 
     // Listener establishment
     auto create_listener(address_type addr, port_type port) -> future_listener_type;
     auto create_listener(address_type addr) -> future_listener_type;  // Random port
-    auto create_listener(address_type addr, port_type port,
-                        std::chrono::milliseconds timeout) -> future_listener_type;
+    auto create_listener(address_type addr, port_type port, std::chrono::milliseconds timeout)
+        -> future_listener_type;
 
     // Connection data routing
-    auto route_connection_data(connection_id_type conn_id, std::vector<std::byte> data) -> future_bool_type;
+    auto route_connection_data(connection_id_type conn_id, std::vector<std::byte> data)
+        -> future_bool_type;
 
     // Connection state updates (called by Connection objects)
     auto notify_connection_closed(endpoint_type local_endpoint) -> void;
@@ -148,8 +144,11 @@ private:
     // Timer and scheduling methods
     auto timer_thread_main() -> void;
     auto schedule_message_delivery(message_type msg, std::chrono::milliseconds delay) -> void;
-    auto schedule_connection_data_delivery(connection_id_type conn_id, std::vector<std::byte> data, std::chrono::milliseconds delay) -> void;
-    auto schedule_connection_establishment(std::shared_ptr<listener_type> listener, std::shared_ptr<connection_type> connection, std::chrono::milliseconds delay) -> void;
+    auto schedule_connection_data_delivery(connection_id_type conn_id, std::vector<std::byte> data,
+                                           std::chrono::milliseconds delay) -> void;
+    auto schedule_connection_establishment(std::shared_ptr<listener_type> listener,
+                                           std::shared_ptr<connection_type> connection,
+                                           std::chrono::milliseconds delay) -> void;
     auto process_scheduled_deliveries() -> void;
 
     // Connection request tracking for timeout handling
@@ -158,9 +157,7 @@ private:
         endpoint_type destination;
         std::chrono::steady_clock::time_point start_time;
         std::chrono::milliseconds timeout;
-        bool is_expired() const {
-            return std::chrono::steady_clock::now() - start_time > timeout;
-        }
+        bool is_expired() const { return std::chrono::steady_clock::now() - start_time > timeout; }
     };
 
     auto process_connection_timeouts() -> void;
@@ -174,7 +171,7 @@ private:
 
         // For priority queue (earliest delivery time has highest priority)
         bool operator<(const ScheduledMessage& other) const {
-            return delivery_time > other.delivery_time; // Reverse for min-heap
+            return delivery_time > other.delivery_time;  // Reverse for min-heap
         }
     };
 
@@ -186,7 +183,7 @@ private:
 
         // For priority queue (earliest delivery time has highest priority)
         bool operator<(const ScheduledConnectionData& other) const {
-            return delivery_time > other.delivery_time; // Reverse for min-heap
+            return delivery_time > other.delivery_time;  // Reverse for min-heap
         }
     };
 
@@ -198,7 +195,7 @@ private:
 
         // For priority queue (earliest delivery time has highest priority)
         bool operator<(const ScheduledConnectionEstablishment& other) const {
-            return delivery_time > other.delivery_time; // Reverse for min-heap
+            return delivery_time > other.delivery_time;  // Reverse for min-heap
         }
     };
 
@@ -245,10 +242,9 @@ private:
     mutable std::shared_mutex _mutex;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator
 
 #include "simulator_impl.hpp"
 #include "connection_pool_impl.hpp"
 #include "listener_manager_impl.hpp"
 #include "connection_tracker_impl.hpp"
-

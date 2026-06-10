@@ -33,8 +33,8 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
 }
 
 // Helper to generate random node address
@@ -54,7 +54,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * Property: For any listener that is closed, the bound port SHALL be immediately
  * released and made available for new listeners to bind to.
  */
-BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -112,7 +112,7 @@ BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, * boost::unit_tes
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, * boost::unit_tes
  * Property: For any set of listeners that are closed, all bound ports SHALL be
  * immediately released and made available for reuse.
  */
-BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -197,7 +197,7 @@ BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, * boost::unit_test
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -208,7 +208,7 @@ BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, * boost::unit_test
  * Property: For any listener when the simulator is stopped, the bound port SHALL
  * be released and made available for reuse after restart.
  */
-BOOST_AUTO_TEST_CASE(property_port_release_on_stop, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_port_release_on_stop, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -266,6 +266,6 @@ BOOST_AUTO_TEST_CASE(property_port_release_on_stop, * boost::unit_test::timeout(
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }

@@ -23,21 +23,21 @@
 #include <algorithm>
 
 namespace {
-    constexpr const char* server_bind_address = "127.0.0.1";
-    constexpr std::uint16_t server_bind_port = 5685;
-    constexpr const char* server_endpoint = "coap://127.0.0.1:5685";
-    constexpr std::uint64_t node_id = 1;
-    constexpr std::chrono::milliseconds rpc_timeout{10000}; // Longer timeout for block transfers
+constexpr const char* server_bind_address = "127.0.0.1";
+constexpr std::uint16_t server_bind_port = 5685;
+constexpr const char* server_endpoint = "coap://127.0.0.1:5685";
+constexpr std::uint64_t node_id = 1;
+constexpr std::chrono::milliseconds rpc_timeout{10000};  // Longer timeout for block transfers
 
-    // Block transfer configuration
-    constexpr std::size_t small_block_size = 256;
-    constexpr std::size_t medium_block_size = 1024;
-    constexpr std::size_t large_block_size = 4096;
+// Block transfer configuration
+constexpr std::size_t small_block_size = 256;
+constexpr std::size_t medium_block_size = 1024;
+constexpr std::size_t large_block_size = 4096;
 
-    // Test payload sizes
-    constexpr std::size_t small_payload_size = 512;    // Fits in 2 blocks of 256 bytes
-    constexpr std::size_t medium_payload_size = 3072;  // Fits in 3 blocks of 1024 bytes
-    constexpr std::size_t large_payload_size = 16384;  // Fits in 4 blocks of 4096 bytes
+// Test payload sizes
+constexpr std::size_t small_payload_size = 512;    // Fits in 2 blocks of 256 bytes
+constexpr std::size_t medium_payload_size = 3072;  // Fits in 3 blocks of 1024 bytes
+constexpr std::size_t large_payload_size = 16384;  // Fits in 4 blocks of 4096 bytes
 }
 
 // Mock configuration structures for demonstration
@@ -82,14 +82,14 @@ auto test_block_transfer_configuration() -> bool {
         coap_server_config server_config;
         server_config.enable_block_transfer = true;
         server_config.max_block_size = medium_block_size;
-        server_config.max_request_size = 64 * 1024; // 64 KB max request
+        server_config.max_request_size = 64 * 1024;  // 64 KB max request
         server_config.enable_dtls = false;
 
         // Create client configuration with block transfer
         coap_client_config client_config;
         client_config.enable_block_transfer = true;
         client_config.max_block_size = medium_block_size;
-        client_config.ack_timeout = std::chrono::milliseconds{5000}; // Longer for block transfers
+        client_config.ack_timeout = std::chrono::milliseconds{5000};  // Longer for block transfers
         client_config.enable_dtls = false;
 
         std::cout << "  ✓ Block transfer configuration created\n";
@@ -147,8 +147,7 @@ auto test_block_option_parsing() -> bool {
         }
 
         std::cout << "  ✓ Block option case 1: block=" << decoded1.block_number
-                  << ", more=" << decoded1.more_blocks
-                  << ", size=" << decoded1.block_size << "\n";
+                  << ", more=" << decoded1.more_blocks << ", size=" << decoded1.block_size << "\n";
 
         // Test case 2: Last block, no more blocks, 512 byte blocks
         kythira::block_option block2;
@@ -167,8 +166,7 @@ auto test_block_option_parsing() -> bool {
         }
 
         std::cout << "  ✓ Block option case 2: block=" << decoded2.block_number
-                  << ", more=" << decoded2.more_blocks
-                  << ", size=" << decoded2.block_size << "\n";
+                  << ", more=" << decoded2.more_blocks << ", size=" << decoded2.block_size << "\n";
 
         // Test case 3: Middle block, more blocks to follow, 256 byte blocks
         kythira::block_option block3;
@@ -187,8 +185,7 @@ auto test_block_option_parsing() -> bool {
         }
 
         std::cout << "  ✓ Block option case 3: block=" << decoded3.block_number
-                  << ", more=" << decoded3.more_blocks
-                  << ", size=" << decoded3.block_size << "\n";
+                  << ", more=" << decoded3.more_blocks << ", size=" << decoded3.block_size << "\n";
 
         // Note: In a real implementation with libcoap and block transfer support:
         // - Block options would be parsed from CoAP message headers
@@ -217,8 +214,9 @@ auto test_payload_splitting() -> bool {
         auto small_payload = generate_test_payload(small_payload_size);
         bool should_use_blocks_small = (small_payload.size() > medium_block_size);
 
-        std::cout << "  ✓ Small payload (" << small_payload.size() << " bytes): "
-                  << (should_use_blocks_small ? "uses" : "doesn't use") << " block transfer\n";
+        std::cout << "  ✓ Small payload (" << small_payload.size()
+                  << " bytes): " << (should_use_blocks_small ? "uses" : "doesn't use")
+                  << " block transfer\n";
 
         // Test medium payload (should require block transfer)
         auto medium_payload = generate_test_payload(medium_payload_size);
@@ -226,23 +224,26 @@ auto test_payload_splitting() -> bool {
 
         if (should_use_blocks_medium) {
             // Simulate block splitting
-            std::size_t num_blocks = (medium_payload.size() + medium_block_size - 1) / medium_block_size;
-            std::cout << "  ✓ Medium payload (" << medium_payload.size() << " bytes) would split into "
-                      << num_blocks << " blocks\n";
+            std::size_t num_blocks =
+                (medium_payload.size() + medium_block_size - 1) / medium_block_size;
+            std::cout << "  ✓ Medium payload (" << medium_payload.size()
+                      << " bytes) would split into " << num_blocks << " blocks\n";
 
             // Verify block calculation
             for (std::size_t i = 0; i < num_blocks; ++i) {
                 std::size_t block_start = i * medium_block_size;
-                std::size_t block_end = std::min(block_start + medium_block_size, medium_payload.size());
+                std::size_t block_end =
+                    std::min(block_start + medium_block_size, medium_payload.size());
                 std::size_t block_size = block_end - block_start;
 
-                std::size_t expected_size = (i == num_blocks - 1) ?
-                    (medium_payload.size() % medium_block_size) : medium_block_size;
+                std::size_t expected_size = (i == num_blocks - 1)
+                                                ? (medium_payload.size() % medium_block_size)
+                                                : medium_block_size;
                 if (expected_size == 0) expected_size = medium_block_size;
 
                 if (block_size != expected_size) {
-                    std::cerr << "  ✗ Block " << i << " has incorrect size: "
-                              << block_size << " (expected " << expected_size << ")\n";
+                    std::cerr << "  ✗ Block " << i << " has incorrect size: " << block_size
+                              << " (expected " << expected_size << ")\n";
                     return false;
                 }
             }
@@ -254,9 +255,10 @@ auto test_payload_splitting() -> bool {
         bool should_use_blocks_large = (large_payload.size() > medium_block_size);
 
         if (should_use_blocks_large) {
-            std::size_t num_blocks = (large_payload.size() + medium_block_size - 1) / medium_block_size;
-            std::cout << "  ✓ Large payload (" << large_payload.size() << " bytes) would split into "
-                      << num_blocks << " blocks\n";
+            std::size_t num_blocks =
+                (large_payload.size() + medium_block_size - 1) / medium_block_size;
+            std::cout << "  ✓ Large payload (" << large_payload.size()
+                      << " bytes) would split into " << num_blocks << " blocks\n";
         }
 
         // Note: In a real implementation with libcoap and block transfer support:
@@ -287,7 +289,8 @@ auto test_block_reassembly() -> bool {
 
         // Simulate block reassembly
         std::string test_token = "test_token_123";
-        std::size_t blocks_needed = (original_payload.size() + medium_block_size - 1) / medium_block_size;
+        std::size_t blocks_needed =
+            (original_payload.size() + medium_block_size - 1) / medium_block_size;
 
         std::cout << "  ✓ Original payload size: " << original_payload.size() << " bytes\n";
         std::cout << "  ✓ Expected blocks: " << blocks_needed << "\n";
@@ -297,23 +300,24 @@ auto test_block_reassembly() -> bool {
 
         for (std::size_t block_num = 0; block_num < blocks_needed; ++block_num) {
             std::size_t block_start = block_num * medium_block_size;
-            std::size_t block_end = std::min(block_start + medium_block_size, original_payload.size());
+            std::size_t block_end =
+                std::min(block_start + medium_block_size, original_payload.size());
 
-            std::vector<std::byte> block_data(
-                original_payload.begin() + block_start,
-                original_payload.begin() + block_end
-            );
+            std::vector<std::byte> block_data(original_payload.begin() + block_start,
+                                              original_payload.begin() + block_end);
 
             // Append block data to reassembled payload
-            reassembled_payload.insert(reassembled_payload.end(), block_data.begin(), block_data.end());
+            reassembled_payload.insert(reassembled_payload.end(), block_data.begin(),
+                                       block_data.end());
 
-            std::cout << "  ✓ Processed block " << block_num << " (" << block_data.size() << " bytes)\n";
+            std::cout << "  ✓ Processed block " << block_num << " (" << block_data.size()
+                      << " bytes)\n";
         }
 
         // Verify reassembly
         if (reassembled_payload.size() != original_payload.size()) {
-            std::cerr << "  ✗ Reassembled payload size mismatch: "
-                      << reassembled_payload.size() << " vs " << original_payload.size() << "\n";
+            std::cerr << "  ✗ Reassembled payload size mismatch: " << reassembled_payload.size()
+                      << " vs " << original_payload.size() << "\n";
             return false;
         }
 
@@ -346,12 +350,13 @@ auto test_large_snapshot_transfer() -> bool {
         coap_server_config server_config;
         server_config.enable_block_transfer = true;
         server_config.max_block_size = large_block_size;
-        server_config.max_request_size = 128 * 1024; // 128 KB max
+        server_config.max_request_size = 128 * 1024;  // 128 KB max
 
         coap_client_config client_config;
         client_config.enable_block_transfer = true;
         client_config.max_block_size = large_block_size;
-        client_config.ack_timeout = std::chrono::milliseconds{10000}; // Long timeout for large transfers
+        client_config.ack_timeout =
+            std::chrono::milliseconds{10000};  // Long timeout for large transfers
 
         std::cout << "  ✓ Large snapshot server configuration created\n";
         std::cout << "  ✓ Large snapshot handler configured\n";
@@ -380,17 +385,20 @@ auto test_large_snapshot_transfer() -> bool {
         auto large_snapshot_data = generate_test_payload(large_payload_size);
         snapshot_req.data = large_snapshot_data;
 
-        std::cout << "  ✓ Large snapshot request created (" << large_snapshot_data.size() << " bytes)\n";
+        std::cout << "  ✓ Large snapshot request created (" << large_snapshot_data.size()
+                  << " bytes)\n";
 
         // Test if block transfer would be used
         bool would_use_blocks = (large_snapshot_data.size() > large_block_size);
 
         if (would_use_blocks) {
-            std::size_t num_blocks = (large_snapshot_data.size() + large_block_size - 1) / large_block_size;
+            std::size_t num_blocks =
+                (large_snapshot_data.size() + large_block_size - 1) / large_block_size;
             std::cout << "  ✓ Large snapshot would be split into " << num_blocks << " blocks\n";
 
             // Calculate transfer time estimate
-            auto estimated_time = std::chrono::milliseconds(num_blocks * 100); // 100ms per block estimate
+            auto estimated_time =
+                std::chrono::milliseconds(num_blocks * 100);  // 100ms per block estimate
 
             std::cout << "  ✓ Estimated transfer time: " << estimated_time.count() << "ms\n";
         } else {

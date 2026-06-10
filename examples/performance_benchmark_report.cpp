@@ -66,22 +66,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Basic Operations",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Future creation and immediate resolution"
-        });
+        results_.push_back({"Basic Operations", num_operations, duration, ops_per_second,
+                            "Future creation and immediate resolution"});
 
-        std::cout << "  Completed: " << num_operations << " operations in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " operations in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_string_operations() {
@@ -101,22 +95,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "String Operations",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Future operations with string objects"
-        });
+        results_.push_back({"String Operations", num_operations, duration, ops_per_second,
+                            "Future operations with string objects"});
 
-        std::cout << "  Completed: " << num_operations << " operations in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " operations in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_large_objects() {
@@ -137,22 +125,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Large Objects",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Future operations with 10K element vectors"
-        });
+        results_.push_back({"Large Objects", num_operations, duration, ops_per_second,
+                            "Future operations with 10K element vectors"});
 
-        std::cout << "  Completed: " << num_operations << " operations in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " operations in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_concurrent_operations() {
@@ -185,8 +167,8 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         int expected_operations = num_threads * operations_per_thread;
         if (total_operations.load() != expected_operations) {
@@ -195,16 +177,11 @@ private:
 
         double ops_per_second = (expected_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Concurrent Operations",
-            expected_operations,
-            duration,
-            ops_per_second,
-            "4 threads, 10K operations each"
-        });
+        results_.push_back({"Concurrent Operations", expected_operations, duration, ops_per_second,
+                            "4 threads, 10K operations each"});
 
-        std::cout << "  Completed: " << expected_operations << " operations across "
-                  << num_threads << " threads in " << duration.count() << "μs ("
+        std::cout << "  Completed: " << expected_operations << " operations across " << num_threads
+                  << " threads in " << duration.count() << "μs ("
                   << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
@@ -217,8 +194,7 @@ private:
 
         for (int i = 0; i < num_operations; ++i) {
             auto exception_future = kythira::Future<int>(
-                folly::exception_wrapper(std::runtime_error("benchmark error"))
-            );
+                folly::exception_wrapper(std::runtime_error("benchmark error")));
 
             bool caught_exception = false;
             try {
@@ -233,22 +209,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Exception Handling",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Future operations with exception propagation"
-        });
+        results_.push_back({"Exception Handling", num_operations, duration, ops_per_second,
+                            "Future operations with exception propagation"});
 
-        std::cout << "  Completed: " << num_operations << " operations in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " operations in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_memory_allocation() {
@@ -270,22 +240,18 @@ private:
             }
 
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-                end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
             double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-            results_.push_back({
-                "Memory Allocation (size " + std::to_string(size) + ")",
-                num_operations,
-                duration,
-                ops_per_second,
-                "Vector allocation and future wrapping"
-            });
+            results_.push_back({"Memory Allocation (size " + std::to_string(size) + ")",
+                                num_operations, duration, ops_per_second,
+                                "Vector allocation and future wrapping"});
 
-            std::cout << "  Size " << size << ": " << num_operations
-                      << " operations in " << duration.count() << "μs ("
-                      << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
+            std::cout << "  Size " << size << ": " << num_operations << " operations in "
+                      << duration.count() << "μs (" << static_cast<int>(ops_per_second)
+                      << " ops/sec)" << std::endl;
         }
     }
 
@@ -306,22 +272,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Concept Methods (isReady)",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Future concept method performance"
-        });
+        results_.push_back({"Concept Methods (isReady)", num_operations, duration, ops_per_second,
+                            "Future concept method performance"});
 
-        std::cout << "  Completed: " << num_operations << " isReady() calls in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " isReady() calls in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_throughput() {
@@ -340,22 +300,16 @@ private:
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        results_.push_back({
-            "Throughput Test",
-            num_operations,
-            duration,
-            ops_per_second,
-            "Maximum sustained throughput measurement"
-        });
+        results_.push_back({"Throughput Test", num_operations, duration, ops_per_second,
+                            "Maximum sustained throughput measurement"});
 
-        std::cout << "  Completed: " << num_operations << " operations in "
-                  << duration.count() << "μs (" << static_cast<int>(ops_per_second)
-                  << " ops/sec)" << std::endl;
+        std::cout << "  Completed: " << num_operations << " operations in " << duration.count()
+                  << "μs (" << static_cast<int>(ops_per_second) << " ops/sec)" << std::endl;
     }
 
     void benchmark_latency() {
@@ -376,8 +330,8 @@ private:
             }
 
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
-                end_time - start_time);
+            auto latency =
+                std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
             latencies.push_back(latency);
         }
@@ -395,14 +349,10 @@ private:
 
         auto avg_latency = total_latency / num_samples;
 
-        results_.push_back({
-            "Latency Test",
-            num_samples,
-            avg_latency,
-            1000000.0 / avg_latency.count(),
-            "Min: " + std::to_string(min_latency.count()) + "μs, Max: " +
-            std::to_string(max_latency.count()) + "μs"
-        });
+        results_.push_back({"Latency Test", num_samples, avg_latency,
+                            1000000.0 / avg_latency.count(),
+                            "Min: " + std::to_string(min_latency.count()) +
+                                "μs, Max: " + std::to_string(max_latency.count()) + "μs"});
 
         std::cout << "  Average latency: " << avg_latency.count() << "μs" << std::endl;
         std::cout << "  Min latency: " << min_latency.count() << "μs" << std::endl;
@@ -411,19 +361,16 @@ private:
 
     void generate_report() {
         std::cout << std::endl << "=== Performance Benchmark Report ===" << std::endl;
-        std::cout << std::left << std::setw(30) << "Benchmark"
-                  << std::setw(12) << "Operations"
-                  << std::setw(15) << "Duration (μs)"
-                  << std::setw(15) << "Ops/Second"
+        std::cout << std::left << std::setw(30) << "Benchmark" << std::setw(12) << "Operations"
+                  << std::setw(15) << "Duration (μs)" << std::setw(15) << "Ops/Second"
                   << "Notes" << std::endl;
         std::cout << std::string(100, '-') << std::endl;
 
         for (const auto& result : results_) {
-            std::cout << std::left << std::setw(30) << result.name
-                      << std::setw(12) << result.operations
-                      << std::setw(15) << result.duration.count()
-                      << std::setw(15) << static_cast<int>(result.ops_per_second)
-                      << result.notes << std::endl;
+            std::cout << std::left << std::setw(30) << result.name << std::setw(12)
+                      << result.operations << std::setw(15) << result.duration.count()
+                      << std::setw(15) << static_cast<int>(result.ops_per_second) << result.notes
+                      << std::endl;
         }
 
         std::cout << std::string(100, '-') << std::endl;
@@ -433,7 +380,7 @@ private:
         std::chrono::microseconds total_time{0};
 
         for (const auto& result : results_) {
-            if (result.name != "Latency Test") { // Exclude latency test from totals
+            if (result.name != "Latency Test") {  // Exclude latency test from totals
                 total_ops += result.operations;
                 total_time += result.duration;
             }
@@ -444,8 +391,8 @@ private:
         std::cout << std::endl << "=== Summary ===" << std::endl;
         std::cout << "Total operations: " << static_cast<int>(total_ops) << std::endl;
         std::cout << "Total time: " << total_time.count() << "μs" << std::endl;
-        std::cout << "Overall throughput: " << static_cast<int>(overall_throughput)
-                  << " ops/sec" << std::endl;
+        std::cout << "Overall throughput: " << static_cast<int>(overall_throughput) << " ops/sec"
+                  << std::endl;
 
         // Write detailed report to file
         write_detailed_report();
@@ -461,7 +408,8 @@ private:
         report_file << "=============================================" << std::endl;
         report_file << std::endl;
 
-        report_file << "Generated: " << std::chrono::system_clock::now().time_since_epoch().count() << std::endl;
+        report_file << "Generated: " << std::chrono::system_clock::now().time_since_epoch().count()
+                    << std::endl;
         report_file << "System: kythira::Future performance after conversion" << std::endl;
         report_file << std::endl;
 
@@ -472,8 +420,10 @@ private:
             report_file << std::endl;
             report_file << "Test: " << result.name << std::endl;
             report_file << "  Operations: " << result.operations << std::endl;
-            report_file << "  Duration: " << result.duration.count() << " microseconds" << std::endl;
-            report_file << "  Throughput: " << static_cast<int>(result.ops_per_second) << " ops/sec" << std::endl;
+            report_file << "  Duration: " << result.duration.count() << " microseconds"
+                        << std::endl;
+            report_file << "  Throughput: " << static_cast<int>(result.ops_per_second) << " ops/sec"
+                        << std::endl;
             report_file << "  Notes: " << result.notes << std::endl;
         }
 
@@ -482,20 +432,24 @@ private:
         report_file << "--------------------" << std::endl;
 
         // Find best and worst performing tests
-        auto best_throughput = std::max_element(results_.begin(), results_.end(),
-            [](const BenchmarkResult& a, const BenchmarkResult& b) {
-                return a.ops_per_second < b.ops_per_second;
-            });
+        auto best_throughput =
+            std::max_element(results_.begin(), results_.end(),
+                             [](const BenchmarkResult& a, const BenchmarkResult& b) {
+                                 return a.ops_per_second < b.ops_per_second;
+                             });
 
-        auto worst_throughput = std::min_element(results_.begin(), results_.end(),
-            [](const BenchmarkResult& a, const BenchmarkResult& b) {
-                return a.ops_per_second < b.ops_per_second;
-            });
+        auto worst_throughput =
+            std::min_element(results_.begin(), results_.end(),
+                             [](const BenchmarkResult& a, const BenchmarkResult& b) {
+                                 return a.ops_per_second < b.ops_per_second;
+                             });
 
-        report_file << "Best performing test: " << best_throughput->name
-                    << " (" << static_cast<int>(best_throughput->ops_per_second) << " ops/sec)" << std::endl;
-        report_file << "Worst performing test: " << worst_throughput->name
-                    << " (" << static_cast<int>(worst_throughput->ops_per_second) << " ops/sec)" << std::endl;
+        report_file << "Best performing test: " << best_throughput->name << " ("
+                    << static_cast<int>(best_throughput->ops_per_second) << " ops/sec)"
+                    << std::endl;
+        report_file << "Worst performing test: " << worst_throughput->name << " ("
+                    << static_cast<int>(worst_throughput->ops_per_second) << " ops/sec)"
+                    << std::endl;
 
         // Performance requirements validation
         report_file << std::endl << "Performance Requirements Validation:" << std::endl;
@@ -528,9 +482,8 @@ private:
             }
 
             if (!requirement_note.empty()) {
-                report_file << result.name << ": "
-                            << (meets_requirement ? "PASS" : "FAIL")
-                            << " (" << requirement_note << ")" << std::endl;
+                report_file << result.name << ": " << (meets_requirement ? "PASS" : "FAIL") << " ("
+                            << requirement_note << ")" << std::endl;
 
                 if (!meets_requirement) {
                     all_requirements_met = false;
@@ -538,19 +491,24 @@ private:
             }
         }
 
-        report_file << std::endl << "Overall Performance: "
+        report_file << std::endl
+                    << "Overall Performance: "
                     << (all_requirements_met ? "ACCEPTABLE" : "NEEDS IMPROVEMENT") << std::endl;
 
         report_file << std::endl << "Memory Usage Analysis:" << std::endl;
         report_file << "---------------------" << std::endl;
-        report_file << "Memory allocation tests show performance scaling with object size." << std::endl;
-        report_file << "All memory allocation patterns demonstrate reasonable performance." << std::endl;
+        report_file << "Memory allocation tests show performance scaling with object size."
+                    << std::endl;
+        report_file << "All memory allocation patterns demonstrate reasonable performance."
+                    << std::endl;
         report_file << "No significant memory leaks or allocation issues detected." << std::endl;
 
         report_file << std::endl << "Conclusion:" << std::endl;
         report_file << "----------" << std::endl;
-        report_file << "The kythira::Future implementation demonstrates good performance" << std::endl;
-        report_file << "characteristics across all tested scenarios. The conversion from" << std::endl;
+        report_file << "The kythira::Future implementation demonstrates good performance"
+                    << std::endl;
+        report_file << "characteristics across all tested scenarios. The conversion from"
+                    << std::endl;
         report_file << "legacy future types to kythira::Future maintains" << std::endl;
         report_file << "equivalent performance while providing a unified interface." << std::endl;
 

@@ -49,4 +49,4 @@ private:
     std::int64_t _value = 0;
 };
 
-} // namespace kythira::examples
+}  // namespace kythira::examples

@@ -19,25 +19,24 @@
 #include <cstdint>
 
 namespace {
-    constexpr const char* server_bind_address = "127.0.0.1";
-    constexpr std::uint16_t secure_server_port = 5684;
-    constexpr const char* secure_server_endpoint = "coaps://127.0.0.1:5684";
-    constexpr std::uint64_t node_id = 1;
-    constexpr std::chrono::milliseconds rpc_timeout{10000}; // Longer timeout for DTLS handshake
+constexpr const char* server_bind_address = "127.0.0.1";
+constexpr std::uint16_t secure_server_port = 5684;
+constexpr const char* secure_server_endpoint = "coaps://127.0.0.1:5684";
+constexpr std::uint64_t node_id = 1;
+constexpr std::chrono::milliseconds rpc_timeout{10000};  // Longer timeout for DTLS handshake
 
-    // Test PSK credentials
-    constexpr const char* test_psk_identity = "raft-node-1";
-    const std::vector<std::byte> test_psk_key = {
-        std::byte{0x01}, std::byte{0x23}, std::byte{0x45}, std::byte{0x67},
-        std::byte{0x89}, std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF},
-        std::byte{0xFE}, std::byte{0xDC}, std::byte{0xBA}, std::byte{0x98},
-        std::byte{0x76}, std::byte{0x54}, std::byte{0x32}, std::byte{0x10}
-    };
+// Test PSK credentials
+constexpr const char* test_psk_identity = "raft-node-1";
+const std::vector<std::byte> test_psk_key = {
+    std::byte{0x01}, std::byte{0x23}, std::byte{0x45}, std::byte{0x67},
+    std::byte{0x89}, std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF},
+    std::byte{0xFE}, std::byte{0xDC}, std::byte{0xBA}, std::byte{0x98},
+    std::byte{0x76}, std::byte{0x54}, std::byte{0x32}, std::byte{0x10}};
 
-    // Test certificate paths (would be real paths in production)
-    constexpr const char* test_cert_file = "/etc/ssl/certs/raft-node.pem";
-    constexpr const char* test_key_file = "/etc/ssl/private/raft-node-key.pem";
-    constexpr const char* test_ca_file = "/etc/ssl/certs/raft-ca.pem";
+// Test certificate paths (would be real paths in production)
+constexpr const char* test_cert_file = "/etc/ssl/certs/raft-node.pem";
+constexpr const char* test_key_file = "/etc/ssl/private/raft-node-key.pem";
+constexpr const char* test_ca_file = "/etc/ssl/certs/raft-ca.pem";
 }
 
 // Mock configuration structures for demonstration
@@ -72,7 +71,7 @@ auto test_psk_authentication_config() -> bool {
         server_config.enable_dtls = true;
         server_config.psk_identity = test_psk_identity;
         server_config.psk_key = test_psk_key;
-        server_config.verify_peer_cert = false; // Using PSK, not certificates
+        server_config.verify_peer_cert = false;  // Using PSK, not certificates
         server_config.max_concurrent_sessions = 10;
 
         // Create client configuration with PSK
@@ -80,8 +79,8 @@ auto test_psk_authentication_config() -> bool {
         client_config.enable_dtls = true;
         client_config.psk_identity = test_psk_identity;
         client_config.psk_key = test_psk_key;
-        client_config.verify_peer_cert = false; // Using PSK, not certificates
-        client_config.ack_timeout = std::chrono::milliseconds{5000}; // Longer for DTLS
+        client_config.verify_peer_cert = false;                       // Using PSK, not certificates
+        client_config.ack_timeout = std::chrono::milliseconds{5000};  // Longer for DTLS
 
         std::cout << "  ✓ PSK-based DTLS server configuration created\n";
         std::cout << "  ✓ PSK-based DTLS client configuration created\n";
@@ -137,7 +136,7 @@ auto test_certificate_authentication_config() -> bool {
         client_config.key_file = test_key_file;
         client_config.ca_file = test_ca_file;
         client_config.verify_peer_cert = true;
-        client_config.ack_timeout = std::chrono::milliseconds{5000}; // Longer for DTLS
+        client_config.ack_timeout = std::chrono::milliseconds{5000};  // Longer for DTLS
 
         std::cout << "  ✓ Certificate-based DTLS configuration created\n";
         std::cout << "  ✓ Certificate-based DTLS client configuration created\n";
@@ -156,7 +155,8 @@ auto test_certificate_authentication_config() -> bool {
         std::cout << "  ✓ Certificate configuration validation passed\n";
 
         // Test certificate validation with mock data
-        std::string mock_cert_data = "-----BEGIN CERTIFICATE-----\nMOCK_CERT_DATA\n-----END CERTIFICATE-----";
+        std::string mock_cert_data =
+            "-----BEGIN CERTIFICATE-----\nMOCK_CERT_DATA\n-----END CERTIFICATE-----";
 
         // Note: In a real implementation with libcoap and DTLS support:
         // - Certificate validation would verify the certificate chain
@@ -183,7 +183,7 @@ auto test_security_error_handling() -> bool {
 
         coap_client_config client_config;
         client_config.enable_dtls = true;
-        client_config.psk_identity = "different-identity"; // Mismatched identity
+        client_config.psk_identity = "different-identity";  // Mismatched identity
         client_config.psk_key = test_psk_key;
 
         std::cout << "  ✓ Mismatched PSK configuration created for testing\n";
@@ -243,7 +243,7 @@ auto test_dtls_connection_establishment() -> bool {
         client_config.enable_dtls = true;
         client_config.psk_identity = test_psk_identity;
         client_config.psk_key = test_psk_key;
-        client_config.ack_timeout = std::chrono::milliseconds{10000}; // Long timeout for handshake
+        client_config.ack_timeout = std::chrono::milliseconds{10000};  // Long timeout for handshake
 
         std::cout << "  ✓ DTLS connection configuration created\n";
 
@@ -259,7 +259,7 @@ auto test_dtls_connection_establishment() -> bool {
         std::cout << "  ✓ CoAPS endpoint format validated\n";
 
         // Test connection timeout scenarios
-        client_config.ack_timeout = std::chrono::milliseconds{100}; // Very short timeout
+        client_config.ack_timeout = std::chrono::milliseconds{100};  // Very short timeout
 
         std::cout << "  ✓ Connection timeout scenarios configured\n";
 

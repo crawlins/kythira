@@ -32,10 +32,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -56,7 +56,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * exists, the connection pool SHALL return the existing connection rather than creating
  * a new one.
  */
-BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -122,25 +122,31 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, * boost::unit_test::timeout
             // Verify that the same connection was reused
             if (conn1_ptr == conn2_ptr) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection successfully reused from pool");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Connection successfully reused from pool");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": New connection created instead of reusing pooled connection");
+                BOOST_TEST_MESSAGE(
+                    "Iteration "
+                    << i << ": New connection created instead of reusing pooled connection");
             }
 
             // Test Case 3: Verify pool size
-            auto pool_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             // After returning conn2, pool should have 1 connection
             pool.return_connection(conn2);
-            auto pool_size_after = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (pool_size_after >= 1) {
                 ++success_count;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Pool correctly maintains connections");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool size incorrect after returning connection");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Pool size incorrect after returning connection");
             }
 
             // Test Case 4: Multiple sequential reuses
@@ -156,7 +162,8 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, * boost::unit_test::timeout
 
                 if (last_conn && conn.get() != last_conn.get()) {
                     all_reused = false;
-                    BOOST_TEST_MESSAGE("Iteration " << i << " reuse " << j << ": Different connection returned");
+                    BOOST_TEST_MESSAGE("Iteration " << i << " reuse " << j
+                                                    << ": Different connection returned");
                 }
 
                 last_conn = conn;
@@ -165,10 +172,13 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, * boost::unit_test::timeout
 
             if (all_reused) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": All sequential requests reused the same connection");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": All sequential requests reused the same connection");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Sequential requests did not consistently reuse connection");
+                BOOST_TEST_MESSAGE(
+                    "Iteration " << i
+                                 << ": Sequential requests did not consistently reuse connection");
             }
 
         } catch (const std::exception& e) {

@@ -13,15 +13,14 @@
 namespace network_simulator {
 
 enum class ConnectionState {
-    CONNECTING,    // Connection establishment in progress
-    CONNECTED,     // Connection established and ready
-    CLOSING,       // Connection close initiated
-    CLOSED,        // Connection closed
-    ERROR          // Connection in error state
+    CONNECTING,  // Connection establishment in progress
+    CONNECTED,   // Connection established and ready
+    CLOSING,     // Connection close initiated
+    CLOSED,      // Connection closed
+    ERROR        // Connection in error state
 };
 
-template<typename Types>
-class ConnectionTracker {
+template<typename Types> class ConnectionTracker {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
@@ -38,9 +37,8 @@ public:
         std::optional<std::string> last_error;
 
         ConnectionStats()
-            : established_time(std::chrono::steady_clock::now())
-            , last_activity(std::chrono::steady_clock::now())
-        {}
+            : established_time(std::chrono::steady_clock::now()),
+              last_activity(std::chrono::steady_clock::now()) {}
     };
 
     struct ConnectionInfo {
@@ -54,18 +52,16 @@ public:
         std::function<void(ConnectionState, ConnectionState)> state_change_callback;
 
         ConnectionInfo(endpoint_type local, endpoint_type remote)
-            : local_endpoint(local)
-            , remote_endpoint(remote)
-            , state(ConnectionState::CONNECTING)
-        {}
+            : local_endpoint(local), remote_endpoint(remote), state(ConnectionState::CONNECTING) {}
     };
 
     ConnectionTracker();
 
     auto register_connection(endpoint_type local, endpoint_type remote,
-                           std::shared_ptr<connection_type> conn) -> void;
+                             std::shared_ptr<connection_type> conn) -> void;
     auto update_connection_state(endpoint_type local, ConnectionState new_state) -> void;
-    auto update_connection_stats(endpoint_type local, std::size_t bytes_transferred, bool is_send) -> void;
+    auto update_connection_stats(endpoint_type local, std::size_t bytes_transferred, bool is_send)
+        -> void;
     auto get_connection_info(endpoint_type local) const -> std::optional<ConnectionInfo>;
     auto get_all_connections() const -> std::vector<ConnectionInfo>;
     auto cleanup_connection(endpoint_type local) -> void;
@@ -78,15 +74,16 @@ public:
 
     // Observer registration
     auto set_state_change_callback(endpoint_type local,
-                                   std::function<void(ConnectionState, ConnectionState)> callback) -> void;
+                                   std::function<void(ConnectionState, ConnectionState)> callback)
+        -> void;
 
 private:
     std::unordered_map<endpoint_type, ConnectionInfo> _connection_info;
     mutable std::shared_mutex _info_mutex;
 
     // Keep-alive and idle timeout management
-    std::chrono::milliseconds _keep_alive_interval{30000}; // 30 seconds
-    std::chrono::milliseconds _idle_timeout{300000}; // 5 minutes
+    std::chrono::milliseconds _keep_alive_interval{30000};  // 30 seconds
+    std::chrono::milliseconds _idle_timeout{300000};        // 5 minutes
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator

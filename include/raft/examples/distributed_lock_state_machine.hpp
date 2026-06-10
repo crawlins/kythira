@@ -19,7 +19,8 @@ public:
 
         if (cmd.starts_with("ACQUIRE ")) {
             auto parts = split(cmd.substr(8));
-            if (parts.size() != 3) throw std::invalid_argument("ACQUIRE requires lock_id, owner, timeout_ms");
+            if (parts.size() != 3)
+                throw std::invalid_argument("ACQUIRE requires lock_id, owner, timeout_ms");
             return acquire(parts[0], parts[1], std::stoull(parts[2]));
         } else if (cmd.starts_with("RELEASE ")) {
             auto parts = split(cmd.substr(8));
@@ -58,7 +59,8 @@ private:
     };
     std::unordered_map<std::string, lock_info> _locks;
 
-    auto acquire(const std::string& lock_id, const std::string& owner, std::uint64_t timeout_ms) -> std::vector<std::byte> {
+    auto acquire(const std::string& lock_id, const std::string& owner, std::uint64_t timeout_ms)
+        -> std::vector<std::byte> {
         auto now = std::chrono::steady_clock::now().time_since_epoch().count();
         auto& lock = _locks[lock_id];
 
@@ -108,4 +110,4 @@ private:
     }
 };
 
-} // namespace kythira::examples
+}  // namespace kythira::examples

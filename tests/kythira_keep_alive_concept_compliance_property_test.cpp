@@ -17,18 +17,20 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30};
-    constexpr std::size_t thread_pool_size = 4;
+constexpr int test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30};
+constexpr std::size_t thread_pool_size = 4;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 1: Concept Compliance**
  *
- * Property: For any KeepAlive wrapper instance, it should satisfy the keep_alive concept requirements
+ * Property: For any KeepAlive wrapper instance, it should satisfy the keep_alive concept
+ * requirements
  * **Validates: Requirements 2.2**
  */
-BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: Static assertion that kythira::KeepAlive satisfies keep_alive concept
     static_assert(kythira::keep_alive<KeepAlive>,
                   "kythira::KeepAlive must satisfy keep_alive concept");
@@ -93,9 +95,8 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test, * boos
 
         // Test that we can add work through KeepAlive
         std::atomic<bool> task_executed{false};
-        keep_alive_instance.add([&task_executed]() {
-            task_executed.store(true, std::memory_order_relaxed);
-        });
+        keep_alive_instance.add(
+            [&task_executed]() { task_executed.store(true, std::memory_order_relaxed); });
 
         BOOST_CHECK(task_executed.load());
     }
@@ -113,14 +114,14 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test, * boos
         BOOST_CHECK(!default_keep_alive.is_valid());
 
         // Should throw when trying to add work
-        BOOST_CHECK_THROW(default_keep_alive.add([](){}), std::runtime_error);
+        BOOST_CHECK_THROW(default_keep_alive.add([]() {}), std::runtime_error);
     }
 
     // Test 5: Property-based testing - generate multiple scenarios
     for (int i = 0; i < test_iterations; ++i) {
-        auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(
-            (i % 4) + 1  // 1 to 4 threads
-        );
+        auto cpu_executor =
+            std::make_unique<folly::CPUThreadPoolExecutor>((i % 4) + 1  // 1 to 4 threads
+            );
         Executor wrapper(cpu_executor.get());
         auto keep_alive_instance = wrapper.get_keep_alive();
 
@@ -156,12 +157,11 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test, * boos
 
         // Test work submission through KeepAlive
         std::atomic<int> counter{0};
-        int num_tasks = (i % 10) + 1; // 1 to 10 tasks
+        int num_tasks = (i % 10) + 1;  // 1 to 10 tasks
 
         for (int j = 0; j < num_tasks; ++j) {
-            keep_alive_instance.add([&counter, j]() {
-                counter.fetch_add(j + 1, std::memory_order_relaxed);
-            });
+            keep_alive_instance.add(
+                [&counter, j]() { counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
         // Wait for tasks to complete
@@ -181,7 +181,8 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_concept_compliance_property_test, * boos
 /**
  * Test that kythira::KeepAlive works with different executor types
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_different_executors, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_different_executors,
+                     *boost::unit_test::timeout(60)) {
     // Test with CPUThreadPoolExecutor
     {
         auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(2);
@@ -218,7 +219,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_different_executors, * boost:
         // Test immediate execution
         bool executed = false;
         keep_alive_instance.add([&executed]() { executed = true; });
-        BOOST_CHECK(executed); // Should execute immediately
+        BOOST_CHECK(executed);  // Should execute immediately
     }
 
     // Test with global executor
@@ -231,7 +232,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_different_executors, * boost:
 /**
  * Test thread safety of KeepAlive concept compliance
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_thread_safety, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_thread_safety, *boost::unit_test::timeout(90)) {
     auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(thread_pool_size);
     Executor wrapper(cpu_executor.get());
     auto keep_alive_instance = wrapper.get_keep_alive();
@@ -288,7 +289,8 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_thread_safety, * boost::unit_
 /**
  * Test KeepAlive concept compliance with exception scenarios
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_exception_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_exception_handling,
+                     *boost::unit_test::timeout(30)) {
     // Test with valid KeepAlive
     {
         auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(2);
@@ -341,7 +343,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_compliance_exception_handling, * boost::
         BOOST_CHECK(invalid_keep_alive.get() == nullptr);
 
         // Should throw when trying to add work
-        BOOST_CHECK_THROW(invalid_keep_alive.add([](){}), std::runtime_error);
+        BOOST_CHECK_THROW(invalid_keep_alive.add([]() {}), std::runtime_error);
 
         // Should still satisfy concept after exception
         static_assert(kythira::keep_alive<decltype(invalid_keep_alive)>,

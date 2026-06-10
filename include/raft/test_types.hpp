@@ -11,10 +11,8 @@
 namespace kythira {
 
 // Test transport types template for use in CoAP transport tests
-template<typename Serializer>
-struct test_transport_types {
-    template<typename T>
-    using future_template = folly::Future<T>;
+template<typename Serializer> struct test_transport_types {
+    template<typename T> using future_template = folly::Future<T>;
 
     using serializer_type = Serializer;
     using rpc_serializer_type = Serializer;
@@ -25,4 +23,4 @@ struct test_transport_types {
     using port_type = std::uint16_t;
 };
 
-} // namespace kythira
+}  // namespace kythira

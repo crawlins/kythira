@@ -25,7 +25,8 @@ namespace kythira {
  * Each phase must be committed before proceeding to the next phase to maintain
  * Raft safety properties.
  */
-template<typename NodeId = std::uint64_t, typename LogIndex = std::uint64_t, typename FutureType = kythira::Future<bool>>
+template<typename NodeId = std::uint64_t, typename LogIndex = std::uint64_t,
+         typename FutureType = kythira::Future<bool>>
 requires kythira::node_id<NodeId> && kythira::log_index<LogIndex>
 class configuration_synchronizer {
 public:
@@ -36,9 +37,9 @@ public:
 
 private:
     enum class config_change_phase {
-        none,                    // No configuration change in progress
-        joint_consensus,         // Waiting for joint consensus to be committed
-        final_configuration      // Waiting for final configuration to be committed
+        none,                // No configuration change in progress
+        joint_consensus,     // Waiting for joint consensus to be committed
+        final_configuration  // Waiting for final configuration to be committed
     };
 
     // Current phase of configuration change
@@ -71,17 +72,15 @@ public:
      * @param timeout Maximum time to wait for the configuration change
      * @return Future that completes when the configuration change is done
      */
-    auto start_configuration_change(
-        const cluster_configuration<NodeId>& new_config,
-        std::chrono::milliseconds timeout = std::chrono::seconds(60)
-    ) -> future_type {
+    auto start_configuration_change(const cluster_configuration<NodeId>& new_config,
+                                    std::chrono::milliseconds timeout = std::chrono::seconds(60))
+        -> future_type {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (_current_phase != config_change_phase::none) {
             return kythira::FutureFactory::makeExceptionalFuture<bool>(
-                std::make_exception_ptr(
-                    configuration_change_exception("start", "Configuration change already in progress")
-                ));
+                std::make_exception_ptr(configuration_change_exception(
+                    "start", "Configuration change already in progress")));
         }
 
         _target_configuration = new_config;
@@ -106,10 +105,8 @@ public:
      * @param config The configuration that was committed
      * @param committed_index The log index at which it was committed
      */
-    auto notify_configuration_committed(
-        const cluster_configuration<NodeId>& config,
-        LogIndex committed_index
-    ) -> void {
+    auto notify_configuration_committed(const cluster_configuration<NodeId>& config,
+                                        LogIndex committed_index) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (_current_phase == config_change_phase::none) {
@@ -127,10 +124,8 @@ public:
             }
         } else if (_current_phase == config_change_phase::final_configuration) {
             // Final configuration was committed
-            if (!config.is_joint_consensus() &&
-                _target_configuration &&
+            if (!config.is_joint_consensus() && _target_configuration &&
                 config.nodes() == _target_configuration->nodes()) {
-
                 _final_config_index = committed_index;
 
                 // Configuration change completed successfully
@@ -153,14 +148,14 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (_current_phase == config_change_phase::none) {
-            return; // No change in progress
+            return;  // No change in progress
         }
 
         if (_change_promise) {
             std::string phase_name = (_current_phase == config_change_phase::joint_consensus)
-                ? "joint_consensus" : "final_configuration";
-            _change_promise->setException(
-                configuration_change_exception(phase_name, reason));
+                                         ? "joint_consensus"
+                                         : "final_configuration";
+            _change_promise->setException(configuration_change_exception(phase_name, reason));
         }
 
         reset_state();
@@ -217,7 +212,8 @@ public:
         if (is_timed_out()) {
             if (_change_promise) {
                 std::string phase_name = (_current_phase == config_change_phase::joint_consensus)
-                    ? "joint_consensus" : "final_configuration";
+                                             ? "joint_consensus"
+                                             : "final_configuration";
                 _change_promise->setException(
                     configuration_change_exception(phase_name, "Configuration change timed out"));
             }
@@ -269,4 +265,4 @@ private:
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

@@ -290,7 +290,8 @@ BOOST_AUTO_TEST_CASE(handle_network_error_false_for_permanent) {
 
 BOOST_AUTO_TEST_CASE(handle_serialization_error_returns_false) {
     kythira::error_handler<int> h;
-    // Serialization errors should NOT retry (should_retry=false), so handle_serialization_error returns false
+    // Serialization errors should NOT retry (should_retry=false), so handle_serialization_error
+    // returns false
     auto e = std::runtime_error("serialization failed");
     BOOST_CHECK(!h.handle_serialization_error(e));
 }
@@ -303,8 +304,7 @@ BOOST_AUTO_TEST_CASE(too_few_errors) {
     kythira::error_handler<int> h;
     std::vector<kythira::error_classification> errors = {
         {kythira::error_type::network_timeout, true, "timeout", std::nullopt},
-        {kythira::error_type::network_unreachable, true, "unreachable", std::nullopt}
-    };
+        {kythira::error_type::network_unreachable, true, "unreachable", std::nullopt}};
     BOOST_CHECK(!h.detect_network_partition(errors));
 }
 
@@ -313,8 +313,7 @@ BOOST_AUTO_TEST_CASE(majority_network_errors) {
     std::vector<kythira::error_classification> errors = {
         {kythira::error_type::network_timeout, true, "timeout", std::nullopt},
         {kythira::error_type::network_unreachable, true, "unreachable", std::nullopt},
-        {kythira::error_type::connection_refused, true, "refused", std::nullopt}
-    };
+        {kythira::error_type::connection_refused, true, "refused", std::nullopt}};
     BOOST_CHECK(h.detect_network_partition(errors));
 }
 
@@ -323,8 +322,7 @@ BOOST_AUTO_TEST_CASE(minority_network_errors) {
     std::vector<kythira::error_classification> errors = {
         {kythira::error_type::network_timeout, true, "timeout", std::nullopt},
         {kythira::error_type::permanent_failure, false, "disk", std::nullopt},
-        {kythira::error_type::permanent_failure, false, "disk", std::nullopt}
-    };
+        {kythira::error_type::permanent_failure, false, "disk", std::nullopt}};
     BOOST_CHECK(!h.detect_network_partition(errors));
 }
 
@@ -339,8 +337,7 @@ BOOST_AUTO_TEST_CASE(invalid_policy_throws) {
         .max_delay = std::chrono::milliseconds{1000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.1,
-        .max_attempts = 5
-    };
+        .max_attempts = 5};
     BOOST_CHECK_THROW(h.set_retry_policy("test", bad_policy), std::invalid_argument);
 }
 
@@ -351,8 +348,7 @@ BOOST_AUTO_TEST_CASE(invalid_policy_backoff_too_low) {
         .max_delay = std::chrono::milliseconds{1000},
         .backoff_multiplier = 0.5,  // invalid: must be > 1.0
         .jitter_factor = 0.1,
-        .max_attempts = 5
-    };
+        .max_attempts = 5};
     BOOST_CHECK_THROW(h.set_retry_policy("test", bad_policy), std::invalid_argument);
 }
 
@@ -365,13 +361,11 @@ BOOST_AUTO_TEST_CASE(get_unknown_policy_returns_default) {
 
 BOOST_AUTO_TEST_CASE(set_and_get_policy) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{200},
-        .max_delay = std::chrono::milliseconds{4000},
-        .backoff_multiplier = 3.0,
-        .jitter_factor = 0.05,
-        .max_attempts = 7
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{200},
+                                                .max_delay = std::chrono::milliseconds{4000},
+                                                .backoff_multiplier = 3.0,
+                                                .jitter_factor = 0.05,
+                                                .max_attempts = 7};
     h.set_retry_policy("custom", p);
     auto retrieved = h.get_retry_policy("custom");
     BOOST_CHECK_EQUAL(retrieved.max_attempts, 7u);
@@ -382,7 +376,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(execute_with_retry_suite)
 
-BOOST_AUTO_TEST_CASE(success_on_first_attempt, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(success_on_first_attempt, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
     int call_count = 0;
     auto future = h.execute_with_retry("heartbeat", [&call_count]() -> kythira::Future<int> {
@@ -394,53 +388,46 @@ BOOST_AUTO_TEST_CASE(success_on_first_attempt, * boost::unit_test::timeout(30)) 
     BOOST_CHECK_EQUAL(call_count, 1);
 }
 
-BOOST_AUTO_TEST_CASE(invalid_policy_returns_exceptional_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(invalid_policy_returns_exceptional_future, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy bad{
-        .initial_delay = std::chrono::milliseconds{0},
-        .max_delay = std::chrono::milliseconds{1000},
-        .backoff_multiplier = 2.0,
-        .jitter_factor = 0.1,
-        .max_attempts = 5
-    };
-    auto future = h.execute_with_retry("test", []() -> kythira::Future<int> {
-        return kythira::FutureFactory::makeFuture<int>(1);
-    }, bad);
+    kythira::error_handler<int>::retry_policy bad{.initial_delay = std::chrono::milliseconds{0},
+                                                  .max_delay = std::chrono::milliseconds{1000},
+                                                  .backoff_multiplier = 2.0,
+                                                  .jitter_factor = 0.1,
+                                                  .max_attempts = 5};
+    auto future = h.execute_with_retry(
+        "test", []() -> kythira::Future<int> { return kythira::FutureFactory::makeFuture<int>(1); },
+        bad);
     BOOST_CHECK_THROW(std::move(future).get(), std::invalid_argument);
 }
 
-BOOST_AUTO_TEST_CASE(permanent_failure_no_retry, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(permanent_failure_no_retry, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
     // Set a policy with many attempts
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{10},
-        .max_delay = std::chrono::milliseconds{100},
-        .backoff_multiplier = 2.0,
-        .jitter_factor = 0.0,
-        .max_attempts = 10
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{10},
+                                                .max_delay = std::chrono::milliseconds{100},
+                                                .backoff_multiplier = 2.0,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 10};
     h.set_retry_policy("test_permanent", p);
 
     int call_count = 0;
     auto future = h.execute_with_retry("test_permanent", [&call_count]() -> kythira::Future<int> {
         ++call_count;
-        return kythira::FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("disk full"));
+        return kythira::FutureFactory::makeExceptionalFuture<int>(std::runtime_error("disk full"));
     });
     BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     // Permanent failure → should not retry
     BOOST_CHECK_EQUAL(call_count, 1);
 }
 
-BOOST_AUTO_TEST_CASE(exhausted_retries, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(exhausted_retries, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 2
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 2};
     h.set_retry_policy("exhausted_op", p);
 
     int call_count = 0;
@@ -453,15 +440,13 @@ BOOST_AUTO_TEST_CASE(exhausted_retries, * boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(call_count, 2);  // initial + 1 retry = 2 attempts
 }
 
-BOOST_AUTO_TEST_CASE(serialization_timeout_no_retry, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(serialization_timeout_no_retry, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 10
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 10};
     h.set_retry_policy("ser_timeout_op", p);
 
     int call_count = 0;
@@ -474,15 +459,13 @@ BOOST_AUTO_TEST_CASE(serialization_timeout_no_retry, * boost::unit_test::timeout
     BOOST_CHECK_EQUAL(call_count, 1);
 }
 
-BOOST_AUTO_TEST_CASE(network_timeout_retries_with_backoff, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_timeout_retries_with_backoff, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 3};
     h.set_retry_policy("net_timeout_op", p);
 
     int call_count = 0;
@@ -499,15 +482,13 @@ BOOST_AUTO_TEST_CASE(network_timeout_retries_with_backoff, * boost::unit_test::t
     BOOST_CHECK_EQUAL(call_count, 3);
 }
 
-BOOST_AUTO_TEST_CASE(connection_failure_timeout_retries, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connection_failure_timeout_retries, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 3};
     h.set_retry_policy("conn_fail_op", p);
 
     int call_count = 0;
@@ -523,15 +504,13 @@ BOOST_AUTO_TEST_CASE(connection_failure_timeout_retries, * boost::unit_test::tim
     BOOST_CHECK_EQUAL(result, 77);
 }
 
-BOOST_AUTO_TEST_CASE(network_delay_timeout_retries, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_delay_timeout_retries, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 3};
     h.set_retry_policy("delay_op", p);
 
     int call_count = 0;
@@ -547,22 +526,21 @@ BOOST_AUTO_TEST_CASE(network_delay_timeout_retries, * boost::unit_test::timeout(
     BOOST_CHECK_EQUAL(result, 55);
 }
 
-BOOST_AUTO_TEST_CASE(unknown_timeout_retries, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(unknown_timeout_retries, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{1},
-        .max_delay = std::chrono::milliseconds{5},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{1},
+                                                .max_delay = std::chrono::milliseconds{5},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 3};
     h.set_retry_policy("unk_timeout_op", p);
 
     int call_count = 0;
     auto future = h.execute_with_retry("unk_timeout_op", [&call_count]() -> kythira::Future<int> {
         ++call_count;
         if (call_count < 2) {
-            // "time_out" keyword → network_timeout classification → unknown_timeout type (no matching sub-keyword)
+            // "time_out" keyword → network_timeout classification → unknown_timeout type (no
+            // matching sub-keyword)
             return kythira::FutureFactory::makeExceptionalFuture<int>(
                 std::runtime_error("time_out error occurred"));
         }
@@ -578,25 +556,53 @@ BOOST_AUTO_TEST_SUITE(stream_operators_suite)
 
 BOOST_AUTO_TEST_CASE(error_type_stream) {
     std::ostringstream oss;
-    oss << kythira::error_type::network_timeout;      BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::network_unreachable;   BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::connection_refused;    BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::serialization_error;   BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::protocol_error;        BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::temporary_failure;     BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::permanent_failure;     BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::error_type::unknown_error;         BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << static_cast<kythira::error_type>(999);     BOOST_CHECK(!oss.str().empty());
+    oss << kythira::error_type::network_timeout;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::network_unreachable;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::connection_refused;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::serialization_error;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::protocol_error;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::temporary_failure;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::permanent_failure;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::error_type::unknown_error;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << static_cast<kythira::error_type>(999);
+    BOOST_CHECK(!oss.str().empty());
 }
 
 BOOST_AUTO_TEST_CASE(timeout_type_stream) {
     std::ostringstream oss;
-    oss << kythira::timeout_type::network_delay;          BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::timeout_type::network_timeout;        BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::timeout_type::connection_failure;     BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::timeout_type::serialization_timeout;  BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << kythira::timeout_type::unknown_timeout;        BOOST_CHECK(!oss.str().empty()); oss.str("");
-    oss << static_cast<kythira::timeout_type>(999);      BOOST_CHECK(!oss.str().empty());
+    oss << kythira::timeout_type::network_delay;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::timeout_type::network_timeout;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::timeout_type::connection_failure;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::timeout_type::serialization_timeout;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << kythira::timeout_type::unknown_timeout;
+    BOOST_CHECK(!oss.str().empty());
+    oss.str("");
+    oss << static_cast<kythira::timeout_type>(999);
+    BOOST_CHECK(!oss.str().empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -622,13 +628,11 @@ BOOST_AUTO_TEST_CASE(get_install_snapshot_handler) {
 }
 
 BOOST_AUTO_TEST_CASE(configure_all_handlers) {
-    kythira::error_handler<int>::retry_policy p{
-        .initial_delay = std::chrono::milliseconds{50},
-        .max_delay = std::chrono::milliseconds{500},
-        .backoff_multiplier = 2.0,
-        .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+    kythira::error_handler<int>::retry_policy p{.initial_delay = std::chrono::milliseconds{50},
+                                                .max_delay = std::chrono::milliseconds{500},
+                                                .backoff_multiplier = 2.0,
+                                                .jitter_factor = 0.0,
+                                                .max_attempts = 3};
     // Should not throw
     BOOST_CHECK_NO_THROW(kythira::raft_error_handler<>::configure_all_handlers(p, p, p, p));
 }

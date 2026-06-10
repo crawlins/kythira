@@ -9,14 +9,14 @@
 #include <cstddef>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_term = 1000000;
-    constexpr std::uint64_t max_index = 1000000;
-    constexpr std::uint64_t max_node_id = 10000;
-    constexpr std::size_t max_log_entries = 50;
-    constexpr std::size_t max_command_size = 100;
-    constexpr std::size_t max_snapshot_data_size = 1000;
-    constexpr std::size_t max_config_nodes = 10;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_term = 1000000;
+constexpr std::uint64_t max_index = 1000000;
+constexpr std::uint64_t max_node_id = 10000;
+constexpr std::size_t max_log_entries = 50;
+constexpr std::size_t max_command_size = 100;
+constexpr std::size_t max_snapshot_data_size = 1000;
+constexpr std::size_t max_config_nodes = 10;
 }
 
 // Helper to generate random term
@@ -120,16 +120,12 @@ auto generate_random_snapshot(std::mt19937& rng) -> kythira::snapshot<> {
 
 // Helper to compare log entries
 auto log_entries_equal(const kythira::log_entry<>& a, const kythira::log_entry<>& b) -> bool {
-    return a.term() == b.term() &&
-           a.index() == b.index() &&
-           a.command() == b.command();
+    return a.term() == b.term() && a.index() == b.index() && a.command() == b.command();
 }
 
 // Helper to compare cluster configurations
-auto cluster_configurations_equal(
-    const kythira::cluster_configuration<>& a,
-    const kythira::cluster_configuration<>& b
-) -> bool {
+auto cluster_configurations_equal(const kythira::cluster_configuration<>& a,
+                                  const kythira::cluster_configuration<>& b) -> bool {
     if (a.nodes() != b.nodes()) {
         return false;
     }
@@ -177,7 +173,7 @@ BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
             if (loaded_term != original_term) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Term mismatch - original: "
-                    << original_term << ", loaded: " << loaded_term);
+                                                << original_term << ", loaded: " << loaded_term);
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -185,8 +181,8 @@ BOOST_AUTO_TEST_CASE(property_current_term_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("Current term round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Current term round-trip: " << (property_test_iterations - failures) << "/"
+                                                   << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -224,8 +220,8 @@ BOOST_AUTO_TEST_CASE(property_voted_for_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("VotedFor round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("VotedFor round-trip: " << (property_test_iterations - failures) << "/"
+                                               << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -263,8 +259,8 @@ BOOST_AUTO_TEST_CASE(property_log_entry_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("Log entry round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Log entry round-trip: " << (property_test_iterations - failures) << "/"
+                                                << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -305,13 +301,15 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
             }
 
             // Retrieve the range
-            auto loaded_entries = engine.get_log_entries(start_index, start_index + entry_count - 1);
+            auto loaded_entries =
+                engine.get_log_entries(start_index, start_index + entry_count - 1);
 
             // Verify they match
             if (loaded_entries.size() != original_entries.size()) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Entry count mismatch - expected: "
-                    << original_entries.size() << ", got: " << loaded_entries.size());
+                                                << original_entries.size()
+                                                << ", got: " << loaded_entries.size());
             } else {
                 bool all_match = true;
                 for (std::size_t j = 0; j < original_entries.size(); ++j) {
@@ -331,8 +329,9 @@ BOOST_AUTO_TEST_CASE(property_log_entries_range_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("Log entries range round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Log entries range round-trip: " << (property_test_iterations - failures)
+                                                        << "/" << property_test_iterations
+                                                        << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -360,7 +359,8 @@ BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
             auto loaded_snapshot = engine.load_snapshot();
 
             // Verify they match
-            if (!loaded_snapshot.has_value() || !snapshots_equal(*loaded_snapshot, original_snapshot)) {
+            if (!loaded_snapshot.has_value() ||
+                !snapshots_equal(*loaded_snapshot, original_snapshot)) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Snapshot mismatch");
             }
@@ -370,8 +370,8 @@ BOOST_AUTO_TEST_CASE(property_snapshot_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("Snapshot round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Snapshot round-trip: " << (property_test_iterations - failures) << "/"
+                                               << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -422,7 +422,8 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
             auto loaded_term = engine.load_current_term();
             auto loaded_node_id = engine.load_voted_for();
             auto loaded_snapshot = engine.load_snapshot();
-            auto loaded_entries = engine.get_log_entries(start_index, start_index + entry_count - 1);
+            auto loaded_entries =
+                engine.get_log_entries(start_index, start_index + entry_count - 1);
 
             // Verify everything matches
             bool state_matches = true;
@@ -437,7 +438,8 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
                 BOOST_TEST_MESSAGE("Iteration " << i << ": VotedFor mismatch");
             }
 
-            if (!loaded_snapshot.has_value() || !snapshots_equal(*loaded_snapshot, original_snapshot)) {
+            if (!loaded_snapshot.has_value() ||
+                !snapshots_equal(*loaded_snapshot, original_snapshot)) {
                 state_matches = false;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Snapshot mismatch");
             }
@@ -464,7 +466,7 @@ BOOST_AUTO_TEST_CASE(property_complete_state_round_trip) {
         }
     }
 
-    BOOST_TEST_MESSAGE("Complete state round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Complete state round-trip: " << (property_test_iterations - failures) << "/"
+                                                     << property_test_iterations << " passed");
     BOOST_CHECK_EQUAL(failures, 0);
 }

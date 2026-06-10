@@ -27,13 +27,13 @@ namespace examples {
 
 // Example constants
 namespace {
-    constexpr int example_value = 42;
-    constexpr int example_multiplier = 2;
-    constexpr std::chrono::milliseconds example_delay{100};
-    constexpr std::chrono::seconds example_timeout{5};
-    constexpr const char* example_message = "Hello, Concepts!";
-    constexpr const char* example_error_message = "Example error occurred";
-    constexpr std::size_t thread_pool_size = 4;
+constexpr int example_value = 42;
+constexpr int example_multiplier = 2;
+constexpr std::chrono::milliseconds example_delay{100};
+constexpr std::chrono::seconds example_timeout{5};
+constexpr const char* example_message = "Hello, Concepts!";
+constexpr const char* example_error_message = "Example error occurred";
+constexpr std::size_t thread_pool_size = 4;
 }
 
 //=============================================================================
@@ -62,9 +62,8 @@ auto demonstrate_try_concept() -> void {
     std::cout << "Success case result: " << result1 << "\n";
 
     // Error case
-    kythira::Try<int> error_try = kythira::Try<int>(
-        folly::exception_wrapper(std::runtime_error(example_error_message))
-    );
+    kythira::Try<int> error_try =
+        kythira::Try<int>(folly::exception_wrapper(std::runtime_error(example_error_message)));
     auto result2 = extract_value_safely(error_try, -1);
     std::cout << "Error case result: " << result2 << "\n";
 }
@@ -76,8 +75,7 @@ auto demonstrate_try_concept() -> void {
 /**
  * Generic function that works with any Future-like type
  */
-template<kythira::future<int> FutureType>
-auto process_async_result(FutureType future) -> int {
+template<kythira::future<int> FutureType> auto process_async_result(FutureType future) -> int {
     std::cout << "Processing future...\n";
 
     if (future.isReady()) {
@@ -125,7 +123,8 @@ auto demonstrate_future_concept() -> void {
  * Generic function that works with any Promise-like type
  */
 template<kythira::promise<std::string> PromiseType>
-auto create_greeting_future(PromiseType promise, const std::string& name) -> kythira::Future<std::string> {
+auto create_greeting_future(PromiseType promise, const std::string& name)
+    -> kythira::Future<std::string> {
     // Get future before fulfilling promise
     auto folly_future = promise.getFuture();
     auto future = kythira::Future<std::string>(std::move(folly_future));
@@ -148,7 +147,7 @@ template<kythira::semi_promise<int> SemiPromiseType>
 auto fulfill_computation(SemiPromiseType& promise, int input) -> void {
     try {
         if (!promise.isFulfilled()) {
-            int result = input * input; // Simple computation
+            int result = input * input;  // Simple computation
             promise.setValue(result);
         }
     } catch (const std::exception& e) {
@@ -190,8 +189,8 @@ auto schedule_parallel_work(ExecutorType& executor, int num_tasks) -> void {
     for (int i = 0; i < num_tasks; ++i) {
         executor.add([i]() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            std::cout << "Task " << i << " completed on thread "
-                      << std::this_thread::get_id() << "\n";
+            std::cout << "Task " << i << " completed on thread " << std::this_thread::get_id()
+                      << "\n";
         });
     }
 }
@@ -235,8 +234,7 @@ auto demonstrate_executor_concepts() -> void {
 /**
  * Complex example combining multiple concepts
  */
-template<kythira::future<int> FutureType,
-         kythira::executor ExecutorType>
+template<kythira::future<int> FutureType, kythira::executor ExecutorType>
 auto process_batch_async(std::vector<int> inputs, ExecutorType& executor) -> std::vector<int> {
     std::cout << "Processing batch of " << inputs.size() << " items\n";
 
@@ -321,7 +319,7 @@ auto demonstrate_concept_validation() -> void {
     std::cout << "Note: Kythira wrappers support void types properly.\n";
 }
 
-} // namespace examples
+}  // namespace examples
 
 //=============================================================================
 // Main function to run all examples

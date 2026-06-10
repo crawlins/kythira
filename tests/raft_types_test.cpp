@@ -162,8 +162,9 @@ BOOST_AUTO_TEST_CASE(test_request_vote_request_default_implementation) {
     using request_t = kythira::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t>;
 
     // Verify it satisfies the concept
-    static_assert(kythira::request_vote_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
-                  "request_vote_request should satisfy request_vote_request_type concept");
+    static_assert(
+        kythira::request_vote_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
+        "request_vote_request should satisfy request_vote_request_type concept");
 
     // Create a request
     request_t req{5, 123, 100, 4};
@@ -196,10 +197,12 @@ BOOST_AUTO_TEST_CASE(test_request_vote_response_default_implementation) {
 // Test append_entries_request default implementation
 BOOST_AUTO_TEST_CASE(test_append_entries_request_default_implementation) {
     using log_entry_t = kythira::log_entry<std::uint64_t, std::uint64_t>;
-    using request_t = kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>;
+    using request_t =
+        kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>;
 
     // Verify it satisfies the concept
-    static_assert(kythira::append_entries_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t, log_entry_t>,
+    static_assert(kythira::append_entries_request_type<request_t, std::uint64_t, std::uint64_t,
+                                                       std::uint64_t, log_entry_t>,
                   "append_entries_request should satisfy append_entries_request_type concept");
 
     // Create entries
@@ -247,10 +250,12 @@ BOOST_AUTO_TEST_CASE(test_append_entries_response_default_implementation) {
 
 // Test install_snapshot_request default implementation
 BOOST_AUTO_TEST_CASE(test_install_snapshot_request_default_implementation) {
-    using request_t = kythira::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using request_t =
+        kythira::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t>;
 
     // Verify it satisfies the concept
-    static_assert(kythira::install_snapshot_request_type<request_t, std::uint64_t, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::install_snapshot_request_type<request_t, std::uint64_t, std::uint64_t,
+                                                         std::uint64_t>,
                   "install_snapshot_request should satisfy install_snapshot_request_type concept");
 
     // Create snapshot data
@@ -277,8 +282,9 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_response_default_implementation) {
     using response_t = kythira::install_snapshot_response<std::uint64_t>;
 
     // Verify it satisfies the concept
-    static_assert(kythira::install_snapshot_response_type<response_t, std::uint64_t>,
-                  "install_snapshot_response should satisfy install_snapshot_response_type concept");
+    static_assert(
+        kythira::install_snapshot_response_type<response_t, std::uint64_t>,
+        "install_snapshot_response should satisfy install_snapshot_response_type concept");
 
     // Create a response
     response_t resp{5};
@@ -288,16 +294,23 @@ BOOST_AUTO_TEST_CASE(test_install_snapshot_response_default_implementation) {
 
 // Test RPC message types with string node IDs
 BOOST_AUTO_TEST_CASE(test_rpc_messages_with_string_node_ids) {
-    using request_vote_req_t = kythira::request_vote_request<std::string, std::uint64_t, std::uint64_t>;
-    using append_entries_req_t = kythira::append_entries_request<std::string, std::uint64_t, std::uint64_t>;
-    using install_snapshot_req_t = kythira::install_snapshot_request<std::string, std::uint64_t, std::uint64_t>;
+    using request_vote_req_t =
+        kythira::request_vote_request<std::string, std::uint64_t, std::uint64_t>;
+    using append_entries_req_t =
+        kythira::append_entries_request<std::string, std::uint64_t, std::uint64_t>;
+    using install_snapshot_req_t =
+        kythira::install_snapshot_request<std::string, std::uint64_t, std::uint64_t>;
 
     // Verify they satisfy the concepts
-    static_assert(kythira::request_vote_request_type<request_vote_req_t, std::string, std::uint64_t, std::uint64_t>,
+    static_assert(kythira::request_vote_request_type<request_vote_req_t, std::string, std::uint64_t,
+                                                     std::uint64_t>,
                   "request_vote_request should work with string node IDs");
-    static_assert(kythira::append_entries_request_type<append_entries_req_t, std::string, std::uint64_t, std::uint64_t, kythira::log_entry<>>,
-                  "append_entries_request should work with string node IDs");
-    static_assert(kythira::install_snapshot_request_type<install_snapshot_req_t, std::string, std::uint64_t, std::uint64_t>,
+    static_assert(
+        kythira::append_entries_request_type<append_entries_req_t, std::string, std::uint64_t,
+                                             std::uint64_t, kythira::log_entry<>>,
+        "append_entries_request should work with string node IDs");
+    static_assert(kythira::install_snapshot_request_type<install_snapshot_req_t, std::string,
+                                                         std::uint64_t, std::uint64_t>,
                   "install_snapshot_request should work with string node IDs");
 
     // Create and test with string IDs

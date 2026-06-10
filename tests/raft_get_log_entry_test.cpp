@@ -4,14 +4,14 @@
 #include <raft/types.hpp>
 
 namespace {
-    constexpr std::uint64_t test_term = 1;
-    constexpr std::uint64_t test_index_1 = 1;
-    constexpr std::uint64_t test_index_2 = 2;
-    constexpr std::uint64_t test_index_3 = 3;
-    constexpr std::uint64_t test_index_5 = 5;
-    constexpr std::uint64_t test_index_10 = 10;
-    constexpr std::uint64_t snapshot_last_included_index = 5;
-    constexpr std::uint64_t snapshot_last_included_term = 2;
+constexpr std::uint64_t test_term = 1;
+constexpr std::uint64_t test_index_1 = 1;
+constexpr std::uint64_t test_index_2 = 2;
+constexpr std::uint64_t test_index_3 = 3;
+constexpr std::uint64_t test_index_5 = 5;
+constexpr std::uint64_t test_index_10 = 10;
+constexpr std::uint64_t snapshot_last_included_index = 5;
+constexpr std::uint64_t snapshot_last_included_term = 2;
 }
 
 // Test fixture for get_log_entry tests
@@ -20,28 +20,25 @@ namespace {
 struct get_log_entry_fixture {
     using log_entry_type = kythira::log_entry<std::uint64_t, std::uint64_t>;
     using snapshot_type = kythira::snapshot<std::uint64_t, std::uint64_t, std::uint64_t>;
-    using persistence_type = kythira::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t>;
+    using persistence_type =
+        kythira::memory_persistence_engine<std::uint64_t, std::uint64_t, std::uint64_t>;
 
     persistence_type persistence;
 
     auto add_log_entry(std::uint64_t index, std::uint64_t term) -> void {
-        log_entry_type entry{
-            ._term = term,
-            ._index = index,
-            ._command = std::vector<std::byte>{std::byte{0x01}, std::byte{0x02}}
-        };
+        log_entry_type entry{._term = term,
+                             ._index = index,
+                             ._command = std::vector<std::byte>{std::byte{0x01}, std::byte{0x02}}};
         persistence.append_log_entry(entry);
     }
 
-    auto create_snapshot(std::uint64_t last_included_index, std::uint64_t last_included_term) -> void {
+    auto create_snapshot(std::uint64_t last_included_index, std::uint64_t last_included_term)
+        -> void {
         snapshot_type snap{
             ._last_included_index = last_included_index,
             ._last_included_term = last_included_term,
-            ._configuration = kythira::cluster_configuration<std::uint64_t>{
-                ._nodes = {1}
-            },
-            ._state_machine_state = std::vector<std::byte>{std::byte{0xFF}}
-        };
+            ._configuration = kythira::cluster_configuration<std::uint64_t>{._nodes = {1}},
+            ._state_machine_state = std::vector<std::byte>{std::byte{0xFF}}};
         persistence.save_snapshot(snap);
     }
 
@@ -73,10 +70,10 @@ struct get_log_entry_fixture {
     }
 };
 
-BOOST_FIXTURE_TEST_SUITE(get_log_entry_tests, get_log_entry_fixture, * boost::unit_test::timeout(30))
+BOOST_FIXTURE_TEST_SUITE(get_log_entry_tests, get_log_entry_fixture, *boost::unit_test::timeout(30))
 
 // Test retrieval of existing entries
-BOOST_AUTO_TEST_CASE(test_retrieve_existing_entry, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_retrieve_existing_entry, *boost::unit_test::timeout(15)) {
     // Add some log entries
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_2, test_term);
@@ -100,7 +97,7 @@ BOOST_AUTO_TEST_CASE(test_retrieve_existing_entry, * boost::unit_test::timeout(1
 }
 
 // Test handling of snapshot-compacted entries
-BOOST_AUTO_TEST_CASE(test_snapshot_compacted_entries, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_snapshot_compacted_entries, *boost::unit_test::timeout(15)) {
     // Add log entries
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_2, test_term);
@@ -133,7 +130,7 @@ BOOST_AUTO_TEST_CASE(test_snapshot_compacted_entries, * boost::unit_test::timeou
 }
 
 // Test out-of-bounds indices
-BOOST_AUTO_TEST_CASE(test_out_of_bounds_indices, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_out_of_bounds_indices, *boost::unit_test::timeout(15)) {
     // Add some log entries
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_2, test_term);
@@ -153,7 +150,7 @@ BOOST_AUTO_TEST_CASE(test_out_of_bounds_indices, * boost::unit_test::timeout(15)
 }
 
 // Test edge case: empty log
-BOOST_AUTO_TEST_CASE(test_empty_log, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_empty_log, *boost::unit_test::timeout(15)) {
     // Don't add any entries
 
     // Any index should return nullopt
@@ -165,7 +162,7 @@ BOOST_AUTO_TEST_CASE(test_empty_log, * boost::unit_test::timeout(15)) {
 }
 
 // Test edge case: single entry
-BOOST_AUTO_TEST_CASE(test_single_entry, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_single_entry, *boost::unit_test::timeout(15)) {
     // Add only one entry
     add_log_entry(test_index_1, test_term);
 
@@ -184,7 +181,7 @@ BOOST_AUTO_TEST_CASE(test_single_entry, * boost::unit_test::timeout(15)) {
 }
 
 // Test edge case: sparse log (non-contiguous indices)
-BOOST_AUTO_TEST_CASE(test_sparse_log, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_sparse_log, *boost::unit_test::timeout(15)) {
     // Add entries with gaps
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_3, test_term);
@@ -212,7 +209,7 @@ BOOST_AUTO_TEST_CASE(test_sparse_log, * boost::unit_test::timeout(15)) {
 }
 
 // Test snapshot at boundary
-BOOST_AUTO_TEST_CASE(test_snapshot_at_boundary, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_snapshot_at_boundary, *boost::unit_test::timeout(15)) {
     // Add entries
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_2, test_term);
@@ -235,7 +232,7 @@ BOOST_AUTO_TEST_CASE(test_snapshot_at_boundary, * boost::unit_test::timeout(15))
 }
 
 // Test multiple snapshots (only latest matters)
-BOOST_AUTO_TEST_CASE(test_multiple_snapshots, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_multiple_snapshots, *boost::unit_test::timeout(15)) {
     // Add entries
     add_log_entry(test_index_1, test_term);
     add_log_entry(test_index_2, test_term);

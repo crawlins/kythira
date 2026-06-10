@@ -30,9 +30,9 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test_message";
-    constexpr auto test_timeout = std::chrono::milliseconds{100};
+constexpr int test_value = 42;
+constexpr const char* test_string = "test_message";
+constexpr auto test_timeout = std::chrono::milliseconds{100};
 }
 
 BOOST_AUTO_TEST_SUITE(existing_wrapper_integration_tests)
@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_SUITE(existing_wrapper_integration_tests)
  *
  * Requirements: 10.1, 10.2, 10.3
  */
-BOOST_AUTO_TEST_CASE(existing_future_wrapper_basic_functionality, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(existing_future_wrapper_basic_functionality, *boost::unit_test::timeout(30)) {
     // Test Future construction from value
     auto value_future = kythira::Future<int>(test_value);
     BOOST_CHECK(value_future.isReady());
@@ -72,13 +72,12 @@ BOOST_AUTO_TEST_CASE(existing_future_wrapper_basic_functionality, * boost::unit_
  *
  * Requirements: 10.2, 10.4
  */
-BOOST_AUTO_TEST_CASE(future_chaining_transformation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_chaining_transformation, *boost::unit_test::timeout(30)) {
     // Test future chaining with then()
     auto initial_future = kythira::Future<int>(test_value);
 
-    auto string_future = initial_future.then([](int val) -> std::string {
-        return "Value: " + std::to_string(val);
-    });
+    auto string_future =
+        initial_future.then([](int val) -> std::string { return "Value: " + std::to_string(val); });
 
     BOOST_CHECK(string_future.isReady());
     auto result = string_future.get();
@@ -88,9 +87,7 @@ BOOST_AUTO_TEST_CASE(future_chaining_transformation, * boost::unit_test::timeout
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     auto error_future = kythira::Future<int>(ex);
 
-    auto handled_future = error_future.onError([](folly::exception_wrapper) -> int {
-        return -1;
-    });
+    auto handled_future = error_future.onError([](folly::exception_wrapper) -> int { return -1; });
 
     BOOST_CHECK(handled_future.isReady());
     BOOST_CHECK_EQUAL(handled_future.get(), -1);
@@ -103,7 +100,7 @@ BOOST_AUTO_TEST_CASE(future_chaining_transformation, * boost::unit_test::timeout
  *
  * Requirements: 10.1, 10.3
  */
-BOOST_AUTO_TEST_CASE(void_future_handling, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(void_future_handling, *boost::unit_test::timeout(15)) {
     // Test void Future construction
     auto void_future = kythira::Future<void>();
     BOOST_CHECK(void_future.isReady());
@@ -117,9 +114,7 @@ BOOST_AUTO_TEST_CASE(void_future_handling, * boost::unit_test::timeout(15)) {
 
     // Test void Future chaining - create a new future for chaining
     auto fresh_void_future = kythira::Future<void>();
-    auto chained_future = std::move(fresh_void_future).then([]() -> int {
-        return test_value;
-    });
+    auto chained_future = std::move(fresh_void_future).then([]() -> int { return test_value; });
 
     BOOST_CHECK(chained_future.isReady());
     BOOST_CHECK_EQUAL(chained_future.get(), test_value);
@@ -137,7 +132,7 @@ BOOST_AUTO_TEST_SUITE(collective_operations_integration_tests)
  *
  * Requirements: 10.2, 10.3
  */
-BOOST_AUTO_TEST_CASE(collective_operations_basic, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(collective_operations_basic, *boost::unit_test::timeout(30)) {
     // Create multiple futures
     std::vector<kythira::Future<int>> futures;
     futures.emplace_back(kythira::Future<int>(1));
@@ -166,7 +161,7 @@ BOOST_AUTO_TEST_CASE(collective_operations_basic, * boost::unit_test::timeout(30
  *
  * Requirements: 10.2, 10.4
  */
-BOOST_AUTO_TEST_CASE(mixed_future_types_collective, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(mixed_future_types_collective, *boost::unit_test::timeout(30)) {
     std::vector<kythira::Future<int>> mixed_futures;
 
     // Add ready futures created directly
@@ -201,7 +196,7 @@ BOOST_AUTO_TEST_SUITE(try_wrapper_integration_tests)
  *
  * Requirements: 10.1, 10.3
  */
-BOOST_AUTO_TEST_CASE(try_wrapper_basic_functionality, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_wrapper_basic_functionality, *boost::unit_test::timeout(15)) {
     // Test Try with value
     auto value_try = kythira::Try<int>(test_value);
     BOOST_CHECK(value_try.has_value());
@@ -229,7 +224,7 @@ BOOST_AUTO_TEST_CASE(try_wrapper_basic_functionality, * boost::unit_test::timeou
  *
  * Requirements: 10.1, 10.4
  */
-BOOST_AUTO_TEST_CASE(try_wrapper_different_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_wrapper_different_types, *boost::unit_test::timeout(15)) {
     // Test with string
     std::string test_str = test_string;
     auto string_try = kythira::Try<std::string>(test_str);
@@ -257,7 +252,7 @@ BOOST_AUTO_TEST_SUITE(interoperability_tests)
  *
  * Requirements: 10.2, 10.5
  */
-BOOST_AUTO_TEST_CASE(folly_interoperability, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(folly_interoperability, *boost::unit_test::timeout(30)) {
     // Test converting from folly::Future to kythira::Future and back
     auto original_folly = folly::makeFuture(test_value);
     auto wrapped = kythira::Future<int>(std::move(original_folly));
@@ -269,9 +264,10 @@ BOOST_AUTO_TEST_CASE(folly_interoperability, * boost::unit_test::timeout(30)) {
     auto cpu_executor = std::make_shared<folly::CPUThreadPoolExecutor>(1);
 
     // Create a future that uses the executor
-    auto executor_future = folly::makeFuture(test_value)
-        .via(cpu_executor.get())
-        .thenValue([](int val) { return val * 2; });
+    auto executor_future =
+        folly::makeFuture(test_value).via(cpu_executor.get()).thenValue([](int val) {
+            return val * 2;
+        });
 
     auto wrapped_executor_future = kythira::Future<int>(std::move(executor_future));
 
@@ -289,7 +285,7 @@ BOOST_AUTO_TEST_CASE(folly_interoperability, * boost::unit_test::timeout(30)) {
  *
  * Requirements: 10.1, 10.2
  */
-BOOST_AUTO_TEST_CASE(exception_type_conversion, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(exception_type_conversion, *boost::unit_test::timeout(15)) {
     // Test folly::exception_wrapper to std::exception_ptr conversion
     auto folly_ex = folly::exception_wrapper(std::runtime_error(test_string));
     auto try_with_folly_ex = kythira::Try<int>(folly_ex);
@@ -326,7 +322,7 @@ BOOST_AUTO_TEST_SUITE(regression_prevention_tests)
  *
  * Requirements: 10.3, 10.5
  */
-BOOST_AUTO_TEST_CASE(existing_functionality_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(existing_functionality_preservation, *boost::unit_test::timeout(30)) {
     // Test all existing Future construction methods still work
 
     // 1. Direct value construction
@@ -370,7 +366,7 @@ BOOST_AUTO_TEST_CASE(existing_functionality_preservation, * boost::unit_test::ti
  *
  * Requirements: 10.3, 10.5
  */
-BOOST_AUTO_TEST_CASE(collective_operations_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(collective_operations_preservation, *boost::unit_test::timeout(30)) {
     // Test wait_for_all still works
     std::vector<kythira::Future<int>> futures_all;
     for (int i = 1; i <= 3; ++i) {
@@ -412,7 +408,7 @@ BOOST_AUTO_TEST_SUITE(performance_integration_tests)
  *
  * Requirements: 10.5
  */
-BOOST_AUTO_TEST_CASE(wrapper_performance_impact, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(wrapper_performance_impact, *boost::unit_test::timeout(60)) {
     constexpr std::size_t num_operations = 1000;
 
     // Measure direct folly usage
@@ -420,7 +416,7 @@ BOOST_AUTO_TEST_CASE(wrapper_performance_impact, * boost::unit_test::timeout(60)
     for (std::size_t i = 0; i < num_operations; ++i) {
         auto future = folly::makeFuture(static_cast<int>(i));
         auto result = std::move(future).get();
-        (void)result; // Suppress unused variable warning
+        (void)result;  // Suppress unused variable warning
     }
     auto end_folly = std::chrono::steady_clock::now();
 
@@ -430,12 +426,14 @@ BOOST_AUTO_TEST_CASE(wrapper_performance_impact, * boost::unit_test::timeout(60)
         auto folly_future = folly::makeFuture(static_cast<int>(i));
         auto wrapper_future = kythira::Future<int>(std::move(folly_future));
         auto result = wrapper_future.get();
-        (void)result; // Suppress unused variable warning
+        (void)result;  // Suppress unused variable warning
     }
     auto end_wrapper = std::chrono::steady_clock::now();
 
-    auto folly_time = std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
-    auto wrapper_time = std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
+    auto folly_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
+    auto wrapper_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
 
     // Wrapper should not be more than 100% slower than direct folly usage
     // This is a generous threshold to account for test environment variability
@@ -445,7 +443,7 @@ BOOST_AUTO_TEST_CASE(wrapper_performance_impact, * boost::unit_test::timeout(60)
     if (folly_time.count() > 0) {
         double overhead_ratio = static_cast<double>(wrapper_time.count()) / folly_time.count();
         BOOST_TEST_MESSAGE("Overhead ratio: " << overhead_ratio);
-        BOOST_CHECK_LE(overhead_ratio, 2.0); // Allow up to 100% overhead
+        BOOST_CHECK_LE(overhead_ratio, 2.0);  // Allow up to 100% overhead
     }
 }
 
@@ -456,7 +454,7 @@ BOOST_AUTO_TEST_CASE(wrapper_performance_impact, * boost::unit_test::timeout(60)
  *
  * Requirements: 10.5
  */
-BOOST_AUTO_TEST_CASE(memory_usage_validation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(memory_usage_validation, *boost::unit_test::timeout(30)) {
     // Test that wrappers can handle large numbers of objects
     constexpr std::size_t num_futures = 1000;
     std::vector<kythira::Future<int>> futures;
@@ -514,7 +512,7 @@ auto process_generic_future(FutureType future) -> decltype(future.get()) {
     throw std::runtime_error("Future not ready");
 }
 
-BOOST_AUTO_TEST_CASE(template_function_compatibility, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(template_function_compatibility, *boost::unit_test::timeout(15)) {
     // Test with kythira::Future<int>
     auto int_future = kythira::Future<int>(test_value);
     auto result = process_generic_future(std::move(int_future));
@@ -535,17 +533,13 @@ BOOST_AUTO_TEST_CASE(template_function_compatibility, * boost::unit_test::timeou
  *
  * Requirements: 10.2, 10.4
  */
-BOOST_AUTO_TEST_CASE(chaining_compatibility, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(chaining_compatibility, *boost::unit_test::timeout(30)) {
     // Test complex chaining
     auto initial = kythira::Future<int>(test_value);
 
-    auto chained = initial
-        .then([](int val) -> std::string {
-            return "Number: " + std::to_string(val);
-        })
-        .then([](const std::string& str) -> std::size_t {
-            return str.length();
-        });
+    auto chained =
+        initial.then([](int val) -> std::string { return "Number: " + std::to_string(val); })
+            .then([](const std::string& str) -> std::size_t { return str.length(); });
 
     BOOST_CHECK(chained.isReady());
     auto result = chained.get();

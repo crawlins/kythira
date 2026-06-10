@@ -32,23 +32,23 @@
 #include <numeric>
 
 namespace {
-    // Performance test constants
-    constexpr std::size_t benchmark_iterations = 1000;
-    constexpr std::size_t concurrent_operations = 10;
-    constexpr std::size_t serialization_iterations = 10000;
+// Performance test constants
+constexpr std::size_t benchmark_iterations = 1000;
+constexpr std::size_t concurrent_operations = 10;
+constexpr std::size_t serialization_iterations = 10000;
 
-    // Test message sizes
-    constexpr std::size_t small_message_size = 64;
-    constexpr std::size_t medium_message_size = 1024;
-    constexpr std::size_t large_message_size = 8192;
+// Test message sizes
+constexpr std::size_t small_message_size = 64;
+constexpr std::size_t medium_message_size = 1024;
+constexpr std::size_t large_message_size = 8192;
 
-    // Performance thresholds
-    constexpr std::chrono::microseconds max_serialization_time{100};
-    constexpr double min_serialization_throughput = 10000.0; // ops per second
+// Performance thresholds
+constexpr std::chrono::microseconds max_serialization_time{100};
+constexpr double min_serialization_throughput = 10000.0;  // ops per second
 
-    using steady_clock = std::chrono::steady_clock;
-    using microseconds = std::chrono::microseconds;
-    using milliseconds = std::chrono::milliseconds;
+using steady_clock = std::chrono::steady_clock;
+using microseconds = std::chrono::microseconds;
+using milliseconds = std::chrono::milliseconds;
 }
 
 class PerformanceValidator {
@@ -140,13 +140,14 @@ private:
 
         double config_ops_per_second = (benchmark_iterations * 2 * 1000000.0) / duration.count();
 
-        std::cout << "  ✓ Completed " << (benchmark_iterations * 2) << " configuration operations\n";
+        std::cout << "  ✓ Completed " << (benchmark_iterations * 2)
+                  << " configuration operations\n";
         std::cout << "  ✓ Configuration performance: " << std::fixed << std::setprecision(0)
                   << config_ops_per_second << " ops/second\n";
         std::cout << "  ✓ Average configuration time: "
                   << (duration.count() / static_cast<double>(benchmark_iterations * 2)) << " μs\n";
 
-        bool passed = config_ops_per_second >= 100000.0; // 100K ops/second threshold
+        bool passed = config_ops_per_second >= 100000.0;  // 100K ops/second threshold
         if (passed) {
             std::cout << "  ✓ Configuration performance validation passed\n";
         } else {
@@ -160,7 +161,8 @@ private:
         std::cout << "\nTest 2: Serialization Performance Benchmarks\n";
 
         // Test serialization performance with different message sizes
-        std::vector<std::size_t> message_sizes = {small_message_size, medium_message_size, large_message_size};
+        std::vector<std::size_t> message_sizes = {small_message_size, medium_message_size,
+                                                  large_message_size};
         bool all_passed = true;
 
         for (auto size : message_sizes) {
@@ -172,7 +174,9 @@ private:
                 try {
                     kythira::json_serializer serializer;
                     auto serialized = serializer.serialize(request);
-                    auto deserialized = serializer.template deserialize<kythira::request_vote_request<>>(serialized);
+                    auto deserialized =
+                        serializer.template deserialize<kythira::request_vote_request<>>(
+                            serialized);
                 } catch (...) {
                     // Count serialization errors
                 }
@@ -189,7 +193,8 @@ private:
                       << ops_per_second << " ops/second\n";
             std::cout << "    - Average serialization time: " << avg_time.count() << " μs\n";
 
-            bool size_passed = ops_per_second >= min_serialization_throughput && avg_time <= max_serialization_time;
+            bool size_passed = ops_per_second >= min_serialization_throughput &&
+                               avg_time <= max_serialization_time;
             if (!size_passed) {
                 all_passed = false;
             }
@@ -210,7 +215,7 @@ private:
         // Test memory pool configuration
         kythira::coap_client_config config;
         config.enable_memory_optimization = true;
-        config.memory_pool_size = 1024 * 1024; // 1MB
+        config.memory_pool_size = 1024 * 1024;  // 1MB
 
         std::cout << "  ✓ Memory optimization enabled\n";
         std::cout << "  ✓ Memory pool size: " << (config.memory_pool_size / 1024) << " KB\n";
@@ -231,7 +236,7 @@ private:
         std::cout << "  ✓ Memory growth for 1000 requests: " << memory_growth << " KB\n";
         std::cout << "  ✓ Average memory per request: " << (memory_growth / 1000.0) << " KB\n";
 
-        bool passed = memory_growth < 1000; // Less than 1MB for 1000 requests
+        bool passed = memory_growth < 1000;  // Less than 1MB for 1000 requests
         if (passed) {
             std::cout << "  ✓ Memory optimization validation passed\n";
         } else {
@@ -256,10 +261,9 @@ private:
         std::cout << "  ✓ Session timeout: " << config.session_timeout.count() << " ms\n";
 
         // Validate configuration consistency
-        bool config_valid = config.enable_connection_pooling &&
-                           config.connection_pool_size > 0 &&
-                           config.enable_session_reuse &&
-                           config.session_timeout > std::chrono::milliseconds(0);
+        bool config_valid = config.enable_connection_pooling && config.connection_pool_size > 0 &&
+                            config.enable_session_reuse &&
+                            config.session_timeout > std::chrono::milliseconds(0);
 
         if (config_valid) {
             std::cout << "  ✓ Connection pooling configuration validation passed\n";
@@ -282,9 +286,11 @@ private:
         server_config.max_concurrent_requests = 100;
 
         std::cout << "  ✓ Client concurrent processing enabled\n";
-        std::cout << "  ✓ Client max concurrent requests: " << client_config.max_concurrent_requests << "\n";
+        std::cout << "  ✓ Client max concurrent requests: " << client_config.max_concurrent_requests
+                  << "\n";
         std::cout << "  ✓ Server concurrent processing enabled\n";
-        std::cout << "  ✓ Server max concurrent requests: " << server_config.max_concurrent_requests << "\n";
+        std::cout << "  ✓ Server max concurrent requests: " << server_config.max_concurrent_requests
+                  << "\n";
 
         // Test concurrent configuration creation
         std::vector<std::future<bool>> futures;
@@ -346,13 +352,14 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<microseconds>(end_time - start_time);
 
-        double cache_ops_per_second = (config.serialization_cache_size * 2 * 1000000.0) / duration.count();
+        double cache_ops_per_second =
+            (config.serialization_cache_size * 2 * 1000000.0) / duration.count();
 
         std::cout << "  ✓ Cache operations performance: " << std::fixed << std::setprecision(0)
                   << cache_ops_per_second << " ops/second\n";
         std::cout << "  ✓ Cache size: " << cache.size() << " entries\n";
 
-        bool passed = cache_ops_per_second >= 50000.0; // 50K ops/second threshold
+        bool passed = cache_ops_per_second >= 50000.0;  // 50K ops/second threshold
         if (passed) {
             std::cout << "  ✓ Cache optimization validation passed\n";
         } else {
@@ -370,7 +377,7 @@ private:
 
         // Test timeout configurations
         bool timeout_valid = config.ack_timeout >= std::chrono::milliseconds(100) &&
-                            config.ack_timeout <= std::chrono::milliseconds(10000);
+                             config.ack_timeout <= std::chrono::milliseconds(10000);
 
         // Test retry configurations
         bool retry_valid = config.max_retransmit >= 1 && config.max_retransmit <= 10;
@@ -415,7 +422,7 @@ private:
     auto get_estimated_memory_usage() -> std::size_t {
         // Simplified memory usage estimation
         // In a real implementation, this would use platform-specific APIs
-        return 100; // Stub implementation returns constant value in KB
+        return 100;  // Stub implementation returns constant value in KB
     }
 };
 

@@ -11,8 +11,8 @@
 #include <vector>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr const char* test_name = "type_conversion_property_test";
+constexpr std::size_t property_test_iterations = 100;
+constexpr const char* test_name = "type_conversion_property_test";
 }
 
 BOOST_AUTO_TEST_SUITE(type_conversion_property_tests)
@@ -21,9 +21,10 @@ BOOST_AUTO_TEST_SUITE(type_conversion_property_tests)
  * **Feature: folly-concept-wrappers, Property 8: Exception and Type Conversion**
  * **Validates: Requirements 8.1**
  *
- * Property: For any exception conversion operation, the system should preserve information and maintain semantic equivalence
+ * Property: For any exception conversion operation, the system should preserve information and
+ * maintain semantic equivalence
  */
-BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, *boost::unit_test::timeout(60)) {
     // Test exception conversion fidelity between folly::exception_wrapper and std::exception_ptr
 
     // Test 1: Convert std::exception_ptr to folly::exception_wrapper and back
@@ -69,13 +70,16 @@ BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, * boost::unit_test:
         folly::exception_wrapper original_ew;
         switch (i % 3) {
             case 0:
-                original_ew = folly::make_exception_wrapper<std::runtime_error>("Folly runtime error " + std::to_string(i));
+                original_ew = folly::make_exception_wrapper<std::runtime_error>(
+                    "Folly runtime error " + std::to_string(i));
                 break;
             case 1:
-                original_ew = folly::make_exception_wrapper<std::invalid_argument>("Folly invalid argument " + std::to_string(i));
+                original_ew = folly::make_exception_wrapper<std::invalid_argument>(
+                    "Folly invalid argument " + std::to_string(i));
                 break;
             case 2:
-                original_ew = folly::make_exception_wrapper<std::logic_error>("Folly logic error " + std::to_string(i));
+                original_ew = folly::make_exception_wrapper<std::logic_error>("Folly logic error " +
+                                                                              std::to_string(i));
                 break;
         }
 
@@ -113,16 +117,17 @@ BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, * boost::unit_test:
     }
 
     BOOST_TEST_MESSAGE("Exception conversion fidelity property validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 8: Exception and Type Conversion**
  * **Validates: Requirements 8.2**
  *
- * Property: For any void/Unit conversion operation, the system should maintain semantic equivalence between void and folly::Unit
+ * Property: For any void/Unit conversion operation, the system should maintain semantic equivalence
+ * between void and folly::Unit
  */
-BOOST_AUTO_TEST_CASE(property_void_unit_semantic_equivalence, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_void_unit_semantic_equivalence, *boost::unit_test::timeout(60)) {
     // Test void/Unit type mapping utilities and semantic equivalence
 
     // Test 1: Verify type mapping utilities work correctly
@@ -248,23 +253,23 @@ BOOST_AUTO_TEST_CASE(property_void_unit_semantic_equivalence, * boost::unit_test
     }
 
     BOOST_TEST_MESSAGE("Void/Unit semantic equivalence property validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 8: Exception and Type Conversion**
  * **Validates: Requirements 8.5**
  *
- * Property: For any type conversion operation, the system should avoid unnecessary copies and maintain move semantics
+ * Property: For any type conversion operation, the system should avoid unnecessary copies and
+ * maintain move semantics
  */
-BOOST_AUTO_TEST_CASE(property_move_semantics_optimization, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_move_semantics_optimization, *boost::unit_test::timeout(60)) {
     // Test move semantics optimization helpers and type conversions
 
     // Test 1: Verify should_move_v trait works correctly
     {
         // Types that should be moved (move constructible and not trivially copyable)
-        static_assert(kythira::detail::should_move_v<std::string>,
-                      "std::string should be moved");
+        static_assert(kythira::detail::should_move_v<std::string>, "std::string should be moved");
         static_assert(kythira::detail::should_move_v<std::vector<int>>,
                       "std::vector should be moved");
 
@@ -318,7 +323,7 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_optimization, * boost::unit_test::t
 
             BOOST_CHECK(try_with_copy.hasValue());
             BOOST_CHECK_EQUAL(try_with_copy.value(), original_value);
-            BOOST_CHECK_EQUAL(value_copy, original_value); // Should still have original value
+            BOOST_CHECK_EQUAL(value_copy, original_value);  // Should still have original value
         }
     }
 
@@ -347,7 +352,7 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_optimization, * boost::unit_test::t
 
             BOOST_CHECK(future_with_copy.isReady());
             BOOST_CHECK_EQUAL(future_with_copy.get(), original_value);
-            BOOST_CHECK_EQUAL(value_copy, original_value); // Should still have original value
+            BOOST_CHECK_EQUAL(value_copy, original_value);  // Should still have original value
         }
     }
 
@@ -411,7 +416,7 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_optimization, * boost::unit_test::t
     }
 
     BOOST_TEST_MESSAGE("Move semantics optimization property validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

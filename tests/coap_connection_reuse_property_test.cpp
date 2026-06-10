@@ -17,15 +17,15 @@
 using namespace kythira;
 
 namespace {
-    constexpr const char* test_endpoint_1 = "coap://node1.example.com:5683";
-    constexpr const char* test_endpoint_2 = "coap://node2.example.com:5683";
-    constexpr const char* test_endpoint_3 = "coap://node3.example.com:5683";
-    constexpr std::size_t test_pool_size = 10;
-    constexpr std::size_t test_request_count = 50;
-    constexpr std::uint64_t test_node_id_1 = 1;
-    constexpr std::uint64_t test_node_id_2 = 2;
-    constexpr std::uint64_t test_node_id_3 = 3;
-    constexpr std::chrono::milliseconds test_timeout{1000};
+constexpr const char* test_endpoint_1 = "coap://node1.example.com:5683";
+constexpr const char* test_endpoint_2 = "coap://node2.example.com:5683";
+constexpr const char* test_endpoint_3 = "coap://node3.example.com:5683";
+constexpr std::size_t test_pool_size = 10;
+constexpr std::size_t test_request_count = 50;
+constexpr std::uint64_t test_node_id_1 = 1;
+constexpr std::uint64_t test_node_id_2 = 2;
+constexpr std::uint64_t test_node_id_3 = 3;
+constexpr std::chrono::milliseconds test_timeout{1000};
 }
 
 // Define test types for CoAP transport
@@ -38,24 +38,22 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
-
 
 BOOST_AUTO_TEST_SUITE(coap_connection_reuse_property_tests)
 
 /**
  * **Feature: coap-transport, Property 13: Connection reuse optimization**
  *
- * Property: For any sequence of requests to the same target node, the client should handle multiple requests without errors.
- * Validates: Requirements 7.4
+ * Property: For any sequence of requests to the same target node, the client should handle multiple
+ * requests without errors. Validates: Requirements 7.4
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_connection_reuse_property, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(60)) {
     // Create CoAP client configuration with connection reuse enabled
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
@@ -66,21 +64,15 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, * boost::unit_test::timeout
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
         {test_node_id_1, test_endpoint_1},
         {test_node_id_2, test_endpoint_2},
-        {test_node_id_3, test_endpoint_3}
-    };
+        {test_node_id_3, test_endpoint_3}};
 
-    coap_client<test_transport_types>
-        client(endpoint_map, client_config, noop_metrics{});
+    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
     // Property: Client should handle multiple requests to the same endpoint without errors
 
     // Test 1: Multiple requests to the same endpoint should not crash
     request_vote_request<> vote_request{
-        ._term = 1,
-        ._candidate_id = 100,
-        ._last_log_index = 0,
-        ._last_log_term = 0
-    };
+        ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     std::atomic<std::size_t> successful_requests{0};
     std::atomic<std::size_t> failed_requests{0};
@@ -131,7 +123,7 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, * boost::unit_test::timeout
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_test::timeout(60)) {
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
     client_config.enable_connection_pooling = true;
@@ -139,10 +131,10 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, * boost::unit_te
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 50;
 
-    std::unordered_map<std::uint64_t, std::string> endpoint_map = {{test_node_id_1, test_endpoint_1}};
+    std::unordered_map<std::uint64_t, std::string> endpoint_map = {
+        {test_node_id_1, test_endpoint_1}};
 
-    coap_client<test_transport_types>
-        client(endpoint_map, client_config, noop_metrics{});
+    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
     // Property: Concurrent requests should be handled without crashes
 
@@ -155,18 +147,15 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, * boost::unit_te
     constexpr std::size_t operations_per_thread = 20;
 
     request_vote_request<> vote_request{
-        ._term = 1,
-        ._candidate_id = 100,
-        ._last_log_index = 0,
-        ._last_log_term = 0
-    };
+        ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     // Launch threads that concurrently send requests
     for (std::size_t t = 0; t < num_threads; ++t) {
         threads.emplace_back([&, t]() {
             for (std::size_t i = 0; i < operations_per_thread; ++i) {
                 try {
-                    auto future = client.send_request_vote(test_node_id_1, vote_request, test_timeout);
+                    auto future =
+                        client.send_request_vote(test_node_id_1, vote_request, test_timeout);
                     successful_requests.fetch_add(1);
                 } catch (const std::exception& e) {
                     // Expected for stub implementation
@@ -185,10 +174,12 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, * boost::unit_te
     BOOST_CHECK_EQUAL(errors.load(), 0);
 
     // Property 2: All operations should complete
-    BOOST_CHECK_EQUAL(successful_requests.load() + failed_requests.load(), num_threads * operations_per_thread);
+    BOOST_CHECK_EQUAL(successful_requests.load() + failed_requests.load(),
+                      num_threads * operations_per_thread);
 
     BOOST_TEST_MESSAGE("Concurrent requests: " << successful_requests.load() << " successful, "
-                      << failed_requests.load() << " failed (expected for stub)");
+                                               << failed_requests.load()
+                                               << " failed (expected for stub)");
 }
 
 /**
@@ -196,15 +187,15 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, * boost::unit_te
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test::timeout(60)) {
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 10;
 
-    std::unordered_map<std::uint64_t, std::string> endpoint_map = {{test_node_id_1, test_endpoint_1}};
+    std::unordered_map<std::uint64_t, std::string> endpoint_map = {
+        {test_node_id_1, test_endpoint_1}};
 
-    coap_client<test_transport_types>
-        client(endpoint_map, client_config, noop_metrics{});
+    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
     // Property: Concurrent slot acquisition and release should be thread-safe
 
@@ -248,13 +239,14 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, * boost::unit_tes
     BOOST_CHECK_EQUAL(errors.load(), 0);
 
     // Property 2: All operations should complete
-    BOOST_CHECK_EQUAL(successful_acquires.load() + failed_acquires.load(), num_threads * operations_per_thread);
+    BOOST_CHECK_EQUAL(successful_acquires.load() + failed_acquires.load(),
+                      num_threads * operations_per_thread);
 
     // Property 3: Some operations should have succeeded
     BOOST_CHECK_GT(successful_acquires.load(), 0);
 
     BOOST_TEST_MESSAGE("Concurrent slot management: " << successful_acquires.load() << " acquired, "
-                      << failed_acquires.load() << " failed");
+                                                      << failed_acquires.load() << " failed");
 }
 
 /**
@@ -262,25 +254,21 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, * boost::unit_tes
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test::timeout(45)) {
     // Create client with connection reuse disabled
     coap_client_config client_config;
     client_config.enable_session_reuse = false;
     client_config.enable_connection_pooling = false;
 
-    std::unordered_map<std::uint64_t, std::string> endpoint_map = {{test_node_id_1, test_endpoint_1}};
+    std::unordered_map<std::uint64_t, std::string> endpoint_map = {
+        {test_node_id_1, test_endpoint_1}};
 
-    coap_client<test_transport_types>
-        client(endpoint_map, client_config, noop_metrics{});
+    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
     // Property: When connection reuse is disabled, client should still handle requests
 
     request_vote_request<> vote_request{
-        ._term = 1,
-        ._candidate_id = 100,
-        ._last_log_index = 0,
-        ._last_log_term = 0
-    };
+        ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     // Multiple calls should not crash even without pooling
     for (std::size_t i = 0; i < 5; ++i) {
@@ -305,8 +293,9 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, * boost::unit_test
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_client_configuration_property, * boost::unit_test::timeout(45)) {
-    std::unordered_map<std::uint64_t, std::string> endpoint_map = {{test_node_id_1, test_endpoint_1}};
+BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::timeout(45)) {
+    std::unordered_map<std::uint64_t, std::string> endpoint_map = {
+        {test_node_id_1, test_endpoint_1}};
 
     // Property: Client should be constructible with memory optimization enabled
     {
@@ -315,8 +304,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, * boost::unit_test::tim
         client_config.memory_pool_size = 1024;
 
         BOOST_CHECK_NO_THROW(
-            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{})
-        );
+            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{}));
     }
 
     // Property: Client should be constructible with serialization caching enabled
@@ -326,8 +314,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, * boost::unit_test::tim
         client_config.serialization_cache_size = 100;
 
         BOOST_CHECK_NO_THROW(
-            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{})
-        );
+            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{}));
     }
 
     // Property: Client should be constructible with all optimizations enabled
@@ -340,8 +327,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, * boost::unit_test::tim
         client_config.enable_serialization_caching = true;
 
         BOOST_CHECK_NO_THROW(
-            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{})
-        );
+            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{}));
     }
 
     // Property: Client should be constructible with all optimizations disabled
@@ -354,8 +340,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, * boost::unit_test::tim
         client_config.enable_serialization_caching = false;
 
         BOOST_CHECK_NO_THROW(
-            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{})
-        );
+            coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{}));
     }
 
     BOOST_TEST_MESSAGE("Client configuration test completed successfully");

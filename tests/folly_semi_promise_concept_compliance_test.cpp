@@ -11,17 +11,18 @@
 #include <folly/ExceptionWrapper.h>
 
 namespace {
-    constexpr const char* test_name = "folly_semi_promise_concept_compliance_test";
+constexpr const char* test_name = "folly_semi_promise_concept_compliance_test";
 }
 
 BOOST_AUTO_TEST_SUITE(folly_semi_promise_concept_compliance_tests)
 
 /**
  * Test that folly::Promise<T> satisfies semi_promise concept
- * Note: Folly doesn't have a separate SemiPromise class, but Promise provides the SemiPromise interface
- * Requirements: 10.1
+ * Note: Folly doesn't have a separate SemiPromise class, but Promise provides the SemiPromise
+ * interface Requirements: 10.1
  */
-BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance,
+                     *boost::unit_test::timeout(30)) {
     // Test folly::Promise<int> satisfies semi_promise concept
     static_assert(kythira::semi_promise<folly::Promise<int>, int>,
                   "folly::Promise<int> must satisfy semi_promise concept");
@@ -34,7 +35,8 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance, * bo
     static_assert(kythira::semi_promise<folly::Promise<double>, double>,
                   "folly::Promise<double> must satisfy semi_promise concept");
 
-    // Test folly::Promise<folly::Unit> satisfies semi_promise concept (folly uses Unit instead of void)
+    // Test folly::Promise<folly::Unit> satisfies semi_promise concept (folly uses Unit instead of
+    // void)
     static_assert(kythira::semi_promise<folly::Promise<folly::Unit>, void>,
                   "folly::Promise<folly::Unit> must satisfy semi_promise concept for void type");
 
@@ -52,7 +54,8 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance, * bo
                   "folly::Promise<int*> must satisfy semi_promise concept");
 
     // Test folly::Promise with reference wrapper
-    static_assert(kythira::semi_promise<folly::Promise<std::reference_wrapper<int>>, std::reference_wrapper<int>>,
+    static_assert(kythira::semi_promise<folly::Promise<std::reference_wrapper<int>>,
+                                        std::reference_wrapper<int>>,
                   "folly::Promise<std::reference_wrapper<int>> must satisfy semi_promise concept");
 
     BOOST_TEST_MESSAGE("All folly::Promise types satisfy semi_promise concept");
@@ -61,7 +64,7 @@ BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance, * bo
 /**
  * Test runtime behavior of folly::Promise with the semi_promise concept interface
  */
-BOOST_AUTO_TEST_CASE(test_folly_promise_runtime_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_folly_promise_runtime_behavior, *boost::unit_test::timeout(30)) {
     // Test non-void Promise
     {
         folly::Promise<int> promise;

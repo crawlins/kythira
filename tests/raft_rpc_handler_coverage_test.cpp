@@ -56,52 +56,61 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
 
 struct test_raft_types {
-    using future_type  = kythira::Future<std::vector<std::byte>>;
+    using future_type = kythira::Future<std::vector<std::byte>>;
     using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type     = kythira::Try<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-    using node_id_type   = std::uint64_t;
-    using term_id_type   = std::uint64_t;
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
 
     using serialized_data_type = std::vector<std::byte>;
-    using serializer_type      = kythira::json_rpc_serializer<serialized_data_type>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-    using raft_network_types   = kythira::raft_simulator_network_types<std::string>;
-    using network_client_type  = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-    using network_server_type  = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-    using persistence_engine_type  = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-    using logger_type              = kythira::console_logger;
-    using metrics_type             = kythira::noop_metrics;
-    using membership_manager_type  = kythira::default_membership_manager<node_id_type>;
-    using state_machine_type       = kythira::test_key_value_state_machine<log_index_type>;
-    using configuration_type       = kythira::raft_configuration;
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    using configuration_type = kythira::raft_configuration;
 
-    using log_entry_type             = kythira::log_entry<term_id_type, log_index_type>;
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
     using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-    using snapshot_type              = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-    using request_vote_request_type       = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-    using request_vote_response_type      = kythira::request_vote_response<term_id_type>;
-    using append_entries_request_type     = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-    using append_entries_response_type    = kythira::append_entries_response<term_id_type, log_index_type>;
-    using install_snapshot_request_type   = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-    using install_snapshot_response_type  = kythira::install_snapshot_response<term_id_type>;
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
 };
 
-using sim_t      = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>;
-using node_t     = kythira::node<test_raft_types>;
+using sim_t = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>;
+using node_t = kythira::node<test_raft_types>;
 using net_node_t = network_simulator::NetworkNode<test_raft_types::raft_network_types>;
-using ser_t      = test_raft_types::serializer_type;
-using data_t     = test_raft_types::serialized_data_type;
+using ser_t = test_raft_types::serializer_type;
+using data_t = test_raft_types::serialized_data_type;
 
 kythira::raft_configuration fast_cfg() {
     kythira::raft_configuration c;
     c._election_timeout_min = std::chrono::milliseconds{200};
     c._election_timeout_max = std::chrono::milliseconds{400};
-    c._heartbeat_interval   = std::chrono::milliseconds{50};
-    c._rpc_timeout          = std::chrono::milliseconds{100};
+    c._heartbeat_interval = std::chrono::milliseconds{50};
+    c._rpc_timeout = std::chrono::milliseconds{100};
     return c;
 }
 
@@ -114,15 +123,11 @@ void connect(sim_t& sim, const std::string& a, const std::string& b) {
 
 // Fire a serialized RPC message from fake_peer → target_addr
 template<typename Msg>
-void fire_rpc(
-    std::shared_ptr<net_node_t> src,
-    const std::string& dst_addr,
-    const Msg& msg)
-{
+void fire_rpc(std::shared_ptr<net_node_t> src, const std::string& dst_addr, const Msg& msg) {
     ser_t ser;
     auto payload = ser.serialize(msg);
-    test_raft_types::raft_network_types::message_type nm(
-        src->address(), 0, dst_addr, 5000, payload);
+    test_raft_types::raft_network_types::message_type nm(src->address(), 0, dst_addr, 5000,
+                                                         payload);
     src->send(std::move(nm));
 }
 
@@ -137,30 +142,28 @@ bool wait_for(Pred pred, std::chrono::milliseconds deadline = std::chrono::milli
     return true;
 }
 
-} // namespace
+}  // namespace
 
 // ── Suite: handle_request_vote ────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_SUITE(handle_request_vote_suite)
 
-BOOST_AUTO_TEST_CASE(follower_grants_vote_for_higher_term, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(follower_grants_vote_for_higher_term, *boost::unit_test::timeout(15)) {
     sim_t sim;
     sim.start();
 
-    auto net1 = sim.create_node("1");   // raft node under test
-    auto net2 = sim.create_node("2");   // fake peer / "candidate"
+    auto net1 = sim.create_node("1");  // raft node under test
+    auto net2 = sim.create_node("2");  // fake peer / "candidate"
     connect(sim, "1", "2");
 
-    node_t raft1{
-        1,
-        test_raft_types::network_client_type{net1, ser_t{}},
-        test_raft_types::network_server_type{net1, ser_t{}},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        fast_cfg()
-    };
+    node_t raft1{1,
+                 test_raft_types::network_client_type{net1, ser_t{}},
+                 test_raft_types::network_server_type{net1, ser_t{}},
+                 test_raft_types::persistence_engine_type{},
+                 kythira::console_logger{kythira::log_level::error},
+                 test_raft_types::metrics_type{},
+                 test_raft_types::membership_manager_type{},
+                 fast_cfg()};
     raft1.start();
 
     // Confirm follower state before sending
@@ -169,20 +172,20 @@ BOOST_AUTO_TEST_CASE(follower_grants_vote_for_higher_term, * boost::unit_test::t
 
     // Send RequestVote from peer 2 with term=1 (higher than follower's term=0)
     test_raft_types::request_vote_request_type req;
-    req._term           = 1;
-    req._candidate_id   = 2;
+    req._term = 1;
+    req._candidate_id = 2;
     req._last_log_index = 0;
-    req._last_log_term  = 0;
+    req._last_log_term = 0;
     fire_rpc(net2, "1", req);
 
     // The follower should update its term to 1 after processing the vote request
-    BOOST_CHECK(wait_for([&]{ return raft1.get_current_term() >= 1u; }));
+    BOOST_CHECK(wait_for([&] { return raft1.get_current_term() >= 1u; }));
     BOOST_CHECK_GE(raft1.get_current_term(), 1u);
 
     raft1.stop();
 }
 
-BOOST_AUTO_TEST_CASE(follower_rejects_lower_term_vote, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(follower_rejects_lower_term_vote, *boost::unit_test::timeout(15)) {
     sim_t sim;
     sim.start();
 
@@ -190,33 +193,31 @@ BOOST_AUTO_TEST_CASE(follower_rejects_lower_term_vote, * boost::unit_test::timeo
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{
-        1,
-        test_raft_types::network_client_type{net1, ser_t{}},
-        test_raft_types::network_server_type{net1, ser_t{}},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        fast_cfg()
-    };
+    node_t raft1{1,
+                 test_raft_types::network_client_type{net1, ser_t{}},
+                 test_raft_types::network_server_type{net1, ser_t{}},
+                 test_raft_types::persistence_engine_type{},
+                 kythira::console_logger{kythira::log_level::error},
+                 test_raft_types::metrics_type{},
+                 test_raft_types::membership_manager_type{},
+                 fast_cfg()};
     raft1.start();
 
     // First, artificially advance the follower to term 3 by sending a higher-term vote request
     test_raft_types::request_vote_request_type req_high;
-    req_high._term           = 3;
-    req_high._candidate_id   = 2;
+    req_high._term = 3;
+    req_high._candidate_id = 2;
     req_high._last_log_index = 0;
-    req_high._last_log_term  = 0;
+    req_high._last_log_term = 0;
     fire_rpc(net2, "1", req_high);
-    BOOST_CHECK(wait_for([&]{ return raft1.get_current_term() >= 3u; }));
+    BOOST_CHECK(wait_for([&] { return raft1.get_current_term() >= 3u; }));
 
     // Now send a stale vote request with term=1 (lower than current)
     test_raft_types::request_vote_request_type req_low;
-    req_low._term           = 1;
-    req_low._candidate_id   = 2;
+    req_low._term = 1;
+    req_low._candidate_id = 2;
     req_low._last_log_index = 0;
-    req_low._last_log_term  = 0;
+    req_low._last_log_term = 0;
     fire_rpc(net2, "1", req_low);
 
     // Term should remain 3 (no regression)
@@ -232,39 +233,37 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(handle_append_entries_suite)
 
-BOOST_AUTO_TEST_CASE(follower_accepts_heartbeat_from_leader, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(follower_accepts_heartbeat_from_leader, *boost::unit_test::timeout(15)) {
     sim_t sim;
     sim.start();
 
-    auto net1 = sim.create_node("1");   // follower under test
-    auto net2 = sim.create_node("2");   // fake leader
+    auto net1 = sim.create_node("1");  // follower under test
+    auto net2 = sim.create_node("2");  // fake leader
     connect(sim, "1", "2");
 
-    node_t raft1{
-        1,
-        test_raft_types::network_client_type{net1, ser_t{}},
-        test_raft_types::network_server_type{net1, ser_t{}},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        fast_cfg()
-    };
+    node_t raft1{1,
+                 test_raft_types::network_client_type{net1, ser_t{}},
+                 test_raft_types::network_server_type{net1, ser_t{}},
+                 test_raft_types::persistence_engine_type{},
+                 kythira::console_logger{kythira::log_level::error},
+                 test_raft_types::metrics_type{},
+                 test_raft_types::membership_manager_type{},
+                 fast_cfg()};
     raft1.start();
     BOOST_CHECK_EQUAL(raft1.get_state(), kythira::server_state::follower);
 
     // Send an AppendEntries heartbeat (empty entries) from "leader" at term=1
     test_raft_types::append_entries_request_type heartbeat;
-    heartbeat._term           = 1;
-    heartbeat._leader_id      = 2;
+    heartbeat._term = 1;
+    heartbeat._leader_id = 2;
     heartbeat._prev_log_index = 0;
-    heartbeat._prev_log_term  = 0;
-    heartbeat._leader_commit  = 0;
+    heartbeat._prev_log_term = 0;
+    heartbeat._leader_commit = 0;
 
     fire_rpc(net2, "1", heartbeat);
 
     // Follower should update its term to 1 (recognising a valid leader heartbeat)
-    BOOST_CHECK(wait_for([&]{ return raft1.get_current_term() >= 1u; }));
+    BOOST_CHECK(wait_for([&] { return raft1.get_current_term() >= 1u; }));
     BOOST_CHECK_GE(raft1.get_current_term(), 1u);
     // Follower remains a follower when it receives a valid heartbeat
     BOOST_CHECK_EQUAL(raft1.get_state(), kythira::server_state::follower);
@@ -272,7 +271,7 @@ BOOST_AUTO_TEST_CASE(follower_accepts_heartbeat_from_leader, * boost::unit_test:
     raft1.stop();
 }
 
-BOOST_AUTO_TEST_CASE(follower_rejects_stale_append_entries, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(follower_rejects_stale_append_entries, *boost::unit_test::timeout(15)) {
     sim_t sim;
     sim.start();
 
@@ -280,27 +279,27 @@ BOOST_AUTO_TEST_CASE(follower_rejects_stale_append_entries, * boost::unit_test::
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{
-        1,
-        test_raft_types::network_client_type{net1, ser_t{}},
-        test_raft_types::network_server_type{net1, ser_t{}},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        fast_cfg()
-    };
+    node_t raft1{1,
+                 test_raft_types::network_client_type{net1, ser_t{}},
+                 test_raft_types::network_server_type{net1, ser_t{}},
+                 test_raft_types::persistence_engine_type{},
+                 kythira::console_logger{kythira::log_level::error},
+                 test_raft_types::metrics_type{},
+                 test_raft_types::membership_manager_type{},
+                 fast_cfg()};
     raft1.start();
 
     // Advance the node's term first
     test_raft_types::request_vote_request_type adv;
-    adv._term = 5; adv._candidate_id = 2;
+    adv._term = 5;
+    adv._candidate_id = 2;
     fire_rpc(net2, "1", adv);
-    BOOST_CHECK(wait_for([&]{ return raft1.get_current_term() >= 5u; }));
+    BOOST_CHECK(wait_for([&] { return raft1.get_current_term() >= 5u; }));
 
     // Send stale AppendEntries (term=1 < current term=5)
     test_raft_types::append_entries_request_type stale;
-    stale._term = 1; stale._leader_id = 2;
+    stale._term = 1;
+    stale._leader_id = 2;
     fire_rpc(net2, "1", stale);
 
     std::this_thread::sleep_for(std::chrono::milliseconds{200});
@@ -316,7 +315,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(handle_install_snapshot_suite)
 
-BOOST_AUTO_TEST_CASE(follower_processes_snapshot, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(follower_processes_snapshot, *boost::unit_test::timeout(15)) {
     sim_t sim;
     sim.start();
 
@@ -324,31 +323,29 @@ BOOST_AUTO_TEST_CASE(follower_processes_snapshot, * boost::unit_test::timeout(15
     auto net2 = sim.create_node("2");
     connect(sim, "1", "2");
 
-    node_t raft1{
-        1,
-        test_raft_types::network_client_type{net1, ser_t{}},
-        test_raft_types::network_server_type{net1, ser_t{}},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        fast_cfg()
-    };
+    node_t raft1{1,
+                 test_raft_types::network_client_type{net1, ser_t{}},
+                 test_raft_types::network_server_type{net1, ser_t{}},
+                 test_raft_types::persistence_engine_type{},
+                 kythira::console_logger{kythira::log_level::error},
+                 test_raft_types::metrics_type{},
+                 test_raft_types::membership_manager_type{},
+                 fast_cfg()};
     raft1.start();
 
     // Send InstallSnapshot from a leader with term=2
     test_raft_types::install_snapshot_request_type snap;
-    snap._term                = 2;
-    snap._leader_id           = 2;
+    snap._term = 2;
+    snap._leader_id = 2;
     snap._last_included_index = 5;
-    snap._last_included_term  = 2;
-    snap._offset              = 0;
-    snap._done                = true;
+    snap._last_included_term = 2;
+    snap._offset = 0;
+    snap._done = true;
 
     fire_rpc(net2, "1", snap);
 
     // Follower should update its term when it receives the snapshot message
-    BOOST_CHECK(wait_for([&]{ return raft1.get_current_term() >= 2u; }));
+    BOOST_CHECK(wait_for([&] { return raft1.get_current_term() >= 2u; }));
     BOOST_CHECK_GE(raft1.get_current_term(), 2u);
 
     raft1.stop();

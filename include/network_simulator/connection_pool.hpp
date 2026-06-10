@@ -11,11 +11,9 @@
 namespace network_simulator {
 
 // Forward declaration
-template<typename Types>
-class NetworkSimulator;
+template<typename Types> class NetworkSimulator;
 
-template<typename Types>
-class ConnectionPool {
+template<typename Types> class ConnectionPool {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
@@ -30,11 +28,10 @@ public:
         bool is_healthy;
 
         PooledConnection(std::shared_ptr<connection_type> conn)
-            : connection(std::move(conn))
-            , last_used(std::chrono::steady_clock::now())
-            , created(std::chrono::steady_clock::now())
-            , is_healthy(true)
-        {}
+            : connection(std::move(conn)),
+              last_used(std::chrono::steady_clock::now()),
+              created(std::chrono::steady_clock::now()),
+              is_healthy(true) {}
 
         auto is_stale(std::chrono::milliseconds max_age) const -> bool {
             return std::chrono::steady_clock::now() - last_used > max_age;
@@ -43,15 +40,16 @@ public:
 
     struct PoolConfig {
         std::size_t max_connections_per_endpoint = 10;
-        std::chrono::milliseconds max_idle_time{300000}; // 5 minutes
-        std::chrono::milliseconds max_connection_age{3600000}; // 1 hour
+        std::chrono::milliseconds max_idle_time{300000};        // 5 minutes
+        std::chrono::milliseconds max_connection_age{3600000};  // 1 hour
         bool enable_health_checks = true;
     };
 
     explicit ConnectionPool(PoolConfig config = PoolConfig{});
 
     auto get_or_create_connection(endpoint_type destination,
-                                  std::function<future_connection_type()> create_fn) -> future_connection_type;
+                                  std::function<future_connection_type()> create_fn)
+        -> future_connection_type;
     auto return_connection(std::shared_ptr<connection_type> conn) -> void;
     auto cleanup_stale_connections() -> void;
     auto configure_pool(PoolConfig config) -> void;
@@ -67,4 +65,4 @@ private:
     auto is_connection_healthy(const PooledConnection& pooled_conn) const -> bool;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator

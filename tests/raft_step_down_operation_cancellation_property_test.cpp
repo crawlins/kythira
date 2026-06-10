@@ -18,7 +18,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_step_down_operation_cancellation_property_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("raft_step_down_operation_cancellation_property_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -31,23 +32,25 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t min_operations = 5;
-    constexpr std::size_t max_operations = 50;
-    constexpr std::size_t min_futures = 3;
-    constexpr std::size_t max_futures = 30;
-    constexpr std::chrono::milliseconds test_timeout{30000};
-    constexpr std::chrono::milliseconds operation_timeout{5000};
-    constexpr const char* step_down_reason = "Leadership lost";
-    constexpr const char* term_change_reason = "Higher term detected";
+constexpr std::size_t min_operations = 5;
+constexpr std::size_t max_operations = 50;
+constexpr std::size_t min_futures = 3;
+constexpr std::size_t max_futures = 30;
+constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr std::chrono::milliseconds operation_timeout{5000};
+constexpr const char* step_down_reason = "Leadership lost";
+constexpr const char* term_change_reason = "Higher term detected";
 }
 
 /**
  * **Feature: raft-completion, Property 38: Step-down Operation Cancellation**
  *
- * Property: For any leader step-down, all pending client operations are cancelled with appropriate errors.
+ * Property: For any leader step-down, all pending client operations are cancelled with appropriate
+ * errors.
  * **Validates: Requirements 8.2**
  */
-BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test,
+                     *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Testing step-down operation cancellation property...");
 
     std::random_device rd;
@@ -66,9 +69,10 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
         const std::uint64_t current_term = term_dist(gen);
         const std::uint64_t higher_term = current_term + 1 + (gen() % 5);
 
-        BOOST_TEST_MESSAGE("Testing step-down cancellation with " << operation_count
-                          << " pending operations, " << future_count << " futures, "
-                          << "current term: " << current_term << ", higher term: " << higher_term);
+        BOOST_TEST_MESSAGE("Testing step-down cancellation with "
+                           << operation_count << " pending operations, " << future_count
+                           << " futures, "
+                           << "current term: " << current_term << ", higher term: " << higher_term);
 
         // Test 1: Step-down due to higher term discovery
         {
@@ -89,7 +93,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                     fulfilled_count.fetch_add(1);
                 };
 
-                auto reject_callback = [&rejected_count, &leadership_lost_count](std::exception_ptr ex) {
+                auto reject_callback = [&rejected_count,
+                                        &leadership_lost_count](std::exception_ptr ex) {
                     rejected_count.fetch_add(1);
                     try {
                         std::rethrow_exception(ex);
@@ -104,12 +109,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                     }
                 };
 
-                commit_waiter.register_operation(
-                    index,
-                    std::move(fulfill_callback),
-                    std::move(reject_callback),
-                    operation_timeout
-                );
+                commit_waiter.register_operation(index, std::move(fulfill_callback),
+                                                 std::move(reject_callback), operation_timeout);
             }
 
             // Verify operations are pending (leader state)
@@ -131,8 +132,9 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_CHECK_EQUAL(rejected_count.load(), operation_count);
             BOOST_CHECK_EQUAL(leadership_lost_count.load(), operation_count);
 
-            BOOST_TEST_MESSAGE("✓ Step-down due to higher term: " << operation_count
-                              << " operations cancelled with leadership errors");
+            BOOST_TEST_MESSAGE("✓ Step-down due to higher term: "
+                               << operation_count
+                               << " operations cancelled with leadership errors");
         }
 
         // Test 2: Step-down due to network partition detection
@@ -140,7 +142,9 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_TEST_MESSAGE("Test 2: Step-down due to network partition detection");
 
             kythira::commit_waiter<std::uint64_t> commit_waiter;
-            std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>> heartbeat_futures;
+            std::vector<
+                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                heartbeat_futures;
 
             std::atomic<std::size_t> operation_rejected_count{0};
             std::atomic<std::size_t> partition_error_count{0};
@@ -150,7 +154,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             for (std::size_t i = 0; i < partition_operations; ++i) {
                 const std::uint64_t index = index_dist(gen);
 
-                auto reject_callback = [&operation_rejected_count, &partition_error_count](std::exception_ptr ex) {
+                auto reject_callback = [&operation_rejected_count,
+                                        &partition_error_count](std::exception_ptr ex) {
                     operation_rejected_count.fetch_add(1);
                     try {
                         std::rethrow_exception(ex);
@@ -165,17 +170,16 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    operation_timeout
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    operation_timeout);
             }
 
             // Create heartbeat futures that would fail (simulating partition)
             for (std::size_t i = 0; i < future_count; ++i) {
-                auto promise = std::make_shared<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
-                heartbeat_futures.push_back(promise->getFuture().within(std::chrono::milliseconds{100})); // Short timeout
+                auto promise = std::make_shared<kythira::Promise<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
+                heartbeat_futures.push_back(
+                    promise->getFuture().within(std::chrono::milliseconds{100}));  // Short timeout
             }
 
             // Verify initial state
@@ -184,7 +188,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
 
             // Simulate step-down due to partition detection
             commit_waiter.cancel_all_operations("Network partition detected - stepping down");
-            kythira::raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::cancel_collection(heartbeat_futures);
+            kythira::raft_future_collector<kythira::append_entries_response<
+                std::uint64_t, std::uint64_t>>::cancel_collection(heartbeat_futures);
 
             // Give callbacks time to execute
             std::this_thread::sleep_for(std::chrono::milliseconds{150});
@@ -195,7 +200,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_CHECK_EQUAL(operation_rejected_count.load(), partition_operations);
 
             BOOST_TEST_MESSAGE("✓ Step-down due to partition: " << partition_operations
-                              << " operations + " << future_count << " futures cleaned up");
+                                                                << " operations + " << future_count
+                                                                << " futures cleaned up");
         }
 
         // Test 3: Step-down during active replication
@@ -203,7 +209,9 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_TEST_MESSAGE("Test 3: Step-down during active replication");
 
             kythira::commit_waiter<std::uint64_t> commit_waiter;
-            std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>> replication_futures;
+            std::vector<
+                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                replication_futures;
 
             std::atomic<std::size_t> replication_cancelled_count{0};
             std::atomic<std::size_t> client_cancelled_count{0};
@@ -218,16 +226,14 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    operation_timeout
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    operation_timeout);
             }
 
             // Create replication futures (simulating ongoing AppendEntries RPCs)
             for (std::size_t i = 0; i < future_count; ++i) {
-                auto promise = std::make_shared<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
+                auto promise = std::make_shared<kythira::Promise<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 replication_futures.push_back(promise->getFuture().within(operation_timeout));
             }
 
@@ -237,7 +243,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
 
             // Simulate step-down during active replication (e.g., due to election timeout)
             commit_waiter.cancel_all_operations("Election timeout - stepping down");
-            kythira::raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::cancel_collection(replication_futures);
+            kythira::raft_future_collector<kythira::append_entries_response<
+                std::uint64_t, std::uint64_t>>::cancel_collection(replication_futures);
 
             // Give callbacks time to execute
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -247,8 +254,9 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_CHECK(replication_futures.empty());
             BOOST_CHECK_EQUAL(client_cancelled_count.load(), replication_operations);
 
-            BOOST_TEST_MESSAGE("✓ Step-down during replication: " << replication_operations
-                              << " client ops + " << future_count << " replication futures cancelled");
+            BOOST_TEST_MESSAGE("✓ Step-down during replication: "
+                               << replication_operations << " client ops + " << future_count
+                               << " replication futures cancelled");
         }
 
         // Test 4: Step-down with mixed operation states
@@ -272,26 +280,22 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{50} // Short timeout
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{50}  // Short timeout
                 );
             }
 
             // Some operations with long timeouts (would be pending)
             for (std::size_t i = 0; i < mixed_operations; ++i) {
-                const std::uint64_t index = index_dist(gen) + 1000; // Different index range
+                const std::uint64_t index = index_dist(gen) + 1000;  // Different index range
 
                 auto reject_callback = [&pending_cancelled](std::exception_ptr ex) {
                     pending_cancelled.fetch_add(1);
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000} // Long timeout
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000}  // Long timeout
                 );
             }
 
@@ -311,7 +315,7 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
 
             // Property: Step-down should handle mixed operation states correctly
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
-            BOOST_CHECK_GT(timed_out_count, 0); // Some operations should have timed out
+            BOOST_CHECK_GT(timed_out_count, 0);  // Some operations should have timed out
             BOOST_CHECK_GT(timeout_cancelled.load(), 0);
             BOOST_CHECK_GT(pending_cancelled.load(), 0);
 
@@ -320,7 +324,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             BOOST_CHECK_EQUAL(total_cancelled, mixed_operations * 2);
 
             BOOST_TEST_MESSAGE("✓ Mixed state step-down: " << timed_out_count << " timed out, "
-                              << remaining_before_step_down << " cancelled by step-down");
+                                                           << remaining_before_step_down
+                                                           << " cancelled by step-down");
         }
     }
 
@@ -346,11 +351,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    operation_timeout
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    operation_timeout);
             }
 
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), cycle_operations);
@@ -368,9 +370,10 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
         std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
         // Property: Rapid cycles should handle all operations correctly
-        BOOST_CHECK_EQUAL(total_cancelled.load(), 5 * 3); // 5 cycles * 3 operations each
+        BOOST_CHECK_EQUAL(total_cancelled.load(), 5 * 3);  // 5 cycles * 3 operations each
 
-        BOOST_TEST_MESSAGE("✓ Rapid step-down cycles: " << total_cancelled.load() << " operations handled");
+        BOOST_TEST_MESSAGE("✓ Rapid step-down cycles: " << total_cancelled.load()
+                                                        << " operations handled");
     }
 
     // Test 6: Step-down with concurrent operations
@@ -390,7 +393,7 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             operation_threads.emplace_back([&, t]() {
                 for (std::size_t i = 0; i < ops_per_thread; ++i) {
                     if (step_down_triggered.load()) {
-                        break; // Stop adding operations after step-down
+                        break;  // Stop adding operations after step-down
                     }
 
                     const std::uint64_t index = (t * 1000) + i + 1;
@@ -401,11 +404,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
 
                     try {
                         commit_waiter.register_operation(
-                            index,
-                            [](std::vector<std::byte>) {},
-                            std::move(reject_callback),
-                            operation_timeout
-                        );
+                            index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                            operation_timeout);
                     } catch (...) {
                         // May fail if step-down happens during registration
                     }
@@ -437,7 +437,7 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
         BOOST_CHECK_EQUAL(concurrent_cancelled.load(), operations_before_step_down);
 
         BOOST_TEST_MESSAGE("✓ Concurrent step-down: " << operations_before_step_down
-                          << " operations cancelled safely");
+                                                      << " operations cancelled safely");
     }
 
     // Test 7: Step-down error message validation
@@ -450,12 +450,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
 
         // Add operations with different step-down reasons
         const std::vector<std::string> step_down_reasons = {
-            "Higher term detected: 42",
-            "Network partition detected",
-            "Election timeout exceeded",
-            "Heartbeat majority lost",
-            "Manual step-down requested"
-        };
+            "Higher term detected: 42", "Network partition detected", "Election timeout exceeded",
+            "Heartbeat majority lost", "Manual step-down requested"};
 
         for (std::size_t i = 0; i < step_down_reasons.size(); ++i) {
             const std::uint64_t index = i + 1;
@@ -470,11 +466,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test, * boos
             };
 
             commit_waiter.register_operation(
-                index,
-                [](std::vector<std::byte>) {},
-                std::move(reject_callback),
-                operation_timeout
-            );
+                index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                operation_timeout);
         }
 
         BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), step_down_reasons.size());

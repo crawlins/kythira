@@ -11,14 +11,15 @@
 using namespace std;
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::size_t min_cluster_size = 3;
-    constexpr std::size_t max_cluster_size = 9;
-    constexpr std::size_t test_iterations = 30;
-    constexpr std::size_t min_log_entries = 1;
-    constexpr std::size_t max_log_entries = 10;
-    constexpr std::size_t failure_threshold = 3; // Number of consecutive failures to mark as unresponsive
-    constexpr std::chrono::milliseconds response_timeout{1000};
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t min_cluster_size = 3;
+constexpr std::size_t max_cluster_size = 9;
+constexpr std::size_t test_iterations = 30;
+constexpr std::size_t min_log_entries = 1;
+constexpr std::size_t max_log_entries = 10;
+constexpr std::size_t failure_threshold =
+    3;  // Number of consecutive failures to mark as unresponsive
+constexpr std::chrono::milliseconds response_timeout{1000};
 }
 
 // Simplified types for testing the property
@@ -35,9 +36,12 @@ enum class FollowerAvailability {
 // Stream operator for FollowerAvailability to support Boost.Test printing
 std::ostream& operator<<(std::ostream& os, FollowerAvailability availability) {
     switch (availability) {
-        case FollowerAvailability::available: return os << "available";
-        case FollowerAvailability::unavailable: return os << "unavailable";
-        default: return os << "unknown";
+        case FollowerAvailability::available:
+            return os << "available";
+        case FollowerAvailability::unavailable:
+            return os << "unavailable";
+        default:
+            return os << "unknown";
     }
 }
 
@@ -53,7 +57,8 @@ private:
     std::size_t _failure_threshold;
 
 public:
-    explicit UnresponsiveFollowerHandler(std::size_t cluster_size, std::size_t failure_threshold = ::failure_threshold)
+    explicit UnresponsiveFollowerHandler(std::size_t cluster_size,
+                                         std::size_t failure_threshold = ::failure_threshold)
         : _cluster_size(cluster_size), _failure_threshold(failure_threshold) {
         // Initialize all followers as available
         for (std::size_t i = 2; i <= cluster_size; ++i) {
@@ -97,9 +102,7 @@ public:
     }
 
     // Get current commit index
-    LogIndex get_commit_index() const {
-        return _commit_index;
-    }
+    LogIndex get_commit_index() const { return _commit_index; }
 
     // Get the number of acknowledgments for a log entry (including leader)
     std::size_t get_acknowledgment_count(LogIndex log_index) const {
@@ -110,7 +113,7 @@ public:
 
     // Get the number of available followers (excluding unavailable ones)
     std::size_t get_available_count() const {
-        std::size_t available_count = 1; // Leader is always available
+        std::size_t available_count = 1;  // Leader is always available
         for (const auto& [follower_id, availability] : _follower_availability) {
             if (availability == FollowerAvailability::available) {
                 available_count++;
@@ -139,9 +142,7 @@ public:
     }
 
     // Get unavailable followers count
-    std::size_t get_unavailable_followers_count() const {
-        return _unavailable_followers.size();
-    }
+    std::size_t get_unavailable_followers_count() const { return _unavailable_followers.size(); }
 
     // Check if replication can continue despite unavailable followers
     bool can_continue_replication() const {
@@ -199,7 +200,8 @@ public:
         std::sort(acknowledged_entries.begin(), acknowledged_entries.end());
 
         if (!acknowledged_entries.empty()) {
-            for (LogIndex log_index = _commit_index + 1; log_index <= acknowledged_entries.back(); ++log_index) {
+            for (LogIndex log_index = _commit_index + 1; log_index <= acknowledged_entries.back();
+                 ++log_index) {
                 if (has_majority_acknowledgment(log_index)) {
                     new_commit_index = log_index;
                 } else {
@@ -218,30 +220,35 @@ private:
 /**
  * **Feature: raft-completion, Property 30: Unresponsive Follower Handling**
  *
- * Property: For any consistently unresponsive follower, the system marks it unavailable but continues with majority.
+ * Property: For any consistently unresponsive follower, the system marks it unavailable but
+ * continues with majority.
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
     std::uniform_int_distribution<std::size_t> entry_count_dist(min_log_entries, max_log_entries);
-    std::uniform_int_distribution<int> failure_rate_dist(20, 60); // percentage of followers that will fail
-    std::uniform_int_distribution<int> response_rate_dist(70, 100); // response rate for available followers
+    std::uniform_int_distribution<int> failure_rate_dist(
+        20, 60);  // percentage of followers that will fail
+    std::uniform_int_distribution<int> response_rate_dist(
+        70, 100);  // response rate for available followers
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++; // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
 
-        const std::size_t follower_count = cluster_size - 1; // Exclude leader
+        const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t entry_count = entry_count_dist(gen);
 
         BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size
-                          << ", followers: " << follower_count
-                          << ", log entries: " << entry_count);
+                                                    << ", followers: " << follower_count
+                                                    << ", log entries: " << entry_count);
 
         // Create follower IDs (leader is ID 1, followers are 2, 3, 4, ...)
         std::vector<NodeId> follower_ids;
@@ -265,60 +272,72 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
             }
         }
 
-        BOOST_TEST_MESSAGE("Failing followers: " << failing_followers.size()
-                          << " out of " << follower_count);
+        BOOST_TEST_MESSAGE("Failing followers: " << failing_followers.size() << " out of "
+                                                 << follower_count);
 
         // Simulate multiple rounds of communication to trigger failure detection
-        const std::size_t communication_rounds = failure_threshold + 2; // Ensure we exceed threshold
+        const std::size_t communication_rounds =
+            failure_threshold + 2;  // Ensure we exceed threshold
 
         for (std::size_t round = 1; round <= communication_rounds; ++round) {
             BOOST_TEST_MESSAGE("Communication round " << round);
 
             for (const auto& follower_id : follower_ids) {
-                bool is_failing = std::find(failing_followers.begin(), failing_followers.end(), follower_id) != failing_followers.end();
+                bool is_failing = std::find(failing_followers.begin(), failing_followers.end(),
+                                            follower_id) != failing_followers.end();
 
                 if (is_failing) {
                     // Consistently failing follower
                     handler.record_failed_response(follower_id);
-                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " failed (consecutive: "
-                                      << handler.get_consecutive_failures(follower_id) << ")");
+                    BOOST_TEST_MESSAGE("  Follower "
+                                       << follower_id << " failed (consecutive: "
+                                       << handler.get_consecutive_failures(follower_id) << ")");
                 } else {
                     // Responsive follower (with occasional failures)
                     const int response_rate = response_rate_dist(gen);
                     if ((gen() % 100) < response_rate) {
                         handler.record_successful_response(follower_id);
-                        BOOST_TEST_MESSAGE("  Follower " << follower_id << " responded successfully");
+                        BOOST_TEST_MESSAGE("  Follower " << follower_id
+                                                         << " responded successfully");
                     } else {
                         handler.record_failed_response(follower_id);
-                        BOOST_TEST_MESSAGE("  Follower " << follower_id << " failed occasionally (consecutive: "
-                                          << handler.get_consecutive_failures(follower_id) << ")");
+                        BOOST_TEST_MESSAGE("  Follower "
+                                           << follower_id << " failed occasionally (consecutive: "
+                                           << handler.get_consecutive_failures(follower_id) << ")");
                     }
                 }
             }
 
-            // Property 1: Consistently failing followers should be marked as unavailable after threshold
+            // Property 1: Consistently failing followers should be marked as unavailable after
+            // threshold
             for (const auto& follower_id : failing_followers) {
-                const std::size_t consecutive_failures = handler.get_consecutive_failures(follower_id);
+                const std::size_t consecutive_failures =
+                    handler.get_consecutive_failures(follower_id);
                 const bool should_be_unavailable = consecutive_failures >= failure_threshold;
                 const bool is_unavailable = handler.is_follower_unavailable(follower_id);
 
                 BOOST_CHECK_EQUAL(is_unavailable, should_be_unavailable);
 
                 if (should_be_unavailable) {
-                    BOOST_CHECK_EQUAL(handler.get_follower_availability(follower_id), FollowerAvailability::unavailable);
+                    BOOST_CHECK_EQUAL(handler.get_follower_availability(follower_id),
+                                      FollowerAvailability::unavailable);
                     BOOST_TEST_MESSAGE("  Follower " << follower_id << " marked as UNAVAILABLE");
                 }
             }
 
             // Property 2: Occasionally failing followers should remain available
             for (const auto& follower_id : follower_ids) {
-                bool is_consistently_failing = std::find(failing_followers.begin(), failing_followers.end(), follower_id) != failing_followers.end();
+                bool is_consistently_failing =
+                    std::find(failing_followers.begin(), failing_followers.end(), follower_id) !=
+                    failing_followers.end();
 
                 if (!is_consistently_failing) {
                     // Should not be marked as unavailable due to occasional failures
-                    const std::size_t consecutive_failures = handler.get_consecutive_failures(follower_id);
+                    const std::size_t consecutive_failures =
+                        handler.get_consecutive_failures(follower_id);
                     if (consecutive_failures < failure_threshold) {
-                        BOOST_CHECK_EQUAL(handler.get_follower_availability(follower_id), FollowerAvailability::available);
+                        BOOST_CHECK_EQUAL(handler.get_follower_availability(follower_id),
+                                          FollowerAvailability::available);
                     }
                 }
             }
@@ -329,9 +348,9 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         const std::size_t unavailable_count = handler.get_unavailable_followers_count();
         const bool can_continue = handler.can_continue_replication();
 
-        BOOST_TEST_MESSAGE("Available nodes: " << available_count
-                          << ", Unavailable followers: " << unavailable_count
-                          << ", Can continue: " << (can_continue ? "YES" : "NO"));
+        BOOST_TEST_MESSAGE("Available nodes: "
+                           << available_count << ", Unavailable followers: " << unavailable_count
+                           << ", Can continue: " << (can_continue ? "YES" : "NO"));
 
         // The system should be able to continue if there are enough available nodes for majority
         const std::size_t majority_needed = (available_count / 2) + 1;
@@ -346,12 +365,13 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         for (LogIndex log_index = 1; log_index <= entry_count; ++log_index) {
             BOOST_TEST_MESSAGE("Processing log entry " << log_index);
 
-            std::size_t ack_count = 1; // Leader always acknowledges implicitly
+            std::size_t ack_count = 1;  // Leader always acknowledges implicitly
             std::vector<NodeId> acknowledging_followers;
 
             // Simulate acknowledgments from available followers only
             for (const auto& follower_id : follower_ids) {
-                const FollowerAvailability availability = handler.get_follower_availability(follower_id);
+                const FollowerAvailability availability =
+                    handler.get_follower_availability(follower_id);
 
                 if (availability == FollowerAvailability::available) {
                     // Available followers acknowledge with high probability
@@ -360,15 +380,19 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
                         handler.record_acknowledgment(log_index, follower_id);
                         acknowledging_followers.push_back(follower_id);
                         ack_count++;
-                        BOOST_TEST_MESSAGE("  Available follower " << follower_id << " acknowledged entry " << log_index);
+                        BOOST_TEST_MESSAGE("  Available follower "
+                                           << follower_id << " acknowledged entry " << log_index);
                     }
                 } else {
                     // Unavailable followers don't acknowledge
-                    BOOST_TEST_MESSAGE("  Unavailable follower " << follower_id << " did not acknowledge entry " << log_index);
+                    BOOST_TEST_MESSAGE("  Unavailable follower " << follower_id
+                                                                 << " did not acknowledge entry "
+                                                                 << log_index);
                 }
             }
 
-            BOOST_TEST_MESSAGE("  Entry " << log_index << " has " << ack_count << " acknowledgments");
+            BOOST_TEST_MESSAGE("  Entry " << log_index << " has " << ack_count
+                                          << " acknowledgments");
 
             // Property 5: Majority calculation should exclude unavailable followers
             const std::size_t current_available_count = handler.get_available_count();
@@ -377,8 +401,9 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
             const bool expected_majority = ack_count >= current_majority_needed;
 
             BOOST_CHECK_EQUAL(has_majority, expected_majority);
-            BOOST_TEST_MESSAGE("  Majority check: " << ack_count << " >= " << current_majority_needed
-                              << " = " << (expected_majority ? "TRUE" : "FALSE"));
+            BOOST_TEST_MESSAGE("  Majority check: " << ack_count
+                                                    << " >= " << current_majority_needed << " = "
+                                                    << (expected_majority ? "TRUE" : "FALSE"));
         }
 
         // Property 6: Unavailable followers should not contribute to acknowledgments
@@ -416,7 +441,8 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         const NodeId test_follower = 2;
 
         // Initially available
-        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower), FollowerAvailability::available);
+        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::available);
         BOOST_CHECK_EQUAL(single_handler.get_consecutive_failures(test_follower), 0);
         BOOST_CHECK(!single_handler.is_follower_unavailable(test_follower));
 
@@ -425,15 +451,19 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
             single_handler.record_failed_response(test_follower);
         }
 
-        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower), FollowerAvailability::available);
-        BOOST_CHECK_EQUAL(single_handler.get_consecutive_failures(test_follower), failure_threshold - 1);
+        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::available);
+        BOOST_CHECK_EQUAL(single_handler.get_consecutive_failures(test_follower),
+                          failure_threshold - 1);
         BOOST_CHECK(!single_handler.is_follower_unavailable(test_follower));
 
         // One more failure should mark as unavailable
         single_handler.record_failed_response(test_follower);
 
-        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower), FollowerAvailability::unavailable);
-        BOOST_CHECK_EQUAL(single_handler.get_consecutive_failures(test_follower), failure_threshold);
+        BOOST_CHECK_EQUAL(single_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::unavailable);
+        BOOST_CHECK_EQUAL(single_handler.get_consecutive_failures(test_follower),
+                          failure_threshold);
         BOOST_CHECK(single_handler.is_follower_unavailable(test_follower));
         BOOST_CHECK_EQUAL(single_handler.get_unavailable_followers_count(), 1);
 
@@ -452,13 +482,15 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
             recovery_handler.record_failed_response(test_follower);
         }
 
-        BOOST_CHECK_EQUAL(recovery_handler.get_follower_availability(test_follower), FollowerAvailability::unavailable);
+        BOOST_CHECK_EQUAL(recovery_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::unavailable);
         BOOST_CHECK(recovery_handler.is_follower_unavailable(test_follower));
 
         // Record successful response (should recover)
         recovery_handler.record_successful_response(test_follower);
 
-        BOOST_CHECK_EQUAL(recovery_handler.get_follower_availability(test_follower), FollowerAvailability::available);
+        BOOST_CHECK_EQUAL(recovery_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::available);
         BOOST_CHECK_EQUAL(recovery_handler.get_consecutive_failures(test_follower), 0);
         BOOST_CHECK(!recovery_handler.is_follower_unavailable(test_follower));
         BOOST_CHECK_EQUAL(recovery_handler.get_unavailable_followers_count(), 0);
@@ -472,7 +504,7 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         UnresponsiveFollowerHandler multi_handler(cluster_size);
 
         std::vector<NodeId> followers = {2, 3, 4, 5, 6, 7};
-        std::vector<NodeId> failing_followers = {5, 6, 7}; // 3 out of 6 followers
+        std::vector<NodeId> failing_followers = {5, 6, 7};  // 3 out of 6 followers
 
         // Make some followers unresponsive
         for (const auto& follower_id : failing_followers) {
@@ -481,15 +513,16 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
             }
         }
 
-        // Property: System should still be able to continue (4 available: leader + 3 followers, majority is 3)
-        BOOST_CHECK_EQUAL(multi_handler.get_available_count(), 4); // 7 - 3 unavailable = 4
+        // Property: System should still be able to continue (4 available: leader + 3 followers,
+        // majority is 3)
+        BOOST_CHECK_EQUAL(multi_handler.get_available_count(), 4);  // 7 - 3 unavailable = 4
         BOOST_CHECK_EQUAL(multi_handler.get_unavailable_followers_count(), 3);
         BOOST_CHECK(multi_handler.can_continue_replication());
 
         // Simulate replication with remaining available followers
-        multi_handler.record_acknowledgment(1, 2); // available
-        multi_handler.record_acknowledgment(1, 3); // available
-        multi_handler.record_acknowledgment(1, 4); // available
+        multi_handler.record_acknowledgment(1, 2);  // available
+        multi_handler.record_acknowledgment(1, 3);  // available
+        multi_handler.record_acknowledgment(1, 4);  // available
 
         // Entry should be committed (leader + 3 available followers = 4, majority of 4 is 3)
         BOOST_CHECK(multi_handler.has_majority_acknowledgment(1));
@@ -513,7 +546,7 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         }
 
         // Property: System should still be able to continue with leader + 1 follower
-        BOOST_CHECK_EQUAL(blocked_handler.get_available_count(), 2); // Leader + 1 follower
+        BOOST_CHECK_EQUAL(blocked_handler.get_available_count(), 2);  // Leader + 1 follower
         BOOST_CHECK_EQUAL(blocked_handler.get_unavailable_followers_count(), 3);
         BOOST_CHECK(blocked_handler.can_continue_replication());
 
@@ -542,12 +575,13 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         }
 
         // Property: System should still be able to continue with just the leader
-        BOOST_CHECK_EQUAL(leader_only_handler.get_available_count(), 1); // Only leader
+        BOOST_CHECK_EQUAL(leader_only_handler.get_available_count(), 1);  // Only leader
         BOOST_CHECK_EQUAL(leader_only_handler.get_unavailable_followers_count(), 2);
         BOOST_CHECK(leader_only_handler.can_continue_replication());
 
         // Simulate leader proposing an entry (leader implicitly acknowledges its own entries)
-        // In a real implementation, the leader would add the entry to its log and implicitly acknowledge it
+        // In a real implementation, the leader would add the entry to its log and implicitly
+        // acknowledge it
         leader_only_handler.propose_entry(1);
 
         // Entry should be committed (leader = 1, majority of 1 is 1)
@@ -571,14 +605,18 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         }
 
         // Should still be available
-        BOOST_CHECK_EQUAL(threshold_handler.get_follower_availability(test_follower), FollowerAvailability::available);
-        BOOST_CHECK_EQUAL(threshold_handler.get_consecutive_failures(test_follower), custom_threshold - 1);
+        BOOST_CHECK_EQUAL(threshold_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::available);
+        BOOST_CHECK_EQUAL(threshold_handler.get_consecutive_failures(test_follower),
+                          custom_threshold - 1);
 
         // One more failure should mark as unavailable
         threshold_handler.record_failed_response(test_follower);
 
-        BOOST_CHECK_EQUAL(threshold_handler.get_follower_availability(test_follower), FollowerAvailability::unavailable);
-        BOOST_CHECK_EQUAL(threshold_handler.get_consecutive_failures(test_follower), custom_threshold);
+        BOOST_CHECK_EQUAL(threshold_handler.get_follower_availability(test_follower),
+                          FollowerAvailability::unavailable);
+        BOOST_CHECK_EQUAL(threshold_handler.get_consecutive_failures(test_follower),
+                          custom_threshold);
 
         BOOST_TEST_MESSAGE("✓ Custom failure threshold test passed");
     }
@@ -608,11 +646,19 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test, * boost:
         }
 
         // Property: Only consistently failing follower should be marked unavailable
-        BOOST_CHECK_EQUAL(intermittent_handler.get_follower_availability(consistent_failing_follower), FollowerAvailability::unavailable);
-        BOOST_CHECK_EQUAL(intermittent_handler.get_follower_availability(intermittent_failing_follower), FollowerAvailability::available);
+        BOOST_CHECK_EQUAL(
+            intermittent_handler.get_follower_availability(consistent_failing_follower),
+            FollowerAvailability::unavailable);
+        BOOST_CHECK_EQUAL(
+            intermittent_handler.get_follower_availability(intermittent_failing_follower),
+            FollowerAvailability::available);
 
-        BOOST_CHECK_EQUAL(intermittent_handler.get_consecutive_failures(consistent_failing_follower), failure_threshold);
-        BOOST_CHECK_EQUAL(intermittent_handler.get_consecutive_failures(intermittent_failing_follower), failure_threshold - 1);
+        BOOST_CHECK_EQUAL(
+            intermittent_handler.get_consecutive_failures(consistent_failing_follower),
+            failure_threshold);
+        BOOST_CHECK_EQUAL(
+            intermittent_handler.get_consecutive_failures(intermittent_failing_follower),
+            failure_threshold - 1);
 
         BOOST_CHECK_EQUAL(intermittent_handler.get_unavailable_followers_count(), 1);
 

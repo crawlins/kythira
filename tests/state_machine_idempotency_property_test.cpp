@@ -4,7 +4,7 @@
 #include "raft/examples/counter_state_machine.hpp"
 #include "state_machine_test_utilities.hpp"
 
-BOOST_AUTO_TEST_CASE(property_put_idempotency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_put_idempotency, *boost::unit_test::timeout(30)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -15,7 +15,7 @@ BOOST_AUTO_TEST_CASE(property_put_idempotency, * boost::unit_test::timeout(30)) 
         auto result1 = sm.apply(cmd, 1);
         auto state1 = sm.get_state();
 
-        auto result2 = sm.apply(cmd, 1); // Apply same command again
+        auto result2 = sm.apply(cmd, 1);  // Apply same command again
         auto state2 = sm.get_state();
 
         BOOST_CHECK(result1 == result2);
@@ -23,11 +23,12 @@ BOOST_AUTO_TEST_CASE(property_put_idempotency, * boost::unit_test::timeout(30)) 
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_get_idempotency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_get_idempotency, *boost::unit_test::timeout(30)) {
     kythira::test_key_value_state_machine sm;
 
     // Setup: PUT a key using binary format
-    auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command("testkey", "testvalue");
+    auto put_cmd =
+        kythira::test_key_value_state_machine<>::make_put_command("testkey", "testvalue");
     sm.apply(put_cmd, 1);
 
     // Test: GET multiple times using binary format
@@ -48,12 +49,13 @@ BOOST_AUTO_TEST_CASE(property_get_idempotency, * boost::unit_test::timeout(30)) 
     BOOST_CHECK(state2 == state3);
 }
 
-BOOST_AUTO_TEST_CASE(property_counter_idempotency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_counter_idempotency, *boost::unit_test::timeout(30)) {
     kythira::examples::counter_state_machine sm;
 
     std::string inc_cmd = "INC";
-    std::vector<std::byte> inc_bytes(reinterpret_cast<const std::byte*>(inc_cmd.data()),
-                                     reinterpret_cast<const std::byte*>(inc_cmd.data() + inc_cmd.size()));
+    std::vector<std::byte> inc_bytes(
+        reinterpret_cast<const std::byte*>(inc_cmd.data()),
+        reinterpret_cast<const std::byte*>(inc_cmd.data() + inc_cmd.size()));
 
     // Apply INC command at index 1
     auto result1 = sm.apply(inc_bytes, 1);
@@ -71,7 +73,7 @@ BOOST_AUTO_TEST_CASE(property_counter_idempotency, * boost::unit_test::timeout(3
     BOOST_CHECK_EQUAL(sm.get_value(), 2);
 }
 
-BOOST_AUTO_TEST_CASE(property_sequence_idempotency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_sequence_idempotency, *boost::unit_test::timeout(30)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -88,7 +90,8 @@ BOOST_AUTO_TEST_CASE(property_sequence_idempotency, * boost::unit_test::timeout(
             try {
                 sm1.apply(commands[i], i + 1);
                 sm2.apply(commands[i], i + 1);
-            } catch (...) {}
+            } catch (...) {
+            }
         }
 
         BOOST_CHECK(sm1.get_state() == sm2.get_state());

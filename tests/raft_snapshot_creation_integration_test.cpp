@@ -16,7 +16,7 @@
 /**
  * Test: Verify create_snapshot() method exists and works
  */
-BOOST_AUTO_TEST_CASE(test_create_snapshot_exists, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_create_snapshot_exists, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: create_snapshot() method exists and compiles");
 
     using counter_sm = kythira::examples::counter_state_machine<std::uint64_t>;
@@ -34,25 +34,17 @@ BOOST_AUTO_TEST_CASE(test_create_snapshot_exists, * boost::unit_test::timeout(30
     auto membership = kythira::default_membership_manager<std::uint64_t>{};
 
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
-    auto network_client = kythira::simulator_network_client<
-        kythira::Future<std::vector<std::byte>>,
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        std::vector<std::byte>>{serializer};
-    auto network_server = kythira::simulator_network_server<
-        kythira::Future<std::vector<std::byte>>,
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        std::vector<std::byte>>{serializer};
+    auto network_client =
+        kythira::simulator_network_client<kythira::Future<std::vector<std::byte>>,
+                                          kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                          std::vector<std::byte>>{serializer};
+    auto network_server =
+        kythira::simulator_network_server<kythira::Future<std::vector<std::byte>>,
+                                          kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                          std::vector<std::byte>>{serializer};
 
     // Create Raft node
-    node_type node(
-        1,
-        network_client,
-        network_server,
-        persistence,
-        logger,
-        metrics,
-        membership
-    );
+    node_type node(1, network_client, network_server, persistence, logger, metrics, membership);
 
     // Call create_snapshot() - this should call _state_machine.get_state()
     node.create_snapshot();

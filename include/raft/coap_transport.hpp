@@ -61,21 +61,20 @@ struct pending_message {
     bool is_confirmable{true};
 
     pending_message(std::string tok, std::uint16_t msg_id, std::chrono::milliseconds to,
-                   std::function<void(std::vector<std::byte>)> resolve_cb,
-                   std::function<void(std::exception_ptr)> reject_cb,
-                   std::vector<std::byte> payload,
-                   std::string endpoint, std::string path, bool confirmable)
-        : token(std::move(tok))
-        , message_id(msg_id)
-        , send_time(std::chrono::steady_clock::now())
-        , timeout(to)
-        , resolve_callback(std::move(resolve_cb))
-        , reject_callback(std::move(reject_cb))
-        , original_payload(std::move(payload))
-        , target_endpoint(std::move(endpoint))
-        , resource_path(std::move(path))
-        , is_confirmable(confirmable)
-    {}
+                    std::function<void(std::vector<std::byte>)> resolve_cb,
+                    std::function<void(std::exception_ptr)> reject_cb,
+                    std::vector<std::byte> payload, std::string endpoint, std::string path,
+                    bool confirmable)
+        : token(std::move(tok)),
+          message_id(msg_id),
+          send_time(std::chrono::steady_clock::now()),
+          timeout(to),
+          resolve_callback(std::move(resolve_cb)),
+          reject_callback(std::move(reject_cb)),
+          original_payload(std::move(payload)),
+          target_endpoint(std::move(endpoint)),
+          resource_path(std::move(path)),
+          is_confirmable(confirmable) {}
 };
 
 struct received_message_info {
@@ -83,9 +82,7 @@ struct received_message_info {
     std::chrono::steady_clock::time_point received_time;
 
     received_message_info(std::uint16_t msg_id)
-        : message_id(msg_id)
-        , received_time(std::chrono::steady_clock::now())
-    {}
+        : message_id(msg_id), received_time(std::chrono::steady_clock::now()) {}
 };
 
 // Block transfer state management
@@ -100,10 +97,9 @@ struct block_transfer_state {
     std::chrono::steady_clock::time_point last_activity;
 
     block_transfer_state(std::string tok, std::uint32_t blk_size)
-        : token(std::move(tok))
-        , block_size(blk_size)
-        , last_activity(std::chrono::steady_clock::now())
-    {}
+        : token(std::move(tok)),
+          block_size(blk_size),
+          last_activity(std::chrono::steady_clock::now()) {}
 };
 
 // CoAP error information structure for enhanced error handling
@@ -117,8 +113,7 @@ struct coap_error_info {
 // Note: transport_types concept is defined in types.hpp
 
 // CoAP transport types implementation using folly
-template<typename RPC_Serializer, typename Metrics, typename Executor>
-struct coap_transport_types {
+template<typename RPC_Serializer, typename Metrics, typename Executor> struct coap_transport_types {
 #ifdef FOLLY_AVAILABLE
     template<typename T> using future_template = folly::Future<T>;
 #else
@@ -153,7 +148,8 @@ struct simple_coap_transport_types {
 // Default transport types implementation (deprecated - use coap_transport_types instead)
 template<typename FutureType, typename RPC_Serializer, typename Metrics, typename Logger>
 struct default_transport_types {
-    template<typename T> using future_template = FutureType;  // Note: This assumes FutureType is a template-like wrapper
+    template<typename T>
+    using future_template = FutureType;  // Note: This assumes FutureType is a template-like wrapper
     using future_type = FutureType;
     using serializer_type = RPC_Serializer;
     using metrics_type = Metrics;
@@ -185,8 +181,8 @@ struct coap_client_config {
     std::string psk_identity;
     std::vector<std::byte> psk_key;
     bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites; // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true}; // Enable DTLS session resumption
+    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
+    bool enable_session_resumption{true};    // Enable DTLS session resumption
 
     // Multicast configuration
     bool enable_multicast{false};
@@ -200,14 +196,14 @@ struct coap_client_config {
     bool enable_concurrent_processing{true};
     std::size_t max_concurrent_requests{50};
     bool enable_memory_optimization{false};
-    std::size_t memory_pool_size{1024 * 1024}; // 1MB
-    std::size_t memory_pool_block_size{4096}; // 4KB blocks
-    bool enable_periodic_pool_reset{false}; // Enable periodic memory pool reset
-    std::chrono::seconds pool_reset_interval{300}; // Reset interval (5 minutes default)
+    std::size_t memory_pool_size{1024 * 1024};      // 1MB
+    std::size_t memory_pool_block_size{4096};       // 4KB blocks
+    bool enable_periodic_pool_reset{false};         // Enable periodic memory pool reset
+    std::chrono::seconds pool_reset_interval{300};  // Reset interval (5 minutes default)
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
     std::size_t max_cache_entries{100};
-    std::chrono::milliseconds cache_ttl{60000}; // 1 minute
+    std::chrono::milliseconds cache_ttl{60000};  // 1 minute
     bool enable_certificate_validation{true};
 };
 
@@ -226,22 +222,22 @@ struct coap_server_config {
     std::string psk_identity;
     std::vector<std::byte> psk_key;
     bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites; // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true}; // Enable DTLS session resumption
+    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
+    bool enable_session_resumption{true};    // Enable DTLS session resumption
 
     // Multicast configuration
     bool enable_multicast{false};
-    std::string multicast_address{"224.0.1.187"}; // CoAP multicast address
+    std::string multicast_address{"224.0.1.187"};  // CoAP multicast address
     std::uint16_t multicast_port{5683};
 
     // Performance optimization settings
     bool enable_concurrent_processing{true};
     std::size_t max_concurrent_requests{100};
     bool enable_memory_optimization{false};
-    std::size_t memory_pool_size{1024 * 1024}; // 1MB
-    std::size_t memory_pool_block_size{4096}; // 4KB blocks
-    bool enable_periodic_pool_reset{false}; // Enable periodic memory pool reset
-    std::chrono::seconds pool_reset_interval{300}; // Reset interval (5 minutes default)
+    std::size_t memory_pool_size{1024 * 1024};      // 1MB
+    std::size_t memory_pool_block_size{4096};       // 4KB blocks
+    bool enable_periodic_pool_reset{false};         // Enable periodic memory pool reset
+    std::chrono::seconds pool_reset_interval{300};  // Reset interval (5 minutes default)
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
 };
@@ -257,10 +253,10 @@ struct cache_entry {
     std::size_t hash_value{0};
 
     cache_entry(std::vector<std::byte> data, std::size_t hash)
-        : serialized_data(std::move(data))
-        , created(std::chrono::steady_clock::now())
-        , last_accessed(created)
-        , hash_value(hash) {}
+        : serialized_data(std::move(data)),
+          created(std::chrono::steady_clock::now()),
+          last_accessed(created),
+          hash_value(hash) {}
 
     auto touch() -> void {
         last_accessed = std::chrono::steady_clock::now();
@@ -294,15 +290,15 @@ struct multicast_response_collector {
     std::function<void(std::vector<std::vector<std::byte>>)> resolve_callback;
     std::function<void(std::exception_ptr)> reject_callback;
 
-    multicast_response_collector(std::string tok, std::chrono::milliseconds to,
-                               std::function<void(std::vector<std::vector<std::byte>>)> resolve_cb,
-                               std::function<void(std::exception_ptr)> reject_cb)
-        : token(std::move(tok))
-        , start_time(std::chrono::steady_clock::now())
-        , timeout(to)
-        , resolve_callback(std::move(resolve_cb))
-        , reject_callback(std::move(reject_cb))
-    {}
+    multicast_response_collector(
+        std::string tok, std::chrono::milliseconds to,
+        std::function<void(std::vector<std::vector<std::byte>>)> resolve_cb,
+        std::function<void(std::exception_ptr)> reject_cb)
+        : token(std::move(tok)),
+          start_time(std::chrono::steady_clock::now()),
+          timeout(to),
+          resolve_callback(std::move(resolve_cb)),
+          reject_callback(std::move(reject_cb)) {}
 };
 
 // CoAP client class declaration
@@ -317,55 +313,43 @@ public:
     using logger_type = typename Types::logger_type;
 
     // Constructor and destructor
-    coap_client(
-        std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
-        kythira::coap_client_config config,
-        metrics_type metrics
-    );
+    coap_client(std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
+                kythira::coap_client_config config, metrics_type metrics);
 
     ~coap_client();
 
     // RPC methods
-    auto send_request_vote(
-        std::uint64_t target,
-        const kythira::request_vote_request<>& request,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}
-    ) -> future_template<kythira::request_vote_response<>>;
+    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+                           std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(
-        std::uint64_t target,
-        const kythira::append_entries_request<>& request,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}
-    ) -> future_template<kythira::append_entries_response<>>;
+    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+                             std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(
-        std::uint64_t target,
-        const kythira::install_snapshot_request<>& request,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{30000}
-    ) -> future_template<kythira::install_snapshot_response<>>;
+    auto send_install_snapshot(std::uint64_t target,
+                               const kythira::install_snapshot_request<>& request,
+                               std::chrono::milliseconds timeout = std::chrono::milliseconds{30000})
+        -> future_template<kythira::install_snapshot_response<>>;
 
     // Multicast support
-    auto send_multicast_message(
-        const std::string& multicast_address,
-        std::uint16_t multicast_port,
-        const std::string& resource_path,
-        const std::vector<std::byte>& payload,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}
-    ) -> future_template<std::vector<std::byte>>;
+    auto send_multicast_message(const std::string& multicast_address, std::uint16_t multicast_port,
+                                const std::string& resource_path,
+                                const std::vector<std::byte>& payload,
+                                std::chrono::milliseconds timeout = std::chrono::milliseconds{5000})
+        -> future_template<std::vector<std::byte>>;
 
     // Enhanced multicast discovery operations
-    auto discover_raft_nodes(
-        const std::string& multicast_address = "224.0.1.187",
-        std::uint16_t multicast_port = 5683,
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{3000}
-    ) -> future_template<std::vector<std::string>>;
+    auto discover_raft_nodes(const std::string& multicast_address = "224.0.1.187",
+                             std::uint16_t multicast_port = 5683,
+                             std::chrono::milliseconds timeout = std::chrono::milliseconds{3000})
+        -> future_template<std::vector<std::string>>;
 
-    auto send_multicast_heartbeat(
-        const std::string& multicast_address = "224.0.1.187",
-        std::uint16_t multicast_port = 5683,
-        const std::string& node_id = "",
-        std::chrono::milliseconds timeout = std::chrono::milliseconds{2000}
-    ) -> future_template<std::vector<std::string>>;
+    auto send_multicast_heartbeat(const std::string& multicast_address = "224.0.1.187",
+                                  std::uint16_t multicast_port = 5683,
+                                  const std::string& node_id = "",
+                                  std::chrono::milliseconds timeout = std::chrono::milliseconds{
+                                      2000}) -> future_template<std::vector<std::string>>;
 
     // Multicast group management
     auto join_multicast_group(const std::string& multicast_address) -> bool;
@@ -384,7 +368,8 @@ public:
     // Multicast helper methods (exposed for testing)
     auto is_valid_multicast_address(const std::string& address) -> bool;
     auto create_discovery_message(const std::string& node_id = "") -> std::vector<std::byte>;
-    auto parse_discovery_response(const std::vector<std::byte>& response_data) -> std::optional<std::string>;
+    auto parse_discovery_response(const std::vector<std::byte>& response_data)
+        -> std::optional<std::string>;
 
     // Concurrent processing control (exposed for testing)
     auto acquire_concurrent_slot() -> bool;
@@ -402,7 +387,8 @@ private:
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
     std::unordered_map<std::uint16_t, received_message_info> _received_messages;
     std::unordered_map<std::string, std::unique_ptr<block_transfer_state>> _active_block_transfers;
-    std::unordered_map<std::string, std::shared_ptr<multicast_response_collector>> _multicast_requests;
+    std::unordered_map<std::string, std::shared_ptr<multicast_response_collector>>
+        _multicast_requests;
 
     // Multicast group management
     std::unordered_set<std::string> _joined_multicast_groups;
@@ -417,7 +403,8 @@ private:
     std::atomic<std::size_t> _concurrent_requests{0};
 
     // Network partition detection
-    std::unordered_map<std::string, std::chrono::steady_clock::time_point> _network_partition_detection;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+        _network_partition_detection;
 
     // Synchronization
     mutable std::mutex _mutex;
@@ -426,12 +413,8 @@ private:
 
     // Helper methods
     template<typename Request, typename Response>
-    auto send_rpc(
-        std::uint64_t target,
-        const std::string& resource_path,
-        const Request& request,
-        std::chrono::milliseconds timeout
-    ) -> future_template<Response>;
+    auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
+                  std::chrono::milliseconds timeout) -> future_template<Response>;
 
     auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
     auto generate_message_token() -> std::string;
@@ -447,13 +430,16 @@ private:
 
     // Block transfer methods
     auto should_use_block_transfer(const std::vector<std::byte>& payload) const -> bool;
-    auto split_payload_into_blocks(const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>>;
-    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
+    auto split_payload_into_blocks(const std::vector<std::byte>& payload) const
+        -> std::vector<std::vector<std::byte>>;
+    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data,
+                           const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
     auto cleanup_expired_block_transfers() -> void;
 
     // Session management methods
     auto get_or_create_session(const std::string& endpoint) -> coap_session_t*;
-    auto get_or_create_session(std::uint64_t target, coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
+    auto get_or_create_session(std::uint64_t target, coap_address_t* dst_addr, coap_uri_t* uri)
+        -> coap_session_t*;
     auto create_new_session(coap_address_t* dst_addr, coap_uri_t* uri) -> coap_session_t*;
     auto return_session_to_pool(const std::string& endpoint, coap_session_t* session) -> void;
     auto cleanup_expired_sessions() -> void;
@@ -478,17 +464,21 @@ private:
     // Enhanced serialization caching methods
     template<typename Request>
     auto get_cached_or_serialize(const Request& request) -> std::vector<std::uint8_t>;
-    auto cache_serialization_result(std::size_t hash, const std::vector<std::uint8_t>& data) -> void;
+    auto cache_serialization_result(std::size_t hash, const std::vector<std::uint8_t>& data)
+        -> void;
 
     // Enhanced response handling methods
     auto validate_response_pdu(coap_pdu_t* response) -> bool;
     auto map_coap_error_code(coap_pdu_code_t code) -> coap_error_info;
-    auto should_retry_on_error(const coap_error_info& error_info, std::size_t attempt_count) -> bool;
+    auto should_retry_on_error(const coap_error_info& error_info, std::size_t attempt_count)
+        -> bool;
     auto handle_response_timeout(const std::string& token) -> void;
     auto correlate_response_with_request(const std::string& token, coap_pdu_t* response) -> bool;
 
     // Enhanced multicast methods
-    auto handle_multicast_response(const std::string& token, const std::vector<std::byte>& response_data, const std::string& sender_address) -> void;
+    auto handle_multicast_response(const std::string& token,
+                                   const std::vector<std::byte>& response_data,
+                                   const std::string& sender_address) -> void;
     auto finalize_multicast_response_collection(const std::string& token) -> void;
     auto cleanup_expired_multicast_requests() -> void;
     auto handle_multicast_error(const std::string& token, const std::exception_ptr& error) -> void;
@@ -513,27 +503,23 @@ public:
     using port_type = std::uint16_t;
 
     // Constructor and destructor
-    coap_server(
-        std::string bind_address,
-        std::uint16_t bind_port,
-        kythira::coap_server_config config,
-        metrics_type metrics
-    );
+    coap_server(std::string bind_address, std::uint16_t bind_port,
+                kythira::coap_server_config config, metrics_type metrics);
 
     ~coap_server();
 
     // Handler registration
     auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
-    ) -> void;
+        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+            handler) -> void;
 
     auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
-    ) -> void;
+        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+            handler) -> void;
 
-    auto register_install_snapshot_handler(
-        std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
-    ) -> void;
+    auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
+                                               const kythira::install_snapshot_request<>&)>
+                                               handler) -> void;
 
     // Server lifecycle
     auto start() -> void;
@@ -583,9 +569,12 @@ private:
     std::unordered_map<std::size_t, cache_entry> _serialization_cache;
 
     // RPC handlers
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> _install_snapshot_handler;
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+        _request_vote_handler;
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+        _append_entries_handler;
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+        _install_snapshot_handler;
 
     // Synchronization
     mutable std::mutex _mutex;
@@ -593,26 +582,25 @@ private:
     // Helper methods
     auto setup_resources() -> void;
     auto setup_dtls_context() -> void;
-    auto send_error_response(coap_pdu_t* response, coap_pdu_code_t code, const std::string& message) -> void;
+    auto send_error_response(coap_pdu_t* response, coap_pdu_code_t code, const std::string& message)
+        -> void;
     auto is_duplicate_message(std::uint16_t message_id) -> bool;
     auto record_received_message(std::uint16_t message_id) -> void;
     auto cleanup_expired_messages() -> void;
 
     // Resource handler template
     template<typename Request, typename Response>
-    auto handle_rpc_resource(
-        coap_resource_t* resource,
-        coap_session_t* session,
-        const coap_pdu_t* request,
-        const coap_string_t* query,
-        coap_pdu_t* response,
-        std::function<Response(const Request&)> handler
-    ) -> void;
+    auto handle_rpc_resource(coap_resource_t* resource, coap_session_t* session,
+                             const coap_pdu_t* request, const coap_string_t* query,
+                             coap_pdu_t* response, std::function<Response(const Request&)> handler)
+        -> void;
 
     // Block transfer methods
     auto should_use_block_transfer(const std::vector<std::byte>& payload) const -> bool;
-    auto split_payload_into_blocks(const std::vector<std::byte>& payload) const -> std::vector<std::vector<std::byte>>;
-    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data, const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
+    auto split_payload_into_blocks(const std::vector<std::byte>& payload) const
+        -> std::vector<std::vector<std::byte>>;
+    auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data,
+                           const block_option& block_opt) -> std::optional<std::vector<std::byte>>;
     auto cleanup_expired_block_transfers() -> void;
     auto reject_malformed_request(coap_pdu_t* response, const std::string& reason) -> void;
 
@@ -633,11 +621,17 @@ private:
 
     // Multicast methods
     auto setup_multicast_listener() -> void;
-    auto handle_multicast_message(const std::vector<std::byte>& message_data, const std::string& resource_path, const std::string& sender_address) -> void;
-    auto handle_multicast_request_vote(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
-    auto handle_multicast_append_entries(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
-    auto handle_multicast_install_snapshot(const std::vector<std::byte>& message_data, const std::string& sender_address) -> void;
-    auto send_multicast_response(const std::string& target_address, const std::vector<std::byte>& response_data) -> void;
+    auto handle_multicast_message(const std::vector<std::byte>& message_data,
+                                  const std::string& resource_path,
+                                  const std::string& sender_address) -> void;
+    auto handle_multicast_request_vote(const std::vector<std::byte>& message_data,
+                                       const std::string& sender_address) -> void;
+    auto handle_multicast_append_entries(const std::vector<std::byte>& message_data,
+                                         const std::string& sender_address) -> void;
+    auto handle_multicast_install_snapshot(const std::vector<std::byte>& message_data,
+                                           const std::string& sender_address) -> void;
+    auto send_multicast_response(const std::string& target_address,
+                                 const std::vector<std::byte>& response_data) -> void;
     auto cleanup_expired_multicast_groups() -> void;
 
     // Cipher suite configuration methods
@@ -646,4 +640,4 @@ private:
     auto get_supported_cipher_suites() const -> std::vector<std::string>;
 };
 
-} // namespace kythira
+}  // namespace kythira

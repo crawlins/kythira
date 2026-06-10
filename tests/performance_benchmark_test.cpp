@@ -18,7 +18,7 @@
  * This test validates that the performance characteristics of kythira::Future
  * are reasonable and meet expected performance requirements.
  */
-BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test::timeout(120)) {
     // Performance benchmarks for future operations
 
     BOOST_TEST_MESSAGE("Starting performance benchmarks for future operations");
@@ -36,14 +36,14 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("Future creation/resolution: " << num_operations
-                          << " operations in " << duration.count() << "μs"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("Future creation/resolution: "
+                           << num_operations << " operations in " << duration.count() << "μs"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // Should be able to do at least 10,000 operations per second
         BOOST_CHECK(ops_per_second > 10000);
@@ -64,14 +64,14 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("String future operations: " << num_operations
-                          << " operations in " << duration.count() << "μs"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("String future operations: "
+                           << num_operations << " operations in " << duration.count() << "μs"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // Should be able to do at least 1,000 string operations per second
         BOOST_CHECK(ops_per_second > 1000);
@@ -93,14 +93,14 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("Large object future operations: " << num_operations
-                          << " operations in " << duration.count() << "ms"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("Large object future operations: "
+                           << num_operations << " operations in " << duration.count() << "ms"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // Should be able to do at least 100 large object operations per second
         BOOST_CHECK(ops_per_second > 100);
@@ -133,18 +133,18 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         int expected_operations = num_threads * operations_per_thread;
         BOOST_CHECK_EQUAL(total_operations.load(), expected_operations);
 
         double ops_per_second = (expected_operations * 1000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("Concurrent future operations: " << expected_operations
-                          << " operations across " << num_threads << " threads in "
-                          << duration.count() << "ms"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("Concurrent future operations: "
+                           << expected_operations << " operations across " << num_threads
+                           << " threads in " << duration.count() << "ms"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // Should be able to do at least 5,000 concurrent operations per second
         BOOST_CHECK(ops_per_second > 5000);
@@ -157,9 +157,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         auto start_time = std::chrono::high_resolution_clock::now();
 
         for (int i = 0; i < num_operations; ++i) {
-            auto exception_future = kythira::Future<int>(
-                folly::exception_wrapper(std::runtime_error("test error"))
-            );
+            auto exception_future =
+                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
 
             bool caught_exception = false;
             try {
@@ -172,14 +171,14 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("Exception handling: " << num_operations
-                          << " operations in " << duration.count() << "μs"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("Exception handling: "
+                           << num_operations << " operations in " << duration.count() << "μs"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // Exception handling should still be reasonably fast
         BOOST_CHECK(ops_per_second > 1000);
@@ -203,15 +202,15 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
             }
 
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-                end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
             double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-            BOOST_TEST_MESSAGE("Memory allocation (size " << size << "): "
-                              << num_operations << " operations in "
-                              << duration.count() << "μs"
-                              << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+            BOOST_TEST_MESSAGE("Memory allocation (size "
+                               << size << "): " << num_operations << " operations in "
+                               << duration.count() << "μs"
+                               << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
         }
     }
 
@@ -229,14 +228,14 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, * boost::unit_test
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
         double ops_per_second = (num_operations * 1000000.0) / duration.count();
 
-        BOOST_TEST_MESSAGE("isReady() calls: " << num_operations
-                          << " operations in " << duration.count() << "μs"
-                          << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
+        BOOST_TEST_MESSAGE("isReady() calls: "
+                           << num_operations << " operations in " << duration.count() << "μs"
+                           << " (" << static_cast<int>(ops_per_second) << " ops/sec)");
 
         // isReady() should be very fast
         BOOST_CHECK(ops_per_second > 100000);

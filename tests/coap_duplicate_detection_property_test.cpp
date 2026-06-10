@@ -19,10 +19,10 @@
 #include <unordered_set>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_node_id = 1000;
-    constexpr std::uint16_t max_message_id = 65535;
-    constexpr std::size_t max_duplicate_count = 10;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_node_id = 1000;
+constexpr std::uint16_t max_message_id = 65535;
+constexpr std::size_t max_duplicate_count = 10;
 }
 
 // Define test types for CoAP transport
@@ -35,12 +35,10 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
-
 
 BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)
 
@@ -50,7 +48,7 @@ BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)
 // only the first occurrence should be processed.
 //
 // REWRITTEN: Tests behavior through public API - sends duplicate requests and verifies handling
-BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::timeout(45)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
@@ -71,8 +69,8 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
 
                 // Create client
                 kythira::noop_metrics metrics;
-                kythira::coap_client<test_transport_types> client(
-                    std::move(endpoints), config, metrics);
+                kythira::coap_client<test_transport_types> client(std::move(endpoints), config,
+                                                                  metrics);
 
                 // Create identical requests
                 kythira::request_vote_request<> request;
@@ -83,9 +81,12 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
 
                 // Send the same request multiple times
                 // Duplicate detection should handle this transparently
-                auto future1 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
-                auto future2 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
-                auto future3 = client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
+                auto future1 =
+                    client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
+                auto future2 =
+                    client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
+                auto future3 =
+                    client.send_request_vote(target_node, request, std::chrono::milliseconds{1000});
 
                 // All sends should succeed (duplicate detection is internal)
                 // Note: We don't call .get() because server isn't running
@@ -99,32 +100,36 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, * boost::unit_test::t
 
                 // Create server
                 kythira::noop_metrics metrics;
-                kythira::coap_server<test_transport_types>
-                    server("127.0.0.1", 5683, config, metrics);
+                kythira::coap_server<test_transport_types> server("127.0.0.1", 5683, config,
+                                                                  metrics);
 
                 // Register a handler that tracks calls
                 std::atomic<int> call_count{0};
-                server.register_request_vote_handler([&call_count](const kythira::request_vote_request<>& req) {
-                    call_count++;
-                    kythira::request_vote_response<> response;
-                    response._term = req._term;
-                    response._vote_granted = false;
-                    return response;
-                });
+                server.register_request_vote_handler(
+                    [&call_count](const kythira::request_vote_request<>& req) {
+                        call_count++;
+                        kythira::request_vote_response<> response;
+                        response._term = req._term;
+                        response._vote_granted = false;
+                        return response;
+                    });
 
                 // Server should handle duplicate messages internally
-                // (This is verified through the handler not being called multiple times for duplicates)
-                BOOST_CHECK(server.is_running() == false); // Server not started in test
+                // (This is verified through the handler not being called multiple times for
+                // duplicates)
+                BOOST_CHECK(server.is_running() == false);  // Server not started in test
             }
 
         } catch (const std::exception& e) {
             failures++;
-            BOOST_TEST_MESSAGE("Exception during duplicate detection test " << i << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception during duplicate detection test " << i << ": "
+                                                                            << e.what());
         }
     }
 
-    BOOST_TEST_MESSAGE("Duplicate message detection: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Duplicate message detection: " << (property_test_iterations - failures)
+                                                       << "/" << property_test_iterations
+                                                       << " passed");
 
     BOOST_CHECK_EQUAL(failures, 0);
 }

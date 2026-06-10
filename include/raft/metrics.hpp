@@ -9,15 +9,9 @@ namespace kythira {
 
 // Metrics concept for collecting and reporting performance metrics
 template<typename M>
-concept metrics = requires(
-    M metric,
-    std::string_view name,
-    std::string_view dimension_name,
-    std::string_view dimension_value,
-    std::int64_t count,
-    std::chrono::nanoseconds duration,
-    double value
-) {
+concept metrics = requires(M metric, std::string_view name, std::string_view dimension_name,
+                           std::string_view dimension_value, std::int64_t count,
+                           std::chrono::nanoseconds duration, double value) {
     // Metric configuration
     { metric.set_metric_name(name) } -> std::same_as<void>;
     { metric.add_dimension(dimension_name, dimension_value) } -> std::same_as<void>;
@@ -39,10 +33,8 @@ public:
     // Metric configuration - no-op
     auto set_metric_name([[maybe_unused]] std::string_view name) -> void {}
 
-    auto add_dimension(
-        [[maybe_unused]] std::string_view dimension_name,
-        [[maybe_unused]] std::string_view dimension_value
-    ) -> void {}
+    auto add_dimension([[maybe_unused]] std::string_view dimension_name,
+                       [[maybe_unused]] std::string_view dimension_value) -> void {}
 
     // Recording methods - no-op
     auto add_one() -> void {}
@@ -60,4 +52,4 @@ public:
 // Verify that noop_metrics satisfies the metrics concept
 static_assert(metrics<noop_metrics>, "noop_metrics must satisfy metrics concept");
 
-} // namespace kythira
+}  // namespace kythira

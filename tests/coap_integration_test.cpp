@@ -17,25 +17,22 @@
 #include <set>
 
 namespace {
-    constexpr const char* test_server_address = "127.0.0.1";
-    constexpr std::uint16_t test_server_port = 5700;
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr const char* test_server_address = "127.0.0.1";
+constexpr std::uint16_t test_server_port = 5700;
+constexpr std::uint64_t test_node_id = 1;
+constexpr std::chrono::milliseconds test_timeout{5000};
 
-    // Test data constants
-    constexpr std::uint64_t test_term = 5;
-    constexpr std::uint64_t test_candidate_id = 42;
-    constexpr std::uint64_t test_leader_id = 1;
-    constexpr std::uint64_t test_log_index = 10;
-    constexpr std::uint64_t test_log_term = 4;
+// Test data constants
+constexpr std::uint64_t test_term = 5;
+constexpr std::uint64_t test_candidate_id = 42;
+constexpr std::uint64_t test_leader_id = 1;
+constexpr std::uint64_t test_log_index = 10;
+constexpr std::uint64_t test_log_term = 4;
 
-    const std::vector<std::byte> test_snapshot_data = {
-        std::byte{'t'}, std::byte{'e'}, std::byte{'s'}, std::byte{'t'},
-        std::byte{'_'}, std::byte{'s'}, std::byte{'n'}, std::byte{'a'},
-        std::byte{'p'}, std::byte{'s'}, std::byte{'h'}, std::byte{'o'},
-        std::byte{'t'}, std::byte{'_'}, std::byte{'d'}, std::byte{'a'},
-        std::byte{'t'}, std::byte{'a'}
-    };
+const std::vector<std::byte> test_snapshot_data = {
+    std::byte{'t'}, std::byte{'e'}, std::byte{'s'}, std::byte{'t'}, std::byte{'_'}, std::byte{'s'},
+    std::byte{'n'}, std::byte{'a'}, std::byte{'p'}, std::byte{'s'}, std::byte{'h'}, std::byte{'o'},
+    std::byte{'t'}, std::byte{'_'}, std::byte{'d'}, std::byte{'a'}, std::byte{'t'}, std::byte{'a'}};
 }
 
 // Mock configuration structures for testing
@@ -67,7 +64,7 @@ struct CoAPIntegrationFixture {
 BOOST_FIXTURE_TEST_SUITE(coap_integration_tests, CoAPIntegrationFixture)
 
 // Integration test for client-server communication
-BOOST_AUTO_TEST_CASE(test_client_server_communication, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_client_server_communication, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Integration test: Client-server communication");
 
     // Create server configuration
@@ -92,7 +89,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication, * boost::unit_test::timeo
 
     // Test endpoint mapping
     std::unordered_map<std::uint64_t, std::string> node_endpoints;
-    node_endpoints[test_node_id] = std::format("coap://{}:{}", test_server_address, test_server_port);
+    node_endpoints[test_node_id] =
+        std::format("coap://{}:{}", test_server_address, test_server_port);
 
     BOOST_CHECK_EQUAL(node_endpoints.size(), 1);
     BOOST_CHECK(node_endpoints.find(test_node_id) != node_endpoints.end());
@@ -144,7 +142,7 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication, * boost::unit_test::timeo
 }
 
 // Integration test for DTLS handshake and secure communication
-BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, *boost::unit_test::timeout(180)) {
     BOOST_TEST_MESSAGE("Integration test: DTLS handshake and secure communication");
 
     // Test PSK-based DTLS configuration
@@ -163,8 +161,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, * boost::unit_tes
         std::byte{0x01}, std::byte{0x23}, std::byte{0x45}, std::byte{0x67},
         std::byte{0x89}, std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF},
         std::byte{0xFE}, std::byte{0xDC}, std::byte{0xBA}, std::byte{0x98},
-        std::byte{0x76}, std::byte{0x54}, std::byte{0x32}, std::byte{0x10}
-    };
+        std::byte{0x76}, std::byte{0x54}, std::byte{0x32}, std::byte{0x10}};
 
     // Simulate PSK configuration
     struct psk_config {
@@ -213,13 +210,18 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, * boost::unit_tes
 
     // Test security error handling
     struct security_error {
-        enum class type { certificate_invalid, psk_mismatch, handshake_timeout };
+        enum class type {
+            certificate_invalid,
+            psk_mismatch,
+            handshake_timeout
+        };
         type error_type;
         std::string message;
     };
 
     // Simulate certificate validation failure
-    security_error cert_error{security_error::type::certificate_invalid, "Certificate validation failed"};
+    security_error cert_error{security_error::type::certificate_invalid,
+                              "Certificate validation failed"};
     BOOST_CHECK(cert_error.error_type == security_error::type::certificate_invalid);
     BOOST_CHECK(!cert_error.message.empty());
 
@@ -231,20 +233,20 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, * boost::unit_tes
 }
 
 // Integration test for block transfer with large messages
-BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Integration test: Block transfer with large messages");
 
     // Create configurations with block transfer enabled
     coap_server_config server_config;
     server_config.enable_block_transfer = true;
     server_config.max_block_size = 1024;
-    server_config.max_request_size = 64 * 1024; // 64 KB
+    server_config.max_request_size = 64 * 1024;  // 64 KB
     server_config.enable_dtls = false;
 
     coap_client_config client_config;
     client_config.enable_block_transfer = true;
     client_config.max_block_size = 1024;
-    client_config.ack_timeout = std::chrono::milliseconds{10000}; // Longer for block transfers
+    client_config.ack_timeout = std::chrono::milliseconds{10000};  // Longer for block transfers
     client_config.enable_dtls = false;
 
     // Test block transfer configuration
@@ -260,7 +262,7 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, * boost::unit_test::tim
 
     // Generate large test data (larger than block size)
     std::vector<std::byte> large_data;
-    large_data.reserve(5000); // 5KB > 1KB block size
+    large_data.reserve(5000);  // 5KB > 1KB block size
     for (std::size_t i = 0; i < 5000; ++i) {
         large_data.push_back(static_cast<std::byte>(i % 256));
     }
@@ -277,7 +279,7 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, * boost::unit_test::tim
 
         // Verify block size calculations
         for (std::size_t i = 0; i < num_blocks - 1; ++i) {
-            std::size_t block_size = 1024; // All but last block should be full size
+            std::size_t block_size = 1024;  // All but last block should be full size
             BOOST_CHECK_EQUAL(block_size, 1024);
         }
 
@@ -299,7 +301,8 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, * boost::unit_test::tim
         std::size_t block_start = i * 1024;
         std::size_t block_end = std::min(block_start + 1024, large_data.size());
 
-        std::vector<std::byte> block_data(large_data.begin() + block_start, large_data.begin() + block_end);
+        std::vector<std::byte> block_data(large_data.begin() + block_start,
+                                          large_data.begin() + block_end);
         reassembled.insert(reassembled.end(), block_data.begin(), block_data.end());
     }
 
@@ -311,7 +314,7 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, * boost::unit_test::tim
 }
 
 // Integration test for multicast communication scenarios
-BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Integration test: Multicast communication scenarios");
 
     // Test multicast configuration
@@ -338,7 +341,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, * boost::unit_test:
 
     for (int i = 0; i < 3; ++i) {
         coap_server_config server_config;
-        server_config.enable_dtls = false; // Multicast typically uses plain CoAP
+        server_config.enable_dtls = false;  // Multicast typically uses plain CoAP
         server_config.max_concurrent_sessions = 20;
         multicast_servers.push_back(server_config);
     }
@@ -362,7 +365,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, * boost::unit_test:
     std::vector<multicast_response> responses;
     responses.push_back({1, test_term, true});
     responses.push_back({2, test_term, false});
-    responses.push_back({3, test_term + 1, false}); // Higher term
+    responses.push_back({3, test_term + 1, false});  // Higher term
 
     BOOST_CHECK_EQUAL(responses.size(), 3);
 
@@ -381,13 +384,13 @@ BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, * boost::unit_test:
 
     BOOST_CHECK_EQUAL(votes_granted, 1);
     BOOST_CHECK_EQUAL(max_term, test_term + 1);
-    BOOST_CHECK(!election_won); // 1 out of 3 is not majority
+    BOOST_CHECK(!election_won);  // 1 out of 3 is not majority
 
     BOOST_TEST_MESSAGE("Multicast response aggregation logic validated");
 
     // Test multicast endpoint format
-    std::string multicast_endpoint = std::format("coap://{}:{}",
-        multicast_config.multicast_address, multicast_config.multicast_port);
+    std::string multicast_endpoint = std::format("coap://{}:{}", multicast_config.multicast_address,
+                                                 multicast_config.multicast_port);
     BOOST_CHECK(multicast_endpoint.find("224.0.1.187") != std::string::npos);
     BOOST_CHECK(multicast_endpoint.find("5683") != std::string::npos);
 
@@ -395,16 +398,16 @@ BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, * boost::unit_test:
 }
 
 // Integration test for error recovery and resilience
-BOOST_AUTO_TEST_CASE(test_error_recovery_resilience, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_error_recovery_resilience, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Integration test: Error recovery and resilience");
 
     coap_client_config client_config;
     client_config.enable_dtls = false;
-    client_config.ack_timeout = std::chrono::milliseconds{1000}; // Short timeout for testing
+    client_config.ack_timeout = std::chrono::milliseconds{1000};  // Short timeout for testing
 
     // Test connection to non-existent server configuration
     std::unordered_map<std::uint64_t, std::string> invalid_endpoints;
-    invalid_endpoints[test_node_id] = "coap://127.0.0.1:9999"; // Non-existent server
+    invalid_endpoints[test_node_id] = "coap://127.0.0.1:9999";  // Non-existent server
 
     BOOST_CHECK_EQUAL(invalid_endpoints.size(), 1);
     BOOST_CHECK(invalid_endpoints.find(test_node_id) != invalid_endpoints.end());
@@ -450,7 +453,7 @@ BOOST_AUTO_TEST_CASE(test_error_recovery_resilience, * boost::unit_test::timeout
 }
 
 // Integration test for performance and concurrent requests
-BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, *boost::unit_test::timeout(180)) {
     BOOST_TEST_MESSAGE("Integration test: Performance and concurrent requests");
 
     coap_server_config server_config;
@@ -501,7 +504,7 @@ BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, * boost::unit_test::t
         bool would_complete = (processing_time < req.timeout);
         req.completed = would_complete;
 
-        BOOST_CHECK(req.completed); // All requests should complete within timeout
+        BOOST_CHECK(req.completed);  // All requests should complete within timeout
     }
 
     // Count completed requests
@@ -544,9 +547,9 @@ BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, * boost::unit_test::t
     for (std::size_t i = 0; i < 15; ++i) {
         bool acquired = pool.acquire_connection();
         if (i < 10) {
-            BOOST_CHECK(acquired); // First 10 should succeed
+            BOOST_CHECK(acquired);  // First 10 should succeed
         } else {
-            BOOST_CHECK(!acquired); // Next 5 should fail (pool exhausted)
+            BOOST_CHECK(!acquired);  // Next 5 should fail (pool exhausted)
         }
     }
 
@@ -576,15 +579,12 @@ BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, * boost::unit_test::t
 
     // Simulate metrics collection
     std::vector<std::chrono::milliseconds> response_times = {
-        std::chrono::milliseconds{50},
-        std::chrono::milliseconds{75},
-        std::chrono::milliseconds{100},
-        std::chrono::milliseconds{125},
-        std::chrono::milliseconds{80}
-    };
+        std::chrono::milliseconds{50}, std::chrono::milliseconds{75},
+        std::chrono::milliseconds{100}, std::chrono::milliseconds{125},
+        std::chrono::milliseconds{80}};
 
     metrics.total_requests = response_times.size();
-    metrics.successful_requests = response_times.size(); // All successful for this test
+    metrics.successful_requests = response_times.size();  // All successful for this test
     metrics.failed_requests = 0;
 
     // Calculate min, max, and average
@@ -605,13 +605,14 @@ BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, * boost::unit_test::t
     BOOST_CHECK_EQUAL(metrics.failed_requests, 0);
     BOOST_CHECK_EQUAL(metrics.max_response_time, std::chrono::milliseconds{125});
     BOOST_CHECK_EQUAL(metrics.min_response_time, std::chrono::milliseconds{50});
-    BOOST_CHECK_EQUAL(metrics.avg_response_time, std::chrono::milliseconds{86}); // (50+75+100+125+80)/5 = 86
+    BOOST_CHECK_EQUAL(metrics.avg_response_time,
+                      std::chrono::milliseconds{86});  // (50+75+100+125+80)/5 = 86
 
     BOOST_TEST_MESSAGE("Performance metrics collection validated");
 }
 
 // Integration test for complete request-response cycles
-BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Integration test: Complete request-response cycles");
 
     // Test complete RequestVote cycle
@@ -667,7 +668,7 @@ BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, * boost::unit_test::
         struct response {
             std::uint64_t term{test_term};
             bool success{true};
-            std::uint64_t match_index{test_log_index + 2}; // After appending 3 entries
+            std::uint64_t match_index{test_log_index + 2};  // After appending 3 entries
         };
 
         request req;
@@ -686,7 +687,8 @@ BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, * boost::unit_test::
     // Simulate response generation
     append_cycle.resp.term = append_cycle.req.term;
     append_cycle.resp.success = true;
-    append_cycle.resp.match_index = append_cycle.req.prev_log_index + append_cycle.req.entries.size();
+    append_cycle.resp.match_index =
+        append_cycle.req.prev_log_index + append_cycle.req.entries.size();
     append_cycle.completed = true;
     append_cycle.duration = std::chrono::milliseconds{200};
 
@@ -735,7 +737,7 @@ BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, * boost::unit_test::
     snapshot_cycle.resp.success = true;
     snapshot_cycle.resp.bytes_stored = snapshot_cycle.req.data.size();
     snapshot_cycle.completed = true;
-    snapshot_cycle.duration = std::chrono::milliseconds{500}; // Longer for snapshot
+    snapshot_cycle.duration = std::chrono::milliseconds{500};  // Longer for snapshot
 
     BOOST_CHECK(snapshot_cycle.completed);
     BOOST_CHECK(snapshot_cycle.resp.success);
@@ -768,7 +770,7 @@ BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, * boost::unit_test::
 }
 
 // Integration test for end-to-end message flow with serialization
-BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Integration test: End-to-end message flow with serialization");
 
     // Test message serialization/deserialization cycle
@@ -808,12 +810,13 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
     // Test CoAP message structure
     struct coap_message {
         std::uint8_t version{1};
-        std::uint8_t type{0}; // Confirmable
-        std::uint8_t code{2}; // POST
+        std::uint8_t type{0};  // Confirmable
+        std::uint8_t code{2};  // POST
         std::uint16_t message_id{12345};
-        std::vector<std::byte> token{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        std::vector<std::byte> token{std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                     std::byte{0x04}};
         std::string uri_path{"/raft/request_vote"};
-        std::uint16_t content_format{50}; // JSON
+        std::uint16_t content_format{50};  // JSON
         std::vector<std::byte> payload;
     };
 
@@ -821,12 +824,12 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
     msg.payload = flow.serialized_data;
 
     BOOST_CHECK_EQUAL(msg.version, 1);
-    BOOST_CHECK_EQUAL(msg.type, 0); // Confirmable
-    BOOST_CHECK_EQUAL(msg.code, 2); // POST
+    BOOST_CHECK_EQUAL(msg.type, 0);  // Confirmable
+    BOOST_CHECK_EQUAL(msg.code, 2);  // POST
     BOOST_CHECK_GT(msg.message_id, 0);
     BOOST_CHECK_EQUAL(msg.token.size(), 4);
     BOOST_CHECK_EQUAL(msg.uri_path, "/raft/request_vote");
-    BOOST_CHECK_EQUAL(msg.content_format, 50); // JSON
+    BOOST_CHECK_EQUAL(msg.content_format, 50);  // JSON
     BOOST_CHECK_EQUAL(msg.payload.size(), flow.serialized_data.size());
 
     BOOST_TEST_MESSAGE("CoAP message structure validated");
@@ -834,17 +837,17 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
     // Test response message structure
     struct coap_response {
         std::uint8_t version{1};
-        std::uint8_t type{2}; // Acknowledgment
-        std::uint8_t code{69}; // 2.05 Content
+        std::uint8_t type{2};   // Acknowledgment
+        std::uint8_t code{69};  // 2.05 Content
         std::uint16_t message_id;
         std::vector<std::byte> token;
-        std::uint16_t content_format{50}; // JSON
+        std::uint16_t content_format{50};  // JSON
         std::vector<std::byte> payload;
     };
 
     coap_response resp;
-    resp.message_id = msg.message_id; // Match request
-    resp.token = msg.token; // Match request
+    resp.message_id = msg.message_id;  // Match request
+    resp.token = msg.token;            // Match request
 
     // Simulate response payload
     std::string response_data = "response_data";
@@ -853,8 +856,8 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
     }
 
     BOOST_CHECK_EQUAL(resp.version, 1);
-    BOOST_CHECK_EQUAL(resp.type, 2); // Acknowledgment
-    BOOST_CHECK_EQUAL(resp.code, 69); // 2.05 Content
+    BOOST_CHECK_EQUAL(resp.type, 2);   // Acknowledgment
+    BOOST_CHECK_EQUAL(resp.code, 69);  // 2.05 Content
     BOOST_CHECK_EQUAL(resp.message_id, msg.message_id);
     BOOST_CHECK_EQUAL(resp.token.size(), msg.token.size());
     BOOST_CHECK(resp.token == msg.token);
@@ -872,13 +875,11 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
 
         std::chrono::milliseconds calculate_next_timeout() {
             // Exponential backoff: timeout * 2^retry
-            auto multiplier = 1U << current_retry; // 2^retry
+            auto multiplier = 1U << current_retry;  // 2^retry
             return initial_timeout * multiplier;
         }
 
-        bool should_retry() {
-            return current_retry < max_retries;
-        }
+        bool should_retry() { return current_retry < max_retries; }
 
         void increment_retry() {
             if (should_retry()) {
@@ -898,12 +899,12 @@ BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, * boost::unit_test::timeout(1
     // Simulate first retry
     retry.increment_retry();
     BOOST_CHECK_EQUAL(retry.current_retry, 1);
-    BOOST_CHECK_EQUAL(retry.current_timeout, std::chrono::milliseconds{4000}); // 2000 * 2^1
+    BOOST_CHECK_EQUAL(retry.current_timeout, std::chrono::milliseconds{4000});  // 2000 * 2^1
 
     // Simulate second retry
     retry.increment_retry();
     BOOST_CHECK_EQUAL(retry.current_retry, 2);
-    BOOST_CHECK_EQUAL(retry.current_timeout, std::chrono::milliseconds{8000}); // 2000 * 2^2
+    BOOST_CHECK_EQUAL(retry.current_timeout, std::chrono::milliseconds{8000});  // 2000 * 2^2
 
     BOOST_TEST_MESSAGE("Retry logic with exponential backoff validated");
 }

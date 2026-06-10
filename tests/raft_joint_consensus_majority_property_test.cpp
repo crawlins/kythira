@@ -32,7 +32,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_joint_consensus_majority_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_joint_consensus_majority_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -45,56 +46,65 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{50};
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{50};
 }
 
 BOOST_AUTO_TEST_SUITE(joint_consensus_majority_property_tests)
@@ -105,7 +115,7 @@ BOOST_AUTO_TEST_SUITE(joint_consensus_majority_property_tests)
  * For any joint consensus configuration, the configuration should contain
  * both the old and new node lists.
  */
-BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -151,7 +161,7 @@ BOOST_AUTO_TEST_CASE(joint_consensus_has_both_configurations, * boost::unit_test
  * This test verifies the logic in advance_commit_index() that checks for
  * majorities in both configurations.
  */
-BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -170,7 +180,7 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
 
         // Create leader node (node 2, which is in both configurations)
         constexpr std::uint64_t leader_id = 2;
-    const std::string leader_addr = std::to_string(leader_id);
+        const std::string leader_addr = std::to_string(leader_id);
         auto leader_sim_node = simulator.create_node(leader_addr);
 
         // Create configuration
@@ -181,14 +191,15 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
 
         auto leader = kythira::node<test_raft_types>{
             leader_id,
-            test_raft_types::network_client_type{leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_client_type{
+                leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_server_type{
+                leader_sim_node, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             test_raft_types::persistence_engine_type{},
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         // Set up joint consensus configuration
         kythira::cluster_configuration<std::uint64_t> old_config{};
@@ -215,7 +226,8 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
 
         // Verify that the joint configuration requires both majorities
         // This is tested by the implementation in advance_commit_index()
-        // which checks: (new_replication_count >= new_majority) && (old_replication_count >= old_majority)
+        // which checks: (new_replication_count >= new_majority) && (old_replication_count >=
+        // old_majority)
 
         leader.stop();
     }
@@ -227,7 +239,7 @@ BOOST_AUTO_TEST_CASE(commit_requires_both_majorities, * boost::unit_test::timeou
  * For any joint consensus configuration, the majority calculation should
  * correctly compute (size / 2) + 1 for both old and new configurations.
  */
-BOOST_AUTO_TEST_CASE(majority_calculation_is_correct, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(majority_calculation_is_correct, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 

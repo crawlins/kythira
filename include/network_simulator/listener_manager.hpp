@@ -13,11 +13,9 @@
 namespace network_simulator {
 
 // Forward declaration
-template<typename Types>
-class NetworkSimulator;
+template<typename Types> class NetworkSimulator;
 
-template<typename Types>
-class ListenerManager {
+template<typename Types> class ListenerManager {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
@@ -34,10 +32,9 @@ public:
         std::atomic<bool> is_active{true};
 
         ListenerResource(std::shared_ptr<listener_type> l, endpoint_type ep)
-            : listener(std::move(l))
-            , bound_endpoint(ep)
-            , created(std::chrono::steady_clock::now())
-        {}
+            : listener(std::move(l)),
+              bound_endpoint(ep),
+              created(std::chrono::steady_clock::now()) {}
 
         // Delete copy constructor and assignment due to atomic member
         ListenerResource(const ListenerResource&) = delete;
@@ -45,12 +42,11 @@ public:
 
         // Provide move constructor and assignment
         ListenerResource(ListenerResource&& other) noexcept
-            : listener(std::move(other.listener))
-            , bound_endpoint(std::move(other.bound_endpoint))
-            , created(other.created)
-            , pending_connections(std::move(other.pending_connections))
-            , is_active(other.is_active.load())
-        {}
+            : listener(std::move(other.listener)),
+              bound_endpoint(std::move(other.bound_endpoint)),
+              created(other.created),
+              pending_connections(std::move(other.pending_connections)),
+              is_active(other.is_active.load()) {}
 
         ListenerResource& operator=(ListenerResource&& other) noexcept {
             if (this != &other) {
@@ -84,4 +80,4 @@ private:
     mutable std::mutex _port_allocation_mutex;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator

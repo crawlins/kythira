@@ -14,11 +14,11 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::chrono::milliseconds min_timeout{1};
-    constexpr std::chrono::milliseconds max_timeout{60000};
-    constexpr std::size_t min_size = 1;
-    constexpr std::size_t max_size = 1000000;
+constexpr std::size_t test_iterations = 15;
+constexpr std::chrono::milliseconds min_timeout{1};
+constexpr std::chrono::milliseconds max_timeout{60000};
+constexpr std::size_t min_size = 1;
+constexpr std::size_t max_size = 1000000;
 }
 
 // Global fixture to initialize Folly
@@ -36,10 +36,11 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 /**
  * **Feature: raft-completion, Property 46: Configuration Validation**
  *
- * Property: When timeout configurations are invalid, the system rejects them with clear error messages.
+ * Property: When timeout configurations are invalid, the system rejects them with clear error
+ * messages.
  * **Validates: Requirements 9.5**
  */
-BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, *boost::unit_test::timeout(180)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -51,7 +52,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         std::uniform_int_distribution<std::size_t> size_dist(min_size, max_size);
 
         auto election_timeout_min = std::chrono::milliseconds{timeout_dist(gen)};
-        auto election_timeout_max = std::chrono::milliseconds{std::max(static_cast<int>(election_timeout_min.count()), timeout_dist(gen))};
+        auto election_timeout_max = std::chrono::milliseconds{
+            std::max(static_cast<int>(election_timeout_min.count()), timeout_dist(gen))};
         auto heartbeat_interval = std::chrono::milliseconds{timeout_dist(gen)};
         auto rpc_timeout = std::chrono::milliseconds{timeout_dist(gen)};
         auto append_entries_timeout = std::chrono::milliseconds{timeout_dist(gen)};
@@ -89,7 +91,7 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         }
 
         BOOST_TEST_MESSAGE("✓ Configuration validation consistency verified - Valid: "
-                          << is_valid << ", Errors: " << validation_errors.size());
+                           << is_valid << ", Errors: " << validation_errors.size());
     }
 
     // Test 1: Default configuration validation
@@ -112,30 +114,36 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         BOOST_TEST_MESSAGE("Test 2: Invalid timeout configurations");
 
         // Test zero and negative timeouts
-        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>> invalid_timeout_configs = {
-            {"zero election_timeout_min", [](raft_configuration& config) {
-                config._election_timeout_min = std::chrono::milliseconds{0};
-            }},
-            {"zero heartbeat_interval", [](raft_configuration& config) {
-                config._heartbeat_interval = std::chrono::milliseconds{0};
-            }},
-            {"zero rpc_timeout", [](raft_configuration& config) {
-                config._rpc_timeout = std::chrono::milliseconds{0};
-            }},
-            {"zero append_entries_timeout", [](raft_configuration& config) {
-                config._append_entries_timeout = std::chrono::milliseconds{0};
-            }},
-            {"zero request_vote_timeout", [](raft_configuration& config) {
-                config._request_vote_timeout = std::chrono::milliseconds{0};
-            }},
-            {"zero install_snapshot_timeout", [](raft_configuration& config) {
-                config._install_snapshot_timeout = std::chrono::milliseconds{0};
-            }},
-            {"election_timeout_max less than min", [](raft_configuration& config) {
-                config._election_timeout_min = std::chrono::milliseconds{300};
-                config._election_timeout_max = std::chrono::milliseconds{200};
-            }}
-        };
+        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>>
+            invalid_timeout_configs = {
+                {"zero election_timeout_min",
+                 [](raft_configuration& config) {
+                     config._election_timeout_min = std::chrono::milliseconds{0};
+                 }},
+                {"zero heartbeat_interval",
+                 [](raft_configuration& config) {
+                     config._heartbeat_interval = std::chrono::milliseconds{0};
+                 }},
+                {"zero rpc_timeout",
+                 [](raft_configuration& config) {
+                     config._rpc_timeout = std::chrono::milliseconds{0};
+                 }},
+                {"zero append_entries_timeout",
+                 [](raft_configuration& config) {
+                     config._append_entries_timeout = std::chrono::milliseconds{0};
+                 }},
+                {"zero request_vote_timeout",
+                 [](raft_configuration& config) {
+                     config._request_vote_timeout = std::chrono::milliseconds{0};
+                 }},
+                {"zero install_snapshot_timeout",
+                 [](raft_configuration& config) {
+                     config._install_snapshot_timeout = std::chrono::milliseconds{0};
+                 }},
+                {"election_timeout_max less than min", [](raft_configuration& config) {
+                     config._election_timeout_min = std::chrono::milliseconds{300};
+                     config._election_timeout_max = std::chrono::milliseconds{200};
+                 }}};
 
         for (const auto& [description, modifier] : invalid_timeout_configs) {
             raft_configuration config;
@@ -150,8 +158,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             BOOST_CHECK(!errors.empty());
 
             // Property: Error messages should be descriptive
-            bool found_relevant_error = std::any_of(errors.begin(), errors.end(),
-                [&description](const std::string& error) {
+            bool found_relevant_error =
+                std::any_of(errors.begin(), errors.end(), [&description](const std::string& error) {
                     return error.find("timeout") != std::string::npos ||
                            error.find("positive") != std::string::npos ||
                            error.find("greater") != std::string::npos;
@@ -166,21 +174,18 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
     {
         BOOST_TEST_MESSAGE("Test 3: Invalid size configurations");
 
-        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>> invalid_size_configs = {
-            {"zero max_entries_per_append", [](raft_configuration& config) {
-                config._max_entries_per_append = 0;
-            }},
-            {"zero snapshot_threshold_bytes", [](raft_configuration& config) {
-                config._snapshot_threshold_bytes = 0;
-            }},
-            {"zero snapshot_chunk_size", [](raft_configuration& config) {
-                config._snapshot_chunk_size = 0;
-            }},
-            {"chunk_size greater than threshold", [](raft_configuration& config) {
-                config._snapshot_threshold_bytes = 1000;
-                config._snapshot_chunk_size = 2000;
-            }}
-        };
+        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>>
+            invalid_size_configs = {
+                {"zero max_entries_per_append",
+                 [](raft_configuration& config) { config._max_entries_per_append = 0; }},
+                {"zero snapshot_threshold_bytes",
+                 [](raft_configuration& config) { config._snapshot_threshold_bytes = 0; }},
+                {"zero snapshot_chunk_size",
+                 [](raft_configuration& config) { config._snapshot_chunk_size = 0; }},
+                {"chunk_size greater than threshold", [](raft_configuration& config) {
+                     config._snapshot_threshold_bytes = 1000;
+                     config._snapshot_chunk_size = 2000;
+                 }}};
 
         for (const auto& [description, modifier] : invalid_size_configs) {
             raft_configuration config;
@@ -195,8 +200,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             BOOST_CHECK(!errors.empty());
 
             // Property: Error messages should be descriptive
-            bool found_relevant_error = std::any_of(errors.begin(), errors.end(),
-                [](const std::string& error) {
+            bool found_relevant_error =
+                std::any_of(errors.begin(), errors.end(), [](const std::string& error) {
                     return error.find("positive") != std::string::npos ||
                            error.find("exceed") != std::string::npos ||
                            error.find("chunk") != std::string::npos ||
@@ -212,21 +217,25 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
     {
         BOOST_TEST_MESSAGE("Test 4: Invalid retry policy configurations");
 
-        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>> invalid_retry_configs = {
-            {"invalid heartbeat retry policy", [](raft_configuration& config) {
-                config._heartbeat_retry_policy.initial_delay = std::chrono::milliseconds{0};
-            }},
-            {"invalid append_entries retry policy", [](raft_configuration& config) {
-                config._append_entries_retry_policy.max_delay = std::chrono::milliseconds{50};
-                config._append_entries_retry_policy.initial_delay = std::chrono::milliseconds{100};
-            }},
-            {"invalid request_vote retry policy", [](raft_configuration& config) {
-                config._request_vote_retry_policy.backoff_multiplier = 1.0;
-            }},
-            {"invalid install_snapshot retry policy", [](raft_configuration& config) {
-                config._install_snapshot_retry_policy.jitter_factor = -0.1;
-            }}
-        };
+        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>>
+            invalid_retry_configs = {
+                {"invalid heartbeat retry policy",
+                 [](raft_configuration& config) {
+                     config._heartbeat_retry_policy.initial_delay = std::chrono::milliseconds{0};
+                 }},
+                {"invalid append_entries retry policy",
+                 [](raft_configuration& config) {
+                     config._append_entries_retry_policy.max_delay = std::chrono::milliseconds{50};
+                     config._append_entries_retry_policy.initial_delay =
+                         std::chrono::milliseconds{100};
+                 }},
+                {"invalid request_vote retry policy",
+                 [](raft_configuration& config) {
+                     config._request_vote_retry_policy.backoff_multiplier = 1.0;
+                 }},
+                {"invalid install_snapshot retry policy", [](raft_configuration& config) {
+                     config._install_snapshot_retry_policy.jitter_factor = -0.1;
+                 }}};
 
         for (const auto& [description, modifier] : invalid_retry_configs) {
             raft_configuration config;
@@ -241,8 +250,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             BOOST_CHECK(!errors.empty());
 
             // Property: Error messages should mention retry policy
-            bool found_retry_policy_error = std::any_of(errors.begin(), errors.end(),
-                [](const std::string& error) {
+            bool found_retry_policy_error =
+                std::any_of(errors.begin(), errors.end(), [](const std::string& error) {
                     return error.find("retry_policy") != std::string::npos;
                 });
             BOOST_CHECK(found_retry_policy_error);
@@ -255,21 +264,25 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
     {
         BOOST_TEST_MESSAGE("Test 5: Invalid adaptive timeout configurations");
 
-        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>> invalid_adaptive_configs = {
-            {"invalid adaptive timeout config - zero min_timeout", [](raft_configuration& config) {
-                config._adaptive_timeout_config.min_timeout = std::chrono::milliseconds{0};
-            }},
-            {"invalid adaptive timeout config - max less than min", [](raft_configuration& config) {
-                config._adaptive_timeout_config.min_timeout = std::chrono::milliseconds{1000};
-                config._adaptive_timeout_config.max_timeout = std::chrono::milliseconds{500};
-            }},
-            {"invalid adaptive timeout config - bad adaptation factor", [](raft_configuration& config) {
-                config._adaptive_timeout_config.adaptation_factor = 1.0;
-            }},
-            {"invalid adaptive timeout config - zero sample window", [](raft_configuration& config) {
-                config._adaptive_timeout_config.sample_window_size = 0;
-            }}
-        };
+        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>>
+            invalid_adaptive_configs = {
+                {"invalid adaptive timeout config - zero min_timeout",
+                 [](raft_configuration& config) {
+                     config._adaptive_timeout_config.min_timeout = std::chrono::milliseconds{0};
+                 }},
+                {"invalid adaptive timeout config - max less than min",
+                 [](raft_configuration& config) {
+                     config._adaptive_timeout_config.min_timeout = std::chrono::milliseconds{1000};
+                     config._adaptive_timeout_config.max_timeout = std::chrono::milliseconds{500};
+                 }},
+                {"invalid adaptive timeout config - bad adaptation factor",
+                 [](raft_configuration& config) {
+                     config._adaptive_timeout_config.adaptation_factor = 1.0;
+                 }},
+                {"invalid adaptive timeout config - zero sample window",
+                 [](raft_configuration& config) {
+                     config._adaptive_timeout_config.sample_window_size = 0;
+                 }}};
 
         for (const auto& [description, modifier] : invalid_adaptive_configs) {
             raft_configuration config;
@@ -284,13 +297,14 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             BOOST_CHECK(!errors.empty());
 
             // Property: Error messages should mention adaptive timeout
-            bool found_adaptive_error = std::any_of(errors.begin(), errors.end(),
-                [](const std::string& error) {
+            bool found_adaptive_error =
+                std::any_of(errors.begin(), errors.end(), [](const std::string& error) {
                     return error.find("adaptive_timeout") != std::string::npos;
                 });
             BOOST_CHECK(found_adaptive_error);
 
-            BOOST_TEST_MESSAGE("✓ Invalid adaptive timeout configuration rejected: " << description);
+            BOOST_TEST_MESSAGE(
+                "✓ Invalid adaptive timeout configuration rejected: " << description);
         }
     }
 
@@ -300,7 +314,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
 
         raft_configuration incompatible_config;
         incompatible_config._heartbeat_interval = std::chrono::milliseconds{200};
-        incompatible_config._election_timeout_min = std::chrono::milliseconds{400}; // Ratio: 2.0 (should fail)
+        incompatible_config._election_timeout_min =
+            std::chrono::milliseconds{400};  // Ratio: 2.0 (should fail)
 
         // Property: Incompatible heartbeat/election timeout should fail validation
         BOOST_CHECK(!incompatible_config.validate());
@@ -308,8 +323,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         auto errors = incompatible_config.get_validation_errors();
 
         // Property: Should have compatibility error
-        bool found_compatibility_error = std::any_of(errors.begin(), errors.end(),
-            [](const std::string& error) {
+        bool found_compatibility_error =
+            std::any_of(errors.begin(), errors.end(), [](const std::string& error) {
                 return error.find("heartbeat_interval") != std::string::npos &&
                        error.find("election_timeout") != std::string::npos;
             });
@@ -325,12 +340,12 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         raft_configuration multi_error_config;
 
         // Introduce multiple errors
-        multi_error_config._election_timeout_min = std::chrono::milliseconds{0}; // Error 1
-        multi_error_config._heartbeat_interval = std::chrono::milliseconds{0}; // Error 2
-        multi_error_config._max_entries_per_append = 0; // Error 3
-        multi_error_config._snapshot_chunk_size = 2000; // Error 4 (with threshold = 1000)
+        multi_error_config._election_timeout_min = std::chrono::milliseconds{0};  // Error 1
+        multi_error_config._heartbeat_interval = std::chrono::milliseconds{0};    // Error 2
+        multi_error_config._max_entries_per_append = 0;                           // Error 3
+        multi_error_config._snapshot_chunk_size = 2000;  // Error 4 (with threshold = 1000)
         multi_error_config._snapshot_threshold_bytes = 1000;
-        multi_error_config._heartbeat_retry_policy.max_attempts = 0; // Error 5
+        multi_error_config._heartbeat_retry_policy.max_attempts = 0;  // Error 5
 
         // Property: Configuration with multiple errors should fail validation
         BOOST_CHECK(!multi_error_config.validate());
@@ -338,7 +353,7 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         auto errors = multi_error_config.get_validation_errors();
 
         // Property: Should have multiple validation errors
-        BOOST_CHECK_GE(errors.size(), 3); // At least 3 errors
+        BOOST_CHECK_GE(errors.size(), 3);  // At least 3 errors
 
         // Property: Each error should be unique
         std::set<std::string> unique_errors(errors.begin(), errors.end());
@@ -351,21 +366,22 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
     {
         BOOST_TEST_MESSAGE("Test 8: Error message clarity and specificity");
 
-        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>> specific_error_tests = {
-            {"election_timeout_min must be positive", [](raft_configuration& config) {
-                config._election_timeout_min = std::chrono::milliseconds{0};
-            }},
-            {"heartbeat_interval must be positive", [](raft_configuration& config) {
-                config._heartbeat_interval = std::chrono::milliseconds{0};
-            }},
-            {"max_entries_per_append must be positive", [](raft_configuration& config) {
-                config._max_entries_per_append = 0;
-            }},
-            {"snapshot_chunk_size should not exceed threshold", [](raft_configuration& config) {
-                config._snapshot_threshold_bytes = 1000;
-                config._snapshot_chunk_size = 2000;
-            }}
-        };
+        std::vector<std::pair<std::string, std::function<void(raft_configuration&)>>>
+            specific_error_tests = {
+                {"election_timeout_min must be positive",
+                 [](raft_configuration& config) {
+                     config._election_timeout_min = std::chrono::milliseconds{0};
+                 }},
+                {"heartbeat_interval must be positive",
+                 [](raft_configuration& config) {
+                     config._heartbeat_interval = std::chrono::milliseconds{0};
+                 }},
+                {"max_entries_per_append must be positive",
+                 [](raft_configuration& config) { config._max_entries_per_append = 0; }},
+                {"snapshot_chunk_size should not exceed threshold", [](raft_configuration& config) {
+                     config._snapshot_threshold_bytes = 1000;
+                     config._snapshot_chunk_size = 2000;
+                 }}};
 
         for (const auto& [expected_error_content, modifier] : specific_error_tests) {
             raft_configuration config;
@@ -377,15 +393,16 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             BOOST_CHECK(!errors.empty());
 
             // Property: Error message should contain expected content
-            bool found_expected_content = std::any_of(errors.begin(), errors.end(),
-                [&expected_error_content](const std::string& error) {
+            bool found_expected_content = std::any_of(
+                errors.begin(), errors.end(), [&expected_error_content](const std::string& error) {
                     return error.find("positive") != std::string::npos ||
                            error.find("exceed") != std::string::npos ||
                            error.find("greater") != std::string::npos;
                 });
             BOOST_CHECK(found_expected_content);
 
-            BOOST_TEST_MESSAGE("✓ Error message contains expected content for: " << expected_error_content);
+            BOOST_TEST_MESSAGE(
+                "✓ Error message contains expected content for: " << expected_error_content);
         }
     }
 
@@ -397,7 +414,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         raft_configuration min_valid_config;
         min_valid_config._election_timeout_min = std::chrono::milliseconds{3};
         min_valid_config._election_timeout_max = std::chrono::milliseconds{4};
-        min_valid_config._heartbeat_interval = std::chrono::milliseconds{1}; // 3/1 = 3.0 (exactly at boundary)
+        min_valid_config._heartbeat_interval =
+            std::chrono::milliseconds{1};  // 3/1 = 3.0 (exactly at boundary)
         min_valid_config._rpc_timeout = std::chrono::milliseconds{1};
         min_valid_config._append_entries_timeout = std::chrono::milliseconds{1};
         min_valid_config._request_vote_timeout = std::chrono::milliseconds{1};
@@ -413,7 +431,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
         raft_configuration large_valid_config;
         large_valid_config._election_timeout_min = std::chrono::milliseconds{30000};
         large_valid_config._election_timeout_max = std::chrono::milliseconds{60000};
-        large_valid_config._heartbeat_interval = std::chrono::milliseconds{10000}; // 30000/10000 = 3.0
+        large_valid_config._heartbeat_interval =
+            std::chrono::milliseconds{10000};  // 30000/10000 = 3.0
         large_valid_config._rpc_timeout = std::chrono::milliseconds{30000};
         large_valid_config._append_entries_timeout = std::chrono::milliseconds{60000};
         large_valid_config._request_vote_timeout = std::chrono::milliseconds{30000};
@@ -446,7 +465,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
 
             // Generate random values
             auto election_min = std::chrono::milliseconds{timeout_dist(gen)};
-            auto election_max = std::chrono::milliseconds{std::max(static_cast<int>(election_min.count()), timeout_dist(gen))};
+            auto election_max = std::chrono::milliseconds{
+                std::max(static_cast<int>(election_min.count()), timeout_dist(gen))};
             auto heartbeat = std::chrono::milliseconds{timeout_dist(gen)};
 
             config._election_timeout_min = election_min;
@@ -458,10 +478,12 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             config._install_snapshot_timeout = std::chrono::milliseconds{timeout_dist(gen)};
             config._max_entries_per_append = size_dist(gen);
             config._snapshot_threshold_bytes = size_dist(gen);
-            config._snapshot_chunk_size = std::min(config._snapshot_threshold_bytes, size_dist(gen));
+            config._snapshot_chunk_size =
+                std::min(config._snapshot_threshold_bytes, size_dist(gen));
 
             // Configure retry policies
-            config._heartbeat_retry_policy.initial_delay = std::chrono::milliseconds{timeout_dist(gen) / 10};
+            config._heartbeat_retry_policy.initial_delay =
+                std::chrono::milliseconds{timeout_dist(gen) / 10};
             config._heartbeat_retry_policy.max_delay = std::chrono::milliseconds{timeout_dist(gen)};
             config._heartbeat_retry_policy.backoff_multiplier = multiplier_dist(gen);
             config._heartbeat_retry_policy.jitter_factor = jitter_dist(gen);
@@ -486,8 +508,8 @@ BOOST_AUTO_TEST_CASE(raft_configuration_validation_property_test, * boost::unit_
             }
         }
 
-        BOOST_TEST_MESSAGE("✓ Random validation stress test - Valid: " << valid_configs
-                          << ", Invalid: " << invalid_configs);
+        BOOST_TEST_MESSAGE("✓ Random validation stress test - Valid: "
+                           << valid_configs << ", Invalid: " << invalid_configs);
     }
 
     BOOST_TEST_MESSAGE("All configuration validation property tests passed!");

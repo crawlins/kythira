@@ -8,183 +8,166 @@
 #include <memory>
 
 namespace {
-    constexpr const char* test_name = "executor_attachment_support_property_test";
+constexpr const char* test_name = "executor_attachment_support_property_test";
 
-    // Mock executor type that satisfies basic executor requirements
-    struct MockExecutor {
-        void add(std::function<void()> func) {
-            func(); // Execute immediately for testing
-        }
+// Mock executor type that satisfies basic executor requirements
+struct MockExecutor {
+    void add(std::function<void()> func) {
+        func();  // Execute immediately for testing
+    }
 
-        auto getKeepAliveToken() -> MockExecutor* {
-            return this;
-        }
-    };
+    auto getKeepAliveToken() -> MockExecutor* { return this; }
+};
 
-    // Mock future type that supports executor attachment via 'via' method
-    template<typename T>
-    struct MockFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+// Mock future type that supports executor attachment via 'via' method
+template<typename T> struct MockFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds) const { return true; }
 
-        // Continuation methods required by future concept
-        template<typename F>
-        auto thenValue(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
+    // Continuation methods required by future concept
+    template<typename F> auto thenValue(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
 
-        template<typename F>
-        auto thenTry(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
+    template<typename F> auto thenTry(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
 
-        template<typename F>
-        auto thenError(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
+    template<typename F> auto thenError(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
 
-        // Via method for executor attachment - this is what we're testing
-        template<typename Executor>
-        auto via(Executor* executor) -> MockFuture<T> {
-            // In real implementation, this would attach the executor
-            // For testing, we just return a new future
-            return MockFuture<T>{};
-        }
+    // Via method for executor attachment - this is what we're testing
+    template<typename Executor> auto via(Executor* executor) -> MockFuture<T> {
+        // In real implementation, this would attach the executor
+        // For testing, we just return a new future
+        return MockFuture<T>{};
+    }
 
-        // Delay method for time-based scheduling
-        auto delay(std::chrono::milliseconds duration) -> MockFuture<T> {
-            return MockFuture<T>{};
-        }
+    // Delay method for time-based scheduling
+    auto delay(std::chrono::milliseconds duration) -> MockFuture<T> { return MockFuture<T>{}; }
 
-        // Within method for timeout operations
-        auto within(std::chrono::milliseconds timeout) -> MockFuture<T> {
-            return MockFuture<T>{};
-        }
-    };
+    // Within method for timeout operations
+    auto within(std::chrono::milliseconds timeout) -> MockFuture<T> { return MockFuture<T>{}; }
+};
 
-    // Void specialization
-    template<>
-    struct MockFuture<void> {
-        void get() {}
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+// Void specialization
+template<> struct MockFuture<void> {
+    void get() {}
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds) const { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
+    template<typename F> auto thenValue(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
 
-        template<typename F>
-        auto thenTry(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
+    template<typename F> auto thenTry(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
 
-        template<typename F>
-        auto thenError(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
+    template<typename F> auto thenError(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
 
-        template<typename Executor>
-        auto via(Executor* executor) -> MockFuture<void> {
-            return MockFuture<void>{};
-        }
+    template<typename Executor> auto via(Executor* executor) -> MockFuture<void> {
+        return MockFuture<void>{};
+    }
 
-        auto delay(std::chrono::milliseconds duration) -> MockFuture<void> {
-            return MockFuture<void>{};
-        }
+    auto delay(std::chrono::milliseconds duration) -> MockFuture<void> {
+        return MockFuture<void>{};
+    }
 
-        auto within(std::chrono::milliseconds timeout) -> MockFuture<void> {
-            return MockFuture<void>{};
-        }
-    };
+    auto within(std::chrono::milliseconds timeout) -> MockFuture<void> {
+        return MockFuture<void>{};
+    }
+};
 
-    // Mock future type that does NOT support executor attachment
-    template<typename T>
-    struct IncompleteFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+// Mock future type that does NOT support executor attachment
+template<typename T> struct IncompleteFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds) const { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> IncompleteFuture<T> { return IncompleteFuture<T>{}; }
+    template<typename F> auto thenValue(F&& func) -> IncompleteFuture<T> {
+        return IncompleteFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenTry(F&& func) -> IncompleteFuture<T> { return IncompleteFuture<T>{}; }
+    template<typename F> auto thenTry(F&& func) -> IncompleteFuture<T> {
+        return IncompleteFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenError(F&& func) -> IncompleteFuture<T> { return IncompleteFuture<T>{}; }
+    template<typename F> auto thenError(F&& func) -> IncompleteFuture<T> {
+        return IncompleteFuture<T>{};
+    }
 
-        // Has via method (required by basic future concept) but missing delay and within
-        template<typename Executor>
-        auto via(Executor* executor) -> IncompleteFuture<T> { return IncompleteFuture<T>{}; }
+    // Has via method (required by basic future concept) but missing delay and within
+    template<typename Executor> auto via(Executor* executor) -> IncompleteFuture<T> {
+        return IncompleteFuture<T>{};
+    }
 
-        // Missing delay and within methods - should fail future_continuation concept
-    };
+    // Missing delay and within methods - should fail future_continuation concept
+};
 
-    // Different executor implementations
-    struct InlineExecutor {
-        void add(std::function<void()> func) { func(); }
-        auto getKeepAliveToken() -> InlineExecutor* { return this; }
-    };
+// Different executor implementations
+struct InlineExecutor {
+    void add(std::function<void()> func) { func(); }
+    auto getKeepAliveToken() -> InlineExecutor* { return this; }
+};
 
-    struct ThreadPoolExecutor {
-        void add(std::function<void()> func) { func(); }
-        auto getKeepAliveToken() -> ThreadPoolExecutor* { return this; }
-    };
+struct ThreadPoolExecutor {
+    void add(std::function<void()> func) { func(); }
+    auto getKeepAliveToken() -> ThreadPoolExecutor* { return this; }
+};
 
-    // Mock future that works with any executor type
-    template<typename T>
-    struct GenericFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+// Mock future that works with any executor type
+template<typename T> struct GenericFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds) const { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
+    template<typename F> auto thenValue(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
 
-        template<typename F>
-        auto thenTry(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
+    template<typename F> auto thenTry(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
 
-        template<typename F>
-        auto thenError(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
+    template<typename F> auto thenError(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
 
-        // Generic via method that works with any executor type
-        template<typename Executor>
-        auto via(Executor* executor) -> GenericFuture<T> {
-            return GenericFuture<T>{};
-        }
+    // Generic via method that works with any executor type
+    template<typename Executor> auto via(Executor* executor) -> GenericFuture<T> {
+        return GenericFuture<T>{};
+    }
 
-        auto delay(std::chrono::milliseconds duration) -> GenericFuture<T> {
-            return GenericFuture<T>{};
-        }
+    auto delay(std::chrono::milliseconds duration) -> GenericFuture<T> {
+        return GenericFuture<T>{};
+    }
 
-        auto within(std::chrono::milliseconds timeout) -> GenericFuture<T> {
-            return GenericFuture<T>{};
-        }
-    };
+    auto within(std::chrono::milliseconds timeout) -> GenericFuture<T> {
+        return GenericFuture<T>{};
+    }
+};
 
-    struct ChainableExecutor {
-        void add(std::function<void()> func) { func(); }
-        auto getKeepAliveToken() -> ChainableExecutor* { return this; }
-    };
+struct ChainableExecutor {
+    void add(std::function<void()> func) { func(); }
+    auto getKeepAliveToken() -> ChainableExecutor* { return this; }
+};
 
-    template<typename T>
-    struct ChainableFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+template<typename T> struct ChainableFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds) const { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> ChainableFuture<T> { return ChainableFuture<T>{}; }
+    template<typename F> auto thenValue(F&& func) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenTry(F&& func) -> ChainableFuture<T> { return ChainableFuture<T>{}; }
+    template<typename F> auto thenTry(F&& func) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenError(F&& func) -> ChainableFuture<T> { return ChainableFuture<T>{}; }
+    template<typename F> auto thenError(F&& func) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
 
-        template<typename Executor>
-        auto via(Executor* executor) -> ChainableFuture<T> {
-            return ChainableFuture<T>{};
-        }
+    template<typename Executor> auto via(Executor* executor) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
 
-        auto delay(std::chrono::milliseconds duration) -> ChainableFuture<T> {
-            return ChainableFuture<T>{};
-        }
+    auto delay(std::chrono::milliseconds duration) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
 
-        auto within(std::chrono::milliseconds timeout) -> ChainableFuture<T> {
-            return ChainableFuture<T>{};
-        }
-    };
+    auto within(std::chrono::milliseconds timeout) -> ChainableFuture<T> {
+        return ChainableFuture<T>{};
+    }
+};
 }
 
 BOOST_AUTO_TEST_SUITE(executor_attachment_support_property_tests)
@@ -192,10 +175,11 @@ BOOST_AUTO_TEST_SUITE(executor_attachment_support_property_tests)
 /**
  * **Feature: folly-concepts-enhancement, Property 9: Executor attachment support**
  *
- * Property: For any future and executor type, via method should enable executor attachment for continuations
+ * Property: For any future and executor type, via method should enable executor attachment for
+ * continuations
  * **Validates: Requirements 8.1**
  */
-BOOST_AUTO_TEST_CASE(property_executor_attachment_support, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_executor_attachment_support, *boost::unit_test::timeout(60)) {
     // Test that future_continuation concept properly validates executor attachment semantics
 
     // Test 1: Verify that MockFuture satisfies future concept
@@ -211,8 +195,7 @@ BOOST_AUTO_TEST_CASE(property_executor_attachment_support, * boost::unit_test::t
                   "MockFuture<void> should satisfy future_continuation concept");
 
     // Test 3: Verify that MockExecutor satisfies executor concept
-    static_assert(kythira::executor<MockExecutor>,
-                  "MockExecutor should satisfy executor concept");
+    static_assert(kythira::executor<MockExecutor>, "MockExecutor should satisfy executor concept");
 
     // Test 4: Test runtime executor attachment behavior
     MockFuture<int> int_future;
@@ -254,7 +237,7 @@ BOOST_AUTO_TEST_CASE(property_executor_attachment_support, * boost::unit_test::t
 /**
  * Test that future_continuation concept rejects types without proper executor attachment
  */
-BOOST_AUTO_TEST_CASE(test_future_continuation_concept_rejection, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_continuation_concept_rejection, *boost::unit_test::timeout(30)) {
     // Test that IncompleteFuture satisfies basic future concept
     static_assert(kythira::future<IncompleteFuture<int>, int>,
                   "IncompleteFuture<int> should satisfy basic future concept");
@@ -270,7 +253,7 @@ BOOST_AUTO_TEST_CASE(test_future_continuation_concept_rejection, * boost::unit_t
 /**
  * Test executor attachment with different executor types
  */
-BOOST_AUTO_TEST_CASE(test_multiple_executor_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_multiple_executor_types, *boost::unit_test::timeout(30)) {
     // Test that different executor types work with the same future
     static_assert(kythira::executor<InlineExecutor>,
                   "InlineExecutor should satisfy executor concept");
@@ -301,16 +284,15 @@ BOOST_AUTO_TEST_CASE(test_multiple_executor_types, * boost::unit_test::timeout(3
 /**
  * Test chaining of executor attachment operations
  */
-BOOST_AUTO_TEST_CASE(test_executor_attachment_chaining, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_executor_attachment_chaining, *boost::unit_test::timeout(30)) {
     // Test chaining of continuation operations
     ChainableFuture<int> future;
     ChainableExecutor executor;
 
     // Test that operations can be chained
-    auto chained = future
-        .via(&executor)
-        .delay(std::chrono::milliseconds{100})
-        .within(std::chrono::milliseconds{1000});
+    auto chained = future.via(&executor)
+                       .delay(std::chrono::milliseconds{100})
+                       .within(std::chrono::milliseconds{1000});
 
     static_assert(std::is_same_v<decltype(chained), ChainableFuture<int>>,
                   "Chained operations should return ChainableFuture<int>");

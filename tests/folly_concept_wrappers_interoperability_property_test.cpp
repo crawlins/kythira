@@ -20,11 +20,11 @@
 #include "../include/concepts/future.hpp"
 
 namespace {
-    constexpr std::size_t test_iterations = 100;
-    constexpr std::chrono::seconds test_timeout{30};
-    constexpr const char* test_string_value = "interop_test";
-    constexpr int test_int_value = 123;
-    constexpr const char* test_exception_message = "interop exception";
+constexpr std::size_t test_iterations = 100;
+constexpr std::chrono::seconds test_timeout{30};
+constexpr const char* test_string_value = "interop_test";
+constexpr int test_int_value = 123;
+constexpr const char* test_exception_message = "interop exception";
 }
 
 /**
@@ -35,7 +35,7 @@ namespace {
  *
  * **Validates: Requirements 10.2, 10.4**
  */
-BOOST_AUTO_TEST_CASE(test_wrapper_type_interoperability, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_wrapper_type_interoperability, *boost::unit_test::timeout(30)) {
     // Test that different wrapper types can work together seamlessly
 
     // Test Promise -> Future interoperability
@@ -73,7 +73,7 @@ BOOST_AUTO_TEST_CASE(test_wrapper_type_interoperability, * boost::unit_test::tim
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_mixed_wrapper_usage_in_same_code, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mixed_wrapper_usage_in_same_code, *boost::unit_test::timeout(30)) {
     // Test using multiple wrapper types in the same code block
 
     auto cpu_executor = std::make_shared<folly::CPUThreadPoolExecutor>(2);
@@ -108,7 +108,7 @@ BOOST_AUTO_TEST_CASE(test_mixed_wrapper_usage_in_same_code, * boost::unit_test::
     BOOST_CHECK_THROW(exceptional_future.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(test_conversion_between_wrapper_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_conversion_between_wrapper_types, *boost::unit_test::timeout(30)) {
     // Test conversion utilities between wrapper types
 
     // Test folly::Try -> kythira::Try conversion
@@ -159,13 +159,12 @@ BOOST_AUTO_TEST_CASE(test_conversion_between_wrapper_types, * boost::unit_test::
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_concept_constrained_template_compatibility, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_concept_constrained_template_compatibility,
+                     *boost::unit_test::timeout(30)) {
     // Test that wrappers work with concept-constrained template functions
 
     // Simple template function that requires future concept
-    auto process_int_future = [](kythira::Future<int> future) -> int {
-        return future.get();
-    };
+    auto process_int_future = [](kythira::Future<int> future) -> int { return future.get(); };
 
     // Simple template function that requires promise concept
     auto fulfill_int_promise = [](kythira::Promise<int>& promise, int value) -> void {
@@ -173,7 +172,8 @@ BOOST_AUTO_TEST_CASE(test_concept_constrained_template_compatibility, * boost::u
     };
 
     // Simple template function that requires executor concept
-    auto submit_work_to_executor = [](kythira::Executor& executor, std::function<void()> work) -> void {
+    auto submit_work_to_executor = [](kythira::Executor& executor,
+                                      std::function<void()> work) -> void {
         executor.add(std::move(work));
     };
 
@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constrained_template_compatibility, * boost::u
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_collection_operations_interoperability, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_collection_operations_interoperability, *boost::unit_test::timeout(30)) {
     // Test that collection operations work with mixed wrapper types
 
     // Create futures using different methods
@@ -237,7 +237,8 @@ BOOST_AUTO_TEST_CASE(test_collection_operations_interoperability, * boost::unit_
     BOOST_CHECK_EQUAL(results[2].value(), test_int_value + 2);
 }
 
-BOOST_AUTO_TEST_CASE(test_property_interoperability_with_random_data, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_property_interoperability_with_random_data,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> int_dist(-1000, 1000);
@@ -278,7 +279,7 @@ BOOST_AUTO_TEST_CASE(test_property_interoperability_with_random_data, * boost::u
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_void_type_interoperability, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_type_interoperability, *boost::unit_test::timeout(30)) {
     // Test interoperability specifically with void types (which use folly::Unit internally)
 
     // Test void Promise -> void Future
@@ -302,9 +303,7 @@ BOOST_AUTO_TEST_CASE(test_void_type_interoperability, * boost::unit_test::timeou
     // Test void Future chaining
     {
         kythira::Future<void> void_future;
-        auto chained = std::move(void_future).thenValue([]() {
-            return test_int_value;
-        });
+        auto chained = std::move(void_future).thenValue([]() { return test_int_value; });
 
         BOOST_CHECK(chained.isReady());
         BOOST_CHECK_EQUAL(chained.get(), test_int_value);

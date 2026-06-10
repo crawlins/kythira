@@ -20,21 +20,23 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value_base = 100;
-    constexpr const char* test_exception_msg = "collection test exception";
-    constexpr std::size_t property_test_iterations = 25;
-    constexpr std::size_t max_collection_size = 10;
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds long_timeout{1000};
+constexpr int test_value_base = 100;
+constexpr const char* test_exception_msg = "collection test exception";
+constexpr std::size_t property_test_iterations = 25;
+constexpr std::size_t max_collection_size = 10;
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds long_timeout{1000};
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 5: Collection Operations**
  *
- * Property: For any collection of futures, collection operations should return results according to their specified strategy (all, any, first N) with proper ordering and timeout handling
+ * Property: For any collection of futures, collection operations should return results according to
+ * their specified strategy (all, any, first N) with proper ordering and timeout handling
  * **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5**
  */
-BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_test,
+                     *boost::unit_test::timeout(120)) {
     // Test 1: collectAll preserves order and waits for all futures
     {
         std::vector<Future<int>> futures;
@@ -70,7 +72,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                 int value = test_value_base + static_cast<int>(i);
                 futures.push_back(FutureFactory::makeFuture(value));
             } else {
-                std::string exception_msg = std::string(test_exception_msg) + "_" + std::to_string(i);
+                std::string exception_msg =
+                    std::string(test_exception_msg) + "_" + std::to_string(i);
                 auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                 futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
             }
@@ -98,9 +101,12 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         std::vector<Future<int>> futures;
 
         // Create futures where we know which one will complete first
-        futures.push_back(FutureFactory::makeFuture(test_value_base));     // This should complete first
-        futures.push_back(FutureFactory::makeFuture(test_value_base + 1)); // This should also be ready
-        futures.push_back(FutureFactory::makeFuture(test_value_base + 2)); // This should also be ready
+        futures.push_back(
+            FutureFactory::makeFuture(test_value_base));  // This should complete first
+        futures.push_back(
+            FutureFactory::makeFuture(test_value_base + 1));  // This should also be ready
+        futures.push_back(
+            FutureFactory::makeFuture(test_value_base + 2));  // This should also be ready
 
         auto any_result = FutureCollector::collectAny(std::move(futures));
         auto result = any_result.get();
@@ -173,7 +179,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
             std::size_t index = std::get<0>(result);
             Try<int> try_value = std::get<1>(result);
 
-            BOOST_CHECK(index < 7); // Should be valid index
+            BOOST_CHECK(index < 7);  // Should be valid index
             BOOST_CHECK(try_value.hasValue());
 
             int expected_value = test_value_base + static_cast<int>(index);
@@ -185,7 +191,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         // Verify no duplicate indices
         std::sort(returned_indices.begin(), returned_indices.end());
         auto unique_end = std::unique(returned_indices.begin(), returned_indices.end());
-        BOOST_CHECK_EQUAL(std::distance(returned_indices.begin(), unique_end), static_cast<long>(n));
+        BOOST_CHECK_EQUAL(std::distance(returned_indices.begin(), unique_end),
+                          static_cast<long>(n));
 
         BOOST_TEST_MESSAGE("collectN returns exactly N futures with correct indices");
     }
@@ -212,7 +219,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                 int value = test_value_base + static_cast<int>(iteration * 100 + i);
                 futures.push_back(FutureFactory::makeFuture(value));
             } else {
-                std::string exception_msg = "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
+                std::string exception_msg =
+                    "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
                 auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                 futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
             }
@@ -226,7 +234,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
                     futures_copy.push_back(FutureFactory::makeFuture(value));
                 } else {
-                    std::string exception_msg = "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
+                    std::string exception_msg =
+                        "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
                     auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                     futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
                 }
@@ -256,7 +265,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
                     futures_copy.push_back(FutureFactory::makeFuture(value));
                 } else {
-                    std::string exception_msg = "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
+                    std::string exception_msg =
+                        "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
                     auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                     futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
                 }
@@ -291,7 +301,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
                     futures_copy.push_back(FutureFactory::makeFuture(value));
                 } else {
-                    std::string exception_msg = "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
+                    std::string exception_msg =
+                        "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
                     auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                     futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
                 }
@@ -315,7 +326,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                 // Verify result matches expectation for that index
                 if (should_succeed[index]) {
                     BOOST_CHECK(try_value.hasValue());
-                    int expected_value = test_value_base + static_cast<int>(iteration * 100 + index);
+                    int expected_value =
+                        test_value_base + static_cast<int>(iteration * 100 + index);
                     BOOST_CHECK_EQUAL(try_value.value(), expected_value);
                 } else {
                     BOOST_CHECK(try_value.hasException());
@@ -338,7 +350,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
             immediate_futures.push_back(FutureFactory::makeFuture(value));
         }
 
-        auto timeout_all_result = FutureCollector::collectAllWithTimeout(std::move(immediate_futures), long_timeout);
+        auto timeout_all_result =
+            FutureCollector::collectAllWithTimeout(std::move(immediate_futures), long_timeout);
         auto timeout_results = timeout_all_result.get();
 
         BOOST_CHECK_EQUAL(timeout_results.size(), 3);
@@ -351,7 +364,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         std::vector<Future<int>> immediate_futures2;
         immediate_futures2.push_back(FutureFactory::makeFuture(test_value_base));
 
-        auto timeout_any_result = FutureCollector::collectAnyWithTimeout(std::move(immediate_futures2), long_timeout);
+        auto timeout_any_result =
+            FutureCollector::collectAnyWithTimeout(std::move(immediate_futures2), long_timeout);
         auto timeout_result = timeout_any_result.get();
 
         std::size_t index = std::get<0>(timeout_result);
@@ -374,7 +388,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
             all_failed_futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
         }
 
-        auto all_failed_result = FutureCollector::collectAnyWithoutException(std::move(all_failed_futures));
+        auto all_failed_result =
+            FutureCollector::collectAnyWithoutException(std::move(all_failed_futures));
 
         // This should throw since no futures succeed
         BOOST_CHECK_THROW(all_failed_result.get(), std::exception);
@@ -432,7 +447,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         std::vector<Future<void>> void_futures3;
         void_futures3.push_back(FutureFactory::makeFuture());
 
-        auto void_any_success_result = FutureCollector::collectAnyWithoutException(std::move(void_futures3));
+        auto void_any_success_result =
+            FutureCollector::collectAnyWithoutException(std::move(void_futures3));
         auto void_index = void_any_success_result.get();
 
         BOOST_CHECK_EQUAL(void_index, 0);
@@ -444,7 +460,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 /**
  * Test collection operation performance and scalability
  */
-BOOST_AUTO_TEST_CASE(collection_operations_performance_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(collection_operations_performance_test, *boost::unit_test::timeout(60)) {
     constexpr std::size_t large_collection_size = 100;
 
     // Test collectAll with large collection
@@ -460,10 +476,11 @@ BOOST_AUTO_TEST_CASE(collection_operations_performance_test, * boost::unit_test:
         auto results = all_result.get();
         auto end_time = std::chrono::steady_clock::now();
 
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         BOOST_CHECK_EQUAL(results.size(), large_collection_size);
-        BOOST_CHECK(duration < std::chrono::milliseconds(1000)); // Should complete quickly
+        BOOST_CHECK(duration < std::chrono::milliseconds(1000));  // Should complete quickly
 
         // Verify all results are correct
         for (std::size_t i = 0; i < results.size(); ++i) {
@@ -486,10 +503,11 @@ BOOST_AUTO_TEST_CASE(collection_operations_performance_test, * boost::unit_test:
         auto results = n_result.get();
         auto end_time = std::chrono::steady_clock::now();
 
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         BOOST_CHECK_EQUAL(results.size(), n);
-        BOOST_CHECK(duration < std::chrono::milliseconds(1000)); // Should complete quickly
+        BOOST_CHECK(duration < std::chrono::milliseconds(1000));  // Should complete quickly
     }
 
     BOOST_TEST_MESSAGE("Collection operations perform well with large collections");
@@ -498,7 +516,7 @@ BOOST_AUTO_TEST_CASE(collection_operations_performance_test, * boost::unit_test:
 /**
  * Test collection operation thread safety
  */
-BOOST_AUTO_TEST_CASE(collection_operations_thread_safety_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(collection_operations_thread_safety_test, *boost::unit_test::timeout(60)) {
     constexpr std::size_t num_threads = 4;
     constexpr std::size_t operations_per_thread = 10;
 
@@ -527,7 +545,8 @@ BOOST_AUTO_TEST_CASE(collection_operations_thread_safety_test, * boost::unit_tes
                                 all_valid = false;
                                 break;
                             }
-                            int expected = test_value_base + static_cast<int>(t * 1000 + op * 10 + i);
+                            int expected =
+                                test_value_base + static_cast<int>(t * 1000 + op * 10 + i);
                             if (results[i].value() != expected) {
                                 all_valid = false;
                                 break;

@@ -19,8 +19,7 @@ namespace kythira {
  *
  * @tparam T The value type of the futures being collected
  */
-template<typename T>
-class raft_future_collector {
+template<typename T> class raft_future_collector {
 public:
     // Delete constructors to make this a static-only utility class
     raft_future_collector() = delete;
@@ -41,10 +40,9 @@ public:
      * @return Future containing vector of results from majority (may include failed responses)
      * @throws std::invalid_argument if futures vector is empty
      */
-    static auto collect_majority(
-        std::vector<kythira::Future<T>> futures,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<std::vector<T>> {
+    static auto collect_majority(std::vector<kythira::Future<T>> futures,
+                                 std::chrono::milliseconds timeout)
+        -> kythira::Future<std::vector<T>> {
         if (futures.empty()) {
             return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
                 kythira::future_collection_exception("collect_majority", 0));
@@ -75,8 +73,9 @@ public:
                     } else {
                         failed_count++;
                     }
-                    // Note: We ignore futures that failed with exceptions (timeouts, network errors)
-                    // These are different from "failed responses" which are valid responses with success=false
+                    // Note: We ignore futures that failed with exceptions (timeouts, network
+                    // errors) These are different from "failed responses" which are valid responses
+                    // with success=false
                 }
 
                 if constexpr (std::is_void_v<T>) {
@@ -88,15 +87,17 @@ public:
                         }
                     }
                     if (completed_count >= majority_count) {
-                        return std::vector<T>{}; // Empty vector indicates success for void
+                        return std::vector<T>{};  // Empty vector indicates success for void
                     } else {
-                        throw kythira::future_collection_exception("collect_majority", failed_count);
+                        throw kythira::future_collection_exception("collect_majority",
+                                                                   failed_count);
                     }
                 } else {
                     if (completed_results.size() >= majority_count) {
                         return completed_results;
                     } else {
-                        throw kythira::future_collection_exception("collect_majority", failed_count);
+                        throw kythira::future_collection_exception("collect_majority",
+                                                                   failed_count);
                     }
                 }
             });
@@ -112,10 +113,9 @@ public:
      * @param timeout Maximum time to wait for each future
      * @return Future containing vector of Try<T> results
      */
-    static auto collect_all_with_timeout(
-        std::vector<kythira::Future<T>> futures,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<std::vector<kythira::Try<T>>> {
+    static auto collect_all_with_timeout(std::vector<kythira::Future<T>> futures,
+                                         std::chrono::milliseconds timeout)
+        -> kythira::Future<std::vector<kythira::Try<T>>> {
         if (futures.empty()) {
             return kythira::FutureFactory::makeFuture(std::vector<kythira::Try<T>>{});
         }
@@ -139,10 +139,9 @@ public:
      * @param timeout Maximum time to wait for any future
      * @return Future containing tuple of index and result from first completed future
      */
-    static auto collect_any_with_timeout(
-        std::vector<kythira::Future<T>> futures,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<std::tuple<std::size_t, T>> {
+    static auto collect_any_with_timeout(std::vector<kythira::Future<T>> futures,
+                                         std::chrono::milliseconds timeout)
+        -> kythira::Future<std::tuple<std::size_t, T>> {
         if (futures.empty()) {
             return kythira::FutureFactory::makeExceptionalFuture<std::tuple<std::size_t, T>>(
                 kythira::future_collection_exception("collect_any_with_timeout", 0));
@@ -157,9 +156,7 @@ public:
 
         if constexpr (std::is_void_v<T>) {
             return kythira::FutureCollector::collectAnyWithoutException(std::move(timed_futures))
-                .thenValue([](std::size_t index) {
-                    return std::make_tuple(index, T{});
-                });
+                .thenValue([](std::size_t index) { return std::make_tuple(index, T{}); });
         } else {
             return kythira::FutureCollector::collectAnyWithoutException(std::move(timed_futures));
         }
@@ -195,18 +192,16 @@ public:
      * @return Future containing results based on the strategy
      */
     enum class collection_strategy {
-        all,        // Wait for all futures
-        majority,   // Wait for majority of futures
-        any,        // Wait for any single future
-        count       // Wait for specific count of futures
+        all,       // Wait for all futures
+        majority,  // Wait for majority of futures
+        any,       // Wait for any single future
+        count      // Wait for specific count of futures
     };
 
-    static auto collect_with_strategy(
-        std::vector<kythira::Future<T>> futures,
-        collection_strategy strategy,
-        std::chrono::milliseconds timeout,
-        std::size_t count = 0
-    ) -> kythira::Future<std::vector<T>> {
+    static auto collect_with_strategy(std::vector<kythira::Future<T>> futures,
+                                      collection_strategy strategy,
+                                      std::chrono::milliseconds timeout, std::size_t count = 0)
+        -> kythira::Future<std::vector<T>> {
         switch (strategy) {
             case collection_strategy::all:
                 return collect_all_with_timeout(std::move(futures), timeout)
@@ -272,4 +267,4 @@ public:
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

@@ -20,11 +20,11 @@
 #include "../include/concepts/future.hpp"
 
 namespace {
-    constexpr std::size_t test_iterations = 100;
-    constexpr std::chrono::seconds test_timeout{30};
-    constexpr const char* test_string_value = "test_value";
-    constexpr int test_int_value = 42;
-    constexpr const char* test_exception_message = "test exception";
+constexpr std::size_t test_iterations = 100;
+constexpr std::chrono::seconds test_timeout{30};
+constexpr const char* test_string_value = "test_value";
+constexpr int test_int_value = 42;
+constexpr const char* test_exception_message = "test exception";
 }
 
 /**
@@ -35,7 +35,8 @@ namespace {
  *
  * **Validates: Requirements 10.1, 10.2, 10.3, 10.5**
  */
-BOOST_AUTO_TEST_CASE(test_backward_compatibility_with_existing_try_and_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_backward_compatibility_with_existing_try_and_future,
+                     *boost::unit_test::timeout(30)) {
     // Test that existing Try and Future classes continue to work as expected
 
     // Test existing Try<int> functionality
@@ -87,7 +88,7 @@ BOOST_AUTO_TEST_CASE(test_backward_compatibility_with_existing_try_and_future, *
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_api_compatibility_with_existing_code, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_api_compatibility_with_existing_code, *boost::unit_test::timeout(30)) {
     // Test that new wrappers maintain the same API as existing implementations
 
     // Test Promise API compatibility
@@ -141,16 +142,15 @@ BOOST_AUTO_TEST_CASE(test_api_compatibility_with_existing_code, * boost::unit_te
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_no_breaking_changes_to_existing_functionality, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_no_breaking_changes_to_existing_functionality,
+                     *boost::unit_test::timeout(30)) {
     // Test that existing functionality continues to work without breaking changes
 
     // Test that existing Future chaining still works
     {
         kythira::Future<int> future(test_int_value);
 
-        auto chained = std::move(future).thenValue([](int value) {
-            return value * 2;
-        });
+        auto chained = std::move(future).thenValue([](int value) { return value * 2; });
 
         BOOST_CHECK(chained.isReady());
         BOOST_CHECK_EQUAL(chained.get(), test_int_value * 2);
@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(test_no_breaking_changes_to_existing_functionality, * boost
             try {
                 std::rethrow_exception(ep);
             } catch (const std::runtime_error& e) {
-                return test_int_value; // Return default value on error
+                return test_int_value;  // Return default value on error
             }
             return 0;
         });
@@ -178,16 +178,14 @@ BOOST_AUTO_TEST_CASE(test_no_breaking_changes_to_existing_functionality, * boost
     {
         kythira::Future<void> future;
 
-        auto chained = std::move(future).thenValue([]() {
-            return test_int_value;
-        });
+        auto chained = std::move(future).thenValue([]() { return test_int_value; });
 
         BOOST_CHECK(chained.isReady());
         BOOST_CHECK_EQUAL(chained.get(), test_int_value);
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_concept_compliance_maintained, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_concept_compliance_maintained, *boost::unit_test::timeout(30)) {
     // Test that existing classes still satisfy their concepts
 
     // Test that Try still satisfies try_type concept
@@ -223,7 +221,8 @@ BOOST_AUTO_TEST_CASE(test_concept_compliance_maintained, * boost::unit_test::tim
                   "KeepAlive must still satisfy keep_alive concept");
 }
 
-BOOST_AUTO_TEST_CASE(test_property_backward_compatibility_with_random_data, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_property_backward_compatibility_with_random_data,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> int_dist(-1000, 1000);

@@ -36,9 +36,9 @@ BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
 // according to the tasks but are not yet available in the current implementation
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test_message";
-    constexpr auto test_timeout = std::chrono::milliseconds{100};
+constexpr int test_value = 42;
+constexpr const char* test_string = "test_message";
+constexpr auto test_timeout = std::chrono::milliseconds{100};
 }
 
 // ============================================================================
@@ -47,7 +47,7 @@ namespace {
 
 BOOST_AUTO_TEST_SUITE(semi_promise_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(semi_promise_value_setting_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(semi_promise_value_setting_test, *boost::unit_test::timeout(15)) {
     // Test kythira::SemiPromise<T> wrapper class setValue functionality
     // Validates: Requirements 11.2, 11.3, 11.4
 
@@ -61,7 +61,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_value_setting_test, * boost::unit_test::timeou
     BOOST_CHECK(semi_promise.get_folly_promise().isFulfilled());
 }
 
-BOOST_AUTO_TEST_CASE(semi_promise_exception_handling_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(semi_promise_exception_handling_test, *boost::unit_test::timeout(15)) {
     // Test exception handling in kythira::SemiPromise
     // Validates: Requirements 11.3, 11.4
 
@@ -80,14 +80,14 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_handling_test, * boost::unit_test::t
     BOOST_CHECK(semi_promise2.isFulfilled());
 }
 
-BOOST_AUTO_TEST_CASE(semi_promise_void_handling_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(semi_promise_void_handling_test, *boost::unit_test::timeout(15)) {
     // Test void/Unit handling in kythira::SemiPromise<void>
     // Validates: Requirements 11.3, 11.4
 
     kythira::SemiPromise<void> semi_promise;
     BOOST_CHECK(!semi_promise.isFulfilled());
 
-    semi_promise.setValue(); // Should handle void case
+    semi_promise.setValue();  // Should handle void case
     BOOST_CHECK(semi_promise.isFulfilled());
 
     // Test with Unit parameter
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(promise_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(promise_future_retrieval_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(promise_future_retrieval_test, *boost::unit_test::timeout(15)) {
     // Test kythira::Promise<T> wrapper class getFuture functionality
     // Validates: Requirements 11.1, 11.5
 
@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(promise_future_retrieval_test, * boost::unit_test::timeout(
     BOOST_CHECK_EQUAL(std::move(future).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(promise_inheritance_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(promise_inheritance_test, *boost::unit_test::timeout(15)) {
     // Test that kythira::Promise extends kythira::SemiPromise functionality
     // Validates: Requirements 11.1, 11.5
 
@@ -145,7 +145,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(executor_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(executor_work_submission_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_work_submission_test, *boost::unit_test::timeout(30)) {
     // Test kythira::Executor wrapper class work submission
     // Validates: Requirements 12.1, 12.3
 
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(executor_work_submission_test, * boost::unit_test::timeout(
     BOOST_CHECK(executor.get() == cpu_executor.get());
 }
 
-BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, *boost::unit_test::timeout(15)) {
     // Test proper lifetime management in kythira::Executor
     // Validates: Requirements 12.1, 12.3
 
@@ -186,7 +186,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(keep_alive_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_test, *boost::unit_test::timeout(15)) {
     // Test kythira::KeepAlive wrapper class pointer access
     // Validates: Requirements 12.2, 12.4, 12.5
 
@@ -198,7 +198,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_test, * boost::unit_test::timeout
     BOOST_CHECK(keep_alive.is_valid());
 }
 
-BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, *boost::unit_test::timeout(15)) {
     // Test proper reference counting in kythira::KeepAlive
     // Validates: Requirements 12.2, 12.4, 12.5
 
@@ -206,8 +206,8 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, * boost::unit_test::tim
     auto folly_keep_alive = folly::getKeepAliveToken(cpu_executor.get());
 
     kythira::KeepAlive keep_alive1(folly_keep_alive);
-    kythira::KeepAlive keep_alive2 = keep_alive1; // Copy
-    kythira::KeepAlive keep_alive3 = std::move(keep_alive1); // Move
+    kythira::KeepAlive keep_alive2 = keep_alive1;             // Copy
+    kythira::KeepAlive keep_alive3 = std::move(keep_alive1);  // Move
 
     BOOST_CHECK(keep_alive2.get() == cpu_executor.get());
     BOOST_CHECK(keep_alive3.get() == cpu_executor.get());
@@ -223,7 +223,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_factory_tests)
 
-BOOST_AUTO_TEST_CASE(future_factory_make_future_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_factory_make_future_test, *boost::unit_test::timeout(15)) {
     // Test kythira::FutureFactory static class makeFuture functionality
     // Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5
 
@@ -237,7 +237,7 @@ BOOST_AUTO_TEST_CASE(future_factory_make_future_test, * boost::unit_test::timeou
     BOOST_CHECK_NO_THROW(std::move(void_future).get());
 }
 
-BOOST_AUTO_TEST_CASE(future_factory_exceptional_future_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_factory_exceptional_future_test, *boost::unit_test::timeout(15)) {
     // Test makeExceptionalFuture in kythira::FutureFactory
     // Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5
 
@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE(future_factory_exceptional_future_test, * boost::unit_test:
     BOOST_CHECK_THROW(std::move(future2).get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(future_factory_ready_future_test, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_factory_ready_future_test, *boost::unit_test::timeout(15)) {
     // Test makeReadyFuture in kythira::FutureFactory
     // Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.5
 
@@ -280,7 +280,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_collector_tests)
 
-BOOST_AUTO_TEST_CASE(future_collector_collect_all_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_collect_all_test, *boost::unit_test::timeout(30)) {
     // Test kythira::FutureCollector static class collectAll functionality
     // Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5
 
@@ -301,7 +301,7 @@ BOOST_AUTO_TEST_CASE(future_collector_collect_all_test, * boost::unit_test::time
     BOOST_CHECK_EQUAL(results[2].value(), 3);
 }
 
-BOOST_AUTO_TEST_CASE(future_collector_collect_any_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_collect_any_test, *boost::unit_test::timeout(30)) {
     // Test collectAny in kythira::FutureCollector
     // Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5
 
@@ -316,7 +316,7 @@ BOOST_AUTO_TEST_CASE(future_collector_collect_any_test, * boost::unit_test::time
     BOOST_CHECK_EQUAL(std::get<1>(result).value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_collector_collect_n_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_collect_n_test, *boost::unit_test::timeout(30)) {
     // Test collectN in kythira::FutureCollector
     // Validates: Requirements 14.1, 14.2, 14.3, 14.4, 14.5
 
@@ -343,7 +343,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_continuation_tests)
 
-BOOST_AUTO_TEST_CASE(future_via_executor_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_via_executor_test, *boost::unit_test::timeout(30)) {
     // Test via() method in kythira::Future
     // Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5
 
@@ -360,7 +360,7 @@ BOOST_AUTO_TEST_CASE(future_via_executor_test, * boost::unit_test::timeout(30)) 
     BOOST_CHECK_EQUAL(std::move(continued2).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_delay_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(future_delay_test, *boost::unit_test::timeout(60)) {
     // Test delay() method in kythira::Future
     // Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5
 
@@ -377,7 +377,7 @@ BOOST_AUTO_TEST_CASE(future_delay_test, * boost::unit_test::timeout(60)) {
     BOOST_CHECK_GE(elapsed.count(), 100);
 }
 
-BOOST_AUTO_TEST_CASE(future_within_timeout_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_within_timeout_test, *boost::unit_test::timeout(30)) {
     // Test within() method in kythira::Future
     // Validates: Requirements 15.1, 15.2, 15.3, 15.4, 15.5
 
@@ -395,7 +395,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_transformation_tests)
 
-BOOST_AUTO_TEST_CASE(future_then_value_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_then_value_test, *boost::unit_test::timeout(30)) {
     // Test thenValue() method in kythira::Future
     // Validates: Requirements 16.1, 16.2, 16.3, 16.4, 16.5
 
@@ -410,7 +410,7 @@ BOOST_AUTO_TEST_CASE(future_then_value_test, * boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(std::move(transformed2).get(), test_value * 3);
 }
 
-BOOST_AUTO_TEST_CASE(future_then_error_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_then_error_test, *boost::unit_test::timeout(30)) {
     // Test thenError() method in kythira::Future
     // Validates: Requirements 16.1, 16.2, 16.3, 16.4, 16.5
 
@@ -427,7 +427,7 @@ BOOST_AUTO_TEST_CASE(future_then_error_test, * boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(std::move(handled2).get(), test_value + 1);
 }
 
-BOOST_AUTO_TEST_CASE(future_ensure_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_ensure_test, *boost::unit_test::timeout(30)) {
     // Test ensure() method in kythira::Future
     // Validates: Requirements 16.1, 16.2, 16.3, 16.4, 16.5
 
@@ -449,7 +449,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(wrapper_integration_tests)
 
-BOOST_AUTO_TEST_CASE(promise_future_integration_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_future_integration_test, *boost::unit_test::timeout(30)) {
     // Test integration between kythira::Promise and kythira::Future
     // Validates: Requirements 20.1, 20.2, 20.3, 20.4, 20.5
 
@@ -462,7 +462,7 @@ BOOST_AUTO_TEST_CASE(promise_future_integration_test, * boost::unit_test::timeou
     BOOST_CHECK_EQUAL(std::move(future).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(executor_future_integration_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_future_integration_test, *boost::unit_test::timeout(30)) {
     // Test integration between kythira::Executor and kythira::Future
     // Validates: Requirements 20.1, 20.2, 20.3, 20.4, 20.5
 
@@ -474,7 +474,7 @@ BOOST_AUTO_TEST_CASE(executor_future_integration_test, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(std::move(continued).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(factory_collector_integration_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(factory_collector_integration_test, *boost::unit_test::timeout(30)) {
     // Test integration between kythira::FutureFactory and kythira::FutureCollector
     // Validates: Requirements 20.1, 20.2, 20.3, 20.4, 20.5
 
@@ -500,7 +500,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(performance_validation_tests)
 
-BOOST_AUTO_TEST_CASE(wrapper_overhead_validation_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(wrapper_overhead_validation_test, *boost::unit_test::timeout(60)) {
     // Validate that wrapper classes have minimal overhead
     // Validates: Requirements 19.5
 
@@ -511,7 +511,7 @@ BOOST_AUTO_TEST_CASE(wrapper_overhead_validation_test, * boost::unit_test::timeo
     for (std::size_t i = 0; i < num_operations; ++i) {
         auto future = folly::makeFuture(static_cast<int>(i));
         auto result = std::move(future).get();
-        (void)result; // Suppress unused variable warning
+        (void)result;  // Suppress unused variable warning
     }
     auto end_folly = std::chrono::steady_clock::now();
 
@@ -520,19 +520,21 @@ BOOST_AUTO_TEST_CASE(wrapper_overhead_validation_test, * boost::unit_test::timeo
     for (std::size_t i = 0; i < num_operations; ++i) {
         auto future = kythira::FutureFactory::makeFuture(static_cast<int>(i));
         auto result = std::move(future).get();
-        (void)result; // Suppress unused variable warning
+        (void)result;  // Suppress unused variable warning
     }
     auto end_wrapper = std::chrono::steady_clock::now();
 
-    auto folly_time = std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
-    auto wrapper_time = std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
+    auto folly_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_folly - start_folly);
+    auto wrapper_time =
+        std::chrono::duration_cast<std::chrono::microseconds>(end_wrapper - start_wrapper);
 
-    // Wrapper should not be more than 100% slower than direct folly usage (2x overhead is acceptable)
-    // This accounts for system noise and ensures the test is not flaky
+    // Wrapper should not be more than 100% slower than direct folly usage (2x overhead is
+    // acceptable) This accounts for system noise and ensures the test is not flaky
     BOOST_CHECK_LE(wrapper_time.count(), folly_time.count() * 2.0);
 }
 
-BOOST_AUTO_TEST_CASE(memory_usage_validation_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(memory_usage_validation_test, *boost::unit_test::timeout(30)) {
     // Validate that wrapper classes don't significantly increase memory usage
     // Validates: Requirements 19.5
 

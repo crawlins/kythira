@@ -7,14 +7,14 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_payload = "test_message";
-    constexpr std::chrono::milliseconds test_latency{10};
-    constexpr double test_reliability = 1.0; // 100% reliability for reliable delivery
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_payload = "test_message";
+constexpr std::chrono::milliseconds test_latency{10};
+constexpr double test_reliability = 1.0;  // 100% reliability for reliable delivery
 }
 
-BOOST_AUTO_TEST_CASE(network_node_receive_message_property_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_node_receive_message_property_test, *boost::unit_test::timeout(30)) {
     // **Property 9: Receive Returns Sent Message**
     // **Validates: Requirements 5.2**
 
@@ -50,13 +50,8 @@ BOOST_AUTO_TEST_CASE(network_node_receive_message_property_test, * boost::unit_t
         unsigned short dst_port = static_cast<unsigned short>(9000 + i);
 
         // Create message from node_a to node_b
-        Message<DefaultNetworkTypes> msg(
-            test_node_a,
-            src_port,
-            test_node_b,
-            dst_port,
-            original_payload
-        );
+        Message<DefaultNetworkTypes> msg(test_node_a, src_port, test_node_b, dst_port,
+                                         original_payload);
 
         // Send message
         auto send_future = node_a->send(std::move(msg));
@@ -78,9 +73,10 @@ BOOST_AUTO_TEST_CASE(network_node_receive_message_property_test, * boost::unit_t
                 auto received_payload = received_msg.payload();
                 BOOST_CHECK_EQUAL(received_payload.size(), original_payload.size());
 
-                for (std::size_t j = 0; j < original_payload.size() && j < received_payload.size(); ++j) {
+                for (std::size_t j = 0; j < original_payload.size() && j < received_payload.size();
+                     ++j) {
                     BOOST_CHECK_EQUAL(static_cast<int>(received_payload[j]),
-                                    static_cast<int>(original_payload[j]));
+                                      static_cast<int>(original_payload[j]));
                 }
             }
         }

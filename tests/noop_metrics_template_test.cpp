@@ -4,7 +4,8 @@
 
 // Template function that uses metrics concept
 template<kythira::metrics M>
-auto record_operation(M& metric, std::string_view operation_name, std::chrono::nanoseconds duration) -> void {
+auto record_operation(M& metric, std::string_view operation_name, std::chrono::nanoseconds duration)
+    -> void {
     metric.set_metric_name(operation_name);
     metric.add_dimension("operation_type", "test");
     metric.add_duration(duration);
@@ -13,8 +14,7 @@ auto record_operation(M& metric, std::string_view operation_name, std::chrono::n
 }
 
 // Template class that uses metrics concept
-template<kythira::metrics M>
-class operation_tracker {
+template<kythira::metrics M> class operation_tracker {
 public:
     explicit operation_tracker(M& metric) : _metric(metric) {}
 

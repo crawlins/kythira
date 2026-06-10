@@ -32,10 +32,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -56,7 +56,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * accurate state information including current status, establishment time, and data
  * transfer statistics.
  */
-BOOST_AUTO_TEST_CASE(property_connection_state_tracking, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_state_tracking, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -174,12 +174,14 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, * boost::unit_test::tim
                 if (updated_info->stats.bytes_sent == test_data.size() &&
                     updated_info->stats.messages_sent == 1) {
                     ++success_count;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": Data transfer stats updated correctly");
+                    BOOST_TEST_MESSAGE("Iteration " << i
+                                                    << ": Data transfer stats updated correctly");
                 } else {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": Data transfer stats incorrect - bytes_sent: "
-                                     << updated_info->stats.bytes_sent << ", messages_sent: "
-                                     << updated_info->stats.messages_sent);
+                    BOOST_TEST_MESSAGE("Iteration "
+                                       << i << ": Data transfer stats incorrect - bytes_sent: "
+                                       << updated_info->stats.bytes_sent
+                                       << ", messages_sent: " << updated_info->stats.messages_sent);
                 }
 
                 // Verify last activity time updated
@@ -192,7 +194,8 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, * boost::unit_test::tim
                 }
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection info not found after stats update");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Connection info not found after stats update");
             }
 
             // Test Case 3: Verify connection state after close
@@ -208,7 +211,8 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, * boost::unit_test::tim
                     BOOST_TEST_MESSAGE("Iteration " << i << ": Connection state updated to CLOSED");
                 } else {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": Connection state not updated to CLOSED");
+                    BOOST_TEST_MESSAGE("Iteration " << i
+                                                    << ": Connection state not updated to CLOSED");
                 }
             } else {
                 ++failures;
@@ -227,10 +231,12 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, * boost::unit_test::tim
 
             if (found) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection found in get_all_connections");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Connection found in get_all_connections");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection not found in get_all_connections");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Connection not found in get_all_connections");
             }
 
         } catch (const std::exception& e) {

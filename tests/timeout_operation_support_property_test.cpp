@@ -8,117 +8,103 @@
 #include <functional>
 
 namespace {
-    constexpr const char* test_name = "timeout_operation_support_property_test";
+constexpr const char* test_name = "timeout_operation_support_property_test";
 
-    // Mock future type that supports timeout operations
-    template<typename T>
-    struct TimeoutCapableFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
+// Mock future type that supports timeout operations
+template<typename T> struct TimeoutCapableFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
 
-        // Wait with timeout - this is the key timeout operation
-        bool wait(std::chrono::milliseconds timeout) const {
-            return true; // Simulate successful wait within timeout
-        }
+    // Wait with timeout - this is the key timeout operation
+    bool wait(std::chrono::milliseconds timeout) const {
+        return true;  // Simulate successful wait within timeout
+    }
 
-        // Continuation methods required by future concept
-        template<typename F>
-        auto thenValue(F&& func) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
+    // Continuation methods required by future concept
+    template<typename F> auto thenValue(F&& func) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenTry(F&& func) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
+    template<typename F> auto thenTry(F&& func) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenError(F&& func) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
+    template<typename F> auto thenError(F&& func) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
 
-        // Via method for executor attachment
-        template<typename Executor>
-        auto via(Executor* executor) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
+    // Via method for executor attachment
+    template<typename Executor> auto via(Executor* executor) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
 
-        // Within method for timeout operations - key timeout functionality
-        auto within(std::chrono::milliseconds timeout) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
+    // Within method for timeout operations - key timeout functionality
+    auto within(std::chrono::milliseconds timeout) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
 
-        // Delay method for time-based scheduling
-        auto delay(std::chrono::milliseconds duration) -> TimeoutCapableFuture<T> {
-            return TimeoutCapableFuture<T>{};
-        }
-    };
+    // Delay method for time-based scheduling
+    auto delay(std::chrono::milliseconds duration) -> TimeoutCapableFuture<T> {
+        return TimeoutCapableFuture<T>{};
+    }
+};
 
-    // Void specialization
-    template<>
-    struct TimeoutCapableFuture<void> {
-        void get() {}
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds timeout) const { return true; }
+// Void specialization
+template<> struct TimeoutCapableFuture<void> {
+    void get() {}
+    bool isReady() const { return true; }
+    bool wait(std::chrono::milliseconds timeout) const { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
+    template<typename F> auto thenValue(F&& func) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
 
-        template<typename F>
-        auto thenTry(F&& func) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
+    template<typename F> auto thenTry(F&& func) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
 
-        template<typename F>
-        auto thenError(F&& func) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
+    template<typename F> auto thenError(F&& func) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
 
-        template<typename Executor>
-        auto via(Executor* executor) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
+    template<typename Executor> auto via(Executor* executor) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
 
-        auto within(std::chrono::milliseconds timeout) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
+    auto within(std::chrono::milliseconds timeout) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
 
-        auto delay(std::chrono::milliseconds duration) -> TimeoutCapableFuture<void> {
-            return TimeoutCapableFuture<void>{};
-        }
-    };
+    auto delay(std::chrono::milliseconds duration) -> TimeoutCapableFuture<void> {
+        return TimeoutCapableFuture<void>{};
+    }
+};
 
-    // Mock future type that does NOT support timeout operations properly
-    template<typename T>
-    struct NoTimeoutFuture {
-        T get() { return T{}; }
-        bool isReady() const { return true; }
+// Mock future type that does NOT support timeout operations properly
+template<typename T> struct NoTimeoutFuture {
+    T get() { return T{}; }
+    bool isReady() const { return true; }
 
-        // Missing wait method with timeout - should fail future concept
+    // Missing wait method with timeout - should fail future concept
 
-        template<typename F>
-        auto thenValue(F&& func) -> NoTimeoutFuture<T> {
-            return NoTimeoutFuture<T>{};
-        }
+    template<typename F> auto thenValue(F&& func) -> NoTimeoutFuture<T> {
+        return NoTimeoutFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenTry(F&& func) -> NoTimeoutFuture<T> {
-            return NoTimeoutFuture<T>{};
-        }
+    template<typename F> auto thenTry(F&& func) -> NoTimeoutFuture<T> {
+        return NoTimeoutFuture<T>{};
+    }
 
-        template<typename F>
-        auto thenError(F&& func) -> NoTimeoutFuture<T> {
-            return NoTimeoutFuture<T>{};
-        }
-    };
+    template<typename F> auto thenError(F&& func) -> NoTimeoutFuture<T> {
+        return NoTimeoutFuture<T>{};
+    }
+};
 
-    // Mock executor for testing
-    struct MockExecutor {
-        void add(std::function<void()> func) { func(); }
-        auto getKeepAliveToken() -> MockExecutor* { return this; }
-    };
+// Mock executor for testing
+struct MockExecutor {
+    void add(std::function<void()> func) { func(); }
+    auto getKeepAliveToken() -> MockExecutor* { return this; }
+};
 }
 
 BOOST_AUTO_TEST_SUITE(timeout_operation_support_property_tests)
@@ -129,7 +115,7 @@ BOOST_AUTO_TEST_SUITE(timeout_operation_support_property_tests)
  * Property: For any future type, timeout-based operations should be supported consistently
  * **Validates: Requirements 7.7**
  */
-BOOST_AUTO_TEST_CASE(property_timeout_operation_support, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_timeout_operation_support, *boost::unit_test::timeout(60)) {
     // Test that timeout operations are properly supported across future types
 
     // Test 1: Verify that TimeoutCapableFuture satisfies future concept
@@ -177,8 +163,9 @@ BOOST_AUTO_TEST_CASE(property_timeout_operation_support, * boost::unit_test::tim
                   "within should return future of same value type");
     static_assert(std::is_same_v<decltype(timeout_void_future), TimeoutCapableFuture<void>>,
                   "within should return future of same value type for void");
-    static_assert(std::is_same_v<decltype(timeout_string_future), TimeoutCapableFuture<std::string>>,
-                  "within should return future of same value type for std::string");
+    static_assert(
+        std::is_same_v<decltype(timeout_string_future), TimeoutCapableFuture<std::string>>,
+        "within should return future of same value type for std::string");
 
     // Test 6: Test timeout operations with different value types
     TimeoutCapableFuture<double> double_future;
@@ -199,7 +186,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_operation_support, * boost::unit_test::tim
 /**
  * Test that kythira::Future supports timeout operations
  */
-BOOST_AUTO_TEST_CASE(test_kythira_future_timeout_support, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_kythira_future_timeout_support, *boost::unit_test::timeout(30)) {
     // Test that kythira::Future satisfies future concept (which requires wait method)
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> should satisfy future concept");
@@ -230,7 +217,7 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_timeout_support, * boost::unit_test::ti
 /**
  * Test timeout operations with executor attachment
  */
-BOOST_AUTO_TEST_CASE(test_timeout_with_executor_attachment, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_timeout_with_executor_attachment, *boost::unit_test::timeout(30)) {
     // Test combining timeout operations with executor attachment
     TimeoutCapableFuture<int> future;
     MockExecutor executor;
@@ -239,10 +226,7 @@ BOOST_AUTO_TEST_CASE(test_timeout_with_executor_attachment, * boost::unit_test::
     constexpr std::chrono::milliseconds delay{500};
 
     // Test chaining timeout operations with executor operations
-    auto chained = future
-        .via(&executor)
-        .delay(delay)
-        .within(timeout);
+    auto chained = future.via(&executor).delay(delay).within(timeout);
 
     static_assert(std::is_same_v<decltype(chained), TimeoutCapableFuture<int>>,
                   "Chained timeout operations should return TimeoutCapableFuture<int>");
@@ -251,8 +235,7 @@ BOOST_AUTO_TEST_CASE(test_timeout_with_executor_attachment, * boost::unit_test::
                   "TimeoutCapableFuture should satisfy future_continuation concept");
 
     // Test that executor satisfies executor concept
-    static_assert(kythira::executor<MockExecutor>,
-                  "MockExecutor should satisfy executor concept");
+    static_assert(kythira::executor<MockExecutor>, "MockExecutor should satisfy executor concept");
 
     BOOST_TEST_MESSAGE("Timeout with executor attachment test passed");
     BOOST_TEST(true);
@@ -261,7 +244,7 @@ BOOST_AUTO_TEST_CASE(test_timeout_with_executor_attachment, * boost::unit_test::
 /**
  * Test timeout operations with different timeout durations
  */
-BOOST_AUTO_TEST_CASE(test_various_timeout_durations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_various_timeout_durations, *boost::unit_test::timeout(30)) {
     TimeoutCapableFuture<int> future;
 
     // Test with various timeout durations
@@ -272,11 +255,15 @@ BOOST_AUTO_TEST_CASE(test_various_timeout_durations, * boost::unit_test::timeout
     constexpr std::chrono::minutes minute_timeout{1};          // 1 minute
 
     // All should work with the wait method
-    bool nano_result = future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(nano_timeout));
-    bool micro_result = future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(micro_timeout));
+    bool nano_result =
+        future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(nano_timeout));
+    bool micro_result =
+        future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(micro_timeout));
     bool milli_result = future.wait(milli_timeout);
-    bool second_result = future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(second_timeout));
-    bool minute_result = future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(minute_timeout));
+    bool second_result =
+        future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(second_timeout));
+    bool minute_result =
+        future.wait(std::chrono::duration_cast<std::chrono::milliseconds>(minute_timeout));
 
     BOOST_CHECK(nano_result);
     BOOST_CHECK(micro_result);
@@ -285,11 +272,15 @@ BOOST_AUTO_TEST_CASE(test_various_timeout_durations, * boost::unit_test::timeout
     BOOST_CHECK(minute_result);
 
     // Test within method with various durations
-    auto within_nano = future.within(std::chrono::duration_cast<std::chrono::milliseconds>(nano_timeout));
-    auto within_micro = future.within(std::chrono::duration_cast<std::chrono::milliseconds>(micro_timeout));
+    auto within_nano =
+        future.within(std::chrono::duration_cast<std::chrono::milliseconds>(nano_timeout));
+    auto within_micro =
+        future.within(std::chrono::duration_cast<std::chrono::milliseconds>(micro_timeout));
     auto within_milli = future.within(milli_timeout);
-    auto within_second = future.within(std::chrono::duration_cast<std::chrono::milliseconds>(second_timeout));
-    auto within_minute = future.within(std::chrono::duration_cast<std::chrono::milliseconds>(minute_timeout));
+    auto within_second =
+        future.within(std::chrono::duration_cast<std::chrono::milliseconds>(second_timeout));
+    auto within_minute =
+        future.within(std::chrono::duration_cast<std::chrono::milliseconds>(minute_timeout));
 
     // All should return the same future type
     static_assert(std::is_same_v<decltype(within_nano), TimeoutCapableFuture<int>>);

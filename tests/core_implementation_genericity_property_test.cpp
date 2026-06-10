@@ -10,7 +10,7 @@
 #include <type_traits>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
+constexpr std::size_t property_test_iterations = 100;
 }
 
 BOOST_AUTO_TEST_SUITE(core_implementation_genericity_property_tests)
@@ -19,8 +19,7 @@ BOOST_AUTO_TEST_SUITE(core_implementation_genericity_property_tests)
 // **Validates: Requirements 8.1, 8.2**
 // Property: For any core Raft implementation, it should accept future types as template
 // parameters and use future concepts instead of concrete future types
-BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test::timeout(90)) {
-
+BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, *boost::unit_test::timeout(90)) {
     // Test 1: Verify that kythira::Future satisfies the future concept
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> must satisfy future concept");
@@ -34,7 +33,7 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
     // Test 2: Verify the concept can be used as a constraint
     // This lambda demonstrates that the concept can be used to constrain template parameters
     auto test_generic_future = []<typename F, typename T>(F&& future_instance)
-        requires kythira::future<std::remove_cvref_t<F>, T>
+    requires kythira::future<std::remove_cvref_t<F>, T>
     {
         // If this compiles, the concept constraint is working
         return true;
@@ -59,8 +58,9 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
         {
             std::string random_string = "test_" + std::to_string(i);
             kythira::Future<std::string> string_future(random_string);
-            bool result = test_generic_future.template operator()<kythira::Future<std::string>, std::string>(
-                std::move(string_future));
+            bool result =
+                test_generic_future.template operator()<kythira::Future<std::string>, std::string>(
+                    std::move(string_future));
             BOOST_CHECK(result);
         }
 
@@ -111,7 +111,8 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
     // Test onError() operation
     {
         kythira::Future<int> error_future(folly::exception_wrapper(std::runtime_error("test")));
-        auto recovered = std::move(error_future).onError([](folly::exception_wrapper) { return 0; });
+        auto recovered =
+            std::move(error_future).onError([](folly::exception_wrapper) { return 0; });
         BOOST_CHECK_EQUAL(recovered.get(), 0);
     }
 
@@ -119,7 +120,7 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
     {
         kythira::Future<void> void_future;
         BOOST_CHECK(void_future.isReady());
-        void_future.get(); // Should not throw
+        void_future.get();  // Should not throw
 
         // Test void then() chaining - create a new future since we consumed the previous one
         kythira::Future<void> void_future2;
@@ -142,7 +143,7 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
 
     // Test 7: Property - generic code can work with any type satisfying the concept
     auto process_future = []<typename F, typename T>(F future)
-        requires kythira::future<F, T>
+    requires kythira::future<F, T>
     {
         if (!future.isReady()) {
             future.wait(std::chrono::milliseconds(1000));
@@ -153,7 +154,8 @@ BOOST_AUTO_TEST_CASE(property_core_implementation_genericity, * boost::unit_test
     for (std::size_t i = 0; i < 10; ++i) {
         int value = int_dist(rng);
         kythira::Future<int> future(value);
-        int result = process_future.template operator()<kythira::Future<int>, int>(std::move(future));
+        int result =
+            process_future.template operator()<kythira::Future<int>, int>(std::move(future));
         BOOST_CHECK_EQUAL(result, value);
     }
 }

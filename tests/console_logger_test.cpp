@@ -5,11 +5,11 @@
 #include <vector>
 
 namespace {
-    constexpr const char* test_message = "Test message";
-    constexpr const char* test_key = "key";
-    constexpr const char* test_value = "value";
-    constexpr std::size_t concurrent_threads = 4;
-    constexpr std::size_t messages_per_thread = 10;
+constexpr const char* test_message = "Test message";
+constexpr const char* test_key = "key";
+constexpr const char* test_value = "value";
+constexpr std::size_t concurrent_threads = 4;
+constexpr std::size_t messages_per_thread = 10;
 }
 
 auto test_basic_logging() -> bool {
@@ -39,33 +39,14 @@ auto test_structured_logging() -> bool {
     try {
         kythira::console_logger logger;
 
-        logger.log(
-            kythira::log_level::info,
-            "Leader election started",
-            {
-                {"term", "42"},
-                {"candidate_id", "node_1"},
-                {"timeout_ms", "150"}
-            }
-        );
+        logger.log(kythira::log_level::info, "Leader election started",
+                   {{"term", "42"}, {"candidate_id", "node_1"}, {"timeout_ms", "150"}});
 
-        logger.log(
-            kythira::log_level::warning,
-            "Network partition detected",
-            {
-                {"affected_nodes", "3"},
-                {"partition_id", "p1"}
-            }
-        );
+        logger.log(kythira::log_level::warning, "Network partition detected",
+                   {{"affected_nodes", "3"}, {"partition_id", "p1"}});
 
-        logger.log(
-            kythira::log_level::error,
-            "Persistence failure",
-            {
-                {"error_code", "ENOSPC"},
-                {"path", "/var/raft/log"}
-            }
-        );
+        logger.log(kythira::log_level::error, "Persistence failure",
+                   {{"error_code", "ENOSPC"}, {"path", "/var/raft/log"}});
 
         std::cout << "  ✓ Structured logging passed\n\n";
         return true;
@@ -120,17 +101,12 @@ auto test_thread_safety() -> bool {
         for (std::size_t i = 0; i < concurrent_threads; ++i) {
             threads.emplace_back([&logger, i]() {
                 for (std::size_t j = 0; j < messages_per_thread; ++j) {
-                    logger.info(std::string("Thread ") + std::to_string(i) +
-                               " message " + std::to_string(j));
+                    logger.info(std::string("Thread ") + std::to_string(i) + " message " +
+                                std::to_string(j));
 
                     logger.log(
-                        kythira::log_level::debug,
-                        "Structured message",
-                        {
-                            {"thread_id", std::to_string(i)},
-                            {"message_id", std::to_string(j)}
-                        }
-                    );
+                        kythira::log_level::debug, "Structured message",
+                        {{"thread_id", std::to_string(i)}, {"message_id", std::to_string(j)}});
                 }
             });
         }
@@ -153,7 +129,7 @@ auto test_concept_satisfaction() -> bool {
 
     // Compile-time verification
     static_assert(kythira::diagnostic_logger<kythira::console_logger>,
-        "console_logger must satisfy diagnostic_logger concept");
+                  "console_logger must satisfy diagnostic_logger concept");
 
     std::cout << "  ✓ Concept satisfaction passed\n\n";
     return true;

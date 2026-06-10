@@ -23,21 +23,22 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t num_property_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::chrono::milliseconds short_delay{10};
-    constexpr std::chrono::milliseconds medium_delay{50};
+constexpr std::size_t num_property_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::chrono::milliseconds short_delay{10};
+constexpr std::chrono::milliseconds medium_delay{50};
 
-    // Random number generator for property tests
-    std::random_device rd;
-    std::mt19937 gen(rd());
+// Random number generator for property tests
+std::random_device rd;
+std::mt19937 gen(rd());
 }
 
 // Global fixture to initialize Folly once for all tests
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("future_then_try_future_returning_callback_property_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("future_then_try_future_returning_callback_property_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -59,7 +60,7 @@ BOOST_AUTO_TEST_SUITE(future_then_try_future_returning_callback_property_tests)
  *
  * **Validates: Requirement 30.1**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_automatic_flattening, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_then_try_automatic_flattening, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -68,16 +69,16 @@ BOOST_AUTO_TEST_CASE(property_then_try_automatic_flattening, * boost::unit_test:
 
         // Create a future and chain with thenTry that returns Future<int>
         auto result = FutureFactory::makeFuture(test_value)
-            .thenTry([&executor](Try<int> t) -> Future<int> {
-                // This callback returns Future<int>, not int
-                if (t.hasValue()) {
-                    return FutureFactory::makeFuture(t.value() * 2);
-                } else {
-                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
-                }
-            })
-            .via(&executor)
-            .get();
+                          .thenTry([&executor](Try<int> t) -> Future<int> {
+                              // This callback returns Future<int>, not int
+                              if (t.hasValue()) {
+                                  return FutureFactory::makeFuture(t.value() * 2);
+                              } else {
+                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
+                              }
+                          })
+                          .via(&executor)
+                          .get();
 
         // Verify the result is int, not Future<int>
         BOOST_CHECK_EQUAL(result, test_value * 2);
@@ -92,7 +93,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_automatic_flattening, * boost::unit_test:
  *
  * **Validates: Requirement 30.4**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_handles_success_and_error, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_then_try_handles_success_and_error, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -102,24 +103,24 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_success_and_error, * boost::unit_
         bool inject_failure = should_fail(gen);
 
         // Create a future that may succeed or fail
-        Future<int> initial_future = inject_failure
-            ? FutureFactory::makeExceptionalFuture<int>(
-                folly::exception_wrapper(std::runtime_error("Test error")))
-            : FutureFactory::makeFuture(test_value);
+        Future<int> initial_future =
+            inject_failure ? FutureFactory::makeExceptionalFuture<int>(
+                                 folly::exception_wrapper(std::runtime_error("Test error")))
+                           : FutureFactory::makeFuture(test_value);
 
         // Chain with thenTry that handles both cases
         auto result = std::move(initial_future)
-            .thenTry([&executor, test_value](Try<int> t) -> Future<int> {
-                if (t.hasValue()) {
-                    // Success case - return doubled value
-                    return FutureFactory::makeFuture(t.value() * 2);
-                } else {
-                    // Error case - return default value
-                    return FutureFactory::makeFuture(test_value);
-                }
-            })
-            .via(&executor)
-            .get();
+                          .thenTry([&executor, test_value](Try<int> t) -> Future<int> {
+                              if (t.hasValue()) {
+                                  // Success case - return doubled value
+                                  return FutureFactory::makeFuture(t.value() * 2);
+                              } else {
+                                  // Error case - return default value
+                                  return FutureFactory::makeFuture(test_value);
+                              }
+                          })
+                          .via(&executor)
+                          .get();
 
         // Verify the result
         if (inject_failure) {
@@ -138,7 +139,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_success_and_error, * boost::unit_
  *
  * **Validates: Requirements 30.2, 30.3**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_supports_async_operations, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_then_try_supports_async_operations, *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -149,20 +150,18 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_async_operations, * boost::unit_
 
         // Create a future and chain with thenTry that includes async delay
         auto result = FutureFactory::makeFuture(test_value)
-            .thenTry([&executor](Try<int> t) -> Future<int> {
-                if (t.hasValue()) {
-                    // Return a future with async delay
-                    return FutureFactory::makeFuture(folly::Unit{})
-                        .delay(short_delay)
-                        .thenValue([value = t.value()]() {
-                            return value * 2;
-                        });
-                } else {
-                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
-                }
-            })
-            .via(&executor)
-            .get();
+                          .thenTry([&executor](Try<int> t) -> Future<int> {
+                              if (t.hasValue()) {
+                                  // Return a future with async delay
+                                  return FutureFactory::makeFuture(folly::Unit{})
+                                      .delay(short_delay)
+                                      .thenValue([value = t.value()]() { return value * 2; });
+                              } else {
+                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
+                              }
+                          })
+                          .via(&executor)
+                          .get();
 
         auto end_time = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
@@ -183,7 +182,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_async_operations, * boost::unit_
  *
  * **Validates: Requirement 30.5**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_handles_void_futures, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_then_try_handles_void_futures, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -215,7 +214,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_void_futures, * boost::unit_test:
  *
  * **Validates: Requirements 30.2, 30.3**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_supports_chaining, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_then_try_supports_chaining, *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -224,29 +223,29 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_chaining, * boost::unit_test::ti
 
         // Chain multiple thenTry operations with Future-returning callbacks
         auto result = FutureFactory::makeFuture(test_value)
-            .thenTry([](Try<int> t) -> Future<int> {
-                if (t.hasValue()) {
-                    return FutureFactory::makeFuture(t.value() + 1);
-                } else {
-                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
-                }
-            })
-            .thenTry([](Try<int> t) -> Future<int> {
-                if (t.hasValue()) {
-                    return FutureFactory::makeFuture(t.value() * 2);
-                } else {
-                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
-                }
-            })
-            .thenTry([](Try<int> t) -> Future<int> {
-                if (t.hasValue()) {
-                    return FutureFactory::makeFuture(t.value() - 1);
-                } else {
-                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
-                }
-            })
-            .via(&executor)
-            .get();
+                          .thenTry([](Try<int> t) -> Future<int> {
+                              if (t.hasValue()) {
+                                  return FutureFactory::makeFuture(t.value() + 1);
+                              } else {
+                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
+                              }
+                          })
+                          .thenTry([](Try<int> t) -> Future<int> {
+                              if (t.hasValue()) {
+                                  return FutureFactory::makeFuture(t.value() * 2);
+                              } else {
+                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
+                              }
+                          })
+                          .thenTry([](Try<int> t) -> Future<int> {
+                              if (t.hasValue()) {
+                                  return FutureFactory::makeFuture(t.value() - 1);
+                              } else {
+                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
+                              }
+                          })
+                          .via(&executor)
+                          .get();
 
         // Verify the result: (test_value + 1) * 2 - 1
         int expected = (test_value + 1) * 2 - 1;
@@ -262,7 +261,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_chaining, * boost::unit_test::ti
  *
  * **Validates: Requirement 30.3**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_propagates_errors, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_then_try_propagates_errors, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -300,7 +299,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_propagates_errors, * boost::unit_test::ti
  *
  * **Validates: Requirements 30.1, 30.2**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_handles_type_conversions, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_then_try_handles_type_conversions, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -308,16 +307,17 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_type_conversions, * boost::unit_t
         int test_value = value_dist(gen);
 
         // Convert int to string through Future-returning callback
-        auto result = FutureFactory::makeFuture(test_value)
-            .thenTry([](Try<int> t) -> Future<std::string> {
-                if (t.hasValue()) {
-                    return FutureFactory::makeFuture(std::to_string(t.value()));
-                } else {
-                    return FutureFactory::makeExceptionalFuture<std::string>(t.exception());
-                }
-            })
-            .via(&executor)
-            .get();
+        auto result =
+            FutureFactory::makeFuture(test_value)
+                .thenTry([](Try<int> t) -> Future<std::string> {
+                    if (t.hasValue()) {
+                        return FutureFactory::makeFuture(std::to_string(t.value()));
+                    } else {
+                        return FutureFactory::makeExceptionalFuture<std::string>(t.exception());
+                    }
+                })
+                .via(&executor)
+                .get();
 
         // Verify the result
         BOOST_CHECK_EQUAL(result, std::to_string(test_value));
@@ -332,7 +332,7 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_type_conversions, * boost::unit_t
  *
  * **Validates: Requirements 30.1, 30.2, 30.3, 30.4, 30.5**
  */
-BOOST_AUTO_TEST_CASE(property_then_try_enables_async_retry, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_then_try_enables_async_retry, *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
@@ -343,25 +343,26 @@ BOOST_AUTO_TEST_CASE(property_then_try_enables_async_retry, * boost::unit_test::
         auto start_time = std::chrono::steady_clock::now();
 
         // Simulate async retry pattern
-        auto result = FutureFactory::makeFuture(0)
-            .thenTry([&attempt_count, max_attempts, &executor](Try<int> t) -> Future<int> {
-                attempt_count++;
+        auto result =
+            FutureFactory::makeFuture(0)
+                .thenTry([&attempt_count, max_attempts, &executor](Try<int> t) -> Future<int> {
+                    attempt_count++;
 
-                if (attempt_count.load() < max_attempts) {
-                    // Simulate failure and retry with delay
-                    return FutureFactory::makeFuture(folly::Unit{})
-                        .delay(short_delay)
-                        .thenValue([&attempt_count, max_attempts, &executor]() -> Future<int> {
-                            // Recursive retry
-                            return FutureFactory::makeFuture(attempt_count.load());
-                        });
-                } else {
-                    // Success after retries
-                    return FutureFactory::makeFuture(attempt_count.load());
-                }
-            })
-            .via(&executor)
-            .get();
+                    if (attempt_count.load() < max_attempts) {
+                        // Simulate failure and retry with delay
+                        return FutureFactory::makeFuture(folly::Unit{})
+                            .delay(short_delay)
+                            .thenValue([&attempt_count, max_attempts, &executor]() -> Future<int> {
+                                // Recursive retry
+                                return FutureFactory::makeFuture(attempt_count.load());
+                            });
+                    } else {
+                        // Success after retries
+                        return FutureFactory::makeFuture(attempt_count.load());
+                    }
+                })
+                .via(&executor)
+                .get();
 
         auto end_time = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);

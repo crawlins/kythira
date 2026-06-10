@@ -8,17 +8,18 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_pool_size = 64 * 1024;
-    constexpr std::size_t test_block_size = 4096;
-    constexpr auto short_leak_threshold = std::chrono::seconds{1};
-    constexpr auto test_timeout_seconds = 30;
+constexpr std::size_t test_pool_size = 64 * 1024;
+constexpr std::size_t test_block_size = 4096;
+constexpr auto short_leak_threshold = std::chrono::seconds{1};
+constexpr auto test_timeout_seconds = 30;
 }
 
 /**
  * Debug test to understand leak detection behavior
  */
-BOOST_AUTO_TEST_CASE(debug_leak_detection, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(debug_leak_detection, *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     std::cout << "Pool created with leak detection enabled\n";
     std::cout << "Leak threshold: " << short_leak_threshold.count() << " seconds\n";

@@ -13,7 +13,8 @@
 namespace kythira {
 
 /**
- * @brief CommitWaiter manages pending client operations waiting for commit and state machine application
+ * @brief CommitWaiter manages pending client operations waiting for commit and state machine
+ * application
  *
  * This class tracks client operations that are waiting for their log entries to be committed
  * (replicated to majority) and applied to the state machine. It provides timeout handling
@@ -38,17 +39,15 @@ private:
         std::chrono::steady_clock::time_point submitted_at;
         std::optional<std::chrono::milliseconds> timeout;
 
-        pending_operation(
-            log_index_t index,
-            std::function<void(std::vector<std::byte>)> fulfill,
-            std::function<void(std::exception_ptr)> reject,
-            std::chrono::steady_clock::time_point submitted,
-            std::optional<std::chrono::milliseconds> timeout_duration
-        ) : entry_index(index)
-          , fulfill_callback(std::move(fulfill))
-          , reject_callback(std::move(reject))
-          , submitted_at(submitted)
-          , timeout(timeout_duration) {}
+        pending_operation(log_index_t index, std::function<void(std::vector<std::byte>)> fulfill,
+                          std::function<void(std::exception_ptr)> reject,
+                          std::chrono::steady_clock::time_point submitted,
+                          std::optional<std::chrono::milliseconds> timeout_duration)
+            : entry_index(index),
+              fulfill_callback(std::move(fulfill)),
+              reject_callback(std::move(reject)),
+              submitted_at(submitted),
+              timeout(timeout_duration) {}
 
         // Move-only semantics
         pending_operation(const pending_operation&) = delete;
@@ -94,22 +93,16 @@ public:
      * @param reject_callback Callback to call when the operation is rejected
      * @param timeout Optional timeout duration (nullopt means no timeout)
      */
-    auto register_operation(
-        log_index_t index,
-        std::function<void(std::vector<std::byte>)> fulfill_callback,
-        std::function<void(std::exception_ptr)> reject_callback,
-        std::optional<std::chrono::milliseconds> timeout = std::nullopt
-    ) -> void {
+    auto register_operation(log_index_t index,
+                            std::function<void(std::vector<std::byte>)> fulfill_callback,
+                            std::function<void(std::exception_ptr)> reject_callback,
+                            std::optional<std::chrono::milliseconds> timeout = std::nullopt)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Create pending operation
-        pending_operation op(
-            index,
-            std::move(fulfill_callback),
-            std::move(reject_callback),
-            std::chrono::steady_clock::now(),
-            timeout
-        );
+        pending_operation op(index, std::move(fulfill_callback), std::move(reject_callback),
+                             std::chrono::steady_clock::now(), timeout);
 
         // Add to pending operations map
         _pending_operations[index].push_back(std::move(op));
@@ -125,10 +118,8 @@ public:
      * @param get_result Function to get the state machine result for a given log index
      */
     template<typename ResultFunction>
-    auto notify_committed_and_applied(
-        log_index_t commit_index,
-        ResultFunction&& get_result
-    ) -> void {
+    auto notify_committed_and_applied(log_index_t commit_index, ResultFunction&& get_result)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Find all operations that can be fulfilled
@@ -161,9 +152,8 @@ public:
      * @param commit_index The highest log index that has been committed and applied
      */
     auto notify_committed_and_applied(log_index_t commit_index) -> void {
-        notify_committed_and_applied(commit_index, [](log_index_t) {
-            return std::vector<std::byte>{};
-        });
+        notify_committed_and_applied(commit_index,
+                                     [](log_index_t) { return std::vector<std::byte>{}; });
     }
 
     /**
@@ -177,9 +167,8 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Use base completion exception for general cancellations
-        auto exception = std::make_exception_ptr(
-            raft_completion_exception("Operation cancelled: " + reason)
-        );
+        auto exception =
+            std::make_exception_ptr(raft_completion_exception("Operation cancelled: " + reason));
 
         for (auto& [index, operations] : _pending_operations) {
             for (auto& op : operations) {
@@ -205,9 +194,8 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Use specific leadership lost exception with term information
-        auto exception = std::make_exception_ptr(
-            leadership_lost_exception<TermId>(old_term, new_term)
-        );
+        auto exception =
+            std::make_exception_ptr(leadership_lost_exception<TermId>(old_term, new_term));
 
         for (auto& [index, operations] : _pending_operations) {
             for (auto& op : operations) {
@@ -239,12 +227,10 @@ public:
             while (op_it != operations.end()) {
                 if (op_it->is_timed_out()) {
                     // Use specific timeout exception with entry index and timeout details
-                    auto timeout_exception = std::make_exception_ptr(
-                        commit_timeout_exception<log_index_t>(
+                    auto timeout_exception =
+                        std::make_exception_ptr(commit_timeout_exception<log_index_t>(
                             op_it->entry_index,
-                            op_it->timeout.value_or(std::chrono::milliseconds{0})
-                        )
-                    );
+                            op_it->timeout.value_or(std::chrono::milliseconds{0})));
                     op_it->reject_callback(timeout_exception);
                     op_it = operations.erase(op_it);
                     ++cancelled_count;
@@ -279,9 +265,8 @@ public:
             return 0;
         }
 
-        auto exception = std::make_exception_ptr(
-            raft_completion_exception("Operation cancelled: " + reason)
-        );
+        auto exception =
+            std::make_exception_ptr(raft_completion_exception("Operation cancelled: " + reason));
 
         std::size_t cancelled_count = it->second.size();
         for (auto& op : it->second) {
@@ -302,12 +287,12 @@ public:
      * @param reason The reason for cancellation
      * @return Number of operations cancelled
      */
-    auto cancel_operations_after_index(log_index_t after_index, const std::string& reason) -> std::size_t {
+    auto cancel_operations_after_index(log_index_t after_index, const std::string& reason)
+        -> std::size_t {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        auto exception = std::make_exception_ptr(
-            raft_completion_exception("Operation cancelled: " + reason)
-        );
+        auto exception =
+            std::make_exception_ptr(raft_completion_exception("Operation cancelled: " + reason));
 
         std::size_t cancelled_count = 0;
         auto it = _pending_operations.begin();
@@ -371,4 +356,4 @@ public:
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

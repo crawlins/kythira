@@ -16,12 +16,12 @@
 #include <chrono>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_term = 1000000;
-    constexpr std::uint64_t max_index = 1000000;
-    constexpr std::uint64_t max_node_id = 1000;
-    constexpr std::size_t max_data_size = 10000;
-    constexpr std::size_t max_entries = 100;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_term = 1000000;
+constexpr std::uint64_t max_index = 1000000;
+constexpr std::uint64_t max_node_id = 1000;
+constexpr std::size_t max_data_size = 10000;
+constexpr std::size_t max_entries = 100;
 }
 
 BOOST_AUTO_TEST_SUITE(coap_message_serialization_property_tests)
@@ -30,7 +30,7 @@ BOOST_AUTO_TEST_SUITE(coap_message_serialization_property_tests)
 // **Validates: Requirements 1.2, 1.3, 7.2**
 // Property: For any valid Raft RPC message (request or response), serializing then
 // deserializing should produce an equivalent message.
-BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, *boost::unit_test::timeout(60)) {
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
 
     std::random_device rd;
@@ -133,10 +133,10 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
                     original._leader_id != deserialized._leader_id ||
                     original._prev_log_index != deserialized._prev_log_index ||
                     original._prev_log_term != deserialized._prev_log_term ||
-                    original._leader_commit != deserialized._leader_commit ||
-                    !entries_match) {
+                    original._leader_commit != deserialized._leader_commit || !entries_match) {
                     failures++;
-                    BOOST_TEST_MESSAGE("AppendEntries request round-trip failed at iteration " << i);
+                    BOOST_TEST_MESSAGE("AppendEntries request round-trip failed at iteration "
+                                       << i);
                 }
             }
 
@@ -162,7 +162,8 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
                     original._conflict_index != deserialized._conflict_index ||
                     original._conflict_term != deserialized._conflict_term) {
                     failures++;
-                    BOOST_TEST_MESSAGE("AppendEntries response round-trip failed at iteration " << i);
+                    BOOST_TEST_MESSAGE("AppendEntries response round-trip failed at iteration "
+                                       << i);
                 }
             }
 
@@ -191,10 +192,10 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
                     original._last_included_index != deserialized._last_included_index ||
                     original._last_included_term != deserialized._last_included_term ||
                     original._offset != deserialized._offset ||
-                    original._done != deserialized._done ||
-                    original._data != deserialized._data) {
+                    original._done != deserialized._done || original._data != deserialized._data) {
                     failures++;
-                    BOOST_TEST_MESSAGE("InstallSnapshot request round-trip failed at iteration " << i);
+                    BOOST_TEST_MESSAGE("InstallSnapshot request round-trip failed at iteration "
+                                       << i);
                 }
             }
 
@@ -208,18 +209,21 @@ BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, * boost::unit_te
 
                 if (original._term != deserialized._term) {
                     failures++;
-                    BOOST_TEST_MESSAGE("InstallSnapshot response round-trip failed at iteration " << i);
+                    BOOST_TEST_MESSAGE("InstallSnapshot response round-trip failed at iteration "
+                                       << i);
                 }
             }
 
         } catch (const std::exception& e) {
             failures++;
-            BOOST_TEST_MESSAGE("Exception during serialization round-trip test " << i << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception during serialization round-trip test " << i << ": "
+                                                                                 << e.what());
         }
     }
 
-    BOOST_TEST_MESSAGE("Message serialization round-trip: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Message serialization round-trip: " << (property_test_iterations - failures)
+                                                            << "/" << property_test_iterations
+                                                            << " passed");
 
     BOOST_CHECK_EQUAL(failures, 0);
 }

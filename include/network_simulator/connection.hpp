@@ -14,12 +14,10 @@
 namespace network_simulator {
 
 // Forward declaration
-template<typename Types>
-class NetworkSimulator;
+template<typename Types> class NetworkSimulator;
 
 // Connection class template
-template<typename Types>
-class Connection {
+template<typename Types> class Connection {
 public:
     // Type aliases from Types template argument
     using address_type = typename Types::address_type;
@@ -30,15 +28,12 @@ public:
     using future_bool_type = typename Types::future_bool_type;
     using future_bytes_type = typename Types::future_bytes_type;
 
-    Connection(endpoint_type local,
-               endpoint_type remote,
-               simulator_type* simulator)
-        : _local(std::move(local))
-        , _remote(std::move(remote))
-        , _connection_id(_local.address, _local.port, _remote.address, _remote.port)
-        , _simulator(simulator)
-        , _open(true)
-    {}
+    Connection(endpoint_type local, endpoint_type remote, simulator_type* simulator)
+        : _local(std::move(local)),
+          _remote(std::move(remote)),
+          _connection_id(_local.address, _local.port, _remote.address, _remote.port),
+          _simulator(simulator),
+          _open(true) {}
 
     auto read() -> future_bytes_type;
     auto read(std::chrono::milliseconds timeout) -> future_bytes_type;
@@ -70,6 +65,6 @@ private:
     std::condition_variable _data_available;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator
 
 #include "connection_impl.hpp"

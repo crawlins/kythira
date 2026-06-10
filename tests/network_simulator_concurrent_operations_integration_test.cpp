@@ -17,15 +17,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* node_prefix = "node_";
-    constexpr unsigned short base_port = 8080;
-    constexpr std::chrono::milliseconds network_latency{5};
-    constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
-    constexpr std::chrono::seconds test_timeout{10};
-    constexpr const char* test_message_prefix = "Message from ";
-    constexpr std::size_t num_nodes = 4;
-    constexpr std::size_t messages_per_node = 10;
-    constexpr std::size_t concurrent_connections = 5;
+constexpr const char* node_prefix = "node_";
+constexpr unsigned short base_port = 8080;
+constexpr std::chrono::milliseconds network_latency{5};
+constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
+constexpr std::chrono::seconds test_timeout{10};
+constexpr const char* test_message_prefix = "Message from ";
+constexpr std::size_t num_nodes = 4;
+constexpr std::size_t messages_per_node = 10;
+constexpr std::size_t concurrent_connections = 5;
 }
 
 /**
@@ -33,7 +33,7 @@ namespace {
  * Tests: multiple nodes sending/receiving simultaneously
  * _Requirements: 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create a fully connected mesh topology for maximum concurrency
@@ -84,9 +84,8 @@ BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, * boost::unit_test::t
                 for (std::size_t msg_num = 0; msg_num < messages_per_node; ++msg_num) {
                     try {
                         // Create unique message
-                        std::string message_content = test_message_prefix + sender_id +
-                                                    " to " + target_id +
-                                                    " #" + std::to_string(msg_num);
+                        std::string message_content = test_message_prefix + sender_id + " to " +
+                                                      target_id + " #" + std::to_string(msg_num);
 
                         std::vector<std::byte> payload;
                         for (char c : message_content) {
@@ -96,8 +95,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, * boost::unit_test::t
                         DefaultNetworkTypes::message_type msg(
                             sender_id, base_port + static_cast<unsigned short>(sender_idx),
                             target_id, base_port + static_cast<unsigned short>(target_idx),
-                            payload
-                        );
+                            payload);
 
                         // Send message
                         auto send_future = sender_node->send(msg);
@@ -201,7 +199,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, * boost::unit_test::t
  * Tests: multiple clients connecting to multiple servers simultaneously
  * _Requirements: 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology with multiple server and client nodes
@@ -269,34 +267,42 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, * boost::unit_te
 
     // === CONCURRENT CLIENT CONNECTIONS ===
 
-    std::vector<std::future<std::shared_ptr<DefaultNetworkTypes::connection_type>>> connection_futures;
+    std::vector<std::future<std::shared_ptr<DefaultNetworkTypes::connection_type>>>
+        connection_futures;
     std::atomic<std::size_t> successful_connections{0};
     std::atomic<std::size_t> failed_connections{0};
 
     // Each client connects to each server concurrently
     for (std::size_t client_idx = 0; client_idx < client_nodes.size(); ++client_idx) {
         for (std::size_t server_idx = 0; server_idx < server_nodes.size(); ++server_idx) {
-            auto connect_task = std::async(std::launch::async, [&, client_idx, server_idx]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
-                try {
-                    std::string server_id = server_ids[server_idx];
-                    unsigned short server_port = base_port + static_cast<unsigned short>(server_idx);
-                    unsigned short client_port = base_port + 1000 + static_cast<unsigned short>(client_idx * 10 + server_idx);
+            auto connect_task =
+                std::async(std::launch::async,
+                           [&, client_idx,
+                            server_idx]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
+                               try {
+                                   std::string server_id = server_ids[server_idx];
+                                   unsigned short server_port =
+                                       base_port + static_cast<unsigned short>(server_idx);
+                                   unsigned short client_port =
+                                       base_port + 1000 +
+                                       static_cast<unsigned short>(client_idx * 10 + server_idx);
 
-                    auto connect_future = client_nodes[client_idx]->connect(server_id, server_port, client_port);
-                    auto connection = std::move(connect_future).get();
+                                   auto connect_future = client_nodes[client_idx]->connect(
+                                       server_id, server_port, client_port);
+                                   auto connection = std::move(connect_future).get();
 
-                    if (connection != nullptr && connection->is_open()) {
-                        successful_connections.fetch_add(1);
-                        return connection;
-                    } else {
-                        failed_connections.fetch_add(1);
-                        return nullptr;
-                    }
-                } catch (const std::exception&) {
-                    failed_connections.fetch_add(1);
-                    return nullptr;
-                }
-            });
+                                   if (connection != nullptr && connection->is_open()) {
+                                       successful_connections.fetch_add(1);
+                                       return connection;
+                                   } else {
+                                       failed_connections.fetch_add(1);
+                                       return nullptr;
+                                   }
+                               } catch (const std::exception&) {
+                                   failed_connections.fetch_add(1);
+                                   return nullptr;
+                               }
+                           });
 
             connection_futures.push_back(std::move(connect_task));
         }
@@ -310,20 +316,22 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, * boost::unit_te
     for (std::size_t server_idx = 0; server_idx < listeners.size(); ++server_idx) {
         // Each server expects connections from all clients
         for (std::size_t client_idx = 0; client_idx < client_nodes.size(); ++client_idx) {
-            auto accept_task = std::async(std::launch::async, [&, server_idx]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
-                try {
-                    auto accept_future = listeners[server_idx]->accept(test_timeout);
-                    auto connection = std::move(accept_future).get();
+            auto accept_task = std::async(
+                std::launch::async,
+                [&, server_idx]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
+                    try {
+                        auto accept_future = listeners[server_idx]->accept(test_timeout);
+                        auto connection = std::move(accept_future).get();
 
-                    if (connection != nullptr && connection->is_open()) {
-                        return connection;
-                    } else {
+                        if (connection != nullptr && connection->is_open()) {
+                            return connection;
+                        } else {
+                            return nullptr;
+                        }
+                    } catch (const std::exception&) {
                         return nullptr;
                     }
-                } catch (const std::exception&) {
-                    return nullptr;
-                }
-            });
+                });
 
             accept_futures.push_back(std::move(accept_task));
         }
@@ -444,7 +452,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, * boost::unit_te
  * Tests: adding/removing nodes and edges while operations are ongoing
  * _Requirements: 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(concurrent_topology_modifications, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concurrent_topology_modifications, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     NetworkEdge edge(network_latency, network_reliability);
@@ -481,11 +489,8 @@ BOOST_AUTO_TEST_CASE(concurrent_topology_modifications, * boost::unit_test::time
                     payload.push_back(static_cast<std::byte>(c));
                 }
 
-                DefaultNetworkTypes::message_type msg(
-                    node_a, base_port,
-                    node_b, base_port,
-                    payload
-                );
+                DefaultNetworkTypes::message_type msg(node_a, base_port, node_b, base_port,
+                                                      payload);
 
                 auto send_future = node_a_ptr->send(msg);
                 bool send_success = std::move(send_future).get();
@@ -565,7 +570,7 @@ BOOST_AUTO_TEST_CASE(concurrent_topology_modifications, * boost::unit_test::time
  * Tests: starting/stopping simulator while operations are ongoing
  * _Requirements: 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(concurrent_lifecycle_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concurrent_lifecycle_operations, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     NetworkEdge edge(network_latency, network_reliability);
@@ -618,11 +623,8 @@ BOOST_AUTO_TEST_CASE(concurrent_lifecycle_operations, * boost::unit_test::timeou
                     payload.push_back(static_cast<std::byte>(c));
                 }
 
-                DefaultNetworkTypes::message_type msg(
-                    node_a, base_port,
-                    node_b, base_port,
-                    payload
-                );
+                DefaultNetworkTypes::message_type msg(node_a, base_port, node_b, base_port,
+                                                      payload);
 
                 auto send_future = node_a_ptr->send(msg);
                 bool send_success = std::move(send_future).get();
@@ -668,7 +670,7 @@ BOOST_AUTO_TEST_CASE(concurrent_lifecycle_operations, * boost::unit_test::timeou
  * Tests: many threads performing operations simultaneously
  * _Requirements: 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(high_contention_thread_safety, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(high_contention_thread_safety, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     NetworkEdge edge(network_latency, network_reliability);
@@ -707,8 +709,8 @@ BOOST_AUTO_TEST_CASE(high_contention_thread_safety, * boost::unit_test::timeout(
                 try {
                     total_operations.fetch_add(1);
 
-                    std::string message = "Thread " + std::to_string(thread_id) +
-                                        " Operation " + std::to_string(op);
+                    std::string message =
+                        "Thread " + std::to_string(thread_id) + " Operation " + std::to_string(op);
                     std::vector<std::byte> payload;
                     for (char c : message) {
                         payload.push_back(static_cast<std::byte>(c));
@@ -717,10 +719,8 @@ BOOST_AUTO_TEST_CASE(high_contention_thread_safety, * boost::unit_test::timeout(
                     // Alternate between sending from A to B and B to A
                     if (op % 2 == 0) {
                         DefaultNetworkTypes::message_type msg(
-                            node_a, base_port + static_cast<unsigned short>(thread_id),
-                            node_b, base_port,
-                            payload
-                        );
+                            node_a, base_port + static_cast<unsigned short>(thread_id), node_b,
+                            base_port, payload);
 
                         auto send_future = node_a_ptr->send(msg);
                         bool send_success = std::move(send_future).get();
@@ -730,10 +730,8 @@ BOOST_AUTO_TEST_CASE(high_contention_thread_safety, * boost::unit_test::timeout(
                         }
                     } else {
                         DefaultNetworkTypes::message_type msg(
-                            node_b, base_port + static_cast<unsigned short>(thread_id),
-                            node_a, base_port,
-                            payload
-                        );
+                            node_b, base_port + static_cast<unsigned short>(thread_id), node_a,
+                            base_port, payload);
 
                         auto send_future = node_b_ptr->send(msg);
                         bool send_success = std::move(send_future).get();

@@ -22,13 +22,13 @@
 #include <folly/init/Init.h>
 
 namespace {
-    constexpr const char* test_initial_value = "Initial";
-    constexpr const char* test_transformed_value = "Transformed";
-    constexpr const char* test_timeout_message = "Operation timed out";
-    constexpr std::chrono::milliseconds short_delay{50};
-    constexpr std::chrono::milliseconds medium_delay{100};
-    constexpr std::chrono::milliseconds long_delay{200};
-    constexpr std::chrono::milliseconds timeout_duration{150};
+constexpr const char* test_initial_value = "Initial";
+constexpr const char* test_transformed_value = "Transformed";
+constexpr const char* test_timeout_message = "Operation timed out";
+constexpr std::chrono::milliseconds short_delay{50};
+constexpr std::chrono::milliseconds medium_delay{100};
+constexpr std::chrono::milliseconds long_delay{200};
+constexpr std::chrono::milliseconds timeout_duration{150};
 }
 
 class ContinuationExampleRunner {
@@ -69,13 +69,14 @@ private:
             std::atomic<std::thread::id> execution_thread_id{std::this_thread::get_id()};
             std::atomic<bool> continuation_executed{false};
 
-            auto continued_future = std::move(future)
-                .via(executor.get())
-                .thenValue([&execution_thread_id, &continuation_executed](std::string value) {
-                    execution_thread_id = std::this_thread::get_id();
-                    continuation_executed = true;
-                    return value + "_via_executor";
-                });
+            auto continued_future =
+                std::move(future)
+                    .via(executor.get())
+                    .thenValue([&execution_thread_id, &continuation_executed](std::string value) {
+                        execution_thread_id = std::this_thread::get_id();
+                        continuation_executed = true;
+                        return value + "_via_executor";
+                    });
 
             // Get result
             auto result = std::move(continued_future).get();
@@ -123,14 +124,15 @@ private:
             // Verify delay occurred
             if (elapsed < medium_delay) {
                 std::cout << "  ❌ Delay did not occur (elapsed: "
-                         << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
-                         << "ms, expected: " << medium_delay.count() << "ms)\n";
+                          << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                          << "ms, expected: " << medium_delay.count() << "ms)\n";
                 return false;
             }
 
             // Verify result is unchanged
             if (result != 42) {
-                std::cout << "  ❌ Delayed future result mismatch: expected 42, got " << result << "\n";
+                std::cout << "  ❌ Delayed future result mismatch: expected 42, got " << result
+                          << "\n";
                 return false;
             }
 
@@ -223,19 +225,14 @@ private:
 
             auto start_time = std::chrono::steady_clock::now();
 
-            auto chained_future = std::move(future)
-                .via(executor.get())
-                .thenValue([](std::string value) {
-                    return value + "_step1";
-                })
-                .delay(short_delay)
-                .thenValue([](std::string value) {
-                    return value + "_step2";
-                })
-                .within(timeout_duration)
-                .thenValue([](std::string value) {
-                    return value + "_final";
-                });
+            auto chained_future =
+                std::move(future)
+                    .via(executor.get())
+                    .thenValue([](std::string value) { return value + "_step1"; })
+                    .delay(short_delay)
+                    .thenValue([](std::string value) { return value + "_step2"; })
+                    .within(timeout_duration)
+                    .thenValue([](std::string value) { return value + "_final"; });
 
             // Get result
             auto result = std::move(chained_future).get();
@@ -250,8 +247,8 @@ private:
             // Verify all transformations applied
             std::string expected = std::string(test_initial_value) + "_step1_step2_final";
             if (result != expected) {
-                std::cout << "  ❌ Chained continuation result mismatch: expected '"
-                         << expected << "', got '" << result << "'\n";
+                std::cout << "  ❌ Chained continuation result mismatch: expected '" << expected
+                          << "', got '" << result << "'\n";
                 return false;
             }
 

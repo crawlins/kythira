@@ -12,13 +12,13 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test";
-    constexpr auto test_timeout = std::chrono::milliseconds{100};
+constexpr int test_value = 42;
+constexpr const char* test_string = "test";
+constexpr auto test_timeout = std::chrono::milliseconds{100};
 }
 
 // Test Try wrapper with value
-BOOST_AUTO_TEST_CASE(test_try_with_value, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_try_with_value, *boost::unit_test::timeout(30)) {
     kythira::Try<int> t(test_value);
 
     BOOST_TEST(t.hasValue());
@@ -26,11 +26,12 @@ BOOST_AUTO_TEST_CASE(test_try_with_value, * boost::unit_test::timeout(30)) {
     BOOST_TEST(t.value() == test_value);
 
     // Verify it satisfies the try_type concept
-    static_assert(kythira::try_type<kythira::Try<int>, int>, "Try<int> should satisfy try_type concept");
+    static_assert(kythira::try_type<kythira::Try<int>, int>,
+                  "Try<int> should satisfy try_type concept");
 }
 
 // Test Try wrapper with exception
-BOOST_AUTO_TEST_CASE(test_try_with_exception, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_try_with_exception, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Try<int> t(ex);
 
@@ -42,7 +43,7 @@ BOOST_AUTO_TEST_CASE(test_try_with_exception, * boost::unit_test::timeout(30)) {
 }
 
 // Test Try wrapper with folly::Try
-BOOST_AUTO_TEST_CASE(test_try_from_folly_try, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_try_from_folly_try, *boost::unit_test::timeout(30)) {
     folly::Try<int> folly_try(test_value);
     kythira::Try<int> t(std::move(folly_try));
 
@@ -51,7 +52,7 @@ BOOST_AUTO_TEST_CASE(test_try_from_folly_try, * boost::unit_test::timeout(30)) {
 }
 
 // Test Future wrapper with value
-BOOST_AUTO_TEST_CASE(test_future_with_value, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_with_value, *boost::unit_test::timeout(30)) {
     kythira::Future<int> f(test_value);
 
     BOOST_TEST(f.isReady());
@@ -59,7 +60,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_value, * boost::unit_test::timeout(30)) {
 }
 
 // Test Future wrapper with exception
-BOOST_AUTO_TEST_CASE(test_future_with_exception, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_with_exception, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<int> f(ex);
 
@@ -68,7 +69,7 @@ BOOST_AUTO_TEST_CASE(test_future_with_exception, * boost::unit_test::timeout(30)
 }
 
 // Test Future then() chaining
-BOOST_AUTO_TEST_CASE(test_future_then, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_then, *boost::unit_test::timeout(30)) {
     kythira::Future<int> f(test_value);
 
     auto f2 = f.then([](int val) { return val * 2; });
@@ -77,7 +78,7 @@ BOOST_AUTO_TEST_CASE(test_future_then, * boost::unit_test::timeout(30)) {
 }
 
 // Test Future onError() handling
-BOOST_AUTO_TEST_CASE(test_future_on_error, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_on_error, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<int> f(ex);
 
@@ -87,7 +88,7 @@ BOOST_AUTO_TEST_CASE(test_future_on_error, * boost::unit_test::timeout(30)) {
 }
 
 // Test Future wait() with timeout
-BOOST_AUTO_TEST_CASE(test_future_wait, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_future_wait, *boost::unit_test::timeout(60)) {
     folly::Promise<int> promise;
     kythira::Future<int> f(promise.getFuture());
 
@@ -106,7 +107,7 @@ BOOST_AUTO_TEST_CASE(test_future_wait, * boost::unit_test::timeout(60)) {
 }
 
 // Test wait_for_any with multiple futures
-BOOST_AUTO_TEST_CASE(test_wait_for_any, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_wait_for_any, *boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -139,7 +140,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_any, * boost::unit_test::timeout(90)) {
 }
 
 // Test wait_for_all with multiple futures
-BOOST_AUTO_TEST_CASE(test_wait_for_all, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_wait_for_all, *boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -188,7 +189,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all, * boost::unit_test::timeout(90)) {
 }
 
 // Test wait_for_all with mixed success and failure
-BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, *boost::unit_test::timeout(60)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -223,31 +224,20 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_with_exceptions, * boost::unit_test::time
 }
 
 // Test Message with empty payload
-BOOST_AUTO_TEST_CASE(test_message_empty_payload, * boost::unit_test::timeout(30)) {
-    Message<DefaultNetworkTypes> msg(
-        "src",
-        8080,
-        "dst",
-        9090
-    );
+BOOST_AUTO_TEST_CASE(test_message_empty_payload, *boost::unit_test::timeout(30)) {
+    Message<DefaultNetworkTypes> msg("src", 8080, "dst", 9090);
 
     BOOST_TEST(msg.payload().empty());
 }
 
 // Test Message with non-empty payload
-BOOST_AUTO_TEST_CASE(test_message_with_payload, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_message_with_payload, *boost::unit_test::timeout(30)) {
     std::vector<std::byte> payload;
     for (char c : std::string(test_string)) {
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    Message<DefaultNetworkTypes> msg(
-        "src",
-        8080,
-        "dst",
-        9090,
-        payload
-    );
+    Message<DefaultNetworkTypes> msg("src", 8080, "dst", 9090, payload);
 
     BOOST_TEST(msg.payload().size() == payload.size());
 
@@ -258,7 +248,7 @@ BOOST_AUTO_TEST_CASE(test_message_with_payload, * boost::unit_test::timeout(30))
 }
 
 // Test Message with various address/port types
-BOOST_AUTO_TEST_CASE(test_message_various_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_message_various_types, *boost::unit_test::timeout(30)) {
     // Create a custom types struct for testing different address/port types
     struct CustomTypes {
         using address_type = unsigned long;
@@ -274,23 +264,16 @@ BOOST_AUTO_TEST_CASE(test_message_various_types, * boost::unit_test::timeout(30)
     };
 
     // Test with unsigned long address and string port
-    Message<CustomTypes> msg1(
-        0xC0A80101UL,  // 192.168.1.1
-        "http",
-        0xC0A80102UL,  // 192.168.1.2
-        "https"
-    );
+    Message<CustomTypes> msg1(0xC0A80101UL,  // 192.168.1.1
+                              "http",
+                              0xC0A80102UL,  // 192.168.1.2
+                              "https");
 
     BOOST_TEST(msg1.source_address() == 0xC0A80101UL);
     BOOST_TEST(msg1.source_port() == "http");
 
     // Test with DefaultNetworkTypes (string address, unsigned short port)
-    Message<DefaultNetworkTypes> msg2(
-        "192.168.1.1",
-        8080,
-        "192.168.1.2",
-        9090
-    );
+    Message<DefaultNetworkTypes> msg2("192.168.1.1", 8080, "192.168.1.2", 9090);
 
     BOOST_TEST(msg2.source_port() == 8080);
     BOOST_TEST(msg2.destination_port() == 9090);

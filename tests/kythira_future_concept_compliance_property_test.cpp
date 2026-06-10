@@ -12,8 +12,8 @@
 #include <chrono>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 50;
-    constexpr const char* test_name = "kythira_future_concept_compliance_property_test";
+constexpr std::size_t property_test_iterations = 50;
+constexpr const char* test_name = "kythira_future_concept_compliance_property_test";
 }
 
 BOOST_AUTO_TEST_SUITE(kythira_future_concept_compliance_property_tests)
@@ -23,7 +23,7 @@ BOOST_AUTO_TEST_SUITE(kythira_future_concept_compliance_property_tests)
  * **Validates: Requirements 10.5**
  * Property: For any value type T, kythira::Future<T> should satisfy all relevant concepts
  */
-BOOST_AUTO_TEST_CASE(property_kythira_future_concept_compliance, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_kythira_future_concept_compliance, *boost::unit_test::timeout(60)) {
     // Test kythira::Future<int> satisfies future concept
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> must satisfy future concept");
@@ -111,7 +111,8 @@ BOOST_AUTO_TEST_CASE(property_kythira_future_concept_compliance, * boost::unit_t
 
         // Test kythira::Try<int> with exception
         {
-            auto ex = folly::exception_wrapper(std::runtime_error("test error " + std::to_string(i)));
+            auto ex =
+                folly::exception_wrapper(std::runtime_error("test error " + std::to_string(i)));
             kythira::Try<int> try_exception(ex);
 
             // Test hasValue and hasException
@@ -129,14 +130,12 @@ BOOST_AUTO_TEST_CASE(property_kythira_future_concept_compliance, * boost::unit_t
 /**
  * Test kythira::Future continuation methods
  */
-BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, *boost::unit_test::timeout(30)) {
     // Test thenValue continuation
     {
         kythira::Future<int> future(42);
 
-        auto continued_future = std::move(future).thenValue([](int value) {
-            return value * 2;
-        });
+        auto continued_future = std::move(future).thenValue([](int value) { return value * 2; });
 
         // Get the result from the continued future
         int result = std::move(continued_future).get();
@@ -147,9 +146,7 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, * boost::unit_te
     {
         kythira::Future<int> future(10);
 
-        auto continued_future = std::move(future).then([](int value) {
-            return value + 5;
-        });
+        auto continued_future = std::move(future).then([](int value) { return value + 5; });
 
         // Get the result from the continued future
         int result = std::move(continued_future).get();
@@ -179,7 +176,7 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, * boost::unit_te
         kythira::Future<int> future(ex);
 
         auto recovered_future = std::move(future).onError([](folly::exception_wrapper) {
-            return 999; // Recovery value
+            return 999;  // Recovery value
         });
 
         // Get the result from the recovered future
@@ -193,7 +190,7 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, * boost::unit_te
 /**
  * Test kythira::Try behavior with different types
  */
-BOOST_AUTO_TEST_CASE(test_kythira_try_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_kythira_try_behavior, *boost::unit_test::timeout(30)) {
     // Test kythira::Try<void> behavior
     {
         kythira::Try<void> try_void;

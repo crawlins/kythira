@@ -36,7 +36,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_applied_index_catchup_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_applied_index_catchup_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -49,12 +50,12 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
-    constexpr std::chrono::milliseconds commit_timeout{2000};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{100};
+constexpr std::chrono::milliseconds commit_timeout{2000};
 }
 
 /**
@@ -72,11 +73,8 @@ public:
         bool catchup_successful;
     };
 
-    auto record_catchup_scenario(
-        std::uint64_t commit_index,
-        std::uint64_t initial_applied_index,
-        const std::vector<std::uint64_t>& entries_to_apply
-    ) -> void {
+    auto record_catchup_scenario(std::uint64_t commit_index, std::uint64_t initial_applied_index,
+                                 const std::vector<std::uint64_t>& entries_to_apply) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
 
         auto start_time = std::chrono::steady_clock::now();
@@ -95,15 +93,8 @@ public:
         auto end_time = std::chrono::steady_clock::now();
         bool successful = (final_applied_index == commit_index);
 
-        _catchup_scenarios.push_back({
-            commit_index,
-            initial_applied_index,
-            final_applied_index,
-            applied_entries,
-            start_time,
-            end_time,
-            successful
-        });
+        _catchup_scenarios.push_back({commit_index, initial_applied_index, final_applied_index,
+                                      applied_entries, start_time, end_time, successful});
     }
 
     auto get_scenarios() const -> std::vector<CatchupState> {
@@ -113,10 +104,9 @@ public:
 
     auto verify_all_catchups_successful() const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
-        return std::all_of(_catchup_scenarios.begin(), _catchup_scenarios.end(),
-            [](const CatchupState& scenario) {
-                return scenario.catchup_successful;
-            });
+        return std::all_of(
+            _catchup_scenarios.begin(), _catchup_scenarios.end(),
+            [](const CatchupState& scenario) { return scenario.catchup_successful; });
     }
 
     auto verify_applied_index_reaches_commit_index() const -> bool {
@@ -134,7 +124,7 @@ public:
         for (const auto& scenario : _catchup_scenarios) {
             // Check that applied entries are in strictly increasing order
             for (std::size_t i = 1; i < scenario.applied_entries.size(); ++i) {
-                if (scenario.applied_entries[i] <= scenario.applied_entries[i-1]) {
+                if (scenario.applied_entries[i] <= scenario.applied_entries[i - 1]) {
                     return false;
                 }
             }
@@ -172,7 +162,7 @@ BOOST_AUTO_TEST_SUITE(applied_index_catchup_property_tests)
  * For any scenario where applied index lags behind commit index,
  * the system catches up by applying pending entries.
  */
-BOOST_AUTO_TEST_CASE(property_applied_index_catchup, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_applied_index_catchup, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> commit_index_dist(5, 20);
@@ -196,25 +186,25 @@ BOOST_AUTO_TEST_CASE(property_applied_index_catchup, * boost::unit_test::timeout
 
         // Property verification
         BOOST_CHECK_MESSAGE(tracker.verify_all_catchups_successful(),
-            "Applied index catch-up should be successful");
+                            "Applied index catch-up should be successful");
 
         BOOST_CHECK_MESSAGE(tracker.verify_applied_index_reaches_commit_index(),
-            "Applied index should reach commit index after catch-up");
+                            "Applied index should reach commit index after catch-up");
 
         BOOST_CHECK_MESSAGE(tracker.verify_sequential_application(),
-            "Entries should be applied sequentially during catch-up");
+                            "Entries should be applied sequentially during catch-up");
 
         auto scenarios = tracker.get_scenarios();
         BOOST_CHECK_MESSAGE(!scenarios.empty(),
-            "At least one catch-up scenario should be recorded");
+                            "At least one catch-up scenario should be recorded");
 
         if (!scenarios.empty()) {
             const auto& scenario = scenarios[0];
             BOOST_CHECK_MESSAGE(scenario.applied_entries.size() == lag,
-                "Number of applied entries should equal the lag amount");
+                                "Number of applied entries should equal the lag amount");
 
             BOOST_CHECK_MESSAGE(scenario.applied_index_after == commit_index,
-                "Final applied index should equal commit index");
+                                "Final applied index should equal commit index");
         }
 
         tracker.clear();
@@ -227,7 +217,7 @@ BOOST_AUTO_TEST_CASE(property_applied_index_catchup, * boost::unit_test::timeout
  * For any scenario with a large gap between applied and commit indices,
  * the system successfully applies all pending entries.
  */
-BOOST_AUTO_TEST_CASE(property_large_gap_catchup, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_large_gap_catchup, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> large_commit_dist(50, 100);
@@ -250,19 +240,19 @@ BOOST_AUTO_TEST_CASE(property_large_gap_catchup, * boost::unit_test::timeout(90)
 
         // Verify large gap catch-up properties
         BOOST_CHECK_MESSAGE(tracker.verify_all_catchups_successful(),
-            "Large gap catch-up should be successful");
+                            "Large gap catch-up should be successful");
 
         BOOST_CHECK_MESSAGE(tracker.verify_applied_index_reaches_commit_index(),
-            "Applied index should reach commit index even with large gaps");
+                            "Applied index should reach commit index even with large gaps");
 
         BOOST_CHECK_MESSAGE(tracker.verify_sequential_application(),
-            "Sequential application should be maintained even with large gaps");
+                            "Sequential application should be maintained even with large gaps");
 
         auto scenarios = tracker.get_scenarios();
         if (!scenarios.empty()) {
             const auto& scenario = scenarios[0];
             BOOST_CHECK_MESSAGE(scenario.applied_entries.size() == lag,
-                "All entries in large gap should be applied");
+                                "All entries in large gap should be applied");
         }
 
         tracker.clear();
@@ -275,7 +265,7 @@ BOOST_AUTO_TEST_CASE(property_large_gap_catchup, * boost::unit_test::timeout(90)
  * For any sequence of catch-up scenarios, each one successfully
  * brings applied index up to commit index.
  */
-BOOST_AUTO_TEST_CASE(property_multiple_catchup_scenarios, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_multiple_catchup_scenarios, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> scenario_count_dist(3, 8);
@@ -300,21 +290,21 @@ BOOST_AUTO_TEST_CASE(property_multiple_catchup_scenarios, * boost::unit_test::ti
             }
 
             tracker.record_catchup_scenario(current_commit, current_applied, entries_to_apply);
-            current_applied = current_commit; // After catch-up, applied equals commit
+            current_applied = current_commit;  // After catch-up, applied equals commit
         }
 
         // Verify multiple scenario properties
         BOOST_CHECK_MESSAGE(tracker.verify_all_catchups_successful(),
-            "All catch-up scenarios should be successful");
+                            "All catch-up scenarios should be successful");
 
         BOOST_CHECK_MESSAGE(tracker.verify_applied_index_reaches_commit_index(),
-            "Applied index should reach commit index in all scenarios");
+                            "Applied index should reach commit index in all scenarios");
 
         BOOST_CHECK_MESSAGE(tracker.verify_sequential_application(),
-            "Sequential application should be maintained across all scenarios");
+                            "Sequential application should be maintained across all scenarios");
 
         BOOST_CHECK_MESSAGE(tracker.get_scenario_count() == scenario_count,
-            "All catch-up scenarios should be recorded");
+                            "All catch-up scenarios should be recorded");
 
         tracker.clear();
     }
@@ -326,29 +316,28 @@ BOOST_AUTO_TEST_CASE(property_multiple_catchup_scenarios, * boost::unit_test::ti
  * For any scenario where applied index equals commit index,
  * no catch-up is needed and the system remains stable.
  */
-BOOST_AUTO_TEST_CASE(property_no_catchup_needed, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_no_catchup_needed, *boost::unit_test::timeout(60)) {
     AppliedIndexCatchupTracker tracker;
 
     // Test case where applied index equals commit index
     std::uint64_t index = 10;
-    std::vector<std::uint64_t> no_entries; // No entries to apply
+    std::vector<std::uint64_t> no_entries;  // No entries to apply
 
     tracker.record_catchup_scenario(index, index, no_entries);
 
     auto scenarios = tracker.get_scenarios();
-    BOOST_CHECK_MESSAGE(!scenarios.empty(),
-        "No-catchup scenario should be recorded");
+    BOOST_CHECK_MESSAGE(!scenarios.empty(), "No-catchup scenario should be recorded");
 
     if (!scenarios.empty()) {
         const auto& scenario = scenarios[0];
         BOOST_CHECK_MESSAGE(scenario.applied_entries.empty(),
-            "No entries should be applied when no catch-up is needed");
+                            "No entries should be applied when no catch-up is needed");
 
         BOOST_CHECK_MESSAGE(scenario.applied_index_before == scenario.applied_index_after,
-            "Applied index should remain unchanged when no catch-up is needed");
+                            "Applied index should remain unchanged when no catch-up is needed");
 
         BOOST_CHECK_MESSAGE(scenario.catchup_successful,
-            "No-catchup scenario should be considered successful");
+                            "No-catchup scenario should be considered successful");
     }
 }
 
@@ -358,7 +347,7 @@ BOOST_AUTO_TEST_CASE(property_no_catchup_needed, * boost::unit_test::timeout(60)
  * For any scenario where only some entries between applied and commit
  * indices are available, the system applies what it can.
  */
-BOOST_AUTO_TEST_CASE(property_partial_catchup, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_partial_catchup, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> commit_dist(10, 20);
@@ -373,7 +362,7 @@ BOOST_AUTO_TEST_CASE(property_partial_catchup, * boost::unit_test::timeout(90)) 
         // Only provide some of the entries between applied and commit
         std::vector<std::uint64_t> available_entries;
         for (std::uint64_t i = applied_index + 1; i <= commit_index; i += 2) {
-            available_entries.push_back(i); // Only odd-indexed entries
+            available_entries.push_back(i);  // Only odd-indexed entries
         }
 
         tracker.record_catchup_scenario(commit_index, applied_index, available_entries);
@@ -382,7 +371,8 @@ BOOST_AUTO_TEST_CASE(property_partial_catchup, * boost::unit_test::timeout(90)) 
         // 1. Sequential application is maintained for available entries
         // 2. Applied index advances as far as possible with available entries
 
-        BOOST_CHECK_MESSAGE(tracker.verify_sequential_application(),
+        BOOST_CHECK_MESSAGE(
+            tracker.verify_sequential_application(),
             "Sequential application should be maintained even with partial catch-up");
 
         auto scenarios = tracker.get_scenarios();
@@ -391,11 +381,10 @@ BOOST_AUTO_TEST_CASE(property_partial_catchup, * boost::unit_test::timeout(90)) 
 
             // Applied index should advance to the highest available entry
             if (!scenario.applied_entries.empty()) {
-                std::uint64_t highest_applied = *std::max_element(
-                    scenario.applied_entries.begin(),
-                    scenario.applied_entries.end()
-                );
-                BOOST_CHECK_MESSAGE(scenario.applied_index_after >= highest_applied,
+                std::uint64_t highest_applied = *std::max_element(scenario.applied_entries.begin(),
+                                                                  scenario.applied_entries.end());
+                BOOST_CHECK_MESSAGE(
+                    scenario.applied_index_after >= highest_applied,
                     "Applied index should advance to at least the highest available entry");
             }
         }
@@ -410,7 +399,7 @@ BOOST_AUTO_TEST_CASE(property_partial_catchup, * boost::unit_test::timeout(90)) 
  * For any scenario where there are gaps in the log (due to snapshots),
  * catch-up still works correctly for available entries.
  */
-BOOST_AUTO_TEST_CASE(property_catchup_with_gaps, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_catchup_with_gaps, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> gap_start_dist(20, 30);
@@ -436,7 +425,7 @@ BOOST_AUTO_TEST_CASE(property_catchup_with_gaps, * boost::unit_test::timeout(90)
 
         // Verify catch-up with gaps
         BOOST_CHECK_MESSAGE(tracker.verify_sequential_application(),
-            "Sequential application should work correctly with gaps");
+                            "Sequential application should work correctly with gaps");
 
         auto scenarios = tracker.get_scenarios();
         if (!scenarios.empty()) {
@@ -444,14 +433,13 @@ BOOST_AUTO_TEST_CASE(property_catchup_with_gaps, * boost::unit_test::timeout(90)
 
             // Should apply available entries after the gap
             BOOST_CHECK_MESSAGE(!scenario.applied_entries.empty(),
-                "Should apply available entries even with gaps");
+                                "Should apply available entries even with gaps");
 
             // Applied entries should be sequential within available range
             for (std::size_t i = 1; i < scenario.applied_entries.size(); ++i) {
                 BOOST_CHECK_MESSAGE(
-                    scenario.applied_entries[i] == scenario.applied_entries[i-1] + 1,
-                    "Applied entries should be sequential within available range"
-                );
+                    scenario.applied_entries[i] == scenario.applied_entries[i - 1] + 1,
+                    "Applied entries should be sequential within available range");
             }
         }
 

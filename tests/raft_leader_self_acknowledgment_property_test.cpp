@@ -11,12 +11,12 @@
 using namespace std;
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::size_t min_cluster_size = 1;
-    constexpr std::size_t max_cluster_size = 9;
-    constexpr std::size_t test_iterations = 30;
-    constexpr std::size_t min_log_entries = 1;
-    constexpr std::size_t max_log_entries = 10;
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t min_cluster_size = 1;
+constexpr std::size_t max_cluster_size = 9;
+constexpr std::size_t test_iterations = 30;
+constexpr std::size_t min_log_entries = 1;
+constexpr std::size_t max_log_entries = 10;
 }
 
 // Simplified types for testing the property
@@ -46,7 +46,7 @@ public:
     std::size_t get_total_acknowledgment_count(LogIndex log_index) const {
         auto it = _acknowledgments.find(log_index);
         std::size_t follower_acks = (it != _acknowledgments.end()) ? it->second.size() : 0;
-        return follower_acks + 1; // +1 for leader self-acknowledgment
+        return follower_acks + 1;  // +1 for leader self-acknowledgment
     }
 
     // Get only follower acknowledgment count (excluding leader)
@@ -62,25 +62,20 @@ public:
     }
 
     // Get the required majority size
-    std::size_t get_majority_size() const {
-        return (_cluster_size / 2) + 1;
-    }
+    std::size_t get_majority_size() const { return (_cluster_size / 2) + 1; }
 
     // Check if leader is included in acknowledgment count
     bool is_leader_included_in_count(LogIndex log_index) const {
         // Leader is always implicitly included
-        return get_total_acknowledgment_count(log_index) > get_follower_acknowledgment_count(log_index);
+        return get_total_acknowledgment_count(log_index) >
+               get_follower_acknowledgment_count(log_index);
     }
 
     // Get leader ID
-    NodeId get_leader_id() const {
-        return _leader_id;
-    }
+    NodeId get_leader_id() const { return _leader_id; }
 
     // Clear all acknowledgments
-    void clear() {
-        _acknowledgments.clear();
-    }
+    void clear() { _acknowledgments.clear(); }
 
     // Get all log indices that have acknowledgments
     std::vector<LogIndex> get_acknowledged_entries() const {
@@ -99,30 +94,31 @@ public:
  * Property: For any commit decision, the leader includes itself in majority calculations.
  * **Validates: Requirements 6.5**
  */
-BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
     std::uniform_int_distribution<std::size_t> entry_count_dist(min_log_entries, max_log_entries);
-    std::uniform_int_distribution<int> ack_rate_dist(50, 100); // percentage
+    std::uniform_int_distribution<int> ack_rate_dist(50, 100);  // percentage
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++; // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
 
         const NodeId leader_id = 1;
         const std::size_t follower_count = cluster_size - 1;
         const std::size_t majority_needed = (cluster_size / 2) + 1;
         const std::size_t entry_count = entry_count_dist(gen);
 
-        BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size
-                          << ", leader ID: " << leader_id
-                          << ", majority needed: " << majority_needed
-                          << ", followers: " << follower_count
-                          << ", log entries: " << entry_count);
+        BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size << ", leader ID: " << leader_id
+                                                    << ", majority needed: " << majority_needed
+                                                    << ", followers: " << follower_count
+                                                    << ", log entries: " << entry_count);
 
         // Create follower IDs (leader is ID 1, followers are 2, 3, 4, ...)
         std::vector<NodeId> follower_ids;
@@ -149,47 +145,53 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
                     calculator.record_follower_acknowledgment(log_index, follower_id);
                     acknowledging_followers.push_back(follower_id);
                     follower_ack_count++;
-                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry " << log_index);
+                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry "
+                                                     << log_index);
                 }
             }
 
             // Property 1: Leader is always implicitly included in acknowledgment count
             const std::size_t total_acks = calculator.get_total_acknowledgment_count(log_index);
-            const std::size_t follower_acks = calculator.get_follower_acknowledgment_count(log_index);
+            const std::size_t follower_acks =
+                calculator.get_follower_acknowledgment_count(log_index);
 
             BOOST_CHECK_EQUAL(follower_acks, follower_ack_count);
-            BOOST_CHECK_EQUAL(total_acks, follower_ack_count + 1); // +1 for leader
+            BOOST_CHECK_EQUAL(total_acks, follower_ack_count + 1);  // +1 for leader
             BOOST_CHECK(calculator.is_leader_included_in_count(log_index));
 
             BOOST_TEST_MESSAGE("  Entry " << log_index << ": " << follower_acks
-                              << " follower acks + 1 leader = " << total_acks << " total");
+                                          << " follower acks + 1 leader = " << total_acks
+                                          << " total");
 
             // Property 2: Majority calculation includes leader self-acknowledgment
             const bool has_majority = calculator.has_majority_acknowledgment(log_index);
             const bool expected_majority = total_acks >= majority_needed;
 
             BOOST_CHECK_EQUAL(has_majority, expected_majority);
-            BOOST_TEST_MESSAGE("  Has majority: " << (has_majority ? "YES" : "NO")
-                              << " (need " << majority_needed << ", have " << total_acks << ")");
+            BOOST_TEST_MESSAGE("  Has majority: " << (has_majority ? "YES" : "NO") << " (need "
+                                                  << majority_needed << ", have " << total_acks
+                                                  << ")");
 
             // Property 3: Leader self-acknowledgment is essential for single-node clusters
             if (cluster_size == 1) {
-                BOOST_CHECK_EQUAL(total_acks, 1); // Only leader
-                BOOST_CHECK(has_majority); // Leader alone should be majority
+                BOOST_CHECK_EQUAL(total_acks, 1);  // Only leader
+                BOOST_CHECK(has_majority);         // Leader alone should be majority
                 BOOST_TEST_MESSAGE("  Single node cluster: leader alone is majority");
             }
 
             // Property 4: Leader self-acknowledgment reduces follower acknowledgments needed
             const std::size_t followers_needed_without_leader = majority_needed;
-            const std::size_t followers_needed_with_leader = majority_needed - 1; // Leader counts as 1
+            const std::size_t followers_needed_with_leader =
+                majority_needed - 1;  // Leader counts as 1
 
             BOOST_CHECK_EQUAL(calculator.get_majority_size(), majority_needed);
 
-            // If we have exactly (majority_needed - 1) followers, we should have majority with leader
+            // If we have exactly (majority_needed - 1) followers, we should have majority with
+            // leader
             if (follower_ack_count == followers_needed_with_leader) {
                 BOOST_CHECK(has_majority);
                 BOOST_TEST_MESSAGE("  Leader self-acknowledgment enables majority with "
-                                  << followers_needed_with_leader << " follower acks");
+                                   << followers_needed_with_leader << " follower acks");
             }
         }
 
@@ -208,8 +210,9 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
 
         // Property: Single node cluster should always have majority (leader self-acknowledgment)
         BOOST_CHECK_EQUAL(single_calculator.get_majority_size(), 1);
-        BOOST_CHECK_EQUAL(single_calculator.get_total_acknowledgment_count(1), 1); // Only leader
-        BOOST_CHECK_EQUAL(single_calculator.get_follower_acknowledgment_count(1), 0); // No followers
+        BOOST_CHECK_EQUAL(single_calculator.get_total_acknowledgment_count(1), 1);  // Only leader
+        BOOST_CHECK_EQUAL(single_calculator.get_follower_acknowledgment_count(1),
+                          0);  // No followers
         BOOST_CHECK(single_calculator.has_majority_acknowledgment(1));
         BOOST_CHECK(single_calculator.is_leader_included_in_count(1));
 
@@ -223,17 +226,18 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
         const NodeId follower_id = 2;
         MajorityCalculator two_calculator(leader_id, cluster_size);
 
-        const std::size_t majority_needed = 2; // (2/2) + 1 = 2
+        const std::size_t majority_needed = 2;  // (2/2) + 1 = 2
         BOOST_CHECK_EQUAL(two_calculator.get_majority_size(), majority_needed);
 
         // Test without follower acknowledgment
-        BOOST_CHECK_EQUAL(two_calculator.get_total_acknowledgment_count(1), 1); // Only leader
-        BOOST_CHECK(!two_calculator.has_majority_acknowledgment(1)); // Need 2, have 1
+        BOOST_CHECK_EQUAL(two_calculator.get_total_acknowledgment_count(1), 1);  // Only leader
+        BOOST_CHECK(!two_calculator.has_majority_acknowledgment(1));             // Need 2, have 1
 
         // Test with follower acknowledgment
         two_calculator.record_follower_acknowledgment(1, follower_id);
-        BOOST_CHECK_EQUAL(two_calculator.get_total_acknowledgment_count(1), 2); // Leader + follower
-        BOOST_CHECK(two_calculator.has_majority_acknowledgment(1)); // Have majority
+        BOOST_CHECK_EQUAL(two_calculator.get_total_acknowledgment_count(1),
+                          2);                                        // Leader + follower
+        BOOST_CHECK(two_calculator.has_majority_acknowledgment(1));  // Have majority
 
         // Property: Leader self-acknowledgment is always included
         BOOST_CHECK(two_calculator.is_leader_included_in_count(1));
@@ -248,22 +252,24 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
         const std::vector<NodeId> follower_ids = {2, 3};
         MajorityCalculator three_calculator(leader_id, cluster_size);
 
-        const std::size_t majority_needed = 2; // (3/2) + 1 = 2
+        const std::size_t majority_needed = 2;  // (3/2) + 1 = 2
         BOOST_CHECK_EQUAL(three_calculator.get_majority_size(), majority_needed);
 
         // Test with no follower acknowledgments
-        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1), 1); // Only leader
-        BOOST_CHECK(!three_calculator.has_majority_acknowledgment(1)); // Need 2, have 1
+        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1), 1);  // Only leader
+        BOOST_CHECK(!three_calculator.has_majority_acknowledgment(1));             // Need 2, have 1
 
         // Test with one follower acknowledgment
         three_calculator.record_follower_acknowledgment(1, follower_ids[0]);
-        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1), 2); // Leader + 1 follower
-        BOOST_CHECK(three_calculator.has_majority_acknowledgment(1)); // Have majority
+        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1),
+                          2);                                          // Leader + 1 follower
+        BOOST_CHECK(three_calculator.has_majority_acknowledgment(1));  // Have majority
 
         // Test with both follower acknowledgments
         three_calculator.record_follower_acknowledgment(1, follower_ids[1]);
-        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1), 3); // Leader + 2 followers
-        BOOST_CHECK(three_calculator.has_majority_acknowledgment(1)); // Still have majority
+        BOOST_CHECK_EQUAL(three_calculator.get_total_acknowledgment_count(1),
+                          3);                                          // Leader + 2 followers
+        BOOST_CHECK(three_calculator.has_majority_acknowledgment(1));  // Still have majority
 
         // Property: Leader self-acknowledgment reduces required follower acknowledgments
         // Without leader: would need 2 followers
@@ -279,20 +285,21 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
         const NodeId leader_id = 1;
         MajorityCalculator large_calculator(leader_id, large_cluster_size);
 
-        const std::size_t majority_needed = 5; // (9/2) + 1 = 5
+        const std::size_t majority_needed = 5;  // (9/2) + 1 = 5
         BOOST_CHECK_EQUAL(large_calculator.get_majority_size(), majority_needed);
 
         // Test with exactly (majority_needed - 1) follower acknowledgments
-        const std::size_t followers_needed = majority_needed - 1; // 4 followers
+        const std::size_t followers_needed = majority_needed - 1;  // 4 followers
 
         for (std::size_t i = 0; i < followers_needed; ++i) {
-            const NodeId follower_id = static_cast<NodeId>(i + 2); // IDs 2, 3, 4, 5
+            const NodeId follower_id = static_cast<NodeId>(i + 2);  // IDs 2, 3, 4, 5
             large_calculator.record_follower_acknowledgment(1, follower_id);
         }
 
         // Property: Leader self-acknowledgment should enable majority with fewer followers
         BOOST_CHECK_EQUAL(large_calculator.get_follower_acknowledgment_count(1), followers_needed);
-        BOOST_CHECK_EQUAL(large_calculator.get_total_acknowledgment_count(1), majority_needed); // followers + leader
+        BOOST_CHECK_EQUAL(large_calculator.get_total_acknowledgment_count(1),
+                          majority_needed);  // followers + leader
         BOOST_CHECK(large_calculator.has_majority_acknowledgment(1));
         BOOST_CHECK(large_calculator.is_leader_included_in_count(1));
 
@@ -310,7 +317,8 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
         for (LogIndex log_index = 1; log_index <= entry_count; ++log_index) {
             // Property: Leader is always included, even with no follower acknowledgments
             BOOST_CHECK_EQUAL(consistency_calculator.get_total_acknowledgment_count(log_index), 1);
-            BOOST_CHECK_EQUAL(consistency_calculator.get_follower_acknowledgment_count(log_index), 0);
+            BOOST_CHECK_EQUAL(consistency_calculator.get_follower_acknowledgment_count(log_index),
+                              0);
             BOOST_CHECK(consistency_calculator.is_leader_included_in_count(log_index));
             BOOST_CHECK_EQUAL(consistency_calculator.get_leader_id(), leader_id);
 
@@ -330,22 +338,26 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
 
             // Property: Leader self-acknowledgment works regardless of leader ID
             BOOST_CHECK_EQUAL(leader_calculator.get_leader_id(), leader_id);
-            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1), 1); // Leader only
+            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1),
+                              1);  // Leader only
             BOOST_CHECK(leader_calculator.is_leader_included_in_count(1));
 
             // Test that follower acknowledgments don't include leader ID
-            const NodeId follower_id = (leader_id == 1) ? 2 : 1; // Use different ID than leader
+            const NodeId follower_id = (leader_id == 1) ? 2 : 1;  // Use different ID than leader
             leader_calculator.record_follower_acknowledgment(1, follower_id);
 
             BOOST_CHECK_EQUAL(leader_calculator.get_follower_acknowledgment_count(1), 1);
-            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1), 2); // Leader + follower
+            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1),
+                              2);  // Leader + follower
 
             // Try to record leader as follower (should be ignored)
             leader_calculator.record_follower_acknowledgment(1, leader_id);
-            BOOST_CHECK_EQUAL(leader_calculator.get_follower_acknowledgment_count(1), 1); // Still 1
-            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1), 2); // Still 2
+            BOOST_CHECK_EQUAL(leader_calculator.get_follower_acknowledgment_count(1),
+                              1);                                                       // Still 1
+            BOOST_CHECK_EQUAL(leader_calculator.get_total_acknowledgment_count(1), 2);  // Still 2
 
-            BOOST_TEST_MESSAGE("Leader ID " << leader_id << ": self-acknowledgment working correctly");
+            BOOST_TEST_MESSAGE("Leader ID " << leader_id
+                                            << ": self-acknowledgment working correctly");
         }
 
         BOOST_TEST_MESSAGE("✓ Different leader IDs test passed");
@@ -355,15 +367,15 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
     {
         // Test various cluster sizes and their majority requirements
         std::vector<std::pair<std::size_t, std::size_t>> cluster_majority_pairs = {
-            {1, 1}, // Single node
-            {2, 2}, // Two nodes
-            {3, 2}, // Three nodes
-            {4, 3}, // Four nodes (even, but testing)
-            {5, 3}, // Five nodes
-            {6, 4}, // Six nodes (even, but testing)
-            {7, 4}, // Seven nodes
-            {8, 5}, // Eight nodes (even, but testing)
-            {9, 5}  // Nine nodes
+            {1, 1},  // Single node
+            {2, 2},  // Two nodes
+            {3, 2},  // Three nodes
+            {4, 3},  // Four nodes (even, but testing)
+            {5, 3},  // Five nodes
+            {6, 4},  // Six nodes (even, but testing)
+            {7, 4},  // Seven nodes
+            {8, 5},  // Eight nodes (even, but testing)
+            {9, 5}   // Nine nodes
         };
 
         for (const auto& [cluster_size, expected_majority] : cluster_majority_pairs) {
@@ -382,11 +394,13 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
                 majority_calculator.record_follower_acknowledgment(1, follower_id);
             }
 
-            BOOST_CHECK_EQUAL(majority_calculator.get_total_acknowledgment_count(1), expected_majority);
+            BOOST_CHECK_EQUAL(majority_calculator.get_total_acknowledgment_count(1),
+                              expected_majority);
             BOOST_CHECK(majority_calculator.has_majority_acknowledgment(1));
 
             BOOST_TEST_MESSAGE("Cluster size " << cluster_size << ": majority " << expected_majority
-                              << ", need " << followers_needed << " followers + leader");
+                                               << ", need " << followers_needed
+                                               << " followers + leader");
         }
 
         BOOST_TEST_MESSAGE("✓ Majority calculation edge cases test passed");
@@ -401,9 +415,9 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
 
         // Create different acknowledgment patterns for different entries
         std::unordered_map<LogIndex, std::vector<NodeId>> entry_followers = {
-            {1, {2, 3}},        // 2 followers + leader = 3 total (no majority, need 4)
-            {2, {2, 3, 4}},     // 3 followers + leader = 4 total (majority!)
-            {3, {2, 3, 4, 5, 6}} // 5 followers + leader = 6 total (majority!)
+            {1, {2, 3}},          // 2 followers + leader = 3 total (no majority, need 4)
+            {2, {2, 3, 4}},       // 3 followers + leader = 4 total (majority!)
+            {3, {2, 3, 4, 5, 6}}  // 5 followers + leader = 6 total (majority!)
         };
 
         for (const auto& [log_index, followers] : entry_followers) {
@@ -411,18 +425,22 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test, * boost::uni
                 tracking_calculator.record_follower_acknowledgment(log_index, follower_id);
             }
 
-            const std::size_t expected_total = followers.size() + 1; // +1 for leader
-            const bool should_have_majority = expected_total >= 4; // Majority of 7 is 4
+            const std::size_t expected_total = followers.size() + 1;  // +1 for leader
+            const bool should_have_majority = expected_total >= 4;    // Majority of 7 is 4
 
             // Property: Leader self-acknowledgment is always included in total count
-            BOOST_CHECK_EQUAL(tracking_calculator.get_follower_acknowledgment_count(log_index), followers.size());
-            BOOST_CHECK_EQUAL(tracking_calculator.get_total_acknowledgment_count(log_index), expected_total);
-            BOOST_CHECK_EQUAL(tracking_calculator.has_majority_acknowledgment(log_index), should_have_majority);
+            BOOST_CHECK_EQUAL(tracking_calculator.get_follower_acknowledgment_count(log_index),
+                              followers.size());
+            BOOST_CHECK_EQUAL(tracking_calculator.get_total_acknowledgment_count(log_index),
+                              expected_total);
+            BOOST_CHECK_EQUAL(tracking_calculator.has_majority_acknowledgment(log_index),
+                              should_have_majority);
             BOOST_CHECK(tracking_calculator.is_leader_included_in_count(log_index));
 
-            BOOST_TEST_MESSAGE("Entry " << log_index << ": " << followers.size()
-                              << " followers + leader = " << expected_total
-                              << " total, majority: " << (should_have_majority ? "YES" : "NO"));
+            BOOST_TEST_MESSAGE("Entry "
+                               << log_index << ": " << followers.size()
+                               << " followers + leader = " << expected_total
+                               << " total, majority: " << (should_have_majority ? "YES" : "NO"));
         }
 
         BOOST_TEST_MESSAGE("✓ Acknowledgment tracking with leader self-acknowledgment test passed");

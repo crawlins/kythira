@@ -14,15 +14,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* client_node_id = "client";
-    constexpr const char* server_node_id = "server";
-    constexpr unsigned short server_port = 8080;
-    constexpr unsigned short client_port = 9090;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Hello, Server!";
-    constexpr const char* response_message = "Hello, Client!";
+constexpr const char* client_node_id = "client";
+constexpr const char* server_node_id = "server";
+constexpr unsigned short server_port = 8080;
+constexpr unsigned short client_port = 9090;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Hello, Server!";
+constexpr const char* response_message = "Hello, Client!";
 }
 
 /**
@@ -30,15 +30,17 @@ namespace {
  * Tests: basic connection establishment and data transfer using DefaultNetworkTypes
  * _Requirements: 6.1-6.5, 7.1-7.8, 8.1-8.6_
  */
-BOOST_AUTO_TEST_CASE(simple_client_server_communication, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(simple_client_server_communication, *boost::unit_test::timeout(30)) {
     // Create simulator
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Configure topology
     simulator.add_node(server_node_id);
     simulator.add_node(client_node_id);
-    simulator.add_edge(server_node_id, client_node_id, NetworkEdge(network_latency, network_reliability));
-    simulator.add_edge(client_node_id, server_node_id, NetworkEdge(network_latency, network_reliability));
+    simulator.add_edge(server_node_id, client_node_id,
+                       NetworkEdge(network_latency, network_reliability));
+    simulator.add_edge(client_node_id, server_node_id,
+                       NetworkEdge(network_latency, network_reliability));
 
     // Create nodes
     auto server_node = simulator.create_node(server_node_id);
@@ -121,7 +123,7 @@ BOOST_AUTO_TEST_CASE(simple_client_server_communication, * boost::unit_test::tim
  * Tests: basic send/receive operations using DefaultNetworkTypes
  * _Requirements: 4.1-4.4, 5.1-5.3_
  */
-BOOST_AUTO_TEST_CASE(connectionless_communication_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connectionless_communication_integration, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create bidirectional network topology: client <-> server
@@ -150,11 +152,8 @@ BOOST_AUTO_TEST_CASE(connectionless_communication_integration, * boost::unit_tes
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg(
-        client_node_id, client_port,
-        server_node_id, server_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg(client_node_id, client_port, server_node_id, server_port,
+                                          payload);
 
     // Client sends message to server
     auto send_future = client->send(msg);

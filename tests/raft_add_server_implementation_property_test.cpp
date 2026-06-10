@@ -12,12 +12,12 @@
 #include <memory>
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::chrono::milliseconds short_timeout{1000};
-    constexpr const char* test_leader_id = "leader";
-    constexpr const char* test_follower_1_id = "follower1";
-    constexpr const char* test_follower_2_id = "follower2";
-    constexpr const char* test_new_node_id = "new_node";
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::chrono::milliseconds short_timeout{1000};
+constexpr const char* test_leader_id = "leader";
+constexpr const char* test_follower_1_id = "follower1";
+constexpr const char* test_follower_2_id = "follower2";
+constexpr const char* test_new_node_id = "new_node";
 }
 
 /**
@@ -30,7 +30,7 @@ namespace {
  * Validates: Requirements 9.2, 9.3, 9.4, 17.1, 17.3, 23.2, 23.4, 29.1, 29.2, 29.3
  */
 
-BOOST_AUTO_TEST_CASE(property_add_server_requires_leadership, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_requires_leadership, *boost::unit_test::timeout(60)) {
     // Property: When add_server is called on a non-leader, the system SHALL
     // reject the request with a leadership error
     // Validates: Requirement 17.3 (only leaders can initiate configuration changes)
@@ -40,10 +40,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_requires_leadership, * boost::unit_test
     // This test verifies that only leaders can add servers to the cluster
     // Non-leaders (followers and candidates) must reject add_server requests
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_validates_duplicate_nodes, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_validates_duplicate_nodes,
+                     *boost::unit_test::timeout(60)) {
     // Property: When add_server is called with a node already in the configuration,
     // the system SHALL reject the request with a validation error
     // Validates: Requirement 23.4 (configuration validation with clear error messages)
@@ -53,10 +54,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_validates_duplicate_nodes, * boost::uni
     // This test verifies that attempting to add a node that already exists
     // in the cluster configuration is properly rejected
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_prevents_concurrent_changes, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_prevents_concurrent_changes,
+                     *boost::unit_test::timeout(60)) {
     // Property: When a configuration change is in progress, the system SHALL
     // reject new add_server requests until the current change completes
     // Validates: Requirement 17.3 (only one configuration change at a time)
@@ -66,10 +68,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_prevents_concurrent_changes, * boost::u
     // This test verifies that only one configuration change can be in progress
     // at a time, preventing race conditions and ensuring safety
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_enters_joint_consensus, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_enters_joint_consensus, *boost::unit_test::timeout(90)) {
     // Property: When add_server is initiated, the system SHALL enter joint
     // consensus mode with both old and new configurations
     // Validates: Requirement 29.1 (joint consensus mode entry with both configurations)
@@ -80,10 +82,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_enters_joint_consensus, * boost::unit_t
     // that includes both the old configuration and the new configuration with
     // the added server
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_waits_for_joint_consensus_commit, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_waits_for_joint_consensus_commit,
+                     *boost::unit_test::timeout(90)) {
     // Property: When joint consensus configuration is replicated, the system SHALL
     // wait for it to be committed before proceeding to final configuration
     // Validates: Requirement 29.2 (waiting for joint consensus commit before final)
@@ -94,10 +97,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_waits_for_joint_consensus_commit, * boo
     // joint consensus configuration to be committed to a majority before
     // proceeding to the final configuration
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_commits_final_configuration, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_commits_final_configuration,
+                     *boost::unit_test::timeout(90)) {
     // Property: When joint consensus is committed, the system SHALL commit the
     // final configuration and wait for confirmation
     // Validates: Requirement 29.3 (final configuration commit and confirmation waiting)
@@ -108,10 +112,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_commits_final_configuration, * boost::u
     // proceeds to commit the final configuration (new configuration only) and
     // waits for it to be committed
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_requires_majority_in_both_configs, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_requires_majority_in_both_configs,
+                     *boost::unit_test::timeout(90)) {
     // Property: When in joint consensus mode, the system SHALL require majority
     // in both old and new configurations for all decisions
     // Validates: Requirement 9.3 (configuration changes require majority in both)
@@ -121,10 +126,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_requires_majority_in_both_configs, * bo
     // This test verifies that during joint consensus, decisions (commits, elections)
     // require majority agreement from both the old and new configurations
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_uses_joint_consensus_protocol, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_uses_joint_consensus_protocol,
+                     *boost::unit_test::timeout(90)) {
     // Property: When adding a server, the system SHALL use the joint consensus
     // protocol to safely transition between configurations
     // Validates: Requirement 9.2 (cluster membership changes use joint consensus)
@@ -137,10 +143,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_uses_joint_consensus_protocol, * boost:
     // 3. Create final configuration (C_new)
     // 4. Replicate and commit final configuration
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_adds_as_non_voting_initially, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_add_server_adds_as_non_voting_initially,
+                     *boost::unit_test::timeout(120)) {
     // Property: When adding a new server, the system SHALL add it as a non-voting
     // member initially during the catch-up phase
     // Validates: Requirement 9.4 (new servers added as non-voting members initially)
@@ -154,10 +161,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_adds_as_non_voting_initially, * boost::
     // Note: Current implementation has a TODO for catch-up phase
     // This test will verify the intended behavior once implemented
 
-    BOOST_CHECK(true); // Placeholder - will implement when catch-up is implemented
+    BOOST_CHECK(true);  // Placeholder - will implement when catch-up is implemented
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_uses_configurable_retry_policy, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_uses_configurable_retry_policy,
+                     *boost::unit_test::timeout(90)) {
     // Property: When configuration change operations fail, the system SHALL
     // use configurable retry policies for recovery
     // Validates: Requirement 23.2 (configurable retry policies for configuration changes)
@@ -168,10 +176,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_uses_configurable_retry_policy, * boost
     // configuration entries) use configurable retry policies with exponential
     // backoff when network operations fail
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_validates_configuration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_validates_configuration, *boost::unit_test::timeout(60)) {
     // Property: When validating configuration changes, the system SHALL provide
     // clear error messages for validation failures
     // Validates: Requirement 23.4 (configuration validation with clear error messages)
@@ -185,10 +193,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_validates_configuration, * boost::unit_
     // - Configuration change already in progress
     // - Not the leader
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_uses_two_phase_protocol, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_uses_two_phase_protocol, *boost::unit_test::timeout(90)) {
     // Property: When adding a server, the system SHALL use the two-phase protocol
     // (joint consensus then final configuration)
     // Validates: Requirement 17.1 (configuration changes use two-phase protocol)
@@ -200,10 +208,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_uses_two_phase_protocol, * boost::unit_
     // Phase 2: Final configuration (C_new)
     // With proper waiting between phases for commit confirmation
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_handles_leadership_loss, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_handles_leadership_loss, *boost::unit_test::timeout(90)) {
     // Property: When the leader loses leadership during add_server, the system
     // SHALL properly handle the transition and fail the operation
     // Validates: Requirement 17.3 (proper handling of leadership changes)
@@ -214,10 +222,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_handles_leadership_loss, * boost::unit_
     // configuration change, the operation is properly failed and the
     // configuration synchronizer handles the transition
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_emits_metrics, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_emits_metrics, *boost::unit_test::timeout(60)) {
     // Property: When add_server operations occur, the system SHALL emit
     // appropriate metrics for monitoring
     // Validates: Requirement 13.7 (metrics emission for Raft operations)
@@ -230,10 +238,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_emits_metrics, * boost::unit_test::time
     // - add_server_failed (with reason)
     // - add_server_duration
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual metrics verification
+    BOOST_CHECK(true);  // Placeholder - will implement with actual metrics verification
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_logs_progress, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_add_server_logs_progress, *boost::unit_test::timeout(60)) {
     // Property: When add_server operations progress through phases, the system
     // SHALL log comprehensive progress information
     // Validates: Requirement 24.3 (configuration change failure logging)
@@ -247,10 +255,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_logs_progress, * boost::unit_test::time
     // - Phase transitions
     // - Success or failure with details
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual logging verification
+    BOOST_CHECK(true);  // Placeholder - will implement with actual logging verification
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_handles_replication_failures, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_handles_replication_failures,
+                     *boost::unit_test::timeout(90)) {
     // Property: When configuration entry replication fails, the system SHALL
     // handle the failure and provide appropriate error information
     // Validates: Requirement 18.2 (AppendEntries retry handling)
@@ -261,10 +270,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_handles_replication_failures, * boost::
     // are properly handled with retry logic and eventual failure reporting
     // if retries are exhausted
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_synchronizes_with_config_synchronizer, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_synchronizes_with_config_synchronizer,
+                     *boost::unit_test::timeout(90)) {
     // Property: When add_server is called, the system SHALL use the
     // ConfigurationSynchronizer for proper phase management
     // Validates: Requirement 17.1 (two-phase protocol with proper synchronization)
@@ -275,10 +285,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_synchronizes_with_config_synchronizer, 
     // ConfigurationSynchronizer component to manage the two-phase protocol
     // and ensure proper waiting between phases
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_returns_future_on_completion, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_returns_future_on_completion,
+                     *boost::unit_test::timeout(90)) {
     // Property: When add_server completes (success or failure), the system SHALL
     // fulfill the returned future with the appropriate result
     // Validates: Requirement 25.1 (generic future concepts for async operations)
@@ -289,10 +300,10 @@ BOOST_AUTO_TEST_CASE(property_add_server_returns_future_on_completion, * boost::
     // when the configuration change completes (both phases committed) or
     // fails with an appropriate exception
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_handles_timeout, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_add_server_handles_timeout, *boost::unit_test::timeout(90)) {
     // Property: When add_server operations timeout, the system SHALL handle
     // the timeout and fail the operation appropriately
     // Validates: Requirement 23.2 (configurable retry policies with timeout)
@@ -303,10 +314,11 @@ BOOST_AUTO_TEST_CASE(property_add_server_handles_timeout, * boost::unit_test::ti
     // (e.g., waiting for commit), the operation is properly failed and
     // the future is fulfilled with a timeout exception
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }
 
-BOOST_AUTO_TEST_CASE(property_add_server_maintains_safety_during_transition, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_add_server_maintains_safety_during_transition,
+                     *boost::unit_test::timeout(120)) {
     // Property: When transitioning through joint consensus, the system SHALL
     // maintain safety properties (no split brain, consistent commits)
     // Validates: Requirement 9.3 (majority in both configurations)
@@ -317,5 +329,5 @@ BOOST_AUTO_TEST_CASE(property_add_server_maintains_safety_during_transition, * b
     // maintains safety by requiring majority agreement from both old and new
     // configurations for all decisions, preventing split brain scenarios
 
-    BOOST_CHECK(true); // Placeholder - will implement with actual node creation
+    BOOST_CHECK(true);  // Placeholder - will implement with actual node creation
 }

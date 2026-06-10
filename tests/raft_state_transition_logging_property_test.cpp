@@ -32,7 +32,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_state_transition_logging_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_state_transition_logging_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -45,54 +46,63 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
 }
 
 BOOST_AUTO_TEST_SUITE(state_transition_logging_property_tests)
@@ -129,8 +139,7 @@ BOOST_AUTO_TEST_CASE(follower_to_candidate_transition_logged) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -150,7 +159,6 @@ BOOST_AUTO_TEST_CASE(follower_to_candidate_transition_logged) {
         BOOST_CHECK(true);
     }
 }
-
 
 /**
  * Property: Candidate to leader transition is logged
@@ -184,8 +192,7 @@ BOOST_AUTO_TEST_CASE(candidate_to_leader_transition_logged) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -231,10 +238,7 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
         constexpr std::uint64_t node2_id = 2;
 
         // Set up network topology
-        network_simulator::NetworkEdge edge(
-            std::chrono::milliseconds{10},
-            1.0
-        );
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
         simulator.add_edge(std::to_string(node1_id), std::to_string(node2_id), edge);
         simulator.add_edge(std::to_string(node2_id), std::to_string(node1_id), edge);
 
@@ -254,14 +258,15 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
 
         auto node1 = kythira::node<test_raft_types>{
             node1_id,
-            test_raft_types::network_client_type{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_client_type{
+                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_server_type{
+                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence1),
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node1.start();
 
@@ -276,22 +281,18 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
         kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t> ae_request{
             higher_term,
             node2_id,
-            0,  // prev_log_index
-            0,  // prev_log_term
+            0,   // prev_log_index
+            0,   // prev_log_term
             {},  // empty entries
-            0   // leader_commit
+            0    // leader_commit
         };
 
         auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
         auto data = serializer.serialize(ae_request);
 
         auto msg = network_simulator::Message<test_raft_types::raft_network_types>{
-            std::to_string(node2_id),
-            1,
-            std::to_string(node1_id),
-            1,
-            std::vector<std::byte>(data.begin(), data.end())
-        };
+            std::to_string(node2_id), 1, std::to_string(node1_id), 1,
+            std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
         BOOST_REQUIRE(send_result);
@@ -308,7 +309,6 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
         BOOST_CHECK(true);
     }
 }
-
 
 /**
  * Property: Candidate to follower transition is logged
@@ -337,10 +337,7 @@ BOOST_AUTO_TEST_CASE(candidate_to_follower_transition_logged) {
         constexpr std::uint64_t node2_id = 2;
 
         // Set up network topology
-        network_simulator::NetworkEdge edge(
-            std::chrono::milliseconds{10},
-            1.0
-        );
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
         simulator.add_edge(std::to_string(node1_id), std::to_string(node2_id), edge);
         simulator.add_edge(std::to_string(node2_id), std::to_string(node1_id), edge);
 
@@ -360,14 +357,15 @@ BOOST_AUTO_TEST_CASE(candidate_to_follower_transition_logged) {
 
         auto node1 = kythira::node<test_raft_types>{
             node1_id,
-            test_raft_types::network_client_type{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
-            test_raft_types::network_server_type{sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_client_type{
+                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
+            test_raft_types::network_server_type{
+                sim_node1, kythira::json_rpc_serializer<std::vector<std::byte>>{}},
             std::move(persistence1),
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node1.start();
 
@@ -378,24 +376,14 @@ BOOST_AUTO_TEST_CASE(candidate_to_follower_transition_logged) {
 
         // Send AppendEntries with higher term
         kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t> ae_request{
-            higher_term,
-            node2_id,
-            0,
-            0,
-            {},
-            0
-        };
+            higher_term, node2_id, 0, 0, {}, 0};
 
         auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
         auto data = serializer.serialize(ae_request);
 
         auto msg = network_simulator::Message<test_raft_types::raft_network_types>{
-            std::to_string(node2_id),
-            1,
-            std::to_string(node1_id),
-            1,
-            std::vector<std::byte>(data.begin(), data.end())
-        };
+            std::to_string(node2_id), 1, std::to_string(node1_id), 1,
+            std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
         BOOST_REQUIRE(send_result);

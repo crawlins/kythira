@@ -33,10 +33,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -57,7 +57,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * the connection tracker SHALL update the connection state appropriately and notify any registered
  * observers.
  */
-BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_state_updates, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -122,9 +122,9 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::time
             ConnectionState old_state_observed = ConnectionState::CONNECTED;
             ConnectionState new_state_observed = ConnectionState::CONNECTED;
 
-            tracker.set_state_change_callback(local_endpoint,
-                [&callback_invoked, &old_state_observed, &new_state_observed]
-                (ConnectionState old_state, ConnectionState new_state) {
+            tracker.set_state_change_callback(
+                local_endpoint, [&callback_invoked, &old_state_observed, &new_state_observed](
+                                    ConnectionState old_state, ConnectionState new_state) {
                     callback_invoked.store(true);
                     old_state_observed = old_state;
                     new_state_observed = new_state;
@@ -145,12 +145,15 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::time
                 if (old_state_observed == ConnectionState::CONNECTED &&
                     new_state_observed == ConnectionState::CLOSING) {
                     ++success_count;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": State transition CONNECTED -> CLOSING observed correctly");
+                    BOOST_TEST_MESSAGE(
+                        "Iteration "
+                        << i << ": State transition CONNECTED -> CLOSING observed correctly");
                 } else {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": State transition incorrect - old: "
-                                     << static_cast<int>(old_state_observed)
-                                     << ", new: " << static_cast<int>(new_state_observed));
+                    BOOST_TEST_MESSAGE("Iteration "
+                                       << i << ": State transition incorrect - old: "
+                                       << static_cast<int>(old_state_observed)
+                                       << ", new: " << static_cast<int>(new_state_observed));
                 }
             } else {
                 ++failures;
@@ -164,7 +167,8 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::time
                 BOOST_TEST_MESSAGE("Iteration " << i << ": State updated to CLOSING in tracker");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": State not updated to CLOSING in tracker");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": State not updated to CLOSING in tracker");
             }
 
             // Test Case 4: Update state to CLOSED
@@ -183,14 +187,17 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::time
                 if (old_state_observed == ConnectionState::CLOSING &&
                     new_state_observed == ConnectionState::CLOSED) {
                     ++success_count;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": State transition CLOSING -> CLOSED observed correctly");
+                    BOOST_TEST_MESSAGE(
+                        "Iteration " << i
+                                     << ": State transition CLOSING -> CLOSED observed correctly");
                 } else {
                     ++failures;
                     BOOST_TEST_MESSAGE("Iteration " << i << ": Second state transition incorrect");
                 }
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Second state change callback not invoked");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Second state change callback not invoked");
             }
 
             // Verify final state
@@ -218,14 +225,17 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, * boost::unit_test::time
                 // Verify state transition to ERROR
                 if (new_state_observed == ConnectionState::ERROR) {
                     ++success_count;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": State transition to ERROR observed correctly");
+                    BOOST_TEST_MESSAGE("Iteration "
+                                       << i << ": State transition to ERROR observed correctly");
                 } else {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ": State transition to ERROR incorrect");
+                    BOOST_TEST_MESSAGE("Iteration " << i
+                                                    << ": State transition to ERROR incorrect");
                 }
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Error state change callback not invoked");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Error state change callback not invoked");
             }
 
             // Verify error state in tracker

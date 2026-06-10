@@ -23,9 +23,9 @@
 #include <folly/init/Init.h>
 
 namespace {
-    constexpr const char* test_message = "Work executed successfully";
-    constexpr std::chrono::milliseconds test_timeout{1000};
-    constexpr std::size_t test_thread_count = 2;
+constexpr const char* test_message = "Work executed successfully";
+constexpr std::chrono::milliseconds test_timeout{1000};
+constexpr std::size_t test_thread_count = 2;
 }
 
 class ExecutorExampleRunner {
@@ -71,8 +71,7 @@ private:
 
             // Wait for work to start
             auto start_time = std::chrono::steady_clock::now();
-            while (!work_executed &&
-                   std::chrono::steady_clock::now() - start_time < test_timeout) {
+            while (!work_executed && std::chrono::steady_clock::now() - start_time < test_timeout) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
 
@@ -110,9 +109,7 @@ private:
             // Submit work that should execute immediately
             bool work_executed = false;
 
-            executor.add([&work_executed]() {
-                work_executed = true;
-            });
+            executor.add([&work_executed]() { work_executed = true; });
 
             // With inline executor, work should be done immediately
             if (!work_executed) {
@@ -147,14 +144,11 @@ private:
             // Verify we can use the executor through KeepAlive
             std::atomic<bool> work_executed{false};
 
-            raw_executor->add([&work_executed]() {
-                work_executed = true;
-            });
+            raw_executor->add([&work_executed]() { work_executed = true; });
 
             // Wait for work execution
             auto start_time = std::chrono::steady_clock::now();
-            while (!work_executed &&
-                   std::chrono::steady_clock::now() - start_time < test_timeout) {
+            while (!work_executed && std::chrono::steady_clock::now() - start_time < test_timeout) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
 
@@ -224,7 +218,7 @@ private:
             }
 
             // Test that invalid executor throws when used
-            kythira::Executor default_executor; // Default constructor creates invalid executor
+            kythira::Executor default_executor;  // Default constructor creates invalid executor
             bool add_exception_thrown = false;
             try {
                 default_executor.add([]() {

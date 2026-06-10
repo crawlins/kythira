@@ -16,11 +16,11 @@
 #include <set>
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::size_t test_max_pending_ops = 10;
-    constexpr std::chrono::milliseconds test_min_timeout{100};
-    constexpr std::chrono::milliseconds test_max_timeout{5000};
-    constexpr const char* test_node_id = "node_1";
+constexpr std::size_t test_iterations = 15;
+constexpr std::size_t test_max_pending_ops = 10;
+constexpr std::chrono::milliseconds test_min_timeout{100};
+constexpr std::chrono::milliseconds test_max_timeout{5000};
+constexpr const char* test_node_id = "node_1";
 }
 
 // Mock logger that captures log messages for verification
@@ -37,11 +37,9 @@ public:
         _entries.emplace_back(log_entry{level, std::string(message), {}});
     }
 
-    auto log(
-        kythira::log_level level,
-        std::string_view message,
-        const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs
-    ) -> void {
+    auto log(kythira::log_level level, std::string_view message,
+             const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         std::vector<std::pair<std::string, std::string>> converted_pairs;
         for (const auto& [key, value] : key_value_pairs) {
@@ -58,22 +56,28 @@ public:
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
 
-    auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto trace(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::trace, message, kvp);
     }
-    auto debug(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto debug(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::debug, message, kvp);
     }
-    auto info(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto info(std::string_view message,
+              const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::info, message, kvp);
     }
-    auto warning(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto warning(std::string_view message,
+                 const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::warning, message, kvp);
     }
-    auto error(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto error(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::error, message, kvp);
     }
-    auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto critical(std::string_view message,
+                  const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::critical, message, kvp);
     }
 
@@ -87,11 +91,9 @@ public:
         _entries.clear();
     }
 
-    [[nodiscard]] auto has_warning_log_with_context(
-        const std::string& expected_message_part,
-        std::chrono::milliseconds timeout,
-        std::size_t pending_count
-    ) const -> bool {
+    [[nodiscard]] auto has_warning_log_with_context(const std::string& expected_message_part,
+                                                    std::chrono::milliseconds timeout,
+                                                    std::size_t pending_count) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
 
         for (const auto& entry : _entries) {
@@ -148,7 +150,7 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
  *
  * For any commit waiting timeout, the timeout is logged with context about pending operations.
  */
-BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<std::size_t> pending_dist(1, test_max_pending_ops);
@@ -166,19 +168,15 @@ BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, * boost::unit_te
         capturing_logger logger;
 
         // Simulate commit timeout logging that should occur in the Raft implementation
-        logger.warning("Commit operation timed out", {
-            {"node_id", test_node_id},
-            {"timeout_ms", std::to_string(timeout_ms.count())},
-            {"pending_operations", std::to_string(pending_count)},
-            {"operation_type", "client_command"}
-        });
+        logger.warning("Commit operation timed out",
+                       {{"node_id", test_node_id},
+                        {"timeout_ms", std::to_string(timeout_ms.count())},
+                        {"pending_operations", std::to_string(pending_count)},
+                        {"operation_type", "client_command"}});
 
         // Verify that the warning was logged with proper context
-        BOOST_CHECK(logger.has_warning_log_with_context(
-            "Commit operation timed out",
-            timeout_ms,
-            pending_count
-        ));
+        BOOST_CHECK(logger.has_warning_log_with_context("Commit operation timed out", timeout_ms,
+                                                        pending_count));
 
         // Verify that all required context fields are present
         auto entries = logger.get_entries();
@@ -187,10 +185,8 @@ BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, * boost::unit_te
         for (const auto& entry : entries) {
             if (entry.level == kythira::log_level::warning &&
                 entry.message.find("Commit operation timed out") != std::string::npos) {
-
-                std::set<std::string> required_keys = {
-                    "node_id", "timeout_ms", "pending_operations", "operation_type"
-                };
+                std::set<std::string> required_keys = {"node_id", "timeout_ms",
+                                                       "pending_operations", "operation_type"};
                 std::set<std::string> found_keys;
 
                 for (const auto& [key, value] : entry.key_value_pairs) {
@@ -221,4 +217,4 @@ BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, * boost::unit_te
 
 // Verify that the capturing_logger satisfies the diagnostic_logger concept
 static_assert(kythira::diagnostic_logger<capturing_logger>,
-    "capturing_logger must satisfy diagnostic_logger concept");
+              "capturing_logger must satisfy diagnostic_logger concept");

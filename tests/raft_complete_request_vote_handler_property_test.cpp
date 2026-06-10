@@ -6,9 +6,9 @@
 #include <cstddef>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_term = 100;
-    constexpr std::uint64_t max_index = 100;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_term = 100;
+constexpr std::uint64_t max_index = 100;
 }
 
 // Helper to generate random term
@@ -35,7 +35,7 @@ auto generate_random_log_index(std::mt19937& rng) -> std::uint64_t {
  * 1. Higher last log term is more up-to-date
  * 2. If terms equal, higher last log index is more up-to-date
  */
-BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -45,7 +45,8 @@ BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test:
 
     // Ensure we test all three scenarios by dedicating iterations to each
     constexpr std::size_t iterations_per_scenario = property_test_iterations / 3;
-    constexpr std::size_t remaining_iterations = property_test_iterations - (iterations_per_scenario * 3);
+    constexpr std::size_t remaining_iterations =
+        property_test_iterations - (iterations_per_scenario * 3);
 
     // Test higher term scenarios
     for (std::size_t i = 0; i < iterations_per_scenario; ++i) {
@@ -63,10 +64,13 @@ BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test:
         ++tests_passed;
 
         if (i < 3) {
-            BOOST_TEST_MESSAGE("Higher term test " << i << ": "
-                << "Our log (term=" << our_last_log_term << ", index=" << our_last_log_index << "), "
-                << "Candidate log (term=" << candidate_last_log_term << ", index=" << candidate_last_log_index << "), "
-                << "Expected up-to-date: yes");
+            BOOST_TEST_MESSAGE("Higher term test "
+                               << i << ": "
+                               << "Our log (term=" << our_last_log_term
+                               << ", index=" << our_last_log_index << "), "
+                               << "Candidate log (term=" << candidate_last_log_term
+                               << ", index=" << candidate_last_log_index << "), "
+                               << "Expected up-to-date: yes");
         }
     }
 
@@ -86,10 +90,13 @@ BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test:
         ++tests_passed;
 
         if (i < 3) {
-            BOOST_TEST_MESSAGE("Equal term test " << i << ": "
-                << "Our log (term=" << our_last_log_term << ", index=" << our_last_log_index << "), "
-                << "Candidate log (term=" << candidate_last_log_term << ", index=" << candidate_last_log_index << "), "
-                << "Expected up-to-date: " << (expected_up_to_date ? "yes" : "no"));
+            BOOST_TEST_MESSAGE("Equal term test "
+                               << i << ": "
+                               << "Our log (term=" << our_last_log_term
+                               << ", index=" << our_last_log_index << "), "
+                               << "Candidate log (term=" << candidate_last_log_term
+                               << ", index=" << candidate_last_log_index << "), "
+                               << "Expected up-to-date: " << (expected_up_to_date ? "yes" : "no"));
         }
     }
 
@@ -109,10 +116,13 @@ BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test:
         ++tests_passed;
 
         if (i < 3) {
-            BOOST_TEST_MESSAGE("Lower term test " << i << ": "
-                << "Our log (term=" << our_last_log_term << ", index=" << our_last_log_index << "), "
-                << "Candidate log (term=" << candidate_last_log_term << ", index=" << candidate_last_log_index << "), "
-                << "Expected up-to-date: no");
+            BOOST_TEST_MESSAGE("Lower term test "
+                               << i << ": "
+                               << "Our log (term=" << our_last_log_term
+                               << ", index=" << our_last_log_index << "), "
+                               << "Candidate log (term=" << candidate_last_log_term
+                               << ", index=" << candidate_last_log_index << "), "
+                               << "Expected up-to-date: no");
         }
     }
 
@@ -165,7 +175,7 @@ BOOST_AUTO_TEST_CASE(property_log_up_to_dateness_comparison, * boost::unit_test:
  * 2. Haven't voted for another candidate in this term
  * 3. Candidate's log is at least as up-to-date
  */
-BOOST_AUTO_TEST_CASE(property_vote_granting_conditions, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_vote_granting_conditions, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -182,9 +192,7 @@ BOOST_AUTO_TEST_CASE(property_vote_granting_conditions, * boost::unit_test::time
         bool log_up_to_date = bool_dist(rng) == 1;
 
         // Determine if vote should be granted
-        bool should_grant = (request_term >= current_term) &&
-                           !already_voted &&
-                           log_up_to_date;
+        bool should_grant = (request_term >= current_term) && !already_voted && log_up_to_date;
 
         if (should_grant) {
             ++should_grant_tests;
@@ -199,9 +207,11 @@ BOOST_AUTO_TEST_CASE(property_vote_granting_conditions, * boost::unit_test::time
 
         if (i < 10) {  // Log first 10 iterations
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "request_term=" << request_term << ", current_term=" << current_term << ", "
-                << "already_voted=" << already_voted << ", log_up_to_date=" << log_up_to_date << ", "
-                << "should_grant=" << should_grant);
+                                            << "request_term=" << request_term
+                                            << ", current_term=" << current_term << ", "
+                                            << "already_voted=" << already_voted
+                                            << ", log_up_to_date=" << log_up_to_date << ", "
+                                            << "should_grant=" << should_grant);
         }
     }
 
@@ -223,7 +233,7 @@ BOOST_AUTO_TEST_CASE(property_vote_granting_conditions, * boost::unit_test::time
  * Property: When receiving a RequestVote with a higher term,
  * the node must update its current term before processing the vote.
  */
-BOOST_AUTO_TEST_CASE(property_term_update_on_higher_term, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_term_update_on_higher_term, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -249,8 +259,9 @@ BOOST_AUTO_TEST_CASE(property_term_update_on_higher_term, * boost::unit_test::ti
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_term=" << current_term << ", request_term=" << request_term << ", "
-                << "should_update=" << should_update_term);
+                                            << "current_term=" << current_term
+                                            << ", request_term=" << request_term << ", "
+                                            << "should_update=" << should_update_term);
         }
     }
 
@@ -265,7 +276,7 @@ BOOST_AUTO_TEST_CASE(property_term_update_on_higher_term, * boost::unit_test::ti
     BOOST_CHECK_EQUAL(tests_passed, property_test_iterations);
 }
 
-BOOST_AUTO_TEST_CASE(test_all_properties_passed, * boost::unit_test::timeout(5)) {
+BOOST_AUTO_TEST_CASE(test_all_properties_passed, *boost::unit_test::timeout(5)) {
     BOOST_TEST_MESSAGE("✓ All complete RequestVote handler property tests passed!");
     BOOST_TEST_MESSAGE("✓ Implementation verified to follow Raft specification:");
     BOOST_TEST_MESSAGE("  - Log up-to-dateness comparison (term first, then index)");

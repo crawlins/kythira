@@ -14,18 +14,20 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 2: Promise Value and Exception Handling**
  *
- * Property: For any promise wrapper and value/exception, setting the value or exception should properly convert types and make the associated future ready with the correct result
+ * Property: For any promise wrapper and value/exception, setting the value or exception should
+ * properly convert types and make the associated future ready with the correct result
  * **Validates: Requirements 1.5**
  */
-BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: getFuture returns properly wrapped Future instance for int type
     {
         Promise<int> promise;
@@ -74,7 +76,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
 
         promise.setValue(folly::Unit{});
         BOOST_CHECK(future.isReady());
-        future.get(); // Should not throw
+        future.get();  // Should not throw
     }
 
     // Test 4: getSemiFuture returns properly wrapped Future instance for int type
@@ -104,7 +106,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
 
         promise.setValue(folly::Unit{});
         BOOST_CHECK(semi_future.isReady());
-        semi_future.get(); // Should not throw
+        semi_future.get();  // Should not throw
     }
 
     // Test 6: Future retrieval with exception handling - getFuture
@@ -141,9 +143,10 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
         BOOST_CHECK_THROW(semi_future.get(), std::runtime_error);
     }
 
-    // Test 8: Property-based testing - verify future retrieval works across multiple types and values
+    // Test 8: Property-based testing - verify future retrieval works across multiple types and
+    // values
     for (int i = 0; i < 100; ++i) {
-        int random_value = i * 7 + 13; // Simple pseudo-random generation
+        int random_value = i * 7 + 13;  // Simple pseudo-random generation
 
         // Test getFuture with various values
         {
@@ -197,7 +200,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
                           "getFuture() should return Future<void>");
 
             void_promise.setValue(folly::Unit{});
-            void_future.get(); // Should not throw
+            void_future.get();  // Should not throw
         }
 
         // Test exception propagation through future retrieval
@@ -205,7 +208,8 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
             Promise<int> exception_promise;
             auto future = exception_promise.getFuture();
 
-            auto ex = folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+            auto ex =
+                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
             exception_promise.setException(ex);
             BOOST_CHECK(future.isReady());
             BOOST_CHECK_THROW(future.get(), std::runtime_error);
@@ -216,7 +220,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_future_retrieval_property_test, * boost::un
 /**
  * Test that retrieved futures satisfy the future concept
  */
-BOOST_AUTO_TEST_CASE(retrieved_future_concept_compliance_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(retrieved_future_concept_compliance_test, *boost::unit_test::timeout(30)) {
     // Test that futures returned by getFuture satisfy future concept
     {
         Promise<int> promise;
@@ -242,14 +246,14 @@ BOOST_AUTO_TEST_CASE(retrieved_future_concept_compliance_test, * boost::unit_tes
         auto future = promise.getFuture();
 
         promise.setValue(folly::Unit{});
-        future.get(); // Should not throw
+        future.get();  // Should not throw
     }
 }
 
 /**
  * Test future retrieval behavior and lifecycle management
  */
-BOOST_AUTO_TEST_CASE(future_retrieval_lifecycle_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_retrieval_lifecycle_test, *boost::unit_test::timeout(30)) {
     // Test that promise-future relationship is properly maintained
     {
         Promise<int> promise;
@@ -295,7 +299,7 @@ BOOST_AUTO_TEST_CASE(future_retrieval_lifecycle_test, * boost::unit_test::timeou
 /**
  * Test move semantics with future retrieval
  */
-BOOST_AUTO_TEST_CASE(future_retrieval_move_semantics_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_retrieval_move_semantics_test, *boost::unit_test::timeout(30)) {
     // Test that promise can be moved after getting future
     {
         Promise<int> promise1;

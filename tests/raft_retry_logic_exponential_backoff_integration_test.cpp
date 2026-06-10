@@ -35,7 +35,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_retry_logic_exponential_backoff_integration_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("raft_retry_logic_exponential_backoff_integration_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -48,24 +49,24 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    // Test constants
-    constexpr std::uint64_t test_term_1 = 1;
-    constexpr std::uint64_t test_term_2 = 2;
-    constexpr std::uint64_t test_log_index_1 = 1;
-    constexpr std::uint64_t test_log_index_2 = 2;
-    constexpr std::uint64_t test_node_a = 1;
-    constexpr std::uint64_t test_node_b = 2;
-    constexpr std::uint64_t test_node_c = 3;
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds medium_timeout{500};
-    constexpr std::chrono::milliseconds long_timeout{2000};
-    constexpr const char* test_node_a_str = "node_a";
-    constexpr const char* test_node_b_str = "node_b";
-    constexpr const char* test_node_c_str = "node_c";
-    constexpr std::size_t max_retry_attempts = 5;
-    constexpr std::chrono::milliseconds initial_delay{100};
-    constexpr std::chrono::milliseconds max_delay{5000};
-    constexpr double backoff_multiplier = 2.0;
+// Test constants
+constexpr std::uint64_t test_term_1 = 1;
+constexpr std::uint64_t test_term_2 = 2;
+constexpr std::uint64_t test_log_index_1 = 1;
+constexpr std::uint64_t test_log_index_2 = 2;
+constexpr std::uint64_t test_node_a = 1;
+constexpr std::uint64_t test_node_b = 2;
+constexpr std::uint64_t test_node_c = 3;
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds medium_timeout{500};
+constexpr std::chrono::milliseconds long_timeout{2000};
+constexpr const char* test_node_a_str = "node_a";
+constexpr const char* test_node_b_str = "node_b";
+constexpr const char* test_node_c_str = "node_c";
+constexpr std::size_t max_retry_attempts = 5;
+constexpr std::chrono::milliseconds initial_delay{100};
+constexpr std::chrono::milliseconds max_delay{5000};
+constexpr double backoff_multiplier = 2.0;
 }
 
 /**
@@ -108,70 +109,59 @@ public:
     auto send_heartbeat(
         const std::string& target,
         const kythira::append_entries_request<std::uint64_t, std::uint64_t>& request,
-        std::chrono::milliseconds timeout
-    ) -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
+        std::chrono::milliseconds timeout)
+        -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
         return simulate_operation<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
             target,
             [request]() {
                 return kythira::append_entries_response<std::uint64_t, std::uint64_t>{
-                    request.term(), true, std::nullopt, std::nullopt
-                };
+                    request.term(), true, std::nullopt, std::nullopt};
             },
-            "Network timeout occurred"
-        );
+            "Network timeout occurred");
     }
 
     auto send_append_entries(
         const std::string& target,
         const kythira::append_entries_request<std::uint64_t, std::uint64_t>& request,
-        std::chrono::milliseconds timeout
-    ) -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
+        std::chrono::milliseconds timeout)
+        -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
         return simulate_operation<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
             target,
             [request]() {
                 return kythira::append_entries_response<std::uint64_t, std::uint64_t>{
-                    request.term(), true, std::nullopt, std::nullopt
-                };
+                    request.term(), true, std::nullopt, std::nullopt};
             },
-            "Connection refused by target"
-        );
+            "Connection refused by target");
     }
 
     auto send_install_snapshot(
         const std::string& target,
         const kythira::install_snapshot_request<std::uint64_t, std::uint64_t>& request,
-        std::chrono::milliseconds timeout
-    ) -> kythira::install_snapshot_response<std::uint64_t> {
+        std::chrono::milliseconds timeout) -> kythira::install_snapshot_response<std::uint64_t> {
         return simulate_operation<kythira::install_snapshot_response<std::uint64_t>>(
             target,
             [request]() {
                 return kythira::install_snapshot_response<std::uint64_t>{request.term()};
             },
-            "Temporary failure, try again"
-        );
+            "Temporary failure, try again");
     }
 
     auto send_request_vote(
         const std::string& target,
         const kythira::request_vote_request<std::uint64_t, std::uint64_t>& request,
-        std::chrono::milliseconds timeout
-    ) -> kythira::request_vote_response<std::uint64_t> {
+        std::chrono::milliseconds timeout) -> kythira::request_vote_response<std::uint64_t> {
         return simulate_operation<kythira::request_vote_response<std::uint64_t>>(
             target,
             [request]() {
                 return kythira::request_vote_response<std::uint64_t>{request.term(), true};
             },
-            "Network is unreachable"
-        );
+            "Network is unreachable");
     }
 
 private:
     template<typename ResponseType, typename OperationFunc>
-    auto simulate_operation(
-        const std::string& target,
-        OperationFunc&& operation,
-        const std::string& error_message
-    ) -> ResponseType {
+    auto simulate_operation(const std::string& target, OperationFunc&& operation,
+                            const std::string& error_message) -> ResponseType {
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Get current attempt number
@@ -189,12 +179,10 @@ private:
         }
 
         // Record operation
-        OperationRecord record{
-            .timestamp = std::chrono::steady_clock::now(),
-            .attempt_number = attempt,
-            .succeeded = !should_fail,
-            .error_message = should_fail ? actual_error : ""
-        };
+        OperationRecord record{.timestamp = std::chrono::steady_clock::now(),
+                               .attempt_number = attempt,
+                               .succeeded = !should_fail,
+                               .error_message = should_fail ? actual_error : ""};
         _operation_records[target].push_back(record);
 
         if (should_fail) {
@@ -211,7 +199,8 @@ private:
     std::mt19937 _rng;
 };
 
-BOOST_AUTO_TEST_SUITE(retry_logic_exponential_backoff_integration_tests, * boost::unit_test::timeout(300))
+BOOST_AUTO_TEST_SUITE(retry_logic_exponential_backoff_integration_tests,
+                      *boost::unit_test::timeout(300))
 
 /**
  * Test: Heartbeat retry under network failures
@@ -221,7 +210,7 @@ BOOST_AUTO_TEST_SUITE(retry_logic_exponential_backoff_integration_tests, * boost
  *
  * Requirements: 18.1
  */
-BOOST_AUTO_TEST_CASE(heartbeat_retry_network_failures, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(heartbeat_retry_network_failures, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing heartbeat retry under network failures");
 
     MockNetworkClient network_client;
@@ -233,29 +222,30 @@ BOOST_AUTO_TEST_CASE(heartbeat_retry_network_failures, * boost::unit_test::timeo
         .max_delay = std::chrono::milliseconds{1000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,  // No jitter for predictable testing
-        .max_attempts = 4
-    };
+        .max_attempts = 4};
     handler.set_retry_policy("heartbeat", heartbeat_policy);
 
     // Test scenario: First 2 attempts fail, 3rd succeeds
     network_client.set_failure_count(test_node_b_str, 2);
 
-    auto heartbeat_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+    auto heartbeat_operation = [&network_client]()
+        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1
-        };
+            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
             auto response = network_client.send_heartbeat(test_node_b_str, request, medium_timeout);
             return kythira::FutureFactory::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }
     };
 
     auto start_time = std::chrono::steady_clock::now();
-    auto result_future = handler.execute_with_retry("heartbeat", heartbeat_operation, heartbeat_policy);
+    auto result_future =
+        handler.execute_with_retry("heartbeat", heartbeat_operation, heartbeat_policy);
     auto result = std::move(result_future).get();
     auto end_time = std::chrono::steady_clock::now();
 
@@ -301,20 +291,18 @@ BOOST_AUTO_TEST_CASE(heartbeat_retry_network_failures, * boost::unit_test::timeo
  *
  * Requirements: 18.2
  */
-BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing AppendEntries retry with various failure patterns");
 
     MockNetworkClient network_client;
     kythira::error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
 
     // Configure retry policy for AppendEntries
-    typename decltype(handler)::retry_policy append_policy{
-        .initial_delay = initial_delay,
-        .max_delay = max_delay,
-        .backoff_multiplier = backoff_multiplier,
-        .jitter_factor = 0.0,
-        .max_attempts = max_retry_attempts
-    };
+    typename decltype(handler)::retry_policy append_policy{.initial_delay = initial_delay,
+                                                           .max_delay = max_delay,
+                                                           .backoff_multiplier = backoff_multiplier,
+                                                           .jitter_factor = 0.0,
+                                                           .max_attempts = max_retry_attempts};
     handler.set_retry_policy("append_entries", append_policy);
 
     // Test Pattern 1: Intermittent failures (fail, succeed, fail, succeed)
@@ -323,23 +311,30 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::
         network_client.reset();
         network_client.set_failure_count(test_node_b_str, 1);
 
-        auto append_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto append_operation = [&network_client]()
+            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-                test_term_1, test_node_a, test_log_index_1, test_term_1,
-                {kythira::log_entry<std::uint64_t, std::uint64_t>{test_term_1, test_log_index_1, {}}},
-                test_log_index_1
-            };
+                test_term_1,
+                test_node_a,
+                test_log_index_1,
+                test_term_1,
+                {kythira::log_entry<std::uint64_t, std::uint64_t>{
+                    test_term_1, test_log_index_1, {}}},
+                test_log_index_1};
 
             try {
-                auto response = network_client.send_append_entries(test_node_b_str, request, medium_timeout);
+                auto response =
+                    network_client.send_append_entries(test_node_b_str, request, medium_timeout);
                 return kythira::FutureFactory::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
         };
 
-        auto result_future = handler.execute_with_retry("append_entries", append_operation, append_policy);
+        auto result_future =
+            handler.execute_with_retry("append_entries", append_operation, append_policy);
         auto result = std::move(result_future).get();
 
         BOOST_CHECK(result.success());
@@ -354,24 +349,31 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::
         network_client.reset();
         network_client.set_failure_count(test_node_c_str, 3);
 
-        auto append_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto append_operation = [&network_client]()
+            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-                test_term_2, test_node_a, test_log_index_2, test_term_2,
-                {kythira::log_entry<std::uint64_t, std::uint64_t>{test_term_2, test_log_index_2, {}}},
-                test_log_index_2
-            };
+                test_term_2,
+                test_node_a,
+                test_log_index_2,
+                test_term_2,
+                {kythira::log_entry<std::uint64_t, std::uint64_t>{
+                    test_term_2, test_log_index_2, {}}},
+                test_log_index_2};
 
             try {
-                auto response = network_client.send_append_entries(test_node_c_str, request, medium_timeout);
+                auto response =
+                    network_client.send_append_entries(test_node_c_str, request, medium_timeout);
                 return kythira::FutureFactory::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
         };
 
         auto start_time = std::chrono::steady_clock::now();
-        auto result_future = handler.execute_with_retry("append_entries", append_operation, append_policy);
+        auto result_future =
+            handler.execute_with_retry("append_entries", append_operation, append_policy);
         auto result = std::move(result_future).get();
         auto end_time = std::chrono::steady_clock::now();
 
@@ -383,12 +385,14 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::
         if (records.size() >= 4) {
             for (std::size_t i = 1; i < records.size(); ++i) {
                 auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    records[i].timestamp - records[i-1].timestamp);
-                BOOST_TEST_MESSAGE("Delay before attempt " << (i+1) << ": " << delay.count() << "ms");
+                    records[i].timestamp - records[i - 1].timestamp);
+                BOOST_TEST_MESSAGE("Delay before attempt " << (i + 1) << ": " << delay.count()
+                                                           << "ms");
             }
         }
 
-        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto total_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         BOOST_TEST_MESSAGE("Total time for 4 attempts: " << total_time.count() << "ms");
         BOOST_TEST_MESSAGE("✓ Multiple consecutive failures handled correctly");
     }
@@ -399,23 +403,26 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::
         network_client.reset();
         network_client.set_always_fail(test_node_b_str, true);
 
-        auto append_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto append_operation = [&network_client]()
+            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-                test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1
-            };
+                test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
             try {
-                auto response = network_client.send_append_entries(test_node_b_str, request, medium_timeout);
+                auto response =
+                    network_client.send_append_entries(test_node_b_str, request, medium_timeout);
                 return kythira::FutureFactory::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
         };
 
         bool exception_caught = false;
         try {
-            auto result_future = handler.execute_with_retry("append_entries", append_operation, append_policy);
+            auto result_future =
+                handler.execute_with_retry("append_entries", append_operation, append_policy);
             auto result = std::move(result_future).get();
             BOOST_FAIL("Expected exception for exceeding retry limit");
         } catch (const std::exception& e) {
@@ -438,7 +445,7 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, * boost::unit_test::
  *
  * Requirements: 18.3
  */
-BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Testing InstallSnapshot retry with partial transfers");
 
     MockNetworkClient network_client;
@@ -450,35 +457,37 @@ BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, * boost::unit_tes
         .max_delay = std::chrono::milliseconds{10000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,
-        .max_attempts = 6
-    };
+        .max_attempts = 6};
     handler.set_retry_policy("install_snapshot", snapshot_policy);
 
     // Simulate partial transfer failures
     network_client.set_failure_count(test_node_c_str, 2);
 
-    auto snapshot_operation = [&network_client]() -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+    auto snapshot_operation =
+        [&network_client]() -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
         kythira::install_snapshot_request<std::uint64_t, std::uint64_t> request{
             test_term_1,
             test_node_a,
             test_log_index_1,
             test_term_1,
-            0,  // offset
+            0,                                                    // offset
             {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}},  // data
-            true  // done
+            true                                                  // done
         };
 
         try {
-            auto response = network_client.send_install_snapshot(test_node_c_str, request, long_timeout);
+            auto response =
+                network_client.send_install_snapshot(test_node_c_str, request, long_timeout);
             return kythira::FutureFactory::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::install_snapshot_response<std::uint64_t>>(
-                std::current_exception());
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::install_snapshot_response<std::uint64_t>>(std::current_exception());
         }
     };
 
     auto start_time = std::chrono::steady_clock::now();
-    auto result_future = handler.execute_with_retry("install_snapshot", snapshot_operation, snapshot_policy);
+    auto result_future =
+        handler.execute_with_retry("install_snapshot", snapshot_operation, snapshot_policy);
     auto result = std::move(result_future).get();
     auto end_time = std::chrono::steady_clock::now();
 
@@ -524,7 +533,7 @@ BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, * boost::unit_tes
  *
  * Requirements: 18.4
  */
-BOOST_AUTO_TEST_CASE(request_vote_retry_elections, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(request_vote_retry_elections, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing RequestVote retry during elections");
 
     MockNetworkClient network_client;
@@ -536,27 +545,24 @@ BOOST_AUTO_TEST_CASE(request_vote_retry_elections, * boost::unit_test::timeout(6
         .max_delay = std::chrono::milliseconds{2000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+        .max_attempts = 3};
     handler.set_retry_policy("request_vote", vote_policy);
 
     // Simulate election with network issues
     network_client.set_failure_count(test_node_b_str, 1);
 
-    auto vote_operation = [&network_client]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+    auto vote_operation =
+        [&network_client]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
         kythira::request_vote_request<std::uint64_t, std::uint64_t> request{
-            test_term_2,
-            test_node_a,
-            test_log_index_1,
-            test_term_1
-        };
+            test_term_2, test_node_a, test_log_index_1, test_term_1};
 
         try {
-            auto response = network_client.send_request_vote(test_node_b_str, request, medium_timeout);
+            auto response =
+                network_client.send_request_vote(test_node_b_str, request, medium_timeout);
             return kythira::FutureFactory::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
-                std::current_exception());
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::request_vote_response<std::uint64_t>>(std::current_exception());
         }
     };
 
@@ -575,8 +581,8 @@ BOOST_AUTO_TEST_CASE(request_vote_retry_elections, * boost::unit_test::timeout(6
 
     // Verify backoff delay
     if (records.size() >= 2) {
-        auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-            records[1].timestamp - records[0].timestamp);
+        auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(records[1].timestamp -
+                                                                           records[0].timestamp);
 
         BOOST_TEST_MESSAGE("Delay between attempts: " << delay.count() << "ms");
 
@@ -598,7 +604,7 @@ BOOST_AUTO_TEST_CASE(request_vote_retry_elections, * boost::unit_test::timeout(6
  *
  * Requirements: 18.1, 18.2, 18.3, 18.4
  */
-BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Testing exponential backoff delay verification");
 
     MockNetworkClient network_client;
@@ -610,23 +616,24 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test:
         .max_delay = std::chrono::milliseconds{10000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,  // No jitter for precise testing
-        .max_attempts = 5
-    };
+        .max_attempts = 5};
     handler.set_retry_policy("test_operation", test_policy);
 
     // Set up to fail 4 times, succeed on 5th
     network_client.set_failure_count(test_node_b_str, 4);
 
-    auto test_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+    auto test_operation = [&network_client]()
+        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1
-        };
+            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
-            auto response = network_client.send_append_entries(test_node_b_str, request, medium_timeout);
+            auto response =
+                network_client.send_append_entries(test_node_b_str, request, medium_timeout);
             return kythira::FutureFactory::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }
     };
@@ -647,7 +654,7 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test:
         // Calculate actual delays
         for (std::size_t i = 1; i < records.size(); ++i) {
             auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-                records[i].timestamp - records[i-1].timestamp);
+                records[i].timestamp - records[i - 1].timestamp);
             actual_delays.push_back(delay);
         }
 
@@ -659,9 +666,9 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test:
 
         BOOST_TEST_MESSAGE("Exponential backoff delay pattern:");
         for (std::size_t i = 0; i < actual_delays.size(); ++i) {
-            BOOST_TEST_MESSAGE("  Attempt " << (i+1) << " -> " << (i+2)
-                              << ": Expected ~" << expected_delays[i].count() << "ms"
-                              << ", Actual " << actual_delays[i].count() << "ms");
+            BOOST_TEST_MESSAGE("  Attempt " << (i + 1) << " -> " << (i + 2) << ": Expected ~"
+                                            << expected_delays[i].count() << "ms"
+                                            << ", Actual " << actual_delays[i].count() << "ms");
 
             // Allow 30% tolerance for timing variations
             auto expected = expected_delays[i].count();
@@ -672,7 +679,7 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test:
 
         // Verify exponential growth pattern
         for (std::size_t i = 1; i < actual_delays.size(); ++i) {
-            BOOST_CHECK_GT(actual_delays[i].count(), actual_delays[i-1].count());
+            BOOST_CHECK_GT(actual_delays[i].count(), actual_delays[i - 1].count());
         }
 
         BOOST_TEST_MESSAGE("✓ Exponential backoff follows expected mathematical pattern");
@@ -687,7 +694,7 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, * boost::unit_test:
  *
  * Requirements: 18.1, 18.2, 18.3, 18.4
  */
-BOOST_AUTO_TEST_CASE(retry_limit_enforcement, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(retry_limit_enforcement, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing retry limit enforcement");
 
     MockNetworkClient network_client;
@@ -707,26 +714,28 @@ BOOST_AUTO_TEST_CASE(retry_limit_enforcement, * boost::unit_test::timeout(60)) {
             .max_delay = std::chrono::milliseconds{1000},
             .backoff_multiplier = 2.0,
             .jitter_factor = 0.0,
-            .max_attempts = max_attempts
-        };
+            .max_attempts = max_attempts};
 
-        auto test_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto test_operation = [&network_client]()
+            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-                test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1
-            };
+                test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
             try {
-                auto response = network_client.send_append_entries(test_node_b_str, request, medium_timeout);
+                auto response =
+                    network_client.send_append_entries(test_node_b_str, request, medium_timeout);
                 return kythira::FutureFactory::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
         };
 
         bool exception_caught = false;
         try {
-            auto result_future = handler.execute_with_retry("test_operation", test_operation, limit_policy);
+            auto result_future =
+                handler.execute_with_retry("test_operation", test_operation, limit_policy);
             auto result = std::move(result_future).get();
             BOOST_FAIL("Expected exception after exceeding retry limit");
         } catch (const std::exception& e) {
@@ -753,7 +762,7 @@ BOOST_AUTO_TEST_CASE(retry_limit_enforcement, * boost::unit_test::timeout(60)) {
  *
  * Requirements: 18.1, 18.2, 18.3, 18.4
  */
-BOOST_AUTO_TEST_CASE(max_delay_cap_enforcement, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(max_delay_cap_enforcement, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Testing max delay cap enforcement");
 
     MockNetworkClient network_client;
@@ -765,28 +774,30 @@ BOOST_AUTO_TEST_CASE(max_delay_cap_enforcement, * boost::unit_test::timeout(90))
         .max_delay = std::chrono::milliseconds{300},  // Low cap
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,
-        .max_attempts = 6
-    };
+        .max_attempts = 6};
     handler.set_retry_policy("test_operation", capped_policy);
 
     // Set up to fail 5 times, succeed on 6th
     network_client.set_failure_count(test_node_b_str, 5);
 
-    auto test_operation = [&network_client]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+    auto test_operation = [&network_client]()
+        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
-            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1
-        };
+            test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
-            auto response = network_client.send_append_entries(test_node_b_str, request, medium_timeout);
+            auto response =
+                network_client.send_append_entries(test_node_b_str, request, medium_timeout);
             return kythira::FutureFactory::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }
     };
 
-    auto result_future = handler.execute_with_retry("test_operation", test_operation, capped_policy);
+    auto result_future =
+        handler.execute_with_retry("test_operation", test_operation, capped_policy);
     auto result = std::move(result_future).get();
 
     BOOST_CHECK(result.success());
@@ -799,9 +810,10 @@ BOOST_AUTO_TEST_CASE(max_delay_cap_enforcement, * boost::unit_test::timeout(90))
         BOOST_TEST_MESSAGE("Delay pattern with max_delay cap:");
         for (std::size_t i = 1; i < records.size(); ++i) {
             auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-                records[i].timestamp - records[i-1].timestamp);
+                records[i].timestamp - records[i - 1].timestamp);
 
-            BOOST_TEST_MESSAGE("  Delay before attempt " << (i+1) << ": " << delay.count() << "ms");
+            BOOST_TEST_MESSAGE("  Delay before attempt " << (i + 1) << ": " << delay.count()
+                                                         << "ms");
 
             // All delays should be <= max_delay (with tolerance)
             BOOST_CHECK_LE(delay.count(), 400);  // 300ms + 33% tolerance

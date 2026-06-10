@@ -46,8 +46,7 @@ auto ListenerManager<Types>::close_listener(endpoint_type endpoint) -> void {
     }
 }
 
-template<typename Types>
-auto ListenerManager<Types>::cleanup_all_listeners() -> void {
+template<typename Types> auto ListenerManager<Types>::cleanup_all_listeners() -> void {
     std::unique_lock lock(_listeners_mutex);
 
     // Close all listeners
@@ -71,8 +70,7 @@ auto ListenerManager<Types>::cleanup_all_listeners() -> void {
     }
 }
 
-template<typename Types>
-auto ListenerManager<Types>::release_port(port_type port) -> void {
+template<typename Types> auto ListenerManager<Types>::release_port(port_type port) -> void {
     std::lock_guard lock(_port_allocation_mutex);
     _allocated_ports.erase(port);
 }
@@ -92,7 +90,8 @@ auto ListenerManager<Types>::is_port_available(address_type addr, port_type port
 }
 
 template<typename Types>
-auto ListenerManager<Types>::get_listener(endpoint_type endpoint) const -> std::shared_ptr<listener_type> {
+auto ListenerManager<Types>::get_listener(endpoint_type endpoint) const
+    -> std::shared_ptr<listener_type> {
     std::shared_lock lock(_listeners_mutex);
 
     auto it = _active_listeners.find(endpoint);
@@ -118,4 +117,4 @@ auto ListenerManager<Types>::get_all_listeners() const -> std::vector<endpoint_t
     return result;
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

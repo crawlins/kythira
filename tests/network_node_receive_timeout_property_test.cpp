@@ -7,12 +7,12 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr std::chrono::milliseconds short_timeout{1}; // Very short timeout
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr std::chrono::milliseconds short_timeout{1};  // Very short timeout
 }
 
-BOOST_AUTO_TEST_CASE(network_node_receive_timeout_property_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_node_receive_timeout_property_test, *boost::unit_test::timeout(30)) {
     // **Property 10: Receive Timeout Exception**
     // **Validates: Requirements 5.3**
 
@@ -48,8 +48,8 @@ BOOST_AUTO_TEST_CASE(network_node_receive_timeout_property_test, * boost::unit_t
 
             // Check if we got an empty message (which indicates timeout/no message)
             bool is_empty = received_msg.payload().empty() &&
-                           received_msg.source_address().empty() &&
-                           received_msg.destination_address().empty();
+                            received_msg.source_address().empty() &&
+                            received_msg.destination_address().empty();
 
             // This is acceptable timeout behavior
             BOOST_CHECK(is_empty);

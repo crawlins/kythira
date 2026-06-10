@@ -11,24 +11,22 @@
 #include <raft/metrics.hpp>
 
 // Use the correct transport types for testing
-using test_transport_types = kythira::default_transport_types<
-    kythira::Future<kythira::request_vote_response<>>,
-    kythira::json_rpc_serializer<std::vector<std::byte>>,
-    kythira::noop_metrics,
-    kythira::console_logger
->;
+using test_transport_types =
+    kythira::default_transport_types<kythira::Future<kythira::request_vote_response<>>,
+                                     kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                     kythira::noop_metrics, kythira::console_logger>;
 
 #include <unordered_map>
 #include <string>
 #include <chrono>
 
 namespace {
-    constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
-    constexpr const char* test_coaps_endpoint = "coaps://127.0.0.1:5684";
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr std::uint16_t test_bind_port = 5683;
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::size_t property_test_iterations = 10;
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
+constexpr const char* test_coaps_endpoint = "coaps://127.0.0.1:5684";
+constexpr std::uint64_t test_node_id = 1;
+constexpr std::uint16_t test_bind_port = 5683;
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::size_t property_test_iterations = 10;
 }
 
 BOOST_AUTO_TEST_SUITE(coap_transport_initialization_property_tests)
@@ -37,7 +35,8 @@ BOOST_AUTO_TEST_SUITE(coap_transport_initialization_property_tests)
 // **Validates: Requirements 1.1**
 // Property: For any valid configuration, initializing the CoAP transport should create
 // both client and server components with the specified configuration parameters.
-BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
+                     *boost::unit_test::timeout(60)) {
     // Test multiple configurations to verify initialization robustness
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
@@ -53,7 +52,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 // Configure PSK when DTLS is enabled
                 if (client_config.enable_dtls) {
                     client_config.psk_identity = "test_client";
-                    client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+                    client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                             std::byte{0x04}};
                 }
 
                 kythira::noop_metrics metrics;
@@ -66,8 +66,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 // The actual CoAP functionality will be tested in implementation-specific tests
                 bool client_created = false;
                 try {
-                    kythira::coap_client<test_transport_types> client(
-                std::move(node_endpoints), client_config, metrics);
+                    kythira::coap_client<test_transport_types> client(std::move(node_endpoints),
+                                                                      client_config, metrics);
                     client_created = true;
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Client creation failed: " << e.what());
@@ -89,7 +89,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 // Configure PSK when DTLS is enabled
                 if (server_config.enable_dtls) {
                     server_config.psk_identity = "test_server";
-                    server_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+                    server_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07},
+                                             std::byte{0x08}};
                 }
 
                 kythira::noop_metrics metrics;
@@ -99,8 +100,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 // Verify server can be constructed with valid configuration
                 bool server_created = false;
                 try {
-                    kythira::coap_server<test_transport_types> server(
-                test_bind_address, port, server_config, metrics);
+                    kythira::coap_server<test_transport_types> server(test_bind_address, port,
+                                                                      server_config, metrics);
                     server_created = true;
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Server creation failed: " << e.what());
@@ -119,11 +120,11 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 config.ack_random_factor_ms = std::chrono::milliseconds{500 + i * 100};
 
                 // Test retransmission parameters
-                config.max_retransmit = 1 + (i % 8); // Valid range: 1-8
+                config.max_retransmit = 1 + (i % 8);  // Valid range: 1-8
 
                 // Test block transfer settings
                 config.enable_block_transfer = (i % 2 == 0);
-                config.max_block_size = 256 << (i % 4); // Powers of 2: 256, 512, 1024, 2048
+                config.max_block_size = 256 << (i % 4);  // Powers of 2: 256, 512, 1024, 2048
 
                 // Test session management
                 config.max_sessions = 10 + (i * 5);
@@ -137,8 +138,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
 
                 bool config_client_created = false;
                 try {
-                    kythira::coap_client<test_transport_types> client(
-                std::move(endpoints), config, metrics);
+                    kythira::coap_client<test_transport_types> client(std::move(endpoints), config,
+                                                                      metrics);
                     config_client_created = true;
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Config client creation failed: " << e.what());
@@ -171,14 +172,16 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
                 case 1:
                     // PSK-based authentication
                     dtls_config.psk_identity = "test_identity";
-                    dtls_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+                    dtls_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                           std::byte{0x04}};
                     break;
                 case 2:
                     // Mixed configuration (should still be valid for construction)
                     dtls_config.cert_file = "/path/to/cert.pem";
                     dtls_config.key_file = "/path/to/key.pem";
                     dtls_config.psk_identity = "backup_identity";
-                    dtls_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07}, std::byte{0x08}};
+                    dtls_config.psk_key = {std::byte{0x05}, std::byte{0x06}, std::byte{0x07},
+                                           std::byte{0x08}};
                     dtls_config.verify_peer_cert = false;
                     break;
             }
@@ -190,8 +193,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
 
             bool dtls_client_created = false;
             try {
-                kythira::coap_client<test_transport_types> client(
-                std::move(endpoints), dtls_config, metrics);
+                kythira::coap_client<test_transport_types> client(std::move(endpoints), dtls_config,
+                                                                  metrics);
                 dtls_client_created = true;
             } catch (const std::exception& e) {
                 BOOST_TEST_MESSAGE("DTLS client creation failed: " << e.what());
@@ -201,7 +204,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
             BOOST_TEST_MESSAGE("DTLS configuration test " << i << " passed");
 
         } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("Exception during DTLS configuration test " << i << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception during DTLS configuration test " << i << ": "
+                                                                           << e.what());
             BOOST_TEST(false, "DTLS configuration test failed");
         }
     }
@@ -217,8 +221,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
 
         bool multicast_server_created = false;
         try {
-            kythira::coap_server<test_transport_types> server(
-                test_bind_address, test_bind_port, multicast_config, metrics);
+            kythira::coap_server<test_transport_types> server(test_bind_address, test_bind_port,
+                                                              multicast_config, metrics);
             multicast_server_created = true;
         } catch (const std::exception& e) {
             BOOST_TEST_MESSAGE("Multicast server creation failed: " << e.what());
@@ -236,13 +240,14 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components, * boo
 }
 
 // Test that the CoAP transport classes are properly instantiable
-BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_concept_satisfaction, *boost::unit_test::timeout(15)) {
     // Note: CoAP client/server are templated and satisfy network_client/network_server
     // concepts when instantiated with appropriate Types parameter.
     // The concept satisfaction is verified at compile-time when the templates are instantiated.
 
     // Verify that json_serializer satisfies rpc_serializer concept
-    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>);
+    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                          std::vector<std::byte>>);
 
     // Verify that noop_metrics satisfies metrics concept
     static_assert(kythira::metrics<kythira::noop_metrics>);
@@ -257,7 +262,7 @@ BOOST_AUTO_TEST_CASE(test_concept_satisfaction, * boost::unit_test::timeout(15))
 }
 
 // Test exception types are properly defined
-BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_exception_types, *boost::unit_test::timeout(15)) {
     // Test that all CoAP exception types can be constructed and thrown
     try {
         throw kythira::coap_transport_error("Base transport error");
@@ -268,7 +273,7 @@ BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
     }
 
     try {
-        throw kythira::coap_client_error(0x80, "Client error"); // 4.00 Bad Request
+        throw kythira::coap_client_error(0x80, "Client error");  // 4.00 Bad Request
     } catch (const kythira::coap_client_error& e) {
         BOOST_TEST(e.response_code() == 0x80);
         BOOST_TEST(std::string(e.what()) == "Client error");
@@ -277,7 +282,7 @@ BOOST_AUTO_TEST_CASE(test_exception_types, * boost::unit_test::timeout(15)) {
     }
 
     try {
-        throw kythira::coap_server_error(0xA0, "Server error"); // 5.00 Internal Server Error
+        throw kythira::coap_server_error(0xA0, "Server error");  // 5.00 Internal Server Error
     } catch (const kythira::coap_server_error& e) {
         BOOST_TEST(e.response_code() == 0xA0);
         BOOST_TEST(std::string(e.what()) == "Server error");

@@ -25,10 +25,10 @@
 #include <thread>
 
 namespace {
-    constexpr std::uint64_t node_id = 1;
-    constexpr std::chrono::milliseconds election_timeout_min{150};
-    constexpr std::chrono::milliseconds election_timeout_max{300};
-    constexpr std::chrono::milliseconds heartbeat_interval{50};
+constexpr std::uint64_t node_id = 1;
+constexpr std::chrono::milliseconds election_timeout_min{150};
+constexpr std::chrono::milliseconds election_timeout_max{300};
+constexpr std::chrono::milliseconds heartbeat_interval{50};
 }
 
 auto test_snapshot_creation() -> bool {
@@ -48,7 +48,8 @@ auto test_snapshot_creation() -> bool {
         std::cout << "    Last included index: " << snap.last_included_index() << "\n";
         std::cout << "    Last included term: " << snap.last_included_term() << "\n";
         std::cout << "    Configuration nodes: " << snap.configuration().nodes().size() << "\n";
-        std::cout << "    State machine state size: " << snap.state_machine_state().size() << " bytes\n";
+        std::cout << "    State machine state size: " << snap.state_machine_state().size()
+                  << " bytes\n";
 
         std::cout << "  ✓ Scenario passed\n";
         return true;

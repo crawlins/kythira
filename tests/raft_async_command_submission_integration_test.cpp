@@ -35,7 +35,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_async_command_submission_integration_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_async_command_submission_integration_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -48,25 +49,25 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    // Test constants
-    constexpr std::uint64_t test_log_index_1 = 1;
-    constexpr std::uint64_t test_log_index_2 = 2;
-    constexpr std::uint64_t test_log_index_3 = 3;
-    constexpr std::uint64_t test_log_index_4 = 4;
-    constexpr std::uint64_t test_log_index_5 = 5;
-    constexpr std::uint64_t test_term_1 = 1;
-    constexpr std::uint64_t test_term_2 = 2;
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds medium_timeout{500};
-    constexpr std::chrono::milliseconds long_timeout{2000};
-    constexpr std::chrono::milliseconds replication_delay{50};
-    constexpr std::chrono::milliseconds slow_replication_delay{200};
-    constexpr const char* test_command_1 = "command_1";
-    constexpr const char* test_command_2 = "command_2";
-    constexpr const char* test_command_3 = "command_3";
-    constexpr const char* leadership_lost_msg = "Leadership lost during commit";
-    constexpr const char* timeout_msg = "Operation timed out";
-    constexpr std::size_t concurrent_command_count = 10;
+// Test constants
+constexpr std::uint64_t test_log_index_1 = 1;
+constexpr std::uint64_t test_log_index_2 = 2;
+constexpr std::uint64_t test_log_index_3 = 3;
+constexpr std::uint64_t test_log_index_4 = 4;
+constexpr std::uint64_t test_log_index_5 = 5;
+constexpr std::uint64_t test_term_1 = 1;
+constexpr std::uint64_t test_term_2 = 2;
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds medium_timeout{500};
+constexpr std::chrono::milliseconds long_timeout{2000};
+constexpr std::chrono::milliseconds replication_delay{50};
+constexpr std::chrono::milliseconds slow_replication_delay{200};
+constexpr const char* test_command_1 = "command_1";
+constexpr const char* test_command_2 = "command_2";
+constexpr const char* test_command_3 = "command_3";
+constexpr const char* leadership_lost_msg = "Leadership lost during commit";
+constexpr const char* timeout_msg = "Operation timed out";
+constexpr std::size_t concurrent_command_count = 10;
 }
 
 /**
@@ -86,22 +87,17 @@ public:
 
     MockReplicationSimulator() = default;
 
-    auto submit_command(
-        std::uint64_t log_index,
-        std::vector<std::byte> command,
-        std::chrono::milliseconds replication_delay
-    ) -> void {
+    auto submit_command(std::uint64_t log_index, std::vector<std::byte> command,
+                        std::chrono::milliseconds replication_delay) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
 
-        CommandRecord record{
-            .log_index = log_index,
-            .command = std::move(command),
-            .submitted_at = std::chrono::steady_clock::now(),
-            .committed_at = {},
-            .applied_at = {},
-            .committed = false,
-            .applied = false
-        };
+        CommandRecord record{.log_index = log_index,
+                             .command = std::move(command),
+                             .submitted_at = std::chrono::steady_clock::now(),
+                             .committed_at = {},
+                             .applied_at = {},
+                             .committed = false,
+                             .applied = false};
 
         _commands[log_index] = record;
         _replication_delays[log_index] = replication_delay;
@@ -149,7 +145,7 @@ private:
     std::unordered_map<std::uint64_t, std::chrono::milliseconds> _replication_delays;
 };
 
-BOOST_AUTO_TEST_SUITE(async_command_submission_integration_tests, * boost::unit_test::timeout(300))
+BOOST_AUTO_TEST_SUITE(async_command_submission_integration_tests, *boost::unit_test::timeout(300))
 
 /**
  * Test: Command submission with replication delays
@@ -159,7 +155,7 @@ BOOST_AUTO_TEST_SUITE(async_command_submission_integration_tests, * boost::unit_
  *
  * Requirements: 15.1, 15.2
  */
-BOOST_AUTO_TEST_CASE(command_submission_with_replication_delays, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(command_submission_with_replication_delays, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing command submission with replication delays");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -186,17 +182,15 @@ BOOST_AUTO_TEST_CASE(command_submission_with_replication_delays, * boost::unit_t
             future_succeeded = false;
             future_completed = true;
         },
-        long_timeout
-    );
+        long_timeout);
 
     // Verify future doesn't complete immediately
     std::this_thread::sleep_for(std::chrono::milliseconds{10});
     BOOST_CHECK(!future_completed.load());
 
     // Simulate replication in background
-    auto replication_thread = std::thread([&simulator]() {
-        simulator.simulate_replication(test_log_index_1);
-    });
+    auto replication_thread =
+        std::thread([&simulator]() { simulator.simulate_replication(test_log_index_1); });
 
     // Wait for replication
     replication_thread.join();
@@ -212,8 +206,7 @@ BOOST_AUTO_TEST_CASE(command_submission_with_replication_delays, * boost::unit_t
 
     // Wait for completion
     auto start = std::chrono::steady_clock::now();
-    while (!future_completed.load() &&
-           std::chrono::steady_clock::now() - start < medium_timeout) {
+    while (!future_completed.load() && std::chrono::steady_clock::now() - start < medium_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
 
@@ -243,7 +236,7 @@ BOOST_AUTO_TEST_CASE(command_submission_with_replication_delays, * boost::unit_t
  *
  * Requirements: 15.5
  */
-BOOST_AUTO_TEST_CASE(concurrent_command_submissions, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concurrent_command_submissions, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing concurrent command submissions");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -270,11 +263,7 @@ BOOST_AUTO_TEST_CASE(concurrent_command_submissions, * boost::unit_test::timeout
                     completion_order.push_back(log_index);
                     completed_count++;
                 },
-                [&](std::exception_ptr) {
-                    completed_count++;
-                },
-                long_timeout
-            );
+                [&](std::exception_ptr) { completed_count++; }, long_timeout);
         });
     }
 
@@ -324,7 +313,7 @@ BOOST_AUTO_TEST_CASE(concurrent_command_submissions, * boost::unit_test::timeout
  *
  * Requirements: 15.4
  */
-BOOST_AUTO_TEST_CASE(leadership_changes_during_processing, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(leadership_changes_during_processing, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing leadership changes during command processing");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -354,7 +343,8 @@ BOOST_AUTO_TEST_CASE(leadership_changes_during_processing, * boost::unit_test::t
                 try {
                     std::rethrow_exception(ex);
                 } catch (const kythira::leadership_lost_exception<std::uint64_t>& leadership_ex) {
-                    BOOST_TEST_MESSAGE("Caught expected leadership_lost_exception: " << leadership_ex.what());
+                    BOOST_TEST_MESSAGE(
+                        "Caught expected leadership_lost_exception: " << leadership_ex.what());
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Caught unexpected exception: " << e.what());
                     BOOST_FAIL("Expected leadership_lost_exception");
@@ -363,8 +353,7 @@ BOOST_AUTO_TEST_CASE(leadership_changes_during_processing, * boost::unit_test::t
                     BOOST_FAIL("Expected leadership_lost_exception");
                 }
             },
-            long_timeout
-        );
+            long_timeout);
     }
 
     // Simulate first command succeeding
@@ -400,7 +389,7 @@ BOOST_AUTO_TEST_CASE(leadership_changes_during_processing, * boost::unit_test::t
  *
  * Requirements: 15.1, 15.4
  */
-BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing timeout handling for slow commits");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -414,10 +403,7 @@ BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(
     std::atomic<bool> completed{false};
 
     waiter.register_operation(
-        test_log_index_1,
-        [&](std::vector<std::byte>) {
-            completed = true;
-        },
+        test_log_index_1, [&](std::vector<std::byte>) { completed = true; },
         [&](std::exception_ptr ex) {
             completed = true;
 
@@ -426,7 +412,8 @@ BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(
                 std::rethrow_exception(ex);
             } catch (const kythira::commit_timeout_exception<std::uint64_t>& timeout_ex) {
                 timed_out = true;
-                BOOST_TEST_MESSAGE("Caught expected commit_timeout_exception: " << timeout_ex.what());
+                BOOST_TEST_MESSAGE(
+                    "Caught expected commit_timeout_exception: " << timeout_ex.what());
             } catch (const std::exception& other_ex) {
                 BOOST_TEST_MESSAGE("Caught exception: " << other_ex.what());
             }
@@ -435,9 +422,8 @@ BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(
     );
 
     // Start slow replication in background
-    auto replication_thread = std::thread([&simulator]() {
-        simulator.simulate_replication(test_log_index_1);
-    });
+    auto replication_thread =
+        std::thread([&simulator]() { simulator.simulate_replication(test_log_index_1); });
 
     // Trigger timeout check
     std::this_thread::sleep_for(short_timeout + std::chrono::milliseconds{50});
@@ -445,8 +431,7 @@ BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(
 
     // Wait for completion
     auto start = std::chrono::steady_clock::now();
-    while (!completed.load() &&
-           std::chrono::steady_clock::now() - start < medium_timeout) {
+    while (!completed.load() && std::chrono::steady_clock::now() - start < medium_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
 
@@ -467,7 +452,7 @@ BOOST_AUTO_TEST_CASE(timeout_handling_slow_commits, * boost::unit_test::timeout(
  *
  * Requirements: 15.5
  */
-BOOST_AUTO_TEST_CASE(proper_ordering_linearizability, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(proper_ordering_linearizability, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing proper ordering and linearizability");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -476,11 +461,10 @@ BOOST_AUTO_TEST_CASE(proper_ordering_linearizability, * boost::unit_test::timeou
     // Submit commands with varying replication delays
     std::vector<std::pair<std::uint64_t, std::chrono::milliseconds>> commands = {
         {test_log_index_1, std::chrono::milliseconds{100}},
-        {test_log_index_2, std::chrono::milliseconds{50}},   // Faster
+        {test_log_index_2, std::chrono::milliseconds{50}},  // Faster
         {test_log_index_3, std::chrono::milliseconds{150}},
-        {test_log_index_4, std::chrono::milliseconds{25}},   // Fastest
-        {test_log_index_5, std::chrono::milliseconds{75}}
-    };
+        {test_log_index_4, std::chrono::milliseconds{25}},  // Fastest
+        {test_log_index_5, std::chrono::milliseconds{75}}};
 
     std::mutex order_mutex;
     std::vector<std::uint64_t> application_order;
@@ -498,19 +482,14 @@ BOOST_AUTO_TEST_CASE(proper_ordering_linearizability, * boost::unit_test::timeou
                 application_order.push_back(log_index);
                 completed_count++;
             },
-            [&](std::exception_ptr) {
-                completed_count++;
-            },
-            long_timeout
-        );
+            [&](std::exception_ptr) { completed_count++; }, long_timeout);
     }
 
     // Simulate replication with different delays (out of order completion)
     std::vector<std::thread> replication_threads;
     for (const auto& [log_index, delay] : commands) {
-        replication_threads.emplace_back([&simulator, log_index]() {
-            simulator.simulate_replication(log_index);
-        });
+        replication_threads.emplace_back(
+            [&simulator, log_index]() { simulator.simulate_replication(log_index); });
     }
 
     // Wait for all replications
@@ -552,7 +531,7 @@ BOOST_AUTO_TEST_CASE(proper_ordering_linearizability, * boost::unit_test::timeou
  *
  * Requirements: 15.2
  */
-BOOST_AUTO_TEST_CASE(application_before_future_fulfillment, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(application_before_future_fulfillment, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing state machine application before future fulfillment");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -571,11 +550,7 @@ BOOST_AUTO_TEST_CASE(application_before_future_fulfillment, * boost::unit_test::
             BOOST_CHECK(application_completed.load());
             future_fulfilled = true;
         },
-        [&](std::exception_ptr) {
-            future_fulfilled = true;
-        },
-        long_timeout
-    );
+        [&](std::exception_ptr) { future_fulfilled = true; }, long_timeout);
 
     // Simulate replication
     simulator.simulate_replication(test_log_index_1);
@@ -593,8 +568,7 @@ BOOST_AUTO_TEST_CASE(application_before_future_fulfillment, * boost::unit_test::
 
     // Wait for future fulfillment
     auto start = std::chrono::steady_clock::now();
-    while (!future_fulfilled.load() &&
-           std::chrono::steady_clock::now() - start < medium_timeout) {
+    while (!future_fulfilled.load() && std::chrono::steady_clock::now() - start < medium_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
 
@@ -610,7 +584,7 @@ BOOST_AUTO_TEST_CASE(application_before_future_fulfillment, * boost::unit_test::
  *
  * Requirements: 15.3
  */
-BOOST_AUTO_TEST_CASE(error_propagation_application_failure, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(error_propagation_application_failure, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing error propagation on application failure");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -620,10 +594,7 @@ BOOST_AUTO_TEST_CASE(error_propagation_application_failure, * boost::unit_test::
     std::string error_message;
 
     waiter.register_operation(
-        test_log_index_1,
-        [&](std::vector<std::byte>) {
-            completed = true;
-        },
+        test_log_index_1, [&](std::vector<std::byte>) { completed = true; },
         [&](std::exception_ptr ex) {
             error_received = true;
             completed = true;
@@ -635,8 +606,7 @@ BOOST_AUTO_TEST_CASE(error_propagation_application_failure, * boost::unit_test::
                 BOOST_TEST_MESSAGE("Caught application failure: " << e.what());
             }
         },
-        long_timeout
-    );
+        long_timeout);
 
     // Simulate application failure by using a result function that throws
     auto failing_result_function = [](std::uint64_t) -> std::vector<std::byte> {
@@ -647,8 +617,7 @@ BOOST_AUTO_TEST_CASE(error_propagation_application_failure, * boost::unit_test::
 
     // Wait for completion
     auto start = std::chrono::steady_clock::now();
-    while (!completed.load() &&
-           std::chrono::steady_clock::now() - start < medium_timeout) {
+    while (!completed.load() && std::chrono::steady_clock::now() - start < medium_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
 

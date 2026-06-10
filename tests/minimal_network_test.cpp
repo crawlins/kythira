@@ -5,12 +5,12 @@
 #include <folly/init/Init.h>
 
 namespace {
-    constexpr const char* client_node_id = "client";
-    constexpr const char* server_node_id = "server";
-    constexpr unsigned short server_port = 8080;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;
-    constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* client_node_id = "client";
+constexpr const char* server_node_id = "server";
+constexpr unsigned short server_port = 8080;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;
+constexpr std::chrono::seconds test_timeout{5};
 }
 
 int main(int argc, char* argv[]) {
@@ -24,9 +24,9 @@ int main(int argc, char* argv[]) {
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
         simulator.add_edge(server_node_id, client_node_id,
-                          network_simulator::NetworkEdge(network_latency, network_reliability));
+                           network_simulator::NetworkEdge(network_latency, network_reliability));
         simulator.add_edge(client_node_id, server_node_id,
-                          network_simulator::NetworkEdge(network_latency, network_reliability));
+                           network_simulator::NetworkEdge(network_latency, network_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);

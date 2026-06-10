@@ -14,14 +14,13 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
 }
 
 // Mock Future implementation for testing
-template<typename T>
-class MockFuture {
+template<typename T> class MockFuture {
 public:
     MockFuture() = default;
     explicit MockFuture(T value) : _value(std::move(value)), _has_value(true) {}
@@ -37,17 +36,14 @@ public:
         return _value;
     }
 
-    auto isReady() const -> bool {
-        return _has_value || _has_exception;
-    }
+    auto isReady() const -> bool { return _has_value || _has_exception; }
 
     auto wait(std::chrono::milliseconds timeout) -> bool {
         // Mock implementation - always ready
         return isReady();
     }
 
-    template<typename F>
-    auto then(F&& func) -> void {
+    template<typename F> auto then(F&& func) -> void {
         // Mock implementation
         if (_has_value) {
             if constexpr (std::is_void_v<T>) {
@@ -58,8 +54,7 @@ public:
         }
     }
 
-    template<typename F>
-    auto onError(F&& func) -> void {
+    template<typename F> auto onError(F&& func) -> void {
         // Mock implementation
         if (_has_exception) {
             if constexpr (std::is_void_v<T>) {
@@ -78,8 +73,7 @@ private:
 };
 
 // Specialization for void
-template<>
-class MockFuture<void> {
+template<> class MockFuture<void> {
 public:
     MockFuture() = default;
     explicit MockFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
@@ -93,23 +87,17 @@ public:
         }
     }
 
-    auto isReady() const -> bool {
-        return _ready || _has_exception;
-    }
+    auto isReady() const -> bool { return _ready || _has_exception; }
 
-    auto wait(std::chrono::milliseconds timeout) -> bool {
-        return isReady();
-    }
+    auto wait(std::chrono::milliseconds timeout) -> bool { return isReady(); }
 
-    template<typename F>
-    auto then(F&& func) -> void {
+    template<typename F> auto then(F&& func) -> void {
         if (_ready) {
             func();
         }
     }
 
-    template<typename F>
-    auto onError(F&& func) -> void {
+    template<typename F> auto onError(F&& func) -> void {
         if (_has_exception) {
             func(_exception);
         }
@@ -124,8 +112,7 @@ private:
 };
 
 // Mock SemiFuture implementation for testing
-template<typename T>
-class MockSemiFuture {
+template<typename T> class MockSemiFuture {
 public:
     MockSemiFuture() = default;
     explicit MockSemiFuture(T value) : _value(std::move(value)), _has_value(true) {}
@@ -141,9 +128,7 @@ public:
         return _value;
     }
 
-    auto isReady() const -> bool {
-        return _has_value || _has_exception;
-    }
+    auto isReady() const -> bool { return _has_value || _has_exception; }
 
 private:
     T _value{};
@@ -153,8 +138,7 @@ private:
 };
 
 // Specialization for void
-template<>
-class MockSemiFuture<void> {
+template<> class MockSemiFuture<void> {
 public:
     MockSemiFuture() = default;
     explicit MockSemiFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
@@ -168,9 +152,7 @@ public:
         }
     }
 
-    auto isReady() const -> bool {
-        return _ready || _has_exception;
-    }
+    auto isReady() const -> bool { return _ready || _has_exception; }
 
     void setReady() { _ready = true; }
 
@@ -181,8 +163,7 @@ private:
 };
 
 // Mock SemiPromise implementation for testing the concept
-template<typename T>
-class MockSemiPromise {
+template<typename T> class MockSemiPromise {
 public:
     MockSemiPromise() = default;
 
@@ -217,18 +198,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool {
-        return _fulfilled;
-    }
+    auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasValue() const -> bool {
-        return _has_value;
-    }
+    auto hasValue() const -> bool { return _has_value; }
 
-    auto hasException() const -> bool {
-        return _has_exception;
-    }
+    auto hasException() const -> bool { return _has_exception; }
 
     template<typename U = T>
     auto getValue() const -> std::enable_if_t<!std::is_void_v<U>, const U&> {
@@ -238,21 +213,18 @@ public:
         return _value;
     }
 
-    auto getException() const -> folly::exception_wrapper {
-        return _exception;
-    }
+    auto getException() const -> folly::exception_wrapper { return _exception; }
 
 protected:
     bool _fulfilled = false;
     bool _has_value = false;
     bool _has_exception = false;
-    T _value{}; // Only valid for non-void types
+    T _value{};  // Only valid for non-void types
     folly::exception_wrapper _exception;
 };
 
 // Specialization for void type
-template<>
-class MockSemiPromise<void> {
+template<> class MockSemiPromise<void> {
 public:
     MockSemiPromise() = default;
 
@@ -275,18 +247,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool {
-        return _fulfilled;
-    }
+    auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasException() const -> bool {
-        return _has_exception;
-    }
+    auto hasException() const -> bool { return _has_exception; }
 
-    auto getException() const -> folly::exception_wrapper {
-        return _exception;
-    }
+    auto getException() const -> folly::exception_wrapper { return _exception; }
 
 protected:
     bool _fulfilled = false;
@@ -295,8 +261,7 @@ protected:
 };
 
 // Mock Promise implementation that extends SemiPromise
-template<typename T>
-class MockPromise : public MockSemiPromise<T> {
+template<typename T> class MockPromise : public MockSemiPromise<T> {
 public:
     MockPromise() = default;
 
@@ -348,8 +313,7 @@ private:
 };
 
 // Specialization for void type
-template<>
-class MockPromise<void> : public MockSemiPromise<void> {
+template<> class MockPromise<void> : public MockSemiPromise<void> {
 public:
     MockPromise() = default;
 
@@ -397,10 +361,11 @@ private:
 /**
  * **Feature: folly-concepts-enhancement, Property 4: Promise concept inheritance**
  *
- * Property: For any type that satisfies promise concept, it should also satisfy semi_promise concept and provide getFuture and getSemiFuture methods
+ * Property: For any type that satisfies promise concept, it should also satisfy semi_promise
+ * concept and provide getFuture and getSemiFuture methods
  * **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
  */
-BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, *boost::unit_test::timeout(90)) {
     // Test 1: MockPromise<int> should satisfy both promise and semi_promise concepts
     {
         static_assert(semi_promise<MockPromise<int>, int>,
@@ -466,11 +431,11 @@ BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, * boost::unit_te
         // Test promise-specific functionality
         auto future = promise.getFuture();
         BOOST_CHECK(future.isReady());
-        BOOST_CHECK_NO_THROW(future.get()); // Should not throw for void
+        BOOST_CHECK_NO_THROW(future.get());  // Should not throw for void
 
         auto semi_future = promise.getSemiFuture();
         BOOST_CHECK(semi_future.isReady());
-        BOOST_CHECK_NO_THROW(semi_future.get()); // Should not throw for void
+        BOOST_CHECK_NO_THROW(semi_future.get());  // Should not throw for void
     }
 
     // Test 4: Exception handling inheritance
@@ -497,7 +462,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, * boost::unit_te
 
     // Test 5: Property-based testing - generate multiple test cases
     for (int i = 0; i < 100; ++i) {
-        int random_value = i * 7 + 13; // Simple pseudo-random generation
+        int random_value = i * 7 + 13;  // Simple pseudo-random generation
 
         // Test value fulfillment with promise concept
         {
@@ -526,7 +491,8 @@ BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, * boost::unit_te
             MockPromise<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
-            auto ex = folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+            auto ex =
+                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
             promise.setException(ex);
 
             // Test semi_promise inheritance
@@ -570,12 +536,11 @@ BOOST_AUTO_TEST_CASE(promise_concept_inheritance_property_test, * boost::unit_te
 /**
  * Test that promise concept properly extends semi_promise concept
  */
-BOOST_AUTO_TEST_CASE(promise_concept_extension_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_concept_extension_test, *boost::unit_test::timeout(30)) {
     // Test that promise concept requires all semi_promise methods
     static_assert(semi_promise<MockPromise<int>, int>,
                   "MockPromise should satisfy semi_promise concept");
-    static_assert(promise<MockPromise<int>, int>,
-                  "MockPromise should satisfy promise concept");
+    static_assert(promise<MockPromise<int>, int>, "MockPromise should satisfy promise concept");
 
     // Test that types missing semi_promise methods don't satisfy promise concept
     struct IncompletePromise {
@@ -593,7 +558,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_extension_test, * boost::unit_test::timeout
 /**
  * Test that types missing promise-specific methods don't satisfy promise concept
  */
-BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that semi_promise alone doesn't satisfy promise concept
     static_assert(semi_promise<MockSemiPromise<int>, int>,
                   "MockSemiPromise should satisfy semi_promise concept");
@@ -626,7 +591,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, * boost::unit_test::timeout
 /**
  * Test type consistency between promise and returned future types
  */
-BOOST_AUTO_TEST_CASE(promise_future_type_consistency_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_future_type_consistency_test, *boost::unit_test::timeout(30)) {
     // Test that promise and future have consistent types
     MockPromise<int> int_promise;
     auto int_future = int_promise.getFuture();
@@ -652,7 +617,7 @@ BOOST_AUTO_TEST_CASE(promise_future_type_consistency_test, * boost::unit_test::t
 /**
  * Test move semantics for promise concept
  */
-BOOST_AUTO_TEST_CASE(promise_move_semantics_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_move_semantics_test, *boost::unit_test::timeout(30)) {
     MockPromise<std::string> promise;
 
     std::string movable_string = "movable test string";

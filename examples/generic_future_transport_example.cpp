@@ -22,14 +22,14 @@
 #include <unordered_map>
 
 namespace {
-    constexpr std::uint64_t node_1_id = 1;
-    constexpr std::uint64_t node_2_id = 2;
-    constexpr std::uint64_t node_3_id = 3;
-    constexpr std::chrono::milliseconds rpc_timeout{5000};
-    constexpr std::uint64_t example_term = 5;
-    constexpr std::uint64_t example_candidate_id = 1;
-    constexpr std::uint64_t example_last_log_index = 10;
-    constexpr std::uint64_t example_last_log_term = 4;
+constexpr std::uint64_t node_1_id = 1;
+constexpr std::uint64_t node_2_id = 2;
+constexpr std::uint64_t node_3_id = 3;
+constexpr std::chrono::milliseconds rpc_timeout{5000};
+constexpr std::uint64_t example_term = 5;
+constexpr std::uint64_t example_candidate_id = 1;
+constexpr std::uint64_t example_last_log_index = 10;
+constexpr std::uint64_t example_last_log_term = 4;
 }
 
 // Define our future types for different RPC responses
@@ -94,7 +94,8 @@ auto demonstrate_transport_api_structure() -> bool {
         // Demonstrate the concept of generic transport usage
         std::cout << "  Example usage pattern:\n";
         std::cout << "    using MyFuture = kythira::Future<ResponseType>;\n";
-        std::cout << "    using MyClient = kythira::transport_client<MyFuture, Serializer, Metrics>;\n";
+        std::cout
+            << "    using MyClient = kythira::transport_client<MyFuture, Serializer, Metrics>;\n";
         std::cout << "    auto future = client.send_rpc(target, request, timeout);\n";
         std::cout << "    auto response = future.get();\n";
 
@@ -119,16 +120,17 @@ auto demonstrate_future_chaining() -> bool {
         auto vote_future = RequestVoteFuture(vote_response);
 
         // Chain operations based on vote result
-        auto chained_result = vote_future.then([](const kythira::request_vote_response<>& response) {
-            std::cout << "  Processing vote response for term " << response.term() << "\n";
-            if (response.vote_granted()) {
-                std::cout << "  ✓ Vote was granted, proceeding with leadership\n";
-                return std::string("leadership_established");
-            } else {
-                std::cout << "  ✗ Vote was denied, remaining follower\n";
-                return std::string("remain_follower");
-            }
-        });
+        auto chained_result =
+            vote_future.then([](const kythira::request_vote_response<>& response) {
+                std::cout << "  Processing vote response for term " << response.term() << "\n";
+                if (response.vote_granted()) {
+                    std::cout << "  ✓ Vote was granted, proceeding with leadership\n";
+                    return std::string("leadership_established");
+                } else {
+                    std::cout << "  ✗ Vote was denied, remaining follower\n";
+                    return std::string("remain_follower");
+                }
+            });
 
         auto final_result = chained_result.get();
         std::cout << "  Final result: " << final_result << "\n";
@@ -145,9 +147,8 @@ auto demonstrate_error_handling() -> bool {
 
     try {
         // Create a future with an exception using folly::exception_wrapper
-        auto error_future = RequestVoteFuture(
-            folly::exception_wrapper(std::runtime_error("Network timeout"))
-        );
+        auto error_future =
+            RequestVoteFuture(folly::exception_wrapper(std::runtime_error("Network timeout")));
 
         // Handle the error gracefully
         auto safe_future = error_future.onError([](folly::exception_wrapper ex) {
@@ -192,7 +193,7 @@ auto demonstrate_collective_operations() -> bool {
 
         // Node 3 denies vote
         kythira::request_vote_response<> response3;
-        response3._term = example_term + 1; // Higher term
+        response3._term = example_term + 1;  // Higher term
         response3._vote_granted = false;
         vote_futures.emplace_back(RequestVoteFuture(response3));
 

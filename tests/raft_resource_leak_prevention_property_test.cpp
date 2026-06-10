@@ -20,7 +20,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_resource_leak_prevention_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_resource_leak_prevention_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -33,14 +34,14 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t min_operations = 20;
-    constexpr std::size_t max_operations = 200;
-    constexpr std::size_t min_futures = 10;
-    constexpr std::size_t max_futures = 100;
-    constexpr std::size_t resource_size = 1024; // Size of test resources in bytes
-    constexpr std::chrono::milliseconds test_timeout{30000};
-    constexpr std::chrono::milliseconds cleanup_timeout{200};
-    constexpr const char* cleanup_reason = "Resource cleanup test";
+constexpr std::size_t min_operations = 20;
+constexpr std::size_t max_operations = 200;
+constexpr std::size_t min_futures = 10;
+constexpr std::size_t max_futures = 100;
+constexpr std::size_t resource_size = 1024;  // Size of test resources in bytes
+constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr std::chrono::milliseconds cleanup_timeout{200};
+constexpr const char* cleanup_reason = "Resource cleanup test";
 }
 
 // Resource tracker to monitor allocations and deallocations
@@ -78,22 +79,16 @@ public:
         }
     }
 
-    auto get_allocated_count() const -> std::size_t {
-        return _allocated_count.load();
-    }
+    auto get_allocated_count() const -> std::size_t { return _allocated_count.load(); }
 
-    auto get_deallocated_count() const -> std::size_t {
-        return _deallocated_count.load();
-    }
+    auto get_deallocated_count() const -> std::size_t { return _deallocated_count.load(); }
 
     auto get_active_count() const -> std::size_t {
         std::lock_guard<std::mutex> lock(_active_resources_mutex);
         return _active_resources.size();
     }
 
-    auto get_total_allocated_bytes() const -> std::size_t {
-        return _total_allocated_bytes.load();
-    }
+    auto get_total_allocated_bytes() const -> std::size_t { return _total_allocated_bytes.load(); }
 
     auto get_total_deallocated_bytes() const -> std::size_t {
         return _total_deallocated_bytes.load();
@@ -118,11 +113,10 @@ private:
     ResourceTracker* _tracker;
 
 public:
-    TestResource(std::size_t size, ResourceTracker* tracker)
-        : _size(size), _tracker(tracker) {
+    TestResource(std::size_t size, ResourceTracker* tracker) : _size(size), _tracker(tracker) {
         _data = _tracker->allocate(size);
         if (_data) {
-            std::memset(_data, 0x42, size); // Fill with test pattern
+            std::memset(_data, 0x42, size);  // Fill with test pattern
         }
     }
 
@@ -160,13 +154,9 @@ public:
         return *this;
     }
 
-    auto is_valid() const -> bool {
-        return _data != nullptr;
-    }
+    auto is_valid() const -> bool { return _data != nullptr; }
 
-    auto size() const -> std::size_t {
-        return _size;
-    }
+    auto size() const -> std::size_t { return _size; }
 };
 
 /**
@@ -175,7 +165,7 @@ public:
  * Property: For any future cleanup operation, memory leaks and resource exhaustion are prevented.
  * **Validates: Requirements 8.5**
  */
-BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Testing resource leak prevention property...");
 
     std::random_device rd;
@@ -194,8 +184,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
         const std::size_t operation_count = operation_count_dist(gen);
         const std::size_t future_count = future_count_dist(gen);
 
-        BOOST_TEST_MESSAGE("Testing resource leak prevention with " << operation_count
-                          << " operations and " << future_count << " futures");
+        BOOST_TEST_MESSAGE("Testing resource leak prevention with "
+                           << operation_count << " operations and " << future_count << " futures");
 
         global_tracker.reset();
 
@@ -228,18 +218,16 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
                     // Resource will be automatically cleaned up when shared_ptr goes out of scope
                 };
 
-                commit_waiter.register_operation(
-                    index,
-                    std::move(fulfill_callback),
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                commit_waiter.register_operation(index, std::move(fulfill_callback),
+                                                 std::move(reject_callback),
+                                                 std::chrono::milliseconds{10000});
             }
 
             // Verify resources are allocated
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), operation_count);
             BOOST_CHECK_EQUAL(operation_resources.size(), operation_count);
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count() - initial_allocated, operation_count);
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count() - initial_allocated,
+                              operation_count);
 
             // Cancel operations to trigger cleanup
             commit_waiter.cancel_all_operations(cleanup_reason);
@@ -256,19 +244,24 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             // Property: All resources should be cleaned up after cancellation
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
             BOOST_CHECK_EQUAL(resources_cleaned->load(), operation_count);
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                              global_tracker.get_deallocated_count());
             BOOST_CHECK_EQUAL(global_tracker.get_active_count(), initial_active);
 
-            BOOST_TEST_MESSAGE("✓ CommitWaiter resource cleanup: " << operation_count
-                              << " resources allocated and cleaned up");
+            BOOST_TEST_MESSAGE("✓ CommitWaiter resource cleanup: "
+                               << operation_count << " resources allocated and cleaned up");
         }
 
         // Test 2: Future collection resource cleanup
         {
             BOOST_TEST_MESSAGE("Test 2: Future collection resource cleanup");
 
-            std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>> collection_futures;
-            std::vector<std::shared_ptr<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>> promises;
+            std::vector<
+                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                collection_futures;
+            std::vector<std::shared_ptr<
+                kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
+                promises;
             std::vector<std::shared_ptr<TestResource>> future_resources;
 
             auto initial_allocated = global_tracker.get_allocated_count();
@@ -282,15 +275,17 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
                 auto resource = std::make_shared<TestResource>(res_size, &global_tracker);
                 future_resources.push_back(resource);
 
-                auto promise = std::make_shared<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
+                auto promise = std::make_shared<kythira::Promise<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 promises.push_back(promise);
 
-                auto future = promise->getFuture()
-                    .thenValue([resource](auto result) {
-                        // Resource will be kept alive by the lambda capture
-                        return result;
-                    })
-                    .within(std::chrono::milliseconds{1000}); // Short timeout for cleanup
+                auto future =
+                    promise->getFuture()
+                        .thenValue([resource](auto result) {
+                            // Resource will be kept alive by the lambda capture
+                            return result;
+                        })
+                        .within(std::chrono::milliseconds{1000});  // Short timeout for cleanup
 
                 collection_futures.push_back(std::move(future));
             }
@@ -298,10 +293,12 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             // Verify resources are allocated
             BOOST_CHECK_EQUAL(collection_futures.size(), future_count);
             BOOST_CHECK_EQUAL(future_resources.size(), future_count);
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count() - initial_allocated, future_count);
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count() - initial_allocated,
+                              future_count);
 
             // Cancel collection to trigger cleanup
-            kythira::raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::cancel_collection(collection_futures);
+            kythira::raft_future_collector<kythira::append_entries_response<
+                std::uint64_t, std::uint64_t>>::cancel_collection(collection_futures);
 
             // Clear resources to trigger RAII cleanup
             promises.clear();
@@ -312,11 +309,12 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
 
             // Property: All resources should be cleaned up after collection cancellation
             BOOST_CHECK(collection_futures.empty());
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                              global_tracker.get_deallocated_count());
             BOOST_CHECK_EQUAL(global_tracker.get_active_count(), initial_active);
 
-            BOOST_TEST_MESSAGE("✓ Future collection resource cleanup: " << future_count
-                              << " resources allocated and cleaned up");
+            BOOST_TEST_MESSAGE("✓ Future collection resource cleanup: "
+                               << future_count << " resources allocated and cleaned up");
         }
 
         // Test 3: Memory usage patterns during cleanup
@@ -346,11 +344,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000});
             }
 
             // Monitor peak memory usage
@@ -370,7 +365,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             // Property: Memory should be cleaned up after cancellation
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
             BOOST_CHECK_EQUAL(peak_memory_operations->load(), memory_operations);
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                              global_tracker.get_deallocated_count());
             BOOST_CHECK_EQUAL(global_tracker.get_active_count(), initial_active);
 
             auto final_allocated_bytes = global_tracker.get_total_allocated_bytes();
@@ -378,7 +374,7 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             BOOST_CHECK_EQUAL(final_allocated_bytes, final_deallocated_bytes);
 
             BOOST_TEST_MESSAGE("✓ Memory usage patterns: Peak " << (peak_active - initial_active)
-                              << " resources, all cleaned up");
+                                                                << " resources, all cleaned up");
         }
 
         // Test 4: Resource cleanup under stress
@@ -409,11 +405,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
                         };
 
                         commit_waiter.register_operation(
-                            index,
-                            [](std::vector<std::byte>) {},
-                            std::move(reject_callback),
-                            std::chrono::milliseconds{10000}
-                        );
+                            index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                            std::chrono::milliseconds{10000});
 
                         // Small delay to create interleaving
                         std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -438,11 +431,12 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             // Property: Stress cleanup should not leak resources
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
             BOOST_CHECK_EQUAL(stress_cleanups->load(), stress_operations);
-            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+            BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                              global_tracker.get_deallocated_count());
             BOOST_CHECK_EQUAL(global_tracker.get_active_count(), initial_active);
 
-            BOOST_TEST_MESSAGE("✓ Stress resource cleanup: " << stress_operations
-                              << " resources cleaned up under stress");
+            BOOST_TEST_MESSAGE("✓ Stress resource cleanup: "
+                               << stress_operations << " resources cleaned up under stress");
         }
     }
 
@@ -461,7 +455,7 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
         auto initial_active = global_tracker.get_active_count();
 
         const std::size_t large_operations = 500;
-        const std::size_t large_resource_size = 4096; // 4KB per resource
+        const std::size_t large_resource_size = 4096;  // 4KB per resource
 
         // Create operations with large resources
         for (std::size_t i = 0; i < large_operations; ++i) {
@@ -475,11 +469,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
             };
 
             commit_waiter.register_operation(
-                index,
-                [](std::vector<std::byte>) {},
-                std::move(reject_callback),
-                std::chrono::milliseconds{10000}
-            );
+                index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                std::chrono::milliseconds{10000});
         }
 
         // Verify large allocation
@@ -505,14 +496,16 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
         // Property: Large resource cleanup should not leak memory
         BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
         BOOST_CHECK_EQUAL(large_cleanups->load(), large_operations);
-        BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+        BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                          global_tracker.get_deallocated_count());
         BOOST_CHECK_EQUAL(global_tracker.get_active_count(), initial_active);
 
         auto total_deallocated = global_tracker.get_total_deallocated_bytes();
         BOOST_CHECK_EQUAL(total_allocated, total_deallocated);
 
-        BOOST_TEST_MESSAGE("✓ Large resource cleanup: " << large_operations
-                          << " large resources (" << (total_allocated / 1024) << " KB) cleaned up");
+        BOOST_TEST_MESSAGE("✓ Large resource cleanup: " << large_operations << " large resources ("
+                                                        << (total_allocated / 1024)
+                                                        << " KB) cleaned up");
     }
 
     // Test 6: Rapid allocation/deallocation cycles
@@ -543,11 +536,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000});
             }
 
             // Rapid cleanup
@@ -568,11 +558,12 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
 
         // Property: Rapid cycles should not accumulate leaks
         BOOST_CHECK_EQUAL(cycle_cleanups->load(), cycle_count * ops_per_cycle);
-        BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(), global_tracker.get_deallocated_count());
+        BOOST_CHECK_EQUAL(global_tracker.get_allocated_count(),
+                          global_tracker.get_deallocated_count());
         BOOST_CHECK_EQUAL(global_tracker.get_active_count(), 0);
 
         BOOST_TEST_MESSAGE("✓ Rapid cycles: " << cycle_count << " cycles × " << ops_per_cycle
-                          << " operations, no leaks detected");
+                                              << " operations, no leaks detected");
     }
 
     // Test 7: Resource cleanup validation
@@ -594,8 +585,8 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, * boost::unit_
         BOOST_CHECK_EQUAL(final_allocated_bytes, final_deallocated_bytes);
 
         BOOST_TEST_MESSAGE("✓ Final validation: " << final_allocated << " allocations, "
-                          << final_deallocated << " deallocations, " << final_active
-                          << " active resources");
+                                                  << final_deallocated << " deallocations, "
+                                                  << final_active << " active resources");
     }
 
     BOOST_TEST_MESSAGE("All resource leak prevention property tests passed!");

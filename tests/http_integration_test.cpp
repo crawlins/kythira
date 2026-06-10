@@ -13,17 +13,15 @@
 #include <unordered_map>
 
 namespace {
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_bind_port = 8083;
-    constexpr const char* test_server_url = "http://127.0.0.1:8083";
-    constexpr std::uint64_t test_node_id = 1;
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_bind_port = 8083;
+constexpr const char* test_server_url = "http://127.0.0.1:8083";
+constexpr std::uint64_t test_node_id = 1;
 
-    // Define transport types for testing using the provided template
-    using test_transport_types = kythira::http_transport_types<
-        kythira::json_serializer,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define transport types for testing using the provided template
+using test_transport_types =
+    kythira::http_transport_types<kythira::json_serializer, kythira::noop_metrics,
+                                  folly::CPUThreadPoolExecutor>;
 }
 
 BOOST_AUTO_TEST_SUITE(http_integration_tests)
@@ -47,8 +45,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
     typename test_transport_types::metrics_type metrics;
 
     // Create and configure server
-    kythira::cpp_httplib_server<test_transport_types> server(
-        test_bind_address, unique_port, server_config, metrics);
+    kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, unique_port,
+                                                             server_config, metrics);
 
     // Track handler invocations
     bool request_vote_called = false;
@@ -91,8 +89,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[test_node_id] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Test RequestVote RPC
         {
@@ -102,11 +100,12 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
             request._last_log_index = 10;
             request._last_log_term = 4;
 
-            auto future = client.send_request_vote(test_node_id, request, std::chrono::milliseconds{1000});
+            auto future =
+                client.send_request_vote(test_node_id, request, std::chrono::milliseconds{1000});
             auto response = std::move(future).get();
 
             BOOST_TEST(request_vote_called);
-            BOOST_TEST(response.term() == 6); // Handler returns term + 1
+            BOOST_TEST(response.term() == 6);  // Handler returns term + 1
             BOOST_TEST(response.vote_granted() == true);
         }
 
@@ -119,7 +118,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
             request._prev_log_term = 5;
             request._leader_commit = 9;
 
-            auto future = client.send_append_entries(test_node_id, request, std::chrono::milliseconds{1000});
+            auto future =
+                client.send_append_entries(test_node_id, request, std::chrono::milliseconds{1000});
             auto response = std::move(future).get();
 
             BOOST_TEST(append_entries_called);
@@ -138,7 +138,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
             request._data = {std::byte{'t'}, std::byte{'e'}, std::byte{'s'}, std::byte{'t'}};
             request._done = true;
 
-            auto future = client.send_install_snapshot(test_node_id, request, std::chrono::milliseconds{1000});
+            auto future = client.send_install_snapshot(test_node_id, request,
+                                                       std::chrono::milliseconds{1000});
             auto response = std::move(future).get();
 
             BOOST_TEST(install_snapshot_called);
@@ -156,7 +157,7 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication) {
 }
 
 // Integration test for concurrent requests
-BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_requests, *boost::unit_test::timeout(120)) {
     // Use a unique port to avoid conflicts
     constexpr std::uint16_t unique_port = 8085;
     constexpr const char* server_url = "http://127.0.0.1:8085";
@@ -177,8 +178,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
     typename test_transport_types::metrics_type metrics;
 
     // Create and configure server
-    kythira::cpp_httplib_server<test_transport_types> server(
-        test_bind_address, unique_port, server_config, metrics);
+    kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, unique_port,
+                                                             server_config, metrics);
 
     // Track handler invocations with thread-safe counters
     std::atomic<std::size_t> request_vote_count{0};
@@ -227,8 +228,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[test_node_id] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Launch concurrent threads to send requests
         std::vector<std::thread> threads;
@@ -250,7 +251,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
                             request._last_log_index = 10 + j;
                             request._last_log_term = 4;
 
-                            auto future = client.send_request_vote(test_node_id, request, std::chrono::milliseconds{3000});
+                            auto future = client.send_request_vote(test_node_id, request,
+                                                                   std::chrono::milliseconds{3000});
                             auto response = std::move(future).get();
 
                             if (response.term() == request.term() + 1 && response.vote_granted()) {
@@ -265,7 +267,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
                             request._prev_log_term = 5;
                             request._leader_commit = 9 + j;
 
-                            auto future = client.send_append_entries(test_node_id, request, std::chrono::milliseconds{3000});
+                            auto future = client.send_append_entries(
+                                test_node_id, request, std::chrono::milliseconds{3000});
                             auto response = std::move(future).get();
 
                             if (response.term() == request.term() && response.success()) {
@@ -279,10 +282,12 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
                             request._last_included_index = 100 + j;
                             request._last_included_term = 6;
                             request._offset = 0;
-                            request._data = {std::byte{'t'}, std::byte{'e'}, std::byte{'s'}, std::byte{'t'}};
+                            request._data = {std::byte{'t'}, std::byte{'e'}, std::byte{'s'},
+                                             std::byte{'t'}};
                             request._done = true;
 
-                            auto future = client.send_install_snapshot(test_node_id, request, std::chrono::milliseconds{3000});
+                            auto future = client.send_install_snapshot(
+                                test_node_id, request, std::chrono::milliseconds{3000});
                             auto response = std::move(future).get();
 
                             if (response.term() == request.term()) {
@@ -344,7 +349,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_requests, * boost::unit_test::timeout(120))
 }
 
 // Integration test for TLS/HTTPS
-BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_tls_https, *boost::unit_test::timeout(180)) {
     // Use a unique port to avoid conflicts
     constexpr std::uint16_t unique_port = 8086;
     constexpr const char* server_url = "https://127.0.0.1:8086";
@@ -359,14 +364,14 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
     server_config.request_timeout = std::chrono::seconds{10};
     server_config.enable_ssl = true;
     server_config.ssl_cert_path = "/tmp/test_cert.pem";  // Non-existent for testing
-    server_config.ssl_key_path = "/tmp/test_key.pem";   // Non-existent for testing
+    server_config.ssl_key_path = "/tmp/test_key.pem";    // Non-existent for testing
 
     // Create client configuration with SSL verification
     kythira::cpp_httplib_client_config client_config;
     client_config.connection_timeout = std::chrono::milliseconds{2000};
     client_config.request_timeout = std::chrono::milliseconds{5000};
     client_config.enable_ssl_verification = true;
-    client_config.ca_cert_path = "/tmp/test_ca.pem";    // Non-existent for testing
+    client_config.ca_cert_path = "/tmp/test_ca.pem";  // Non-existent for testing
 
     typename test_transport_types::metrics_type metrics;
 
@@ -375,8 +380,8 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
         BOOST_TEST_MESSAGE("Testing server failure with invalid certificates");
 
         try {
-            kythira::cpp_httplib_server<test_transport_types> server(
-                test_bind_address, unique_port, server_config, metrics);
+            kythira::cpp_httplib_server<test_transport_types> server(test_bind_address, unique_port,
+                                                                     server_config, metrics);
 
             // Register a simple handler
             server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
@@ -391,15 +396,18 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
                 server.start();
                 // If we get here, the server started despite missing certificates
                 // This might happen if the implementation falls back to HTTP
-                BOOST_TEST_MESSAGE("Server started despite missing certificates - may have fallen back to HTTP");
+                BOOST_TEST_MESSAGE(
+                    "Server started despite missing certificates - may have fallen back to HTTP");
                 server.stop();
             } catch (const std::exception& e) {
-                BOOST_TEST_MESSAGE("Expected: Server failed to start due to missing certificates: " << e.what());
+                BOOST_TEST_MESSAGE(
+                    "Expected: Server failed to start due to missing certificates: " << e.what());
                 // This is the expected behavior
             }
         } catch (const kythira::ssl_configuration_error& e) {
             // Expected: Server constructor validates certificates and throws
-            BOOST_TEST_MESSAGE("Expected: Server construction failed due to missing certificates: " << e.what());
+            BOOST_TEST_MESSAGE(
+                "Expected: Server construction failed due to missing certificates: " << e.what());
         } catch (const std::exception& e) {
             // Also acceptable: any SSL-related error during construction
             BOOST_TEST_MESSAGE("Expected: Server construction failed: " << e.what());
@@ -416,8 +424,8 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
             std::unordered_map<std::uint64_t, std::string> node_urls;
             node_urls[test_node_id] = server_url;  // HTTPS URL
 
-            kythira::cpp_httplib_client<test_transport_types> client(
-                std::move(node_urls), client_config, metrics);
+            kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                     client_config, metrics);
 
             // Try to send a request - should fail due to connection/certificate issues
             kythira::request_vote_request<> request;
@@ -427,7 +435,8 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
             request._last_log_term = 4;
 
             try {
-                auto future = client.send_request_vote(test_node_id, request, std::chrono::milliseconds{2000});
+                auto future = client.send_request_vote(test_node_id, request,
+                                                       std::chrono::milliseconds{2000});
                 auto response = std::move(future).get();
 
                 // If we get here, the request succeeded unexpectedly
@@ -435,7 +444,8 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
                 BOOST_TEST(false, "HTTPS request should have failed");
 
             } catch (const kythira::http_transport_error& e) {
-                BOOST_TEST_MESSAGE("Expected: HTTPS request failed with transport error: " << e.what());
+                BOOST_TEST_MESSAGE(
+                    "Expected: HTTPS request failed with transport error: " << e.what());
                 // This is expected - connection should fail
             } catch (const std::exception& e) {
                 BOOST_TEST_MESSAGE("Expected: HTTPS request failed with exception: " << e.what());
@@ -443,7 +453,8 @@ BOOST_AUTO_TEST_CASE(test_tls_https, * boost::unit_test::timeout(180)) {
             }
         } catch (const kythira::ssl_configuration_error& e) {
             // Expected: Client constructor validates certificates and throws
-            BOOST_TEST_MESSAGE("Expected: Client construction failed due to missing certificates: " << e.what());
+            BOOST_TEST_MESSAGE(
+                "Expected: Client construction failed due to missing certificates: " << e.what());
         } catch (const std::exception& e) {
             // Also acceptable: any SSL-related error during construction
             BOOST_TEST_MESSAGE("Expected: Client construction failed: " << e.what());

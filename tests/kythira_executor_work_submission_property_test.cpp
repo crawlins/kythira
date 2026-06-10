@@ -17,9 +17,9 @@
 #include "../include/concepts/future.hpp"
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr const char* test_name = "kythira_executor_work_submission_property_test";
-    constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t property_test_iterations = 100;
+constexpr const char* test_name = "kythira_executor_work_submission_property_test";
+constexpr std::chrono::milliseconds test_timeout{5000};
 }
 
 BOOST_AUTO_TEST_SUITE(kythira_executor_work_submission_property_tests)
@@ -27,9 +27,10 @@ BOOST_AUTO_TEST_SUITE(kythira_executor_work_submission_property_tests)
 /**
  * **Feature: folly-concept-wrappers, Property 3: Executor Work Submission**
  * **Validates: Requirements 2.3**
- * Property: For any executor wrapper and work item, submitting work should properly forward to the underlying executor and execute the work
+ * Property: For any executor wrapper and work item, submitting work should properly forward to the
+ * underlying executor and execute the work
  */
-BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_executor_work_submission, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> work_count_dist(1, 10);
@@ -59,8 +60,7 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
             // Wait for all work to complete (with timeout)
             auto start = std::chrono::steady_clock::now();
             bool all_executed = false;
-            while (!all_executed &&
-                   std::chrono::steady_clock::now() - start < test_timeout) {
+            while (!all_executed && std::chrono::steady_clock::now() - start < test_timeout) {
                 all_executed = true;
                 for (int j = 0; j < work_count; ++j) {
                     if (!executed[j].load()) {
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
             // Verify all work was executed
             for (int j = 0; j < work_count; ++j) {
                 BOOST_CHECK_MESSAGE(executed[j].load(),
-                    "Work item " << j << " was not executed in iteration " << i);
+                                    "Work item " << j << " was not executed in iteration " << i);
             }
 
             // Verify execution order is valid (all items got unique order numbers)
@@ -86,8 +86,7 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
             }
             std::sort(orders.begin(), orders.end());
             for (int j = 0; j < work_count; ++j) {
-                BOOST_CHECK_MESSAGE(orders[j] == j,
-                    "Invalid execution order in iteration " << i);
+                BOOST_CHECK_MESSAGE(orders[j] == j, "Invalid execution order in iteration " << i);
             }
         }
 
@@ -107,7 +106,8 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
                 });
 
                 // Should be executed immediately with InlineExecutor
-                BOOST_CHECK_MESSAGE(executed[j].load(),
+                BOOST_CHECK_MESSAGE(
+                    executed[j].load(),
                     "Work item " << j << " was not executed immediately in iteration " << i);
                 BOOST_CHECK_EQUAL(counter.load(), j + 1);
             }
@@ -129,7 +129,8 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
                 });
 
                 // Should not be executed yet
-                BOOST_CHECK_MESSAGE(!executed[j].load(),
+                BOOST_CHECK_MESSAGE(
+                    !executed[j].load(),
                     "Work item " << j << " was executed prematurely in iteration " << i);
             }
 
@@ -141,7 +142,8 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
 
             // Verify all work was executed
             for (int j = 0; j < work_count; ++j) {
-                BOOST_CHECK_MESSAGE(executed[j].load(),
+                BOOST_CHECK_MESSAGE(
+                    executed[j].load(),
                     "Work item " << j << " was not executed after run() in iteration " << i);
             }
             BOOST_CHECK_EQUAL(counter.load(), work_count);
@@ -149,13 +151,13 @@ BOOST_AUTO_TEST_CASE(property_executor_work_submission, * boost::unit_test::time
     }
 
     BOOST_TEST_MESSAGE("Executor work submission behavior verified across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
  * Test work submission with different function types
  */
-BOOST_AUTO_TEST_CASE(test_work_submission_function_types, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_work_submission_function_types, *boost::unit_test::timeout(60)) {
     folly::InlineExecutor inline_executor;
     kythira::Executor wrapper(&inline_executor);
 
@@ -163,9 +165,7 @@ BOOST_AUTO_TEST_CASE(test_work_submission_function_types, * boost::unit_test::ti
     {
         std::atomic<int> result{0};
         int value = 42;
-        wrapper.add([&result, value]() {
-            result.store(value);
-        });
+        wrapper.add([&result, value]() { result.store(value); });
         BOOST_CHECK_EQUAL(result.load(), 42);
     }
 
@@ -184,18 +184,14 @@ BOOST_AUTO_TEST_CASE(test_work_submission_function_types, * boost::unit_test::ti
         // Set up the global pointer
         std::atomic<bool> local_called{false};
         // This is a bit hacky but needed for function pointer test
-        wrapper.add([&local_called]() {
-            local_called.store(true);
-        });
+        wrapper.add([&local_called]() { local_called.store(true); });
         BOOST_CHECK(local_called.load());
     }
 
     // Test 3: std::function
     {
         std::atomic<bool> called{false};
-        std::function<void()> func = [&called]() {
-            called.store(true);
-        };
+        std::function<void()> func = [&called]() { called.store(true); };
         wrapper.add(func);
         BOOST_CHECK(called.load());
     }
@@ -204,9 +200,7 @@ BOOST_AUTO_TEST_CASE(test_work_submission_function_types, * boost::unit_test::ti
     {
         struct Callable {
             std::atomic<bool>* called;
-            void operator()() {
-                called->store(true);
-            }
+            void operator()() { called->store(true); }
         };
 
         std::atomic<bool> called{false};
@@ -221,7 +215,7 @@ BOOST_AUTO_TEST_CASE(test_work_submission_function_types, * boost::unit_test::ti
 /**
  * Test work submission with move semantics
  */
-BOOST_AUTO_TEST_CASE(test_work_submission_move_semantics, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_work_submission_move_semantics, *boost::unit_test::timeout(30)) {
     folly::InlineExecutor inline_executor;
     kythira::Executor wrapper(&inline_executor);
 
@@ -247,11 +241,11 @@ BOOST_AUTO_TEST_CASE(test_work_submission_move_semantics, * boost::unit_test::ti
 /**
  * Test work submission error handling
  */
-BOOST_AUTO_TEST_CASE(test_work_submission_error_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_work_submission_error_handling, *boost::unit_test::timeout(30)) {
     // Test with null executor
     {
         kythira::Executor wrapper;
-        BOOST_CHECK_THROW(wrapper.add([](){}), std::runtime_error);
+        BOOST_CHECK_THROW(wrapper.add([]() {}), std::runtime_error);
     }
 
     // Test with work that throws exceptions
@@ -260,9 +254,8 @@ BOOST_AUTO_TEST_CASE(test_work_submission_error_handling, * boost::unit_test::ti
         kythira::Executor wrapper(&inline_executor);
 
         // The InlineExecutor will propagate exceptions, so we expect them to be thrown
-        BOOST_CHECK_THROW(wrapper.add([]() {
-            throw std::runtime_error("Test exception");
-        }), std::runtime_error);
+        BOOST_CHECK_THROW(wrapper.add([]() { throw std::runtime_error("Test exception"); }),
+                          std::runtime_error);
     }
 
     BOOST_TEST_MESSAGE("Work submission error handling test passed");
@@ -271,7 +264,7 @@ BOOST_AUTO_TEST_CASE(test_work_submission_error_handling, * boost::unit_test::ti
 /**
  * Test KeepAlive work submission
  */
-BOOST_AUTO_TEST_CASE(test_keep_alive_work_submission, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_keep_alive_work_submission, *boost::unit_test::timeout(60)) {
     auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(1);
     kythira::Executor wrapper(cpu_executor.get());
 
@@ -279,14 +272,11 @@ BOOST_AUTO_TEST_CASE(test_keep_alive_work_submission, * boost::unit_test::timeou
     auto keep_alive = wrapper.get_keep_alive();
 
     std::atomic<bool> executed{false};
-    keep_alive.add([&executed]() {
-        executed.store(true);
-    });
+    keep_alive.add([&executed]() { executed.store(true); });
 
     // Wait for execution (with timeout)
     auto start = std::chrono::steady_clock::now();
-    while (!executed.load() &&
-           std::chrono::steady_clock::now() - start < test_timeout) {
+    while (!executed.load() && std::chrono::steady_clock::now() - start < test_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
@@ -295,7 +285,7 @@ BOOST_AUTO_TEST_CASE(test_keep_alive_work_submission, * boost::unit_test::timeou
     // Test error handling with invalid KeepAlive
     {
         kythira::KeepAlive invalid_keep_alive;
-        BOOST_CHECK_THROW(invalid_keep_alive.add([](){}), std::runtime_error);
+        BOOST_CHECK_THROW(invalid_keep_alive.add([]() {}), std::runtime_error);
     }
 
     BOOST_TEST_MESSAGE("KeepAlive work submission test passed");

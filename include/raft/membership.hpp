@@ -8,11 +8,7 @@ namespace kythira {
 // Membership manager concept
 // Defines the interface for managing cluster membership changes
 template<typename M, typename NodeId, typename Config>
-concept membership_manager = requires(
-    M manager,
-    const NodeId& node,
-    const Config& config
-) {
+concept membership_manager = requires(M manager, const NodeId& node, const Config& config) {
     requires node_id<NodeId>;
     requires cluster_configuration_type<Config, NodeId>;
 
@@ -62,10 +58,9 @@ public:
 
     // Create a joint consensus configuration from old and new configurations
     // This is used during cluster membership changes to ensure safety
-    auto create_joint_configuration(
-        const cluster_configuration<NodeId>& old_config,
-        const cluster_configuration<NodeId>& new_config
-    ) -> cluster_configuration<NodeId> {
+    auto create_joint_configuration(const cluster_configuration<NodeId>& old_config,
+                                    const cluster_configuration<NodeId>& new_config)
+        -> cluster_configuration<NodeId> {
         // Joint consensus requires majorities from both old and new configurations
         cluster_configuration<NodeId> joint_config{};
 
@@ -83,10 +78,8 @@ public:
 
     // Check if a node is in the configuration
     // During joint consensus, checks both old and new configurations
-    auto is_node_in_configuration(
-        const NodeId& node,
-        const cluster_configuration<NodeId>& config
-    ) -> bool {
+    auto is_node_in_configuration(const NodeId& node, const cluster_configuration<NodeId>& config)
+        -> bool {
         // Check the primary (new) configuration
         for (const auto& n : config.nodes()) {
             if (n == node) {
@@ -110,10 +103,8 @@ public:
     }
 
     // Handle notification when cluster membership changes
-    auto handle_cluster_membership_change(
-        const cluster_configuration<NodeId>& old_config,
-        const cluster_configuration<NodeId>& new_config
-    ) -> void {
+    auto handle_cluster_membership_change(const cluster_configuration<NodeId>& old_config,
+                                          const cluster_configuration<NodeId>& new_config) -> void {
         // In a production implementation, this could:
         // - Notify external service discovery systems
         // - Update load balancer configurations
@@ -129,4 +120,4 @@ public:
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

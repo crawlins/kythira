@@ -7,25 +7,25 @@
 #include <atomic>
 
 namespace {
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_port = 9090;
-    constexpr std::uint16_t test_port_offset = 1;
-    constexpr std::chrono::milliseconds server_startup_delay{200};
-    constexpr std::chrono::seconds connection_timeout{1};
-    constexpr std::chrono::seconds read_timeout{2};
-    constexpr std::size_t content_length_tolerance = 5;
-    constexpr std::size_t multiple_requests_count = 5;
-    constexpr const char* test_json_body = R"({"test":"data","number":42})";
-    constexpr const char* test_content_type_json = "application/json";
-    constexpr const char* test_content_type_plain = "text/plain";
-    constexpr const char* test_endpoint = "/test";
-    constexpr const char* echo_endpoint = "/echo";
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_port = 9090;
+constexpr std::uint16_t test_port_offset = 1;
+constexpr std::chrono::milliseconds server_startup_delay{200};
+constexpr std::chrono::seconds connection_timeout{1};
+constexpr std::chrono::seconds read_timeout{2};
+constexpr std::size_t content_length_tolerance = 5;
+constexpr std::size_t multiple_requests_count = 5;
+constexpr const char* test_json_body = R"({"test":"data","number":42})";
+constexpr const char* test_content_type_json = "application/json";
+constexpr const char* test_content_type_plain = "text/plain";
+constexpr const char* test_endpoint = "/test";
+constexpr const char* echo_endpoint = "/echo";
 }
 
 BOOST_AUTO_TEST_SUITE(httplib_server_validation_tests)
 
 // Test basic cpp-httplib server functionality
-BOOST_AUTO_TEST_CASE(test_basic_httplib_server, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_basic_httplib_server, *boost::unit_test::timeout(30)) {
     httplib::Server server;
     std::atomic<bool> handler_called{false};
     std::atomic<std::size_t> request_count{0};
@@ -45,9 +45,7 @@ BOOST_AUTO_TEST_CASE(test_basic_httplib_server, * boost::unit_test::timeout(30))
     });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen(test_bind_address, test_port);
-    });
+    std::thread server_thread([&]() { server.listen(test_bind_address, test_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(server_startup_delay);
@@ -91,7 +89,7 @@ BOOST_AUTO_TEST_CASE(test_basic_httplib_server, * boost::unit_test::timeout(30))
 }
 
 // Test multiple requests to understand handler behavior
-BOOST_AUTO_TEST_CASE(test_multiple_requests, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multiple_requests, *boost::unit_test::timeout(45)) {
     httplib::Server server;
     std::atomic<std::size_t> total_requests{0};
     std::vector<std::string> received_bodies;
@@ -111,7 +109,8 @@ BOOST_AUTO_TEST_CASE(test_multiple_requests, * boost::unit_test::timeout(45)) {
         {
             std::lock_guard<std::mutex> lock(bodies_mutex);
             received_bodies.push_back(req.body);
-            BOOST_TEST_MESSAGE("Server received request #" << total_requests.load() << ": " << req.body);
+            BOOST_TEST_MESSAGE("Server received request #" << total_requests.load() << ": "
+                                                           << req.body);
         }
 
         res.status = 200;
@@ -122,9 +121,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_requests, * boost::unit_test::timeout(45)) {
 
     // Start server on a different port to avoid conflicts
     constexpr std::uint16_t unique_port = test_port + test_port_offset;
-    std::thread server_thread([&]() {
-        server.listen(test_bind_address, unique_port);
-    });
+    std::thread server_thread([&]() { server.listen(test_bind_address, unique_port); });
 
     // Wait for server to be ready by polling the health endpoint
     httplib::Client health_client(test_bind_address, unique_port);
@@ -179,7 +176,8 @@ BOOST_AUTO_TEST_CASE(test_multiple_requests, * boost::unit_test::timeout(45)) {
         // Wait for all requests to be processed by the server
         // Give the server some time to process all requests
         auto wait_timeout = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-        while (total_requests.load() < num_requests && std::chrono::steady_clock::now() < wait_timeout) {
+        while (total_requests.load() < num_requests &&
+               std::chrono::steady_clock::now() < wait_timeout) {
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
         }
 
@@ -201,7 +199,9 @@ BOOST_AUTO_TEST_CASE(test_multiple_requests, * boost::unit_test::timeout(45)) {
             std::sort(sorted_expected.begin(), sorted_expected.end());
 
             for (std::size_t i = 0; i < num_requests && i < sorted_received.size(); ++i) {
-                BOOST_TEST_MESSAGE("Comparing received[" << i << "]: '" << sorted_received[i] << "' with expected[" << i << "]: '" << sorted_expected[i] << "'");
+                BOOST_TEST_MESSAGE("Comparing received[" << i << "]: '" << sorted_received[i]
+                                                         << "' with expected[" << i << "]: '"
+                                                         << sorted_expected[i] << "'");
                 BOOST_TEST(sorted_received[i] == sorted_expected[i]);
             }
         }

@@ -24,13 +24,13 @@
 #include <chrono>
 
 namespace {
-    constexpr const char* test_multicast_address = "224.0.1.187";
-    constexpr std::uint16_t test_multicast_port = 5683;
-    constexpr const char* test_resource_path = "/raft/request_vote";
-    constexpr std::chrono::milliseconds test_timeout{2000};
+constexpr const char* test_multicast_address = "224.0.1.187";
+constexpr std::uint16_t test_multicast_port = 5683;
+constexpr const char* test_resource_path = "/raft/request_vote";
+constexpr std::chrono::milliseconds test_timeout{2000};
 
-    // Test serializer for multicast testing
-    using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+// Test serializer for multicast testing
+using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 }
 
 // Define test types for CoAP transport
@@ -43,8 +43,7 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
@@ -56,13 +55,13 @@ struct test_transport_types {
  * Property: For any multicast-enabled configuration, messages sent to multicast
  * addresses should be delivered to all listening nodes.
  */
-BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Property test: Multicast message delivery");
 
     // Test with various multicast configurations
     std::vector<std::string> multicast_addresses = {
-        "224.0.1.187",  // Standard CoAP multicast
-        "224.0.1.188",  // Alternative multicast address
+        "224.0.1.187",     // Standard CoAP multicast
+        "224.0.1.188",     // Alternative multicast address
         "239.255.255.250"  // UPnP multicast address
     };
 
@@ -79,9 +78,9 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
             try {
                 // Create client configuration for multicast
                 kythira::coap_client_config client_config;
-                client_config.enable_dtls = false; // Multicast typically uses plain CoAP
+                client_config.enable_dtls = false;  // Multicast typically uses plain CoAP
                 client_config.ack_timeout = std::chrono::milliseconds{1000};
-                client_config.max_retransmit = 2; // Fewer retries for multicast
+                client_config.max_retransmit = 2;  // Fewer retries for multicast
 
                 // Create client
                 std::unordered_map<std::uint64_t, std::string> endpoints;
@@ -89,8 +88,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
 
                 kythira::noop_metrics metrics;
 
-                kythira::coap_client<test_transport_types> client(
-                    std::move(endpoints), client_config, metrics);
+                kythira::coap_client<test_transport_types> client(std::move(endpoints),
+                                                                  client_config, metrics);
 
                 // Test multicast address validation
                 bool is_valid = client.is_valid_multicast_address(address);
@@ -101,7 +100,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
                 } else {
                     BOOST_REQUIRE(!is_valid);
                     BOOST_TEST_MESSAGE("  ✓ Invalid multicast address rejected: " << address);
-                    continue; // Skip invalid addresses
+                    continue;  // Skip invalid addresses
                 }
 
                 // Create test payload
@@ -118,24 +117,25 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, * boost::unit_tes
                 // Property: Multicast should not fail for valid addresses and ports
                 // Note: In stub implementation, we just verify the method signature
                 BOOST_REQUIRE_NO_THROW(
-                    auto future = client.send_multicast_message(
-                        address, port, test_resource_path, test_payload, test_timeout);
+                    auto future = client.send_multicast_message(address, port, test_resource_path,
+                                                                test_payload, test_timeout);
                     // Don't wait for the future in the property test to avoid hanging
                 );
 
             } catch (const std::exception& e) {
-                BOOST_TEST_MESSAGE("  Exception for " << address << ":" << port << " - " << e.what());
+                BOOST_TEST_MESSAGE("  Exception for " << address << ":" << port << " - "
+                                                      << e.what());
                 // Some configurations may not be supported in stub implementation
             }
         }
     }
 
     BOOST_TEST_MESSAGE("Multicast delivery property test completed");
-}/**
+} /**
 
- * Test multicast address validation property
- */
-BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_test::timeout(45)) {
+  * Test multicast address validation property
+  */
+BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, *boost::unit_test::timeout(45)) {
     BOOST_TEST_MESSAGE("Property test: Multicast address validation");
 
     // Create client for testing address validation
@@ -145,15 +145,14 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_t
 
     kythira::noop_metrics metrics;
 
-    kythira::coap_client<test_transport_types> client(
-        std::move(endpoints), client_config, metrics);
+    kythira::coap_client<test_transport_types> client(std::move(endpoints), client_config, metrics);
 
     // Test valid multicast addresses
     std::vector<std::string> valid_addresses = {
-        "224.0.0.0",     // Start of multicast range
-        "224.0.1.187",   // CoAP multicast
-        "224.0.1.188",   // Alternative CoAP multicast
-        "239.255.255.255" // End of multicast range
+        "224.0.0.0",       // Start of multicast range
+        "224.0.1.187",     // CoAP multicast
+        "224.0.1.188",     // Alternative CoAP multicast
+        "239.255.255.255"  // End of multicast range
     };
 
     for (const auto& address : valid_addresses) {
@@ -164,14 +163,14 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_t
 
     // Test invalid addresses
     std::vector<std::string> invalid_addresses = {
-        "",              // Empty address
-        "192.168.1.1",   // Unicast address
-        "127.0.0.1",     // Loopback address
-        "10.0.0.1",      // Private address
-        "223.255.255.255", // Just below multicast range
-        "240.0.0.0",     // Just above multicast range
-        "invalid",       // Invalid format
-        "999.999.999.999" // Invalid IP format
+        "",                 // Empty address
+        "192.168.1.1",      // Unicast address
+        "127.0.0.1",        // Loopback address
+        "10.0.0.1",         // Private address
+        "223.255.255.255",  // Just below multicast range
+        "240.0.0.0",        // Just above multicast range
+        "invalid",          // Invalid format
+        "999.999.999.999"   // Invalid IP format
     };
 
     for (const auto& address : invalid_addresses) {
@@ -186,7 +185,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, * boost::unit_t
 /**
  * Test multicast server configuration property
  */
-BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, *boost::unit_test::timeout(45)) {
     BOOST_TEST_MESSAGE("Property test: Multicast server configuration");
 
     // Test various multicast server configurations
@@ -197,7 +196,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
     valid_config.enable_multicast = true;
     valid_config.multicast_address = test_multicast_address;
     valid_config.multicast_port = test_multicast_port;
-    valid_config.enable_dtls = false; // Multicast typically uses plain CoAP
+    valid_config.enable_dtls = false;  // Multicast typically uses plain CoAP
     configs.push_back(valid_config);
 
     // Configuration with different multicast address
@@ -212,14 +211,14 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
         try {
             kythira::noop_metrics metrics;
 
-            kythira::coap_server<test_transport_types> server(
-                "0.0.0.0", 5683, config, metrics);
+            kythira::coap_server<test_transport_types> server("0.0.0.0", 5683, config, metrics);
 
             // Test multicast address validation
             bool is_valid = server.is_valid_multicast_address(config.multicast_address);
             BOOST_REQUIRE(is_valid);
 
-            BOOST_TEST_MESSAGE("  ✓ Server created with multicast address: " << config.multicast_address);
+            BOOST_TEST_MESSAGE(
+                "  ✓ Server created with multicast address: " << config.multicast_address);
 
             // Property: Multicast-enabled servers should validate multicast addresses
             BOOST_REQUIRE(config.enable_multicast);
@@ -236,7 +235,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, * boost::unit
 /**
  * Test multicast error handling property
  */
-BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, *boost::unit_test::timeout(45)) {
     BOOST_TEST_MESSAGE("Property test: Multicast error handling");
 
     // Create client for error testing
@@ -246,8 +245,7 @@ BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, * boost::unit_test:
 
     kythira::noop_metrics metrics;
 
-    kythira::coap_client<test_transport_types> client(
-        std::move(endpoints), client_config, metrics);
+    kythira::coap_client<test_transport_types> client(std::move(endpoints), client_config, metrics);
 
     // Test error conditions
     std::vector<std::byte> test_payload;
@@ -258,8 +256,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, * boost::unit_test:
 
     // Property: Invalid multicast addresses should be rejected
     // Test that invalid addresses return failed futures immediately
-    auto invalid_future = client.send_multicast_message(
-        "192.168.1.1", 5683, test_resource_path, test_payload, test_timeout);
+    auto invalid_future = client.send_multicast_message("192.168.1.1", 5683, test_resource_path,
+                                                        test_payload, test_timeout);
 
     // Check if the future is ready (should be for invalid input)
     if (invalid_future.isReady()) {

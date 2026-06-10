@@ -6,9 +6,9 @@
 #include <cstring>
 
 namespace {
-    constexpr const char* test_key = "mykey";
-    constexpr const char* test_value = "myvalue";
-    constexpr const char* updated_value = "updated";
+constexpr const char* test_key = "mykey";
+constexpr const char* test_value = "myvalue";
+constexpr const char* updated_value = "updated";
 }
 
 auto test_kv_operations() -> bool {
@@ -18,7 +18,8 @@ auto test_kv_operations() -> bool {
         kythira::test_key_value_state_machine sm;
 
         // PUT using binary format
-        auto put_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key, test_value);
+        auto put_cmd =
+            kythira::test_key_value_state_machine<>::make_put_command(test_key, test_value);
         sm.apply(put_cmd, 1);
 
         // GET using binary format
@@ -32,7 +33,8 @@ auto test_kv_operations() -> bool {
         }
 
         // UPDATE using binary format
-        auto update_cmd = kythira::test_key_value_state_machine<>::make_put_command(test_key, updated_value);
+        auto update_cmd =
+            kythira::test_key_value_state_machine<>::make_put_command(test_key, updated_value);
         sm.apply(update_cmd, 3);
 
         // DELETE using binary format
@@ -55,8 +57,9 @@ auto test_counter_operations() -> bool {
 
         for (int i = 0; i < 5; ++i) {
             std::string cmd = "INC";
-            std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(cmd.data()),
-                                        reinterpret_cast<const std::byte*>(cmd.data() + cmd.size()));
+            std::vector<std::byte> bytes(
+                reinterpret_cast<const std::byte*>(cmd.data()),
+                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size()));
             sm.apply(bytes, i + 1);
         }
 
@@ -96,8 +99,8 @@ auto test_snapshot_operations() -> bool {
 
         // Verify - check that both have the same number of entries
         if (sm1.size() != sm2.size()) {
-            std::cerr << "  ✗ Snapshot restoration failed: size mismatch (sm1="
-                      << sm1.size() << ", sm2=" << sm2.size() << ")\n";
+            std::cerr << "  ✗ Snapshot restoration failed: size mismatch (sm1=" << sm1.size()
+                      << ", sm2=" << sm2.size() << ")\n";
             return false;
         }
 
@@ -134,7 +137,7 @@ auto test_error_handling() -> bool {
 
         // Invalid command (wrong command type byte)
         try {
-            std::vector<std::byte> invalid_cmd = {std::byte{99}}; // Invalid command type
+            std::vector<std::byte> invalid_cmd = {std::byte{99}};  // Invalid command type
             sm.apply(invalid_cmd, 1);
             std::cerr << "  ✗ Should have thrown exception for invalid command\n";
             return false;

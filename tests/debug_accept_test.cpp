@@ -6,7 +6,7 @@
 
 using namespace network_simulator;
 
-BOOST_AUTO_TEST_CASE(debug_accept_connection, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(debug_accept_connection, *boost::unit_test::timeout(30)) {
     // Create simulator
     NetworkSimulator<DefaultNetworkTypes> sim;
     sim.start();

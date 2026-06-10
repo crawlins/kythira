@@ -13,14 +13,14 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr std::chrono::milliseconds default_latency{10};
-    constexpr double default_reliability = 0.99;
-    constexpr std::size_t test_iterations = 50;
-    constexpr const char* node_prefix = "node_";
-    constexpr std::size_t max_nodes_per_test = 10;
-    constexpr std::size_t max_edges_per_test = 20;
-    constexpr const char* test_payload = "test_message";
-    constexpr std::chrono::milliseconds medium_timeout{1000};
+constexpr std::chrono::milliseconds default_latency{10};
+constexpr double default_reliability = 0.99;
+constexpr std::size_t test_iterations = 50;
+constexpr const char* node_prefix = "node_";
+constexpr std::size_t max_nodes_per_test = 10;
+constexpr std::size_t max_edges_per_test = 20;
+constexpr const char* test_payload = "test_message";
+constexpr std::chrono::milliseconds medium_timeout{1000};
 }
 
 /**
@@ -31,8 +31,7 @@ namespace {
  *
  * **Validates: Requirements 12.3**
  */
-BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::timeout(120)) {
-
+BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -142,10 +141,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::
                 auto server_endpoint = listeners[i]->local_endpoint();
 
                 auto connect_future = network_nodes[client_node_idx]->connect(
-                    server_endpoint.address,
-                    server_endpoint.port,
-                    medium_timeout
-                );
+                    server_endpoint.address, server_endpoint.port, medium_timeout);
 
                 // Give some time for connection to establish
                 std::this_thread::sleep_for(default_latency + std::chrono::milliseconds(50));
@@ -173,11 +169,8 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::
                 for (char c : std::string(test_payload)) {
                     payload_msg.push_back(static_cast<std::byte>(c));
                 }
-                Message<DefaultNetworkTypes> msg(
-                    nodes[from_idx], port_dist(gen),
-                    nodes[to_idx], port_dist(gen),
-                    payload_msg
-                );
+                Message<DefaultNetworkTypes> msg(nodes[from_idx], port_dist(gen), nodes[to_idx],
+                                                 port_dist(gen), payload_msg);
 
                 auto send_future = network_nodes[from_idx]->send(msg, medium_timeout);
                 // Don't wait for completion, just initiate the send
@@ -260,11 +253,8 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::
         for (char c : std::string(test_payload)) {
             test_payload_bytes.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> test_msg(
-            new_node_a, 8080,
-            new_node_b, 8081,
-            test_payload_bytes
-        );
+        Message<DefaultNetworkTypes> test_msg(new_node_a, 8080, new_node_b, 8081,
+                                              test_payload_bytes);
 
         auto send_future = new_node_a_obj->send(test_msg, medium_timeout);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -290,7 +280,8 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::
             if (send_future.isReady()) {
                 try {
                     bool result = send_future.get();
-                    BOOST_TEST_MESSAGE("Send after reset (delayed): " << (result ? "succeeded" : "failed"));
+                    BOOST_TEST_MESSAGE(
+                        "Send after reset (delayed): " << (result ? "succeeded" : "failed"));
                 } catch (const std::exception& e) {
                     BOOST_TEST_MESSAGE("Send after reset (delayed) threw exception: " << e.what());
                 }
@@ -308,7 +299,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, * boost::unit_test::
 /**
  * Test reset during active operations
  */
-BOOST_AUTO_TEST_CASE(reset_during_active_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(reset_during_active_operations, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Set up topology
@@ -336,18 +327,14 @@ BOOST_AUTO_TEST_CASE(reset_during_active_operations, * boost::unit_test::timeout
             for (char c : std::string(test_payload)) {
                 payload_reset.push_back(static_cast<std::byte>(c));
             }
-            Message<DefaultNetworkTypes> msg(
-                node_a, 8080 + i,
-                node_b, 8081 + i,
-                payload_reset
-            );
+            Message<DefaultNetworkTypes> msg(node_a, 8080 + i, node_b, 8081 + i, payload_reset);
 
             try {
                 auto send_future = network_node_a->send(msg, medium_timeout);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
                 if (send_future.isReady()) {
-                    send_future.get(); // May succeed or fail, both are acceptable
+                    send_future.get();  // May succeed or fail, both are acceptable
                 }
             } catch (const std::exception&) {
                 // Operations may fail during reset, that's acceptable
@@ -377,7 +364,7 @@ BOOST_AUTO_TEST_CASE(reset_during_active_operations, * boost::unit_test::timeout
 /**
  * Test multiple resets
  */
-BOOST_AUTO_TEST_CASE(multiple_resets, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(multiple_resets, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     for (int cycle = 0; cycle < 5; ++cycle) {
@@ -406,7 +393,7 @@ BOOST_AUTO_TEST_CASE(multiple_resets, * boost::unit_test::timeout(60)) {
 /**
  * Test reset with complex topology
  */
-BOOST_AUTO_TEST_CASE(reset_complex_topology, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(reset_complex_topology, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Create a complex topology
@@ -460,7 +447,7 @@ BOOST_AUTO_TEST_CASE(reset_complex_topology, * boost::unit_test::timeout(60)) {
 /**
  * Test reset returns simulator to initial conditions
  */
-BOOST_AUTO_TEST_CASE(reset_returns_to_initial_conditions, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(reset_returns_to_initial_conditions, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Capture initial state (should be empty)

@@ -24,8 +24,7 @@ class simulator_network_server;
 
 // Shared network types structure for simulator-based Raft networking
 // This must be defined outside the client/server classes so they can share the same type
-template<typename AddressType>
-struct raft_simulator_network_types {
+template<typename AddressType> struct raft_simulator_network_types {
     using address_type = AddressType;
     using port_type = unsigned short;
 
@@ -55,17 +54,15 @@ public:
     using simulator_type = network_simulator::NetworkSimulator<NetworkTypes>;
 
     simulator_network_client(node_type node, Serializer serializer = Serializer{})
-        : _node(std::move(node))
-        , _serializer(std::move(serializer))
-        , _rpc_port(5000)  // Default Raft RPC port
+        : _node(std::move(node)),
+          _serializer(std::move(serializer)),
+          _rpc_port(5000)  // Default Raft RPC port
     {}
 
     // Send RequestVote RPC - returns Future<request_vote_response<>>
-    auto send_request_vote(
-        std::uint64_t target,
-        const kythira::request_vote_request<>& req,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<kythira::request_vote_response<>> {
+    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& req,
+                           std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::request_vote_response<>> {
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -81,13 +78,9 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(
-            _node->address(),
-            0,  // Source port (connectionless)
-            target_addr,
-            _rpc_port,
-            std::move(payload)
-        );
+        typename NetworkTypes::message_type msg(_node->address(),
+                                                0,  // Source port (connectionless)
+                                                target_addr, _rpc_port, std::move(payload));
 
         // Send message and wait for response - now with proper future flattening
         return _node->send(std::move(msg), timeout)
@@ -99,13 +92,15 @@ public:
                 // Wait for response - return the future directly (will be flattened)
                 return _node->receive(timeout);
             })
-            .thenValue([this](typename NetworkTypes::message_type response_msg) -> kythira::request_vote_response<> {
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::request_vote_response<> {
                 // Deserialize response
                 auto response_payload = response_msg.payload();
                 Data response_data;
                 if constexpr (requires { response_data.resize(0); }) {
                     response_data.resize(response_payload.size());
-                    std::copy(response_payload.begin(), response_payload.end(), response_data.begin());
+                    std::copy(response_payload.begin(), response_payload.end(),
+                              response_data.begin());
                 }
 
                 return _serializer.template deserialize_request_vote_response<>(response_data);
@@ -113,11 +108,9 @@ public:
     }
 
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
-    auto send_append_entries(
-        std::uint64_t target,
-        const kythira::append_entries_request<>& req,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<kythira::append_entries_response<>> {
+    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
+                             std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::append_entries_response<>> {
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -133,13 +126,9 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(
-            _node->address(),
-            0,  // Source port (connectionless)
-            target_addr,
-            _rpc_port,
-            std::move(payload)
-        );
+        typename NetworkTypes::message_type msg(_node->address(),
+                                                0,  // Source port (connectionless)
+                                                target_addr, _rpc_port, std::move(payload));
 
         // Send message and wait for response
         return _node->send(std::move(msg), timeout)
@@ -151,7 +140,8 @@ public:
                 // Wait for response - return the future directly
                 return _node->receive(timeout);
             })
-            .thenValue([this](typename NetworkTypes::message_type response_msg) -> kythira::append_entries_response<> {
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::append_entries_response<> {
                 // Deserialize response
                 auto payload = response_msg.payload();
                 Data response_data;
@@ -165,11 +155,9 @@ public:
     }
 
     // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
-    auto send_install_snapshot(
-        std::uint64_t target,
-        const kythira::install_snapshot_request<>& req,
-        std::chrono::milliseconds timeout
-    ) -> kythira::Future<kythira::install_snapshot_response<>> {
+    auto send_install_snapshot(std::uint64_t target, const kythira::install_snapshot_request<>& req,
+                               std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::install_snapshot_response<>> {
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -185,13 +173,9 @@ public:
         }
 
         // Create message
-        typename NetworkTypes::message_type msg(
-            _node->address(),
-            0,  // Source port (connectionless)
-            target_addr,
-            _rpc_port,
-            std::move(payload)
-        );
+        typename NetworkTypes::message_type msg(_node->address(),
+                                                0,  // Source port (connectionless)
+                                                target_addr, _rpc_port, std::move(payload));
 
         // Send message and wait for response
         return _node->send(std::move(msg), timeout)
@@ -203,7 +187,8 @@ public:
                 // Wait for response - return the future directly
                 return _node->receive(timeout);
             })
-            .thenValue([this](typename NetworkTypes::message_type response_msg) -> kythira::install_snapshot_response<> {
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::install_snapshot_response<> {
                 // Deserialize response
                 auto payload = response_msg.payload();
                 Data response_data;
@@ -234,23 +219,22 @@ public:
     using simulator_type = network_simulator::NetworkSimulator<NetworkTypes>;
 
     simulator_network_server(node_type node, Serializer serializer = Serializer{})
-        : _node(std::move(node))
-        , _serializer(std::move(serializer))
-        , _rpc_port(5000)  // Default Raft RPC port
-        , _running(false)
-    {}
+        : _node(std::move(node)),
+          _serializer(std::move(serializer)),
+          _rpc_port(5000)  // Default Raft RPC port
+          ,
+          _running(false) {}
 
     // Move constructor
     simulator_network_server(simulator_network_server&& other) noexcept
-        : _node(std::move(other._node))
-        , _serializer(std::move(other._serializer))
-        , _rpc_port(other._rpc_port)
-        , _running(other._running.load())
-        , _server_thread(std::move(other._server_thread))
-        , _request_vote_handler(std::move(other._request_vote_handler))
-        , _append_entries_handler(std::move(other._append_entries_handler))
-        , _install_snapshot_handler(std::move(other._install_snapshot_handler))
-    {}
+        : _node(std::move(other._node)),
+          _serializer(std::move(other._serializer)),
+          _rpc_port(other._rpc_port),
+          _running(other._running.load()),
+          _server_thread(std::move(other._server_thread)),
+          _request_vote_handler(std::move(other._request_vote_handler)),
+          _append_entries_handler(std::move(other._append_entries_handler)),
+          _install_snapshot_handler(std::move(other._install_snapshot_handler)) {}
 
     // Move assignment
     simulator_network_server& operator=(simulator_network_server&& other) noexcept {
@@ -271,9 +255,7 @@ public:
     }
 
     // Destructor
-    ~simulator_network_server() {
-        stop();
-    }
+    ~simulator_network_server() { stop(); }
 
     // Delete copy constructor and assignment
     simulator_network_server(const simulator_network_server&) = delete;
@@ -281,24 +263,24 @@ public:
 
     // Register RequestVote handler
     auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
-    ) -> void {
+        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+            handler) -> void {
         std::unique_lock lock(_mutex);
         _request_vote_handler = std::move(handler);
     }
 
     // Register AppendEntries handler
     auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
-    ) -> void {
+        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+            handler) -> void {
         std::unique_lock lock(_mutex);
         _append_entries_handler = std::move(handler);
     }
 
     // Register InstallSnapshot handler
-    auto register_install_snapshot_handler(
-        std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
-    ) -> void {
+    auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
+                                               const kythira::install_snapshot_request<>&)>
+                                               handler) -> void {
         std::unique_lock lock(_mutex);
         _install_snapshot_handler = std::move(handler);
     }
@@ -313,9 +295,7 @@ public:
         _running = true;
 
         // Start message processing loop in background thread
-        _server_thread = std::thread([this]() {
-            process_messages();
-        });
+        _server_thread = std::thread([this]() { process_messages(); });
     }
 
     // Stop the server
@@ -348,9 +328,12 @@ private:
     std::thread _server_thread;
 
     // RPC handlers
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> _install_snapshot_handler;
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+        _request_vote_handler;
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+        _append_entries_handler;
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+        _install_snapshot_handler;
 
     mutable std::shared_mutex _mutex;
 
@@ -389,7 +372,8 @@ private:
 
             // Try RequestVote
             try {
-                auto request = _serializer.template deserialize_request_vote_request<>(request_data);
+                auto request =
+                    _serializer.template deserialize_request_vote_request<>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_request_vote_handler) {
@@ -403,7 +387,8 @@ private:
 
             // Try AppendEntries
             try {
-                auto request = _serializer.template deserialize_append_entries_request<>(request_data);
+                auto request =
+                    _serializer.template deserialize_append_entries_request<>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_append_entries_handler) {
@@ -417,7 +402,8 @@ private:
 
             // Try InstallSnapshot
             try {
-                auto request = _serializer.template deserialize_install_snapshot_request<>(request_data);
+                auto request =
+                    _serializer.template deserialize_install_snapshot_request<>(request_data);
 
                 std::shared_lock lock(_mutex);
                 if (_install_snapshot_handler) {
@@ -446,13 +432,9 @@ private:
             std::vector<std::byte> payload(data.begin(), data.end());
 
             // Create response message
-            typename NetworkTypes::message_type msg(
-                _node->address(),
-                _rpc_port,
-                target,
-                0,  // Destination port (connectionless)
-                std::move(payload)
-            );
+            typename NetworkTypes::message_type msg(_node->address(), _rpc_port, target,
+                                                    0,  // Destination port (connectionless)
+                                                    std::move(payload));
 
             // Send response (fire and forget)
             _node->send(std::move(msg));
@@ -464,13 +446,15 @@ private:
 
 // Verify that simulator_network_client satisfies the network_client concept
 using TestNetworkTypes = raft_simulator_network_types<std::string>;
-static_assert(kythira::network_client<
-    simulator_network_client<TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>
->, "simulator_network_client must satisfy the network_client concept");
+static_assert(kythira::network_client<simulator_network_client<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_client must satisfy the network_client concept");
 
 // Verify that simulator_network_server satisfies the network_server concept
-static_assert(kythira::network_server<
-    simulator_network_server<TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>
->, "simulator_network_server must satisfy the network_server concept");
+static_assert(kythira::network_server<simulator_network_server<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_server must satisfy the network_server concept");
 
-} // namespace kythira
+}  // namespace kythira

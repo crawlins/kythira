@@ -14,15 +14,12 @@
 namespace network_simulator {
 
 // Forward declarations
-template<typename Types>
-class NetworkSimulator;
+template<typename Types> class NetworkSimulator;
 
-template<typename Types>
-class Connection;
+template<typename Types> class Connection;
 
 // Listener class template
-template<typename Types>
-class Listener {
+template<typename Types> class Listener {
 public:
     // Type aliases from Types template argument
     using address_type = typename Types::address_type;
@@ -32,12 +29,8 @@ public:
     using simulator_type = NetworkSimulator<Types>;
     using future_connection_type = typename Types::future_connection_type;
 
-    Listener(endpoint_type local_endpoint,
-             simulator_type* simulator)
-        : _local(std::move(local_endpoint))
-        , _simulator(simulator)
-        , _listening(true)
-    {}
+    Listener(endpoint_type local_endpoint, simulator_type* simulator)
+        : _local(std::move(local_endpoint)), _simulator(simulator), _listening(true) {}
 
     auto accept() -> future_connection_type;
     auto accept(std::chrono::milliseconds timeout) -> future_connection_type;
@@ -63,6 +56,6 @@ private:
     std::condition_variable _connection_available;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator
 
 #include "listener_impl.hpp"

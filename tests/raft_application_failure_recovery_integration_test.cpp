@@ -35,7 +35,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_application_failure_recovery_integration_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("raft_application_failure_recovery_integration_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -48,18 +49,18 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    // Test constants
-    constexpr std::uint64_t test_log_index_1 = 1;
-    constexpr std::uint64_t test_log_index_2 = 2;
-    constexpr std::uint64_t test_log_index_3 = 3;
-    constexpr std::uint64_t test_log_index_4 = 4;
-    constexpr std::uint64_t test_log_index_5 = 5;
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds medium_timeout{500};
-    constexpr std::chrono::milliseconds long_timeout{2000};
-    constexpr const char* application_failure_msg = "State machine application failed";
-    constexpr const char* transient_failure_msg = "Transient failure";
-    constexpr std::size_t batch_size = 5;
+// Test constants
+constexpr std::uint64_t test_log_index_1 = 1;
+constexpr std::uint64_t test_log_index_2 = 2;
+constexpr std::uint64_t test_log_index_3 = 3;
+constexpr std::uint64_t test_log_index_4 = 4;
+constexpr std::uint64_t test_log_index_5 = 5;
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds medium_timeout{500};
+constexpr std::chrono::milliseconds long_timeout{2000};
+constexpr const char* application_failure_msg = "State machine application failed";
+constexpr const char* transient_failure_msg = "Transient failure";
+constexpr std::size_t batch_size = 5;
 }
 
 /**
@@ -76,14 +77,16 @@ public:
 
     MockStateMachine() = default;
 
-    auto set_failure_policy(failure_policy policy, std::optional<std::uint64_t> fail_index = std::nullopt) -> void {
+    auto set_failure_policy(failure_policy policy,
+                            std::optional<std::uint64_t> fail_index = std::nullopt) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _policy = policy;
         _fail_index = fail_index;
         _failure_count = 0;
     }
 
-    auto apply(std::uint64_t index, const std::vector<std::byte>& command) -> std::vector<std::byte> {
+    auto apply(std::uint64_t index, const std::vector<std::byte>& command)
+        -> std::vector<std::byte> {
         std::lock_guard<std::mutex> lock(_mutex);
 
         // Check if we should fail
@@ -149,7 +152,8 @@ private:
     std::optional<std::uint64_t> _fail_index;
 };
 
-BOOST_AUTO_TEST_SUITE(application_failure_recovery_integration_tests, * boost::unit_test::timeout(300))
+BOOST_AUTO_TEST_SUITE(application_failure_recovery_integration_tests,
+                      *boost::unit_test::timeout(300))
 
 /**
  * Test: State machine application failure
@@ -159,7 +163,7 @@ BOOST_AUTO_TEST_SUITE(application_failure_recovery_integration_tests, * boost::u
  *
  * Requirements: 19.4
  */
-BOOST_AUTO_TEST_CASE(state_machine_application_failure, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(state_machine_application_failure, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing state machine application failure");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -174,10 +178,7 @@ BOOST_AUTO_TEST_CASE(state_machine_application_failure, * boost::unit_test::time
 
     // Register operation
     waiter.register_operation(
-        test_log_index_1,
-        [&](std::vector<std::byte>) {
-            completed = true;
-        },
+        test_log_index_1, [&](std::vector<std::byte>) { completed = true; },
         [&](std::exception_ptr ex) {
             error_received = true;
             completed = true;
@@ -189,8 +190,7 @@ BOOST_AUTO_TEST_CASE(state_machine_application_failure, * boost::unit_test::time
                 BOOST_TEST_MESSAGE("Caught application failure: " << e.what());
             }
         },
-        long_timeout
-    );
+        long_timeout);
 
     // Simulate application with failure
     auto result_function = [&](std::uint64_t index) -> std::vector<std::byte> {
@@ -201,8 +201,7 @@ BOOST_AUTO_TEST_CASE(state_machine_application_failure, * boost::unit_test::time
 
     // Wait for completion
     auto start = std::chrono::steady_clock::now();
-    while (!completed.load() &&
-           std::chrono::steady_clock::now() - start < medium_timeout) {
+    while (!completed.load() && std::chrono::steady_clock::now() - start < medium_timeout) {
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
 
@@ -223,7 +222,7 @@ BOOST_AUTO_TEST_CASE(state_machine_application_failure, * boost::unit_test::time
  *
  * Requirements: 19.4
  */
-BOOST_AUTO_TEST_CASE(error_propagation_multiple_clients, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(error_propagation_multiple_clients, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing error propagation to multiple clients");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -239,10 +238,7 @@ BOOST_AUTO_TEST_CASE(error_propagation_multiple_clients, * boost::unit_test::tim
     // Register multiple operations for the same index
     for (std::size_t i = 0; i < client_count; ++i) {
         waiter.register_operation(
-            test_log_index_1,
-            [&](std::vector<std::byte>) {
-                completed_count++;
-            },
+            test_log_index_1, [&](std::vector<std::byte>) { completed_count++; },
             [&](std::exception_ptr ex) {
                 errors_received++;
                 completed_count++;
@@ -250,11 +246,11 @@ BOOST_AUTO_TEST_CASE(error_propagation_multiple_clients, * boost::unit_test::tim
                 try {
                     std::rethrow_exception(ex);
                 } catch (const std::exception& e) {
-                    BOOST_CHECK(std::string(e.what()).find(application_failure_msg) != std::string::npos);
+                    BOOST_CHECK(std::string(e.what()).find(application_failure_msg) !=
+                                std::string::npos);
                 }
             },
-            long_timeout
-        );
+            long_timeout);
     }
 
     // Simulate application with failure
@@ -285,7 +281,7 @@ BOOST_AUTO_TEST_CASE(error_propagation_multiple_clients, * boost::unit_test::tim
  *
  * Requirements: 19.3, 19.4
  */
-BOOST_AUTO_TEST_CASE(transient_failure_recovery, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(transient_failure_recovery, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing transient failure recovery");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -312,8 +308,7 @@ BOOST_AUTO_TEST_CASE(transient_failure_recovery, * boost::unit_test::timeout(60)
                 failure_count++;
                 completed_count++;
             },
-            long_timeout
-        );
+            long_timeout);
     }
 
     // Apply entries one by one
@@ -350,21 +345,23 @@ BOOST_AUTO_TEST_CASE(transient_failure_recovery, * boost::unit_test::timeout(60)
  *
  * Requirements: 19.4
  */
-BOOST_AUTO_TEST_CASE(failure_at_specific_index, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(failure_at_specific_index, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing failure at specific index");
 
     kythira::commit_waiter<std::uint64_t> waiter;
     MockStateMachine state_machine;
 
     // Configure state machine to fail at index 3
-    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index, test_log_index_3);
+    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index,
+                                     test_log_index_3);
 
     std::atomic<std::size_t> success_count{0};
     std::atomic<std::size_t> failure_count{0};
     std::atomic<std::size_t> completed_count{0};
 
     // Register operations for multiple indices
-    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3, test_log_index_4};
+    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3,
+                                          test_log_index_4};
 
     for (auto index : indices) {
         waiter.register_operation(
@@ -377,8 +374,7 @@ BOOST_AUTO_TEST_CASE(failure_at_specific_index, * boost::unit_test::timeout(60))
                 failure_count++;
                 completed_count++;
             },
-            long_timeout
-        );
+            long_timeout);
     }
 
     // Apply entries one by one
@@ -420,7 +416,7 @@ BOOST_AUTO_TEST_CASE(failure_at_specific_index, * boost::unit_test::timeout(60))
  *
  * Requirements: 19.5
  */
-BOOST_AUTO_TEST_CASE(applied_index_catchup, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(applied_index_catchup, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing applied index catchup after lag");
 
     kythira::commit_waiter<std::uint64_t> waiter;
@@ -429,19 +425,13 @@ BOOST_AUTO_TEST_CASE(applied_index_catchup, * boost::unit_test::timeout(60)) {
     std::atomic<std::size_t> completed_count{0};
 
     // Register operations for multiple indices
-    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3, test_log_index_4, test_log_index_5};
+    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3,
+                                          test_log_index_4, test_log_index_5};
 
     for (auto index : indices) {
         waiter.register_operation(
-            index,
-            [&](std::vector<std::byte>) {
-                completed_count++;
-            },
-            [&](std::exception_ptr) {
-                completed_count++;
-            },
-            long_timeout
-        );
+            index, [&](std::vector<std::byte>) { completed_count++; },
+            [&](std::exception_ptr) { completed_count++; }, long_timeout);
     }
 
     // Simulate sequential application (as Raft node would do)
@@ -483,21 +473,23 @@ BOOST_AUTO_TEST_CASE(applied_index_catchup, * boost::unit_test::timeout(60)) {
  *
  * Requirements: 19.3, 19.4, 19.5
  */
-BOOST_AUTO_TEST_CASE(batch_application_partial_failure, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(batch_application_partial_failure, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing batch application with partial failure");
 
     kythira::commit_waiter<std::uint64_t> waiter;
     MockStateMachine state_machine;
 
     // Configure state machine to fail at index 3
-    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index, test_log_index_3);
+    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index,
+                                     test_log_index_3);
 
     std::atomic<std::size_t> success_count{0};
     std::atomic<std::size_t> failure_count{0};
     std::atomic<std::size_t> completed_count{0};
 
     // Register operations for batch
-    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3, test_log_index_4, test_log_index_5};
+    std::vector<std::uint64_t> indices = {test_log_index_1, test_log_index_2, test_log_index_3,
+                                          test_log_index_4, test_log_index_5};
 
     for (auto index : indices) {
         waiter.register_operation(
@@ -510,8 +502,7 @@ BOOST_AUTO_TEST_CASE(batch_application_partial_failure, * boost::unit_test::time
                 failure_count++;
                 completed_count++;
             },
-            long_timeout
-        );
+            long_timeout);
     }
 
     // Simulate sequential application (as Raft node would do)
@@ -548,14 +539,15 @@ BOOST_AUTO_TEST_CASE(batch_application_partial_failure, * boost::unit_test::time
  *
  * Requirements: 19.3, 19.4
  */
-BOOST_AUTO_TEST_CASE(system_consistency_after_failures, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(system_consistency_after_failures, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Testing system consistency after failures");
 
     kythira::commit_waiter<std::uint64_t> waiter;
     MockStateMachine state_machine;
 
     // First batch: fail at index 2
-    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index, test_log_index_2);
+    state_machine.set_failure_policy(MockStateMachine::failure_policy::fail_at_index,
+                                     test_log_index_2);
 
     std::atomic<std::size_t> completed_count{0};
 
@@ -564,15 +556,8 @@ BOOST_AUTO_TEST_CASE(system_consistency_after_failures, * boost::unit_test::time
 
     for (auto index : first_batch) {
         waiter.register_operation(
-            index,
-            [&](std::vector<std::byte>) {
-                completed_count++;
-            },
-            [&](std::exception_ptr) {
-                completed_count++;
-            },
-            long_timeout
-        );
+            index, [&](std::vector<std::byte>) { completed_count++; },
+            [&](std::exception_ptr) { completed_count++; }, long_timeout);
     }
 
     // Apply first batch
@@ -602,15 +587,8 @@ BOOST_AUTO_TEST_CASE(system_consistency_after_failures, * boost::unit_test::time
 
     for (auto index : second_batch) {
         waiter.register_operation(
-            index,
-            [&](std::vector<std::byte>) {
-                completed_count++;
-            },
-            [&](std::exception_ptr) {
-                completed_count++;
-            },
-            long_timeout
-        );
+            index, [&](std::vector<std::byte>) { completed_count++; },
+            [&](std::exception_ptr) { completed_count++; }, long_timeout);
     }
 
     // Apply second batch

@@ -15,11 +15,11 @@
 #include "../include/raft/future.hpp"
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr int test_value_2 = 84;
-    constexpr const char* test_string = "test_message";
-    constexpr auto test_timeout = std::chrono::milliseconds{100};
-    constexpr auto short_timeout = std::chrono::milliseconds{10};
+constexpr int test_value = 42;
+constexpr int test_value_2 = 84;
+constexpr const char* test_string = "test_message";
+constexpr auto test_timeout = std::chrono::milliseconds{100};
+constexpr auto short_timeout = std::chrono::milliseconds{10};
 }
 
 // ============================================================================
@@ -28,7 +28,7 @@ namespace {
 
 BOOST_AUTO_TEST_SUITE(try_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(try_default_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_default_constructor, *boost::unit_test::timeout(15)) {
     kythira::Try<int> t;
 
     // Default constructed Try should not have value or exception
@@ -36,7 +36,7 @@ BOOST_AUTO_TEST_CASE(try_default_constructor, * boost::unit_test::timeout(15)) {
     BOOST_CHECK(!t.has_exception());
 }
 
-BOOST_AUTO_TEST_CASE(try_value_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_value_constructor, *boost::unit_test::timeout(15)) {
     kythira::Try<int> t(test_value);
 
     BOOST_CHECK(t.has_value());
@@ -44,7 +44,7 @@ BOOST_AUTO_TEST_CASE(try_value_constructor, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(t.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(try_exception_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_exception_constructor, *boost::unit_test::timeout(15)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Try<int> t(ex);
 
@@ -59,7 +59,7 @@ BOOST_AUTO_TEST_CASE(try_exception_constructor, * boost::unit_test::timeout(15))
     BOOST_CHECK(ex_ptr != nullptr);
 }
 
-BOOST_AUTO_TEST_CASE(try_folly_try_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_folly_try_constructor, *boost::unit_test::timeout(15)) {
     folly::Try<int> folly_try(test_value);
     kythira::Try<int> t(std::move(folly_try));
 
@@ -67,14 +67,14 @@ BOOST_AUTO_TEST_CASE(try_folly_try_constructor, * boost::unit_test::timeout(15))
     BOOST_CHECK_EQUAL(t.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(try_const_value_access, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_const_value_access, *boost::unit_test::timeout(15)) {
     const kythira::Try<int> t(test_value);
 
     BOOST_CHECK(t.has_value());
     BOOST_CHECK_EQUAL(t.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(try_string_type, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_string_type, *boost::unit_test::timeout(15)) {
     std::string test_str(test_string);
     kythira::Try<std::string> t(test_str);
 
@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE(try_string_type, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(t.value(), test_str);
 }
 
-BOOST_AUTO_TEST_CASE(try_move_semantics, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_move_semantics, *boost::unit_test::timeout(15)) {
     std::string test_str(test_string);
     kythira::Try<std::string> t(std::move(test_str));
 
@@ -90,7 +90,7 @@ BOOST_AUTO_TEST_CASE(try_move_semantics, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(t.value(), test_string);
 }
 
-BOOST_AUTO_TEST_CASE(try_folly_interop, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_folly_interop, *boost::unit_test::timeout(15)) {
     kythira::Try<int> t(test_value);
 
     // Should be able to get underlying folly::Try
@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_wrapper_tests)
 
-BOOST_AUTO_TEST_CASE(future_default_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_default_constructor, *boost::unit_test::timeout(15)) {
     // Note: folly::Future doesn't have default constructor, so we test with promise
     folly::Promise<int> promise;
     kythira::Future<int> f(promise.getFuture());
@@ -119,14 +119,14 @@ BOOST_AUTO_TEST_CASE(future_default_constructor, * boost::unit_test::timeout(15)
     promise.setValue(test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_value_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_value_constructor, *boost::unit_test::timeout(15)) {
     kythira::Future<int> f(test_value);
 
     BOOST_CHECK(f.isReady());
     BOOST_CHECK_EQUAL(f.get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_exception_constructor_folly_wrapper, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_exception_constructor_folly_wrapper, *boost::unit_test::timeout(15)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<int> f(ex);
 
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(future_exception_constructor_folly_wrapper, * boost::unit_t
     BOOST_CHECK_THROW(f.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(future_exception_constructor_std_ptr, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_exception_constructor_std_ptr, *boost::unit_test::timeout(15)) {
     auto ex_ptr = std::make_exception_ptr(std::runtime_error(test_string));
     kythira::Future<int> f(ex_ptr);
 
@@ -142,7 +142,7 @@ BOOST_AUTO_TEST_CASE(future_exception_constructor_std_ptr, * boost::unit_test::t
     BOOST_CHECK_THROW(f.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(future_folly_future_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_folly_future_constructor, *boost::unit_test::timeout(15)) {
     auto folly_future = folly::makeFuture(test_value);
     kythira::Future<int> f(std::move(folly_future));
 
@@ -150,7 +150,7 @@ BOOST_AUTO_TEST_CASE(future_folly_future_constructor, * boost::unit_test::timeou
     BOOST_CHECK_EQUAL(f.get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_then_chaining, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_then_chaining, *boost::unit_test::timeout(30)) {
     kythira::Future<int> f(test_value);
 
     auto f2 = f.then([](int val) { return val * 2; });
@@ -158,19 +158,17 @@ BOOST_AUTO_TEST_CASE(future_then_chaining, * boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(f2.get(), test_value * 2);
 }
 
-BOOST_AUTO_TEST_CASE(future_then_void_return, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_then_void_return, *boost::unit_test::timeout(30)) {
     kythira::Future<int> f(test_value);
 
     bool callback_called = false;
-    auto f2 = f.then([&callback_called](int val) {
-        callback_called = true;
-    });
+    auto f2 = f.then([&callback_called](int val) { callback_called = true; });
 
-    f2.get(); // Should not throw
+    f2.get();  // Should not throw
     BOOST_CHECK(callback_called);
 }
 
-BOOST_AUTO_TEST_CASE(future_on_error_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_on_error_handling, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<int> f(ex);
 
@@ -179,7 +177,7 @@ BOOST_AUTO_TEST_CASE(future_on_error_handling, * boost::unit_test::timeout(30)) 
     BOOST_CHECK_EQUAL(f2.get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_wait_timeout, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(future_wait_timeout, *boost::unit_test::timeout(60)) {
     folly::Promise<int> promise;
     kythira::Future<int> f(promise.getFuture());
 
@@ -197,7 +195,7 @@ BOOST_AUTO_TEST_CASE(future_wait_timeout, * boost::unit_test::timeout(60)) {
     BOOST_CHECK(f.isReady());
 }
 
-BOOST_AUTO_TEST_CASE(future_string_type, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_string_type, *boost::unit_test::timeout(15)) {
     std::string test_str(test_string);
     kythira::Future<std::string> f(test_str);
 
@@ -205,7 +203,7 @@ BOOST_AUTO_TEST_CASE(future_string_type, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(f.get(), test_str);
 }
 
-BOOST_AUTO_TEST_CASE(future_move_semantics, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_move_semantics, *boost::unit_test::timeout(15)) {
     std::string test_str(test_string);
     kythira::Future<std::string> f(std::move(test_str));
 
@@ -213,7 +211,7 @@ BOOST_AUTO_TEST_CASE(future_move_semantics, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(f.get(), test_string);
 }
 
-BOOST_AUTO_TEST_CASE(future_folly_interop, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_folly_interop, *boost::unit_test::timeout(15)) {
     kythira::Future<int> f(test_value);
 
     // Should be able to get underlying folly::Future
@@ -230,14 +228,14 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_void_tests)
 
-BOOST_AUTO_TEST_CASE(future_void_default_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_void_default_constructor, *boost::unit_test::timeout(15)) {
     kythira::Future<void> f;
 
     BOOST_CHECK(f.isReady());
     BOOST_CHECK_NO_THROW(f.get());
 }
 
-BOOST_AUTO_TEST_CASE(future_void_exception_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_void_exception_constructor, *boost::unit_test::timeout(15)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<void> f(ex);
 
@@ -245,7 +243,7 @@ BOOST_AUTO_TEST_CASE(future_void_exception_constructor, * boost::unit_test::time
     BOOST_CHECK_THROW(f.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(future_void_folly_constructor, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_void_folly_constructor, *boost::unit_test::timeout(15)) {
     auto folly_future = folly::makeFuture();
     kythira::Future<void> f(std::move(folly_future));
 
@@ -253,19 +251,17 @@ BOOST_AUTO_TEST_CASE(future_void_folly_constructor, * boost::unit_test::timeout(
     BOOST_CHECK_NO_THROW(f.get());
 }
 
-BOOST_AUTO_TEST_CASE(future_void_then_void_return, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_void_then_void_return, *boost::unit_test::timeout(30)) {
     kythira::Future<void> f;
 
     bool callback_called = false;
-    auto f2 = f.then([&callback_called]() {
-        callback_called = true;
-    });
+    auto f2 = f.then([&callback_called]() { callback_called = true; });
 
     BOOST_CHECK_NO_THROW(f2.get());
     BOOST_CHECK(callback_called);
 }
 
-BOOST_AUTO_TEST_CASE(future_void_then_value_return, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_void_then_value_return, *boost::unit_test::timeout(30)) {
     kythira::Future<void> f;
 
     auto f2 = f.then([]() { return test_value; });
@@ -273,20 +269,18 @@ BOOST_AUTO_TEST_CASE(future_void_then_value_return, * boost::unit_test::timeout(
     BOOST_CHECK_EQUAL(f2.get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_void_on_error, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_void_on_error, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<void> f(ex);
 
     bool error_handled = false;
-    auto f2 = f.onError([&error_handled](std::exception_ptr) {
-        error_handled = true;
-    });
+    auto f2 = f.onError([&error_handled](std::exception_ptr) { error_handled = true; });
 
     BOOST_CHECK_NO_THROW(f2.get());
     BOOST_CHECK(error_handled);
 }
 
-BOOST_AUTO_TEST_CASE(future_void_wait_timeout, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(future_void_wait_timeout, *boost::unit_test::timeout(60)) {
     folly::Promise<folly::Unit> promise;
     kythira::Future<void> f(promise.getFuture());
 
@@ -312,7 +306,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(collective_operations_tests)
 
-BOOST_AUTO_TEST_CASE(wait_for_any_basic, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(wait_for_any_basic, *boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -344,7 +338,7 @@ BOOST_AUTO_TEST_CASE(wait_for_any_basic, * boost::unit_test::timeout(90)) {
     promise3.setValue(0);
 }
 
-BOOST_AUTO_TEST_CASE(wait_for_any_with_exception, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(wait_for_any_with_exception, *boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
 
@@ -373,7 +367,7 @@ BOOST_AUTO_TEST_CASE(wait_for_any_with_exception, * boost::unit_test::timeout(90
     promise2.setValue(0);
 }
 
-BOOST_AUTO_TEST_CASE(wait_for_all_basic, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(wait_for_all_basic, *boost::unit_test::timeout(90)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -421,7 +415,7 @@ BOOST_AUTO_TEST_CASE(wait_for_all_basic, * boost::unit_test::timeout(90)) {
     t3.join();
 }
 
-BOOST_AUTO_TEST_CASE(wait_for_all_with_mixed_results, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(wait_for_all_with_mixed_results, *boost::unit_test::timeout(60)) {
     folly::Promise<int> promise1;
     folly::Promise<int> promise2;
     folly::Promise<int> promise3;
@@ -456,7 +450,7 @@ BOOST_AUTO_TEST_CASE(wait_for_all_with_mixed_results, * boost::unit_test::timeou
     BOOST_CHECK_EQUAL(results[2].value(), test_value_2);
 }
 
-BOOST_AUTO_TEST_CASE(wait_for_all_empty_vector, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(wait_for_all_empty_vector, *boost::unit_test::timeout(30)) {
     std::vector<kythira::Future<int>> futures;
 
     auto result_future = kythira::wait_for_all(std::move(futures));
@@ -465,7 +459,7 @@ BOOST_AUTO_TEST_CASE(wait_for_all_empty_vector, * boost::unit_test::timeout(30))
     BOOST_CHECK(results.empty());
 }
 
-BOOST_AUTO_TEST_CASE(wait_for_any_single_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(wait_for_any_single_future, *boost::unit_test::timeout(30)) {
     std::vector<kythira::Future<int>> futures;
     futures.push_back(kythira::Future<int>(test_value));
 
@@ -485,7 +479,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(edge_cases_tests)
 
-BOOST_AUTO_TEST_CASE(try_exception_ptr_conversion, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_exception_ptr_conversion, *boost::unit_test::timeout(15)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Try<int> t(ex);
 
@@ -501,7 +495,7 @@ BOOST_AUTO_TEST_CASE(try_exception_ptr_conversion, * boost::unit_test::timeout(1
     }
 }
 
-BOOST_AUTO_TEST_CASE(future_chaining_with_exceptions, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_chaining_with_exceptions, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<int> f(ex);
 
@@ -511,7 +505,7 @@ BOOST_AUTO_TEST_CASE(future_chaining_with_exceptions, * boost::unit_test::timeou
     BOOST_CHECK_THROW(f2.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(future_void_exception_propagation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_void_exception_propagation, *boost::unit_test::timeout(30)) {
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
     kythira::Future<void> f(ex);
 
@@ -521,7 +515,7 @@ BOOST_AUTO_TEST_CASE(future_void_exception_propagation, * boost::unit_test::time
     BOOST_CHECK_THROW(f2.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(large_value_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(large_value_types, *boost::unit_test::timeout(30)) {
     std::vector<int> large_vector(1000, test_value);
     kythira::Future<std::vector<int>> f(std::move(large_vector));
 
@@ -532,7 +526,7 @@ BOOST_AUTO_TEST_CASE(large_value_types, * boost::unit_test::timeout(30)) {
     BOOST_CHECK_EQUAL(result[999], test_value);
 }
 
-BOOST_AUTO_TEST_CASE(nested_future_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(nested_future_types, *boost::unit_test::timeout(30)) {
     kythira::Future<int> inner_future(test_value);
     kythira::Future<kythira::Future<int>> outer_future(std::move(inner_future));
 
@@ -550,7 +544,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(resource_management_tests)
 
-BOOST_AUTO_TEST_CASE(try_move_only_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_move_only_types, *boost::unit_test::timeout(15)) {
     auto unique_ptr = std::make_unique<int>(test_value);
     kythira::Try<std::unique_ptr<int>> t(std::move(unique_ptr));
 
@@ -559,7 +553,7 @@ BOOST_AUTO_TEST_CASE(try_move_only_types, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(*t.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_move_only_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_move_only_types, *boost::unit_test::timeout(15)) {
     auto unique_ptr = std::make_unique<int>(test_value);
     kythira::Future<std::unique_ptr<int>> f(std::move(unique_ptr));
 
@@ -569,7 +563,7 @@ BOOST_AUTO_TEST_CASE(future_move_only_types, * boost::unit_test::timeout(15)) {
     BOOST_CHECK_EQUAL(*result, test_value);
 }
 
-BOOST_AUTO_TEST_CASE(future_rvalue_reference_handling, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(future_rvalue_reference_handling, *boost::unit_test::timeout(15)) {
     kythira::Future<int> f(test_value);
 
     // Moving future should work
@@ -578,7 +572,7 @@ BOOST_AUTO_TEST_CASE(future_rvalue_reference_handling, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(std::move(folly_future).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(exception_safety_in_constructors, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(exception_safety_in_constructors, *boost::unit_test::timeout(15)) {
     // Test that exceptions during construction are handled properly
     struct ThrowingType {
         ThrowingType() { throw std::runtime_error(test_string); }
@@ -605,7 +599,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(performance_tests)
 
-BOOST_AUTO_TEST_CASE(many_futures_creation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(many_futures_creation, *boost::unit_test::timeout(60)) {
     constexpr std::size_t num_futures = 1000;
     std::vector<kythira::Future<int>> futures;
     futures.reserve(num_futures);
@@ -622,7 +616,7 @@ BOOST_AUTO_TEST_CASE(many_futures_creation, * boost::unit_test::timeout(60)) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(deep_then_chaining, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(deep_then_chaining, *boost::unit_test::timeout(60)) {
     kythira::Future<int> f(1);
 
     // Chain many then operations
@@ -633,7 +627,7 @@ BOOST_AUTO_TEST_CASE(deep_then_chaining, * boost::unit_test::timeout(60)) {
     BOOST_CHECK_EQUAL(f.get(), 101);
 }
 
-BOOST_AUTO_TEST_CASE(concurrent_future_access, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(concurrent_future_access, *boost::unit_test::timeout(90)) {
     constexpr int num_threads = 4;
     constexpr int operations_per_thread = 100;
 

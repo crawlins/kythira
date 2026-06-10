@@ -47,40 +47,44 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
 
 struct test_raft_types {
-    using future_type  = kythira::Future<std::vector<std::byte>>;
+    using future_type = kythira::Future<std::vector<std::byte>>;
     using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type     = kythira::Try<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-    using node_id_type   = std::uint64_t;
-    using term_id_type   = std::uint64_t;
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
 
     using serialized_data_type = std::vector<std::byte>;
-    using serializer_type      = kythira::json_rpc_serializer<serialized_data_type>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
     using raft_network_types = kythira::raft_simulator_network_types<std::string>;
     using network_client_type =
-        kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
     using network_server_type =
-        kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
     using persistence_engine_type =
         kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-    using logger_type             = kythira::console_logger;
-    using metrics_type            = kythira::noop_metrics;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
     using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-    using state_machine_type      = kythira::test_key_value_state_machine<log_index_type>;
-    using configuration_type      = kythira::raft_configuration;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    using configuration_type = kythira::raft_configuration;
 
-    using log_entry_type              = kythira::log_entry<term_id_type, log_index_type>;
-    using cluster_configuration_type  = kythira::cluster_configuration<node_id_type>;
-    using snapshot_type               = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-    using request_vote_request_type  = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
     using request_vote_response_type = kythira::request_vote_response<term_id_type>;
     using append_entries_request_type =
         kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-    using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
     using install_snapshot_request_type =
         kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
     using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
@@ -92,8 +96,8 @@ kythira::raft_configuration make_fast_config() {
     kythira::raft_configuration cfg;
     cfg._election_timeout_min = std::chrono::milliseconds{60};
     cfg._election_timeout_max = std::chrono::milliseconds{100};
-    cfg._heartbeat_interval   = std::chrono::milliseconds{20};
-    cfg._rpc_timeout          = std::chrono::milliseconds{80};
+    cfg._heartbeat_interval = std::chrono::milliseconds{20};
+    cfg._rpc_timeout = std::chrono::milliseconds{80};
     return cfg;
 }
 
@@ -126,69 +130,60 @@ bool wait_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::mil
 // Caller must stop() and the simulator must outlive the returned node.
 std::unique_ptr<raft_node_type> make_single_node_leader(
     network_simulator::NetworkSimulator<test_raft_types::raft_network_types>& sim,
-    std::uint64_t id = 1)
-{
+    std::uint64_t id = 1) {
     auto net = sim.create_node(std::to_string(id));
     auto ser = test_raft_types::serializer_type{};
     auto cfg = make_fast_config();
 
     auto node = std::make_unique<raft_node_type>(
-        id,
-        test_raft_types::network_client_type{net, ser},
-        test_raft_types::network_server_type{net, ser},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        cfg
-    );
+        id, test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser}, test_raft_types::persistence_engine_type{},
+        kythira::console_logger{kythira::log_level::error}, test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{}, cfg);
     node->start();
 
     // Drive election
-    bool became_leader = wait_until([&]() {
-        node->check_election_timeout();
-        return node->is_leader();
-    }, std::chrono::milliseconds{2000});
+    bool became_leader = wait_until(
+        [&]() {
+            node->check_election_timeout();
+            return node->is_leader();
+        },
+        std::chrono::milliseconds{2000});
     (void)became_leader;
 
     return node;
 }
 
-} // namespace
+}  // namespace
 
 // ── Suite: read_state ─────────────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_SUITE(read_state_suite)
 
-BOOST_AUTO_TEST_CASE(read_state_on_follower_throws, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(read_state_on_follower_throws, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{
-        1,
-        test_raft_types::network_client_type{net, ser},
-        test_raft_types::network_server_type{net, ser},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        make_fast_config()
-    };
+    raft_node_type node{1,
+                        test_raft_types::network_client_type{net, ser},
+                        test_raft_types::network_server_type{net, ser},
+                        test_raft_types::persistence_engine_type{},
+                        kythira::console_logger{kythira::log_level::error},
+                        test_raft_types::metrics_type{},
+                        test_raft_types::membership_manager_type{},
+                        make_fast_config()};
     node.start();
 
     // Immediately after start, node is a follower — read_state must throw
     BOOST_CHECK_EQUAL(node.get_state(), kythira::server_state::follower);
-    BOOST_CHECK_THROW(
-        node.read_state(std::chrono::milliseconds{200}).get(),
-        std::exception
-    );
+    BOOST_CHECK_THROW(node.read_state(std::chrono::milliseconds{200}).get(), std::exception);
 
     node.stop();
 }
 
-BOOST_AUTO_TEST_CASE(read_state_on_single_node_leader, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(read_state_on_single_node_leader, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 
@@ -202,7 +197,7 @@ BOOST_AUTO_TEST_CASE(read_state_on_single_node_leader, * boost::unit_test::timeo
     leader->stop();
 }
 
-BOOST_AUTO_TEST_CASE(read_state_after_committed_command, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(read_state_after_committed_command, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 
@@ -227,22 +222,20 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(stop_guard_suite)
 
-BOOST_AUTO_TEST_CASE(stop_already_stopped_node, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(stop_already_stopped_node, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{
-        1,
-        test_raft_types::network_client_type{net, ser},
-        test_raft_types::network_server_type{net, ser},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        make_fast_config()
-    };
+    raft_node_type node{1,
+                        test_raft_types::network_client_type{net, ser},
+                        test_raft_types::network_server_type{net, ser},
+                        test_raft_types::persistence_engine_type{},
+                        kythira::console_logger{kythira::log_level::error},
+                        test_raft_types::metrics_type{},
+                        test_raft_types::membership_manager_type{},
+                        make_fast_config()};
     node.start();
     BOOST_CHECK(node.is_running());
 
@@ -260,22 +253,20 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(heartbeat_timeout_suite)
 
-BOOST_AUTO_TEST_CASE(check_heartbeat_on_follower, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(check_heartbeat_on_follower, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{
-        1,
-        test_raft_types::network_client_type{net, ser},
-        test_raft_types::network_server_type{net, ser},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        make_fast_config()
-    };
+    raft_node_type node{1,
+                        test_raft_types::network_client_type{net, ser},
+                        test_raft_types::network_server_type{net, ser},
+                        test_raft_types::persistence_engine_type{},
+                        kythira::console_logger{kythira::log_level::error},
+                        test_raft_types::metrics_type{},
+                        test_raft_types::membership_manager_type{},
+                        make_fast_config()};
     node.start();
 
     BOOST_CHECK_EQUAL(node.get_state(), kythira::server_state::follower);
@@ -286,7 +277,7 @@ BOOST_AUTO_TEST_CASE(check_heartbeat_on_follower, * boost::unit_test::timeout(10
     node.stop();
 }
 
-BOOST_AUTO_TEST_CASE(check_heartbeat_on_leader_triggers_send, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(check_heartbeat_on_leader_triggers_send, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 
@@ -305,7 +296,7 @@ BOOST_AUTO_TEST_CASE(check_heartbeat_on_leader_triggers_send, * boost::unit_test
     leader->stop();
 }
 
-BOOST_AUTO_TEST_CASE(check_heartbeat_cancels_timed_out_operation, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(check_heartbeat_cancels_timed_out_operation, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 
@@ -332,22 +323,20 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(replicate_suite)
 
-BOOST_AUTO_TEST_CASE(replicate_on_follower_is_noop, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(replicate_on_follower_is_noop, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
     auto net = sim.create_node("1");
     auto ser = test_raft_types::serializer_type{};
 
-    raft_node_type node{
-        1,
-        test_raft_types::network_client_type{net, ser},
-        test_raft_types::network_server_type{net, ser},
-        test_raft_types::persistence_engine_type{},
-        kythira::console_logger{kythira::log_level::error},
-        test_raft_types::metrics_type{},
-        test_raft_types::membership_manager_type{},
-        make_fast_config()
-    };
+    raft_node_type node{1,
+                        test_raft_types::network_client_type{net, ser},
+                        test_raft_types::network_server_type{net, ser},
+                        test_raft_types::persistence_engine_type{},
+                        kythira::console_logger{kythira::log_level::error},
+                        test_raft_types::metrics_type{},
+                        test_raft_types::membership_manager_type{},
+                        make_fast_config()};
     node.start();
 
     BOOST_CHECK_EQUAL(node.get_state(), kythira::server_state::follower);
@@ -356,7 +345,7 @@ BOOST_AUTO_TEST_CASE(replicate_on_follower_is_noop, * boost::unit_test::timeout(
     node.stop();
 }
 
-BOOST_AUTO_TEST_CASE(replicate_on_single_node_leader, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(replicate_on_single_node_leader, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 
@@ -381,7 +370,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(state_queries_suite)
 
-BOOST_AUTO_TEST_CASE(get_node_id_and_term, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(get_node_id_and_term, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
     sim.start();
 

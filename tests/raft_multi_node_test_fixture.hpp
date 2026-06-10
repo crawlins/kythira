@@ -63,10 +63,9 @@ public:
      * Constructor - initializes the fixture with specified configuration
      */
     explicit raft_multi_node_fixture(cluster_config config = cluster_config{})
-        : _config(config)
-        , _simulator(std::make_shared<simulator_type>())
-        , _rng(std::random_device{}())
-    {
+        : _config(config),
+          _simulator(std::make_shared<simulator_type>()),
+          _rng(std::random_device{}()) {
         if (_config.node_count < 3 || _config.node_count > 9 || _config.node_count % 2 == 0) {
             throw std::invalid_argument("Node count must be odd and between 3 and 9");
         }
@@ -160,9 +159,7 @@ public:
     /**
      * Get the number of nodes in the cluster
      */
-    [[nodiscard]] auto get_node_count() const -> std::size_t {
-        return _nodes.size();
-    }
+    [[nodiscard]] auto get_node_count() const -> std::size_t { return _nodes.size(); }
 
     /**
      * Get all node IDs in the cluster
@@ -217,10 +214,8 @@ public:
     /**
      * Simulate network partition between two groups of nodes
      */
-    auto create_network_partition(
-        const std::vector<node_id_type>& group1,
-        const std::vector<node_id_type>& group2
-    ) -> void {
+    auto create_network_partition(const std::vector<node_id_type>& group1,
+                                  const std::vector<node_id_type>& group2) -> void {
         // Remove edges between the two groups
         for (const auto& node1 : group1) {
             for (const auto& node2 : group2) {
@@ -233,17 +228,13 @@ public:
     /**
      * Heal network partition (restore full connectivity)
      */
-    auto heal_network_partition() -> void {
-        configure_network_topology();
-    }
+    auto heal_network_partition() -> void { configure_network_topology(); }
 
     /**
      * Simulate network delay for a specific node
      */
-    auto set_node_network_delay(
-        const node_id_type& node_id,
-        std::chrono::milliseconds delay
-    ) -> void {
+    auto set_node_network_delay(const node_id_type& node_id, std::chrono::milliseconds delay)
+        -> void {
         // Add latency to all edges involving this node
         for (const auto& [other_id, _] : _nodes) {
             if (other_id != node_id) {
@@ -257,10 +248,7 @@ public:
     /**
      * Simulate packet loss for a specific node
      */
-    auto set_node_packet_loss(
-        const node_id_type& node_id,
-        double loss_rate
-    ) -> void {
+    auto set_node_packet_loss(const node_id_type& node_id, double loss_rate) -> void {
         // Set reliability for all edges involving this node
         for (const auto& [other_id, _] : _nodes) {
             if (other_id != node_id) {
@@ -319,9 +307,7 @@ public:
     /**
      * Destructor - ensure cleanup
      */
-    ~raft_multi_node_fixture() {
-        cleanup();
-    }
+    ~raft_multi_node_fixture() { cleanup(); }
 
 private:
     // Node information structure
@@ -367,7 +353,8 @@ private:
      * Configure network topology (fully connected mesh)
      */
     auto configure_network_topology() -> void {
-        auto latency = _config.enable_network_delays ? _config.network_latency : std::chrono::milliseconds(0);
+        auto latency =
+            _config.enable_network_delays ? _config.network_latency : std::chrono::milliseconds(0);
         network_simulator::NetworkEdge edge(latency, _config.network_reliability);
 
         // Create fully connected mesh
@@ -393,4 +380,4 @@ private:
     std::mt19937 _rng;
 };
 
-} // namespace kythira::test
+}  // namespace kythira::test

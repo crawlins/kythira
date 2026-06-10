@@ -19,7 +19,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_callback_safety_after_cancellation_property_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("raft_callback_safety_after_cancellation_property_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -32,13 +33,13 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t min_operations = 10;
-    constexpr std::size_t max_operations = 100;
-    constexpr std::size_t min_futures = 5;
-    constexpr std::size_t max_futures = 50;
-    constexpr std::chrono::milliseconds test_timeout{30000};
-    constexpr std::chrono::milliseconds callback_timeout{100};
-    constexpr const char* cancellation_reason = "Test cancellation";
+constexpr std::size_t min_operations = 10;
+constexpr std::size_t max_operations = 100;
+constexpr std::size_t min_futures = 5;
+constexpr std::size_t max_futures = 50;
+constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr std::chrono::milliseconds callback_timeout{100};
+constexpr const char* cancellation_reason = "Test cancellation";
 }
 
 /**
@@ -47,7 +48,8 @@ namespace {
  * Property: For any cancelled future, no callbacks are invoked after cancellation.
  * **Validates: Requirements 8.4**
  */
-BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test,
+                     *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Testing callback safety after cancellation property...");
 
     std::random_device rd;
@@ -55,7 +57,7 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
     std::uniform_int_distribution<std::size_t> operation_count_dist(min_operations, max_operations);
     std::uniform_int_distribution<std::size_t> future_count_dist(min_futures, max_futures);
     std::uniform_int_distribution<std::uint64_t> index_dist(1, 1000);
-    std::uniform_int_distribution<int> delay_dist(1, 50); // Random delay in milliseconds
+    std::uniform_int_distribution<int> delay_dist(1, 50);  // Random delay in milliseconds
 
     // Test multiple scenarios with different cancellation patterns
     for (int test_iteration = 0; test_iteration < 10; ++test_iteration) {
@@ -64,8 +66,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
         const std::size_t operation_count = operation_count_dist(gen);
         const std::size_t future_count = future_count_dist(gen);
 
-        BOOST_TEST_MESSAGE("Testing callback safety with " << operation_count
-                          << " operations and " << future_count << " futures");
+        BOOST_TEST_MESSAGE("Testing callback safety with " << operation_count << " operations and "
+                                                           << future_count << " futures");
 
         // Test 1: CommitWaiter callback safety after cancellation
         {
@@ -83,8 +85,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 const std::uint64_t index = index_dist(gen);
 
                 auto fulfill_callback = [&callbacks_invoked, &callbacks_after_cancellation,
-                                       &cancellation_completed, &callback_mutex, &callback_times]
-                                      (std::vector<std::byte> result) {
+                                         &cancellation_completed, &callback_mutex,
+                                         &callback_times](std::vector<std::byte> result) {
                     callbacks_invoked.fetch_add(1);
 
                     std::lock_guard<std::mutex> lock(callback_mutex);
@@ -97,8 +99,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 };
 
                 auto reject_callback = [&callbacks_invoked, &callbacks_after_cancellation,
-                                      &cancellation_completed, &callback_mutex, &callback_times]
-                                     (std::exception_ptr ex) {
+                                        &cancellation_completed, &callback_mutex,
+                                        &callback_times](std::exception_ptr ex) {
                     callbacks_invoked.fetch_add(1);
 
                     std::lock_guard<std::mutex> lock(callback_mutex);
@@ -111,10 +113,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    std::move(fulfill_callback),
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000} // Long timeout to avoid timeout cancellation
+                    index, std::move(fulfill_callback), std::move(reject_callback),
+                    std::chrono::milliseconds{10000}  // Long timeout to avoid timeout cancellation
                 );
             }
 
@@ -143,12 +143,14 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                         callback_time - cancellation_start);
 
                     // Callbacks should occur during or shortly after cancellation
-                    BOOST_CHECK_LE(callback_elapsed.count(), 100); // Allow 100ms for callback execution
+                    BOOST_CHECK_LE(callback_elapsed.count(),
+                                   100);  // Allow 100ms for callback execution
                 }
             }
 
-            BOOST_TEST_MESSAGE("✓ CommitWaiter callback safety: " << operation_count
-                              << " callbacks invoked safely during cancellation");
+            BOOST_TEST_MESSAGE("✓ CommitWaiter callback safety: "
+                               << operation_count
+                               << " callbacks invoked safely during cancellation");
         }
 
         // Test 2: Concurrent cancellation and callback safety
@@ -167,7 +169,7 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 const std::uint64_t index = index_dist(gen);
 
                 auto reject_callback = [&concurrent_callbacks, &unsafe_callbacks,
-                                      &cancellation_in_progress](std::exception_ptr ex) {
+                                        &cancellation_in_progress](std::exception_ptr ex) {
                     concurrent_callbacks.fetch_add(1);
 
                     // Simulate some work in callback
@@ -176,16 +178,14 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                     // Check if cancellation is still in progress
                     if (!cancellation_in_progress.load()) {
                         unsafe_callbacks.fetch_add(1);
-                        BOOST_TEST_MESSAGE("WARNING: Callback executed after cancellation completed!");
+                        BOOST_TEST_MESSAGE(
+                            "WARNING: Callback executed after cancellation completed!");
                     }
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000});
             }
 
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), concurrent_operations);
@@ -212,32 +212,39 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
             BOOST_CHECK_EQUAL(unsafe_callbacks.load(), 0);
 
             BOOST_TEST_MESSAGE("✓ Concurrent cancellation safety: " << concurrent_operations
-                              << " callbacks handled safely");
+                                                                    << " callbacks handled safely");
         }
 
         // Test 3: Future collection callback safety
         {
             BOOST_TEST_MESSAGE("Test 3: Future collection callback safety");
 
-            std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>> collection_futures;
-            std::vector<std::shared_ptr<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>> promises;
+            std::vector<
+                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                collection_futures;
+            std::vector<std::shared_ptr<
+                kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
+                promises;
             std::atomic<std::size_t> collection_callbacks{0};
             std::atomic<bool> collection_cancelled{false};
 
             // Create futures with promises
             for (std::size_t i = 0; i < future_count; ++i) {
-                auto promise = std::make_shared<kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
+                auto promise = std::make_shared<kythira::Promise<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 promises.push_back(promise);
 
-                auto future = promise->getFuture()
-                    .thenValue([&collection_callbacks, &collection_cancelled](auto result) {
-                        collection_callbacks.fetch_add(1);
-                        if (collection_cancelled.load()) {
-                            BOOST_TEST_MESSAGE("WARNING: Future callback after collection cancellation!");
-                        }
-                        return result;
-                    })
-                    .within(std::chrono::milliseconds{5000});
+                auto future =
+                    promise->getFuture()
+                        .thenValue([&collection_callbacks, &collection_cancelled](auto result) {
+                            collection_callbacks.fetch_add(1);
+                            if (collection_cancelled.load()) {
+                                BOOST_TEST_MESSAGE(
+                                    "WARNING: Future callback after collection cancellation!");
+                            }
+                            return result;
+                        })
+                        .within(std::chrono::milliseconds{5000});
 
                 collection_futures.push_back(std::move(future));
             }
@@ -247,8 +254,10 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
             // Start collection in background
             std::thread collection_thread([&]() {
                 try {
-                    auto collection_future = kythira::raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::collect_majority(
-                        std::move(collection_futures), std::chrono::milliseconds{1000});
+                    auto collection_future = kythira::raft_future_collector<
+                        kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
+                        collect_majority(std::move(collection_futures),
+                                         std::chrono::milliseconds{1000});
 
                     // This should timeout since promises are not fulfilled
                     auto results = std::move(collection_future).get();
@@ -298,8 +307,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 auto resource = std::make_shared<std::vector<std::byte>>(1024, std::byte{0x55});
                 resources.push_back(resource);
 
-                auto reject_callback = [&resource_callbacks, &resource_cleanups, resource]
-                                     (std::exception_ptr ex) {
+                auto reject_callback = [&resource_callbacks, &resource_cleanups,
+                                        resource](std::exception_ptr ex) {
                     resource_callbacks.fetch_add(1);
 
                     // Simulate resource cleanup
@@ -310,11 +319,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000});
             }
 
             BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), resource_operations);
@@ -333,11 +339,11 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
 
             // Verify resources were cleaned up
             for (const auto& resource : resources) {
-                BOOST_CHECK(resource->empty()); // Should be cleared by callback
+                BOOST_CHECK(resource->empty());  // Should be cleared by callback
             }
 
-            BOOST_TEST_MESSAGE("✓ Resource cleanup callback safety: " << resource_operations
-                              << " resources cleaned up safely");
+            BOOST_TEST_MESSAGE("✓ Resource cleanup callback safety: "
+                               << resource_operations << " resources cleaned up safely");
         }
     }
 
@@ -363,7 +369,7 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 const std::uint64_t index = (cycle * 100) + i + 1;
 
                 auto reject_callback = [&total_safe_callbacks, &total_unsafe_callbacks,
-                                      &cycle_cancelled](std::exception_ptr ex) {
+                                        &cycle_cancelled](std::exception_ptr ex) {
                     if (cycle_cancelled.load()) {
                         total_unsafe_callbacks.fetch_add(1);
                     } else {
@@ -372,11 +378,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
                 };
 
                 commit_waiter.register_operation(
-                    index,
-                    [](std::vector<std::byte>) {},
-                    std::move(reject_callback),
-                    std::chrono::milliseconds{10000}
-                );
+                    index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                    std::chrono::milliseconds{10000});
             }
 
             // Rapid cancellation
@@ -391,11 +394,11 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
         std::this_thread::sleep_for(callback_timeout);
 
         // Property: Rapid cycles should maintain callback safety
-        BOOST_CHECK_EQUAL(total_safe_callbacks.load(), 5 * 10); // 5 cycles * 10 operations
+        BOOST_CHECK_EQUAL(total_safe_callbacks.load(), 5 * 10);  // 5 cycles * 10 operations
         BOOST_CHECK_EQUAL(total_unsafe_callbacks.load(), 0);
 
         BOOST_TEST_MESSAGE("✓ Rapid cancellation cycles: " << total_safe_callbacks.load()
-                          << " callbacks executed safely");
+                                                           << " callbacks executed safely");
     }
 
     // Test 6: Callback exception safety
@@ -412,8 +415,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
         for (std::size_t i = 0; i < exception_operations; ++i) {
             const std::uint64_t index = i + 1;
 
-            auto reject_callback = [&exception_callbacks, &normal_callbacks, i]
-                                 (std::exception_ptr ex) {
+            auto reject_callback = [&exception_callbacks, &normal_callbacks,
+                                    i](std::exception_ptr ex) {
                 try {
                     if (i % 3 == 0) {
                         // Some callbacks throw exceptions
@@ -430,11 +433,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
             };
 
             commit_waiter.register_operation(
-                index,
-                [](std::vector<std::byte>) {},
-                std::move(reject_callback),
-                std::chrono::milliseconds{10000}
-            );
+                index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                std::chrono::milliseconds{10000});
         }
 
         BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), exception_operations);
@@ -449,15 +449,15 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
         BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), 0);
 
         // All callbacks should have been invoked (even those that throw)
-        auto expected_exception_callbacks = (exception_operations + 2) / 3; // Round up division
+        auto expected_exception_callbacks = (exception_operations + 2) / 3;  // Round up division
         auto expected_normal_callbacks = exception_operations - expected_exception_callbacks;
 
         BOOST_CHECK_EQUAL(exception_callbacks.load(), expected_exception_callbacks);
         BOOST_CHECK_EQUAL(normal_callbacks.load(), expected_normal_callbacks);
 
-        BOOST_TEST_MESSAGE("✓ Callback exception safety: " << exception_callbacks.load()
-                          << " exception callbacks, " << normal_callbacks.load()
-                          << " normal callbacks handled safely");
+        BOOST_TEST_MESSAGE("✓ Callback exception safety: "
+                           << exception_callbacks.load() << " exception callbacks, "
+                           << normal_callbacks.load() << " normal callbacks handled safely");
     }
 
     // Test 7: Callback ordering after cancellation
@@ -480,11 +480,8 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
             };
 
             commit_waiter.register_operation(
-                index,
-                [](std::vector<std::byte>) {},
-                std::move(reject_callback),
-                std::chrono::milliseconds{10000}
-            );
+                index, [](std::vector<std::byte>) {}, std::move(reject_callback),
+                std::chrono::milliseconds{10000});
         }
 
         BOOST_CHECK_EQUAL(commit_waiter.get_pending_count(), ordered_operations);
@@ -510,11 +507,11 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test, * bo
 
             std::sort(callback_order.begin(), callback_order.end());
             BOOST_CHECK_EQUAL_COLLECTIONS(callback_order.begin(), callback_order.end(),
-                                        expected_operations.begin(), expected_operations.end());
+                                          expected_operations.begin(), expected_operations.end());
         }
 
         BOOST_TEST_MESSAGE("✓ Callback ordering: All " << ordered_operations
-                          << " callbacks executed in safe order");
+                                                       << " callbacks executed in safe order");
     }
 
     BOOST_TEST_MESSAGE("All callback safety after cancellation property tests passed!");

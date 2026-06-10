@@ -32,10 +32,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -56,7 +56,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * including buffers, timers, and network handles SHALL be properly deallocated to prevent
  * resource leaks.
  */
-BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -135,10 +135,12 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::t
             auto after_cleanup_info = tracker.get_connection_info(local_endpoint);
             if (!after_cleanup_info.has_value()) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection removed from tracker after cleanup");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Connection removed from tracker after cleanup");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection still in tracker after cleanup");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Connection still in tracker after cleanup");
             }
 
             // Test Case 4: Verify get_all_connections doesn't include cleaned up connection
@@ -153,10 +155,12 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::t
 
             if (!found_after_cleanup) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection not in get_all_connections after cleanup");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Connection not in get_all_connections after cleanup");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection still in get_all_connections after cleanup");
+                BOOST_TEST_MESSAGE(
+                    "Iteration " << i << ": Connection still in get_all_connections after cleanup");
             }
 
             // Test Case 5: Establish another connection and test error state cleanup
@@ -198,7 +202,8 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::t
             auto after_error_cleanup = tracker.get_connection_info(local_endpoint2);
             if (!after_error_cleanup.has_value()) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Error connection cleaned up successfully");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Error connection cleaned up successfully");
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Error connection not cleaned up");
@@ -236,7 +241,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::t
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Not all multiple connections tracked: "
-                                 << tracked_count << "/" << endpoints.size());
+                                                << tracked_count << "/" << endpoints.size());
             }
 
             // Close and clean up all connections
@@ -259,7 +264,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, * boost::unit_test::t
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Some connections not cleaned up: "
-                                 << remaining_count << " remaining");
+                                                << remaining_count << " remaining");
             }
 
         } catch (const std::exception& e) {

@@ -8,8 +8,8 @@
 #include <iostream>
 
 namespace {
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_port = 9091;
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_port = 9091;
 }
 
 BOOST_AUTO_TEST_SUITE(httplib_basic_understanding_tests)
@@ -59,7 +59,8 @@ BOOST_AUTO_TEST_CASE(test_basic_server_behavior) {
         auto result = client.Post("/echo", test_body, "text/plain");
 
         if (!result) {
-            std::cout << "Request failed with error: " << httplib::to_string(result.error()) << std::endl;
+            std::cout << "Request failed with error: " << httplib::to_string(result.error())
+                      << std::endl;
             BOOST_TEST(false, "Request failed");
         } else {
             std::cout << "Response status: " << result->status << std::endl;

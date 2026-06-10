@@ -6,8 +6,8 @@
 #include "state_machine_test_utilities.hpp"
 
 namespace {
-    constexpr std::size_t num_iterations = 100;
-    constexpr std::size_t num_commands = 50;
+constexpr std::size_t num_iterations = 100;
+constexpr std::size_t num_commands = 50;
 }
 
 // Test key-value state machine for commutativity testing
@@ -27,16 +27,15 @@ public:
         std::string key(reinterpret_cast<const char*>(command.data() + offset), key_len);
         offset += key_len;
 
-        if (cmd_type == 0) { // GET
+        if (cmd_type == 0) {  // GET
             auto it = _store.find(key);
             if (it != _store.end()) {
                 return std::vector<std::byte>(
                     reinterpret_cast<const std::byte*>(it->second.data()),
-                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size())
-                );
+                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size()));
             }
             return {};
-        } else if (cmd_type == 1) { // SET
+        } else if (cmd_type == 1) {  // SET
             std::uint32_t val_len;
             std::memcpy(&val_len, command.data() + offset, sizeof(val_len));
             offset += sizeof(val_len);
@@ -44,7 +43,7 @@ public:
             std::string value(reinterpret_cast<const char*>(command.data() + offset), val_len);
             _store[key] = value;
             return {};
-        } else if (cmd_type == 2) { // DELETE
+        } else if (cmd_type == 2) {  // DELETE
             _store.erase(key);
             return {};
         }
@@ -55,13 +54,11 @@ public:
     auto get_state() const -> std::vector<std::byte> {
         std::vector<std::byte> state;
         for (const auto& [key, value] : _store) {
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(key.data()),
-                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(key.data()),
+                         reinterpret_cast<const std::byte*>(key.data() + key.size()));
             state.push_back(std::byte{0});
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(value.data()),
-                        reinterpret_cast<const std::byte*>(value.data() + value.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(value.data()),
+                         reinterpret_cast<const std::byte*>(value.data() + value.size()));
             state.push_back(std::byte{0});
         }
         return state;
@@ -76,12 +73,12 @@ public:
             while (offset < snapshot.size() && snapshot[offset] != std::byte{0}) {
                 key += static_cast<char>(snapshot[offset++]);
             }
-            offset++; // Skip null terminator
+            offset++;  // Skip null terminator
 
             while (offset < snapshot.size() && snapshot[offset] != std::byte{0}) {
                 value += static_cast<char>(snapshot[offset++]);
             }
-            offset++; // Skip null terminator
+            offset++;  // Skip null terminator
 
             if (!key.empty()) {
                 _store[key] = value;
@@ -93,7 +90,7 @@ private:
     std::map<std::string, std::string> _store;
 };
 
-BOOST_AUTO_TEST_CASE(property_independent_operations_commute, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_independent_operations_commute, *boost::unit_test::timeout(60)) {
     // Property: Operations on different keys should commute
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -121,7 +118,7 @@ BOOST_AUTO_TEST_CASE(property_independent_operations_commute, * boost::unit_test
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_dependent_operations_do_not_commute, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_dependent_operations_do_not_commute, *boost::unit_test::timeout(60)) {
     // Property: Operations on the same key may not commute
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -152,7 +149,7 @@ BOOST_AUTO_TEST_CASE(property_dependent_operations_do_not_commute, * boost::unit
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_read_operations_always_commute, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_read_operations_always_commute, *boost::unit_test::timeout(60)) {
     // Property: Read operations should always commute with each other
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -178,7 +175,7 @@ BOOST_AUTO_TEST_CASE(property_read_operations_always_commute, * boost::unit_test
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_delete_idempotent, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_delete_idempotent, *boost::unit_test::timeout(60)) {
     // Property: Deleting a non-existent key is idempotent
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -200,7 +197,7 @@ BOOST_AUTO_TEST_CASE(property_delete_idempotent, * boost::unit_test::timeout(60)
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_concurrent_writes_converge, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_concurrent_writes_converge, *boost::unit_test::timeout(90)) {
     // Property: Concurrent writes to different keys should converge to same state
     std::random_device rd;
     std::mt19937 rng(rd());

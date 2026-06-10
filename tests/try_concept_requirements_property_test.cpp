@@ -13,18 +13,19 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
 }
 
 /**
  * **Feature: folly-concepts-enhancement, Property 10: Try concept requirements**
  *
- * Property: For any type that satisfies try_type concept, it should provide value, exception, hasValue, and hasException methods
+ * Property: For any type that satisfies try_type concept, it should provide value, exception,
+ * hasValue, and hasException methods
  * **Validates: Requirements 9.1, 9.2, 9.3, 9.4**
  */
-BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, *boost::unit_test::timeout(90)) {
     // Test with different value types to ensure the concept works generically
 
     // Test 1: kythira::Try<int> should satisfy try_type concept
@@ -55,7 +56,8 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test:
 
     // Test 2: kythira::Try<std::string> should satisfy try_type concept
     {
-        static_assert(try_type<Try<std::string>, std::string>, "Try<std::string> should satisfy try_type concept");
+        static_assert(try_type<Try<std::string>, std::string>,
+                      "Try<std::string> should satisfy try_type concept");
 
         std::string test_str = "hello world";
         Try<std::string> try_with_string(test_str);
@@ -77,14 +79,16 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test:
     // Test 4: Verify folly::Try<T> also satisfies the concept (if it has the right interface)
     {
         // Note: folly::Try uses hasValue() and hasException() which matches our concept
-        static_assert(try_type<folly::Try<int>, int>, "folly::Try<int> should satisfy try_type concept");
+        static_assert(try_type<folly::Try<int>, int>,
+                      "folly::Try<int> should satisfy try_type concept");
 
         folly::Try<int> folly_try_with_value(test_value);
         BOOST_CHECK(folly_try_with_value.hasValue());
         BOOST_CHECK(!folly_try_with_value.hasException());
         BOOST_CHECK_EQUAL(folly_try_with_value.value(), test_value);
 
-        folly::Try<int> folly_try_with_exception{folly::exception_wrapper(std::runtime_error(test_string))};
+        folly::Try<int> folly_try_with_exception{
+            folly::exception_wrapper(std::runtime_error(test_string))};
         BOOST_CHECK(!folly_try_with_exception.hasValue());
         BOOST_CHECK(folly_try_with_exception.hasException());
         BOOST_CHECK_THROW(folly_try_with_exception.value(), std::exception);
@@ -92,7 +96,7 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test:
 
     // Test 5: Property-based testing - generate multiple test cases
     for (int i = 0; i < 100; ++i) {
-        int random_value = i * 7 + 13; // Simple pseudo-random generation
+        int random_value = i * 7 + 13;  // Simple pseudo-random generation
 
         // Test value case
         Try<int> try_val(random_value);
@@ -101,7 +105,8 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test:
         BOOST_CHECK_EQUAL(try_val.value(), random_value);
 
         // Test exception case
-        auto ex = folly::exception_wrapper{std::runtime_error("test exception " + std::to_string(i))};
+        auto ex =
+            folly::exception_wrapper{std::runtime_error("test exception " + std::to_string(i))};
         Try<int> try_ex{ex};
         BOOST_CHECK(!try_ex.hasValue());
         BOOST_CHECK(try_ex.hasException());
@@ -112,10 +117,11 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, * boost::unit_test:
 /**
  * Test that types NOT satisfying try_type concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(try_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(try_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!try_type<int, int>, "int should not satisfy try_type concept");
-    static_assert(!try_type<std::string, std::string>, "std::string should not satisfy try_type concept");
+    static_assert(!try_type<std::string, std::string>,
+                  "std::string should not satisfy try_type concept");
 
     // Test that types missing required methods don't satisfy the concept
     struct IncompleteType {
@@ -123,13 +129,14 @@ BOOST_AUTO_TEST_CASE(try_concept_rejection_test, * boost::unit_test::timeout(30)
         // Missing hasValue(), hasException(), exception()
     };
 
-    static_assert(!try_type<IncompleteType, int>, "IncompleteType should not satisfy try_type concept");
+    static_assert(!try_type<IncompleteType, int>,
+                  "IncompleteType should not satisfy try_type concept");
 }
 
 /**
  * Test const correctness requirements of the try_type concept
  */
-BOOST_AUTO_TEST_CASE(try_concept_const_correctness_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(try_concept_const_correctness_test, *boost::unit_test::timeout(30)) {
     Try<int> try_with_value(test_value);
 
     // Test non-const access
@@ -151,7 +158,7 @@ BOOST_AUTO_TEST_CASE(try_concept_const_correctness_test, * boost::unit_test::tim
 /**
  * Test exception wrapper integration as specified in requirements
  */
-BOOST_AUTO_TEST_CASE(try_concept_exception_wrapper_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(try_concept_exception_wrapper_test, *boost::unit_test::timeout(30)) {
     // Test with folly::exception_wrapper
     auto ex_wrapper = folly::exception_wrapper{std::runtime_error(test_string)};
     Try<int> try_with_ex{ex_wrapper};

@@ -5,17 +5,17 @@
 using namespace kythira::examples;
 
 namespace {
-    auto make_command(const std::string& cmd) -> std::vector<std::byte> {
-        return {reinterpret_cast<const std::byte*>(cmd.data()),
-                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
-    }
-
-    auto parse_result(const std::vector<std::byte>& result) -> std::string {
-        return std::string(reinterpret_cast<const char*>(result.data()), result.size());
-    }
+auto make_command(const std::string& cmd) -> std::vector<std::byte> {
+    return {reinterpret_cast<const std::byte*>(cmd.data()),
+            reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
 }
 
-BOOST_AUTO_TEST_CASE(test_register_write, * boost::unit_test::timeout(10)) {
+auto parse_result(const std::vector<std::byte>& result) -> std::string {
+    return std::string(reinterpret_cast<const char*>(result.data()), result.size());
+}
+}
+
+BOOST_AUTO_TEST_CASE(test_register_write, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     auto cmd = make_command("WRITE hello");
@@ -29,7 +29,7 @@ BOOST_AUTO_TEST_CASE(test_register_write, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(parse_result(result), "hello");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_read, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_read, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Write a value
@@ -43,7 +43,7 @@ BOOST_AUTO_TEST_CASE(test_register_read, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(parse_result(result), "test");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_multiple_writes, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_multiple_writes, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     auto cmd = make_command("WRITE value1");
@@ -61,7 +61,7 @@ BOOST_AUTO_TEST_CASE(test_register_multiple_writes, * boost::unit_test::timeout(
     BOOST_CHECK_EQUAL(parse_result(result), "value3");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_cas_success, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_cas_success, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Write initial value
@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE(test_register_cas_success, * boost::unit_test::timeout(10))
     BOOST_CHECK_EQUAL(parse_result(result), "new");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_cas_failure, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_cas_failure, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Write initial value
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(test_register_cas_failure, * boost::unit_test::timeout(10))
     BOOST_CHECK_EQUAL(parse_result(result), "current");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_cas_empty_to_value, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_cas_empty_to_value, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // CAS from empty to value - the split function will parse this as ["", "first"]
@@ -128,7 +128,7 @@ BOOST_AUTO_TEST_CASE(test_register_cas_empty_to_value, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(parse_result(result), "first");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_snapshot_round_trip, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_snapshot_round_trip, *boost::unit_test::timeout(10)) {
     register_state_machine sm1;
 
     // Write some values
@@ -152,7 +152,7 @@ BOOST_AUTO_TEST_CASE(test_register_snapshot_round_trip, * boost::unit_test::time
     BOOST_CHECK_EQUAL(parse_result(result), "final");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_empty_snapshot, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_empty_snapshot, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Restore from empty snapshot
@@ -165,7 +165,7 @@ BOOST_AUTO_TEST_CASE(test_register_empty_snapshot, * boost::unit_test::timeout(1
     BOOST_CHECK_EQUAL(parse_result(result), "");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_concurrent_access_simulation, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_concurrent_access_simulation, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Simulate concurrent writes (applied in order by Raft)
@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(test_register_concurrent_access_simulation, * boost::unit_t
     BOOST_CHECK_EQUAL(parse_result(result), "client3");
 }
 
-BOOST_AUTO_TEST_CASE(test_register_invalid_command, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_register_invalid_command, *boost::unit_test::timeout(10)) {
     register_state_machine sm;
 
     // Empty command

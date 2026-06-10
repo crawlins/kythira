@@ -10,23 +10,24 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr std::chrono::milliseconds default_latency{10};
-    constexpr double min_reliability = 0.0;
-    constexpr double max_reliability = 1.0;
-    constexpr std::size_t test_iterations = 100;
-    constexpr const char* node_prefix = "node_";
+constexpr std::chrono::milliseconds default_latency{10};
+constexpr double min_reliability = 0.0;
+constexpr double max_reliability = 1.0;
+constexpr std::size_t test_iterations = 100;
+constexpr const char* node_prefix = "node_";
 }
 
 /**
  * **Feature: network-simulator, Property 2: Topology Edge Reliability Preservation**
  *
  * Property: For any pair of nodes and configured reliability value, when an edge is added
- * to the topology with that reliability, querying the topology SHALL return the same reliability value.
+ * to the topology with that reliability, querying the topology SHALL return the same reliability
+ * value.
  *
  * **Validates: Requirements 1.2, 11.3, 11.6**
  */
-BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_reliability_preservation_property_test, * boost::unit_test::timeout(60)) {
-
+BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_reliability_preservation_property_test,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -81,7 +82,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_reliability_preservation_pr
 /**
  * Test edge case: Zero reliability (always fails)
  */
-BOOST_AUTO_TEST_CASE(topology_edge_zero_reliability_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_zero_reliability_preservation, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "node_a";
@@ -101,7 +102,8 @@ BOOST_AUTO_TEST_CASE(topology_edge_zero_reliability_preservation, * boost::unit_
 /**
  * Test edge case: Perfect reliability (always succeeds)
  */
-BOOST_AUTO_TEST_CASE(topology_edge_perfect_reliability_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_perfect_reliability_preservation,
+                     *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "node_x";
@@ -121,7 +123,8 @@ BOOST_AUTO_TEST_CASE(topology_edge_perfect_reliability_preservation, * boost::un
 /**
  * Test multiple edges with different reliabilities
  */
-BOOST_AUTO_TEST_CASE(topology_multiple_edges_reliability_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_multiple_edges_reliability_preservation,
+                     *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::vector<std::string> nodes = {"node_1", "node_2", "node_3", "node_4"};
@@ -148,7 +151,7 @@ BOOST_AUTO_TEST_CASE(topology_multiple_edges_reliability_preservation, * boost::
 /**
  * Test precision preservation for small reliability values
  */
-BOOST_AUTO_TEST_CASE(topology_edge_small_reliability_precision, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_small_reliability_precision, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "precision_from";
@@ -169,7 +172,7 @@ BOOST_AUTO_TEST_CASE(topology_edge_small_reliability_precision, * boost::unit_te
 /**
  * Test precision preservation for reliability values close to 1.0
  */
-BOOST_AUTO_TEST_CASE(topology_edge_high_reliability_precision, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_high_reliability_precision, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "high_from";

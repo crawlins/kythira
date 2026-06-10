@@ -8,17 +8,17 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_pool_size = 1024 * 1024; // 1MB
-    constexpr std::size_t test_block_size = 4096; // 4KB
-    constexpr std::size_t test_allocation_size = 2048; // 2KB
-    constexpr auto test_timeout_seconds = 30;
+constexpr std::size_t test_pool_size = 1024 * 1024;  // 1MB
+constexpr std::size_t test_block_size = 4096;        // 4KB
+constexpr std::size_t test_allocation_size = 2048;   // 2KB
+constexpr auto test_timeout_seconds = 30;
 }
 
 /**
  * Test 1: Validate total_size tracking
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_total_size_tracking, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_total_size_tracking, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     auto metrics = pool.get_metrics();
@@ -44,7 +44,8 @@ BOOST_AUTO_TEST_CASE(test_total_size_tracking, * boost::unit_test::timeout(test_
  * Test 2: Validate allocated_size tracking in real-time
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_allocated_size_real_time_tracking, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_allocated_size_real_time_tracking,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Initial state: no allocations
@@ -56,41 +57,42 @@ BOOST_AUTO_TEST_CASE(test_allocated_size_real_time_tracking, * boost::unit_test:
     BOOST_CHECK(ptr1 != nullptr);
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocated_size, test_block_size); // One block allocated
+    BOOST_CHECK_EQUAL(metrics.allocated_size, test_block_size);  // One block allocated
 
     // Allocate second block
     void* ptr2 = pool.allocate(test_allocation_size);
     BOOST_CHECK(ptr2 != nullptr);
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size); // Two blocks allocated
+    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size);  // Two blocks allocated
 
     // Allocate third block
     void* ptr3 = pool.allocate(test_allocation_size);
     BOOST_CHECK(ptr3 != nullptr);
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocated_size, 3 * test_block_size); // Three blocks allocated
+    BOOST_CHECK_EQUAL(metrics.allocated_size, 3 * test_block_size);  // Three blocks allocated
 
     // Deallocate one block
     pool.deallocate(ptr2);
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size); // Two blocks remaining
+    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size);  // Two blocks remaining
 
     // Deallocate remaining blocks
     pool.deallocate(ptr1);
     pool.deallocate(ptr3);
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocated_size, 0); // All deallocated
+    BOOST_CHECK_EQUAL(metrics.allocated_size, 0);  // All deallocated
 }
 
 /**
  * Test 3: Validate free_size tracking in real-time
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_free_size_real_time_tracking, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_free_size_real_time_tracking,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Initial state: all free
@@ -132,7 +134,8 @@ BOOST_AUTO_TEST_CASE(test_free_size_real_time_tracking, * boost::unit_test::time
  * Test 4: Validate allocation_count monitoring
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_allocation_count_monitoring, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_allocation_count_monitoring,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Initial state
@@ -156,14 +159,15 @@ BOOST_AUTO_TEST_CASE(test_allocation_count_monitoring, * boost::unit_test::timeo
     }
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.allocation_count, 10); // Count remains
+    BOOST_CHECK_EQUAL(metrics.allocation_count, 10);  // Count remains
 }
 
 /**
  * Test 5: Validate deallocation_count monitoring
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_deallocation_count_monitoring, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_deallocation_count_monitoring,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Allocate blocks
@@ -196,7 +200,8 @@ BOOST_AUTO_TEST_CASE(test_deallocation_count_monitoring, * boost::unit_test::tim
  * Test 6: Validate peak_usage tracking for capacity planning
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_peak_usage_capacity_planning, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_peak_usage_capacity_planning,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Initial peak usage
@@ -219,14 +224,14 @@ BOOST_AUTO_TEST_CASE(test_peak_usage_capacity_planning, * boost::unit_test::time
     // Deallocate one block - peak should remain
     pool.deallocate(ptr2);
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.peak_usage, 3 * test_block_size); // Peak unchanged
-    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size); // Current usage decreased
+    BOOST_CHECK_EQUAL(metrics.peak_usage, 3 * test_block_size);      // Peak unchanged
+    BOOST_CHECK_EQUAL(metrics.allocated_size, 2 * test_block_size);  // Current usage decreased
 
     // Allocate more to exceed previous peak
     void* ptr4 = pool.allocate(test_allocation_size);
     void* ptr5 = pool.allocate(test_allocation_size);
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.peak_usage, 4 * test_block_size); // New peak
+    BOOST_CHECK_EQUAL(metrics.peak_usage, 4 * test_block_size);  // New peak
 
     // Clean up
     pool.deallocate(ptr1);
@@ -243,14 +248,15 @@ BOOST_AUTO_TEST_CASE(test_peak_usage_capacity_planning, * boost::unit_test::time
  * Test 7: Validate fragmentation_ratio calculation for pool health
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_fragmentation_ratio_pool_health, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_fragmentation_ratio_pool_health,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     std::size_t total_blocks = test_pool_size / test_block_size;
 
     // No allocations: high fragmentation (all blocks free)
     auto metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.fragmentation_ratio, 100); // 100% free
+    BOOST_CHECK_EQUAL(metrics.fragmentation_ratio, 100);  // 100% free
 
     // Allocate half the blocks
     std::vector<void*> ptrs;
@@ -273,7 +279,7 @@ BOOST_AUTO_TEST_CASE(test_fragmentation_ratio_pool_health, * boost::unit_test::t
     }
 
     metrics = pool.get_metrics();
-    BOOST_CHECK_EQUAL(metrics.fragmentation_ratio, 0); // 0% free (no fragmentation)
+    BOOST_CHECK_EQUAL(metrics.fragmentation_ratio, 0);  // 0% free (no fragmentation)
 
     // Deallocate some blocks to create fragmentation
     for (size_t i = 0; i < ptrs.size(); i += 2) {
@@ -290,7 +296,8 @@ BOOST_AUTO_TEST_CASE(test_fragmentation_ratio_pool_health, * boost::unit_test::t
  * Test 8: Validate get_pool_metrics() method exposure
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_get_pool_metrics_method, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_get_pool_metrics_method,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Verify get_metrics() returns complete metrics structure
@@ -315,7 +322,8 @@ BOOST_AUTO_TEST_CASE(test_get_pool_metrics_method, * boost::unit_test::timeout(t
  * Test 9: Validate metrics consistency under concurrent operations
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     std::atomic<bool> stop{false};
@@ -370,7 +378,8 @@ BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent, * boost::unit_test::ti
  * Test 10: Validate metrics reset behavior
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_metrics_reset_behavior, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_metrics_reset_behavior,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Allocate and build up metrics
@@ -411,7 +420,8 @@ BOOST_AUTO_TEST_CASE(test_metrics_reset_behavior, * boost::unit_test::timeout(te
  * Test 11: Validate metrics accuracy with various allocation patterns
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_metrics_accuracy_various_patterns, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_metrics_accuracy_various_patterns,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Pattern 1: Sequential allocation
@@ -458,7 +468,8 @@ BOOST_AUTO_TEST_CASE(test_metrics_accuracy_various_patterns, * boost::unit_test:
  * Test 12: Validate metrics for capacity planning scenarios
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(test_metrics_capacity_planning, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_metrics_capacity_planning,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     std::size_t total_blocks = test_pool_size / test_block_size;

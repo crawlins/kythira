@@ -12,13 +12,13 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30000};
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_bind_port = 18683;
-    constexpr const char* test_cert_file = "/tmp/test_cert.pem";
-    constexpr const char* test_key_file = "/tmp/test_key.pem";
-    constexpr const char* test_ca_file = "/tmp/test_ca.pem";
+constexpr std::size_t test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_bind_port = 18683;
+constexpr const char* test_cert_file = "/tmp/test_cert.pem";
+constexpr const char* test_key_file = "/tmp/test_key.pem";
+constexpr const char* test_ca_file = "/tmp/test_ca.pem";
 }
 
 /**
@@ -29,7 +29,8 @@ namespace {
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
+                     *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -47,30 +48,28 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication, * boost::un
 
         // Vary configuration based on test variant
         switch (config_variant) {
-            case 0: // Standard certificate configuration
+            case 0:  // Standard certificate configuration
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
                 break;
 
-            case 1: // Certificate with custom cipher suites
+            case 1:  // Certificate with custom cipher suites
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-                };
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
                 break;
 
-            case 2: // Certificate without CA file (self-signed)
+            case 2:  // Certificate without CA file (self-signed)
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.verify_peer_cert = false;
                 break;
 
-            case 3: // Certificate with session resumption disabled
+            case 3:  // Certificate with session resumption disabled
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
@@ -83,26 +82,22 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication, * boost::un
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}, // CoAPS endpoint
-            {2, "coaps://127.0.0.1:5685"}
-        };
+            {1, "coaps://127.0.0.1:5684"},  // CoAPS endpoint
+            {2, "coaps://127.0.0.1:5685"}};
 
         // Test 1: Client DTLS context setup should succeed
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with DTLS
+            BOOST_CHECK(true);  // Client created successfully with DTLS
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS client setup should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL("DTLS client setup should not throw unexpected exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Server DTLS context setup
@@ -118,19 +113,18 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication, * boost::un
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server created successfully with DTLS
+            BOOST_CHECK(true);  // Server created successfully with DTLS
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS server setup should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL("DTLS server setup should not throw unexpected exceptions: " +
+                       std::string(e.what()));
         }
     }
 }
@@ -143,7 +137,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication, * boost::un
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -179,22 +173,18 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, * boost::unit_test:
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}, // CoAPS endpoint
-            {2, "coaps://127.0.0.1:5685"}
-        };
+            {1, "coaps://127.0.0.1:5684"},  // CoAPS endpoint
+            {2, "coaps://127.0.0.1:5685"}};
 
         // Test 1: Client PSK DTLS context setup should succeed
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with PSK DTLS
+            BOOST_CHECK(true);  // Client created successfully with PSK DTLS
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("PSK DTLS client setup should not throw exceptions: " + std::string(e.what()));
+            BOOST_FAIL("PSK DTLS client setup should not throw exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Server PSK DTLS context setup
@@ -207,15 +197,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, * boost::unit_test:
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server created successfully with PSK DTLS
+            BOOST_CHECK(true);  // Server created successfully with PSK DTLS
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("PSK DTLS server setup should not throw exceptions: " + std::string(e.what()));
+            BOOST_FAIL("PSK DTLS server setup should not throw exceptions: " +
+                       std::string(e.what()));
         }
     }
 }
@@ -228,7 +217,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, * boost::unit_test:
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -242,8 +231,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         // Test various invalid DTLS configurations
         coap_client_config client_config;
@@ -251,43 +239,45 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         bool should_throw = false;
 
         switch (error_type) {
-            case 0: // DTLS enabled but no authentication method
+            case 0:  // DTLS enabled but no authentication method
                 // Leave cert_file, key_file, psk_identity, and psk_key empty
                 should_throw = true;
                 break;
 
-            case 1: // PSK key too short
+            case 1:  // PSK key too short
                 client_config.psk_identity = "test_identity";
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}}; // Only 2 bytes
+                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}};  // Only 2 bytes
                 should_throw = true;
                 break;
 
-            case 2: // PSK key too long
+            case 2:  // PSK key too long
                 client_config.psk_identity = "test_identity";
-                client_config.psk_key.resize(128, std::byte{0xAB}); // 128 bytes (too long)
+                client_config.psk_key.resize(128, std::byte{0xAB});  // 128 bytes (too long)
                 should_throw = true;
                 break;
 
-            case 3: // PSK identity too long
-                client_config.psk_identity = std::string(200, 'x'); // 200 characters (too long)
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+            case 3:                                                  // PSK identity too long
+                client_config.psk_identity = std::string(200, 'x');  // 200 characters (too long)
+                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                         std::byte{0x04}};
                 should_throw = true;
                 break;
 
-            case 4: // Valid PSK configuration
+            case 4:  // Valid PSK configuration
                 client_config.psk_identity = "valid_identity";
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                         std::byte{0x04}};
                 should_throw = false;
                 break;
 
-            case 5: // Valid certificate configuration (files may not exist)
+            case 5:  // Valid certificate configuration (files may not exist)
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
-                should_throw = false; // May throw due to missing files, but config is valid
+                should_throw = false;  // May throw due to missing files, but config is valid
                 break;
 
-            case 6: // DTLS disabled (should not throw)
+            case 6:  // DTLS disabled (should not throw)
                 client_config.enable_dtls = false;
                 should_throw = false;
                 break;
@@ -296,11 +286,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
         // Test client configuration validation
         if (should_throw) {
             try {
-                coap_client<test_types> client(
-                    node_endpoints,
-                    client_config,
-                    metrics
-                );
+                coap_client<test_types> client(node_endpoints, client_config, metrics);
 
                 BOOST_FAIL("Invalid DTLS configuration should throw an exception");
 
@@ -314,13 +300,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
             }
         } else {
             try {
-                coap_client<test_types> client(
-                    node_endpoints,
-                    client_config,
-                    metrics
-                );
+                coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-                BOOST_CHECK(true); // Valid configuration should succeed
+                BOOST_CHECK(true);  // Valid configuration should succeed
 
             } catch (const coap_security_error& e) {
                 // May throw if certificate files don't exist, which is acceptable in tests
@@ -342,7 +324,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -355,7 +337,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, * boost::unit_test::timeout(3
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "test_session_resumption";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                 std::byte{0x04}};
         client_config.enable_session_resumption = true;
         client_config.max_sessions = session_count * 2;
 
@@ -370,32 +353,26 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, * boost::unit_test::timeout(3
 
         // Test 1: Client with session resumption enabled
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with session resumption
+            BOOST_CHECK(true);  // Client created successfully with session resumption
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS client with session resumption should not throw: " + std::string(e.what()));
+            BOOST_FAIL("DTLS client with session resumption should not throw: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Client with session resumption disabled
         client_config.enable_session_resumption = false;
 
         try {
-            coap_client<test_types> client_no_resumption(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client_no_resumption(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully without session resumption
+            BOOST_CHECK(true);  // Client created successfully without session resumption
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS client without session resumption should not throw: " + std::string(e.what()));
+            BOOST_FAIL("DTLS client without session resumption should not throw: " +
+                       std::string(e.what()));
         }
 
         // Test 3: Server with session resumption
@@ -409,15 +386,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, * boost::unit_test::timeout(3
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server created successfully with session resumption
+            BOOST_CHECK(true);  // Server created successfully with session resumption
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS server with session resumption should not throw: " + std::string(e.what()));
+            BOOST_FAIL("DTLS server with session resumption should not throw: " +
+                       std::string(e.what()));
         }
     }
 }
@@ -430,7 +406,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, * boost::unit_test::timeout(3
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -443,8 +419,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, * boost::unit_test::t
         "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
         "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
         "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
-        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
-    };
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"};
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         std::size_t cipher_count = cipher_count_dist(gen);
@@ -469,25 +444,21 @@ BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, * boost::unit_test::t
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         // Test 1: Client with custom cipher suites
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with custom cipher suites
+            BOOST_CHECK(true);  // Client created successfully with custom cipher suites
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS client with cipher suites should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL("DTLS client with cipher suites should not throw unexpected exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Server with matching cipher suites
@@ -501,39 +472,36 @@ BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, * boost::unit_test::t
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server created successfully with custom cipher suites
+            BOOST_CHECK(true);  // Server created successfully with custom cipher suites
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS server with cipher suites should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL("DTLS server with cipher suites should not throw unexpected exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 3: Client with empty cipher suites (should use defaults)
         client_config.cipher_suites.clear();
 
         try {
-            coap_client<test_types> client_default(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client_default(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with default cipher suites
+            BOOST_CHECK(true);  // Client created successfully with default cipher suites
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("DTLS client with default cipher suites should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL(
+                "DTLS client with default cipher suites should not throw unexpected exceptions: " +
+                std::string(e.what()));
         }
     }
 }

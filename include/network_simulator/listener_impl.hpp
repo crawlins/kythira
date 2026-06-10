@@ -9,8 +9,7 @@
 
 namespace network_simulator {
 
-template<typename Types>
-auto Listener<Types>::accept() -> future_connection_type {
+template<typename Types> auto Listener<Types>::accept() -> future_connection_type {
     std::unique_lock lock(_queue_mutex);
 
     if (!_listening.load()) {
@@ -35,9 +34,8 @@ auto Listener<Types>::accept() -> future_connection_type {
     }
 
     // No pending connections - wait indefinitely using condition variable
-    _connection_available.wait(lock, [this] {
-        return !_pending_connections.empty() || !_listening.load();
-    });
+    _connection_available.wait(
+        lock, [this] { return !_pending_connections.empty() || !_listening.load(); });
 
     // Check if listener was closed while waiting
     if (!_listening.load()) {
@@ -96,9 +94,8 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
     }
 
     // No pending connections - wait with timeout using condition variable
-    bool connection_available = _connection_available.wait_for(lock, timeout, [this] {
-        return !_pending_connections.empty() || !_listening.load();
-    });
+    bool connection_available = _connection_available.wait_for(
+        lock, timeout, [this] { return !_pending_connections.empty() || !_listening.load(); });
 
     // Check if listener was closed while waiting
     if (!_listening.load()) {
@@ -131,8 +128,7 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
 #endif
 }
 
-template<typename Types>
-auto Listener<Types>::close() -> void {
+template<typename Types> auto Listener<Types>::close() -> void {
     std::unique_lock lock(_queue_mutex);
     _listening.store(false);
 
@@ -140,13 +136,13 @@ auto Listener<Types>::close() -> void {
     _connection_available.notify_all();
 }
 
-template<typename Types>
-auto Listener<Types>::is_listening() const -> bool {
+template<typename Types> auto Listener<Types>::is_listening() const -> bool {
     return _listening.load();
 }
 
 template<typename Types>
-auto Listener<Types>::queue_pending_connection(std::shared_ptr<connection_type> connection) -> void {
+auto Listener<Types>::queue_pending_connection(std::shared_ptr<connection_type> connection)
+    -> void {
     std::unique_lock lock(_queue_mutex);
 
     if (_listening.load()) {
@@ -156,4 +152,4 @@ auto Listener<Types>::queue_pending_connection(std::shared_ptr<connection_type> 
     }
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

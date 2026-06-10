@@ -30,8 +30,7 @@ namespace kythira {
 
 // Raft node class template with unified types parameter
 // Implements the Raft consensus algorithm with pluggable components
-template<raft_types Types = default_raft_types>
-class node {
+template<raft_types Types = default_raft_types> class node {
 public:
     // Type aliases extracted from unified Types parameter
     using types = Types;
@@ -68,31 +67,21 @@ public:
     using serial_number_t = std::uint64_t;
 
     // Constructor with unified types
-    node(
-        node_id_type node_id,
-        network_client_type network_client,
-        network_server_type network_server,
-        persistence_engine_type persistence,
-        logger_type logger,
-        metrics_type metrics,
-        membership_manager_type membership,
-        configuration_type config = configuration_type{}
-    );
+    node(node_id_type node_id, network_client_type network_client,
+         network_server_type network_server, persistence_engine_type persistence,
+         logger_type logger, metrics_type metrics, membership_manager_type membership,
+         configuration_type config = configuration_type{});
 
     // Client operations - return template future types
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
         -> future_type;
 
     // Client operation with session tracking for duplicate detection
-    auto submit_command_with_session(
-        client_id_t client_id,
-        serial_number_t serial_number,
-        const std::vector<std::byte>& command,
-        std::chrono::milliseconds timeout
-    ) -> future_type;
+    auto submit_command_with_session(client_id_t client_id, serial_number_t serial_number,
+                                     const std::vector<std::byte>& command,
+                                     std::chrono::milliseconds timeout) -> future_type;
 
-    auto read_state(std::chrono::milliseconds timeout)
-        -> future_type;
+    auto read_state(std::chrono::milliseconds timeout) -> future_type;
 
     // Node lifecycle
     auto start() -> void;
@@ -153,8 +142,8 @@ private:
     // CandidateId that received vote in current term (or null if none)
     std::optional<node_id_type> _voted_for;
 
-    // Log entries; each entry contains command for state machine, and term when entry was received by leader
-    // First index is 1
+    // Log entries; each entry contains command for state machine, and term when entry was received
+    // by leader First index is 1
     std::vector<log_entry_type> _log;
 
     // ========================================================================
@@ -164,7 +153,8 @@ private:
     // Index of highest log entry known to be committed (initialized to 0, increases monotonically)
     log_index_type _commit_index;
 
-    // Index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+    // Index of highest log entry applied to state machine (initialized to 0, increases
+    // monotonically)
     log_index_type _last_applied;
 
     // Current server state (follower, candidate, or leader)
@@ -224,7 +214,8 @@ private:
     using commit_waiter_t = kythira::commit_waiter<log_index_type>;
     commit_waiter_t _commit_waiter;
 
-    // Configuration synchronizer for safe configuration changes (always uses Future<bool> internally)
+    // Configuration synchronizer for safe configuration changes (always uses Future<bool>
+    // internally)
     using config_synchronizer_t = kythira::configuration_synchronizer<node_id_type, log_index_type>;
     config_synchronizer_t _config_synchronizer;
 
@@ -294,9 +285,12 @@ private:
     // ========================================================================
 
     // RPC handlers
-    auto handle_request_vote(const request_vote_request_type& request) -> request_vote_response_type;
-    auto handle_append_entries(const append_entries_request_type& request) -> append_entries_response_type;
-    auto handle_install_snapshot(const install_snapshot_request_type& request) -> install_snapshot_response_type;
+    auto handle_request_vote(const request_vote_request_type& request)
+        -> request_vote_response_type;
+    auto handle_append_entries(const append_entries_request_type& request)
+        -> append_entries_response_type;
+    auto handle_install_snapshot(const install_snapshot_request_type& request)
+        -> install_snapshot_response_type;
 
     // Election and timing
     auto randomize_election_timeout() -> void;
@@ -335,22 +329,16 @@ private:
 
 // Raft node concept - defines the interface for a Raft node using unified types
 template<typename N>
-concept raft_node = requires(
-    N node,
-    const std::vector<std::byte>& command,
-    std::chrono::milliseconds timeout,
-    typename N::node_id_type node_id
-) {
+concept raft_node = requires(N node, const std::vector<std::byte>& command,
+                             std::chrono::milliseconds timeout, typename N::node_id_type node_id) {
     // Type requirements
     typename N::types;
     typename N::future_type;
     typename N::node_id_type;
 
     // Client operations - return template future types
-    { node.submit_command(command, timeout) }
-        -> std::same_as<typename N::future_type>;
-    { node.read_state(timeout) }
-        -> std::same_as<typename N::future_type>;
+    { node.submit_command(command, timeout) } -> std::same_as<typename N::future_type>;
+    { node.read_state(timeout) } -> std::same_as<typename N::future_type>;
 
     // Node lifecycle
     { node.start() } -> std::same_as<void>;
@@ -377,39 +365,32 @@ concept raft_node = requires(
 
 template<raft_types Types>
 
-node<Types>::node(
-    node_id_type node_id,
-    network_client_type network_client,
-    network_server_type network_server,
-    persistence_engine_type persistence,
-    logger_type logger,
-    metrics_type metrics,
-    membership_manager_type membership,
-    configuration_type config
-)
-    : _current_term{0}
-    , _voted_for{std::nullopt}
-    , _log{}
-    , _commit_index{0}
-    , _last_applied{0}
-    , _state{kythira::server_state::follower}
-    , _next_index{}
-    , _match_index{}
-    , _network_client{std::move(network_client)}
-    , _network_server{std::move(network_server)}
-    , _persistence{std::move(persistence)}
-    , _logger{std::move(logger)}
-    , _metrics{std::move(metrics)}
-    , _membership{std::move(membership)}
-    , _state_machine{}
-    , _config{config}
-    , _node_id{node_id}
-    , _configuration{}
-    , _election_timeout{config.election_timeout_min()}
-    , _heartbeat_interval{config.heartbeat_interval()}
-    , _last_heartbeat{std::chrono::steady_clock::now()}
-    , _rng{std::random_device{}()}
-{
+node<Types>::node(node_id_type node_id, network_client_type network_client,
+                  network_server_type network_server, persistence_engine_type persistence,
+                  logger_type logger, metrics_type metrics, membership_manager_type membership,
+                  configuration_type config)
+    : _current_term{0},
+      _voted_for{std::nullopt},
+      _log{},
+      _commit_index{0},
+      _last_applied{0},
+      _state{kythira::server_state::follower},
+      _next_index{},
+      _match_index{},
+      _network_client{std::move(network_client)},
+      _network_server{std::move(network_server)},
+      _persistence{std::move(persistence)},
+      _logger{std::move(logger)},
+      _metrics{std::move(metrics)},
+      _membership{std::move(membership)},
+      _state_machine{},
+      _config{config},
+      _node_id{node_id},
+      _configuration{},
+      _election_timeout{config.election_timeout_min()},
+      _heartbeat_interval{config.heartbeat_interval()},
+      _last_heartbeat{std::chrono::steady_clock::now()},
+      _rng{std::random_device{}()} {
     // Initialize configuration with just this node
     _configuration._nodes = {_node_id};
     _configuration._is_joint_consensus = false;
@@ -419,10 +400,8 @@ node<Types>::node(
     randomize_election_timeout();
 
     // Log node creation
-    _logger.info("Raft node created", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"state", "follower"}
-    });
+    _logger.info("Raft node created",
+                 {{"node_id", node_id_to_string(_node_id)}, {"state", "follower"}});
 }
 
 template<raft_types Types>
@@ -434,10 +413,8 @@ auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& nod
     _configuration._is_joint_consensus = false;
     _configuration._old_nodes = std::nullopt;
 
-    _logger.info("Cluster configuration updated", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"num_nodes", std::to_string(node_ids.size())}
-    });
+    _logger.info("Cluster configuration updated", {{"node_id", node_id_to_string(_node_id)},
+                                                   {"num_nodes", std::to_string(node_ids.size())}});
 }
 
 template<raft_types Types>
@@ -478,26 +455,22 @@ template<raft_types Types>
 auto node<Types>::randomize_election_timeout() -> void {
     // Randomize election timeout between min and max to prevent split votes
     std::uniform_int_distribution<std::chrono::milliseconds::rep> dist(
-        _config.election_timeout_min().count(),
-        _config.election_timeout_max().count()
-    );
+        _config.election_timeout_min().count(), _config.election_timeout_max().count());
     _election_timeout = std::chrono::milliseconds{dist(_rng)};
 }
 
 // Stub implementations for methods to be implemented in later tasks
 template<raft_types Types>
-auto node<Types>::submit_command(
-    const std::vector<std::byte>& command,
-    std::chrono::milliseconds timeout
-) -> future_type {
+auto node<Types>::submit_command(const std::vector<std::byte>& command,
+                                 std::chrono::milliseconds timeout) -> future_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
     // Only leaders can accept client commands
     if (_state != kythira::server_state::leader) {
-        _logger.debug("Rejected command submission: not leader", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}
-        });
+        _logger.debug(
+            "Rejected command submission: not leader",
+            {{"node_id", node_id_to_string(_node_id)},
+             {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}});
 
         // Emit command rejection metric
         _metrics.set_metric_name("command_rejected");
@@ -509,18 +482,15 @@ auto node<Types>::submit_command(
         // Return a failed future
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::make_exception_ptr(
-            std::runtime_error("Not leader")));
+        promise.setException(std::make_exception_ptr(std::runtime_error("Not leader")));
         return future;
     }
 
     auto submission_start = std::chrono::steady_clock::now();
 
-    _logger.info("Received client command", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"term", std::to_string(_current_term)},
-        {"command_size", std::to_string(command.size())}
-    });
+    _logger.info("Received client command", {{"node_id", node_id_to_string(_node_id)},
+                                             {"term", std::to_string(_current_term)},
+                                             {"command_size", std::to_string(command.size())}});
 
     // Emit command received metric
     _metrics.set_metric_name("command_received");
@@ -531,20 +501,15 @@ auto node<Types>::submit_command(
 
     // Step 1: Append command to leader's log
     log_entry_type entry{
-        ._term = _current_term,
-        ._index = get_last_log_index() + 1,
-        ._command = command
-    };
+        ._term = _current_term, ._index = get_last_log_index() + 1, ._command = command};
 
     try {
         _persistence.append_log_entry(entry);
         _log.push_back(entry);
 
-        _logger.debug("Appended command to log", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"log_index", std::to_string(entry._index)},
-            {"term", std::to_string(entry._term)}
-        });
+        _logger.debug("Appended command to log", {{"node_id", node_id_to_string(_node_id)},
+                                                  {"log_index", std::to_string(entry._index)},
+                                                  {"term", std::to_string(entry._term)}});
 
         // Emit log append metric
         _metrics.set_metric_name("log_entry_appended");
@@ -554,10 +519,8 @@ auto node<Types>::submit_command(
         _metrics.emit();
 
     } catch (const std::exception& e) {
-        _logger.error("Failed to append command to log", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"error", e.what()}
-        });
+        _logger.error("Failed to append command to log",
+                      {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
 
         // Emit log append failure metric
         _metrics.set_metric_name("log_append_failed");
@@ -587,17 +550,15 @@ auto node<Types>::submit_command(
     _commit_waiter.register_operation(
         entry_index,
         // Fulfill callback - called when entry is committed and applied
-        [shared_promise, entry_index, node_id, &logger, &metrics, submission_start]
-        (std::vector<std::byte> result) mutable {
+        [shared_promise, entry_index, node_id, &logger, &metrics,
+         submission_start](std::vector<std::byte> result) mutable {
             auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - submission_start
-            );
+                std::chrono::steady_clock::now() - submission_start);
 
-            logger.info("Command committed and applied", {
-                {"node_id", node_id_to_string(node_id)},
-                {"log_index", std::to_string(entry_index)},
-                {"latency_ms", std::to_string(latency.count())}
-            });
+            logger.info("Command committed and applied",
+                        {{"node_id", node_id_to_string(node_id)},
+                         {"log_index", std::to_string(entry_index)},
+                         {"latency_ms", std::to_string(latency.count())}});
 
             // Emit command completion metric
             metrics.set_metric_name("command_completed");
@@ -615,16 +576,14 @@ auto node<Types>::submit_command(
             shared_promise->setValue(std::move(result));
         },
         // Reject callback - called on timeout or leadership loss
-        [shared_promise, entry_index, node_id, &logger, &metrics]
-        (std::exception_ptr ex) mutable {
+        [shared_promise, entry_index, node_id, &logger, &metrics](std::exception_ptr ex) mutable {
             try {
                 std::rethrow_exception(ex);
             } catch (const kythira::commit_timeout_exception<log_index_type>& e) {
-                logger.warning("Command timed out waiting for commit", {
-                    {"node_id", node_id_to_string(node_id)},
-                    {"log_index", std::to_string(entry_index)},
-                    {"timeout_ms", std::to_string(e.get_timeout().count())}
-                });
+                logger.warning("Command timed out waiting for commit",
+                               {{"node_id", node_id_to_string(node_id)},
+                                {"log_index", std::to_string(entry_index)},
+                                {"timeout_ms", std::to_string(e.get_timeout().count())}});
 
                 // Emit timeout metric
                 metrics.set_metric_name("command_timeout");
@@ -634,12 +593,11 @@ auto node<Types>::submit_command(
                 metrics.emit();
 
             } catch (const kythira::leadership_lost_exception<term_id_type>& e) {
-                logger.warning("Command cancelled due to leadership loss", {
-                    {"node_id", node_id_to_string(node_id)},
-                    {"log_index", std::to_string(entry_index)},
-                    {"old_term", std::to_string(e.get_old_term())},
-                    {"new_term", std::to_string(e.get_new_term())}
-                });
+                logger.warning("Command cancelled due to leadership loss",
+                               {{"node_id", node_id_to_string(node_id)},
+                                {"log_index", std::to_string(entry_index)},
+                                {"old_term", std::to_string(e.get_old_term())},
+                                {"new_term", std::to_string(e.get_new_term())}});
 
                 // Emit leadership loss metric
                 metrics.set_metric_name("command_leadership_lost");
@@ -649,11 +607,9 @@ auto node<Types>::submit_command(
                 metrics.emit();
 
             } catch (const std::exception& e) {
-                logger.warning("Command cancelled", {
-                    {"node_id", node_id_to_string(node_id)},
-                    {"log_index", std::to_string(entry_index)},
-                    {"error", e.what()}
-                });
+                logger.warning("Command cancelled", {{"node_id", node_id_to_string(node_id)},
+                                                     {"log_index", std::to_string(entry_index)},
+                                                     {"error", e.what()}});
 
                 // Emit cancellation metric
                 metrics.set_metric_name("command_cancelled");
@@ -665,14 +621,12 @@ auto node<Types>::submit_command(
 
             shared_promise->setException(ex);
         },
-        timeout > std::chrono::milliseconds{0} ? std::optional{timeout} : std::nullopt
-    );
+        timeout > std::chrono::milliseconds{0} ? std::optional{timeout} : std::nullopt);
 
-    _logger.debug("Registered operation with CommitWaiter", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"log_index", std::to_string(entry_index)},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
+    _logger.debug("Registered operation with CommitWaiter",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"log_index", std::to_string(entry_index)},
+                   {"timeout_ms", std::to_string(timeout.count())}});
 
     // Step 3: Trigger replication to followers
     // Call replicate_to_followers() for immediate replication
@@ -692,26 +646,21 @@ auto node<Types>::submit_command(
 }
 
 template<raft_types Types>
-auto node<Types>::submit_command_with_session(
-    client_id_t client_id,
-    serial_number_t serial_number,
-    const std::vector<std::byte>& command,
-    std::chrono::milliseconds timeout
-) -> future_type {
+auto node<Types>::submit_command_with_session(client_id_t client_id, serial_number_t serial_number,
+                                              const std::vector<std::byte>& command,
+                                              std::chrono::milliseconds timeout) -> future_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
     // Only leaders can accept client commands
     if (_state != kythira::server_state::leader) {
-        _logger.debug("Rejected command with session: not leader", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"client_id", std::to_string(client_id)},
-            {"serial_number", std::to_string(serial_number)}
-        });
+        _logger.debug("Rejected command with session: not leader",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"client_id", std::to_string(client_id)},
+                       {"serial_number", std::to_string(serial_number)}});
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::make_exception_ptr(
-            std::runtime_error("Not leader")));
+        promise.setException(std::make_exception_ptr(std::runtime_error("Not leader")));
         return future;
     }
 
@@ -721,11 +670,10 @@ auto node<Types>::submit_command_with_session(
     if (session_it == _client_sessions.end()) {
         // New client - must start with serial number 1
         if (serial_number != 1) {
-            _logger.warning("Rejected command: new client must start with serial number 1", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"client_id", std::to_string(client_id)},
-                {"serial_number", std::to_string(serial_number)}
-            });
+            _logger.warning("Rejected command: new client must start with serial number 1",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"client_id", std::to_string(client_id)},
+                             {"serial_number", std::to_string(serial_number)}});
 
             _metrics.set_metric_name("session_validation_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -743,22 +691,19 @@ auto node<Types>::submit_command_with_session(
         // Create new session for this client
         _client_sessions[client_id] = client_session{};
 
-        _logger.debug("Created new client session", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"client_id", std::to_string(client_id)}
-        });
+        _logger.debug("Created new client session", {{"node_id", node_id_to_string(_node_id)},
+                                                     {"client_id", std::to_string(client_id)}});
     } else {
         // Existing client - validate serial number
         auto& session = session_it->second;
 
         if (serial_number <= session.last_serial_number) {
             // Duplicate or old request - return cached response
-            _logger.debug("Returning cached response for duplicate/old request", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"client_id", std::to_string(client_id)},
-                {"serial_number", std::to_string(serial_number)},
-                {"last_serial_number", std::to_string(session.last_serial_number)}
-            });
+            _logger.debug("Returning cached response for duplicate/old request",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"client_id", std::to_string(client_id)},
+                           {"serial_number", std::to_string(serial_number)},
+                           {"last_serial_number", std::to_string(session.last_serial_number)}});
 
             _metrics.set_metric_name("duplicate_request_detected");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -771,12 +716,12 @@ auto node<Types>::submit_command_with_session(
             return future;
         } else if (serial_number > session.last_serial_number + 1) {
             // Skipped serial numbers - reject
-            _logger.warning("Rejected command: skipped serial numbers", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"client_id", std::to_string(client_id)},
-                {"serial_number", std::to_string(serial_number)},
-                {"expected_serial_number", std::to_string(session.last_serial_number + 1)}
-            });
+            _logger.warning(
+                "Rejected command: skipped serial numbers",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"client_id", std::to_string(client_id)},
+                 {"serial_number", std::to_string(serial_number)},
+                 {"expected_serial_number", std::to_string(session.last_serial_number + 1)}});
 
             _metrics.set_metric_name("session_validation_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -786,9 +731,9 @@ auto node<Types>::submit_command_with_session(
 
             promise_type promise;
             auto future = promise.getFuture();
-            promise.setException(std::make_exception_ptr(
-                std::invalid_argument(std::format("Serial numbers must be sequential. Expected {}, got {}",
-                    session.last_serial_number + 1, serial_number))));
+            promise.setException(std::make_exception_ptr(std::invalid_argument(
+                std::format("Serial numbers must be sequential. Expected {}, got {}",
+                            session.last_serial_number + 1, serial_number))));
             return future;
         }
 
@@ -796,11 +741,10 @@ auto node<Types>::submit_command_with_session(
     }
 
     // Valid request - submit command and cache response
-    _logger.debug("Processing command with session", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"client_id", std::to_string(client_id)},
-        {"serial_number", std::to_string(serial_number)}
-    });
+    _logger.debug("Processing command with session",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"client_id", std::to_string(client_id)},
+                   {"serial_number", std::to_string(serial_number)}});
 
     // Release lock before calling submit_command (which will acquire it again)
     lock.~lock_guard();
@@ -817,7 +761,9 @@ auto node<Types>::submit_command_with_session(
     auto& metrics_ref = _metrics;
     auto node_id = _node_id;
 
-    return command_future.thenValue([shared_client_id, shared_serial_number, &sessions_ref, &mutex_ref, &logger_ref, &metrics_ref, node_id](std::vector<std::byte> result) {
+    return command_future.thenValue([shared_client_id, shared_serial_number, &sessions_ref,
+                                     &mutex_ref, &logger_ref, &metrics_ref,
+                                     node_id](std::vector<std::byte> result) {
         // Cache the response
         std::lock_guard<std::mutex> cache_lock(mutex_ref);
 
@@ -825,11 +771,10 @@ auto node<Types>::submit_command_with_session(
         session.last_serial_number = shared_serial_number;
         session.last_response = result;
 
-        logger_ref.debug("Cached response for client session", {
-            {"node_id", node_id_to_string(node_id)},
-            {"client_id", std::to_string(shared_client_id)},
-            {"serial_number", std::to_string(shared_serial_number)}
-        });
+        logger_ref.debug("Cached response for client session",
+                         {{"node_id", node_id_to_string(node_id)},
+                          {"client_id", std::to_string(shared_client_id)},
+                          {"serial_number", std::to_string(shared_serial_number)}});
 
         metrics_ref.set_metric_name("session_response_cached");
         metrics_ref.add_dimension("node_id", node_id_to_string(node_id));
@@ -841,19 +786,18 @@ auto node<Types>::submit_command_with_session(
 }
 
 template<raft_types Types>
-auto node<Types>::read_state(
-    std::chrono::milliseconds timeout
-) -> future_type {
+auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     auto start_time = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.debug("Received read_state request", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"state", _state == kythira::server_state::leader ? "leader" :
-                  (_state == kythira::server_state::follower ? "follower" : "candidate")},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
+    _logger.debug(
+        "Received read_state request",
+        {{"node_id", node_id_to_string(_node_id)},
+         {"state", _state == kythira::server_state::leader
+                       ? "leader"
+                       : (_state == kythira::server_state::follower ? "follower" : "candidate")},
+         {"timeout_ms", std::to_string(timeout.count())}});
 
     // Emit metrics for read request received
     _metrics.set_metric_name("raft_read_request_received");
@@ -863,10 +807,10 @@ auto node<Types>::read_state(
 
     // Only leaders can serve linearizable reads
     if (_state != kythira::server_state::leader) {
-        _logger.debug("Rejected read request: not leader", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}
-        });
+        _logger.debug(
+            "Rejected read request: not leader",
+            {{"node_id", node_id_to_string(_node_id)},
+             {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}});
 
         _metrics.set_metric_name("raft_read_request_rejected");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -883,24 +827,23 @@ auto node<Types>::read_state(
 
     // For single-node cluster, return immediately (no need for heartbeat confirmation)
     if (_configuration.nodes().size() == 1) {
-        _logger.debug("Single-node cluster, returning state immediately", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"commit_index", std::to_string(_commit_index)},
-            {"last_applied", std::to_string(_last_applied)}
-        });
+        _logger.debug("Single-node cluster, returning state immediately",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"commit_index", std::to_string(_commit_index)},
+                       {"last_applied", std::to_string(_last_applied)}});
 
         // Get current state from state machine
         try {
             auto state = _state_machine.get_state();
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            _logger.debug("Read request completed (single-node)", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"state_size", std::to_string(state.size())},
-                {"duration_ms", std::to_string(duration.count())}
-            });
+            _logger.debug("Read request completed (single-node)",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"state_size", std::to_string(state.size())},
+                           {"duration_ms", std::to_string(duration.count())}});
 
             _metrics.set_metric_name("raft_read_request_success");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -919,10 +862,8 @@ auto node<Types>::read_state(
             return future;
 
         } catch (const std::exception& e) {
-            _logger.error("Failed to get state from state machine", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"error", e.what()}
-            });
+            _logger.error("Failed to get state from state machine",
+                          {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
 
             _metrics.set_metric_name("raft_read_request_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -938,11 +879,10 @@ auto node<Types>::read_state(
     }
 
     // For multi-node clusters, verify leadership by collecting majority heartbeat responses
-    _logger.debug("Multi-node cluster, sending heartbeats to verify leadership", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"follower_count", std::to_string(_configuration.nodes().size() - 1)},
-        {"timeout_ms", std::to_string(timeout.count())}
-    });
+    _logger.debug("Multi-node cluster, sending heartbeats to verify leadership",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"follower_count", std::to_string(_configuration.nodes().size() - 1)},
+                   {"timeout_ms", std::to_string(timeout.count())}});
 
     // Send heartbeats to all followers and collect responses
     std::vector<kythira::Future<append_entries_response_type>> heartbeat_futures;
@@ -971,21 +911,15 @@ auto node<Types>::read_state(
             prev_log_index,
             prev_log_term,
             std::vector<log_entry_type>{},  // Empty entries for heartbeat
-            _commit_index
-        };
+            _commit_index};
 
-        _logger.debug("Sending heartbeat for read verification", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"target", node_id_to_string(follower_id)},
-            {"term", std::to_string(_current_term)}
-        });
+        _logger.debug("Sending heartbeat for read verification",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"target", node_id_to_string(follower_id)},
+                       {"term", std::to_string(_current_term)}});
 
         // Send heartbeat with timeout
-        auto heartbeat_future = _network_client.send_append_entries(
-            follower_id,
-            request,
-            timeout
-        );
+        auto heartbeat_future = _network_client.send_append_entries(follower_id, request, timeout);
 
         heartbeat_futures.push_back(std::move(heartbeat_future));
     }
@@ -995,157 +929,153 @@ auto node<Types>::read_state(
     auto node_id = _node_id;
 
     return kythira::raft_future_collector<append_entries_response_type>::collect_majority(
-        std::move(heartbeat_futures),
-        timeout
-    ).thenValue([this, current_term, node_id, start_time](std::vector<append_entries_response_type> responses) -> std::vector<std::byte> {
-        std::lock_guard<std::mutex> lock(_mutex);
+               std::move(heartbeat_futures), timeout)
+        .thenValue(
+            [this, current_term, node_id, start_time](
+                std::vector<append_entries_response_type> responses) -> std::vector<std::byte> {
+                std::lock_guard<std::mutex> lock(_mutex);
 
-        _logger.debug("Received majority heartbeat responses", {
-            {"node_id", node_id_to_string(node_id)},
-            {"response_count", std::to_string(responses.size())}
-        });
+                _logger.debug("Received majority heartbeat responses",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"response_count", std::to_string(responses.size())}});
 
-        // Check if we're still the leader and term hasn't changed
-        if (_state != kythira::server_state::leader) {
-            _logger.warning("Lost leadership during read operation", {
-                {"node_id", node_id_to_string(node_id)},
-                {"current_state", _state == kythira::server_state::follower ? "follower" : "candidate"}
-            });
+                // Check if we're still the leader and term hasn't changed
+                if (_state != kythira::server_state::leader) {
+                    _logger.warning(
+                        "Lost leadership during read operation",
+                        {{"node_id", node_id_to_string(node_id)},
+                         {"current_state",
+                          _state == kythira::server_state::follower ? "follower" : "candidate"}});
 
-            _metrics.set_metric_name("raft_read_request_aborted");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_dimension("reason", "leadership_lost");
-            _metrics.add_one();
-            _metrics.emit();
+                    _metrics.set_metric_name("raft_read_request_aborted");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("reason", "leadership_lost");
+                    _metrics.add_one();
+                    _metrics.emit();
 
-            throw kythira::leadership_lost_exception(current_term, _current_term);
-        }
+                    throw kythira::leadership_lost_exception(current_term, _current_term);
+                }
 
-        if (_current_term != current_term) {
-            _logger.warning("Term changed during read operation", {
-                {"node_id", node_id_to_string(node_id)},
-                {"old_term", std::to_string(current_term)},
-                {"new_term", std::to_string(_current_term)}
-            });
+                if (_current_term != current_term) {
+                    _logger.warning("Term changed during read operation",
+                                    {{"node_id", node_id_to_string(node_id)},
+                                     {"old_term", std::to_string(current_term)},
+                                     {"new_term", std::to_string(_current_term)}});
 
-            _metrics.set_metric_name("raft_read_request_aborted");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_dimension("reason", "term_changed");
-            _metrics.add_one();
-            _metrics.emit();
+                    _metrics.set_metric_name("raft_read_request_aborted");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("reason", "term_changed");
+                    _metrics.add_one();
+                    _metrics.emit();
 
-            throw kythira::leadership_lost_exception(current_term, _current_term);
-        }
+                    throw kythira::leadership_lost_exception(current_term, _current_term);
+                }
 
-        // Check for higher terms in responses
-        for (const auto& response : responses) {
-            if (response.term() > _current_term) {
-                _logger.info("Discovered higher term in heartbeat response, stepping down", {
-                    {"node_id", node_id_to_string(node_id)},
-                    {"current_term", std::to_string(_current_term)},
-                    {"response_term", std::to_string(response.term())}
-                });
+                // Check for higher terms in responses
+                for (const auto& response : responses) {
+                    if (response.term() > _current_term) {
+                        _logger.info("Discovered higher term in heartbeat response, stepping down",
+                                     {{"node_id", node_id_to_string(node_id)},
+                                      {"current_term", std::to_string(_current_term)},
+                                      {"response_term", std::to_string(response.term())}});
 
-                become_follower(response.term());
+                        become_follower(response.term());
 
-                _metrics.set_metric_name("raft_read_request_aborted");
+                        _metrics.set_metric_name("raft_read_request_aborted");
+                        _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                        _metrics.add_dimension("reason", "higher_term_discovered");
+                        _metrics.add_one();
+                        _metrics.emit();
+
+                        throw kythira::leadership_lost_exception(current_term, response.term());
+                    }
+                }
+
+                // Leadership confirmed by majority, return current state
+                _logger.debug("Leadership confirmed, returning state",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"commit_index", std::to_string(_commit_index)},
+                               {"last_applied", std::to_string(_last_applied)}});
+
+                try {
+                    auto state = _state_machine.get_state();
+
+                    auto end_time = std::chrono::steady_clock::now();
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        end_time - start_time);
+
+                    _logger.info("Read request completed successfully",
+                                 {{"node_id", node_id_to_string(node_id)},
+                                  {"state_size", std::to_string(state.size())},
+                                  {"duration_ms", std::to_string(duration.count())},
+                                  {"heartbeat_responses", std::to_string(responses.size())}});
+
+                    _metrics.set_metric_name("raft_read_request_success");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("cluster_type", "multi_node");
+                    _metrics.add_one();
+                    _metrics.emit();
+
+                    _metrics.set_metric_name("raft_read_latency");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_duration(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+                    _metrics.emit();
+
+                    return state;
+
+                } catch (const std::exception& e) {
+                    _logger.error(
+                        "Failed to get state from state machine after leadership confirmation",
+                        {{"node_id", node_id_to_string(node_id)}, {"error", e.what()}});
+
+                    _metrics.set_metric_name("raft_read_request_failed");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("reason", "state_machine_error");
+                    _metrics.add_one();
+                    _metrics.emit();
+
+                    throw;
+                }
+            })
+        .thenError(
+            [this, node_id, start_time](folly::exception_wrapper ew) -> std::vector<std::byte> {
+                std::lock_guard<std::mutex> lock(_mutex);
+
+                auto end_time = std::chrono::steady_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+                _logger.error("Read request failed",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"error", ew.what().toStdString()},
+                               {"duration_ms", std::to_string(duration.count())}});
+
+                _metrics.set_metric_name("raft_read_request_failed");
                 _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                _metrics.add_dimension("reason", "higher_term_discovered");
+                _metrics.add_dimension("reason", "heartbeat_collection_failed");
                 _metrics.add_one();
                 _metrics.emit();
 
-                throw kythira::leadership_lost_exception(current_term, response.term());
-            }
-        }
+                // Re-throw the exception
+                ew.throw_exception();
 
-        // Leadership confirmed by majority, return current state
-        _logger.debug("Leadership confirmed, returning state", {
-            {"node_id", node_id_to_string(node_id)},
-            {"commit_index", std::to_string(_commit_index)},
-            {"last_applied", std::to_string(_last_applied)}
-        });
-
-        try {
-            auto state = _state_machine.get_state();
-
-            auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-            _logger.info("Read request completed successfully", {
-                {"node_id", node_id_to_string(node_id)},
-                {"state_size", std::to_string(state.size())},
-                {"duration_ms", std::to_string(duration.count())},
-                {"heartbeat_responses", std::to_string(responses.size())}
+                // This line is unreachable but needed for compilation
+                return std::vector<std::byte>{};
             });
-
-            _metrics.set_metric_name("raft_read_request_success");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_dimension("cluster_type", "multi_node");
-            _metrics.add_one();
-            _metrics.emit();
-
-            _metrics.set_metric_name("raft_read_latency");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
-            _metrics.emit();
-
-            return state;
-
-        } catch (const std::exception& e) {
-            _logger.error("Failed to get state from state machine after leadership confirmation", {
-                {"node_id", node_id_to_string(node_id)},
-                {"error", e.what()}
-            });
-
-            _metrics.set_metric_name("raft_read_request_failed");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_dimension("reason", "state_machine_error");
-            _metrics.add_one();
-            _metrics.emit();
-
-            throw;
-        }
-    }).thenError([this, node_id, start_time](folly::exception_wrapper ew) -> std::vector<std::byte> {
-        std::lock_guard<std::mutex> lock(_mutex);
-
-        auto end_time = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-        _logger.error("Read request failed", {
-            {"node_id", node_id_to_string(node_id)},
-            {"error", ew.what().toStdString()},
-            {"duration_ms", std::to_string(duration.count())}
-        });
-
-        _metrics.set_metric_name("raft_read_request_failed");
-        _metrics.add_dimension("node_id", node_id_to_string(node_id));
-        _metrics.add_dimension("reason", "heartbeat_collection_failed");
-        _metrics.add_one();
-        _metrics.emit();
-
-        // Re-throw the exception
-        ew.throw_exception();
-
-        // This line is unreachable but needed for compilation
-        return std::vector<std::byte>{};
-    });
 }
 
 template<raft_types Types>
 
-
 auto node<Types>::start() -> void {
     // Check if already running
     if (_running.load(std::memory_order_acquire)) {
-        _logger.warning("Attempted to start node that is already running", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.warning("Attempted to start node that is already running",
+                        {{"node_id", node_id_to_string(_node_id)}});
         return;
     }
 
-    _logger.info("Starting Raft node", {
-        {"node_id", node_id_to_string(_node_id)}
-    });
+    _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)
     initialize_from_storage();
@@ -1165,11 +1095,10 @@ auto node<Types>::start() -> void {
     // Mark as running
     _running.store(true, std::memory_order_release);
 
-    _logger.info("Raft node started successfully", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"state", "follower"},
-        {"current_term", std::to_string(_current_term)}
-    });
+    _logger.info("Raft node started successfully",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"state", "follower"},
+                  {"current_term", std::to_string(_current_term)}});
 }
 
 template<raft_types Types>
@@ -1177,15 +1106,12 @@ template<raft_types Types>
 auto node<Types>::stop() -> void {
     // Check if already stopped
     if (!_running.load(std::memory_order_acquire)) {
-        _logger.warning("Attempted to stop node that is not running", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.warning("Attempted to stop node that is not running",
+                        {{"node_id", node_id_to_string(_node_id)}});
         return;
     }
 
-    _logger.info("Stopping Raft node", {
-        {"node_id", node_id_to_string(_node_id)}
-    });
+    _logger.info("Stopping Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Mark as not running
     _running.store(false, std::memory_order_release);
@@ -1196,9 +1122,7 @@ auto node<Types>::stop() -> void {
     // Stop the network server
     _network_server.stop();
 
-    _logger.info("Raft node stopped successfully", {
-        {"node_id", node_id_to_string(_node_id)}
-    });
+    _logger.info("Raft node stopped successfully", {{"node_id", node_id_to_string(_node_id)}});
 }
 
 template<raft_types Types>
@@ -1206,19 +1130,18 @@ template<raft_types Types>
 auto node<Types>::add_server(node_id_type new_node) -> future_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.info("Add server requested", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"new_node", node_id_to_string(new_node)},
-        {"current_state", _state == kythira::server_state::leader ? "leader" :
-                         _state == kythira::server_state::candidate ? "candidate" : "follower"}
-    });
+    _logger.info("Add server requested",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"new_node", node_id_to_string(new_node)},
+                  {"current_state", _state == kythira::server_state::leader      ? "leader"
+                                    : _state == kythira::server_state::candidate ? "candidate"
+                                                                                 : "follower"}});
 
     // Only leaders can add servers
     if (_state != kythira::server_state::leader) {
-        _logger.warning("Cannot add server: not leader", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"new_node", node_id_to_string(new_node)}
-        });
+        _logger.warning(
+            "Cannot add server: not leader",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1228,10 +1151,9 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Check if configuration change is already in progress
     if (_config_synchronizer.is_configuration_change_in_progress()) {
-        _logger.warning("Cannot add server: configuration change already in progress", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"new_node", node_id_to_string(new_node)}
-        });
+        _logger.warning(
+            "Cannot add server: configuration change already in progress",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1241,10 +1163,9 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Validate new node is not already in configuration
     if (_membership.is_node_in_configuration(new_node, _configuration)) {
-        _logger.warning("Cannot add server: already in configuration", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"new_node", node_id_to_string(new_node)}
-        });
+        _logger.warning(
+            "Cannot add server: already in configuration",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1254,10 +1175,9 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Validate new node with membership manager
     if (!_membership.validate_new_node(new_node)) {
-        _logger.warning("Cannot add server: validation failed", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"new_node", node_id_to_string(new_node)}
-        });
+        _logger.warning(
+            "Cannot add server: validation failed",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1265,20 +1185,17 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
         return future;
     }
 
-    _logger.info("Starting server addition with joint consensus", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"new_node", node_id_to_string(new_node)}
-    });
+    _logger.info(
+        "Starting server addition with joint consensus",
+        {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
     // Create new configuration with added node
     std::vector<node_id_type> new_nodes = _configuration.nodes();
     new_nodes.push_back(new_node);
 
-    cluster_configuration_type new_config{
-        new_nodes,
-        false,  // Not joint consensus yet
-        std::nullopt
-    };
+    cluster_configuration_type new_config{new_nodes,
+                                          false,  // Not joint consensus yet
+                                          std::nullopt};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
@@ -1296,12 +1213,11 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Return the future from configuration synchronizer
     // It will complete when the configuration change is committed
-    return config_future.thenTry([this, new_node, old_config = _configuration, new_config](auto try_result) {
+    return config_future.thenTry([this, new_node, old_config = _configuration,
+                                  new_config](auto try_result) {
         if (try_result.hasException()) {
-            _logger.error("Add server failed", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"new_node", node_id_to_string(new_node)}
-            });
+            _logger.error("Add server failed", {{"node_id", node_id_to_string(_node_id)},
+                                                {"new_node", node_id_to_string(new_node)}});
 
             _metrics.set_metric_name("raft_add_server_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1312,10 +1228,9 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
             std::rethrow_exception(try_result.exception());
         }
 
-        _logger.info("Add server completed successfully", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"new_node", node_id_to_string(new_node)}
-        });
+        _logger.info(
+            "Add server completed successfully",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
 
         // Notify membership manager of configuration change
         _membership.handle_cluster_membership_change(old_config, new_config);
@@ -1330,25 +1245,23 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     });
 }
 
-
 template<raft_types Types>
 
 auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.info("Remove server requested", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"old_node", node_id_to_string(old_node)},
-        {"current_state", _state == kythira::server_state::leader ? "leader" :
-                         _state == kythira::server_state::candidate ? "candidate" : "follower"}
-    });
+    _logger.info("Remove server requested",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"old_node", node_id_to_string(old_node)},
+                  {"current_state", _state == kythira::server_state::leader      ? "leader"
+                                    : _state == kythira::server_state::candidate ? "candidate"
+                                                                                 : "follower"}});
 
     // Only leaders can remove servers
     if (_state != kythira::server_state::leader) {
-        _logger.warning("Cannot remove server: not leader", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_node", node_id_to_string(old_node)}
-        });
+        _logger.warning(
+            "Cannot remove server: not leader",
+            {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1358,10 +1271,9 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Check if configuration change is already in progress
     if (_config_synchronizer.is_configuration_change_in_progress()) {
-        _logger.warning("Cannot remove server: configuration change already in progress", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_node", node_id_to_string(old_node)}
-        });
+        _logger.warning(
+            "Cannot remove server: configuration change already in progress",
+            {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1371,10 +1283,9 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Validate server is in current configuration
     if (!_membership.is_node_in_configuration(old_node, _configuration)) {
-        _logger.warning("Cannot remove server: not in configuration", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_node", node_id_to_string(old_node)}
-        });
+        _logger.warning(
+            "Cannot remove server: not in configuration",
+            {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1384,10 +1295,9 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Check if removing this server would leave cluster with no nodes
     if (_configuration.nodes().size() <= 1) {
-        _logger.warning("Cannot remove server: would leave cluster empty", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_node", node_id_to_string(old_node)}
-        });
+        _logger.warning(
+            "Cannot remove server: would leave cluster empty",
+            {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
 
         promise_type promise;
         auto future = promise.getFuture();
@@ -1397,11 +1307,10 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     bool removing_self = (old_node == _node_id);
 
-    _logger.info("Starting server removal with joint consensus", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"old_node", node_id_to_string(old_node)},
-        {"removing_self", removing_self ? "true" : "false"}
-    });
+    _logger.info("Starting server removal with joint consensus",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"old_node", node_id_to_string(old_node)},
+                  {"removing_self", removing_self ? "true" : "false"}});
 
     // Create new configuration without the removed node
     std::vector<node_id_type> new_nodes;
@@ -1411,11 +1320,9 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
         }
     }
 
-    cluster_configuration_type new_config{
-        new_nodes,
-        false,  // Not joint consensus yet
-        std::nullopt
-    };
+    cluster_configuration_type new_config{new_nodes,
+                                          false,  // Not joint consensus yet
+                                          std::nullopt};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
@@ -1434,12 +1341,11 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     _metrics.emit();
 
     // Return the future from configuration synchronizer
-    return config_future.thenTry([this, old_node, removing_self, old_config = _configuration, new_config](auto try_result) {
+    return config_future.thenTry([this, old_node, removing_self, old_config = _configuration,
+                                  new_config](auto try_result) {
         if (try_result.hasException()) {
-            _logger.error("Remove server failed", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"old_node", node_id_to_string(old_node)}
-            });
+            _logger.error("Remove server failed", {{"node_id", node_id_to_string(_node_id)},
+                                                   {"old_node", node_id_to_string(old_node)}});
 
             _metrics.set_metric_name("raft_remove_server_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1450,19 +1356,17 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
             std::rethrow_exception(try_result.exception());
         }
 
-        _logger.info("Remove server completed successfully", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_node", node_id_to_string(old_node)}
-        });
+        _logger.info(
+            "Remove server completed successfully",
+            {{"node_id", node_id_to_string(_node_id)}, {"old_node", node_id_to_string(old_node)}});
 
         // Notify membership manager of configuration change
         _membership.handle_cluster_membership_change(old_config, new_config);
 
         // If we removed ourselves, step down from leadership
         if (removing_self) {
-            _logger.info("Removed self from cluster, stepping down", {
-                {"node_id", node_id_to_string(_node_id)}
-            });
+            _logger.info("Removed self from cluster, stepping down",
+                         {{"node_id", node_id_to_string(_node_id)}});
 
             become_follower(_current_term);
         }
@@ -1476,7 +1380,6 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
         return std::vector<std::byte>{};
     });
 }
-
 
 template<raft_types Types>
 
@@ -1494,11 +1397,11 @@ auto node<Types>::check_election_timeout() -> void {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_heartbeat);
 
     if (elapsed >= _election_timeout) {
-        _logger.debug("Election timeout elapsed", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"state", _state == kythira::server_state::follower ? "follower" : "candidate"},
-            {"term", std::to_string(_current_term)}
-        });
+        _logger.debug(
+            "Election timeout elapsed",
+            {{"node_id", node_id_to_string(_node_id)},
+             {"state", _state == kythira::server_state::follower ? "follower" : "candidate"},
+             {"term", std::to_string(_current_term)}});
 
         // Start a new election (placeholder)
         become_candidate();
@@ -1514,10 +1417,9 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     // Check for timed-out operations (do this for all states)
     auto cancelled_count = _commit_waiter.cancel_timed_out_operations();
     if (cancelled_count > 0) {
-        _logger.debug("Cancelled timed-out operations", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"cancelled_count", std::to_string(cancelled_count)}
-        });
+        _logger.debug("Cancelled timed-out operations",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"cancelled_count", std::to_string(cancelled_count)}});
 
         // Emit timeout cancellation metric
         _metrics.set_metric_name("operations_timed_out");
@@ -1535,10 +1437,9 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_heartbeat);
 
     if (elapsed >= _heartbeat_interval) {
-        _logger.debug("Heartbeat timeout elapsed, sending heartbeats", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"term", std::to_string(_current_term)}
-        });
+        _logger.debug(
+            "Heartbeat timeout elapsed, sending heartbeats",
+            {{"node_id", node_id_to_string(_node_id)}, {"term", std::to_string(_current_term)}});
 
         send_heartbeats();
         _last_heartbeat = now;
@@ -1549,9 +1450,8 @@ auto node<Types>::check_heartbeat_timeout() -> void {
 template<raft_types Types>
 
 auto node<Types>::initialize_from_storage() -> void {
-    _logger.info("Initializing node from persistent storage", {
-        {"node_id", node_id_to_string(_node_id)}
-    });
+    _logger.info("Initializing node from persistent storage",
+                 {{"node_id", node_id_to_string(_node_id)}});
 
     // Load current term
     _current_term = _persistence.load_current_term();
@@ -1559,10 +1459,9 @@ auto node<Types>::initialize_from_storage() -> void {
     // Load voted_for
     _voted_for = _persistence.load_voted_for();
 
-    _logger.info("Node initialized from storage", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"current_term", std::to_string(_current_term)}
-    });
+    _logger.info("Node initialized from storage",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"current_term", std::to_string(_current_term)}});
 }
 
 template<raft_types Types>
@@ -1572,42 +1471,36 @@ auto node<Types>::register_rpc_handlers() -> void {
     _network_server.register_request_vote_handler(
         [this](const request_vote_request_type& request) -> request_vote_response_type {
             return this->handle_request_vote(request);
-        }
-    );
+        });
 
     // Register AppendEntries handler
     _network_server.register_append_entries_handler(
         [this](const append_entries_request_type& request) -> append_entries_response_type {
             return this->handle_append_entries(request);
-        }
-    );
+        });
 
     // Register InstallSnapshot handler
     _network_server.register_install_snapshot_handler(
         [this](const install_snapshot_request_type& request) -> install_snapshot_response_type {
             return this->handle_install_snapshot(request);
-        }
-    );
+        });
 
-    _logger.debug("RPC handlers registered", {
-        {"node_id", node_id_to_string(_node_id)}
-    });
+    _logger.debug("RPC handlers registered", {{"node_id", node_id_to_string(_node_id)}});
 }
 
 template<raft_types Types>
 
-
-auto node<Types>::handle_request_vote(const request_vote_request_type& request) -> request_vote_response_type {
+auto node<Types>::handle_request_vote(const request_vote_request_type& request)
+    -> request_vote_response_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.debug("Received RequestVote RPC", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"from_candidate", node_id_to_string(request.candidate_id())},
-        {"request_term", std::to_string(request.term())},
-        {"current_term", std::to_string(_current_term)},
-        {"candidate_last_log_index", std::to_string(request.last_log_index())},
-        {"candidate_last_log_term", std::to_string(request.last_log_term())}
-    });
+    _logger.debug("Received RequestVote RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"from_candidate", node_id_to_string(request.candidate_id())},
+                   {"request_term", std::to_string(request.term())},
+                   {"current_term", std::to_string(_current_term)},
+                   {"candidate_last_log_index", std::to_string(request.last_log_index())},
+                   {"candidate_last_log_term", std::to_string(request.last_log_term())}});
 
     // Emit metrics for vote request received
     _metrics.set_metric_name("raft_vote_request_received");
@@ -1617,11 +1510,10 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request) 
 
     // Rule 1: Reply false if request term < current term (§5.1)
     if (request.term() < _current_term) {
-        _logger.debug("Denying vote: request term < current term", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"request_term", std::to_string(request.term())},
-            {"current_term", std::to_string(_current_term)}
-        });
+        _logger.debug("Denying vote: request term < current term",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"request_term", std::to_string(request.term())},
+                       {"current_term", std::to_string(_current_term)}});
 
         _metrics.set_metric_name("raft_vote_denied");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1634,23 +1526,21 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request) 
 
     // Rule 2: If request term > current term, update current term and become follower (§5.1)
     if (request.term() > _current_term) {
-        _logger.info("Discovered higher term in RequestVote, becoming follower", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_term", std::to_string(_current_term)},
-            {"new_term", std::to_string(request.term())}
-        });
+        _logger.info("Discovered higher term in RequestVote, becoming follower",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"old_term", std::to_string(_current_term)},
+                      {"new_term", std::to_string(request.term())}});
 
         become_follower(request.term());
     }
 
     // Rule 3: Check if we've already voted for another candidate in this term
     if (_voted_for.has_value() && _voted_for.value() != request.candidate_id()) {
-        _logger.debug("Denying vote: already voted for another candidate", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"voted_for", node_id_to_string(_voted_for.value())},
-            {"candidate", node_id_to_string(request.candidate_id())},
-            {"term", std::to_string(_current_term)}
-        });
+        _logger.debug("Denying vote: already voted for another candidate",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"voted_for", node_id_to_string(_voted_for.value())},
+                       {"candidate", node_id_to_string(request.candidate_id())},
+                       {"term", std::to_string(_current_term)}});
 
         _metrics.set_metric_name("raft_vote_denied");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1679,14 +1569,13 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request) 
     // else: candidate's last log term is lower - candidate is not up-to-date
 
     if (!candidate_log_up_to_date) {
-        _logger.debug("Denying vote: candidate log not up-to-date", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"candidate", node_id_to_string(request.candidate_id())},
-            {"my_last_log_term", std::to_string(my_last_log_term)},
-            {"my_last_log_index", std::to_string(my_last_log_index)},
-            {"candidate_last_log_term", std::to_string(request.last_log_term())},
-            {"candidate_last_log_index", std::to_string(request.last_log_index())}
-        });
+        _logger.debug("Denying vote: candidate log not up-to-date",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())},
+                       {"my_last_log_term", std::to_string(my_last_log_term)},
+                       {"my_last_log_index", std::to_string(my_last_log_index)},
+                       {"candidate_last_log_term", std::to_string(request.last_log_term())},
+                       {"candidate_last_log_index", std::to_string(request.last_log_index())}});
 
         _metrics.set_metric_name("raft_vote_denied");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1707,11 +1596,9 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request) 
     // Reset election timer when granting vote (§5.2)
     reset_election_timer();
 
-    _logger.info("Granting vote", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"candidate", node_id_to_string(request.candidate_id())},
-        {"term", std::to_string(_current_term)}
-    });
+    _logger.info("Granting vote", {{"node_id", node_id_to_string(_node_id)},
+                                   {"candidate", node_id_to_string(request.candidate_id())},
+                                   {"term", std::to_string(_current_term)}});
 
     _metrics.set_metric_name("raft_vote_granted");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1722,23 +1609,21 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request) 
     return request_vote_response_type{_current_term, true};
 }
 
-
 template<raft_types Types>
 
-
-auto node<Types>::handle_append_entries(const append_entries_request_type& request) -> append_entries_response_type {
+auto node<Types>::handle_append_entries(const append_entries_request_type& request)
+    -> append_entries_response_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.debug("Received AppendEntries RPC", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"from_leader", node_id_to_string(request.leader_id())},
-        {"request_term", std::to_string(request.term())},
-        {"current_term", std::to_string(_current_term)},
-        {"prev_log_index", std::to_string(request.prev_log_index())},
-        {"prev_log_term", std::to_string(request.prev_log_term())},
-        {"num_entries", std::to_string(request.entries().size())},
-        {"leader_commit", std::to_string(request.leader_commit())}
-    });
+    _logger.debug("Received AppendEntries RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"from_leader", node_id_to_string(request.leader_id())},
+                   {"request_term", std::to_string(request.term())},
+                   {"current_term", std::to_string(_current_term)},
+                   {"prev_log_index", std::to_string(request.prev_log_index())},
+                   {"prev_log_term", std::to_string(request.prev_log_term())},
+                   {"num_entries", std::to_string(request.entries().size())},
+                   {"leader_commit", std::to_string(request.leader_commit())}});
 
     // Emit metrics for AppendEntries received
     _metrics.set_metric_name("raft_append_entries_received");
@@ -1749,11 +1634,10 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
 
     // Rule 1: Reply false if request term < current term (§5.1)
     if (request.term() < _current_term) {
-        _logger.debug("Rejecting AppendEntries: request term < current term", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"request_term", std::to_string(request.term())},
-            {"current_term", std::to_string(_current_term)}
-        });
+        _logger.debug("Rejecting AppendEntries: request term < current term",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"request_term", std::to_string(request.term())},
+                       {"current_term", std::to_string(_current_term)}});
 
         _metrics.set_metric_name("raft_append_entries_rejected");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1766,19 +1650,17 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
 
     // Rule 2: If request term >= current term, update current term and become follower (§5.1)
     if (request.term() > _current_term) {
-        _logger.info("Discovered higher term in AppendEntries, becoming follower", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_term", std::to_string(_current_term)},
-            {"new_term", std::to_string(request.term())}
-        });
+        _logger.info("Discovered higher term in AppendEntries, becoming follower",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"old_term", std::to_string(_current_term)},
+                      {"new_term", std::to_string(request.term())}});
 
         become_follower(request.term());
     } else if (_state == kythira::server_state::candidate) {
         // If we're a candidate and receive AppendEntries from valid leader, become follower
-        _logger.info("Received valid AppendEntries as candidate, becoming follower", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"term", std::to_string(_current_term)}
-        });
+        _logger.info(
+            "Received valid AppendEntries as candidate, becoming follower",
+            {{"node_id", node_id_to_string(_node_id)}, {"term", std::to_string(_current_term)}});
 
         become_follower(_current_term);
     }
@@ -1786,16 +1668,16 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // Reset election timer on valid AppendEntries (§5.2)
     reset_election_timer();
 
-    // Rule 3: Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+    // Rule 3: Reply false if log doesn't contain an entry at prevLogIndex whose term matches
+    // prevLogTerm (§5.3)
     if (request.prev_log_index() > 0) {
         // Check if we have an entry at prevLogIndex
         if (request.prev_log_index() > get_last_log_index()) {
             // We don't have enough entries
-            _logger.debug("Rejecting AppendEntries: log too short", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"prev_log_index", std::to_string(request.prev_log_index())},
-                {"last_log_index", std::to_string(get_last_log_index())}
-            });
+            _logger.debug("Rejecting AppendEntries: log too short",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"prev_log_index", std::to_string(request.prev_log_index())},
+                           {"last_log_index", std::to_string(get_last_log_index())}});
 
             _metrics.set_metric_name("raft_append_entries_rejected");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1814,12 +1696,11 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             // Term mismatch at prevLogIndex
             auto conflict_term = prev_entry.has_value() ? prev_entry->term() : term_id_type{0};
 
-            _logger.debug("Rejecting AppendEntries: term mismatch at prevLogIndex", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"prev_log_index", std::to_string(request.prev_log_index())},
-                {"expected_term", std::to_string(request.prev_log_term())},
-                {"actual_term", std::to_string(conflict_term)}
-            });
+            _logger.debug("Rejecting AppendEntries: term mismatch at prevLogIndex",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"prev_log_index", std::to_string(request.prev_log_index())},
+                           {"expected_term", std::to_string(request.prev_log_term())},
+                           {"actual_term", std::to_string(conflict_term)}});
 
             _metrics.set_metric_name("raft_append_entries_rejected");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1843,7 +1724,8 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
                 }
             }
 
-            return append_entries_response_type{_current_term, false, conflict_index, conflict_term};
+            return append_entries_response_type{_current_term, false, conflict_index,
+                                                conflict_term};
         }
     }
 
@@ -1859,12 +1741,11 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             auto existing_entry = get_log_entry(entry_index);
             if (existing_entry.has_value() && existing_entry->term() != new_entry.term()) {
                 // Conflict detected - delete this entry and all that follow
-                _logger.info("Detected log conflict, truncating log", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"conflict_index", std::to_string(entry_index)},
-                    {"existing_term", std::to_string(existing_entry->term())},
-                    {"new_term", std::to_string(new_entry.term())}
-                });
+                _logger.info("Detected log conflict, truncating log",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"conflict_index", std::to_string(entry_index)},
+                              {"existing_term", std::to_string(existing_entry->term())},
+                              {"new_term", std::to_string(new_entry.term())}});
 
                 // Truncate log from conflict point
                 _log.erase(_log.begin() + (entry_index - 1), _log.end());
@@ -1890,25 +1771,23 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             // Persist the new entry
             _persistence.append_log_entry(new_entry);
 
-            _logger.debug("Appended new log entry", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"index", std::to_string(entry_index)},
-                {"term", std::to_string(new_entry.term())}
-            });
+            _logger.debug("Appended new log entry", {{"node_id", node_id_to_string(_node_id)},
+                                                     {"index", std::to_string(entry_index)},
+                                                     {"term", std::to_string(new_entry.term())}});
         }
     }
 
-    // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+    // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
+    // entry)
     if (request.leader_commit() > _commit_index) {
         auto old_commit_index = _commit_index;
         _commit_index = std::min(request.leader_commit(), get_last_log_index());
 
-        _logger.debug("Updated commit index", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_commit_index", std::to_string(old_commit_index)},
-            {"new_commit_index", std::to_string(_commit_index)},
-            {"leader_commit", std::to_string(request.leader_commit())}
-        });
+        _logger.debug("Updated commit index",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"old_commit_index", std::to_string(old_commit_index)},
+                       {"new_commit_index", std::to_string(_commit_index)},
+                       {"leader_commit", std::to_string(request.leader_commit())}});
 
         // Apply newly committed entries to state machine
         apply_committed_entries();
@@ -1919,11 +1798,10 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
         _persistence.save_current_term(_current_term);
     }
 
-    _logger.debug("AppendEntries succeeded", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_log_index", std::to_string(get_last_log_index())},
-        {"commit_index", std::to_string(_commit_index)}
-    });
+    _logger.debug("AppendEntries succeeded",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"last_log_index", std::to_string(get_last_log_index())},
+                   {"commit_index", std::to_string(_commit_index)}});
 
     _metrics.set_metric_name("raft_append_entries_accepted");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1934,24 +1812,22 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     return append_entries_response_type{_current_term, true, std::nullopt, std::nullopt};
 }
 
-
 template<raft_types Types>
 
-
-auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& request) -> install_snapshot_response_type {
+auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& request)
+    -> install_snapshot_response_type {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.debug("Received InstallSnapshot RPC", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"from_leader", node_id_to_string(request.leader_id())},
-        {"request_term", std::to_string(request.term())},
-        {"current_term", std::to_string(_current_term)},
-        {"last_included_index", std::to_string(request.last_included_index())},
-        {"last_included_term", std::to_string(request.last_included_term())},
-        {"offset", std::to_string(request.offset())},
-        {"data_size", std::to_string(request.data().size())},
-        {"done", request.done() ? "true" : "false"}
-    });
+    _logger.debug("Received InstallSnapshot RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"from_leader", node_id_to_string(request.leader_id())},
+                   {"request_term", std::to_string(request.term())},
+                   {"current_term", std::to_string(_current_term)},
+                   {"last_included_index", std::to_string(request.last_included_index())},
+                   {"last_included_term", std::to_string(request.last_included_term())},
+                   {"offset", std::to_string(request.offset())},
+                   {"data_size", std::to_string(request.data().size())},
+                   {"done", request.done() ? "true" : "false"}});
 
     // Emit metrics for InstallSnapshot received
     _metrics.set_metric_name("raft_install_snapshot_received");
@@ -1963,11 +1839,10 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
     // Rule 1: Reply immediately if term < currentTerm (§7)
     if (request.term() < _current_term) {
-        _logger.debug("Rejecting InstallSnapshot: request term < current term", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"request_term", std::to_string(request.term())},
-            {"current_term", std::to_string(_current_term)}
-        });
+        _logger.debug("Rejecting InstallSnapshot: request term < current term",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"request_term", std::to_string(request.term())},
+                       {"current_term", std::to_string(_current_term)}});
 
         _metrics.set_metric_name("raft_install_snapshot_rejected");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1980,11 +1855,10 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
 
     // Rule 2: If request term > current term, update current term and become follower
     if (request.term() > _current_term) {
-        _logger.info("Discovered higher term in InstallSnapshot, becoming follower", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_term", std::to_string(_current_term)},
-            {"new_term", std::to_string(request.term())}
-        });
+        _logger.info("Discovered higher term in InstallSnapshot, becoming follower",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"old_term", std::to_string(_current_term)},
+                      {"new_term", std::to_string(request.term())}});
 
         become_follower(request.term());
     }
@@ -2001,20 +1875,18 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         // First chunk - initialize buffer
         snapshot_buffers[_node_id] = request.data();
 
-        _logger.debug("Started receiving snapshot", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"last_included_index", std::to_string(request.last_included_index())},
-            {"last_included_term", std::to_string(request.last_included_term())},
-            {"first_chunk_size", std::to_string(request.data().size())}
-        });
+        _logger.debug("Started receiving snapshot",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"last_included_index", std::to_string(request.last_included_index())},
+                       {"last_included_term", std::to_string(request.last_included_term())},
+                       {"first_chunk_size", std::to_string(request.data().size())}});
     } else {
         // Subsequent chunk - append to buffer
         if (snapshot_buffers.find(_node_id) == snapshot_buffers.end()) {
             // Missing first chunk - reject
-            _logger.error("Received snapshot chunk without first chunk", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"offset", std::to_string(request.offset())}
-            });
+            _logger.error("Received snapshot chunk without first chunk",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"offset", std::to_string(request.offset())}});
 
             _metrics.set_metric_name("raft_install_snapshot_rejected");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2028,11 +1900,10 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         auto& buffer = snapshot_buffers[_node_id];
         if (buffer.size() != request.offset()) {
             // Offset mismatch - reject
-            _logger.error("Snapshot chunk offset mismatch", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"expected_offset", std::to_string(buffer.size())},
-                {"actual_offset", std::to_string(request.offset())}
-            });
+            _logger.error("Snapshot chunk offset mismatch",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"expected_offset", std::to_string(buffer.size())},
+                           {"actual_offset", std::to_string(request.offset())}});
 
             _metrics.set_metric_name("raft_install_snapshot_rejected");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2046,20 +1917,18 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
         // Append chunk data
         buffer.insert(buffer.end(), request.data().begin(), request.data().end());
 
-        _logger.debug("Received snapshot chunk", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"offset", std::to_string(request.offset())},
-            {"chunk_size", std::to_string(request.data().size())},
-            {"total_size", std::to_string(buffer.size())}
-        });
+        _logger.debug("Received snapshot chunk",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"offset", std::to_string(request.offset())},
+                       {"chunk_size", std::to_string(request.data().size())},
+                       {"total_size", std::to_string(buffer.size())}});
     }
 
     // Rule 4: Reply and wait for more data chunks if done is false
     if (!request.done()) {
-        _logger.debug("Waiting for more snapshot chunks", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"bytes_received", std::to_string(snapshot_buffers[_node_id].size())}
-        });
+        _logger.debug("Waiting for more snapshot chunks",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"bytes_received", std::to_string(snapshot_buffers[_node_id].size())}});
 
         return install_snapshot_response_type{_current_term};
     }
@@ -2067,20 +1936,17 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Rule 5: Save snapshot file, discard any existing or partial snapshot with smaller index
     auto& complete_snapshot_data = snapshot_buffers[_node_id];
 
-    _logger.info("Installing complete snapshot", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(request.last_included_index())},
-        {"last_included_term", std::to_string(request.last_included_term())},
-        {"snapshot_size", std::to_string(complete_snapshot_data.size())}
-    });
+    _logger.info("Installing complete snapshot",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_included_index", std::to_string(request.last_included_index())},
+                  {"last_included_term", std::to_string(request.last_included_term())},
+                  {"snapshot_size", std::to_string(complete_snapshot_data.size())}});
 
     // Create snapshot object
     snapshot_type snap{
-        request.last_included_index(),
-        request.last_included_term(),
+        request.last_included_index(), request.last_included_term(),
         _configuration,  // Use current configuration (leader will send updated config if needed)
-        complete_snapshot_data
-    };
+        complete_snapshot_data};
 
     // Rule 6: If existing log entry has same index and term as snapshot's last included entry,
     // retain log entries following it and reply
@@ -2092,21 +1958,19 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
             // Log entry matches snapshot - retain entries after snapshot
             retain_log = true;
 
-            _logger.debug("Retaining log entries after snapshot", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"snapshot_index", std::to_string(request.last_included_index())},
-                {"last_log_index", std::to_string(get_last_log_index())}
-            });
+            _logger.debug("Retaining log entries after snapshot",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"snapshot_index", std::to_string(request.last_included_index())},
+                           {"last_log_index", std::to_string(get_last_log_index())}});
         }
     }
 
     // Rule 7: Discard the entire log if no matching entry exists
     if (!retain_log) {
-        _logger.info("Discarding entire log for snapshot installation", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_log_size", std::to_string(_log.size())},
-            {"snapshot_index", std::to_string(request.last_included_index())}
-        });
+        _logger.info("Discarding entire log for snapshot installation",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"old_log_size", std::to_string(_log.size())},
+                      {"snapshot_index", std::to_string(request.last_included_index())}});
 
         _log.clear();
         _persistence.truncate_log(1);  // Clear all log entries
@@ -2134,14 +1998,13 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Clean up snapshot buffer
     snapshot_buffers.erase(_node_id);
 
-    _logger.info("Successfully installed snapshot", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(request.last_included_index())},
-        {"last_included_term", std::to_string(request.last_included_term())},
-        {"commit_index", std::to_string(_commit_index)},
-        {"last_applied", std::to_string(_last_applied)},
-        {"remaining_log_entries", std::to_string(_log.size())}
-    });
+    _logger.info("Successfully installed snapshot",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_included_index", std::to_string(request.last_included_index())},
+                  {"last_included_term", std::to_string(request.last_included_term())},
+                  {"commit_index", std::to_string(_commit_index)},
+                  {"last_applied", std::to_string(_last_applied)},
+                  {"remaining_log_entries", std::to_string(_log.size())}});
 
     _metrics.set_metric_name("raft_install_snapshot_success");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2152,7 +2015,6 @@ auto node<Types>::handle_install_snapshot(const install_snapshot_request_type& r
     // Rule 9: Reply with current term
     return install_snapshot_response_type{_current_term};
 }
-
 
 template<raft_types Types>
 
@@ -2178,18 +2040,16 @@ auto node<Types>::heartbeat_timeout_elapsed() const -> bool {
 
 template<raft_types Types>
 
-
 auto node<Types>::send_heartbeats() -> void {
     // Only leaders send heartbeats
     if (_state != kythira::server_state::leader) {
         return;
     }
 
-    _logger.debug("Sending heartbeats/replication to followers", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"term", std::to_string(_current_term)},
-        {"commit_index", std::to_string(_commit_index)}
-    });
+    _logger.debug("Sending heartbeats/replication to followers",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"term", std::to_string(_current_term)},
+                   {"commit_index", std::to_string(_commit_index)}});
 
     // In Raft, heartbeats are actually AppendEntries RPCs that may contain log entries
     // So we use replicate_to_followers() which will send AppendEntries with any pending entries
@@ -2205,11 +2065,11 @@ auto node<Types>::send_heartbeats() -> void {
     _metrics.emit();
 }
 
-
 template<raft_types Types>
 auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
     // Create a lambda that sends the heartbeat (AppendEntries with empty entries)
-    auto send_heartbeat_operation = [this, target]() -> kythira::Future<append_entries_response_type> {
+    auto send_heartbeat_operation = [this,
+                                     target]() -> kythira::Future<append_entries_response_type> {
         // Get next index for this follower
         auto next_idx = _next_index[target];
 
@@ -2235,16 +2095,14 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
             prev_log_index,
             prev_log_term,
             std::vector<log_entry_type>{},  // Empty entries for heartbeat
-            _commit_index
-        };
+            _commit_index};
 
-        _logger.debug("Sending heartbeat with retry", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"target", node_id_to_string(target)},
-            {"term", std::to_string(_current_term)},
-            {"prev_log_index", std::to_string(prev_log_index)},
-            {"leader_commit", std::to_string(_commit_index)}
-        });
+        _logger.debug("Sending heartbeat with retry",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"target", node_id_to_string(target)},
+                       {"term", std::to_string(_current_term)},
+                       {"prev_log_index", std::to_string(prev_log_index)},
+                       {"leader_commit", std::to_string(_commit_index)}});
 
         // Send RPC with timeout
         auto timeout = _config.append_entries_timeout();
@@ -2254,86 +2112,83 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
     // Wrap the operation with error handler for exponential backoff retry
     auto start_time = std::chrono::steady_clock::now();
 
-    _append_entries_error_handler.execute_with_retry(
-        "heartbeat",
-        send_heartbeat_operation,
-        std::nullopt  // Use default heartbeat retry policy
-    ).thenTry([this, target, start_time](kythira::Try<append_entries_response_type> try_response) {
-        std::lock_guard<std::mutex> lock(_mutex);
+    _append_entries_error_handler
+        .execute_with_retry("heartbeat", send_heartbeat_operation,
+                            std::nullopt  // Use default heartbeat retry policy
+                            )
+        .thenTry([this, target,
+                  start_time](kythira::Try<append_entries_response_type> try_response) {
+            std::lock_guard<std::mutex> lock(_mutex);
 
-        // Calculate RPC latency
-        auto end_time = std::chrono::steady_clock::now();
-        auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            // Calculate RPC latency
+            auto end_time = std::chrono::steady_clock::now();
+            auto latency =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-        _metrics.set_metric_name("raft_heartbeat_latency");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("target", node_id_to_string(target));
-        _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
-        _metrics.emit();
-
-        if (try_response.hasException()) {
-            // Heartbeat failed after all retries - log error and mark follower as unresponsive
-            _logger.warning("Heartbeat failed after retries", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)},
-                {"latency_ms", std::to_string(latency.count())}
-            });
-
-            _unresponsive_followers.insert(target);
-
-            _metrics.set_metric_name("raft_heartbeat_failed");
+            _metrics.set_metric_name("raft_heartbeat_latency");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
             _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_one();
+            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
             _metrics.emit();
 
-            return;
-        }
+            if (try_response.hasException()) {
+                // Heartbeat failed after all retries - log error and mark follower as unresponsive
+                _logger.warning("Heartbeat failed after retries",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"target", node_id_to_string(target)},
+                                 {"latency_ms", std::to_string(latency.count())}});
 
-        auto response = try_response.value();
+                _unresponsive_followers.insert(target);
 
-        // Check if we've been deposed
-        if (response.term() > _current_term) {
-            _logger.info("Discovered higher term in heartbeat response, stepping down", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"old_term", std::to_string(_current_term)},
-                {"new_term", std::to_string(response.term())}
-            });
+                _metrics.set_metric_name("raft_heartbeat_failed");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_dimension("target", node_id_to_string(target));
+                _metrics.add_one();
+                _metrics.emit();
 
-            become_follower(response.term());
-            return;
-        }
+                return;
+            }
 
-        // Only process response if we're still leader in the same term
-        if (_state != kythira::server_state::leader || response.term() != _current_term) {
-            return;
-        }
+            auto response = try_response.value();
 
-        if (response.success()) {
-            // Heartbeat succeeded - remove from unresponsive set
-            _unresponsive_followers.erase(target);
+            // Check if we've been deposed
+            if (response.term() > _current_term) {
+                _logger.info("Discovered higher term in heartbeat response, stepping down",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"old_term", std::to_string(_current_term)},
+                              {"new_term", std::to_string(response.term())}});
 
-            _logger.debug("Heartbeat succeeded", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)},
-                {"latency_ms", std::to_string(latency.count())}
-            });
+                become_follower(response.term());
+                return;
+            }
 
-            _metrics.set_metric_name("raft_heartbeat_success");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_one();
-            _metrics.emit();
-        } else {
-            // Heartbeat failed due to log inconsistency - will be handled by normal replication
-            _logger.debug("Heartbeat failed due to log inconsistency", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)}
-            });
-        }
-    });
+            // Only process response if we're still leader in the same term
+            if (_state != kythira::server_state::leader || response.term() != _current_term) {
+                return;
+            }
+
+            if (response.success()) {
+                // Heartbeat succeeded - remove from unresponsive set
+                _unresponsive_followers.erase(target);
+
+                _logger.debug("Heartbeat succeeded",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"target", node_id_to_string(target)},
+                               {"latency_ms", std::to_string(latency.count())}});
+
+                _metrics.set_metric_name("raft_heartbeat_success");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_dimension("target", node_id_to_string(target));
+                _metrics.add_one();
+                _metrics.emit();
+            } else {
+                // Heartbeat failed due to log inconsistency - will be handled by normal replication
+                _logger.debug("Heartbeat failed due to log inconsistency",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"target", node_id_to_string(target)}});
+            }
+        });
 }
-
 
 template<raft_types Types>
 
@@ -2341,20 +2196,17 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     auto old_state = _state;
     auto old_term = _current_term;
 
-    _logger.info("Transitioning to follower", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"old_term", std::to_string(_current_term)},
-        {"new_term", std::to_string(new_term)}
-    });
+    _logger.info("Transitioning to follower", {{"node_id", node_id_to_string(_node_id)},
+                                               {"old_term", std::to_string(_current_term)},
+                                               {"new_term", std::to_string(new_term)}});
 
     // If we were a leader, cancel all pending client operations
     if (old_state == kythira::server_state::leader) {
-        _logger.info("Leadership lost, cancelling pending operations", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"old_term", std::to_string(old_term)},
-            {"new_term", std::to_string(new_term)},
-            {"pending_count", std::to_string(_commit_waiter.get_pending_count())}
-        });
+        _logger.info("Leadership lost, cancelling pending operations",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"old_term", std::to_string(old_term)},
+                      {"new_term", std::to_string(new_term)},
+                      {"pending_count", std::to_string(_commit_waiter.get_pending_count())}});
 
         // Cancel all pending operations with leadership lost exception
         _commit_waiter.cancel_all_operations_leadership_lost(old_term, new_term);
@@ -2382,11 +2234,10 @@ template<raft_types Types>
 auto node<Types>::become_candidate() -> void {
     auto old_state = _state;
 
-    _logger.info("Transitioning to candidate and starting election", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"old_term", std::to_string(_current_term)},
-        {"new_term", std::to_string(_current_term + 1)}
-    });
+    _logger.info("Transitioning to candidate and starting election",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"old_term", std::to_string(_current_term)},
+                  {"new_term", std::to_string(_current_term + 1)}});
 
     // Increment current term
     _current_term = _current_term + 1;
@@ -2410,10 +2261,8 @@ auto node<Types>::become_candidate() -> void {
 template<raft_types Types>
 
 auto node<Types>::start_election() -> void {
-    _logger.info("Starting election", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"term", std::to_string(_current_term)}
-    });
+    _logger.info("Starting election", {{"node_id", node_id_to_string(_node_id)},
+                                       {"term", std::to_string(_current_term)}});
 
     // Emit election started metric
     _metrics.set_metric_name("election_started");
@@ -2428,8 +2277,7 @@ auto node<Types>::start_election() -> void {
         .max_delay = std::chrono::milliseconds{3000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.1,
-        .max_attempts = 3
-    };
+        .max_attempts = 3};
 
     // Create error handler for RequestVote operations
     error_handler<request_vote_response_type> vote_error_handler;
@@ -2445,88 +2293,84 @@ auto node<Types>::start_election() -> void {
         }
 
         // Create RequestVote request
-        request_vote_request_type vote_request{
-            ._term = _current_term,
-            ._candidate_id = _node_id,
-            ._last_log_index = get_last_log_index(),
-            ._last_log_term = get_last_log_term()
-        };
+        request_vote_request_type vote_request{._term = _current_term,
+                                               ._candidate_id = _node_id,
+                                               ._last_log_index = get_last_log_index(),
+                                               ._last_log_term = get_last_log_term()};
 
         // Wrap RequestVote RPC call with retry logic
-        auto vote_future = vote_error_handler.execute_with_retry(
-            "request_vote",
-            [this, peer_id, vote_request]() -> kythira::Future<request_vote_response_type> {
-                // Log vote request attempt
-                _logger.debug("Sending RequestVote RPC", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"peer_id", node_id_to_string(peer_id)},
-                    {"term", std::to_string(vote_request._term)},
-                    {"last_log_index", std::to_string(vote_request._last_log_index)},
-                    {"last_log_term", std::to_string(vote_request._last_log_term)}
+        auto vote_future =
+            vote_error_handler
+                .execute_with_retry(
+                    "request_vote",
+                    [this, peer_id, vote_request]() -> kythira::Future<request_vote_response_type> {
+                        // Log vote request attempt
+                        _logger.debug(
+                            "Sending RequestVote RPC",
+                            {{"node_id", node_id_to_string(_node_id)},
+                             {"peer_id", node_id_to_string(peer_id)},
+                             {"term", std::to_string(vote_request._term)},
+                             {"last_log_index", std::to_string(vote_request._last_log_index)},
+                             {"last_log_term", std::to_string(vote_request._last_log_term)}});
+
+                        // Emit vote request metric
+                        _metrics.set_metric_name("vote_request_sent");
+                        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                        _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
+                        _metrics.add_one();
+                        _metrics.emit();
+
+                        return _network_client.send_request_vote(peer_id, vote_request,
+                                                                 _config.rpc_timeout());
+                    },
+                    vote_retry_policy)
+                .thenTry([this, peer_id](kythira::Try<request_vote_response_type> result)
+                             -> request_vote_response_type {
+                    if (result.hasException()) {
+                        // Log vote request failure
+                        _logger.warning("RequestVote RPC failed after retries",
+                                        {{"node_id", node_id_to_string(_node_id)},
+                                         {"peer_id", node_id_to_string(peer_id)},
+                                         {"error", "Exception occurred"}});
+
+                        // Emit vote request failure metric
+                        _metrics.set_metric_name("vote_request_failed");
+                        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                        _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
+                        _metrics.add_one();
+                        _metrics.emit();
+
+                        // Rethrow the exception
+                        std::rethrow_exception(result.exception());
+                    }
+
+                    // Log successful vote response
+                    auto response = result.value();
+                    _logger.debug("Received RequestVote response",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"peer_id", node_id_to_string(peer_id)},
+                                   {"vote_granted", response.vote_granted() ? "true" : "false"},
+                                   {"response_term", std::to_string(response.term())}});
+
+                    // Emit vote response metric
+                    _metrics.set_metric_name("vote_response_received");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
+                    _metrics.add_dimension("vote_granted",
+                                           response.vote_granted() ? "true" : "false");
+                    _metrics.add_one();
+                    _metrics.emit();
+
+                    return response;
                 });
-
-                // Emit vote request metric
-                _metrics.set_metric_name("vote_request_sent");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
-                _metrics.add_one();
-                _metrics.emit();
-
-                return _network_client.send_request_vote(
-                    peer_id,
-                    vote_request,
-                    _config.rpc_timeout()
-                );
-            },
-            vote_retry_policy
-        ).thenTry([this, peer_id](kythira::Try<request_vote_response_type> result) -> request_vote_response_type {
-            if (result.hasException()) {
-                // Log vote request failure
-                _logger.warning("RequestVote RPC failed after retries", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"peer_id", node_id_to_string(peer_id)},
-                    {"error", "Exception occurred"}
-                });
-
-                // Emit vote request failure metric
-                _metrics.set_metric_name("vote_request_failed");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
-                _metrics.add_one();
-                _metrics.emit();
-
-                // Rethrow the exception
-                std::rethrow_exception(result.exception());
-            }
-
-            // Log successful vote response
-            auto response = result.value();
-            _logger.debug("Received RequestVote response", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"peer_id", node_id_to_string(peer_id)},
-                {"vote_granted", response.vote_granted() ? "true" : "false"},
-                {"response_term", std::to_string(response.term())}
-            });
-
-            // Emit vote response metric
-            _metrics.set_metric_name("vote_response_received");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
-            _metrics.add_dimension("vote_granted", response.vote_granted() ? "true" : "false");
-            _metrics.add_one();
-            _metrics.emit();
-
-            return response;
-        });
 
         vote_futures.push_back(std::move(vote_future));
     }
 
     // If there are no peers (single-node cluster), become leader immediately
     if (vote_futures.empty()) {
-        _logger.info("Single-node cluster, becoming leader immediately", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.info("Single-node cluster, becoming leader immediately",
+                     {{"node_id", node_id_to_string(_node_id)}});
         become_leader();
         return;
     }
@@ -2538,114 +2382,109 @@ auto node<Types>::start_election() -> void {
     auto& metrics = _metrics;
     auto& state = _state;
 
-    election_collector_t::collect_majority(
-        std::move(vote_futures),
-        _election_timeout
-    ).thenValue([this, current_term, node_id, &logger, &metrics, &state](std::vector<request_vote_response_type> responses) {
-        std::lock_guard<std::mutex> lock(_mutex);
+    election_collector_t::collect_majority(std::move(vote_futures), _election_timeout)
+        .thenValue([this, current_term, node_id, &logger, &metrics,
+                    &state](std::vector<request_vote_response_type> responses) {
+            std::lock_guard<std::mutex> lock(_mutex);
 
-        // Check if we're still a candidate in the same term
-        if (_state != kythira::server_state::candidate || _current_term != current_term) {
-            logger.debug("Election outcome irrelevant, state changed", {
-                {"node_id", node_id_to_string(node_id)},
-                {"current_state", _state == kythira::server_state::follower ? "follower" : "leader"},
-                {"current_term", std::to_string(_current_term)},
-                {"election_term", std::to_string(current_term)}
-            });
-            return;
-        }
+            // Check if we're still a candidate in the same term
+            if (_state != kythira::server_state::candidate || _current_term != current_term) {
+                logger.debug("Election outcome irrelevant, state changed",
+                             {{"node_id", node_id_to_string(node_id)},
+                              {"current_state",
+                               _state == kythira::server_state::follower ? "follower" : "leader"},
+                              {"current_term", std::to_string(_current_term)},
+                              {"election_term", std::to_string(current_term)}});
+                return;
+            }
 
-        // Count votes (including self-vote)
-        std::size_t votes_granted = 1;  // Self-vote
+            // Count votes (including self-vote)
+            std::size_t votes_granted = 1;  // Self-vote
 
-        for (const auto& response : responses) {
-            // Check for higher term
-            if (response.term() > _current_term) {
-                logger.info("Discovered higher term during election, stepping down", {
-                    {"node_id", node_id_to_string(node_id)},
-                    {"current_term", std::to_string(_current_term)},
-                    {"discovered_term", std::to_string(response.term())}
-                });
+            for (const auto& response : responses) {
+                // Check for higher term
+                if (response.term() > _current_term) {
+                    logger.info("Discovered higher term during election, stepping down",
+                                {{"node_id", node_id_to_string(node_id)},
+                                 {"current_term", std::to_string(_current_term)},
+                                 {"discovered_term", std::to_string(response.term())}});
 
-                become_follower(response.term());
+                    become_follower(response.term());
+
+                    // Emit election lost metric
+                    metrics.set_metric_name("election_lost");
+                    metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    metrics.add_dimension("reason", "higher_term_discovered");
+                    metrics.add_one();
+                    metrics.emit();
+
+                    return;
+                }
+
+                if (response.vote_granted()) {
+                    votes_granted++;
+                }
+            }
+
+            // Calculate majority
+            const std::size_t total_nodes = _configuration.nodes().size();
+            const std::size_t majority = (total_nodes / 2) + 1;
+
+            if (votes_granted >= majority) {
+                logger.info("Election won, transitioning to leader",
+                            {{"node_id", node_id_to_string(node_id)},
+                             {"term", std::to_string(_current_term)},
+                             {"votes_received", std::to_string(votes_granted)},
+                             {"total_nodes", std::to_string(total_nodes)}});
+
+                become_leader();
+
+                // Emit election won metric
+                metrics.set_metric_name("election_won");
+                metrics.add_dimension("node_id", node_id_to_string(node_id));
+                metrics.add_dimension("term", std::to_string(_current_term));
+                metrics.add_one();
+                metrics.emit();
+            } else {
+                logger.info("Election failed, insufficient votes",
+                            {{"node_id", node_id_to_string(node_id)},
+                             {"term", std::to_string(_current_term)},
+                             {"votes_received", std::to_string(votes_granted)},
+                             {"votes_needed", std::to_string(majority)}});
+
+                // Remain as candidate, will retry on next election timeout
+                // Emit election lost metric
+                metrics.set_metric_name("election_lost");
+                metrics.add_dimension("node_id", node_id_to_string(node_id));
+                metrics.add_dimension("reason", "insufficient_votes");
+                metrics.add_one();
+                metrics.emit();
+            }
+        })
+        .thenError([this, current_term, node_id, &logger, &metrics](std::exception_ptr ex) {
+            std::lock_guard<std::mutex> lock(_mutex);
+
+            try {
+                std::rethrow_exception(ex);
+            } catch (const kythira::future_collection_exception& e) {
+                logger.warning("Failed to collect vote majority",
+                               {{"node_id", node_id_to_string(node_id)},
+                                {"operation", e.get_operation()},
+                                {"failed_count", std::to_string(e.get_failed_count())}});
 
                 // Emit election lost metric
                 metrics.set_metric_name("election_lost");
                 metrics.add_dimension("node_id", node_id_to_string(node_id));
-                metrics.add_dimension("reason", "higher_term_discovered");
+                metrics.add_dimension("reason", "collection_failure");
                 metrics.add_one();
                 metrics.emit();
 
-                return;
+                // Remain as candidate, will retry on next election timeout
+            } catch (...) {
+                logger.error("Unexpected error during election",
+                             {{"node_id", node_id_to_string(node_id)}});
             }
-
-            if (response.vote_granted()) {
-                votes_granted++;
-            }
-        }
-
-        // Calculate majority
-        const std::size_t total_nodes = _configuration.nodes().size();
-        const std::size_t majority = (total_nodes / 2) + 1;
-
-        if (votes_granted >= majority) {
-            logger.info("Election won, transitioning to leader", {
-                {"node_id", node_id_to_string(node_id)},
-                {"term", std::to_string(_current_term)},
-                {"votes_received", std::to_string(votes_granted)},
-                {"total_nodes", std::to_string(total_nodes)}
-            });
-
-            become_leader();
-
-            // Emit election won metric
-            metrics.set_metric_name("election_won");
-            metrics.add_dimension("node_id", node_id_to_string(node_id));
-            metrics.add_dimension("term", std::to_string(_current_term));
-            metrics.add_one();
-            metrics.emit();
-        } else {
-            logger.info("Election failed, insufficient votes", {
-                {"node_id", node_id_to_string(node_id)},
-                {"term", std::to_string(_current_term)},
-                {"votes_received", std::to_string(votes_granted)},
-                {"votes_needed", std::to_string(majority)}
-            });
-
-            // Remain as candidate, will retry on next election timeout
-            // Emit election lost metric
-            metrics.set_metric_name("election_lost");
-            metrics.add_dimension("node_id", node_id_to_string(node_id));
-            metrics.add_dimension("reason", "insufficient_votes");
-            metrics.add_one();
-            metrics.emit();
-        }
-    }).thenError([this, current_term, node_id, &logger, &metrics](std::exception_ptr ex) {
-        std::lock_guard<std::mutex> lock(_mutex);
-
-        try {
-            std::rethrow_exception(ex);
-        } catch (const kythira::future_collection_exception& e) {
-            logger.warning("Failed to collect vote majority", {
-                {"node_id", node_id_to_string(node_id)},
-                {"operation", e.get_operation()},
-                {"failed_count", std::to_string(e.get_failed_count())}
-            });
-
-            // Emit election lost metric
-            metrics.set_metric_name("election_lost");
-            metrics.add_dimension("node_id", node_id_to_string(node_id));
-            metrics.add_dimension("reason", "collection_failure");
-            metrics.add_one();
-            metrics.emit();
-
-            // Remain as candidate, will retry on next election timeout
-        } catch (...) {
-            logger.error("Unexpected error during election", {
-                {"node_id", node_id_to_string(node_id)}
-            });
-        }
-    });
+        });
 }
 
 template<raft_types Types>
@@ -2653,10 +2492,8 @@ template<raft_types Types>
 auto node<Types>::become_leader() -> void {
     auto old_state = _state;
 
-    _logger.info("Transitioning to leader", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"term", std::to_string(_current_term)}
-    });
+    _logger.info("Transitioning to leader", {{"node_id", node_id_to_string(_node_id)},
+                                             {"term", std::to_string(_current_term)}});
 
     _state = kythira::server_state::leader;
 
@@ -2702,7 +2539,6 @@ auto node<Types>::append_log_entry(const log_entry_type& entry) -> void {
 
 template<raft_types Types>
 
-
 auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log_entry_type> {
     // Handle invalid index
     if (index == 0) {
@@ -2745,9 +2581,7 @@ auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log
     return _log[vector_index];
 }
 
-
 template<raft_types Types>
-
 
 auto node<Types>::replicate_to_followers() -> void {
     // Only leaders replicate to followers
@@ -2755,12 +2589,11 @@ auto node<Types>::replicate_to_followers() -> void {
         return;
     }
 
-    _logger.debug("Replicating to followers", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"term", std::to_string(_current_term)},
-        {"last_log_index", std::to_string(get_last_log_index())},
-        {"commit_index", std::to_string(_commit_index)}
-    });
+    _logger.debug("Replicating to followers",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"term", std::to_string(_current_term)},
+                   {"last_log_index", std::to_string(get_last_log_index())},
+                   {"commit_index", std::to_string(_commit_index)}});
 
     // Get all nodes in the cluster except ourselves
     std::vector<node_id_type> followers;
@@ -2771,9 +2604,7 @@ auto node<Types>::replicate_to_followers() -> void {
     }
 
     if (followers.empty()) {
-        _logger.debug("No followers to replicate to", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.debug("No followers to replicate to", {{"node_id", node_id_to_string(_node_id)}});
         // For single-node clusters, still need to advance commit index
         advance_commit_index();
         return;
@@ -2787,12 +2618,11 @@ auto node<Types>::replicate_to_followers() -> void {
 
         if (next_idx < first_log_index) {
             // Follower is too far behind - send snapshot
-            _logger.debug("Follower needs snapshot", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"follower", node_id_to_string(follower_id)},
-                {"next_index", std::to_string(next_idx)},
-                {"first_log_index", std::to_string(first_log_index)}
-            });
+            _logger.debug("Follower needs snapshot",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"follower", node_id_to_string(follower_id)},
+                           {"next_index", std::to_string(next_idx)},
+                           {"first_log_index", std::to_string(first_log_index)}});
 
             send_install_snapshot_to(follower_id);
         } else {
@@ -2811,9 +2641,7 @@ auto node<Types>::replicate_to_followers() -> void {
     _metrics.emit();
 }
 
-
 template<raft_types Types>
-
 
 auto node<Types>::send_append_entries_to(node_id_type target) -> void {
     // Only leaders send AppendEntries
@@ -2835,11 +2663,10 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
             prev_log_term = prev_entry->term();
         } else {
             // Previous entry not in log (compacted) - need to send snapshot instead
-            _logger.debug("Previous entry not in log, switching to snapshot", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)},
-                {"prev_log_index", std::to_string(prev_log_index)}
-            });
+            _logger.debug("Previous entry not in log, switching to snapshot",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"prev_log_index", std::to_string(prev_log_index)}});
             send_install_snapshot_to(target);
             return;
         }
@@ -2849,181 +2676,168 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
     std::vector<log_entry_type> entries_to_send;
     auto max_entries = _config.max_entries_per_append();
 
-    for (log_index_type idx = next_idx; idx <= last_log_idx && entries_to_send.size() < max_entries; ++idx) {
+    for (log_index_type idx = next_idx; idx <= last_log_idx && entries_to_send.size() < max_entries;
+         ++idx) {
         auto entry = get_log_entry(idx);
         if (entry.has_value()) {
             entries_to_send.push_back(entry.value());
         } else {
             // Entry not found - should not happen
-            _logger.error("Log entry not found during replication", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"index", std::to_string(idx)}
-            });
+            _logger.error(
+                "Log entry not found during replication",
+                {{"node_id", node_id_to_string(_node_id)}, {"index", std::to_string(idx)}});
             break;
         }
     }
 
     // Create AppendEntries request
-    append_entries_request_type request{
-        _current_term,
-        _node_id,
-        prev_log_index,
-        prev_log_term,
-        entries_to_send,
-        _commit_index
-    };
+    append_entries_request_type request{_current_term, _node_id,        prev_log_index,
+                                        prev_log_term, entries_to_send, _commit_index};
 
-    _logger.debug("Sending AppendEntries", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"target", node_id_to_string(target)},
-        {"term", std::to_string(_current_term)},
-        {"prev_log_index", std::to_string(prev_log_index)},
-        {"prev_log_term", std::to_string(prev_log_term)},
-        {"num_entries", std::to_string(entries_to_send.size())},
-        {"leader_commit", std::to_string(_commit_index)}
-    });
+    _logger.debug("Sending AppendEntries", {{"node_id", node_id_to_string(_node_id)},
+                                            {"target", node_id_to_string(target)},
+                                            {"term", std::to_string(_current_term)},
+                                            {"prev_log_index", std::to_string(prev_log_index)},
+                                            {"prev_log_term", std::to_string(prev_log_term)},
+                                            {"num_entries", std::to_string(entries_to_send.size())},
+                                            {"leader_commit", std::to_string(_commit_index)}});
 
-    // Send RPC with timeout and error handling using ErrorHandler for retry with exponential backoff
+    // Send RPC with timeout and error handling using ErrorHandler for retry with exponential
+    // backoff
     auto timeout = _config.append_entries_timeout();
     auto start_time = std::chrono::steady_clock::now();
 
     try {
         // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-        auto rpc_operation = [this, target, request, timeout]() -> kythira::Future<append_entries_response_type> {
+        auto rpc_operation = [this, target, request,
+                              timeout]() -> kythira::Future<append_entries_response_type> {
             return _network_client.send_append_entries(target, request, timeout);
         };
 
         // Execute with retry using ErrorHandler (exponential backoff with jitter)
-        auto response_future = _append_entries_error_handler.execute_with_retry(
-            "append_entries",
-            rpc_operation
-        );
+        auto response_future =
+            _append_entries_error_handler.execute_with_retry("append_entries", rpc_operation);
 
         // Handle response asynchronously using thenTry to get folly::Try<response>
-        std::move(response_future).thenTry([this, target, next_idx, entries_to_send, start_time](auto try_response) {
-            std::lock_guard<std::mutex> lock(_mutex);
+        std::move(response_future)
+            .thenTry([this, target, next_idx, entries_to_send, start_time](auto try_response) {
+                std::lock_guard<std::mutex> lock(_mutex);
 
-            // Calculate RPC latency (including retry delays)
-            auto end_time = std::chrono::steady_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                // Calculate RPC latency (including retry delays)
+                auto end_time = std::chrono::steady_clock::now();
+                auto latency =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            _metrics.set_metric_name("raft_append_entries_latency");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("target", node_id_to_string(target));
-            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
-            _metrics.emit();
-
-            if (try_response.hasException()) {
-                // RPC failed after all retry attempts - log error and mark follower as unresponsive
-                try {
-                    std::rethrow_exception(try_response.exception());
-                } catch (const std::exception& e) {
-                    auto error_msg = std::format("AppendEntries RPC failed after retries: node_id={}, target={}, error={}",
-                        node_id_to_string(_node_id),
-                        node_id_to_string(target),
-                        e.what());
-                    _logger.warning(error_msg);
-                }
-
-                _unresponsive_followers.insert(target);
-
-                _metrics.set_metric_name("raft_append_entries_failed");
+                _metrics.set_metric_name("raft_append_entries_latency");
                 _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                 _metrics.add_dimension("target", node_id_to_string(target));
-                _metrics.add_one();
+                _metrics.add_duration(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(latency));
                 _metrics.emit();
 
-                return;
-            }
-
-            auto response = try_response.value();
-
-            // Check if we've been deposed
-            if (response.term() > _current_term) {
-                auto msg = std::format(
-                    "Discovered higher term in AppendEntries response, stepping down: node_id={}, old_term={}, new_term={}",
-                    node_id_to_string(_node_id),
-                    _current_term,
-                    response.term()
-                );
-                _logger.info(msg);
-
-                become_follower(response.term());
-                return;
-            }
-
-            // Only process response if we're still leader in the same term
-            if (_state != kythira::server_state::leader || response.term() != _current_term) {
-                return;
-            }
-
-            if (response.success()) {
-                // Success - update next_index and match_index
-                auto new_match_index = next_idx + entries_to_send.size() - 1;
-                _next_index[target] = new_match_index + 1;
-                _match_index[target] = new_match_index;
-
-                // Remove from unresponsive set
-                _unresponsive_followers.erase(target);
-
-                _logger.debug("AppendEntries succeeded", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"target", node_id_to_string(target)},
-                    {"match_index", std::to_string(new_match_index)},
-                    {"next_index", std::to_string(_next_index[target])}
-                });
-
-                _metrics.set_metric_name("raft_entries_replicated");
-                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                _metrics.add_dimension("target", node_id_to_string(target));
-                _metrics.add_count(entries_to_send.size());
-                _metrics.emit();
-
-                // Try to advance commit index
-                advance_commit_index();
-            } else {
-                // Failure - decrement next_index and retry
-                _logger.debug("AppendEntries rejected, decrementing next_index", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"target", node_id_to_string(target)},
-                    {"old_next_index", std::to_string(_next_index[target])}
-                });
-
-                // Use conflict information if available for faster backtracking
-                if (response.conflict_index().has_value()) {
-                    _next_index[target] = response.conflict_index().value();
-                } else {
-                    // Decrement by 1 (conservative approach)
-                    if (_next_index[target] > 1) {
-                        _next_index[target]--;
+                if (try_response.hasException()) {
+                    // RPC failed after all retry attempts - log error and mark follower as
+                    // unresponsive
+                    try {
+                        std::rethrow_exception(try_response.exception());
+                    } catch (const std::exception& e) {
+                        auto error_msg = std::format(
+                            "AppendEntries RPC failed after retries: node_id={}, target={}, "
+                            "error={}",
+                            node_id_to_string(_node_id), node_id_to_string(target), e.what());
+                        _logger.warning(error_msg);
                     }
+
+                    _unresponsive_followers.insert(target);
+
+                    _metrics.set_metric_name("raft_append_entries_failed");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("target", node_id_to_string(target));
+                    _metrics.add_one();
+                    _metrics.emit();
+
+                    return;
                 }
 
-                _logger.debug("Retrying with new next_index", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"target", node_id_to_string(target)},
-                    {"new_next_index", std::to_string(_next_index[target])}
-                });
+                auto response = try_response.value();
 
-                // Retry immediately
-                send_append_entries_to(target);
-            }
-        });
+                // Check if we've been deposed
+                if (response.term() > _current_term) {
+                    auto msg = std::format(
+                        "Discovered higher term in AppendEntries response, stepping down: "
+                        "node_id={}, old_term={}, new_term={}",
+                        node_id_to_string(_node_id), _current_term, response.term());
+                    _logger.info(msg);
+
+                    become_follower(response.term());
+                    return;
+                }
+
+                // Only process response if we're still leader in the same term
+                if (_state != kythira::server_state::leader || response.term() != _current_term) {
+                    return;
+                }
+
+                if (response.success()) {
+                    // Success - update next_index and match_index
+                    auto new_match_index = next_idx + entries_to_send.size() - 1;
+                    _next_index[target] = new_match_index + 1;
+                    _match_index[target] = new_match_index;
+
+                    // Remove from unresponsive set
+                    _unresponsive_followers.erase(target);
+
+                    _logger.debug("AppendEntries succeeded",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"target", node_id_to_string(target)},
+                                   {"match_index", std::to_string(new_match_index)},
+                                   {"next_index", std::to_string(_next_index[target])}});
+
+                    _metrics.set_metric_name("raft_entries_replicated");
+                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                    _metrics.add_dimension("target", node_id_to_string(target));
+                    _metrics.add_count(entries_to_send.size());
+                    _metrics.emit();
+
+                    // Try to advance commit index
+                    advance_commit_index();
+                } else {
+                    // Failure - decrement next_index and retry
+                    _logger.debug("AppendEntries rejected, decrementing next_index",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"target", node_id_to_string(target)},
+                                   {"old_next_index", std::to_string(_next_index[target])}});
+
+                    // Use conflict information if available for faster backtracking
+                    if (response.conflict_index().has_value()) {
+                        _next_index[target] = response.conflict_index().value();
+                    } else {
+                        // Decrement by 1 (conservative approach)
+                        if (_next_index[target] > 1) {
+                            _next_index[target]--;
+                        }
+                    }
+
+                    _logger.debug("Retrying with new next_index",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"target", node_id_to_string(target)},
+                                   {"new_next_index", std::to_string(_next_index[target])}});
+
+                    // Retry immediately
+                    send_append_entries_to(target);
+                }
+            });
 
     } catch (const std::exception& e) {
-        _logger.error("Exception sending AppendEntries", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"target", node_id_to_string(target)},
-            {"error", e.what()}
-        });
+        _logger.error("Exception sending AppendEntries", {{"node_id", node_id_to_string(_node_id)},
+                                                          {"target", node_id_to_string(target)},
+                                                          {"error", e.what()}});
 
         _unresponsive_followers.insert(target);
     }
 }
 
-
 template<raft_types Types>
-
 
 auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     // Only leaders send InstallSnapshot
@@ -3031,19 +2845,15 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
         return;
     }
 
-    _logger.info("Sending InstallSnapshot to follower", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"target", node_id_to_string(target)},
-        {"term", std::to_string(_current_term)}
-    });
+    _logger.info("Sending InstallSnapshot to follower", {{"node_id", node_id_to_string(_node_id)},
+                                                         {"target", node_id_to_string(target)},
+                                                         {"term", std::to_string(_current_term)}});
 
     // Load snapshot from persistence
     auto snapshot_opt = _persistence.load_snapshot();
     if (!snapshot_opt.has_value()) {
-        _logger.error("No snapshot available to send", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"target", node_id_to_string(target)}
-        });
+        _logger.error("No snapshot available to send", {{"node_id", node_id_to_string(_node_id)},
+                                                        {"target", node_id_to_string(target)}});
         return;
     }
 
@@ -3051,13 +2861,12 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     const auto& snapshot_data = snap.state_machine_state();
     auto chunk_size = _config.snapshot_chunk_size();
 
-    _logger.debug("Snapshot details", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(snap.last_included_index())},
-        {"last_included_term", std::to_string(snap.last_included_term())},
-        {"snapshot_size", std::to_string(snapshot_data.size())},
-        {"chunk_size", std::to_string(chunk_size)}
-    });
+    _logger.debug("Snapshot details",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"last_included_index", std::to_string(snap.last_included_index())},
+                   {"last_included_term", std::to_string(snap.last_included_term())},
+                   {"snapshot_size", std::to_string(snapshot_data.size())},
+                   {"chunk_size", std::to_string(chunk_size)}});
 
     // Send snapshot in chunks
     std::size_t offset = 0;
@@ -3070,34 +2879,28 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
         auto current_chunk_size = std::min(remaining, chunk_size);
 
         // Extract chunk data
-        std::vector<std::byte> chunk_data(
-            snapshot_data.begin() + offset,
-            snapshot_data.begin() + offset + current_chunk_size
-        );
+        std::vector<std::byte> chunk_data(snapshot_data.begin() + offset,
+                                          snapshot_data.begin() + offset + current_chunk_size);
 
         // Determine if this is the last chunk
         bool is_last_chunk = (offset + current_chunk_size >= snapshot_data.size());
 
         // Create InstallSnapshot request
-        install_snapshot_request_type request{
-            _current_term,
-            _node_id,
-            snap.last_included_index(),
-            snap.last_included_term(),
-            offset,
-            chunk_data,
-            is_last_chunk
-        };
+        install_snapshot_request_type request{_current_term,
+                                              _node_id,
+                                              snap.last_included_index(),
+                                              snap.last_included_term(),
+                                              offset,
+                                              chunk_data,
+                                              is_last_chunk};
 
-        _logger.debug("Sending snapshot chunk", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"target", node_id_to_string(target)},
-            {"chunk", std::to_string(chunk_num + 1)},
-            {"total_chunks", std::to_string(total_chunks)},
-            {"offset", std::to_string(offset)},
-            {"chunk_size", std::to_string(current_chunk_size)},
-            {"is_last", is_last_chunk ? "true" : "false"}
-        });
+        _logger.debug("Sending snapshot chunk", {{"node_id", node_id_to_string(_node_id)},
+                                                 {"target", node_id_to_string(target)},
+                                                 {"chunk", std::to_string(chunk_num + 1)},
+                                                 {"total_chunks", std::to_string(total_chunks)},
+                                                 {"offset", std::to_string(offset)},
+                                                 {"chunk_size", std::to_string(current_chunk_size)},
+                                                 {"is_last", is_last_chunk ? "true" : "false"}});
 
         // Send RPC with timeout and retry logic using ErrorHandler
         auto timeout = _config.install_snapshot_timeout();
@@ -3105,16 +2908,15 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
 
         try {
             // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-            auto rpc_operation = [this, target, request, timeout]() -> kythira::Future<install_snapshot_response_type> {
+            auto rpc_operation = [this, target, request,
+                                  timeout]() -> kythira::Future<install_snapshot_response_type> {
                 return _network_client.send_install_snapshot(target, request, timeout);
             };
 
             // Execute with retry using ErrorHandler (exponential backoff with jitter)
             // For snapshots, use longer delays and more attempts due to larger data transfers
             auto response_future = _install_snapshot_error_handler.execute_with_retry(
-                "install_snapshot",
-                rpc_operation
-            );
+                "install_snapshot", rpc_operation);
 
             // Wait for response synchronously (snapshot transfer is sequential)
             // Wrap in try-catch to handle exceptions
@@ -3122,13 +2924,11 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
             try {
                 response = std::move(response_future).get();
             } catch (const std::exception& e) {
-                _logger.error(std::format("InstallSnapshot RPC failed after retries: node_id={}, target={}, chunk={}/{}, offset={}, error={}",
-                    node_id_to_string(_node_id),
-                    node_id_to_string(target),
-                    chunk_num + 1,
-                    total_chunks,
-                    offset,
-                    e.what()));
+                _logger.error(
+                    std::format("InstallSnapshot RPC failed after retries: node_id={}, target={}, "
+                                "chunk={}/{}, offset={}, error={}",
+                                node_id_to_string(_node_id), node_id_to_string(target),
+                                chunk_num + 1, total_chunks, offset, e.what()));
 
                 _metrics.set_metric_name("raft_install_snapshot_failed");
                 _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3145,7 +2945,8 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
             }
 
             auto end_time = std::chrono::steady_clock::now();
-            auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto latency =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             _metrics.set_metric_name("raft_install_snapshot_chunk_latency");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3156,11 +2957,9 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
             // Check if we've been deposed
             if (response.term() > _current_term) {
                 auto msg = std::format(
-                    "Discovered higher term in InstallSnapshot response, stepping down: node_id={}, old_term={}, new_term={}",
-                    node_id_to_string(_node_id),
-                    _current_term,
-                    response.term()
-                );
+                    "Discovered higher term in InstallSnapshot response, stepping down: "
+                    "node_id={}, old_term={}, new_term={}",
+                    node_id_to_string(_node_id), _current_term, response.term());
                 _logger.info(msg);
 
                 become_follower(response.term());
@@ -3172,21 +2971,19 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
                 return;
             }
 
-            _logger.debug("Snapshot chunk sent successfully", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)},
-                {"chunk", std::to_string(chunk_num + 1)}
-            });
+            _logger.debug("Snapshot chunk sent successfully",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"chunk", std::to_string(chunk_num + 1)}});
 
         } catch (const std::exception& e) {
-            _logger.error("Exception sending InstallSnapshot chunk", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"target", node_id_to_string(target)},
-                {"chunk", std::to_string(chunk_num + 1)},
-                {"total_chunks", std::to_string(total_chunks)},
-                {"offset", std::to_string(offset)},
-                {"error", e.what()}
-            });
+            _logger.error("Exception sending InstallSnapshot chunk",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"chunk", std::to_string(chunk_num + 1)},
+                           {"total_chunks", std::to_string(total_chunks)},
+                           {"offset", std::to_string(offset)},
+                           {"error", e.what()}});
 
             _metrics.set_metric_name("raft_install_snapshot_failed");
             _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3209,13 +3006,12 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     _next_index[target] = snap.last_included_index() + 1;
     _match_index[target] = snap.last_included_index();
 
-    _logger.info("InstallSnapshot completed successfully", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"target", node_id_to_string(target)},
-        {"last_included_index", std::to_string(snap.last_included_index())},
-        {"total_chunks", std::to_string(total_chunks)},
-        {"total_bytes", std::to_string(snapshot_data.size())}
-    });
+    _logger.info("InstallSnapshot completed successfully",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"target", node_id_to_string(target)},
+                  {"last_included_index", std::to_string(snap.last_included_index())},
+                  {"total_chunks", std::to_string(total_chunks)},
+                  {"total_bytes", std::to_string(snapshot_data.size())}});
 
     _metrics.set_metric_name("raft_install_snapshot_success");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3223,7 +3019,6 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     _metrics.add_value(static_cast<double>(snapshot_data.size()));
     _metrics.emit();
 }
-
 
 template<raft_types Types>
 
@@ -3262,13 +3057,12 @@ auto node<Types>::advance_commit_index() -> void {
                 auto old_commit_index = _commit_index;
                 _commit_index = n;
 
-                _logger.info("Advanced commit index", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"old_commit_index", std::to_string(old_commit_index)},
-                    {"new_commit_index", std::to_string(_commit_index)},
-                    {"replication_count", std::to_string(replication_count)},
-                    {"majority_required", std::to_string(majority)}
-                });
+                _logger.info("Advanced commit index",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"old_commit_index", std::to_string(old_commit_index)},
+                              {"new_commit_index", std::to_string(_commit_index)},
+                              {"replication_count", std::to_string(replication_count)},
+                              {"majority_required", std::to_string(majority)}});
 
                 // Emit commit metric
                 _metrics.set_metric_name("entries_committed");
@@ -3296,13 +3090,12 @@ auto node<Types>::advance_commit_index() -> void {
         // If a follower is significantly behind, mark it as potentially unresponsive
         if (_commit_index > match_idx + 100) {  // Arbitrary threshold
             if (_unresponsive_followers.find(peer_id) == _unresponsive_followers.end()) {
-                _logger.warning("Follower is lagging significantly", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"follower_id", node_id_to_string(peer_id)},
-                    {"follower_match_index", std::to_string(match_idx)},
-                    {"commit_index", std::to_string(_commit_index)},
-                    {"lag", std::to_string(_commit_index - match_idx)}
-                });
+                _logger.warning("Follower is lagging significantly",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"follower_id", node_id_to_string(peer_id)},
+                                 {"follower_match_index", std::to_string(match_idx)},
+                                 {"commit_index", std::to_string(_commit_index)},
+                                 {"lag", std::to_string(_commit_index - match_idx)}});
 
                 _unresponsive_followers.insert(peer_id);
             }
@@ -3326,12 +3119,11 @@ auto node<Types>::apply_committed_entries() -> void {
 
     // Log catchup status if lag is significant
     if (lag > 10) {
-        _logger.info("Applied index catchup needed", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"last_applied", std::to_string(_last_applied)},
-            {"commit_index", std::to_string(_commit_index)},
-            {"lag", std::to_string(lag)}
-        });
+        _logger.info("Applied index catchup needed",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_applied", std::to_string(_last_applied)},
+                      {"commit_index", std::to_string(_commit_index)},
+                      {"lag", std::to_string(lag)}});
 
         // Emit catchup lag metric
         _metrics.set_metric_name("applied_index_lag");
@@ -3353,12 +3145,11 @@ auto node<Types>::apply_committed_entries() -> void {
     bool should_rate_limit = lag > rate_limit_threshold;
     constexpr auto rate_limit_delay = std::chrono::milliseconds(10);
 
-    _logger.debug("Starting entry application", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"entries_to_apply", std::to_string(entries_to_apply)},
-        {"total_lag", std::to_string(lag)},
-        {"rate_limited", should_rate_limit ? "true" : "false"}
-    });
+    _logger.debug("Starting entry application",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"entries_to_apply", std::to_string(entries_to_apply)},
+                   {"total_lag", std::to_string(lag)},
+                   {"rate_limited", should_rate_limit ? "true" : "false"}});
 
     auto catchup_start_time = std::chrono::steady_clock::now();
     log_index_type entries_applied_in_batch = 0;
@@ -3370,23 +3161,21 @@ auto node<Types>::apply_committed_entries() -> void {
         // Get the log entry to apply
         auto entry_opt = get_log_entry(next_index);
         if (!entry_opt.has_value()) {
-            _logger.error("Failed to get log entry for application", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"entry_index", std::to_string(next_index)},
-                {"last_applied", std::to_string(_last_applied)},
-                {"commit_index", std::to_string(_commit_index)}
-            });
+            _logger.error("Failed to get log entry for application",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"entry_index", std::to_string(next_index)},
+                           {"last_applied", std::to_string(_last_applied)},
+                           {"commit_index", std::to_string(_commit_index)}});
             break;
         }
 
         auto& entry = entry_opt.value();
 
-        _logger.debug("Applying log entry to state machine", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"entry_index", std::to_string(entry.index())},
-            {"entry_term", std::to_string(entry.term())},
-            {"command_size", std::to_string(entry.command().size())}
-        });
+        _logger.debug("Applying log entry to state machine",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"entry_index", std::to_string(entry.index())},
+                       {"entry_term", std::to_string(entry.term())},
+                       {"command_size", std::to_string(entry.command().size())}});
 
         auto start_time = std::chrono::steady_clock::now();
 
@@ -3399,14 +3188,14 @@ auto node<Types>::apply_committed_entries() -> void {
             entries_applied_in_batch++;
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-            _logger.debug("Successfully applied log entry", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"entry_index", std::to_string(entry.index())},
-                {"last_applied", std::to_string(_last_applied)},
-                {"application_time_us", std::to_string(duration.count())}
-            });
+            _logger.debug("Successfully applied log entry",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"entry_index", std::to_string(entry.index())},
+                           {"last_applied", std::to_string(_last_applied)},
+                           {"application_time_us", std::to_string(duration.count())}});
 
             // Emit application metric
             _metrics.set_metric_name("entry_applied");
@@ -3418,9 +3207,8 @@ auto node<Types>::apply_committed_entries() -> void {
             // This will fulfill any pending futures waiting for this entry
             // Use shared_ptr to allow the lambda to be called multiple times
             auto shared_result = std::make_shared<std::vector<std::byte>>(std::move(result));
-            _commit_waiter.notify_committed_and_applied(next_index, [shared_result](log_index_type) {
-                return *shared_result;
-            });
+            _commit_waiter.notify_committed_and_applied(
+                next_index, [shared_result](log_index_type) { return *shared_result; });
 
             // Emit commit-to-application latency metric
             _metrics.set_metric_name("commit_to_application_latency");
@@ -3429,15 +3217,13 @@ auto node<Types>::apply_committed_entries() -> void {
             _metrics.emit();
 
         } catch (const std::exception& e) {
-            _logger.error("Failed to apply log entry to state machine", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"entry_index", std::to_string(entry.index())},
-                {"entry_term", std::to_string(entry.term())},
-                {"command_size", std::to_string(entry.command().size())},
-                {"error", e.what()},
-                {"error_type", typeid(e).name()}
-            });
-
+            _logger.error("Failed to apply log entry to state machine",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"entry_index", std::to_string(entry.index())},
+                           {"entry_term", std::to_string(entry.term())},
+                           {"command_size", std::to_string(entry.command().size())},
+                           {"error", e.what()},
+                           {"error_type", typeid(e).name()}});
 
             // Emit application failure metric
             _metrics.set_metric_name("entry_application_failed");
@@ -3452,39 +3238,39 @@ auto node<Types>::apply_committed_entries() -> void {
 
             if (policy == application_failure_policy::halt) {
                 // Halt: Stop applying further entries (safe default)
-                _logger.warning("Halting entry application due to failure (policy: halt)", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"failed_entry_index", std::to_string(entry.index())},
-                    {"last_applied", std::to_string(_last_applied)}
-                });
+                _logger.warning("Halting entry application due to failure (policy: halt)",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"failed_entry_index", std::to_string(entry.index())},
+                                 {"last_applied", std::to_string(_last_applied)}});
 
                 // Propagate error to pending futures
                 auto exception_ptr = std::current_exception();
-                _commit_waiter.notify_committed_and_applied(next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
-                    std::rethrow_exception(exception_ptr);
-                });
+                _commit_waiter.notify_committed_and_applied(
+                    next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
+                        std::rethrow_exception(exception_ptr);
+                    });
 
                 // Stop applying further entries
                 break;
 
             } else if (policy == application_failure_policy::retry) {
                 // Retry: Attempt to retry application with exponential backoff
-                _logger.warning("Retrying entry application due to failure (policy: retry)", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"failed_entry_index", std::to_string(entry.index())},
-                    {"max_attempts", std::to_string(_config.application_retry_max_attempts())}
-                });
+                _logger.warning(
+                    "Retrying entry application due to failure (policy: retry)",
+                    {{"node_id", node_id_to_string(_node_id)},
+                     {"failed_entry_index", std::to_string(entry.index())},
+                     {"max_attempts", std::to_string(_config.application_retry_max_attempts())}});
 
                 bool retry_succeeded = false;
                 auto delay = _config.application_retry_initial_delay();
 
-                for (std::size_t attempt = 1; attempt <= _config.application_retry_max_attempts(); ++attempt) {
-                    _logger.debug("Retry attempt for failed entry", {
-                        {"node_id", node_id_to_string(_node_id)},
-                        {"entry_index", std::to_string(entry.index())},
-                        {"attempt", std::to_string(attempt)},
-                        {"delay_ms", std::to_string(delay.count())}
-                    });
+                for (std::size_t attempt = 1; attempt <= _config.application_retry_max_attempts();
+                     ++attempt) {
+                    _logger.debug("Retry attempt for failed entry",
+                                  {{"node_id", node_id_to_string(_node_id)},
+                                   {"entry_index", std::to_string(entry.index())},
+                                   {"attempt", std::to_string(attempt)},
+                                   {"delay_ms", std::to_string(delay.count())}});
 
                     // Wait before retrying
                     std::this_thread::sleep_for(delay);
@@ -3497,18 +3283,17 @@ auto node<Types>::apply_committed_entries() -> void {
                         _last_applied = next_index;
                         retry_succeeded = true;
 
-                        _logger.info("Successfully applied entry after retry", {
-                            {"node_id", node_id_to_string(_node_id)},
-                            {"entry_index", std::to_string(entry.index())},
-                            {"attempt", std::to_string(attempt)}
-                        });
+                        _logger.info("Successfully applied entry after retry",
+                                     {{"node_id", node_id_to_string(_node_id)},
+                                      {"entry_index", std::to_string(entry.index())},
+                                      {"attempt", std::to_string(attempt)}});
 
                         // Notify CommitWaiter of successful application
                         // Use shared_ptr to allow the lambda to be called multiple times
-                        auto shared_result = std::make_shared<std::vector<std::byte>>(std::move(result));
-                        _commit_waiter.notify_committed_and_applied(next_index, [shared_result](log_index_type) {
-                            return *shared_result;
-                        });
+                        auto shared_result =
+                            std::make_shared<std::vector<std::byte>>(std::move(result));
+                        _commit_waiter.notify_committed_and_applied(
+                            next_index, [shared_result](log_index_type) { return *shared_result; });
 
                         // Emit retry success metric
                         _metrics.set_metric_name("entry_application_retry_success");
@@ -3521,33 +3306,32 @@ auto node<Types>::apply_committed_entries() -> void {
                         break;
 
                     } catch (const std::exception& retry_error) {
-                        _logger.warning("Retry attempt failed", {
-                            {"node_id", node_id_to_string(_node_id)},
-                            {"entry_index", std::to_string(entry.index())},
-                            {"attempt", std::to_string(attempt)},
-                            {"error", retry_error.what()}
-                        });
+                        _logger.warning("Retry attempt failed",
+                                        {{"node_id", node_id_to_string(_node_id)},
+                                         {"entry_index", std::to_string(entry.index())},
+                                         {"attempt", std::to_string(attempt)},
+                                         {"error", retry_error.what()}});
 
                         // Calculate next delay with exponential backoff
-                        delay = std::chrono::milliseconds(
-                            static_cast<long long>(delay.count() * _config.application_retry_backoff_multiplier())
-                        );
+                        delay = std::chrono::milliseconds(static_cast<long long>(
+                            delay.count() * _config.application_retry_backoff_multiplier()));
                         delay = std::min(delay, _config.application_retry_max_delay());
                     }
                 }
 
                 if (!retry_succeeded) {
-                    _logger.error("All retry attempts exhausted for entry application", {
-                        {"node_id", node_id_to_string(_node_id)},
-                        {"entry_index", std::to_string(entry.index())},
-                        {"attempts", std::to_string(_config.application_retry_max_attempts())}
-                    });
+                    _logger.error(
+                        "All retry attempts exhausted for entry application",
+                        {{"node_id", node_id_to_string(_node_id)},
+                         {"entry_index", std::to_string(entry.index())},
+                         {"attempts", std::to_string(_config.application_retry_max_attempts())}});
 
                     // Propagate error to pending futures
                     auto exception_ptr = std::current_exception();
-                    _commit_waiter.notify_committed_and_applied(next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
-                        std::rethrow_exception(exception_ptr);
-                    });
+                    _commit_waiter.notify_committed_and_applied(
+                        next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
+                            std::rethrow_exception(exception_ptr);
+                        });
 
                     // Emit retry exhausted metric
                     _metrics.set_metric_name("entry_application_retry_exhausted");
@@ -3562,20 +3346,20 @@ auto node<Types>::apply_committed_entries() -> void {
 
             } else if (policy == application_failure_policy::skip) {
                 // Skip: Skip failed entry and continue (dangerous!)
-                _logger.warning("Skipping failed entry and continuing (policy: skip - DANGEROUS)", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"skipped_entry_index", std::to_string(entry.index())},
-                    {"last_applied", std::to_string(_last_applied)}
-                });
+                _logger.warning("Skipping failed entry and continuing (policy: skip - DANGEROUS)",
+                                {{"node_id", node_id_to_string(_node_id)},
+                                 {"skipped_entry_index", std::to_string(entry.index())},
+                                 {"last_applied", std::to_string(_last_applied)}});
 
                 // Update last_applied to skip this entry
                 _last_applied = next_index;
 
                 // Propagate error to pending futures for this entry
                 auto exception_ptr = std::current_exception();
-                _commit_waiter.notify_committed_and_applied(next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
-                    std::rethrow_exception(exception_ptr);
-                });
+                _commit_waiter.notify_committed_and_applied(
+                    next_index, [exception_ptr](log_index_type) -> std::vector<std::byte> {
+                        std::rethrow_exception(exception_ptr);
+                    });
 
                 // Emit skip metric
                 _metrics.set_metric_name("entry_application_skipped");
@@ -3598,20 +3382,18 @@ auto node<Types>::apply_committed_entries() -> void {
     // Log catchup completion
     auto catchup_end_time = std::chrono::steady_clock::now();
     auto catchup_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-        catchup_end_time - catchup_start_time
-    );
+        catchup_end_time - catchup_start_time);
 
     if (entries_applied_in_batch > 0) {
         auto remaining_lag = _commit_index - _last_applied;
 
-        _logger.info("Applied index catchup batch completed", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"entries_applied", std::to_string(entries_applied_in_batch)},
-            {"last_applied", std::to_string(_last_applied)},
-            {"commit_index", std::to_string(_commit_index)},
-            {"remaining_lag", std::to_string(remaining_lag)},
-            {"duration_ms", std::to_string(catchup_duration.count())}
-        });
+        _logger.info("Applied index catchup batch completed",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"entries_applied", std::to_string(entries_applied_in_batch)},
+                      {"last_applied", std::to_string(_last_applied)},
+                      {"commit_index", std::to_string(_commit_index)},
+                      {"remaining_lag", std::to_string(remaining_lag)},
+                      {"duration_ms", std::to_string(catchup_duration.count())}});
 
         // Emit catchup throughput metric
         _metrics.set_metric_name("catchup_throughput");
@@ -3640,20 +3422,17 @@ template<raft_types Types>
 auto node<Types>::create_snapshot() -> void {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.info("Creating snapshot from current state machine state", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_applied", std::to_string(_last_applied)}
-    });
+    _logger.info("Creating snapshot from current state machine state",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_applied", std::to_string(_last_applied)}});
 
     auto start_time = std::chrono::steady_clock::now();
 
     // Capture current state from state machine
     auto state = _state_machine.get_state();
 
-    _logger.debug("State machine state captured", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"state_size", std::to_string(state.size())}
-    });
+    _logger.debug("State machine state captured", {{"node_id", node_id_to_string(_node_id)},
+                                                   {"state_size", std::to_string(state.size())}});
 
     // Get the term of the last applied entry
     term_id_type last_applied_term = term_id_type{0};
@@ -3665,12 +3444,7 @@ auto node<Types>::create_snapshot() -> void {
     }
 
     // Create snapshot with captured state
-    snapshot_type snap{
-        _last_applied,
-        last_applied_term,
-        _configuration,
-        state
-    };
+    snapshot_type snap{_last_applied, last_applied_term, _configuration, state};
 
     // Persist snapshot to storage
     _persistence.save_snapshot(snap);
@@ -3678,13 +3452,12 @@ auto node<Types>::create_snapshot() -> void {
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    _logger.info("Snapshot created successfully", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(snap.last_included_index())},
-        {"last_included_term", std::to_string(snap.last_included_term())},
-        {"state_size", std::to_string(state.size())},
-        {"duration_ms", std::to_string(duration.count())}
-    });
+    _logger.info("Snapshot created successfully",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_included_index", std::to_string(snap.last_included_index())},
+                  {"last_included_term", std::to_string(snap.last_included_term())},
+                  {"state_size", std::to_string(state.size())},
+                  {"duration_ms", std::to_string(duration.count())}});
 
     // Emit metrics for snapshot creation
     _metrics.set_metric_name("raft_snapshot_created");
@@ -3703,15 +3476,13 @@ auto node<Types>::create_snapshot() -> void {
 
 template<raft_types Types>
 
-
 auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_state) -> void {
     std::lock_guard<std::mutex> lock(_mutex);
 
-    _logger.info("Creating snapshot with provided state", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_applied", std::to_string(_last_applied)},
-        {"state_size", std::to_string(state_machine_state.size())}
-    });
+    _logger.info("Creating snapshot with provided state",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_applied", std::to_string(_last_applied)},
+                  {"state_size", std::to_string(state_machine_state.size())}});
 
     auto start_time = std::chrono::steady_clock::now();
 
@@ -3725,12 +3496,7 @@ auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_st
     }
 
     // Create snapshot with provided state
-    snapshot_type snap{
-        _last_applied,
-        last_applied_term,
-        _configuration,
-        state_machine_state
-    };
+    snapshot_type snap{_last_applied, last_applied_term, _configuration, state_machine_state};
 
     // Persist snapshot to storage
     _persistence.save_snapshot(snap);
@@ -3738,13 +3504,12 @@ auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_st
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-    _logger.info("Snapshot created successfully", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(snap.last_included_index())},
-        {"last_included_term", std::to_string(snap.last_included_term())},
-        {"snapshot_size", std::to_string(state_machine_state.size())},
-        {"duration_ms", std::to_string(duration.count())}
-    });
+    _logger.info("Snapshot created successfully",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_included_index", std::to_string(snap.last_included_index())},
+                  {"last_included_term", std::to_string(snap.last_included_term())},
+                  {"snapshot_size", std::to_string(state_machine_state.size())},
+                  {"duration_ms", std::to_string(duration.count())}});
 
     _metrics.set_metric_name("raft_snapshot_created");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3760,33 +3525,27 @@ auto node<Types>::create_snapshot(const std::vector<std::byte>& state_machine_st
     compact_log();
 }
 
-
 template<raft_types Types>
-
 
 auto node<Types>::compact_log() -> void {
     // Load the most recent snapshot to determine compaction point
     auto snapshot_opt = _persistence.load_snapshot();
     if (!snapshot_opt.has_value()) {
-        _logger.debug("No snapshot available for log compaction", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.debug("No snapshot available for log compaction",
+                      {{"node_id", node_id_to_string(_node_id)}});
         return;
     }
 
     auto& snap = snapshot_opt.value();
     auto last_included_index = snap.last_included_index();
 
-    _logger.info("Compacting log", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(last_included_index)},
-        {"current_log_size", std::to_string(_log.size())}
-    });
+    _logger.info("Compacting log", {{"node_id", node_id_to_string(_node_id)},
+                                    {"last_included_index", std::to_string(last_included_index)},
+                                    {"current_log_size", std::to_string(_log.size())}});
 
     if (_log.empty()) {
-        _logger.debug("Log already empty, no compaction needed", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.debug("Log already empty, no compaction needed",
+                      {{"node_id", node_id_to_string(_node_id)}});
         return;
     }
 
@@ -3794,11 +3553,10 @@ auto node<Types>::compact_log() -> void {
 
     // Check if we have entries to compact
     if (last_included_index < first_log_index) {
-        _logger.debug("Snapshot index is before log start, no compaction needed", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"last_included_index", std::to_string(last_included_index)},
-            {"first_log_index", std::to_string(first_log_index)}
-        });
+        _logger.debug("Snapshot index is before log start, no compaction needed",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"last_included_index", std::to_string(last_included_index)},
+                       {"first_log_index", std::to_string(first_log_index)}});
         return;
     }
 
@@ -3813,9 +3571,7 @@ auto node<Types>::compact_log() -> void {
     }
 
     if (entries_to_remove == 0) {
-        _logger.debug("No entries to compact", {
-            {"node_id", node_id_to_string(_node_id)}
-        });
+        _logger.debug("No entries to compact", {{"node_id", node_id_to_string(_node_id)}});
         return;
     }
 
@@ -3830,13 +3586,12 @@ auto node<Types>::compact_log() -> void {
     auto new_log_size = _log.size();
     auto entries_removed = old_log_size - new_log_size;
 
-    _logger.info("Log compaction completed", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"entries_removed", std::to_string(entries_removed)},
-        {"old_log_size", std::to_string(old_log_size)},
-        {"new_log_size", std::to_string(new_log_size)},
-        {"last_included_index", std::to_string(last_included_index)}
-    });
+    _logger.info("Log compaction completed",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"entries_removed", std::to_string(entries_removed)},
+                  {"old_log_size", std::to_string(old_log_size)},
+                  {"new_log_size", std::to_string(new_log_size)},
+                  {"last_included_index", std::to_string(last_included_index)}});
 
     _metrics.set_metric_name("raft_log_compacted");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3849,22 +3604,21 @@ auto node<Types>::compact_log() -> void {
     _metrics.emit();
 }
 
-
 template<raft_types Types>
 
 auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
     auto start_time = std::chrono::steady_clock::now();
 
-    _logger.info("Installing snapshot to state machine", {
-        {"node_id", node_id_to_string(_node_id)},
-        {"last_included_index", std::to_string(snap.last_included_index())},
-        {"last_included_term", std::to_string(snap.last_included_term())},
-        {"snapshot_size", std::to_string(snap.state_machine_state().size())}
-    });
+    _logger.info("Installing snapshot to state machine",
+                 {{"node_id", node_id_to_string(_node_id)},
+                  {"last_included_index", std::to_string(snap.last_included_index())},
+                  {"last_included_term", std::to_string(snap.last_included_term())},
+                  {"snapshot_size", std::to_string(snap.state_machine_state().size())}});
 
     try {
         // Restore state machine from snapshot
-        _state_machine.restore_from_snapshot(snap.state_machine_state(), snap.last_included_index());
+        _state_machine.restore_from_snapshot(snap.state_machine_state(),
+                                             snap.last_included_index());
 
         // Update last_applied to snapshot's last_included_index
         _last_applied = snap.last_included_index();
@@ -3873,41 +3627,37 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
         if (snap.last_included_index() > _commit_index) {
             _commit_index = snap.last_included_index();
 
-            _logger.debug("Updated commit_index from snapshot", {
-                {"node_id", node_id_to_string(_node_id)},
-                {"new_commit_index", std::to_string(_commit_index)}
-            });
+            _logger.debug("Updated commit_index from snapshot",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"new_commit_index", std::to_string(_commit_index)}});
         }
 
         // Truncate log based on snapshot's last_included_index
         // Remove all entries up to and including the snapshot's last_included_index
         if (!_log.empty() && snap.last_included_index() > 0) {
-            auto entries_to_remove = std::min(
-                static_cast<std::size_t>(snap.last_included_index()),
-                _log.size()
-            );
+            auto entries_to_remove =
+                std::min(static_cast<std::size_t>(snap.last_included_index()), _log.size());
 
             if (entries_to_remove > 0) {
                 _log.erase(_log.begin(), _log.begin() + entries_to_remove);
 
-                _logger.debug("Truncated log after snapshot installation", {
-                    {"node_id", node_id_to_string(_node_id)},
-                    {"entries_removed", std::to_string(entries_to_remove)},
-                    {"remaining_entries", std::to_string(_log.size())}
-                });
+                _logger.debug("Truncated log after snapshot installation",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"entries_removed", std::to_string(entries_to_remove)},
+                               {"remaining_entries", std::to_string(_log.size())}});
             }
         }
 
         auto end_time = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-        _logger.info("Successfully installed snapshot to state machine", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"last_applied", std::to_string(_last_applied)},
-            {"commit_index", std::to_string(_commit_index)},
-            {"remaining_log_entries", std::to_string(_log.size())},
-            {"duration_ms", std::to_string(duration.count())}
-        });
+        _logger.info("Successfully installed snapshot to state machine",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_applied", std::to_string(_last_applied)},
+                      {"commit_index", std::to_string(_commit_index)},
+                      {"remaining_log_entries", std::to_string(_log.size())},
+                      {"duration_ms", std::to_string(duration.count())}});
 
         // Emit metrics for snapshot installation
         _metrics.set_metric_name("raft_snapshot_installation_duration");
@@ -3922,11 +3672,10 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
         _metrics.emit();
 
     } catch (const std::exception& e) {
-        _logger.error("Failed to install snapshot to state machine", {
-            {"node_id", node_id_to_string(_node_id)},
-            {"error", e.what()},
-            {"last_included_index", std::to_string(snap.last_included_index())}
-        });
+        _logger.error("Failed to install snapshot to state machine",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"error", e.what()},
+                       {"last_included_index", std::to_string(snap.last_included_index())}});
 
         _metrics.set_metric_name("raft_snapshot_installation_failure");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -3939,5 +3688,4 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
     }
 }
 
-
-} // namespace kythira
+}  // namespace kythira

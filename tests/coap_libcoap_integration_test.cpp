@@ -13,14 +13,12 @@
 using namespace kythira;
 
 // Test transport types using default_transport_types
-using test_transport_types = kythira::default_transport_types<
-    kythira::Future<kythira::request_vote_response<>>,
-    kythira::json_rpc_serializer<std::vector<std::byte>>,
-    kythira::noop_metrics,
-    kythira::console_logger
->;
+using test_transport_types =
+    kythira::default_transport_types<kythira::Future<kythira::request_vote_response<>>,
+                                     kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                     kythira::noop_metrics, kythira::console_logger>;
 
-BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, *boost::unit_test::timeout(30)) {
     noop_metrics metrics;
 
     coap_client_config config;
@@ -37,11 +35,7 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(
 #ifdef LIBCOAP_AVAILABLE
     // Test real libcoap context creation
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Verify context was created
         logger.info("libcoap context created successfully");
@@ -51,11 +45,7 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(
 #else
     // Test stub implementation
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         logger.warning("Using stub implementation - libcoap not available");
     });
@@ -64,7 +54,7 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, * boost::unit_test::timeout(
 #endif
 }
 
-BOOST_AUTO_TEST_CASE(test_session_management, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_session_management, *boost::unit_test::timeout(30)) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -79,18 +69,14 @@ BOOST_AUTO_TEST_CASE(test_session_management, * boost::unit_test::timeout(30)) {
     logger.info("Testing session management");
 
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Test session creation and reuse
         logger.info("Session management test completed");
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_serialization_caching, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_serialization_caching, *boost::unit_test::timeout(30)) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -105,18 +91,14 @@ BOOST_AUTO_TEST_CASE(test_serialization_caching, * boost::unit_test::timeout(30)
     logger.info("Testing serialization caching");
 
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Test caching functionality
         logger.info("Serialization caching test completed");
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_dtls_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration, *boost::unit_test::timeout(30)) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -134,18 +116,14 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration, * boost::unit_test::timeout(30)) {
     logger.info("Testing DTLS configuration");
 
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Test DTLS setup
         logger.info("DTLS configuration test completed");
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_server_context_creation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_server_context_creation, *boost::unit_test::timeout(30)) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -156,19 +134,14 @@ BOOST_AUTO_TEST_CASE(test_server_context_creation, * boost::unit_test::timeout(3
     logger.info("Testing server context creation");
 
     BOOST_CHECK_NO_THROW({
-        coap_server<test_transport_types> server(
-            "127.0.0.1",
-            5683,
-            config,
-            metrics
-        );
+        coap_server<test_transport_types> server("127.0.0.1", 5683, config, metrics);
 
         // Test server initialization
         logger.info("Server context creation test completed");
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, *boost::unit_test::timeout(30)) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -183,11 +156,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, * boost::unit_test::timeout(3
     logger.info("Testing enhanced error handling");
 
     BOOST_CHECK_NO_THROW({
-        coap_client<test_transport_types> client(
-            std::move(endpoints),
-            config,
-            metrics
-        );
+        coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Test error handling during initialization
         logger.info("Enhanced error handling test completed");

@@ -22,33 +22,33 @@ inline auto operator<<(std::ostream& os, coap_content_format format) -> std::ost
 }
 
 namespace {
-    // Test constants
-    constexpr std::chrono::milliseconds valid_timeout{2000};
-    constexpr std::chrono::milliseconds invalid_timeout{-1000};
-    constexpr std::size_t valid_max_retransmit = 4;
-    constexpr std::size_t invalid_max_retransmit = 0;
-    constexpr std::size_t valid_max_sessions = 100;
-    constexpr std::size_t invalid_max_sessions = 0;
-    constexpr std::chrono::seconds valid_session_timeout{300};
-    constexpr std::chrono::seconds invalid_session_timeout{-300};
-    constexpr std::size_t valid_block_size = 1024;
-    constexpr std::size_t invalid_block_size = 100;
-    constexpr double valid_backoff_factor = 2.0;
-    constexpr double invalid_backoff_factor_low = 0.5;
-    constexpr double invalid_backoff_factor_high = 15.0;
+// Test constants
+constexpr std::chrono::milliseconds valid_timeout{2000};
+constexpr std::chrono::milliseconds invalid_timeout{-1000};
+constexpr std::size_t valid_max_retransmit = 4;
+constexpr std::size_t invalid_max_retransmit = 0;
+constexpr std::size_t valid_max_sessions = 100;
+constexpr std::size_t invalid_max_sessions = 0;
+constexpr std::chrono::seconds valid_session_timeout{300};
+constexpr std::chrono::seconds invalid_session_timeout{-300};
+constexpr std::size_t valid_block_size = 1024;
+constexpr std::size_t invalid_block_size = 100;
+constexpr double valid_backoff_factor = 2.0;
+constexpr double invalid_backoff_factor_low = 0.5;
+constexpr double invalid_backoff_factor_high = 15.0;
 
-    constexpr const char* valid_cert_file = "/path/to/cert.pem";
-    constexpr const char* valid_key_file = "/path/to/key.pem";
-    constexpr const char* valid_ca_file = "/path/to/ca.pem";
-    constexpr const char* valid_psk_identity = "test_identity";
-    constexpr const char* valid_multicast_address = "224.0.1.187";
-    constexpr std::uint16_t valid_multicast_port = 5683;
-    constexpr std::uint16_t invalid_multicast_port = 0;
+constexpr const char* valid_cert_file = "/path/to/cert.pem";
+constexpr const char* valid_key_file = "/path/to/key.pem";
+constexpr const char* valid_ca_file = "/path/to/ca.pem";
+constexpr const char* valid_psk_identity = "test_identity";
+constexpr const char* valid_multicast_address = "224.0.1.187";
+constexpr std::uint16_t valid_multicast_port = 5683;
+constexpr std::uint16_t invalid_multicast_port = 0;
 }
 
 BOOST_AUTO_TEST_SUITE(CoAPClientConfigTests)
 
-BOOST_AUTO_TEST_CASE(test_valid_client_config, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_valid_client_config, *boost::unit_test::timeout(15)) {
     coap_client_config config;
     config.ack_timeout = valid_timeout;
     config.max_retransmit = valid_max_retransmit;
@@ -60,14 +60,14 @@ BOOST_AUTO_TEST_CASE(test_valid_client_config, * boost::unit_test::timeout(15)) 
     BOOST_CHECK_NO_THROW(validate_client_config(config));
 }
 
-BOOST_AUTO_TEST_CASE(test_client_config_invalid_timeout, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_client_config_invalid_timeout, *boost::unit_test::timeout(15)) {
     coap_client_config config;
     config.ack_timeout = invalid_timeout;
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_transport_error);
 }
 
-BOOST_AUTO_TEST_CASE(test_client_config_invalid_max_retransmit, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_client_config_invalid_max_retransmit, *boost::unit_test::timeout(15)) {
     coap_client_config config;
     config.max_retransmit = invalid_max_retransmit;
 
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_invalid_max_retransmit, * boost::unit_te
 
 BOOST_AUTO_TEST_CASE(test_client_config_excessive_max_retransmit) {
     coap_client_config config;
-    config.max_retransmit = 25; // Too high
+    config.max_retransmit = 25;  // Too high
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_transport_error);
 }
@@ -139,7 +139,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_dtls_psk_auth) {
     coap_client_config config;
     config.enable_dtls = true;
     config.psk_identity = valid_psk_identity;
-    config.psk_key = std::vector<std::byte>(16, std::byte{0x42}); // 16 bytes
+    config.psk_key = std::vector<std::byte>(16, std::byte{0x42});  // 16 bytes
 
     BOOST_CHECK_NO_THROW(validate_client_config(config));
 }
@@ -159,7 +159,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_dtls_psk_key_too_short) {
     coap_client_config config;
     config.enable_dtls = true;
     config.psk_identity = valid_psk_identity;
-    config.psk_key = std::vector<std::byte>(2, std::byte{0x42}); // Too short
+    config.psk_key = std::vector<std::byte>(2, std::byte{0x42});  // Too short
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_security_error);
 }
@@ -168,7 +168,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_dtls_psk_key_too_long) {
     coap_client_config config;
     config.enable_dtls = true;
     config.psk_identity = valid_psk_identity;
-    config.psk_key = std::vector<std::byte>(100, std::byte{0x42}); // Too long
+    config.psk_key = std::vector<std::byte>(100, std::byte{0x42});  // Too long
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_security_error);
 }
@@ -176,7 +176,7 @@ BOOST_AUTO_TEST_CASE(test_client_config_dtls_psk_key_too_long) {
 BOOST_AUTO_TEST_CASE(test_client_config_dtls_psk_identity_too_long) {
     coap_client_config config;
     config.enable_dtls = true;
-    config.psk_identity = std::string(200, 'x'); // Too long
+    config.psk_identity = std::string(200, 'x');  // Too long
     config.psk_key = std::vector<std::byte>(16, std::byte{0x42});
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_security_error);
@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(test_server_config_invalid_max_request_size_zero) {
 
 BOOST_AUTO_TEST_CASE(test_server_config_invalid_max_request_size_too_large) {
     coap_server_config config;
-    config.max_request_size = 128 * 1024 * 1024; // 128 MB, too large
+    config.max_request_size = 128 * 1024 * 1024;  // 128 MB, too large
 
     BOOST_CHECK_THROW(validate_server_config(config), coap_transport_error);
 }
@@ -254,7 +254,7 @@ BOOST_AUTO_TEST_CASE(test_server_config_multicast_invalid_port) {
 BOOST_AUTO_TEST_CASE(test_server_config_multicast_invalid_address) {
     coap_server_config config;
     config.enable_multicast = true;
-    config.multicast_address = "192.168.1.1"; // Not a multicast address
+    config.multicast_address = "192.168.1.1";  // Not a multicast address
     config.multicast_port = valid_multicast_port;
 
     BOOST_CHECK_THROW(validate_server_config(config), coap_transport_error);
@@ -263,7 +263,7 @@ BOOST_AUTO_TEST_CASE(test_server_config_multicast_invalid_address) {
 BOOST_AUTO_TEST_CASE(test_server_config_multicast_ipv6_address) {
     coap_server_config config;
     config.enable_multicast = true;
-    config.multicast_address = "ff02::1"; // IPv6 multicast
+    config.multicast_address = "ff02::1";  // IPv6 multicast
     config.multicast_port = valid_multicast_port;
 
     BOOST_CHECK_NO_THROW(validate_server_config(config));
@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(test_parse_endpoint_default_coap_port) {
 
     BOOST_CHECK_EQUAL(parsed.scheme, "coap");
     BOOST_CHECK_EQUAL(parsed.host, "example.com");
-    BOOST_CHECK_EQUAL(parsed.port, 5683); // Default CoAP port
+    BOOST_CHECK_EQUAL(parsed.port, 5683);  // Default CoAP port
     BOOST_CHECK(parsed.path.empty());
 }
 
@@ -319,7 +319,7 @@ BOOST_AUTO_TEST_CASE(test_parse_endpoint_default_coaps_port) {
 
     BOOST_CHECK_EQUAL(parsed.scheme, "coaps");
     BOOST_CHECK_EQUAL(parsed.host, "example.com");
-    BOOST_CHECK_EQUAL(parsed.port, 5684); // Default CoAPS port
+    BOOST_CHECK_EQUAL(parsed.port, 5684);  // Default CoAPS port
     BOOST_CHECK(parsed.path.empty());
 }
 
@@ -406,7 +406,7 @@ BOOST_AUTO_TEST_SUITE(TokenGenerationTests)
 BOOST_AUTO_TEST_CASE(test_generate_coap_token_default_length) {
     auto token = generate_coap_token();
 
-    BOOST_CHECK_EQUAL(token.size(), 4); // Default length
+    BOOST_CHECK_EQUAL(token.size(), 4);  // Default length
     BOOST_CHECK(is_valid_coap_token(token));
 }
 
@@ -437,7 +437,7 @@ BOOST_AUTO_TEST_CASE(test_generate_coap_token_uniqueness) {
 
 BOOST_AUTO_TEST_CASE(test_is_valid_coap_token) {
     // Valid tokens (0-8 bytes)
-    BOOST_CHECK(is_valid_coap_token({})); // Empty token is valid
+    BOOST_CHECK(is_valid_coap_token({}));  // Empty token is valid
     BOOST_CHECK(is_valid_coap_token(std::vector<std::byte>(1, std::byte{0x42})));
     BOOST_CHECK(is_valid_coap_token(std::vector<std::byte>(8, std::byte{0x42})));
 
@@ -452,24 +452,30 @@ BOOST_AUTO_TEST_SUITE(ContentFormatTests)
 BOOST_AUTO_TEST_CASE(test_get_content_format_for_serializer) {
     BOOST_CHECK(get_content_format_for_serializer("json") == coap_content_format::application_json);
     BOOST_CHECK(get_content_format_for_serializer("JSON") == coap_content_format::application_json);
-    BOOST_CHECK(get_content_format_for_serializer("json_serializer") == coap_content_format::application_json);
+    BOOST_CHECK(get_content_format_for_serializer("json_serializer") ==
+                coap_content_format::application_json);
 
     BOOST_CHECK(get_content_format_for_serializer("cbor") == coap_content_format::application_cbor);
     BOOST_CHECK(get_content_format_for_serializer("CBOR") == coap_content_format::application_cbor);
-    BOOST_CHECK(get_content_format_for_serializer("cbor_serializer") == coap_content_format::application_cbor);
+    BOOST_CHECK(get_content_format_for_serializer("cbor_serializer") ==
+                coap_content_format::application_cbor);
 
     BOOST_CHECK(get_content_format_for_serializer("xml") == coap_content_format::application_xml);
     BOOST_CHECK(get_content_format_for_serializer("text") == coap_content_format::text_plain);
 
     // Unknown serializer defaults to CBOR
-    BOOST_CHECK(get_content_format_for_serializer("unknown") == coap_content_format::application_cbor);
+    BOOST_CHECK(get_content_format_for_serializer("unknown") ==
+                coap_content_format::application_cbor);
 }
 
 BOOST_AUTO_TEST_CASE(test_content_format_to_string) {
     BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::text_plain), "text/plain");
-    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_json), "application/json");
-    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_cbor), "application/cbor");
-    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_xml), "application/xml");
+    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_json),
+                      "application/json");
+    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_cbor),
+                      "application/cbor");
+    BOOST_CHECK_EQUAL(content_format_to_string(coap_content_format::application_xml),
+                      "application/xml");
 }
 
 BOOST_AUTO_TEST_CASE(test_parse_content_format) {
@@ -496,9 +502,9 @@ BOOST_AUTO_TEST_CASE(test_calculate_block_size_szx) {
 }
 
 BOOST_AUTO_TEST_CASE(test_calculate_block_size_szx_invalid) {
-    BOOST_CHECK_THROW(calculate_block_size_szx(8), coap_transport_error);   // Too small
-    BOOST_CHECK_THROW(calculate_block_size_szx(2048), coap_transport_error); // Too large
-    BOOST_CHECK_THROW(calculate_block_size_szx(100), coap_transport_error);  // Not power of 2
+    BOOST_CHECK_THROW(calculate_block_size_szx(8), coap_transport_error);     // Too small
+    BOOST_CHECK_THROW(calculate_block_size_szx(2048), coap_transport_error);  // Too large
+    BOOST_CHECK_THROW(calculate_block_size_szx(100), coap_transport_error);   // Not power of 2
 }
 
 BOOST_AUTO_TEST_CASE(test_szx_to_block_size) {
@@ -525,9 +531,9 @@ BOOST_AUTO_TEST_CASE(test_is_valid_block_size) {
     BOOST_CHECK(is_valid_block_size(512));
     BOOST_CHECK(is_valid_block_size(1024));
 
-    BOOST_CHECK(!is_valid_block_size(8));    // Too small
-    BOOST_CHECK(!is_valid_block_size(2048)); // Too large
-    BOOST_CHECK(!is_valid_block_size(100));  // Not power of 2
+    BOOST_CHECK(!is_valid_block_size(8));     // Too small
+    BOOST_CHECK(!is_valid_block_size(2048));  // Too large
+    BOOST_CHECK(!is_valid_block_size(100));   // Not power of 2
 }
 
 BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
@@ -541,7 +547,7 @@ BOOST_AUTO_TEST_CASE(test_block_option_parse_and_encode) {
     auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 42);
     BOOST_CHECK_EQUAL(parsed.more_blocks, true);
-    BOOST_CHECK_EQUAL(parsed.block_size, 64); // SZX=2 -> 2^(2+4) = 64
+    BOOST_CHECK_EQUAL(parsed.block_size, 64);  // SZX=2 -> 2^(2+4) = 64
 
     auto encoded = parsed.encode();
     BOOST_CHECK_EQUAL(encoded, option_value);
@@ -556,7 +562,7 @@ BOOST_AUTO_TEST_CASE(test_block_option_no_more_blocks) {
     auto parsed = kythira::block_option::parse(option_value);
     BOOST_CHECK_EQUAL(parsed.block_number, 10);
     BOOST_CHECK_EQUAL(parsed.more_blocks, false);
-    BOOST_CHECK_EQUAL(parsed.block_size, 128); // SZX=3 -> 2^(3+4) = 128
+    BOOST_CHECK_EQUAL(parsed.block_size, 128);  // SZX=3 -> 2^(3+4) = 128
 
     auto encoded = parsed.encode();
     BOOST_CHECK_EQUAL(encoded, option_value);

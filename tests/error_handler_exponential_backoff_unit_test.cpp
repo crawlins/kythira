@@ -23,11 +23,11 @@ struct FollyInitFixture {
 BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t test_max_attempts = 5;
-    constexpr std::chrono::milliseconds test_initial_delay{100};
-    constexpr std::chrono::milliseconds test_max_delay{2000};
-    constexpr double test_backoff_multiplier = 2.0;
-    constexpr double test_jitter_factor = 0.1;
+constexpr std::size_t test_max_attempts = 5;
+constexpr std::chrono::milliseconds test_initial_delay{100};
+constexpr std::chrono::milliseconds test_max_delay{2000};
+constexpr double test_backoff_multiplier = 2.0;
+constexpr double test_jitter_factor = 0.1;
 }
 
 /**
@@ -36,19 +36,17 @@ namespace {
  * This test verifies that the ErrorHandler correctly calculates delays
  * with exponential backoff, capping at max_delay, and applying jitter.
  */
-BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, *boost::unit_test::timeout(30)) {
     using namespace kythira;
 
     // Create error handler with test policy
     error_handler<int> handler;
 
-    typename error_handler<int>::retry_policy policy{
-        .initial_delay = test_initial_delay,
-        .max_delay = test_max_delay,
-        .backoff_multiplier = test_backoff_multiplier,
-        .jitter_factor = test_jitter_factor,
-        .max_attempts = test_max_attempts
-    };
+    typename error_handler<int>::retry_policy policy{.initial_delay = test_initial_delay,
+                                                     .max_delay = test_max_delay,
+                                                     .backoff_multiplier = test_backoff_multiplier,
+                                                     .jitter_factor = test_jitter_factor,
+                                                     .max_attempts = test_max_attempts};
 
     handler.set_retry_policy("test_operation", policy);
 
@@ -86,8 +84,7 @@ BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, * boost::unit_test::t
         auto delay = test_initial_delay;
         for (std::size_t j = 1; j < i; ++j) {
             delay = std::chrono::milliseconds{
-                static_cast<long long>(delay.count() * test_backoff_multiplier)
-            };
+                static_cast<long long>(delay.count() * test_backoff_multiplier)};
         }
         delay = std::min(delay, test_max_delay);
         expected_min_delay += delay;
@@ -107,7 +104,7 @@ BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, * boost::unit_test::t
 /**
  * @brief Test delay capping at max_delay
  */
-BOOST_AUTO_TEST_CASE(test_delay_capping, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_delay_capping, *boost::unit_test::timeout(30)) {
     using namespace kythira;
 
     error_handler<int> handler;
@@ -118,8 +115,7 @@ BOOST_AUTO_TEST_CASE(test_delay_capping, * boost::unit_test::timeout(30)) {
         .max_delay = std::chrono::milliseconds{200},  // Cap at 200ms
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,  // No jitter for predictable testing
-        .max_attempts = 5
-    };
+        .max_attempts = 5};
 
     handler.set_retry_policy("test_capping", policy);
 
@@ -127,8 +123,7 @@ BOOST_AUTO_TEST_CASE(test_delay_capping, * boost::unit_test::timeout(30)) {
 
     auto operation = [&attempt_count]() -> Future<int> {
         attempt_count++;
-        return FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("Test failure"));
+        return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
     };
 
     auto start_time = std::chrono::steady_clock::now();
@@ -159,7 +154,7 @@ BOOST_AUTO_TEST_CASE(test_delay_capping, * boost::unit_test::timeout(30)) {
 /**
  * @brief Test jitter application
  */
-BOOST_AUTO_TEST_CASE(test_jitter_application, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_jitter_application, *boost::unit_test::timeout(30)) {
     using namespace kythira;
 
     error_handler<int> handler;
@@ -169,8 +164,7 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, * boost::unit_test::timeout(30)) {
         .max_delay = std::chrono::milliseconds{1000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.2,  // 20% jitter
-        .max_attempts = 3
-    };
+        .max_attempts = 3};
 
     handler.set_retry_policy("test_jitter", policy);
 
@@ -182,8 +176,7 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, * boost::unit_test::timeout(30)) {
 
         auto operation = [&attempt_count]() -> Future<int> {
             attempt_count++;
-            return FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error("Test failure"));
+            return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
         };
 
         auto start_time = std::chrono::steady_clock::now();
@@ -196,7 +189,8 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, * boost::unit_test::timeout(30)) {
         }
 
         auto end_time = std::chrono::steady_clock::now();
-        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto total_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         total_times.push_back(total_time);
     }
 
@@ -222,7 +216,7 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, * boost::unit_test::timeout(30)) {
 /**
  * @brief Test that delays are actually applied (not 0ms)
  */
-BOOST_AUTO_TEST_CASE(test_delays_actually_applied, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_delays_actually_applied, *boost::unit_test::timeout(30)) {
     using namespace kythira;
 
     error_handler<int> handler;
@@ -232,8 +226,7 @@ BOOST_AUTO_TEST_CASE(test_delays_actually_applied, * boost::unit_test::timeout(3
         .max_delay = std::chrono::milliseconds{1000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.0,
-        .max_attempts = 3
-    };
+        .max_attempts = 3};
 
     handler.set_retry_policy("test_applied", policy);
 
@@ -243,8 +236,7 @@ BOOST_AUTO_TEST_CASE(test_delays_actually_applied, * boost::unit_test::timeout(3
     auto operation = [&attempt_count, &attempt_times]() -> Future<int> {
         attempt_times.push_back(std::chrono::steady_clock::now());
         attempt_count++;
-        return FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("Test failure"));
+        return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
     };
 
     try {
@@ -257,10 +249,10 @@ BOOST_AUTO_TEST_CASE(test_delays_actually_applied, * boost::unit_test::timeout(3
     BOOST_REQUIRE_EQUAL(attempt_times.size(), 3);
 
     // Check delays between attempts
-    auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(
-        attempt_times[1] - attempt_times[0]);
-    auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(
-        attempt_times[2] - attempt_times[1]);
+    auto delay1 =
+        std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[1] - attempt_times[0]);
+    auto delay2 =
+        std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[2] - attempt_times[1]);
 
     std::cout << "Delay between attempt 1 and 2: " << delay1.count() << "ms" << std::endl;
     std::cout << "Delay between attempt 2 and 3: " << delay2.count() << "ms" << std::endl;

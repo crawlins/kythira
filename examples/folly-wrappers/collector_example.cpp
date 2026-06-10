@@ -22,13 +22,13 @@
 #include <folly/init/Init.h>
 
 namespace {
-    constexpr const char* test_value_prefix = "Result";
-    constexpr const char* test_error_message = "Collector test exception";
-    constexpr std::chrono::milliseconds short_delay{50};
-    constexpr std::chrono::milliseconds medium_delay{100};
-    constexpr std::chrono::milliseconds long_delay{200};
-    constexpr std::size_t test_future_count = 5;
-    constexpr std::size_t test_collect_n = 3;
+constexpr const char* test_value_prefix = "Result";
+constexpr const char* test_error_message = "Collector test exception";
+constexpr std::chrono::milliseconds short_delay{50};
+constexpr std::chrono::milliseconds medium_delay{100};
+constexpr std::chrono::milliseconds long_delay{200};
+constexpr std::size_t test_future_count = 5;
+constexpr std::size_t test_collect_n = 3;
 }
 
 class CollectorExampleRunner {
@@ -109,14 +109,14 @@ private:
             // Verify all results
             if (results.size() != 3) {
                 std::cout << "  ❌ collectAll result count mismatch: expected 3, got "
-                         << results.size() << "\n";
+                          << results.size() << "\n";
                 return false;
             }
 
             for (std::size_t i = 0; i < results.size(); ++i) {
                 if (!results[i].hasValue() || results[i].value() != static_cast<int>(i + 1)) {
                     std::cout << "  ❌ collectAll result[" << i << "] mismatch: expected "
-                             << (i + 1) << ", got ";
+                              << (i + 1) << ", got ";
                     if (results[i].hasValue()) {
                         std::cout << results[i].value();
                     } else {
@@ -140,7 +140,8 @@ private:
         try {
             // Create futures with different delays (first should complete first)
             std::vector<kythira::Future<int>> futures;
-            futures.push_back(create_delayed_future(100, short_delay));  // This should complete first
+            futures.push_back(
+                create_delayed_future(100, short_delay));  // This should complete first
             futures.push_back(create_delayed_future(200, long_delay));
             futures.push_back(create_delayed_future(300, long_delay));
 
@@ -151,7 +152,8 @@ private:
 
             // Should return quickly (after short_delay)
             if (elapsed > medium_delay) {
-                std::cout << "  ❌ collectAny took too long (should return after first completion)\n";
+                std::cout
+                    << "  ❌ collectAny took too long (should return after first completion)\n";
                 return false;
             }
 
@@ -169,7 +171,7 @@ private:
 
             if (std::get<0>(result) != 0) {  // Should be index 0 (first future)
                 std::cout << "  ❌ collectAny index mismatch: expected 0, got "
-                         << std::get<0>(result) << "\n";
+                          << std::get<0>(result) << "\n";
                 return false;
             }
 
@@ -186,13 +188,14 @@ private:
         try {
             // Create futures: first fails, second succeeds
             std::vector<kythira::Future<int>> futures;
-            futures.push_back(create_exceptional_future(short_delay));  // This fails first
+            futures.push_back(create_exceptional_future(short_delay));   // This fails first
             futures.push_back(create_delayed_future(42, medium_delay));  // This succeeds
             futures.push_back(create_delayed_future(99, long_delay));
 
             // Collect any successful future
             auto start_time = std::chrono::steady_clock::now();
-            auto result = kythira::FutureCollector::collectAnyWithoutException(std::move(futures)).get();
+            auto result =
+                kythira::FutureCollector::collectAnyWithoutException(std::move(futures)).get();
             auto elapsed = std::chrono::steady_clock::now() - start_time;
 
             // Should wait for the first successful future (medium_delay)
@@ -204,13 +207,13 @@ private:
             // Verify we got the successful result
             if (std::get<1>(result) != 42) {
                 std::cout << "  ❌ collectAnyWithoutException value mismatch: expected 42, got "
-                         << std::get<1>(result) << "\n";
+                          << std::get<1>(result) << "\n";
                 return false;
             }
 
             if (std::get<0>(result) != 1) {  // Should be index 1 (second future)
                 std::cout << "  ❌ collectAnyWithoutException index mismatch: expected 1, got "
-                         << std::get<0>(result) << "\n";
+                          << std::get<0>(result) << "\n";
                 return false;
             }
 
@@ -234,11 +237,13 @@ private:
 
             // Collect first N futures
             auto start_time = std::chrono::steady_clock::now();
-            auto results = kythira::FutureCollector::collectN(std::move(futures), test_collect_n).get();
+            auto results =
+                kythira::FutureCollector::collectN(std::move(futures), test_collect_n).get();
             auto elapsed = std::chrono::steady_clock::now() - start_time;
 
             // Should return after the Nth future completes
-            auto expected_delay = short_delay + std::chrono::milliseconds((test_collect_n - 1) * 25);
+            auto expected_delay =
+                short_delay + std::chrono::milliseconds((test_collect_n - 1) * 25);
             if (elapsed < expected_delay) {
                 std::cout << "  ❌ collectN returned too quickly\n";
                 return false;
@@ -246,8 +251,8 @@ private:
 
             // Verify we got N results
             if (results.size() != test_collect_n) {
-                std::cout << "  ❌ collectN result count mismatch: expected "
-                         << test_collect_n << ", got " << results.size() << "\n";
+                std::cout << "  ❌ collectN result count mismatch: expected " << test_collect_n
+                          << ", got " << results.size() << "\n";
                 return false;
             }
 
@@ -314,7 +319,7 @@ private:
 
             if (exception_message != test_error_message) {
                 std::cout << "  ❌ Exception message mismatch in collectAll: expected '"
-                         << test_error_message << "', got '" << exception_message << "'\n";
+                          << test_error_message << "', got '" << exception_message << "'\n";
                 return false;
             }
 

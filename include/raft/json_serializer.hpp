@@ -16,7 +16,8 @@ requires std::ranges::range<Data> && std::same_as<std::ranges::range_value_t<Dat
 class json_rpc_serializer {
 public:
     // Serialize RequestVote Request
-    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
     auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "request_vote_request";
@@ -42,7 +43,8 @@ public:
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
-    auto serialize(const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const -> Data {
+    auto serialize(const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "append_entries_request";
         obj["term"] = req.term();
@@ -85,7 +87,8 @@ public:
     }
 
     // Serialize InstallSnapshot Request
-    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
     auto serialize(const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "install_snapshot_request";
@@ -111,8 +114,10 @@ public:
     }
 
     // Deserialize RequestVote Request
-    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    auto deserialize_request_vote_request(const Data& data) const -> request_vote_request<NodeId, TermId, LogIndex> {
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    auto deserialize_request_vote_request(const Data& data) const
+        -> request_vote_request<NodeId, TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -136,7 +141,8 @@ public:
 
     // Deserialize RequestVote Response
     template<typename TermId = std::uint64_t>
-    auto deserialize_request_vote_response(const Data& data) const -> request_vote_response<TermId> {
+    auto deserialize_request_vote_response(const Data& data) const
+        -> request_vote_response<TermId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -154,7 +160,8 @@ public:
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
-    auto deserialize_append_entries_request(const Data& data) const -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
+    auto deserialize_append_entries_request(const Data& data) const
+        -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -190,7 +197,8 @@ public:
 
     // Deserialize AppendEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    auto deserialize_append_entries_response(const Data& data) const -> append_entries_response<TermId, LogIndex> {
+    auto deserialize_append_entries_response(const Data& data) const
+        -> append_entries_response<TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -214,8 +222,10 @@ public:
     }
 
     // Deserialize InstallSnapshot Request
-    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    auto deserialize_install_snapshot_request(const Data& data) const -> install_snapshot_request<NodeId, TermId, LogIndex> {
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    auto deserialize_install_snapshot_request(const Data& data) const
+        -> install_snapshot_request<NodeId, TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -242,7 +252,8 @@ public:
 
     // Deserialize InstallSnapshot Response
     template<typename TermId = std::uint64_t>
-    auto deserialize_install_snapshot_response(const Data& data) const -> install_snapshot_response<TermId> {
+    auto deserialize_install_snapshot_response(const Data& data) const
+        -> install_snapshot_response<TermId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
 
@@ -257,8 +268,7 @@ public:
     }
 
     // Generic deserialize method that dispatches to specific deserialize methods
-    template<typename T>
-    auto deserialize(const Data& data) const -> T {
+    template<typename T> auto deserialize(const Data& data) const -> T {
         if constexpr (std::same_as<T, request_vote_request<>>) {
             return deserialize_request_vote_request(data);
         } else if constexpr (std::same_as<T, request_vote_response<>>) {
@@ -277,9 +287,7 @@ public:
     }
 
     // Provide name method for content format detection
-    auto name() const -> std::string {
-        return "json";
-    }
+    auto name() const -> std::string { return "json"; }
 
 private:
     // Helper to convert JSON string to bytes
@@ -288,7 +296,7 @@ private:
         if constexpr (requires { result.resize(0); }) {
             result.resize(json_str.size());
             std::transform(json_str.begin(), json_str.end(), result.begin(),
-                          [](char c) { return static_cast<std::byte>(c); });
+                           [](char c) { return static_cast<std::byte>(c); });
         }
         return result;
     }
@@ -337,23 +345,18 @@ private:
     // Helper to convert base64 to bytes
     auto base64_to_bytes(const std::string& base64) const -> std::vector<std::byte> {
         static const unsigned char base64_table[256] = {
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
-            52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
-            64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
-            15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
-            64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-            41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
-            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64
-        };
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62,
+            64, 64, 64, 63, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64, 64, 0,
+            1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+            23, 24, 25, 64, 64, 64, 64, 64, 64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
+            39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+            64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64};
 
         std::vector<std::byte> result;
         int val = 0;
@@ -380,4 +383,4 @@ static_assert(rpc_serializer<json_rpc_serializer<std::vector<std::byte>>, std::v
 // Convenience type alias for the default JSON serializer
 using json_serializer = json_rpc_serializer<std::vector<std::byte>>;
 
-} // namespace kythira
+}  // namespace kythira

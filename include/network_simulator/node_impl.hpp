@@ -19,8 +19,7 @@
 namespace network_simulator {
 
 // Ephemeral port allocation implementation
-template<typename Types>
-auto NetworkNode<Types>::allocate_ephemeral_port() -> port_type {
+template<typename Types> auto NetworkNode<Types>::allocate_ephemeral_port() -> port_type {
     std::lock_guard<std::mutex> lock(_port_mutex);
 
     if constexpr (std::is_same_v<port_type, unsigned short>) {
@@ -53,29 +52,27 @@ auto NetworkNode<Types>::allocate_ephemeral_port() -> port_type {
         _used_ports.insert(port);
         return port;
     } else {
-        static_assert(std::is_same_v<port_type, unsigned short> ||
-                     std::is_same_v<port_type, std::string>,
-                     "Port type must be unsigned short or std::string");
+        static_assert(
+            std::is_same_v<port_type, unsigned short> || std::is_same_v<port_type, std::string>,
+            "Port type must be unsigned short or std::string");
     }
 }
 
 // Port release implementation
-template<typename Types>
-auto NetworkNode<Types>::release_port(port_type port) -> void {
+template<typename Types> auto NetworkNode<Types>::release_port(port_type port) -> void {
     std::lock_guard<std::mutex> lock(_port_mutex);
     _used_ports.erase(port);
 }
 
 // Connectionless send operations
-template<typename Types>
-auto NetworkNode<Types>::send(message_type msg) -> future_bool_type {
+template<typename Types> auto NetworkNode<Types>::send(message_type msg) -> future_bool_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<bool>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_bool_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_bool_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -83,7 +80,8 @@ auto NetworkNode<Types>::send(message_type msg) -> future_bool_type {
 }
 
 template<typename Types>
-auto NetworkNode<Types>::send(message_type msg, std::chrono::milliseconds timeout) -> future_bool_type {
+auto NetworkNode<Types>::send(message_type msg, std::chrono::milliseconds timeout)
+    -> future_bool_type {
     // For now, implement timeout by delegating to the basic send
     // In a full implementation, this would use a timer
     auto future = send(std::move(msg));
@@ -107,15 +105,14 @@ auto NetworkNode<Types>::send(message_type msg, std::chrono::milliseconds timeou
 }
 
 // Connectionless receive operations
-template<typename Types>
-auto NetworkNode<Types>::receive() -> future_message_type {
+template<typename Types> auto NetworkNode<Types>::receive() -> future_message_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<message_type>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_message_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_message_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -126,11 +123,9 @@ template<typename Types>
 auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_message_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(
-            folly::exception_wrapper(TimeoutException()));
+        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
 #else
-        return future_message_type(std::make_exception_ptr(
-            TimeoutException()));
+        return future_message_type(std::make_exception_ptr(TimeoutException()));
 #endif
     }
 
@@ -139,21 +134,23 @@ auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_me
 
 // Connection-oriented client operations
 template<typename Types>
-auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port) -> future_connection_type {
+auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port)
+    -> future_connection_type {
     // Use ephemeral port allocation
     auto src_port = allocate_ephemeral_port();
     return connect(std::move(dst_addr), std::move(dst_port), std::move(src_port));
 }
 
 template<typename Types>
-auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port_type src_port) -> future_connection_type {
+auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port_type src_port)
+    -> future_connection_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<connection_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_connection_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_connection_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -163,20 +160,20 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port
         _used_ports.insert(src_port);
     }
 
-    return _simulator->establish_connection(_address, std::move(src_port),
-                                          std::move(dst_addr), std::move(dst_port));
+    return _simulator->establish_connection(_address, std::move(src_port), std::move(dst_addr),
+                                            std::move(dst_port));
 }
 
 template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
-                                std::chrono::milliseconds timeout) -> future_connection_type {
+                                 std::chrono::milliseconds timeout) -> future_connection_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<connection_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_connection_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_connection_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -184,36 +181,33 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
     auto src_port = allocate_ephemeral_port();
 
     // Use the new establish_connection_with_timeout method
-    return _simulator->establish_connection_with_timeout(_address, std::move(src_port),
-                                                        std::move(dst_addr), std::move(dst_port),
-                                                        timeout);
+    return _simulator->establish_connection_with_timeout(
+        _address, std::move(src_port), std::move(dst_addr), std::move(dst_port), timeout);
 }
 
 // Connection-oriented server operations
-template<typename Types>
-auto NetworkNode<Types>::bind() -> future_listener_type {
+template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<listener_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_listener_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_listener_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
     return _simulator->create_listener(_address);
 }
 
-template<typename Types>
-auto NetworkNode<Types>::bind(port_type port) -> future_listener_type {
+template<typename Types> auto NetworkNode<Types>::bind(port_type port) -> future_listener_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<listener_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_listener_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_listener_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -227,14 +221,15 @@ auto NetworkNode<Types>::bind(port_type port) -> future_listener_type {
 }
 
 template<typename Types>
-auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout) -> future_listener_type {
+auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
+    -> future_listener_type {
     if (!_simulator) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<std::shared_ptr<listener_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not available")));
 #else
-        return future_listener_type(std::make_exception_ptr(
-            std::runtime_error("Simulator not available")));
+        return future_listener_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not available")));
 #endif
     }
 
@@ -248,8 +243,8 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
     auto future = _simulator->create_listener(_address, port);
 
     // For timeout handling, we need to check if the bind operation would succeed
-    // In this implementation, bind operations are synchronous, so we either succeed or fail immediately
-    // The timeout is mainly for testing timeout exception behavior
+    // In this implementation, bind operations are synchronous, so we either succeed or fail
+    // immediately The timeout is mainly for testing timeout exception behavior
 
 #ifdef FOLLY_FUTURES_AVAILABLE
     try {
@@ -270,7 +265,7 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
             std::lock_guard<std::mutex> lock(_port_mutex);
             _used_ports.erase(port);
         }
-        throw; // Re-throw the original exception
+        throw;  // Re-throw the original exception
     }
 #else
     // For SimpleFuture, check if the operation would timeout
@@ -305,4 +300,4 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
 #endif
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

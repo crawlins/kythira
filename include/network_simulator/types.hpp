@@ -25,9 +25,7 @@ struct IPv4Address {
         return _addr.s_addr == other._addr.s_addr;
     }
 
-    auto operator!=(const IPv4Address& other) const -> bool {
-        return !(*this == other);
-    }
+    auto operator!=(const IPv4Address& other) const -> bool { return !(*this == other); }
 
     auto get() const -> const in_addr& { return _addr; }
 };
@@ -43,16 +41,13 @@ struct IPv6Address {
         return std::memcmp(&_addr, &other._addr, sizeof(in6_addr)) == 0;
     }
 
-    auto operator!=(const IPv6Address& other) const -> bool {
-        return !(*this == other);
-    }
+    auto operator!=(const IPv6Address& other) const -> bool { return !(*this == other); }
 
     auto get() const -> const in6_addr& { return _addr; }
 };
 
 // Simple Future implementation for when kythira is not available
-template<typename T>
-class SimpleFuture {
+template<typename T> class SimpleFuture {
 public:
     SimpleFuture() = default;
     explicit SimpleFuture(T value) : _value(std::move(value)), _ready(true) {}
@@ -65,8 +60,7 @@ public:
         return _value;
     }
 
-    template<typename F>
-    auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F, T>> {
+    template<typename F> auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F, T>> {
         if (_exception) {
             return SimpleFuture<std::invoke_result_t<F, T>>(_exception);
         }
@@ -77,8 +71,7 @@ public:
         }
     }
 
-    template<typename F>
-    auto onError(F&& func) -> SimpleFuture<T> {
+    template<typename F> auto onError(F&& func) -> SimpleFuture<T> {
         if (_exception) {
             try {
                 func(_exception);
@@ -103,8 +96,7 @@ private:
 };
 
 // Specialization for void
-template<>
-class SimpleFuture<void> {
+template<> class SimpleFuture<void> {
 public:
     SimpleFuture() : _ready(true) {}
     explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
@@ -115,8 +107,7 @@ public:
         }
     }
 
-    template<typename F>
-    auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F>> {
+    template<typename F> auto then(F&& func) -> SimpleFuture<std::invoke_result_t<F>> {
         if (_exception) {
             return SimpleFuture<std::invoke_result_t<F>>(_exception);
         }
@@ -132,8 +123,7 @@ public:
         }
     }
 
-    template<typename F>
-    auto onError(F&& func) -> SimpleFuture<void> {
+    template<typename F> auto onError(F&& func) -> SimpleFuture<void> {
         if (_exception) {
             try {
                 func(_exception);
@@ -157,24 +147,18 @@ private:
 };
 
 // Forward declarations for template classes that will be defined later
-template<typename Types>
-class Message;
+template<typename Types> class Message;
 
-template<typename Types>
-class NetworkNode;
+template<typename Types> class NetworkNode;
 
-template<typename Types>
-class Connection;
+template<typename Types> class Connection;
 
-template<typename Types>
-class Listener;
+template<typename Types> class Listener;
 
-template<typename Types>
-class NetworkSimulator;
+template<typename Types> class NetworkSimulator;
 
 // Message Structure
-template<typename Types>
-class Message {
+template<typename Types> class Message {
 public:
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
@@ -182,15 +166,13 @@ public:
     // Default constructor for empty messages
     Message() = default;
 
-    Message(address_type src_addr, port_type src_port,
-            address_type dst_addr, port_type dst_port,
+    Message(address_type src_addr, port_type src_port, address_type dst_addr, port_type dst_port,
             std::vector<std::byte> payload = {})
-        : _source_address(std::move(src_addr))
-        , _source_port(std::move(src_port))
-        , _destination_address(std::move(dst_addr))
-        , _destination_port(std::move(dst_port))
-        , _payload(std::move(payload))
-    {}
+        : _source_address(std::move(src_addr)),
+          _source_port(std::move(src_port)),
+          _destination_address(std::move(dst_addr)),
+          _destination_port(std::move(dst_port)),
+          _payload(std::move(payload)) {}
 
     auto source_address() const -> address_type { return _source_address; }
     auto source_port() const -> port_type { return _source_port; }
@@ -213,31 +195,27 @@ struct NetworkEdge {
 
     NetworkEdge() : _latency(0), _reliability(1.0) {}
 
-    NetworkEdge(std::chrono::milliseconds lat, double rel)
-        : _latency(lat), _reliability(rel) {}
+    NetworkEdge(std::chrono::milliseconds lat, double rel) : _latency(lat), _reliability(rel) {}
 
     auto latency() const -> std::chrono::milliseconds { return _latency; }
     auto reliability() const -> double { return _reliability; }
 };
 
 // Endpoint
-template<typename Types>
-struct Endpoint {
+template<typename Types> struct Endpoint {
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
 
     address_type address;
     port_type port;
 
-    Endpoint(address_type addr, port_type prt)
-        : address(std::move(addr)), port(std::move(prt)) {}
+    Endpoint(address_type addr, port_type prt) : address(std::move(addr)), port(std::move(prt)) {}
 
     auto operator==(const Endpoint&) const -> bool = default;
 };
 
 // Connection ID using 4-tuple (src_addr, src_port, dst_addr, dst_port)
-template<typename Types>
-struct ConnectionId {
+template<typename Types> struct ConnectionId {
     using address_type = typename Types::address_type;
     using port_type = typename Types::port_type;
 
@@ -247,8 +225,10 @@ struct ConnectionId {
     port_type dst_port;
 
     ConnectionId(address_type src_a, port_type src_p, address_type dst_a, port_type dst_p)
-        : src_addr(std::move(src_a)), src_port(std::move(src_p))
-        , dst_addr(std::move(dst_a)), dst_port(std::move(dst_p)) {}
+        : src_addr(std::move(src_a)),
+          src_port(std::move(src_p)),
+          dst_addr(std::move(dst_a)),
+          dst_port(std::move(dst_p)) {}
 
     auto operator==(const ConnectionId&) const -> bool = default;
 };
@@ -279,31 +259,30 @@ struct DefaultNetworkTypes {
 #endif
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator
 
 // Hash specialization for IPv4Address
-template<>
-struct std::hash<network_simulator::IPv4Address> {
+template<> struct std::hash<network_simulator::IPv4Address> {
     auto operator()(const network_simulator::IPv4Address& addr) const -> std::size_t {
         return std::hash<uint32_t>{}(addr._addr.s_addr);
     }
 };
 
 // Hash specialization for IPv6Address
-template<>
-struct std::hash<network_simulator::IPv6Address> {
+template<> struct std::hash<network_simulator::IPv6Address> {
     auto operator()(const network_simulator::IPv6Address& addr) const -> std::size_t {
         std::size_t hash = 0;
         for (std::size_t i = 0; i < sizeof(in6_addr); ++i) {
-            hash ^= std::hash<unsigned char>{}(reinterpret_cast<const unsigned char*>(&addr._addr)[i]) << (i % 8);
+            hash ^=
+                std::hash<unsigned char>{}(reinterpret_cast<const unsigned char*>(&addr._addr)[i])
+                << (i % 8);
         }
         return hash;
     }
 };
 
 // Hash specialization for Endpoint
-template<typename Types>
-struct std::hash<network_simulator::Endpoint<Types>> {
+template<typename Types> struct std::hash<network_simulator::Endpoint<Types>> {
     auto operator()(const network_simulator::Endpoint<Types>& ep) const -> std::size_t {
         std::size_t h1 = std::hash<typename Types::address_type>{}(ep.address);
         std::size_t h2 = std::hash<typename Types::port_type>{}(ep.port);
@@ -312,8 +291,7 @@ struct std::hash<network_simulator::Endpoint<Types>> {
 };
 
 // Hash specialization for ConnectionId
-template<typename Types>
-struct std::hash<network_simulator::ConnectionId<Types>> {
+template<typename Types> struct std::hash<network_simulator::ConnectionId<Types>> {
     auto operator()(const network_simulator::ConnectionId<Types>& conn_id) const -> std::size_t {
         std::size_t h1 = std::hash<typename Types::address_type>{}(conn_id.src_addr);
         std::size_t h2 = std::hash<typename Types::port_type>{}(conn_id.src_port);

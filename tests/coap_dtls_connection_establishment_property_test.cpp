@@ -26,18 +26,17 @@ struct TestTypes {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr std::uint16_t test_bind_port = 5684;
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr const char* test_cert_content = R"(-----BEGIN CERTIFICATE-----
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t test_node_id = 1;
+constexpr std::uint16_t test_bind_port = 5684;
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr const char* test_cert_content = R"(-----BEGIN CERTIFICATE-----
 MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOuMA0GCSqGSIb3DQEBBQUAMEUxCzAJBgNV
 BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
 aWRnaXRzIFB0eSBMdGQwHhcNMTMwODI3MjM1NDA3WhcNMTQwODI3MjM1NDA3WjBF
@@ -49,8 +48,8 @@ LlyaHCCUDI/3Y5HuW8Arf+TFgdnuTTj0+VoM8RcPp5sBjPiMpsIwPiMAKbJ5dF9J
 8q1k2JGfLy3B3n+OcB6g==
 -----END CERTIFICATE-----
 )";
-    constexpr const char* test_psk_identity = "test_client";
-    constexpr const char* invalid_cert_content = "INVALID CERTIFICATE DATA";
+constexpr const char* test_psk_identity = "test_client";
+constexpr const char* invalid_cert_content = "INVALID CERTIFICATE DATA";
 }
 
 BOOST_AUTO_TEST_SUITE(coap_dtls_connection_establishment_property_tests)
@@ -59,7 +58,7 @@ BOOST_AUTO_TEST_SUITE(coap_dtls_connection_establishment_property_tests)
 // **Validates: Requirements 1.4, 6.1, 6.3**
 // Property: For any CoAPS endpoint, the transport should establish DTLS connections
 // with proper certificate or PSK validation.
-BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -88,13 +87,14 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 bool client_created = false;
                 try {
-                    kythira::coap_client<TestTypes> client(
-                        std::move(node_endpoints), client_config, metrics);
+                    kythira::coap_client<TestTypes> client(std::move(node_endpoints), client_config,
+                                                           metrics);
 
                     // Verify DTLS is enabled
                     if (!client.is_dtls_enabled()) {
                         failures++;
-                        BOOST_TEST_MESSAGE("DTLS not enabled despite configuration at iteration " << i);
+                        BOOST_TEST_MESSAGE("DTLS not enabled despite configuration at iteration "
+                                           << i);
                         continue;
                     }
 
@@ -104,7 +104,8 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                     if (!connection_established) {
                         failures++;
-                        BOOST_TEST_MESSAGE("DTLS connection establishment failed at iteration " << i);
+                        BOOST_TEST_MESSAGE("DTLS connection establishment failed at iteration "
+                                           << i);
                         continue;
                     }
 
@@ -112,16 +113,19 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
-                    BOOST_TEST_MESSAGE("Expected security error at iteration " << i << ": " << e.what());
-                    client_created = true; // This is acceptable
+                    BOOST_TEST_MESSAGE("Expected security error at iteration " << i << ": "
+                                                                               << e.what());
+                    client_created = true;  // This is acceptable
                 } catch (const std::exception& e) {
-                    BOOST_TEST_MESSAGE("Unexpected error during certificate-based DTLS test " << i << ": " << e.what());
+                    BOOST_TEST_MESSAGE("Unexpected error during certificate-based DTLS test "
+                                       << i << ": " << e.what());
                     failures++;
                 }
 
                 if (!client_created) {
                     failures++;
-                    BOOST_TEST_MESSAGE("Certificate-based DTLS client creation failed at iteration " << i);
+                    BOOST_TEST_MESSAGE("Certificate-based DTLS client creation failed at iteration "
+                                       << i);
                 }
             }
 
@@ -146,23 +150,26 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 bool psk_client_created = false;
                 try {
-                    kythira::coap_client<TestTypes> psk_client(
-                        std::move(psk_endpoints), psk_config, psk_metrics);
+                    kythira::coap_client<TestTypes> psk_client(std::move(psk_endpoints), psk_config,
+                                                               psk_metrics);
 
                     // Verify DTLS is enabled
                     if (!psk_client.is_dtls_enabled()) {
                         failures++;
-                        BOOST_TEST_MESSAGE("PSK DTLS not enabled despite configuration at iteration " << i);
+                        BOOST_TEST_MESSAGE(
+                            "PSK DTLS not enabled despite configuration at iteration " << i);
                         continue;
                     }
 
                     // Test connection establishment to valid endpoint
                     std::string psk_endpoint = std::format("coaps://127.0.0.1:{}", psk_port);
-                    bool psk_connection_established = psk_client.establish_dtls_connection(psk_endpoint);
+                    bool psk_connection_established =
+                        psk_client.establish_dtls_connection(psk_endpoint);
 
                     if (!psk_connection_established) {
                         failures++;
-                        BOOST_TEST_MESSAGE("PSK DTLS connection establishment failed at iteration " << i);
+                        BOOST_TEST_MESSAGE("PSK DTLS connection establishment failed at iteration "
+                                           << i);
                         continue;
                     }
 
@@ -170,10 +177,12 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
-                    BOOST_TEST_MESSAGE("Expected PSK security error at iteration " << i << ": " << e.what());
-                    psk_client_created = true; // This is acceptable
+                    BOOST_TEST_MESSAGE("Expected PSK security error at iteration " << i << ": "
+                                                                                   << e.what());
+                    psk_client_created = true;  // This is acceptable
                 } catch (const std::exception& e) {
-                    BOOST_TEST_MESSAGE("Unexpected error during PSK-based DTLS test " << i << ": " << e.what());
+                    BOOST_TEST_MESSAGE("Unexpected error during PSK-based DTLS test " << i << ": "
+                                                                                      << e.what());
                     failures++;
                 }
 
@@ -210,13 +219,14 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 bool server_created = false;
                 try {
-                    kythira::coap_server<TestTypes> server(
-                        test_bind_address, server_port, server_config, server_metrics);
+                    kythira::coap_server<TestTypes> server(test_bind_address, server_port,
+                                                           server_config, server_metrics);
 
                     // Verify DTLS is enabled
                     if (!server.is_dtls_enabled()) {
                         failures++;
-                        BOOST_TEST_MESSAGE("Server DTLS not enabled despite configuration at iteration " << i);
+                        BOOST_TEST_MESSAGE(
+                            "Server DTLS not enabled despite configuration at iteration " << i);
                         continue;
                     }
 
@@ -224,10 +234,12 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                 } catch (const kythira::coap_security_error& e) {
                     // Security errors are expected for some configurations
-                    BOOST_TEST_MESSAGE("Expected server security error at iteration " << i << ": " << e.what());
-                    server_created = true; // This is acceptable
+                    BOOST_TEST_MESSAGE("Expected server security error at iteration " << i << ": "
+                                                                                      << e.what());
+                    server_created = true;  // This is acceptable
                 } catch (const std::exception& e) {
-                    BOOST_TEST_MESSAGE("Unexpected error during server DTLS test " << i << ": " << e.what());
+                    BOOST_TEST_MESSAGE("Unexpected error during server DTLS test " << i << ": "
+                                                                                   << e.what());
                     failures++;
                 }
 
@@ -250,16 +262,16 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
                 kythira::noop_metrics invalid_metrics;
 
                 try {
-                    kythira::coap_client<TestTypes> invalid_client(
-                        std::move(invalid_endpoints), invalid_config, invalid_metrics);
+                    kythira::coap_client<TestTypes> invalid_client(std::move(invalid_endpoints),
+                                                                   invalid_config, invalid_metrics);
 
                     // Test connection to invalid endpoints
                     std::vector<std::string> invalid_endpoint_tests = {
-                        "",  // Empty endpoint
+                        "",                          // Empty endpoint
                         "invalid://127.0.0.1:5684",  // Invalid scheme
-                        "coap://127.0.0.1:5684",  // Non-DTLS scheme with DTLS enabled
-                        "coaps://",  // Missing host/port
-                        "not_a_url"  // Invalid format
+                        "coap://127.0.0.1:5684",     // Non-DTLS scheme with DTLS enabled
+                        "coaps://",                  // Missing host/port
+                        "not_a_url"                  // Invalid format
                     };
 
                     for (const auto& invalid_endpoint : invalid_endpoint_tests) {
@@ -274,30 +286,35 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, * boost::unit_test:
 
                         if (!exception_thrown) {
                             failures++;
-                            BOOST_TEST_MESSAGE("Expected exception not thrown for invalid endpoint: " << invalid_endpoint);
+                            BOOST_TEST_MESSAGE(
+                                "Expected exception not thrown for invalid endpoint: "
+                                << invalid_endpoint);
                         }
                     }
 
                 } catch (const std::exception& e) {
-                    BOOST_TEST_MESSAGE("Error during invalid endpoint test " << i << ": " << e.what());
+                    BOOST_TEST_MESSAGE("Error during invalid endpoint test " << i << ": "
+                                                                             << e.what());
                     // This is acceptable for this test
                 }
             }
 
         } catch (const std::exception& e) {
             failures++;
-            BOOST_TEST_MESSAGE("Exception during DTLS connection establishment test " << i << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception during DTLS connection establishment test " << i << ": "
+                                                                                      << e.what());
         }
     }
 
-    BOOST_TEST_MESSAGE("DTLS connection establishment: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("DTLS connection establishment: " << (property_test_iterations - failures)
+                                                         << "/" << property_test_iterations
+                                                         << " passed");
 
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
 // Test DTLS configuration validation
-BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::timeout(60)) {
     std::size_t failures = 0;
 
     // Test invalid PSK key sizes
@@ -316,8 +333,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
 
         bool exception_thrown = false;
         try {
-            kythira::coap_client<TestTypes> client(
-                        std::move(endpoints), config, metrics);
+            kythira::coap_client<TestTypes> client(std::move(endpoints), config, metrics);
         } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for short PSK: " << e.what());
@@ -346,8 +362,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
 
         bool exception_thrown = false;
         try {
-            kythira::coap_client<TestTypes> client(
-                        std::move(endpoints), config, metrics);
+            kythira::coap_client<TestTypes> client(std::move(endpoints), config, metrics);
         } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for long PSK: " << e.what());
@@ -373,8 +388,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
 
         bool exception_thrown = false;
         try {
-            kythira::coap_client<TestTypes> client(
-                        std::move(endpoints), config, metrics);
+            kythira::coap_client<TestTypes> client(std::move(endpoints), config, metrics);
         } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
             BOOST_TEST_MESSAGE("Expected security error for long PSK identity: " << e.what());
@@ -399,16 +413,17 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, * boost::unit_test::tim
 
         bool exception_thrown = false;
         try {
-            kythira::coap_client<TestTypes> client(
-                        std::move(endpoints), config, metrics);
+            kythira::coap_client<TestTypes> client(std::move(endpoints), config, metrics);
         } catch (const kythira::coap_security_error& e) {
             exception_thrown = true;
-            BOOST_TEST_MESSAGE("Expected security error for DTLS without auth method: " << e.what());
+            BOOST_TEST_MESSAGE(
+                "Expected security error for DTLS without auth method: " << e.what());
         }
 
         if (!exception_thrown) {
             failures++;
-            BOOST_TEST_MESSAGE("Expected exception not thrown for DTLS without authentication method");
+            BOOST_TEST_MESSAGE(
+                "Expected exception not thrown for DTLS without authentication method");
         }
     }
 

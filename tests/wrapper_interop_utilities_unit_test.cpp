@@ -13,8 +13,8 @@
 #include "../include/raft/future.hpp"
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test_message";
+constexpr int test_value = 42;
+constexpr const char* test_string = "test_message";
 }
 
 // ============================================================================
@@ -23,7 +23,7 @@ namespace {
 
 BOOST_AUTO_TEST_SUITE(type_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(exception_wrapper_conversion_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(exception_wrapper_conversion_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement exception conversion utilities
     // Expected functionality:
 
@@ -50,7 +50,7 @@ BOOST_AUTO_TEST_CASE(exception_wrapper_conversion_placeholder, * boost::unit_tes
     }
 }
 
-BOOST_AUTO_TEST_CASE(void_unit_conversion_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(void_unit_conversion_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement void/Unit conversion utilities
     // Expected functionality:
 
@@ -67,11 +67,11 @@ BOOST_AUTO_TEST_CASE(void_unit_conversion_placeholder, * boost::unit_test::timeo
     static_assert(!std::is_same_v<void, folly::Unit>);
 
     folly::Unit unit_value{};
-    (void)unit_value; // Suppress unused variable warning
+    (void)unit_value;  // Suppress unused variable warning
     BOOST_CHECK(true);
 }
 
-BOOST_AUTO_TEST_CASE(move_semantics_optimization_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(move_semantics_optimization_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement move semantics optimization helpers
     // Expected functionality:
 
@@ -88,7 +88,7 @@ BOOST_AUTO_TEST_CASE(move_semantics_optimization_placeholder, * boost::unit_test
 
     auto moved_string = std::move(large_string);
     BOOST_CHECK_EQUAL(moved_string.data(), original_data);
-    BOOST_CHECK(large_string.empty()); // Original should be empty after move
+    BOOST_CHECK(large_string.empty());  // Original should be empty after move
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(future_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(folly_to_kythira_future_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(folly_to_kythira_future_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement folly::Future to kythira::Future conversion
     // Expected functionality:
 
@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(folly_to_kythira_future_placeholder, * boost::unit_test::ti
     BOOST_CHECK_EQUAL(kythira_future.get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(kythira_to_folly_future_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(kythira_to_folly_future_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement kythira::Future to folly::Future conversion
     // Expected functionality:
 
@@ -135,12 +135,13 @@ BOOST_AUTO_TEST_CASE(kythira_to_folly_future_placeholder, * boost::unit_test::ti
     BOOST_CHECK_EQUAL(std::move(folly_future).get(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(void_future_conversion_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(void_future_conversion_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement void/Unit future conversion utilities
     // Expected functionality:
 
     // auto folly_unit_future = folly::makeFuture();
-    // auto kythira_void_future = kythira::interop::from_folly_future_unit(std::move(folly_unit_future));
+    // auto kythira_void_future =
+    // kythira::interop::from_folly_future_unit(std::move(folly_unit_future));
     //
     // BOOST_CHECK(kythira_void_future.isReady());
     // BOOST_CHECK_NO_THROW(kythira_void_future.get());
@@ -161,7 +162,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(try_conversion_tests)
 
-BOOST_AUTO_TEST_CASE(folly_to_kythira_try_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(folly_to_kythira_try_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement folly::Try to kythira::Try conversion
     // Expected functionality:
 
@@ -179,7 +180,7 @@ BOOST_AUTO_TEST_CASE(folly_to_kythira_try_placeholder, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(kythira_try.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(kythira_to_folly_try_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(kythira_to_folly_try_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement kythira::Try to folly::Try conversion
     // Expected functionality:
 
@@ -197,7 +198,7 @@ BOOST_AUTO_TEST_CASE(kythira_to_folly_try_placeholder, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(folly_try.value(), test_value);
 }
 
-BOOST_AUTO_TEST_CASE(try_exception_conversion_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(try_exception_conversion_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement Try exception conversion utilities
     // Expected functionality:
 
@@ -231,7 +232,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(backward_compatibility_tests)
 
-BOOST_AUTO_TEST_CASE(type_aliases_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(type_aliases_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement backward compatibility type aliases
     // Expected functionality:
 
@@ -254,7 +255,7 @@ BOOST_AUTO_TEST_CASE(type_aliases_placeholder, * boost::unit_test::timeout(15)) 
     BOOST_CHECK(try_value.has_value());
 }
 
-BOOST_AUTO_TEST_CASE(factory_collector_aliases_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(factory_collector_aliases_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Implement factory and collector type aliases
     // Expected functionality:
 
@@ -289,7 +290,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(concept_compliance_tests)
 
-BOOST_AUTO_TEST_CASE(current_concept_compliance_status, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(current_concept_compliance_status, *boost::unit_test::timeout(15)) {
     // Document current concept compliance status
 
     // kythira::Try<int> should satisfy try_type concept (currently does)
@@ -313,7 +314,7 @@ BOOST_AUTO_TEST_CASE(current_concept_compliance_status, * boost::unit_test::time
     // This is why the static assertions fail
 }
 
-BOOST_AUTO_TEST_CASE(missing_concept_implementations, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(missing_concept_implementations, *boost::unit_test::timeout(15)) {
     // Document which concepts are not yet implemented
 
     // semi_promise concept - not implemented
@@ -325,7 +326,7 @@ BOOST_AUTO_TEST_CASE(missing_concept_implementations, * boost::unit_test::timeou
     // future_continuation concept - not implemented
     // future_transformable concept - not implemented
 
-    BOOST_CHECK(true); // Placeholder to document missing implementations
+    BOOST_CHECK(true);  // Placeholder to document missing implementations
 }
 
 BOOST_AUTO_TEST_SUITE_END()
@@ -336,7 +337,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(error_handling_tests)
 
-BOOST_AUTO_TEST_CASE(null_pointer_handling_placeholder, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(null_pointer_handling_placeholder, *boost::unit_test::timeout(15)) {
     // TODO: Test null pointer handling in wrapper classes
     // Expected functionality:
 
@@ -348,10 +349,10 @@ BOOST_AUTO_TEST_CASE(null_pointer_handling_placeholder, * boost::unit_test::time
     // kythira::KeepAlive null_keep_alive;
     // BOOST_CHECK(null_keep_alive.get() == nullptr);
 
-    BOOST_CHECK(true); // Placeholder
+    BOOST_CHECK(true);  // Placeholder
 }
 
-BOOST_AUTO_TEST_CASE(exception_propagation_validation, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(exception_propagation_validation, *boost::unit_test::timeout(15)) {
     // Test that exceptions propagate correctly through existing wrappers
 
     auto ex = folly::exception_wrapper(std::runtime_error(test_string));
@@ -371,7 +372,7 @@ BOOST_AUTO_TEST_CASE(exception_propagation_validation, * boost::unit_test::timeo
     BOOST_CHECK_THROW(chained.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(resource_cleanup_validation, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(resource_cleanup_validation, *boost::unit_test::timeout(15)) {
     // Test that wrapper classes properly clean up resources
 
     // Test with RAII types

@@ -32,9 +32,8 @@ public:
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
         auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
-        command.insert(command.end(),
-                      reinterpret_cast<const std::byte*>(key.data()),
-                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
+        command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
+                       reinterpret_cast<const std::byte*>(key.data() + key.size()));
 
         // For SET commands, add value
         if (cmd == command_type::set) {
@@ -44,9 +43,8 @@ public:
             std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
             auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
             command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
-            command.insert(command.end(),
-                          reinterpret_cast<const std::byte*>(value.data()),
-                          reinterpret_cast<const std::byte*>(value.data() + value.size()));
+            command.insert(command.end(), reinterpret_cast<const std::byte*>(value.data()),
+                           reinterpret_cast<const std::byte*>(value.data() + value.size()));
         }
 
         return command;
@@ -60,31 +58,29 @@ public:
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
         auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
-        command.insert(command.end(),
-                      reinterpret_cast<const std::byte*>(key.data()),
-                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
+        command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
+                       reinterpret_cast<const std::byte*>(key.data() + key.size()));
 
         return command;
     }
 
     // Generate specific SET command
-    static auto generate_set_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
+    static auto generate_set_command(const std::string& key, const std::string& value)
+        -> std::vector<std::byte> {
         std::vector<std::byte> command;
         command.push_back(static_cast<std::byte>(command_type::set));
 
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
         auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
-        command.insert(command.end(),
-                      reinterpret_cast<const std::byte*>(key.data()),
-                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
+        command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
+                       reinterpret_cast<const std::byte*>(key.data() + key.size()));
 
         std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
         auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
         command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
-        command.insert(command.end(),
-                      reinterpret_cast<const std::byte*>(value.data()),
-                      reinterpret_cast<const std::byte*>(value.data() + value.size()));
+        command.insert(command.end(), reinterpret_cast<const std::byte*>(value.data()),
+                       reinterpret_cast<const std::byte*>(value.data() + value.size()));
 
         return command;
     }
@@ -97,9 +93,8 @@ public:
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
         auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
-        command.insert(command.end(),
-                      reinterpret_cast<const std::byte*>(key.data()),
-                      reinterpret_cast<const std::byte*>(key.data() + key.size()));
+        command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
+                       reinterpret_cast<const std::byte*>(key.data() + key.size()));
 
         return command;
     }
@@ -129,7 +124,6 @@ public:
     template<typename StateMachine>
     static auto validate_deterministic_application(
         const std::vector<std::vector<std::byte>>& commands) -> bool {
-
         StateMachine sm1;
         StateMachine sm2;
 
@@ -148,4 +142,4 @@ public:
     }
 };
 
-} // namespace kythira::test
+}  // namespace kythira::test

@@ -17,50 +17,37 @@
 #include <vector>
 
 namespace {
-    // Get the source directory from the build directory
-    auto get_source_directory() -> std::filesystem::path {
-        auto current_path = std::filesystem::current_path();
-        // Walk up until we find a directory containing CMakeLists.txt (the source root)
-        auto p = current_path;
-        for (int i = 0; i < 5; ++i) {
-            if (std::filesystem::exists(p / "CMakeLists.txt")) {
-                return p;
-            }
-            auto parent = p.parent_path();
-            if (parent == p) break;
-            p = parent;
+// Get the source directory from the build directory
+auto get_source_directory() -> std::filesystem::path {
+    auto current_path = std::filesystem::current_path();
+    // Walk up until we find a directory containing CMakeLists.txt (the source root)
+    auto p = current_path;
+    for (int i = 0; i < 5; ++i) {
+        if (std::filesystem::exists(p / "CMakeLists.txt")) {
+            return p;
         }
-        return current_path;
+        auto parent = p.parent_path();
+        if (parent == p) break;
+        p = parent;
     }
+    return current_path;
+}
 
-    const std::vector<std::string> test_directories = {
-        "include/raft",
-        "examples/raft",
-        "tests"
-    };
+const std::vector<std::string> test_directories = {"include/raft", "examples/raft", "tests"};
 
-    constexpr const char* file_extensions[] = {
-        ".hpp",
-        ".cpp"
-    };
+constexpr const char* file_extensions[] = {".hpp", ".cpp"};
 
-    // Pattern to match network concept usages
-    const std::regex network_concept_pattern(
-        R"(\b(network_client|network_server)\s*<)",
-        std::regex_constants::ECMAScript
-    );
+// Pattern to match network concept usages
+const std::regex network_concept_pattern(R"(\b(network_client|network_server)\s*<)",
+                                         std::regex_constants::ECMAScript);
 
-    // Pattern to match correct kythira namespace usage
-    const std::regex correct_namespace_pattern(
-        R"(\bkythira::(network_client|network_server)\s*<)",
-        std::regex_constants::ECMAScript
-    );
+// Pattern to match correct kythira namespace usage
+const std::regex correct_namespace_pattern(R"(\bkythira::(network_client|network_server)\s*<)",
+                                           std::regex_constants::ECMAScript);
 
-    // Pattern to match incorrect namespace usage (kythira:: or no namespace)
-    const std::regex incorrect_namespace_pattern(
-        R"(\b(?:kythira::)?(network_client|network_server)\s*<)",
-        std::regex_constants::ECMAScript
-    );
+// Pattern to match incorrect namespace usage (kythira:: or no namespace)
+const std::regex incorrect_namespace_pattern(
+    R"(\b(?:kythira::)?(network_client|network_server)\s*<)", std::regex_constants::ECMAScript);
 }
 
 auto collect_source_files() -> std::vector<std::filesystem::path> {
@@ -99,10 +86,7 @@ auto read_file_content(const std::filesystem::path& file_path) -> std::string {
         throw std::runtime_error("Failed to open file: " + file_path.string());
     }
 
-    return std::string(
-        std::istreambuf_iterator<char>(file),
-        std::istreambuf_iterator<char>()
-    );
+    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
 }
 
 auto find_network_concept_usages(const std::string& content) -> std::vector<std::string> {
@@ -114,8 +98,9 @@ auto find_network_concept_usages(const std::string& content) -> std::vector<std:
         const auto& match = *iter;
         // Extract a larger context around the match for better analysis
         auto start_pos = std::max(0, static_cast<int>(match.position()) - 20);
-        auto end_pos = std::min(static_cast<int>(content.length()),
-                               static_cast<int>(match.position()) + static_cast<int>(match.length()) + 50);
+        auto end_pos =
+            std::min(static_cast<int>(content.length()),
+                     static_cast<int>(match.position()) + static_cast<int>(match.length()) + 50);
 
         std::string context = content.substr(start_pos, end_pos - start_pos);
         usages.push_back(context);
@@ -128,7 +113,7 @@ auto has_correct_namespace(const std::string& usage) -> bool {
     return std::regex_search(usage, correct_namespace_pattern);
 }
 
-BOOST_AUTO_TEST_CASE(namespace_consistency_property_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(namespace_consistency_property_test, *boost::unit_test::timeout(60)) {
     // **Feature: network-concept-template-fix, Property 2: Namespace consistency**
     // **Validates: Requirements 1.3, 2.5, 3.3, 4.3**
 
@@ -150,10 +135,8 @@ BOOST_AUTO_TEST_CASE(namespace_consistency_property_test, * boost::unit_test::ti
                 if (has_correct_namespace(usage)) {
                     correct_usages++;
                 } else {
-                    violations.push_back(
-                        "File: " + file_path.string() + "\n" +
-                        "Usage: " + usage + "\n"
-                    );
+                    violations.push_back("File: " + file_path.string() + "\n" + "Usage: " + usage +
+                                         "\n");
                 }
             }
         } catch (const std::exception& e) {
@@ -175,15 +158,12 @@ BOOST_AUTO_TEST_CASE(namespace_consistency_property_test, * boost::unit_test::ti
 
     // Property: For any reference to network_client or network_server concepts,
     // the kythira namespace prefix should be used
-    BOOST_CHECK_MESSAGE(
-        violations.empty(),
-        "All network concept references must use kythira namespace prefix. "
-        "Found " + std::to_string(violations.size()) + " violations."
-    );
+    BOOST_CHECK_MESSAGE(violations.empty(),
+                        "All network concept references must use kythira namespace prefix. "
+                        "Found " +
+                            std::to_string(violations.size()) + " violations.");
 
     // Additional check: ensure we found some usages to validate the test is working
-    BOOST_CHECK_MESSAGE(
-        total_usages > 0,
-        "Expected to find network concept usages in the codebase for validation"
-    );
+    BOOST_CHECK_MESSAGE(total_usages > 0,
+                        "Expected to find network concept usages in the codebase for validation");
 }

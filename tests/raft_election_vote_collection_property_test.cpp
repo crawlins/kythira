@@ -13,10 +13,10 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::size_t min_cluster_size = 3;
-    constexpr std::size_t max_cluster_size = 11;
-    constexpr std::size_t test_iterations = 50;
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t min_cluster_size = 3;
+constexpr std::size_t max_cluster_size = 11;
+constexpr std::size_t test_iterations = 50;
 }
 
 // Global fixture to initialize Folly
@@ -34,15 +34,17 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 /**
  * **Feature: raft-completion, Property 7: Election Vote Collection**
  *
- * Property: For any leader election, vote collection determines outcome based on majority votes received.
+ * Property: For any leader election, vote collection determines outcome based on majority votes
+ * received.
  * **Validates: Requirements 2.2**
  */
-BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
-    std::uniform_int_distribution<int> delay_dist(10, 100); // milliseconds
-    std::uniform_int_distribution<int> vote_rate_dist(40, 100); // percentage
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
+    std::uniform_int_distribution<int> delay_dist(10, 100);      // milliseconds
+    std::uniform_int_distribution<int> vote_rate_dist(40, 100);  // percentage
     std::uniform_int_distribution<std::uint64_t> term_dist(1, 10);
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
@@ -50,14 +52,14 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
 
         // Generate random cluster size (odd numbers for clear majority)
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++; // Ensure odd number
+        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number
 
         const std::size_t majority_count = (cluster_size / 2) + 1;
-        const std::size_t voter_count = cluster_size - 1; // Exclude candidate
+        const std::size_t voter_count = cluster_size - 1;  // Exclude candidate
 
         BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size
-                          << ", majority needed: " << majority_count
-                          << ", voters: " << voter_count);
+                                                    << ", majority needed: " << majority_count
+                                                    << ", voters: " << voter_count);
 
         // Create futures representing vote responses from other nodes
         std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> vote_futures;
@@ -76,23 +78,23 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
                 granted_votes++;
                 // Create vote granted response
                 kythira::request_vote_response<std::uint64_t> response{
-                    candidate_term, // term
-                    true // vote_granted
+                    candidate_term,  // term
+                    true             // vote_granted
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response)
-                    .delay(std::chrono::milliseconds(delay_ms));
+                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    std::chrono::milliseconds(delay_ms));
                 vote_futures.push_back(std::move(future));
             } else {
                 // Create vote denied response or timeout
                 if (gen() % 2 == 0) {
                     // Vote denied response
                     kythira::request_vote_response<std::uint64_t> response{
-                        candidate_term, // term
-                        false // vote_granted
+                        candidate_term,  // term
+                        false            // vote_granted
                     };
-                    auto future = kythira::FutureFactory::makeFuture(response)
-                        .delay(std::chrono::milliseconds(delay_ms));
+                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                        std::chrono::milliseconds(delay_ms));
                     vote_futures.push_back(std::move(future));
                 } else {
                     // Timeout simulation
@@ -104,12 +106,13 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
             }
         }
 
-        BOOST_TEST_MESSAGE("Simulated " << granted_votes << " granted votes out of "
-                          << voter_count << " voters");
+        BOOST_TEST_MESSAGE("Simulated " << granted_votes << " granted votes out of " << voter_count
+                                        << " voters");
 
         // Test the majority collection for election
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(vote_futures), test_timeout);
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(vote_futures), test_timeout);
 
         try {
             auto results = std::move(collection_future).get();
@@ -126,19 +129,20 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
             }
 
             BOOST_TEST_MESSAGE("Got " << granted_in_results << " granted votes out of "
-                              << results.size() << " total responses");
+                                      << results.size() << " total responses");
 
             // Property: Election outcome should be determined by majority of granted votes
             // In Raft, candidate needs majority of the cluster (including itself)
-            const std::size_t total_votes_for_candidate = granted_in_results + 1; // +1 for candidate's self-vote
+            const std::size_t total_votes_for_candidate =
+                granted_in_results + 1;  // +1 for candidate's self-vote
             const bool should_win_election = total_votes_for_candidate >= majority_count;
 
             if (should_win_election) {
-                BOOST_TEST_MESSAGE("✓ Candidate should win election with " << total_votes_for_candidate
-                                  << " votes (including self-vote)");
+                BOOST_TEST_MESSAGE("✓ Candidate should win election with "
+                                   << total_votes_for_candidate << " votes (including self-vote)");
             } else {
-                BOOST_TEST_MESSAGE("✓ Candidate should lose election with " << total_votes_for_candidate
-                                  << " votes (including self-vote)");
+                BOOST_TEST_MESSAGE("✓ Candidate should lose election with "
+                                   << total_votes_for_candidate << " votes (including self-vote)");
             }
 
         } catch (const std::exception& e) {
@@ -157,8 +161,9 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
     // Test with empty futures vector
     {
         std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> empty_futures;
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(empty_futures), test_timeout);
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(empty_futures), test_timeout);
 
         BOOST_CHECK_THROW(std::move(collection_future).get(), std::exception);
         BOOST_TEST_MESSAGE("✓ Empty futures vector correctly rejected");
@@ -170,8 +175,9 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
         kythira::request_vote_response<std::uint64_t> response{1, true};
         single_future.push_back(kythira::FutureFactory::makeFuture(response));
 
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(single_future), test_timeout);
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(single_future), test_timeout);
 
         auto results = std::move(collection_future).get();
         BOOST_CHECK_EQUAL(results.size(), 1);
@@ -185,13 +191,14 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::request_vote_response<std::uint64_t> response{1, true};
             // Create futures that take longer than the timeout
-            auto future = kythira::FutureFactory::makeFuture(response)
-                .delay(std::chrono::milliseconds(6000)); // Longer than test_timeout
+            auto future = kythira::FutureFactory::makeFuture(response).delay(
+                std::chrono::milliseconds(6000));  // Longer than test_timeout
             slow_futures.push_back(std::move(future));
         }
 
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(slow_futures), std::chrono::milliseconds(100)); // Short timeout
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(slow_futures), std::chrono::milliseconds(100));  // Short timeout
 
         BOOST_CHECK_THROW(std::move(collection_future).get(), std::exception);
         BOOST_TEST_MESSAGE("✓ Timeout handling works correctly");
@@ -200,18 +207,20 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
     // Test unanimous vote scenario
     {
         const std::size_t unanimous_voters = 5;
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> unanimous_futures;
+        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>>
+            unanimous_futures;
 
         for (std::size_t i = 0; i < unanimous_voters; ++i) {
             kythira::request_vote_response<std::uint64_t> response{1, true};
             unanimous_futures.push_back(kythira::FutureFactory::makeFuture(response));
         }
 
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(unanimous_futures), test_timeout);
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(unanimous_futures), test_timeout);
 
         auto results = std::move(collection_future).get();
-        BOOST_CHECK_GE(results.size(), (unanimous_voters / 2) + 1); // At least majority
+        BOOST_CHECK_GE(results.size(), (unanimous_voters / 2) + 1);  // At least majority
 
         // All returned votes should be granted
         for (const auto& response : results) {
@@ -222,7 +231,7 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
 
     // Test split vote scenario
     {
-        const std::size_t split_voters = 4; // Even number for split
+        const std::size_t split_voters = 4;  // Even number for split
         std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> split_futures;
 
         // Half grant votes, half deny
@@ -232,11 +241,12 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
             split_futures.push_back(kythira::FutureFactory::makeFuture(response));
         }
 
-        auto collection_future = raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
-            std::move(split_futures), test_timeout);
+        auto collection_future =
+            raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
+                std::move(split_futures), test_timeout);
 
         auto results = std::move(collection_future).get();
-        BOOST_CHECK_GE(results.size(), (split_voters / 2) + 1); // At least majority
+        BOOST_CHECK_GE(results.size(), (split_voters / 2) + 1);  // At least majority
 
         // Count granted votes in results
         std::size_t granted_count = 0;
@@ -247,7 +257,7 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, * boost::unit_
         }
 
         BOOST_TEST_MESSAGE("✓ Split vote scenario: " << granted_count << " granted out of "
-                          << results.size() << " responses");
+                                                     << results.size() << " responses");
     }
 
     BOOST_TEST_MESSAGE("All election vote collection property tests passed!");

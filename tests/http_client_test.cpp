@@ -8,19 +8,17 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 namespace {
-    constexpr const char* test_node_url = "http://localhost:8080";
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr std::uint64_t test_term = 5;
-    constexpr std::uint64_t test_candidate_id = 2;
-    constexpr std::uint64_t test_last_log_index = 10;
-    constexpr std::uint64_t test_last_log_term = 4;
+constexpr const char* test_node_url = "http://localhost:8080";
+constexpr std::uint64_t test_node_id = 1;
+constexpr std::uint64_t test_term = 5;
+constexpr std::uint64_t test_candidate_id = 2;
+constexpr std::uint64_t test_last_log_index = 10;
+constexpr std::uint64_t test_last_log_term = 4;
 
-    // Define transport types for testing
-    using test_transport_types = kythira::http_transport_types<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define transport types for testing
+using test_transport_types =
+    kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                  kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_tests)
@@ -29,7 +27,7 @@ BOOST_AUTO_TEST_SUITE(http_client_tests)
 // Note: Templated transports don't directly satisfy network_client concept
 // because they return Types::future_template<T>, not kythira::Future<T>.
 // Concept satisfaction is verified at instantiation time when Types is concrete.
-BOOST_AUTO_TEST_CASE(test_client_type_instantiation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_client_type_instantiation, *boost::unit_test::timeout(30)) {
     using client_type = kythira::cpp_httplib_client<test_transport_types>;
 
     // If this compiles, the type is well-formed
@@ -37,7 +35,7 @@ BOOST_AUTO_TEST_CASE(test_client_type_instantiation, * boost::unit_test::timeout
 }
 
 // Test that cpp_httplib_client requires rpc_serializer concept
-BOOST_AUTO_TEST_CASE(test_client_requires_rpc_serializer_concept, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_client_requires_rpc_serializer_concept, *boost::unit_test::timeout(30)) {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
 
     static_assert(kythira::rpc_serializer<serializer_type, std::vector<std::byte>>,
@@ -47,7 +45,7 @@ BOOST_AUTO_TEST_CASE(test_client_requires_rpc_serializer_concept, * boost::unit_
 }
 
 // Test client construction with valid configuration
-BOOST_AUTO_TEST_CASE(test_client_construction, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_client_construction, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_node_url;
 
@@ -59,14 +57,13 @@ BOOST_AUTO_TEST_CASE(test_client_construction, * boost::unit_test::timeout(30)) 
     typename test_transport_types::metrics_type metrics;
 
     // Test construction doesn't throw
-    kythira::cpp_httplib_client<test_transport_types> client(
-        node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
 
     BOOST_CHECK(true);  // Construction succeeded
 }
 
 // Test HTTPS URL detection
-BOOST_AUTO_TEST_CASE(test_https_url_detection, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_https_url_detection, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[1] = "http://localhost:8080";
     node_map[2] = "https://localhost:8443";
@@ -75,14 +72,13 @@ BOOST_AUTO_TEST_CASE(test_https_url_detection, * boost::unit_test::timeout(30)) 
     typename test_transport_types::metrics_type metrics;
 
     // Test construction with mixed HTTP/HTTPS URLs
-    kythira::cpp_httplib_client<test_transport_types> client(
-        node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
 
     BOOST_CHECK(true);  // Construction succeeded
 }
 
 // Test configuration parameters
-BOOST_AUTO_TEST_CASE(test_configuration_parameters, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_configuration_parameters, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_node_url;
 
@@ -98,14 +94,13 @@ BOOST_AUTO_TEST_CASE(test_configuration_parameters, * boost::unit_test::timeout(
     typename test_transport_types::metrics_type metrics;
 
     // Test construction with custom configuration
-    kythira::cpp_httplib_client<test_transport_types> client(
-        node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
 
     BOOST_CHECK(true);  // Construction succeeded
 }
 
 // Test metrics integration
-BOOST_AUTO_TEST_CASE(test_metrics_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_metrics_integration, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_node_url;
 
@@ -117,8 +112,7 @@ BOOST_AUTO_TEST_CASE(test_metrics_integration, * boost::unit_test::timeout(30)) 
                   "metrics_type must satisfy metrics concept");
 
     // Test construction with metrics
-    kythira::cpp_httplib_client<test_transport_types> client(
-        node_map, config, metrics);
+    kythira::cpp_httplib_client<test_transport_types> client(node_map, config, metrics);
 
     BOOST_CHECK(true);  // Construction succeeded
 }

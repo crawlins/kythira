@@ -15,12 +15,12 @@
 #include <unordered_map>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::uint64_t max_term = 1000;
-    constexpr std::uint64_t max_index = 1000;
-    constexpr std::uint64_t max_node_id = 100;
-    constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
-    constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::uint64_t max_term = 1000;
+constexpr std::uint64_t max_index = 1000;
+constexpr std::uint64_t max_node_id = 100;
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
+constexpr std::chrono::milliseconds test_timeout{5000};
 
 // Define test types for CoAP transport
 struct test_transport_types {
@@ -32,15 +32,14 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
-    // CoAP Content-Format values (RFC 7252)
-    constexpr std::uint16_t coap_content_format_json = 50;
-    constexpr std::uint16_t coap_content_format_cbor = 60;
+// CoAP Content-Format values (RFC 7252)
+constexpr std::uint16_t coap_content_format_json = 50;
+constexpr std::uint16_t coap_content_format_cbor = 60;
 }
 
 BOOST_AUTO_TEST_SUITE(coap_content_format_property_tests)
@@ -49,7 +48,7 @@ BOOST_AUTO_TEST_SUITE(coap_content_format_property_tests)
 // **Validates: Requirements 1.2, 1.3**
 // Property: For any CoAP request or response, the Content-Format option should match
 // the serialization format of the configured RPC_Serializer.
-BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_test::timeout(45)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);
@@ -69,8 +68,7 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
         endpoints[1] = test_coap_endpoint;
 
         kythira::noop_metrics metrics;
-        kythira::coap_client<test_transport_types> client(
-                std::move(endpoints), config, metrics);
+        kythira::coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
         // Test RequestVote with JSON serializer
         kythira::request_vote_request<> request;
@@ -91,14 +89,15 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, * boost::unit_t
         BOOST_TEST_MESSAGE("Exception during Content-Format test: " << e.what());
     }
 
-    BOOST_TEST_MESSAGE("Content-Format option matching: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+    BOOST_TEST_MESSAGE("Content-Format option matching: " << (property_test_iterations - failures)
+                                                          << "/" << property_test_iterations
+                                                          << " passed");
 
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
 // Test that different serializers would use different Content-Format values
-BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::timeout(30)) {
     // This test verifies the conceptual mapping between serializers and Content-Format values
     // In a real implementation, this would test:
     // - JSON serializer uses Content-Format 50 (application/json)
@@ -133,19 +132,19 @@ BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, * boost::unit_test:
 }
 
 // Test that Content-Format option is set for both requests and responses
-BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeout(30)) {
     kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics client_metrics;
 
-    kythira::coap_client<test_transport_types> client(
-        std::move(endpoints), client_config, client_metrics);
+    kythira::coap_client<test_transport_types> client(std::move(endpoints), client_config,
+                                                      client_metrics);
 
     kythira::coap_server_config server_config;
     kythira::noop_metrics server_metrics;
-    kythira::coap_server<test_transport_types> server(
-        "127.0.0.1", 5683, server_config, server_metrics);
+    kythira::coap_server<test_transport_types> server("127.0.0.1", 5683, server_config,
+                                                      server_metrics);
 
     // Test that both client and server can be created with the same serializer
     // In a real implementation, this would verify:
@@ -169,24 +168,24 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, * boost::unit_test::time
     // Don't call future.get() as it might hang in the stub implementation
 
     // Register a handler on the server
-    server.register_request_vote_handler([](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
-        kythira::request_vote_response<> response;
-        response._term = req.term();
-        response._vote_granted = true;
-        return response;
-    });
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            kythira::request_vote_response<> response;
+            response._term = req.term();
+            response._vote_granted = true;
+            return response;
+        });
 
     BOOST_TEST_MESSAGE("Bidirectional Content-Format test passed");
 }
 
 // Test that Accept option is set correctly for expected response format
-BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(30)) {
     kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
     kythira::noop_metrics metrics;
-    kythira::coap_client<test_transport_types> client(
-                std::move(endpoints), config, metrics);
+    kythira::coap_client<test_transport_types> client(std::move(endpoints), config, metrics);
 
     // Test different RPC types to ensure Accept option is set consistently
     std::vector<std::string> rpc_types = {"RequestVote", "AppendEntries", "InstallSnapshot"};
@@ -241,7 +240,8 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, * boost::unit_test::timeout(30
             BOOST_TEST_MESSAGE("Accept option test for " << rpc_type << " passed");
 
         } catch (const std::exception& e) {
-            BOOST_TEST_MESSAGE("Exception in Accept option test for " << rpc_type << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception in Accept option test for " << rpc_type << ": "
+                                                                      << e.what());
         }
     }
 

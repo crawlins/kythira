@@ -13,11 +13,11 @@
 // all future-related operations should use only kythira::Future types
 
 namespace {
-    constexpr const char* kythira_future_impl_path = "include/raft/future.hpp";
-    constexpr const char* legacy_future_impl_path = "include/future/future.hpp";
+constexpr const char* kythira_future_impl_path = "include/raft/future.hpp";
+constexpr const char* legacy_future_impl_path = "include/future/future.hpp";
 }
 
-BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_future_usage_consistency, *boost::unit_test::timeout(60)) {
     std::vector<std::string> violations;
 
     // Check all source files in the project
@@ -29,17 +29,18 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
         for (const auto& entry : std::filesystem::recursive_directory_iterator(include_dir)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".hpp" || entry.path().extension() == ".h")) {
+                std::string file_path =
+                    std::filesystem::relative(entry.path(), project_root).string();
 
-                std::string file_path = std::filesystem::relative(entry.path(), project_root).string();
-
-                // Skip the kythira::Future implementation files - they are allowed to use folly::Future
+                // Skip the kythira::Future implementation files - they are allowed to use
+                // folly::Future
                 if (file_path == kythira_future_impl_path || file_path == legacy_future_impl_path) {
                     continue;
                 }
 
                 std::ifstream file(entry.path());
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future usage
                 std::regex std_future_regex(R"(\bstd::future\b)");
@@ -50,7 +51,8 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
                 // Check for direct folly::Future usage in public interfaces
                 std::regex folly_future_regex(R"(\bfolly::Future\b)");
                 if (std::regex_search(content, folly_future_regex)) {
-                    violations.push_back(file_path + ": contains folly::Future usage in public interface");
+                    violations.push_back(file_path +
+                                         ": contains folly::Future usage in public interface");
                 }
             }
         }
@@ -62,12 +64,12 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
         for (const auto& entry : std::filesystem::recursive_directory_iterator(src_dir)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".cc")) {
-
-                std::string file_path = std::filesystem::relative(entry.path(), project_root).string();
+                std::string file_path =
+                    std::filesystem::relative(entry.path(), project_root).string();
 
                 std::ifstream file(entry.path());
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future usage
                 std::regex std_future_regex(R"(\bstd::future\b)");
@@ -90,19 +92,22 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
         for (const auto& entry : std::filesystem::recursive_directory_iterator(tests_dir)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".cc")) {
-
-                std::string file_path = std::filesystem::relative(entry.path(), project_root).string();
+                std::string file_path =
+                    std::filesystem::relative(entry.path(), project_root).string();
 
                 // Skip this test file and other property tests that check for future usage
-                if (file_path.find("future_usage_consistency_property_test.cpp") != std::string::npos ||
-                    file_path.find("header_include_consistency_property_test.cpp") != std::string::npos ||
-                    file_path.find("test_code_future_usage_property_test.cpp") != std::string::npos) {
+                if (file_path.find("future_usage_consistency_property_test.cpp") !=
+                        std::string::npos ||
+                    file_path.find("header_include_consistency_property_test.cpp") !=
+                        std::string::npos ||
+                    file_path.find("test_code_future_usage_property_test.cpp") !=
+                        std::string::npos) {
                     continue;
                 }
 
                 std::ifstream file(entry.path());
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future usage in test code
                 std::regex std_future_regex(R"(\bstd::future\b)");
@@ -125,12 +130,12 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
         for (const auto& entry : std::filesystem::recursive_directory_iterator(examples_dir)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".cc")) {
-
-                std::string file_path = std::filesystem::relative(entry.path(), project_root).string();
+                std::string file_path =
+                    std::filesystem::relative(entry.path(), project_root).string();
 
                 std::ifstream file(entry.path());
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future usage in examples
                 std::regex std_future_regex(R"(\bstd::future\b)");
@@ -156,10 +161,12 @@ BOOST_AUTO_TEST_CASE(property_future_usage_consistency, * boost::unit_test::time
         BOOST_FAIL(error_msg);
     }
 
-    BOOST_TEST_MESSAGE("Future usage consistency validation passed - all files use kythira::Future");
+    BOOST_TEST_MESSAGE(
+        "Future usage consistency validation passed - all files use kythira::Future");
 }
 
-BOOST_AUTO_TEST_CASE(property_kythira_future_implementation_allowed_folly_usage, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_kythira_future_implementation_allowed_folly_usage,
+                     *boost::unit_test::timeout(30)) {
     // Verify that the kythira::Future implementation is allowed to use folly::Future internally
     std::filesystem::path project_root = std::filesystem::current_path();
 
@@ -168,7 +175,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_future_implementation_allowed_folly_usage,
     if (std::filesystem::exists(future_impl)) {
         std::ifstream file(future_impl);
         std::string content((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
+                            std::istreambuf_iterator<char>());
 
         // Verify it contains folly::Future usage (this is expected and required)
         std::regex folly_future_regex(R"(\bfolly::Future\b)");
@@ -186,7 +193,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_future_implementation_allowed_folly_usage,
     if (std::filesystem::exists(legacy_future_impl)) {
         std::ifstream file(legacy_future_impl);
         std::string content((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
+                            std::istreambuf_iterator<char>());
 
         // Verify it contains folly::Future usage (this is expected and required)
         std::regex folly_future_regex(R"(\bfolly::Future\b)");

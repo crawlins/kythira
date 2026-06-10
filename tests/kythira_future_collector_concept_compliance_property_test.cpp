@@ -16,21 +16,23 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value_1 = 42;
-    constexpr int test_value_2 = 84;
-    constexpr int test_value_3 = 126;
-    constexpr const char* test_string = "test exception";
-    constexpr std::size_t property_test_iterations = 50;
-    constexpr std::size_t test_collection_size = 5;
+constexpr int test_value_1 = 42;
+constexpr int test_value_2 = 84;
+constexpr int test_value_3 = 126;
+constexpr const char* test_string = "test exception";
+constexpr std::size_t property_test_iterations = 50;
+constexpr std::size_t test_collection_size = 5;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 1: Concept Compliance**
  *
- * Property: For any FutureCollector class and its corresponding concept, the collector should satisfy all concept requirements at compile time and runtime
+ * Property: For any FutureCollector class and its corresponding concept, the collector should
+ * satisfy all concept requirements at compile time and runtime
  * **Validates: Requirements 4.1, 4.2, 4.3, 4.4**
  */
-BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: Static assertion for concept compliance
     {
         // Test kythira::FutureCollector satisfies future_collector concept
@@ -85,7 +87,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
         std::size_t index = std::get<0>(result);
         Try<int> try_value = std::get<1>(result);
 
-        BOOST_CHECK(index < 2); // Should be 0 or 1
+        BOOST_CHECK(index < 2);  // Should be 0 or 1
         BOOST_CHECK(try_value.hasValue());
         int value = try_value.value();
         BOOST_CHECK(value == test_value_1 || value == test_value_2);
@@ -100,7 +102,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
         int_futures.push_back(FutureFactory::makeFuture(test_value_1));
         int_futures.push_back(FutureFactory::makeFuture(test_value_2));
 
-        auto any_success_result = FutureCollector::collectAnyWithoutException(std::move(int_futures));
+        auto any_success_result =
+            FutureCollector::collectAnyWithoutException(std::move(int_futures));
         static_assert(future<decltype(any_success_result), std::tuple<std::size_t, int>>,
                       "collectAnyWithoutException result must satisfy future concept");
 
@@ -108,7 +111,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
         std::size_t index = std::get<0>(result);
         int value = std::get<1>(result);
 
-        BOOST_CHECK(index < 2); // Should be 0 or 1
+        BOOST_CHECK(index < 2);  // Should be 0 or 1
         BOOST_CHECK(value == test_value_1 || value == test_value_2);
 
         BOOST_TEST_MESSAGE("collectAnyWithoutException method works correctly");
@@ -133,7 +136,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
             std::size_t index = std::get<0>(result);
             Try<int> try_value = std::get<1>(result);
 
-            BOOST_CHECK(index < 3); // Should be 0, 1, or 2
+            BOOST_CHECK(index < 3);  // Should be 0, 1, or 2
             BOOST_CHECK(try_value.hasValue());
         }
 
@@ -153,7 +156,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
 
         // Add some failed futures
         for (std::size_t j = test_collection_size / 2; j < test_collection_size; ++j) {
-            std::string exception_msg = "test exception " + std::to_string(i) + "_" + std::to_string(j);
+            std::string exception_msg =
+                "test exception " + std::to_string(i) + "_" + std::to_string(j);
             auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
             mixed_futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
         }
@@ -166,7 +170,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
                     int value = static_cast<int>(i * 10 + k);
                     futures_copy.push_back(FutureFactory::makeFuture(value));
                 } else {
-                    std::string exception_msg = "test exception " + std::to_string(i) + "_" + std::to_string(k);
+                    std::string exception_msg =
+                        "test exception " + std::to_string(i) + "_" + std::to_string(k);
                     auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                     futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
                 }
@@ -197,7 +202,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
                     int value = static_cast<int>(i * 10 + k);
                     futures_copy.push_back(FutureFactory::makeFuture(value));
                 } else {
-                    std::string exception_msg = "test exception " + std::to_string(i) + "_" + std::to_string(k);
+                    std::string exception_msg =
+                        "test exception " + std::to_string(i) + "_" + std::to_string(k);
                     auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
                     futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
                 }
@@ -233,7 +239,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
 
         // Test collectAnyWithoutException with empty vector
         std::vector<Future<int>> empty_futures2;
-        auto empty_any_success_result = FutureCollector::collectAnyWithoutException(std::move(empty_futures2));
+        auto empty_any_success_result =
+            FutureCollector::collectAnyWithoutException(std::move(empty_futures2));
         BOOST_CHECK_THROW(empty_any_success_result.get(), std::invalid_argument);
 
         // Test collectN with n > futures.size()
@@ -256,10 +263,11 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test, 
 /**
  * Test that types NOT satisfying future_collector concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!future_collector<int>, "int should not satisfy future_collector concept");
-    static_assert(!future_collector<std::string>, "std::string should not satisfy future_collector concept");
+    static_assert(!future_collector<std::string>,
+                  "std::string should not satisfy future_collector concept");
 
     // Test that types missing required methods don't satisfy the concept
     struct IncompleteFutureCollector {
@@ -274,16 +282,20 @@ BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, * boost::unit_test
 
     // Test that non-static methods don't satisfy the concept
     struct NonStaticFutureCollector {
-        auto collectAll(std::vector<Future<int>> futures) -> Future<std::vector<Try<int>>> { // Not static
+        auto collectAll(std::vector<Future<int>> futures)
+            -> Future<std::vector<Try<int>>> {  // Not static
             return FutureFactory::makeFuture(std::vector<Try<int>>{});
         }
-        auto collectAny(std::vector<Future<int>> futures) -> Future<std::tuple<std::size_t, Try<int>>> { // Not static
+        auto collectAny(std::vector<Future<int>> futures)
+            -> Future<std::tuple<std::size_t, Try<int>>> {  // Not static
             return FutureFactory::makeFuture(std::make_tuple(std::size_t{0}, Try<int>(0)));
         }
-        auto collectAnyWithoutException(std::vector<Future<int>> futures) -> Future<std::tuple<std::size_t, int>> { // Not static
+        auto collectAnyWithoutException(std::vector<Future<int>> futures)
+            -> Future<std::tuple<std::size_t, int>> {  // Not static
             return FutureFactory::makeFuture(std::make_tuple(std::size_t{0}, 0));
         }
-        auto collectN(std::vector<Future<int>> futures, std::size_t n) -> Future<std::vector<std::tuple<std::size_t, Try<int>>>> { // Not static
+        auto collectN(std::vector<Future<int>> futures, std::size_t n)
+            -> Future<std::vector<std::tuple<std::size_t, Try<int>>>> {  // Not static
             return FutureFactory::makeFuture(std::vector<std::tuple<std::size_t, Try<int>>>{});
         }
     };
@@ -297,7 +309,7 @@ BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, * boost::unit_test
 /**
  * Test static-only nature of FutureCollector
  */
-BOOST_AUTO_TEST_CASE(future_collector_static_only_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_static_only_test, *boost::unit_test::timeout(30)) {
     // Test that FutureCollector cannot be instantiated
     static_assert(!std::is_default_constructible_v<FutureCollector>,
                   "FutureCollector should not be default constructible");
@@ -316,7 +328,7 @@ BOOST_AUTO_TEST_CASE(future_collector_static_only_test, * boost::unit_test::time
 /**
  * Test void specialization handling
  */
-BOOST_AUTO_TEST_CASE(future_collector_void_specialization_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_collector_void_specialization_test, *boost::unit_test::timeout(30)) {
     // Test collectAll with void futures
     {
         std::vector<Future<void>> void_futures;
@@ -355,7 +367,8 @@ BOOST_AUTO_TEST_CASE(future_collector_void_specialization_test, * boost::unit_te
         std::vector<Future<void>> void_futures;
         void_futures.push_back(FutureFactory::makeFuture());
 
-        auto any_success_result = FutureCollector::collectAnyWithoutException(std::move(void_futures));
+        auto any_success_result =
+            FutureCollector::collectAnyWithoutException(std::move(void_futures));
         static_assert(future<decltype(any_success_result), std::size_t>,
                       "collectAnyWithoutException with void futures must satisfy future concept");
 

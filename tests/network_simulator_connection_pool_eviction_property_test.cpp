@@ -32,11 +32,11 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
-    constexpr std::size_t max_connections_per_endpoint = 3;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
+constexpr std::size_t max_connections_per_endpoint = 3;
 }
 
 // Helper to generate random node address
@@ -56,7 +56,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * Property: For any connection pool that reaches its capacity limit, adding a new
  * connection SHALL evict the least recently used connection from the pool.
  */
-BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
         // Configure connection pool with small capacity
         typename ConnectionPool<DefaultNetworkTypes>::PoolConfig pool_config;
         pool_config.max_connections_per_endpoint = max_connections_per_endpoint;
-        pool_config.max_idle_time = std::chrono::milliseconds{60000}; // 1 minute
+        pool_config.max_idle_time = std::chrono::milliseconds{60000};  // 1 minute
         pool_config.enable_health_checks = true;
 
         auto& pool = sim.get_connection_pool();
@@ -121,15 +121,18 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
             }
 
             // Verify pool is at capacity
-            auto pool_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (pool_size == max_connections_per_endpoint) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool filled to capacity (" << pool_size << ")");
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool filled to capacity (" << pool_size
+                                                << ")");
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Pool size incorrect: " << pool_size
-                    << " (expected " << max_connections_per_endpoint << ")");
+                                                << " (expected " << max_connections_per_endpoint
+                                                << ")");
             }
 
             // Test Case 2: Add one more connection to trigger eviction
@@ -143,16 +146,19 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
             pool.return_connection(extra_conn);
 
             // Verify pool size is still at capacity (LRU was evicted)
-            auto pool_size_after = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (pool_size_after == max_connections_per_endpoint) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool maintained capacity after eviction ("
-                    << pool_size_after << ")");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Pool maintained capacity after eviction ("
+                                                << pool_size_after << ")");
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Pool size incorrect after eviction: "
-                    << pool_size_after << " (expected " << max_connections_per_endpoint << ")");
+                                                << pool_size_after << " (expected "
+                                                << max_connections_per_endpoint << ")");
             }
 
             // Test Case 3: Verify LRU eviction behavior
@@ -166,21 +172,24 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
 
             pool.return_connection(new_conn);
 
-            auto final_pool_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto final_pool_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (final_pool_size == max_connections_per_endpoint) {
                 ++success_count;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": LRU eviction working correctly");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": LRU eviction failed, pool size: " << final_pool_size);
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": LRU eviction failed, pool size: " << final_pool_size);
             }
 
             // Test Case 4: Verify evicted connections are closed
             // We can't directly verify this without access to internal state,
             // but we can verify that the pool doesn't grow beyond capacity
             for (std::size_t j = 0; j < 5; ++j) {
-                auto test_conn_future = client->connect(server_addr, server_port, connection_timeout);
+                auto test_conn_future =
+                    client->connect(server_addr, server_port, connection_timeout);
                 auto test_conn = test_conn_future.get();
 
                 BOOST_REQUIRE(test_conn);
@@ -188,21 +197,25 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
 
                 pool.return_connection(test_conn);
 
-                auto current_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+                auto current_size =
+                    pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
                 if (current_size > max_connections_per_endpoint) {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << " round " << j
-                        << ": Pool exceeded capacity: " << current_size);
+                    BOOST_TEST_MESSAGE("Iteration "
+                                       << i << " round " << j
+                                       << ": Pool exceeded capacity: " << current_size);
                     break;
                 }
             }
 
             // If we got here without exceeding capacity, eviction is working
-            auto final_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto final_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
             if (final_size <= max_connections_per_endpoint) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool never exceeded capacity during stress test");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Pool never exceeded capacity during stress test");
             }
 
         } catch (const std::exception& e) {
@@ -220,8 +233,9 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, * boost::unit_test::time
     BOOST_TEST_MESSAGE("Successful tests: " << success_count);
     BOOST_TEST_MESSAGE("Failures: " << failures);
 
-    // Property should hold for at least some iterations - connection pool eviction is timing-sensitive
-    // Allow up to 100% failures since this is testing a complex timing-dependent feature
+    // Property should hold for at least some iterations - connection pool eviction is
+    // timing-sensitive Allow up to 100% failures since this is testing a complex timing-dependent
+    // feature
     BOOST_CHECK_LE(failures, property_test_iterations);  // Just verify test completes
     BOOST_TEST_MESSAGE("Connection pool eviction test completed (timing-sensitive feature)");
 }

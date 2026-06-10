@@ -10,11 +10,11 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr std::chrono::milliseconds min_latency{1};
-    constexpr std::chrono::milliseconds max_latency{1000};
-    constexpr double default_reliability = 0.99;
-    constexpr std::size_t test_iterations = 100;
-    constexpr const char* node_prefix = "node_";
+constexpr std::chrono::milliseconds min_latency{1};
+constexpr std::chrono::milliseconds max_latency{1000};
+constexpr double default_reliability = 0.99;
+constexpr std::size_t test_iterations = 100;
+constexpr const char* node_prefix = "node_";
 }
 
 /**
@@ -25,8 +25,8 @@ namespace {
  *
  * **Validates: Requirements 1.1, 11.3, 11.6**
  */
-BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_latency_preservation_property_test, * boost::unit_test::timeout(60)) {
-
+BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_latency_preservation_property_test,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -81,7 +81,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_topology_edge_latency_preservation_proper
 /**
  * Test edge case: Zero latency
  */
-BOOST_AUTO_TEST_CASE(topology_edge_zero_latency_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_zero_latency_preservation, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "node_a";
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(topology_edge_zero_latency_preservation, * boost::unit_test
 /**
  * Test edge case: Maximum latency
  */
-BOOST_AUTO_TEST_CASE(topology_edge_maximum_latency_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_edge_maximum_latency_preservation, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "node_x";
@@ -122,16 +122,13 @@ BOOST_AUTO_TEST_CASE(topology_edge_maximum_latency_preservation, * boost::unit_t
 /**
  * Test multiple edges with different latencies
  */
-BOOST_AUTO_TEST_CASE(topology_multiple_edges_latency_preservation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_multiple_edges_latency_preservation, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::vector<std::string> nodes = {"node_1", "node_2", "node_3", "node_4"};
     std::vector<std::chrono::milliseconds> latencies = {
-        std::chrono::milliseconds(10),
-        std::chrono::milliseconds(50),
-        std::chrono::milliseconds(100),
-        std::chrono::milliseconds(500)
-    };
+        std::chrono::milliseconds(10), std::chrono::milliseconds(50),
+        std::chrono::milliseconds(100), std::chrono::milliseconds(500)};
 
     // Add all nodes
     for (const auto& node : nodes) {

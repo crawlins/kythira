@@ -4,15 +4,11 @@
 
 namespace network_simulator {
 
-template<typename Types>
-ConnectionTracker<Types>::ConnectionTracker() = default;
+template<typename Types> ConnectionTracker<Types>::ConnectionTracker() = default;
 
 template<typename Types>
-auto ConnectionTracker<Types>::register_connection(
-    endpoint_type local,
-    endpoint_type remote,
-    std::shared_ptr<connection_type> conn) -> void {
-
+auto ConnectionTracker<Types>::register_connection(endpoint_type local, endpoint_type remote,
+                                                   std::shared_ptr<connection_type> conn) -> void {
     std::unique_lock lock(_info_mutex);
 
     ConnectionInfo info(local, remote);
@@ -23,10 +19,8 @@ auto ConnectionTracker<Types>::register_connection(
 }
 
 template<typename Types>
-auto ConnectionTracker<Types>::update_connection_state(
-    endpoint_type local,
-    ConnectionState new_state) -> void {
-
+auto ConnectionTracker<Types>::update_connection_state(endpoint_type local,
+                                                       ConnectionState new_state) -> void {
     std::unique_lock lock(_info_mutex);
 
     auto it = _connection_info.find(local);
@@ -37,18 +31,16 @@ auto ConnectionTracker<Types>::update_connection_state(
         // Invoke callback if registered
         if (it->second.state_change_callback) {
             auto callback = it->second.state_change_callback;
-            lock.unlock(); // Release lock before calling callback
+            lock.unlock();  // Release lock before calling callback
             callback(old_state, new_state);
         }
     }
 }
 
 template<typename Types>
-auto ConnectionTracker<Types>::update_connection_stats(
-    endpoint_type local,
-    std::size_t bytes_transferred,
-    bool is_send) -> void {
-
+auto ConnectionTracker<Types>::update_connection_stats(endpoint_type local,
+                                                       std::size_t bytes_transferred, bool is_send)
+    -> void {
     std::unique_lock lock(_info_mutex);
 
     auto it = _connection_info.find(local);
@@ -68,7 +60,6 @@ auto ConnectionTracker<Types>::update_connection_stats(
 template<typename Types>
 auto ConnectionTracker<Types>::get_connection_info(endpoint_type local) const
     -> std::optional<ConnectionInfo> {
-
     std::shared_lock lock(_info_mutex);
 
     auto it = _connection_info.find(local);
@@ -108,8 +99,7 @@ auto ConnectionTracker<Types>::configure_idle_timeout(std::chrono::milliseconds 
     _idle_timeout = timeout;
 }
 
-template<typename Types>
-auto ConnectionTracker<Types>::process_keep_alive() -> void {
+template<typename Types> auto ConnectionTracker<Types>::process_keep_alive() -> void {
     std::shared_lock lock(_info_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -127,8 +117,7 @@ auto ConnectionTracker<Types>::process_keep_alive() -> void {
     }
 }
 
-template<typename Types>
-auto ConnectionTracker<Types>::process_idle_timeouts() -> void {
+template<typename Types> auto ConnectionTracker<Types>::process_idle_timeouts() -> void {
     std::unique_lock lock(_info_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -163,9 +152,7 @@ auto ConnectionTracker<Types>::process_idle_timeouts() -> void {
 
 template<typename Types>
 auto ConnectionTracker<Types>::set_state_change_callback(
-    endpoint_type local,
-    std::function<void(ConnectionState, ConnectionState)> callback) -> void {
-
+    endpoint_type local, std::function<void(ConnectionState, ConnectionState)> callback) -> void {
     std::unique_lock lock(_info_mutex);
 
     auto it = _connection_info.find(local);
@@ -174,4 +161,4 @@ auto ConnectionTracker<Types>::set_state_change_callback(
     }
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

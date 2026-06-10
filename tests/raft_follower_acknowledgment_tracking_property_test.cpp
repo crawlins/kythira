@@ -11,12 +11,12 @@
 using namespace std;
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::size_t min_cluster_size = 3;
-    constexpr std::size_t max_cluster_size = 9;
-    constexpr std::size_t test_iterations = 30;
-    constexpr std::size_t min_log_entries = 1;
-    constexpr std::size_t max_log_entries = 10;
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t min_cluster_size = 3;
+constexpr std::size_t max_cluster_size = 9;
+constexpr std::size_t test_iterations = 30;
+constexpr std::size_t min_log_entries = 1;
+constexpr std::size_t max_log_entries = 10;
 }
 
 // Simplified types for testing the property
@@ -58,9 +58,7 @@ public:
     }
 
     // Clear all acknowledgments
-    void clear() {
-        _acknowledgments.clear();
-    }
+    void clear() { _acknowledgments.clear(); }
 
     // Get all log indices that have acknowledgments
     std::vector<LogIndex> get_acknowledged_entries() const {
@@ -76,29 +74,32 @@ public:
 /**
  * **Feature: raft-completion, Property 27: Follower Acknowledgment Tracking**
  *
- * Property: For any entry replication to followers, the system tracks which followers have acknowledged each entry.
+ * Property: For any entry replication to followers, the system tracks which followers have
+ * acknowledged each entry.
  * **Validates: Requirements 6.1**
  */
-BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
     std::uniform_int_distribution<std::size_t> entry_count_dist(min_log_entries, max_log_entries);
-    std::uniform_int_distribution<int> success_rate_dist(70, 100); // percentage
+    std::uniform_int_distribution<int> success_rate_dist(70, 100);  // percentage
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++; // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
 
-        const std::size_t follower_count = cluster_size - 1; // Exclude leader
+        const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t entry_count = entry_count_dist(gen);
 
         BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size
-                          << ", followers: " << follower_count
-                          << ", log entries: " << entry_count);
+                                                    << ", followers: " << follower_count
+                                                    << ", log entries: " << entry_count);
 
         // Create follower IDs (leader is ID 1, followers are 2, 3, 4, ...)
         std::vector<NodeId> follower_ids;
@@ -128,9 +129,11 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
                     expected_acknowledgments[log_index].insert(follower_id);
                     tracker.record_acknowledgment(log_index, follower_id);
 
-                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry " << log_index);
+                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry "
+                                                     << log_index);
                 } else {
-                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " did NOT acknowledge entry " << log_index);
+                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " did NOT acknowledge entry "
+                                                     << log_index);
                 }
             }
         }
@@ -165,8 +168,8 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
                 }
             }
 
-            BOOST_TEST_MESSAGE("Follower " << follower_id << " acknowledged "
-                              << follower_ack_count << " entries");
+            BOOST_TEST_MESSAGE("Follower " << follower_id << " acknowledged " << follower_ack_count
+                                           << " entries");
 
             // Each follower should be able to acknowledge 0 to all entries
             BOOST_CHECK_GE(follower_ack_count, 0);
@@ -226,13 +229,14 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
             bool follower1_should_ack = follower1_acks.count(entry) > 0;
             bool follower2_should_ack = follower2_acks.count(entry) > 0;
 
-            BOOST_CHECK_EQUAL(tracker.has_acknowledgment(entry, follower1_id), follower1_should_ack);
-            BOOST_CHECK_EQUAL(tracker.has_acknowledgment(entry, follower2_id), follower2_should_ack);
+            BOOST_CHECK_EQUAL(tracker.has_acknowledgment(entry, follower1_id),
+                              follower1_should_ack);
+            BOOST_CHECK_EQUAL(tracker.has_acknowledgment(entry, follower2_id),
+                              follower2_should_ack);
 
-            BOOST_TEST_MESSAGE("Entry " << entry << ": Follower1="
-                              << (follower1_should_ack ? "ACK" : "NACK")
-                              << ", Follower2="
-                              << (follower2_should_ack ? "ACK" : "NACK"));
+            BOOST_TEST_MESSAGE("Entry "
+                               << entry << ": Follower1=" << (follower1_should_ack ? "ACK" : "NACK")
+                               << ", Follower2=" << (follower2_should_ack ? "ACK" : "NACK"));
         }
 
         BOOST_TEST_MESSAGE("✓ Individual follower acknowledgment tracking test passed");
@@ -247,7 +251,9 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
             // Property: System should handle zero acknowledgments correctly
             BOOST_CHECK_EQUAL(tracker.get_acknowledgment_count(entry), 0);
             BOOST_CHECK(tracker.get_acknowledgments(entry).empty());
-            BOOST_TEST_MESSAGE("Entry " << entry << " has " << tracker.get_acknowledgment_count(entry) << " acknowledgments");
+            BOOST_TEST_MESSAGE("Entry " << entry << " has "
+                                        << tracker.get_acknowledgment_count(entry)
+                                        << " acknowledgments");
         }
 
         BOOST_TEST_MESSAGE("✓ Zero acknowledgments tracking test passed");
@@ -272,8 +278,9 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
 
             // Property: System should handle all followers acknowledging
             BOOST_CHECK_EQUAL(tracker.get_acknowledgment_count(entry), follower_count);
-            BOOST_TEST_MESSAGE("Entry " << entry << " has " << tracker.get_acknowledgment_count(entry)
-                              << " acknowledgments (all followers)");
+            BOOST_TEST_MESSAGE("Entry " << entry << " has "
+                                        << tracker.get_acknowledgment_count(entry)
+                                        << " acknowledgments (all followers)");
         }
 
         BOOST_TEST_MESSAGE("✓ All followers acknowledgment tracking test passed");
@@ -310,7 +317,8 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
 
         // Property: System should maintain consistent tracking across all entries
         for (const auto& [entry, expected_acks] : consistent_acks) {
-            BOOST_CHECK_EQUAL(tracker.get_acknowledgment_count(entry), 2); // Each entry should have exactly 2 acks
+            BOOST_CHECK_EQUAL(tracker.get_acknowledgment_count(entry),
+                              2);  // Each entry should have exactly 2 acks
 
             const auto& actual_acks = tracker.get_acknowledgments(entry);
             BOOST_CHECK_EQUAL(actual_acks.size(), expected_acks.size());
@@ -319,7 +327,9 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
                 BOOST_CHECK(actual_acks.count(follower_id) > 0);
             }
 
-            BOOST_TEST_MESSAGE("Entry " << entry << " has " << tracker.get_acknowledgment_count(entry) << " acknowledgments");
+            BOOST_TEST_MESSAGE("Entry " << entry << " has "
+                                        << tracker.get_acknowledgment_count(entry)
+                                        << " acknowledgments");
         }
 
         BOOST_TEST_MESSAGE("✓ Consistent acknowledgment tracking test passed");
@@ -339,7 +349,7 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test, * boos
 
         BOOST_CHECK_EQUAL(acknowledged_entries.size(), expected_entries.size());
         BOOST_CHECK_EQUAL_COLLECTIONS(acknowledged_entries.begin(), acknowledged_entries.end(),
-                                     expected_entries.begin(), expected_entries.end());
+                                      expected_entries.begin(), expected_entries.end());
 
         BOOST_TEST_MESSAGE("✓ Get acknowledged entries test passed");
     }

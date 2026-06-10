@@ -19,14 +19,14 @@ namespace kythira {
  * @brief Error type classification for different handling strategies
  */
 enum class error_type {
-    network_timeout,        // Network operation timed out
-    network_unreachable,    // Target node unreachable
-    connection_refused,     // Connection actively refused
-    serialization_error,    // Message serialization/deserialization failed
-    protocol_error,         // Raft protocol violation
-    temporary_failure,      // Temporary failure, should retry
-    permanent_failure,      // Permanent failure, should not retry
-    unknown_error          // Unclassified error
+    network_timeout,      // Network operation timed out
+    network_unreachable,  // Target node unreachable
+    connection_refused,   // Connection actively refused
+    serialization_error,  // Message serialization/deserialization failed
+    protocol_error,       // Raft protocol violation
+    temporary_failure,    // Temporary failure, should retry
+    permanent_failure,    // Permanent failure, should not retry
+    unknown_error         // Unclassified error
 };
 
 /**
@@ -37,7 +37,7 @@ enum class timeout_type {
     network_timeout,        // No response within timeout period
     connection_failure,     // Connection dropped or refused
     serialization_timeout,  // Timeout during message encoding/decoding
-    unknown_timeout        // Unclassified timeout
+    unknown_timeout         // Unclassified timeout
 };
 
 /**
@@ -45,15 +45,24 @@ enum class timeout_type {
  */
 inline auto operator<<(std::ostream& os, error_type type) -> std::ostream& {
     switch (type) {
-        case error_type::network_timeout: return os << "network_timeout";
-        case error_type::network_unreachable: return os << "network_unreachable";
-        case error_type::connection_refused: return os << "connection_refused";
-        case error_type::serialization_error: return os << "serialization_error";
-        case error_type::protocol_error: return os << "protocol_error";
-        case error_type::temporary_failure: return os << "temporary_failure";
-        case error_type::permanent_failure: return os << "permanent_failure";
-        case error_type::unknown_error: return os << "unknown_error";
-        default: return os << "unknown(" << static_cast<int>(type) << ")";
+        case error_type::network_timeout:
+            return os << "network_timeout";
+        case error_type::network_unreachable:
+            return os << "network_unreachable";
+        case error_type::connection_refused:
+            return os << "connection_refused";
+        case error_type::serialization_error:
+            return os << "serialization_error";
+        case error_type::protocol_error:
+            return os << "protocol_error";
+        case error_type::temporary_failure:
+            return os << "temporary_failure";
+        case error_type::permanent_failure:
+            return os << "permanent_failure";
+        case error_type::unknown_error:
+            return os << "unknown_error";
+        default:
+            return os << "unknown(" << static_cast<int>(type) << ")";
     }
 }
 
@@ -62,12 +71,18 @@ inline auto operator<<(std::ostream& os, error_type type) -> std::ostream& {
  */
 inline auto operator<<(std::ostream& os, timeout_type type) -> std::ostream& {
     switch (type) {
-        case timeout_type::network_delay: return os << "network_delay";
-        case timeout_type::network_timeout: return os << "network_timeout";
-        case timeout_type::connection_failure: return os << "connection_failure";
-        case timeout_type::serialization_timeout: return os << "serialization_timeout";
-        case timeout_type::unknown_timeout: return os << "unknown_timeout";
-        default: return os << "unknown(" << static_cast<int>(type) << ")";
+        case timeout_type::network_delay:
+            return os << "network_delay";
+        case timeout_type::network_timeout:
+            return os << "network_timeout";
+        case timeout_type::connection_failure:
+            return os << "connection_failure";
+        case timeout_type::serialization_timeout:
+            return os << "serialization_timeout";
+        case timeout_type::unknown_timeout:
+            return os << "unknown_timeout";
+        default:
+            return os << "unknown(" << static_cast<int>(type) << ")";
     }
 }
 
@@ -90,8 +105,7 @@ struct error_classification {
  *
  * @tparam Result The result type of operations being handled
  */
-template<typename Result>
-class error_handler {
+template<typename Result> class error_handler {
 public:
     /**
      * @brief Retry policy configuration for different operation types
@@ -105,10 +119,8 @@ public:
 
         // Validation
         auto is_valid() const -> bool {
-            return initial_delay > std::chrono::milliseconds{0} &&
-                   max_delay >= initial_delay &&
-                   backoff_multiplier > 1.0 &&
-                   jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
+            return initial_delay > std::chrono::milliseconds{0} && max_delay >= initial_delay &&
+                   backoff_multiplier > 1.0 && jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
                    max_attempts > 0;
         }
     };
@@ -118,37 +130,32 @@ public:
      */
     error_handler() {
         // Set default retry policies for common Raft operations
-        set_retry_policy("heartbeat", retry_policy{
-            .initial_delay = std::chrono::milliseconds{50},
-            .max_delay = std::chrono::milliseconds{1000},
-            .backoff_multiplier = 1.5,
-            .jitter_factor = 0.1,
-            .max_attempts = 3
-        });
+        set_retry_policy("heartbeat", retry_policy{.initial_delay = std::chrono::milliseconds{50},
+                                                   .max_delay = std::chrono::milliseconds{1000},
+                                                   .backoff_multiplier = 1.5,
+                                                   .jitter_factor = 0.1,
+                                                   .max_attempts = 3});
 
-        set_retry_policy("append_entries", retry_policy{
-            .initial_delay = std::chrono::milliseconds{100},
-            .max_delay = std::chrono::milliseconds{5000},
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.1,
-            .max_attempts = 5
-        });
+        set_retry_policy("append_entries",
+                         retry_policy{.initial_delay = std::chrono::milliseconds{100},
+                                      .max_delay = std::chrono::milliseconds{5000},
+                                      .backoff_multiplier = 2.0,
+                                      .jitter_factor = 0.1,
+                                      .max_attempts = 5});
 
-        set_retry_policy("request_vote", retry_policy{
-            .initial_delay = std::chrono::milliseconds{100},
-            .max_delay = std::chrono::milliseconds{2000},
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.1,
-            .max_attempts = 3
-        });
+        set_retry_policy("request_vote",
+                         retry_policy{.initial_delay = std::chrono::milliseconds{100},
+                                      .max_delay = std::chrono::milliseconds{2000},
+                                      .backoff_multiplier = 2.0,
+                                      .jitter_factor = 0.1,
+                                      .max_attempts = 3});
 
-        set_retry_policy("install_snapshot", retry_policy{
-            .initial_delay = std::chrono::milliseconds{500},
-            .max_delay = std::chrono::milliseconds{30000},
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.1,
-            .max_attempts = 10
-        });
+        set_retry_policy("install_snapshot",
+                         retry_policy{.initial_delay = std::chrono::milliseconds{500},
+                                      .max_delay = std::chrono::milliseconds{30000},
+                                      .backoff_multiplier = 2.0,
+                                      .jitter_factor = 0.1,
+                                      .max_attempts = 10});
     }
 
     /**
@@ -165,11 +172,9 @@ public:
      * @return Future containing the operation result
      */
     template<typename Operation>
-    auto execute_with_retry(
-        const std::string& operation_name,
-        Operation&& op,
-        const std::optional<retry_policy>& custom_policy = std::nullopt
-    ) -> kythira::Future<Result> {
+    auto execute_with_retry(const std::string& operation_name, Operation&& op,
+                            const std::optional<retry_policy>& custom_policy = std::nullopt)
+        -> kythira::Future<Result> {
         const auto& policy = custom_policy.value_or(get_retry_policy(operation_name));
 
         if (!policy.is_valid()) {
@@ -194,7 +199,7 @@ public:
 
         // Convert to lowercase for case-insensitive matching
         std::transform(error_msg.begin(), error_msg.end(), error_msg.begin(),
-                      [](unsigned char c){ return std::tolower(c); });
+                       [](unsigned char c) { return std::tolower(c); });
 
         // Network timeout errors - check for various timeout patterns
         // But exclude configuration/command contexts like "set timeout", "timeout value", etc.
@@ -215,35 +220,29 @@ public:
             // Classify the specific timeout type
             auto timeout_class = classify_timeout(error_msg);
 
-            return {
-                .type = error_type::network_timeout,
-                .should_retry = true,
-                .description = "Network operation timeout",
-                .timeout_classification = timeout_class
-            };
+            return {.type = error_type::network_timeout,
+                    .should_retry = true,
+                    .description = "Network operation timeout",
+                    .timeout_classification = timeout_class};
         }
 
         // Network unreachable errors
         if (error_msg.find("unreachable") != std::string::npos ||
             error_msg.find("no route to host") != std::string::npos ||
             error_msg.find("network is unreachable") != std::string::npos) {
-            return {
-                .type = error_type::network_unreachable,
-                .should_retry = true,
-                .description = "Target node unreachable",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::network_unreachable,
+                    .should_retry = true,
+                    .description = "Target node unreachable",
+                    .timeout_classification = std::nullopt};
         }
 
         // Connection refused errors
         if (error_msg.find("connection refused") != std::string::npos ||
             error_msg.find("refused") != std::string::npos) {
-            return {
-                .type = error_type::connection_refused,
-                .should_retry = true,
-                .description = "Connection actively refused",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::connection_refused,
+                    .should_retry = true,
+                    .description = "Connection actively refused",
+                    .timeout_classification = std::nullopt};
         }
 
         // Serialization errors
@@ -251,12 +250,10 @@ public:
             error_msg.find("deserialization") != std::string::npos ||
             error_msg.find("parse") != std::string::npos ||
             error_msg.find("invalid format") != std::string::npos) {
-            return {
-                .type = error_type::serialization_error,
-                .should_retry = false,
-                .description = "Message serialization/deserialization failed",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::serialization_error,
+                    .should_retry = false,
+                    .description = "Message serialization/deserialization failed",
+                    .timeout_classification = std::nullopt};
         }
 
         // Data corruption/validation errors (should not retry)
@@ -265,12 +262,11 @@ public:
             error_msg.find("corruption") != std::string::npos ||
             error_msg.find("corrupt") != std::string::npos ||
             error_msg.find("invalid data") != std::string::npos) {
-            return {
-                .type = error_type::serialization_error,  // Treat as serialization error (non-retryable)
-                .should_retry = false,
-                .description = "Data corruption or validation failure",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::serialization_error,  // Treat as serialization error
+                                                              // (non-retryable)
+                    .should_retry = false,
+                    .description = "Data corruption or validation failure",
+                    .timeout_classification = std::nullopt};
         }
 
         // Protocol errors
@@ -280,12 +276,10 @@ public:
             error_msg.find("invalid candidate") != std::string::npos ||
             error_msg.find("malformed") != std::string::npos ||
             error_msg.find("invalid request") != std::string::npos) {
-            return {
-                .type = error_type::protocol_error,
-                .should_retry = false,
-                .description = "Raft protocol violation",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::protocol_error,
+                    .should_retry = false,
+                    .description = "Raft protocol violation",
+                    .timeout_classification = std::nullopt};
         }
 
         // Permanent failures (resource exhaustion, should not retry)
@@ -293,12 +287,10 @@ public:
             error_msg.find("out of memory") != std::string::npos ||
             error_msg.find("memory allocation failure") != std::string::npos ||
             error_msg.find("no space left") != std::string::npos) {
-            return {
-                .type = error_type::permanent_failure,
-                .should_retry = false,
-                .description = "Resource exhaustion",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::permanent_failure,
+                    .should_retry = false,
+                    .description = "Resource exhaustion",
+                    .timeout_classification = std::nullopt};
         }
 
         // Authentication and authorization failures (should not retry)
@@ -307,33 +299,27 @@ public:
             error_msg.find("access denied") != std::string::npos ||
             error_msg.find("unauthorized") != std::string::npos ||
             error_msg.find("forbidden") != std::string::npos) {
-            return {
-                .type = error_type::permanent_failure,
-                .should_retry = false,
-                .description = "Authentication or authorization failure",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::permanent_failure,
+                    .should_retry = false,
+                    .description = "Authentication or authorization failure",
+                    .timeout_classification = std::nullopt};
         }
 
         // Temporary failures (generic network issues)
         if (error_msg.find("temporary") != std::string::npos ||
             error_msg.find("try again") != std::string::npos ||
             error_msg.find("busy") != std::string::npos) {
-            return {
-                .type = error_type::temporary_failure,
-                .should_retry = true,
-                .description = "Temporary failure",
-                .timeout_classification = std::nullopt
-            };
+            return {.type = error_type::temporary_failure,
+                    .should_retry = true,
+                    .description = "Temporary failure",
+                    .timeout_classification = std::nullopt};
         }
 
         // Default to unknown error with retry
-        return {
-            .type = error_type::unknown_error,
-            .should_retry = true,
-            .description = "Unknown error: " + std::string(e.what()),
-            .timeout_classification = std::nullopt
-        };
+        return {.type = error_type::unknown_error,
+                .should_retry = true,
+                .description = "Unknown error: " + std::string(e.what()),
+                .timeout_classification = std::nullopt};
     }
 
     /**
@@ -420,7 +406,8 @@ public:
      */
     auto handle_serialization_error(const std::exception& e) -> bool {
         auto classification = classify_error(e);
-        return classification.type == error_type::serialization_error && classification.should_retry;
+        return classification.type == error_type::serialization_error &&
+               classification.should_retry;
     }
 
     /**
@@ -462,7 +449,8 @@ public:
      * @param recent_errors Vector of recent error classifications
      * @return true if partition is likely detected, false otherwise
      */
-    auto detect_network_partition(const std::vector<error_classification>& recent_errors) const -> bool {
+    auto detect_network_partition(const std::vector<error_classification>& recent_errors) const
+        -> bool {
         if (recent_errors.size() < 3) {
             return false;  // Need sufficient sample size
         }
@@ -502,133 +490,142 @@ private:
      * - Serialization timeout: Don't retry (likely a bug)
      */
     template<typename Operation>
-    auto execute_with_retry_impl(
-        const std::string& operation_name,
-        Operation&& op,
-        const retry_policy& policy,
-        std::size_t attempt
-    ) -> kythira::Future<Result> {
-        return std::forward<Operation>(op)()
-            .thenTry([this, operation_name, op = std::forward<Operation>(op), policy, attempt]
-                    (kythira::Try<Result> result) mutable -> kythira::Future<Result> {
+    auto execute_with_retry_impl(const std::string& operation_name, Operation&& op,
+                                 const retry_policy& policy, std::size_t attempt)
+        -> kythira::Future<Result> {
+        return std::forward<Operation>(op)().thenTry([this, operation_name,
+                                                      op = std::forward<Operation>(op), policy,
+                                                      attempt](kythira::Try<Result> result) mutable
+                                                         -> kythira::Future<Result> {
+            // If successful, return the result
+            if (result.hasValue()) {
+                return kythira::FutureFactory::makeFuture(std::move(result).value());
+            }
 
-                // If successful, return the result
-                if (result.hasValue()) {
-                    return kythira::FutureFactory::makeFuture(std::move(result).value());
+            // Handle error case
+            auto eptr = result.exception();
+
+            // Convert exception_ptr to exception for classification
+            try {
+                if (eptr) {
+                    std::rethrow_exception(eptr);
+                }
+            } catch (const std::exception& e) {
+                auto classification = classify_error(e);
+
+                // Special handling for serialization timeouts - don't retry (likely a bug)
+                if (classification.timeout_classification.has_value() &&
+                    classification.timeout_classification.value() ==
+                        timeout_type::serialization_timeout) {
+                    std::cerr << "[ErrorHandler] Serialization timeout detected for operation '"
+                              << operation_name
+                              << "' - not retrying (likely a bug). Error: " << e.what()
+                              << std::endl;
+                    return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
                 }
 
-                // Handle error case
-                auto eptr = result.exception();
-
-                // Convert exception_ptr to exception for classification
-                try {
-                    if (eptr) {
-                        std::rethrow_exception(eptr);
-                    }
-                } catch (const std::exception& e) {
-                    auto classification = classify_error(e);
-
-                    // Special handling for serialization timeouts - don't retry (likely a bug)
-                    if (classification.timeout_classification.has_value() &&
-                        classification.timeout_classification.value() == timeout_type::serialization_timeout) {
-                        std::cerr << "[ErrorHandler] Serialization timeout detected for operation '"
-                                  << operation_name << "' - not retrying (likely a bug). Error: "
-                                  << e.what() << std::endl;
-                        return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
-                    }
-
-                    // If we shouldn't retry this error type, or we've exhausted attempts, propagate error
-                    if (!classification.should_retry || attempt >= policy.max_attempts) {
-                        return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
-                    }
-
-                    // Determine retry strategy based on timeout classification
-                    std::chrono::milliseconds delay;
-                    std::string retry_strategy;
-
-                    if (classification.timeout_classification.has_value()) {
-                        auto timeout_class = classification.timeout_classification.value();
-
-                        switch (timeout_class) {
-                            case timeout_type::network_delay:
-                                // Network delay: Retry immediately with same timeout
-                                delay = std::chrono::milliseconds{10};  // Minimal delay
-                                retry_strategy = "immediate (network delay)";
-                                std::cerr << "[ErrorHandler] Network delay detected for operation '"
-                                          << operation_name << "' - retrying immediately" << std::endl;
-                                break;
-
-                            case timeout_type::network_timeout:
-                                // Network timeout: Retry with exponential backoff and increased timeout
-                                delay = calculate_delay(policy, attempt);
-                                retry_strategy = "exponential backoff (network timeout)";
-                                std::cerr << "[ErrorHandler] Network timeout detected for operation '"
-                                          << operation_name << "' - retrying with exponential backoff" << std::endl;
-                                break;
-
-                            case timeout_type::connection_failure:
-                                // Connection failure: Retry with exponential backoff and connection reset
-                                delay = calculate_delay(policy, attempt);
-                                retry_strategy = "exponential backoff with connection reset (connection failure)";
-                                std::cerr << "[ErrorHandler] Connection failure detected for operation '"
-                                          << operation_name << "' - retrying with exponential backoff and connection reset" << std::endl;
-                                break;
-
-                            case timeout_type::serialization_timeout:
-                                // Serialization timeout: Don't retry (handled above)
-                                return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
-
-                            case timeout_type::unknown_timeout:
-                            default:
-                                // Unknown timeout: Use default exponential backoff
-                                delay = calculate_delay(policy, attempt);
-                                retry_strategy = "exponential backoff (unknown timeout)";
-                                std::cerr << "[ErrorHandler] Unknown timeout type for operation '"
-                                          << operation_name << "' - using default exponential backoff" << std::endl;
-                                break;
-                        }
-                    } else {
-                        // Non-timeout error: Use default exponential backoff
-                        delay = calculate_delay(policy, attempt);
-                        retry_strategy = "exponential backoff (non-timeout error)";
-                    }
-
-                    // Log retry attempt with delay and strategy information
-                    std::cerr << "[ErrorHandler] Retry attempt " << attempt
-                              << " for operation '" << operation_name
-                              << "' after " << delay.count() << "ms delay"
-                              << " using strategy: " << retry_strategy
-                              << ". Error: " << classification.description << std::endl;
-
-                    // Apply async delay and retry - no thread blocking!
-                    return kythira::FutureFactory::makeFuture(folly::Unit{})
-                        .delay(delay)
-                        .thenTry([this, operation_name, op = std::move(op), policy, attempt](kythira::Try<void>) mutable -> kythira::Future<Result> {
-                            // Retry by calling execute_with_retry_impl recursively
-                            // This returns a Future, which will be automatically flattened
-                            return execute_with_retry_impl(operation_name, std::move(op), policy, attempt + 1);
-                        });
-                } catch (...) {
-                    // Unknown exception type, don't retry - propagate error
-                    return kythira::FutureFactory::makeExceptionalFuture<Result>(std::current_exception());
+                // If we shouldn't retry this error type, or we've exhausted attempts, propagate
+                // error
+                if (!classification.should_retry || attempt >= policy.max_attempts) {
+                    return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
                 }
 
-                // Should never reach here
+                // Determine retry strategy based on timeout classification
+                std::chrono::milliseconds delay;
+                std::string retry_strategy;
+
+                if (classification.timeout_classification.has_value()) {
+                    auto timeout_class = classification.timeout_classification.value();
+
+                    switch (timeout_class) {
+                        case timeout_type::network_delay:
+                            // Network delay: Retry immediately with same timeout
+                            delay = std::chrono::milliseconds{10};  // Minimal delay
+                            retry_strategy = "immediate (network delay)";
+                            std::cerr << "[ErrorHandler] Network delay detected for operation '"
+                                      << operation_name << "' - retrying immediately" << std::endl;
+                            break;
+
+                        case timeout_type::network_timeout:
+                            // Network timeout: Retry with exponential backoff and increased timeout
+                            delay = calculate_delay(policy, attempt);
+                            retry_strategy = "exponential backoff (network timeout)";
+                            std::cerr << "[ErrorHandler] Network timeout detected for operation '"
+                                      << operation_name << "' - retrying with exponential backoff"
+                                      << std::endl;
+                            break;
+
+                        case timeout_type::connection_failure:
+                            // Connection failure: Retry with exponential backoff and connection
+                            // reset
+                            delay = calculate_delay(policy, attempt);
+                            retry_strategy =
+                                "exponential backoff with connection reset (connection failure)";
+                            std::cerr
+                                << "[ErrorHandler] Connection failure detected for operation '"
+                                << operation_name
+                                << "' - retrying with exponential backoff and connection reset"
+                                << std::endl;
+                            break;
+
+                        case timeout_type::serialization_timeout:
+                            // Serialization timeout: Don't retry (handled above)
+                            return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
+
+                        case timeout_type::unknown_timeout:
+                        default:
+                            // Unknown timeout: Use default exponential backoff
+                            delay = calculate_delay(policy, attempt);
+                            retry_strategy = "exponential backoff (unknown timeout)";
+                            std::cerr << "[ErrorHandler] Unknown timeout type for operation '"
+                                      << operation_name << "' - using default exponential backoff"
+                                      << std::endl;
+                            break;
+                    }
+                } else {
+                    // Non-timeout error: Use default exponential backoff
+                    delay = calculate_delay(policy, attempt);
+                    retry_strategy = "exponential backoff (non-timeout error)";
+                }
+
+                // Log retry attempt with delay and strategy information
+                std::cerr << "[ErrorHandler] Retry attempt " << attempt << " for operation '"
+                          << operation_name << "' after " << delay.count() << "ms delay"
+                          << " using strategy: " << retry_strategy
+                          << ". Error: " << classification.description << std::endl;
+
+                // Apply async delay and retry - no thread blocking!
+                return kythira::FutureFactory::makeFuture(folly::Unit{})
+                    .delay(delay)
+                    .thenTry([this, operation_name, op = std::move(op), policy,
+                              attempt](kythira::Try<void>) mutable -> kythira::Future<Result> {
+                        // Retry by calling execute_with_retry_impl recursively
+                        // This returns a Future, which will be automatically flattened
+                        return execute_with_retry_impl(operation_name, std::move(op), policy,
+                                                       attempt + 1);
+                    });
+            } catch (...) {
+                // Unknown exception type, don't retry - propagate error
                 return kythira::FutureFactory::makeExceptionalFuture<Result>(
-                    std::runtime_error("Unexpected error in retry logic"));
-            });
+                    std::current_exception());
+            }
+
+            // Should never reach here
+            return kythira::FutureFactory::makeExceptionalFuture<Result>(
+                std::runtime_error("Unexpected error in retry logic"));
+        });
     }
 
     /**
      * @brief Calculate retry delay with exponential backoff and jitter
      */
-    auto calculate_delay(const retry_policy& policy, std::size_t attempt) const -> std::chrono::milliseconds {
+    auto calculate_delay(const retry_policy& policy, std::size_t attempt) const
+        -> std::chrono::milliseconds {
         // Calculate base delay with exponential backoff
         auto base_delay = policy.initial_delay;
         for (std::size_t i = 1; i < attempt; ++i) {
             base_delay = std::chrono::milliseconds{
-                static_cast<long long>(base_delay.count() * policy.backoff_multiplier)
-            };
+                static_cast<long long>(base_delay.count() * policy.backoff_multiplier)};
         }
 
         // Cap at max delay
@@ -636,11 +633,11 @@ private:
 
         // Add jitter to avoid thundering herd
         if (policy.jitter_factor > 0.0) {
-            std::uniform_real_distribution<double> jitter_dist(-policy.jitter_factor, policy.jitter_factor);
+            std::uniform_real_distribution<double> jitter_dist(-policy.jitter_factor,
+                                                               policy.jitter_factor);
             double jitter = jitter_dist(_rng);
-            auto jitter_amount = std::chrono::milliseconds{
-                static_cast<long long>(base_delay.count() * jitter)
-            };
+            auto jitter_amount =
+                std::chrono::milliseconds{static_cast<long long>(base_delay.count() * jitter)};
             base_delay += jitter_amount;
         }
 
@@ -659,7 +656,8 @@ template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
 class raft_error_handler {
 public:
     // Type aliases for common Raft result types
-    using append_entries_handler = error_handler<kythira::append_entries_response<TermId, LogIndex>>;
+    using append_entries_handler =
+        error_handler<kythira::append_entries_response<TermId, LogIndex>>;
     using request_vote_handler = error_handler<kythira::request_vote_response<TermId>>;
     using install_snapshot_handler = error_handler<kythira::install_snapshot_response<TermId>>;
 
@@ -695,26 +693,24 @@ public:
      * type mismatch when callers build a policy from one handler type and pass it to another.
      */
     template<typename PolicyLike>
-    static auto configure_all_handlers(
-        const PolicyLike& heartbeat_policy,
-        const PolicyLike& append_entries_policy,
-        const PolicyLike& vote_policy,
-        const PolicyLike& snapshot_policy
-    ) -> void {
+    static auto configure_all_handlers(const PolicyLike& heartbeat_policy,
+                                       const PolicyLike& append_entries_policy,
+                                       const PolicyLike& vote_policy,
+                                       const PolicyLike& snapshot_policy) -> void {
         auto adapt = []<typename H>(H& handler, const std::string& name, const PolicyLike& src) {
             typename H::retry_policy p;
-            p.initial_delay      = src.initial_delay;
-            p.max_delay          = src.max_delay;
+            p.initial_delay = src.initial_delay;
+            p.max_delay = src.max_delay;
             p.backoff_multiplier = src.backoff_multiplier;
-            p.jitter_factor      = src.jitter_factor;
-            p.max_attempts       = src.max_attempts;
+            p.jitter_factor = src.jitter_factor;
+            p.max_attempts = src.max_attempts;
             handler.set_retry_policy(name, p);
         };
         adapt(get_append_entries_handler(), "append_entries", append_entries_policy);
-        adapt(get_append_entries_handler(), "heartbeat",      heartbeat_policy);
-        adapt(get_request_vote_handler(),   "request_vote",   vote_policy);
+        adapt(get_append_entries_handler(), "heartbeat", heartbeat_policy);
+        adapt(get_request_vote_handler(), "request_vote", vote_policy);
         adapt(get_install_snapshot_handler(), "install_snapshot", snapshot_policy);
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

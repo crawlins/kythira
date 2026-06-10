@@ -33,10 +33,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -57,7 +57,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * associated resources including ports, pending connections, and timers SHALL be
  * immediately released and made available for reuse.
  */
-BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, * boost::unit_test::tim
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -134,7 +134,7 @@ BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, * boost::unit_test::tim
  * Property: For any listener when the simulator is reset, all associated resources
  * SHALL be cleaned up and the simulator SHALL return to initial state.
  */
-BOOST_AUTO_TEST_CASE(property_listener_cleanup_on_reset, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_listener_cleanup_on_reset, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -197,7 +197,7 @@ BOOST_AUTO_TEST_CASE(property_listener_cleanup_on_reset, * boost::unit_test::tim
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }
 
@@ -208,7 +208,7 @@ BOOST_AUTO_TEST_CASE(property_listener_cleanup_on_reset, * boost::unit_test::tim
  * Property: For any listener with pending accept operations, when the listener is
  * closed or simulator is stopped, the pending operations SHALL be properly handled.
  */
-BOOST_AUTO_TEST_CASE(property_pending_accept_cleanup, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_pending_accept_cleanup, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -279,6 +279,6 @@ BOOST_AUTO_TEST_CASE(property_pending_accept_cleanup, * boost::unit_test::timeou
     }
 
     BOOST_TEST_MESSAGE("Property test completed: " << success_count << " iterations succeeded, "
-                      << failures << " iterations failed");
+                                                   << failures << " iterations failed");
     BOOST_CHECK_EQUAL(failures, 0);
 }

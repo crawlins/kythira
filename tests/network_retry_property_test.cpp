@@ -39,19 +39,19 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::uint64_t client_node_id = 1;
-    constexpr std::uint64_t server_node_id = 2;
-    const std::string client_node_addr = std::to_string(client_node_id);
-    const std::string server_node_addr = std::to_string(server_node_id);
-    constexpr std::chrono::milliseconds rpc_timeout{500};
-    constexpr std::chrono::milliseconds retry_delay{100};
-    constexpr int max_retries = 5;
-    constexpr double unreliable_network_reliability = 0.5;  // 50% success rate
-    constexpr double reliable_network_reliability = 1.0;    // 100% success rate
-    constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
-    constexpr std::uint64_t max_term = 1000;
-    constexpr std::uint64_t max_node_id = 100;
-    constexpr std::uint64_t max_index = 1000;
+constexpr std::uint64_t client_node_id = 1;
+constexpr std::uint64_t server_node_id = 2;
+const std::string client_node_addr = std::to_string(client_node_id);
+const std::string server_node_addr = std::to_string(server_node_id);
+constexpr std::chrono::milliseconds rpc_timeout{500};
+constexpr std::chrono::milliseconds retry_delay{100};
+constexpr int max_retries = 5;
+constexpr double unreliable_network_reliability = 0.5;  // 50% success rate
+constexpr double reliable_network_reliability = 1.0;    // 100% success rate
+constexpr std::size_t property_test_iterations = 10;    // Reduced for faster testing
+constexpr std::uint64_t max_term = 1000;
+constexpr std::uint64_t max_node_id = 100;
+constexpr std::uint64_t max_index = 1000;
 }
 
 // Helper to generate random term
@@ -102,10 +102,8 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
         simulator.add_node(server_node_addr);
 
         // Add unreliable bidirectional edges (30% reliability)
-        network_simulator::NetworkEdge unreliable_edge{
-            std::chrono::milliseconds{10},
-            unreliable_network_reliability
-        };
+        network_simulator::NetworkEdge unreliable_edge{std::chrono::milliseconds{10},
+                                                       unreliable_network_reliability};
         simulator.add_edge(client_node_addr, server_node_addr, unreliable_edge);
         simulator.add_edge(server_node_addr, client_node_addr, unreliable_edge);
 
@@ -118,8 +116,12 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
 
         // Create network client and server
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
-        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type,
+                                          std::vector<std::byte>>
+            client(client_node);
+        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type,
+                                          std::vector<std::byte>>
+            server(server_node);
 
         // Register handler on server
         server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
@@ -150,7 +152,8 @@ BOOST_AUTO_TEST_CASE(transient_failures_eventually_succeed) {
             attempts++;
 
             try {
-                auto response_future = client.send_request_vote(server_node_id, request, rpc_timeout);
+                auto response_future =
+                    client.send_request_vote(server_node_id, request, rpc_timeout);
 
                 // Wait for response with timeout
                 auto response = std::move(response_future).get();
@@ -225,7 +228,9 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
 
         // Create network client
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type,
+                                          std::vector<std::byte>>
+            client(client_node);
 
         // Create request
         kythira::request_vote_request<> request;
@@ -242,7 +247,8 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
             attempts++;
 
             try {
-                auto response_future = client.send_request_vote(server_node_id, request, std::chrono::milliseconds{200});
+                auto response_future = client.send_request_vote(server_node_id, request,
+                                                                std::chrono::milliseconds{200});
 
                 // Wait for response
                 auto response = std::move(response_future).get();
@@ -276,13 +282,14 @@ BOOST_AUTO_TEST_CASE(permanent_failures_are_detected) {
  * all iterations to timeout even with 100% reliability and extended timeouts.
  * The core retry logic is validated by the other test cases.
  */
-BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, * boost::unit_test::disabled()) {
+BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, *boost::unit_test::disabled()) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
     std::size_t successful_iterations = 0;
 
-    BOOST_TEST_MESSAGE("Starting reliable_networks_succeed_immediately test with " << property_test_iterations << " iterations");
+    BOOST_TEST_MESSAGE("Starting reliable_networks_succeed_immediately test with "
+                       << property_test_iterations << " iterations");
 
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Generate random request data
@@ -300,10 +307,8 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, * boost::unit_test::
         simulator.add_node(server_node_addr);
 
         // Add reliable bidirectional edges (100% reliability)
-        network_simulator::NetworkEdge reliable_edge{
-            std::chrono::milliseconds{10},
-            reliable_network_reliability
-        };
+        network_simulator::NetworkEdge reliable_edge{std::chrono::milliseconds{10},
+                                                     reliable_network_reliability};
         simulator.add_edge(client_node_addr, server_node_addr, reliable_edge);
         simulator.add_edge(server_node_addr, client_node_addr, reliable_edge);
 
@@ -316,8 +321,12 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, * boost::unit_test::
 
         // Create network client and server
         using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
-        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> client(client_node);
-        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type, std::vector<std::byte>> server(server_node);
+        kythira::simulator_network_client<network_simulator::DefaultNetworkTypes, serializer_type,
+                                          std::vector<std::byte>>
+            client(client_node);
+        kythira::simulator_network_server<network_simulator::DefaultNetworkTypes, serializer_type,
+                                          std::vector<std::byte>>
+            server(server_node);
 
         // Register handler on server
         server.register_request_vote_handler([term](const kythira::request_vote_request<>& req) {
@@ -348,7 +357,8 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, * boost::unit_test::
         constexpr std::chrono::milliseconds longer_timeout{2000};
 
         try {
-            auto response_future = client.send_request_vote(server_node_id, request, longer_timeout);
+            auto response_future =
+                client.send_request_vote(server_node_id, request, longer_timeout);
 
             // Wait for response
             auto response = std::move(response_future).get();
@@ -387,10 +397,11 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, * boost::unit_test::
     }
 
     // Property: With 100% reliability, some attempts should succeed
-    // We allow for significant failures due to timing/initialization issues in the network simulator
-    // The network simulator may have issues with rapid setup/teardown cycles
-    // Require at least 30% success rate (3 out of 10) to account for simulator limitations
-    BOOST_TEST_MESSAGE("Successful iterations: " << successful_iterations << " out of " << property_test_iterations);
+    // We allow for significant failures due to timing/initialization issues in the network
+    // simulator The network simulator may have issues with rapid setup/teardown cycles Require at
+    // least 30% success rate (3 out of 10) to account for simulator limitations
+    BOOST_TEST_MESSAGE("Successful iterations: " << successful_iterations << " out of "
+                                                 << property_test_iterations);
     BOOST_TEST(successful_iterations >= (property_test_iterations * 3 / 10));
 }
 

@@ -8,16 +8,16 @@
 #include <vector>
 
 namespace {
-    constexpr const char* workspace_root = ".";
-    constexpr const char* include_directory = "include";
-    constexpr const char* tests_directory = "tests";
-    constexpr const char* examples_directory = "examples";
+constexpr const char* workspace_root = ".";
+constexpr const char* include_directory = "include";
+constexpr const char* tests_directory = "tests";
+constexpr const char* examples_directory = "examples";
 
-    // Files to exclude from the check (kythira::Future implementation itself)
-    const std::vector<std::string> excluded_files = {
-        "include/raft/future.hpp",  // The kythira::Future implementation
-        "include/concepts/future.hpp"  // The future concept definition
-    };
+// Files to exclude from the check (kythira::Future implementation itself)
+const std::vector<std::string> excluded_files = {
+    "include/raft/future.hpp",     // The kythira::Future implementation
+    "include/concepts/future.hpp"  // The future concept definition
+};
 }
 
 /**
@@ -27,7 +27,7 @@ namespace {
  * Property: For any header file in the codebase (excluding the kythira::Future implementation),
  * future functionality should be accessed only through #include <raft/future.hpp>
  */
-BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_header_include_consistency, *boost::unit_test::timeout(60)) {
     std::vector<std::string> violations;
     std::vector<std::string> checked_files;
 
@@ -36,7 +36,6 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
         for (const auto& entry : std::filesystem::recursive_directory_iterator(include_directory)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".hpp" || entry.path().extension() == ".h")) {
-
                 std::string file_path = entry.path().string();
 
                 // Skip excluded files
@@ -60,7 +59,7 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 }
 
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future includes
                 std::regex std_future_include(R"(#include\s*<future>)");
@@ -71,7 +70,8 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 // Check for folly::Future includes
                 std::regex folly_future_include(R"(#include\s*<folly/futures/Future\.h>)");
                 if (std::regex_search(content, folly_future_include)) {
-                    violations.push_back(file_path + ": contains #include <folly/futures/Future.h>");
+                    violations.push_back(file_path +
+                                         ": contains #include <folly/futures/Future.h>");
                 }
 
                 // Check for direct std::future usage without proper include
@@ -80,7 +80,8 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
 
                 if (std::regex_search(content, std_future_usage) &&
                     !std::regex_search(content, raft_future_include)) {
-                    violations.push_back(file_path + ": uses std::future without #include <raft/future.hpp>");
+                    violations.push_back(file_path +
+                                         ": uses std::future without #include <raft/future.hpp>");
                 }
             }
         }
@@ -91,7 +92,6 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
         for (const auto& entry : std::filesystem::recursive_directory_iterator(tests_directory)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".hpp")) {
-
                 std::string file_path = entry.path().string();
                 checked_files.push_back(file_path);
 
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 }
 
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future includes in test files
                 std::regex std_future_include(R"(#include\s*<future>)");
@@ -112,7 +112,8 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 // Check for folly::Future includes in test files
                 std::regex folly_future_include(R"(#include\s*<folly/futures/Future\.h>)");
                 if (std::regex_search(content, folly_future_include)) {
-                    violations.push_back(file_path + ": contains #include <folly/futures/Future.h>");
+                    violations.push_back(file_path +
+                                         ": contains #include <folly/futures/Future.h>");
                 }
             }
         }
@@ -120,10 +121,10 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
 
     // Check examples directory
     if (std::filesystem::exists(examples_directory)) {
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(examples_directory)) {
+        for (const auto& entry :
+             std::filesystem::recursive_directory_iterator(examples_directory)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".hpp")) {
-
                 std::string file_path = entry.path().string();
                 checked_files.push_back(file_path);
 
@@ -133,7 +134,7 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 }
 
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for std::future includes in example files
                 std::regex std_future_include(R"(#include\s*<future>)");
@@ -144,14 +145,16 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
                 // Check for folly::Future includes in example files
                 std::regex folly_future_include(R"(#include\s*<folly/futures/Future\.h>)");
                 if (std::regex_search(content, folly_future_include)) {
-                    violations.push_back(file_path + ": contains #include <folly/futures/Future.h>");
+                    violations.push_back(file_path +
+                                         ": contains #include <folly/futures/Future.h>");
                 }
             }
         }
     }
 
     // Report results
-    BOOST_TEST_MESSAGE("Checked " << checked_files.size() << " files for header include consistency");
+    BOOST_TEST_MESSAGE("Checked " << checked_files.size()
+                                  << " files for header include consistency");
 
     if (!violations.empty()) {
         BOOST_TEST_MESSAGE("Header include consistency violations found:");
@@ -162,12 +165,13 @@ BOOST_AUTO_TEST_CASE(property_header_include_consistency, * boost::unit_test::ti
 
     // Property: No violations should be found
     BOOST_TEST(violations.empty(),
-               "Header include consistency violations found. All files should use #include <raft/future.hpp> for future functionality.");
+               "Header include consistency violations found. All files should use #include "
+               "<raft/future.hpp> for future functionality.");
 
     BOOST_TEST_MESSAGE("Header include consistency property test passed");
 }
 
-BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, *boost::unit_test::timeout(30)) {
     // Property: Files that include future functionality should use the correct path
     std::vector<std::string> incorrect_paths;
     std::vector<std::string> checked_files;
@@ -183,7 +187,6 @@ BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, * boost::unit_tes
         for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
             if (entry.is_regular_file() &&
                 (entry.path().extension() == ".cpp" || entry.path().extension() == ".hpp")) {
-
                 std::string file_path = entry.path().string();
 
                 // Skip excluded files
@@ -207,12 +210,13 @@ BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, * boost::unit_tes
                 }
 
                 std::string content((std::istreambuf_iterator<char>(file)),
-                                   std::istreambuf_iterator<char>());
+                                    std::istreambuf_iterator<char>());
 
                 // Check for incorrect future include paths
                 std::regex old_future_path(R"(#include\s*<future/future\.hpp>)");
                 if (std::regex_search(content, old_future_path)) {
-                    incorrect_paths.push_back(file_path + ": uses old path #include <future/future.hpp>");
+                    incorrect_paths.push_back(file_path +
+                                              ": uses old path #include <future/future.hpp>");
                 }
 
                 // Check for correct future include path when kythira::Future is used
@@ -221,14 +225,16 @@ BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, * boost::unit_tes
 
                 if (std::regex_search(content, kythira_future_usage) &&
                     !std::regex_search(content, correct_future_include)) {
-                    incorrect_paths.push_back(file_path + ": uses kythira::Future without #include <raft/future.hpp>");
+                    incorrect_paths.push_back(
+                        file_path + ": uses kythira::Future without #include <raft/future.hpp>");
                 }
             }
         }
     }
 
     // Report results
-    BOOST_TEST_MESSAGE("Checked " << checked_files.size() << " files for future include path consistency");
+    BOOST_TEST_MESSAGE("Checked " << checked_files.size()
+                                  << " files for future include path consistency");
 
     if (!incorrect_paths.empty()) {
         BOOST_TEST_MESSAGE("Future include path violations found:");
@@ -239,7 +245,8 @@ BOOST_AUTO_TEST_CASE(property_future_include_path_consistency, * boost::unit_tes
 
     // Property: No incorrect paths should be found
     BOOST_TEST(incorrect_paths.empty(),
-               "Future include path violations found. All files should use #include <raft/future.hpp> for kythira::Future.");
+               "Future include path violations found. All files should use #include "
+               "<raft/future.hpp> for kythira::Future.");
 
     BOOST_TEST_MESSAGE("Future include path consistency property test passed");
 }

@@ -35,20 +35,22 @@ BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
 
 // Test constants
 namespace {
-    constexpr int test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30};
-    constexpr std::size_t thread_pool_size = 4;
-    constexpr int num_threads = 8;
-    constexpr int operations_per_thread = 25;
+constexpr int test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30};
+constexpr std::size_t thread_pool_size = 4;
+constexpr int num_threads = 8;
+constexpr int operations_per_thread = 25;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 3: Executor Work Submission**
  *
- * Property: For any KeepAlive instance, pointer access should be consistent and reference counting should work correctly
+ * Property: For any KeepAlive instance, pointer access should be consistent and reference counting
+ * should work correctly
  * **Validates: Requirements 2.4, 2.5**
  */
-BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test,
+                     *boost::unit_test::timeout(120)) {
     // Test 1: Pointer access consistency
     {
         auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(thread_pool_size);
@@ -65,7 +67,7 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test, * boost::u
 
         // Test is_valid() consistency
         BOOST_CHECK(keep_alive.is_valid());
-        BOOST_CHECK(keep_alive.is_valid()); // Should be consistent
+        BOOST_CHECK(keep_alive.is_valid());  // Should be consistent
 
         // Test const correctness of get()
         const auto& const_keep_alive = keep_alive;
@@ -164,9 +166,9 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test, * boost::u
 
     // Test 5: Property-based testing - pointer access consistency
     for (int i = 0; i < test_iterations; ++i) {
-        auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(
-            (i % 4) + 1  // 1 to 4 threads
-        );
+        auto cpu_executor =
+            std::make_unique<folly::CPUThreadPoolExecutor>((i % 4) + 1  // 1 to 4 threads
+            );
         Executor wrapper(cpu_executor.get());
         auto keep_alive = wrapper.get_keep_alive();
 
@@ -198,9 +200,8 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test, * boost::u
 
         for (int j = 0; j < num_tasks; ++j) {
             auto& selected_copy = copies[j % copies.size()];
-            selected_copy.add([&task_counter, j]() {
-                task_counter.fetch_add(j + 1, std::memory_order_relaxed);
-            });
+            selected_copy.add(
+                [&task_counter, j]() { task_counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
         // Wait for tasks to complete
@@ -220,7 +221,7 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test, * boost::u
 /**
  * Test reference counting behavior with multiple KeepAlive instances
  */
-BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, *boost::unit_test::timeout(90)) {
     // Test that multiple KeepAlive instances can coexist and share the same executor
     {
         auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(thread_pool_size);
@@ -272,9 +273,8 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, * boost::unit_test:
         // Should still be able to submit work
         std::atomic<int> remaining_tasks{0};
         for (auto& ka : keep_alives) {
-            ka.add([&remaining_tasks]() {
-                remaining_tasks.fetch_add(1, std::memory_order_relaxed);
-            });
+            ka.add(
+                [&remaining_tasks]() { remaining_tasks.fetch_add(1, std::memory_order_relaxed); });
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -285,7 +285,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_behavior, * boost::unit_test:
 /**
  * Test thread safety of pointer access and reference counting
  */
-BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, *boost::unit_test::timeout(120)) {
     auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(thread_pool_size);
     Executor wrapper(cpu_executor.get());
     auto original_keep_alive = wrapper.get_keep_alive();
@@ -297,56 +297,58 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, * boost::unit_test
 
     // Launch threads that perform concurrent pointer access and reference counting operations
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([&original_keep_alive, expected_ptr, &successful_operations, &total_operations]() {
-            for (int j = 0; j < operations_per_thread; ++j) {
-                total_operations.fetch_add(1, std::memory_order_relaxed);
+        threads.emplace_back(
+            [&original_keep_alive, expected_ptr, &successful_operations, &total_operations]() {
+                for (int j = 0; j < operations_per_thread; ++j) {
+                    total_operations.fetch_add(1, std::memory_order_relaxed);
 
-                try {
-                    // Test concurrent get() calls
-                    auto* ptr = original_keep_alive.get();
-                    if (ptr == expected_ptr) {
-                        successful_operations.fetch_add(1, std::memory_order_relaxed);
+                    try {
+                        // Test concurrent get() calls
+                        auto* ptr = original_keep_alive.get();
+                        if (ptr == expected_ptr) {
+                            successful_operations.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Test concurrent copy construction
+                        KeepAlive copy(original_keep_alive);
+                        if (copy.get() == expected_ptr && copy.is_valid()) {
+                            successful_operations.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Test concurrent move construction
+                        KeepAlive moved(std::move(copy));
+                        if (moved.get() == expected_ptr && moved.is_valid()) {
+                            successful_operations.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Test concurrent assignment
+                        KeepAlive assigned;
+                        assigned = original_keep_alive;
+                        if (assigned.get() == expected_ptr && assigned.is_valid()) {
+                            successful_operations.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Test concurrent work submission
+                        std::atomic<bool> task_executed{false};
+                        assigned.add([&task_executed]() {
+                            task_executed.store(true, std::memory_order_relaxed);
+                        });
+
+                        // Brief wait to allow task execution
+                        std::this_thread::sleep_for(std::chrono::microseconds(100));
+
+                        if (task_executed.load()) {
+                            successful_operations.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        total_operations.fetch_add(
+                            4, std::memory_order_relaxed);  // 4 additional operations per iteration
+                    } catch (const std::exception& e) {
+                        // Log exception but continue testing
+                        BOOST_TEST_MESSAGE("Exception in thread: " << e.what());
                     }
-
-                    // Test concurrent copy construction
-                    KeepAlive copy(original_keep_alive);
-                    if (copy.get() == expected_ptr && copy.is_valid()) {
-                        successful_operations.fetch_add(1, std::memory_order_relaxed);
-                    }
-
-                    // Test concurrent move construction
-                    KeepAlive moved(std::move(copy));
-                    if (moved.get() == expected_ptr && moved.is_valid()) {
-                        successful_operations.fetch_add(1, std::memory_order_relaxed);
-                    }
-
-                    // Test concurrent assignment
-                    KeepAlive assigned;
-                    assigned = original_keep_alive;
-                    if (assigned.get() == expected_ptr && assigned.is_valid()) {
-                        successful_operations.fetch_add(1, std::memory_order_relaxed);
-                    }
-
-                    // Test concurrent work submission
-                    std::atomic<bool> task_executed{false};
-                    assigned.add([&task_executed]() {
-                        task_executed.store(true, std::memory_order_relaxed);
-                    });
-
-                    // Brief wait to allow task execution
-                    std::this_thread::sleep_for(std::chrono::microseconds(100));
-
-                    if (task_executed.load()) {
-                        successful_operations.fetch_add(1, std::memory_order_relaxed);
-                    }
-
-                    total_operations.fetch_add(4, std::memory_order_relaxed); // 4 additional operations per iteration
-                } catch (const std::exception& e) {
-                    // Log exception but continue testing
-                    BOOST_TEST_MESSAGE("Exception in thread: " << e.what());
                 }
-            }
-        });
+            });
     }
 
     // Wait for all threads to complete
@@ -358,7 +360,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, * boost::unit_test
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Verify that most operations succeeded (allow for some timing-related failures)
-    int expected_total = num_threads * operations_per_thread * 5; // 5 operations per iteration
+    int expected_total = num_threads * operations_per_thread * 5;  // 5 operations per iteration
     BOOST_CHECK_EQUAL(total_operations.load(), expected_total);
 
     // At least 90% of operations should succeed
@@ -369,13 +371,15 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_thread_safety, * boost::unit_test
     BOOST_CHECK(original_keep_alive.get() == expected_ptr);
     BOOST_CHECK(original_keep_alive.is_valid());
 
-    BOOST_TEST_MESSAGE("Thread safety test completed with " << success_rate * 100 << "% success rate");
+    BOOST_TEST_MESSAGE("Thread safety test completed with " << success_rate * 100
+                                                            << "% success rate");
 }
 
 /**
  * Test pointer access with different executor types
  */
-BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_different_executors, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_different_executors,
+                     *boost::unit_test::timeout(60)) {
     // Test with CPUThreadPoolExecutor
     {
         auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(2);
@@ -420,7 +424,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_different_executors, * boost::uni
 /**
  * Test edge cases for pointer access and reference counting
  */
-BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_edge_cases, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_edge_cases, *boost::unit_test::timeout(30)) {
     // Test default constructed KeepAlive
     {
         KeepAlive default_keep_alive;

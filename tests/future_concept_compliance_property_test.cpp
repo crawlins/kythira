@@ -12,10 +12,10 @@
 #include <fstream>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr const char* expected_future_header_path = "../../include/raft/future.hpp";
-    constexpr const char* expected_concept_header_path = "../../include/concepts/future.hpp";
-    constexpr const char* old_future_header_path = "../../include/future/future.hpp";
+constexpr std::size_t property_test_iterations = 100;
+constexpr const char* expected_future_header_path = "../../include/raft/future.hpp";
+constexpr const char* expected_concept_header_path = "../../include/concepts/future.hpp";
+constexpr const char* old_future_header_path = "../../include/future/future.hpp";
 }
 
 BOOST_AUTO_TEST_SUITE(future_concept_compliance_property_tests)
@@ -24,25 +24,18 @@ BOOST_AUTO_TEST_SUITE(future_concept_compliance_property_tests)
 // **Validates: Requirements 8.3, 8.4**
 // Property: For any future-related functionality, it should be accessible through
 // `include/raft/future.hpp` and remain in the `kythira` namespace
-BOOST_AUTO_TEST_CASE(property_future_implementation_location, * boost::unit_test::timeout(60)) {
-
+BOOST_AUTO_TEST_CASE(property_future_implementation_location, *boost::unit_test::timeout(60)) {
     // Test 1: Verify the future header is in the correct location
-    BOOST_CHECK_MESSAGE(
-        std::filesystem::exists(expected_future_header_path),
-        "Future header should exist at include/raft/future.hpp"
-    );
+    BOOST_CHECK_MESSAGE(std::filesystem::exists(expected_future_header_path),
+                        "Future header should exist at include/raft/future.hpp");
 
     // Test 2: Verify the old location no longer exists
-    BOOST_CHECK_MESSAGE(
-        !std::filesystem::exists(old_future_header_path),
-        "Old future header should not exist at include/future/future.hpp"
-    );
+    BOOST_CHECK_MESSAGE(!std::filesystem::exists(old_future_header_path),
+                        "Old future header should not exist at include/future/future.hpp");
 
     // Test 3: Verify the concept header exists in the correct location
-    BOOST_CHECK_MESSAGE(
-        std::filesystem::exists(expected_concept_header_path),
-        "Future concept header should exist at include/concepts/future.hpp"
-    );
+    BOOST_CHECK_MESSAGE(std::filesystem::exists(expected_concept_header_path),
+                        "Future concept header should exist at include/concepts/future.hpp");
 
     // Test 4: Verify the future header contains kythira namespace
     std::ifstream future_file(expected_future_header_path);
@@ -52,10 +45,8 @@ BOOST_AUTO_TEST_CASE(property_future_implementation_location, * boost::unit_test
                                std::istreambuf_iterator<char>());
     future_file.close();
 
-    BOOST_CHECK_MESSAGE(
-        future_content.find("namespace kythira") != std::string::npos,
-        "Future header should contain kythira namespace"
-    );
+    BOOST_CHECK_MESSAGE(future_content.find("namespace kythira") != std::string::npos,
+                        "Future header should contain kythira namespace");
 
     // Test 5: Verify the concept header contains kythira namespace
     std::ifstream concept_file(expected_concept_header_path);
@@ -65,10 +56,8 @@ BOOST_AUTO_TEST_CASE(property_future_implementation_location, * boost::unit_test
                                 std::istreambuf_iterator<char>());
     concept_file.close();
 
-    BOOST_CHECK_MESSAGE(
-        concept_content.find("namespace kythira") != std::string::npos,
-        "Concept header should contain kythira namespace"
-    );
+    BOOST_CHECK_MESSAGE(concept_content.find("namespace kythira") != std::string::npos,
+                        "Concept header should contain kythira namespace");
 
     // Test 6: Verify kythira::Future satisfies the future concept
     static_assert(kythira::future<kythira::Future<int>, int>,
@@ -115,7 +104,8 @@ BOOST_AUTO_TEST_CASE(property_future_implementation_location, * boost::unit_test
 
         // Test error handling
         {
-            kythira::Future<int> error_future(folly::exception_wrapper(std::runtime_error("test error")));
+            kythira::Future<int> error_future(
+                folly::exception_wrapper(std::runtime_error("test error")));
             BOOST_CHECK_THROW(error_future.get(), std::runtime_error);
         }
 

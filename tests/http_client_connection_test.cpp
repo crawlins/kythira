@@ -8,16 +8,14 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 namespace {
-    constexpr const char* test_server_url = "http://httpbin.org";  // Public test server
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr auto test_timeout = std::chrono::milliseconds{5000};
+constexpr const char* test_server_url = "http://httpbin.org";  // Public test server
+constexpr std::uint64_t test_node_id = 1;
+constexpr auto test_timeout = std::chrono::milliseconds{5000};
 
-    // Define transport types for testing
-    using test_transport_types = kythira::http_transport_types<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define transport types for testing
+using test_transport_types =
+    kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                  kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_connection_tests)
@@ -113,22 +111,23 @@ BOOST_AUTO_TEST_CASE(test_connection_to_nonexistent_server) {
 
         // Should be a connection-related error - check for various possible error messages
         // Different systems and libraries may use different error messages
-        bool is_connection_error =
-            error_message.find("failed") != std::string::npos ||
-            error_message.find("refused") != std::string::npos ||
-            error_message.find("connect") != std::string::npos ||
-            error_message.find("resolve") != std::string::npos ||
-            error_message.find("Connection") != std::string::npos ||
-            error_message.find("connection") != std::string::npos ||
-            error_message.find("timeout") != std::string::npos ||
-            error_message.find("Timeout") != std::string::npos ||
-            error_message.find("unreachable") != std::string::npos ||
-            error_message.find("Unreachable") != std::string::npos ||
-            error_message.find("error") != std::string::npos ||
-            error_message.find("Error") != std::string::npos;
+        bool is_connection_error = error_message.find("failed") != std::string::npos ||
+                                   error_message.find("refused") != std::string::npos ||
+                                   error_message.find("connect") != std::string::npos ||
+                                   error_message.find("resolve") != std::string::npos ||
+                                   error_message.find("Connection") != std::string::npos ||
+                                   error_message.find("connection") != std::string::npos ||
+                                   error_message.find("timeout") != std::string::npos ||
+                                   error_message.find("Timeout") != std::string::npos ||
+                                   error_message.find("unreachable") != std::string::npos ||
+                                   error_message.find("Unreachable") != std::string::npos ||
+                                   error_message.find("error") != std::string::npos ||
+                                   error_message.find("Error") != std::string::npos;
 
         if (!is_connection_error) {
-            BOOST_TEST_MESSAGE("Warning: Error message doesn't contain expected keywords, but exception was caught");
+            BOOST_TEST_MESSAGE(
+                "Warning: Error message doesn't contain expected keywords, but exception was "
+                "caught");
             BOOST_TEST_MESSAGE("This is acceptable as long as the connection failed");
         }
 

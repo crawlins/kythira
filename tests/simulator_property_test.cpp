@@ -32,19 +32,17 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
-    constexpr std::chrono::milliseconds min_latency{10};
-    constexpr std::chrono::milliseconds max_latency{100};
-    constexpr double min_reliability = 0.5;
-    constexpr double max_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
+constexpr std::chrono::milliseconds min_latency{10};
+constexpr std::chrono::milliseconds max_latency{100};
+constexpr double min_reliability = 0.5;
+constexpr double max_reliability = 1.0;
 }
 
 // Helper to generate random latency
 auto generate_random_latency(std::mt19937& rng) -> std::chrono::milliseconds {
-    std::uniform_int_distribution<int> dist(
-        static_cast<int>(min_latency.count()),
-        static_cast<int>(max_latency.count())
-    );
+    std::uniform_int_distribution<int> dist(static_cast<int>(min_latency.count()),
+                                            static_cast<int>(max_latency.count()));
     return std::chrono::milliseconds{dist(rng)};
 }
 
@@ -95,8 +93,8 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_latency_preservation) {
             if (actual_latency != expected_latency) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected latency "
-                    << expected_latency.count() << "ms, got "
-                    << actual_latency.count() << "ms");
+                                                << expected_latency.count() << "ms, got "
+                                                << actual_latency.count() << "ms");
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -105,7 +103,7 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_latency_preservation) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -113,7 +111,8 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_latency_preservation) {
  * Validates: Requirements 1.2
  *
  * Property: For any pair of nodes and configured reliability value, when an edge is added
- * to the topology with that reliability, querying the topology SHALL return the same reliability value.
+ * to the topology with that reliability, querying the topology SHALL return the same reliability
+ * value.
  */
 BOOST_AUTO_TEST_CASE(property_topology_edge_reliability_preservation) {
     std::mt19937 rng(std::random_device{}());
@@ -146,7 +145,8 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_reliability_preservation) {
             if (std::abs(actual_reliability - expected_reliability) > epsilon) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected reliability "
-                    << expected_reliability << ", got " << actual_reliability);
+                                                << expected_reliability << ", got "
+                                                << actual_reliability);
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -155,7 +155,7 @@ BOOST_AUTO_TEST_CASE(property_topology_edge_reliability_preservation) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -196,11 +196,9 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
             auto start_time = std::chrono::steady_clock::now();
 
             // Send message
-            DefaultNetworkTypes::message_type msg(
-                addr1, static_cast<unsigned short>(1000),
-                addr2, static_cast<unsigned short>(2000),
-                std::vector<std::byte>{std::byte{0x42}}
-            );
+            DefaultNetworkTypes::message_type msg(addr1, static_cast<unsigned short>(1000), addr2,
+                                                  static_cast<unsigned short>(2000),
+                                                  std::vector<std::byte>{std::byte{0x42}});
 
             auto send_result = node1->send(std::move(msg)).get();
 
@@ -219,8 +217,8 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
             auto end_time = std::chrono::steady_clock::now();
 
             // Calculate actual elapsed time
-            auto actual_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                end_time - start_time);
+            auto actual_duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Verify that actual duration is at least the expected latency
             // Allow for some tolerance due to system scheduling and measurement precision
@@ -228,9 +226,10 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
 
             if (actual_duration < (expected_latency - tolerance)) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected latency >= "
-                    << expected_latency.count() << "ms, but actual duration was "
-                    << actual_duration.count() << "ms");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Expected latency >= " << expected_latency.count()
+                                   << "ms, but actual duration was " << actual_duration.count()
+                                   << "ms");
             }
 
             // Also verify the message was received correctly
@@ -247,7 +246,7 @@ BOOST_AUTO_TEST_CASE(property_latency_application) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -289,10 +288,9 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
 
             for (std::size_t j = 0; j < message_count; ++j) {
                 DefaultNetworkTypes::message_type msg(
-                    addr1, static_cast<unsigned short>(1000),
-                    addr2, static_cast<unsigned short>(2000),
-                    std::vector<std::byte>{std::byte{static_cast<unsigned char>(j)}}
-                );
+                    addr1, static_cast<unsigned short>(1000), addr2,
+                    static_cast<unsigned short>(2000),
+                    std::vector<std::byte>{std::byte{static_cast<unsigned char>(j)}});
 
                 auto send_result = node1->send(std::move(msg)).get();
                 if (send_result) {
@@ -301,8 +299,8 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
             }
 
             // Calculate actual success rate
-            double actual_reliability = static_cast<double>(successful_sends) /
-                                      static_cast<double>(message_count);
+            double actual_reliability =
+                static_cast<double>(successful_sends) / static_cast<double>(message_count);
 
             // Verify that actual reliability is within reasonable bounds of expected reliability
             // Use generous bounds to account for random variation in statistical tests
@@ -314,10 +312,11 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
 
             if (actual_reliability < lower_bound || actual_reliability > upper_bound) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected reliability "
-                    << expected_reliability << " ± " << tolerance
-                    << ", but actual reliability was " << actual_reliability
-                    << " (" << successful_sends << "/" << message_count << ")");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Expected reliability " << expected_reliability
+                                   << " ± " << tolerance << ", but actual reliability was "
+                                   << actual_reliability << " (" << successful_sends << "/"
+                                   << message_count << ")");
             }
 
         } catch (const std::exception& e) {
@@ -327,15 +326,15 @@ BOOST_AUTO_TEST_CASE(property_reliability_application) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
  * Feature: network-simulator, Property 5: Graph-Based Routing
  * Validates: Requirements 1.5
  *
- * Property: For any message sent from source to destination, if a path exists in the directed graph,
- * the message SHALL only traverse edges that exist in the topology.
+ * Property: For any message sent from source to destination, if a path exists in the directed
+ * graph, the message SHALL only traverse edges that exist in the topology.
  */
 BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
     std::mt19937 rng(std::random_device{}());
@@ -362,11 +361,9 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         sim.add_edge(addr1, addr2, edge);
 
         try {
-            DefaultNetworkTypes::message_type msg1(
-                addr1, static_cast<unsigned short>(1000),
-                addr2, static_cast<unsigned short>(2000),
-                std::vector<std::byte>{std::byte{0x01}}
-            );
+            DefaultNetworkTypes::message_type msg1(addr1, static_cast<unsigned short>(1000), addr2,
+                                                   static_cast<unsigned short>(2000),
+                                                   std::vector<std::byte>{std::byte{0x01}});
 
             auto send_result1 = node1->send(std::move(msg1)).get();
 
@@ -383,11 +380,9 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
 
         // Test case 2: No edge exists - message should fail
         try {
-            DefaultNetworkTypes::message_type msg2(
-                addr1, static_cast<unsigned short>(1000),
-                addr3, static_cast<unsigned short>(3000),
-                std::vector<std::byte>{std::byte{0x02}}
-            );
+            DefaultNetworkTypes::message_type msg2(addr1, static_cast<unsigned short>(1000), addr3,
+                                                   static_cast<unsigned short>(3000),
+                                                   std::vector<std::byte>{std::byte{0x02}});
 
             auto send_result2 = node1->send(std::move(msg2)).get();
 
@@ -405,40 +400,40 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
         sim.add_edge(addr2, addr3, edge);
 
         try {
-            // Message from addr1 to addr3 should now succeed via multi-hop routing (addr1->addr2->addr3)
-            DefaultNetworkTypes::message_type msg3(
-                addr1, static_cast<unsigned short>(1000),
-                addr3, static_cast<unsigned short>(3000),
-                std::vector<std::byte>{std::byte{0x03}}
-            );
+            // Message from addr1 to addr3 should now succeed via multi-hop routing
+            // (addr1->addr2->addr3)
+            DefaultNetworkTypes::message_type msg3(addr1, static_cast<unsigned short>(1000), addr3,
+                                                   static_cast<unsigned short>(3000),
+                                                   std::vector<std::byte>{std::byte{0x03}});
 
             auto send_result3 = node1->send(std::move(msg3)).get();
 
             // Should succeed because path exists via addr2 (multi-hop routing supported)
             if (!send_result3) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Send failed with multi-hop path available");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Send failed with multi-hop path available");
             }
 
         } catch (const std::exception& e) {
             ++failures;
-            BOOST_TEST_MESSAGE("Iteration " << i << ": Exception with multi-hop path: " << e.what());
+            BOOST_TEST_MESSAGE("Iteration " << i
+                                            << ": Exception with multi-hop path: " << e.what());
         }
 
         // Test case 4: Verify that messages can be sent along existing edges
         try {
-            DefaultNetworkTypes::message_type msg4(
-                addr2, static_cast<unsigned short>(2000),
-                addr3, static_cast<unsigned short>(3000),
-                std::vector<std::byte>{std::byte{0x04}}
-            );
+            DefaultNetworkTypes::message_type msg4(addr2, static_cast<unsigned short>(2000), addr3,
+                                                   static_cast<unsigned short>(3000),
+                                                   std::vector<std::byte>{std::byte{0x04}});
 
             auto send_result4 = node2->send(std::move(msg4)).get();
 
             // Should succeed because direct edge exists from addr2 to addr3
             if (!send_result4) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Send failed on existing edge addr2->addr3");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Send failed on existing edge addr2->addr3");
             }
 
         } catch (const std::exception& e) {
@@ -448,7 +443,7 @@ BOOST_AUTO_TEST_CASE(property_graph_based_routing) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -481,11 +476,9 @@ BOOST_AUTO_TEST_CASE(property_send_success_result) {
         auto node2 = sim.create_node(addr2);
 
         // Create message
-        DefaultNetworkTypes::message_type msg(
-            addr1, static_cast<unsigned short>(1000),
-            addr2, static_cast<unsigned short>(2000),
-            std::vector<std::byte>{std::byte{0x42}}
-        );
+        DefaultNetworkTypes::message_type msg(addr1, static_cast<unsigned short>(1000), addr2,
+                                              static_cast<unsigned short>(2000),
+                                              std::vector<std::byte>{std::byte{0x42}});
 
         try {
             // Send message
@@ -494,7 +487,8 @@ BOOST_AUTO_TEST_CASE(property_send_success_result) {
             // Verify result is true (message accepted)
             if (!result) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Send returned false when it should return true");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Send returned false when it should return true");
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -503,7 +497,7 @@ BOOST_AUTO_TEST_CASE(property_send_success_result) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -535,11 +529,9 @@ BOOST_AUTO_TEST_CASE(property_send_timeout_result) {
         auto node2 = sim.create_node(addr2);
 
         // Create message
-        DefaultNetworkTypes::message_type msg(
-            addr1, static_cast<unsigned short>(1000),
-            addr2, static_cast<unsigned short>(2000),
-            std::vector<std::byte>{std::byte{0x42}}
-        );
+        DefaultNetworkTypes::message_type msg(addr1, static_cast<unsigned short>(1000), addr2,
+                                              static_cast<unsigned short>(2000),
+                                              std::vector<std::byte>{std::byte{0x42}});
 
         try {
             // Send message with very short timeout
@@ -548,7 +540,9 @@ BOOST_AUTO_TEST_CASE(property_send_timeout_result) {
             // Verify result is false (timeout or no route)
             if (result) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Send returned true when it should return false (no route)");
+                BOOST_TEST_MESSAGE(
+                    "Iteration " << i
+                                 << ": Send returned true when it should return false (no route)");
             }
         } catch (const std::exception& e) {
             // Timeout exception is also acceptable
@@ -557,7 +551,7 @@ BOOST_AUTO_TEST_CASE(property_send_timeout_result) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -575,7 +569,7 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     // The key insight: send() returns true when message passes reliability check,
     // but with low reliability, many send() calls will return false (dropped)
 
-    constexpr double low_reliability = 0.3;  // 30% success rate
+    constexpr double low_reliability = 0.3;     // 30% success rate
     constexpr std::size_t message_count = 200;  // Send many messages
 
     // Generate addresses
@@ -599,10 +593,8 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     // Send many messages
     for (std::size_t i = 0; i < message_count; ++i) {
         DefaultNetworkTypes::message_type msg(
-            addr1, static_cast<unsigned short>(1000),
-            addr2, static_cast<unsigned short>(2000),
-            std::vector<std::byte>{std::byte{static_cast<unsigned char>(i)}}
-        );
+            addr1, static_cast<unsigned short>(1000), addr2, static_cast<unsigned short>(2000),
+            std::vector<std::byte>{std::byte{static_cast<unsigned char>(i)}});
 
         ++send_attempts;
         try {
@@ -618,19 +610,22 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     // Property: With low reliability, many send attempts should return false
     // This demonstrates that send success (returning true) does not guarantee delivery
     // because the reliability check can cause messages to be dropped
-    double success_rate = static_cast<double>(send_success_count) / static_cast<double>(send_attempts);
+    double success_rate =
+        static_cast<double>(send_success_count) / static_cast<double>(send_attempts);
 
     BOOST_TEST_MESSAGE("Send attempts: " << send_attempts << ", Successes: " << send_success_count
-        << ", Success rate: " << success_rate);
+                                         << ", Success rate: " << success_rate);
 
-    // With 30% reliability, expect roughly 30% success rate (allow 15% to 45% for statistical variation)
+    // With 30% reliability, expect roughly 30% success rate (allow 15% to 45% for statistical
+    // variation)
     BOOST_TEST(send_success_count < send_attempts,
-        "Expected some messages to be dropped. Attempts: " << send_attempts
-        << ", Successes: " << send_success_count);
+               "Expected some messages to be dropped. Attempts: "
+                   << send_attempts << ", Successes: " << send_success_count);
 
     bool rate_in_range = (success_rate >= 0.15) && (success_rate <= 0.45);
-    BOOST_TEST(rate_in_range,
-        "Success rate " << success_rate << " outside expected range [0.15, 0.45] for 30% reliability");
+    BOOST_TEST(rate_in_range, "Success rate "
+                                  << success_rate
+                                  << " outside expected range [0.15, 0.45] for 30% reliability");
 }
 
 /**
@@ -674,11 +669,7 @@ BOOST_AUTO_TEST_CASE(property_receive_returns_sent_message) {
         unsigned short dst_port = static_cast<unsigned short>(rng() % 10000 + 1000);
 
         // Create message
-        DefaultNetworkTypes::message_type msg(
-            addr1, src_port,
-            addr2, dst_port,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(addr1, src_port, addr2, dst_port, payload);
 
         try {
             // Send message
@@ -724,7 +715,7 @@ BOOST_AUTO_TEST_CASE(property_receive_returns_sent_message) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -766,7 +757,7 @@ BOOST_AUTO_TEST_CASE(property_receive_timeout_exception) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -776,7 +767,7 @@ BOOST_AUTO_TEST_CASE(property_receive_timeout_exception) {
  * Property: For any connect operation with an explicitly specified source port,
  * the resulting connection's local endpoint SHALL have that source port.
  */
-BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -819,28 +810,28 @@ BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port, * boost::unit_
             auto local_endpoint = connection->local_endpoint();
             if (local_endpoint.port != src_port) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source port "
-                    << src_port << ", got " << local_endpoint.port);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source port " << src_port
+                                                << ", got " << local_endpoint.port);
             }
 
             // Also verify the local address is correct
             if (local_endpoint.address != addr1) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source address "
-                    << addr1 << ", got " << local_endpoint.address);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected source address " << addr1
+                                                << ", got " << local_endpoint.address);
             }
 
             // Verify remote endpoint
             auto remote_endpoint = connection->remote_endpoint();
             if (remote_endpoint.address != addr2) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination address "
-                    << addr2 << ", got " << remote_endpoint.address);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination address " << addr2
+                                                << ", got " << remote_endpoint.address);
             }
             if (remote_endpoint.port != dst_port) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination port "
-                    << dst_port << ", got " << remote_endpoint.port);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Expected destination port " << dst_port
+                                                << ", got " << remote_endpoint.port);
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -849,16 +840,17 @@ BOOST_AUTO_TEST_CASE(property_connect_uses_specified_source_port, * boost::unit_
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 /**
  * Feature: network-simulator, Property 12: Connect Assigns Unique Ephemeral Ports
  * Validates: Requirements 6.3
  *
- * Property: For any sequence of connect operations without specified source ports from the same node,
- * each resulting connection SHALL have a unique source port that was not previously in use.
+ * Property: For any sequence of connect operations without specified source ports from the same
+ * node, each resulting connection SHALL have a unique source port that was not previously in use.
  */
-BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports,
+                     *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -910,8 +902,8 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::u
                 // Check if this port was already used
                 if (used_ports.find(assigned_port) != used_ports.end()) {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ", Connection " << j
-                        << ": Port " << assigned_port << " was already used");
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Connection " << j << ": Port "
+                                                    << assigned_port << " was already used");
                 }
 
                 // Add to used ports set
@@ -922,7 +914,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::u
             if (used_ports.size() != connection_count) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected " << connection_count
-                    << " unique ports, got " << used_ports.size());
+                                                << " unique ports, got " << used_ports.size());
             }
         } catch (const std::exception& e) {
             ++failures;
@@ -931,7 +923,7 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::u
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -941,7 +933,8 @@ BOOST_AUTO_TEST_CASE(property_connect_assigns_unique_ephemeral_ports, * boost::u
  * Property: For any connect operation that successfully establishes a connection,
  * the future SHALL resolve to a valid connection object with is_open() returning true.
  */
-BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object,
+                     *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1017,17 +1010,17 @@ BOOST_AUTO_TEST_CASE(property_successful_connection_returns_connection_object, *
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
-}/**
+                                                      << property_test_iterations << " iterations");
+} /**
 
- * Feature: network-simulator, Property 14: Connect Timeout Exception
- * Validates: Requirements 6.5
- *
- * Property: For any connect operation with a timeout where the connection cannot be established
- * before the timeout expires, the future SHALL enter an error state with an exception.
- * Note: The exception may be TimeoutException or NetworkException depending on the failure mode.
- */
-BOOST_AUTO_TEST_CASE(property_connect_timeout_exception, * boost::unit_test::timeout(90)) {
+  * Feature: network-simulator, Property 14: Connect Timeout Exception
+  * Validates: Requirements 6.5
+  *
+  * Property: For any connect operation with a timeout where the connection cannot be established
+  * before the timeout expires, the future SHALL enter an error state with an exception.
+  * Note: The exception may be TimeoutException or NetworkException depending on the failure mode.
+  */
+BOOST_AUTO_TEST_CASE(property_connect_timeout_exception, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1071,7 +1064,7 @@ BOOST_AUTO_TEST_CASE(property_connect_timeout_exception, * boost::unit_test::tim
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 /**
  * Fea
@@ -1123,13 +1116,13 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
             if (local_endpoint.address != addr) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong listener address. Expected: "
-                    << addr << ", Got: " << local_endpoint.address);
+                                                << addr << ", Got: " << local_endpoint.address);
             }
 
             if (local_endpoint.port != port) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong listener port. Expected: "
-                    << port << ", Got: " << local_endpoint.port);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong listener port. Expected: " << port
+                                                << ", Got: " << local_endpoint.port);
             }
 
             // Test bind without specific port (random port assignment)
@@ -1155,7 +1148,9 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
             // Verify the two listeners have different ports
             if (local_endpoint.port == local_endpoint2.port) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Random port assignment gave same port as specific port");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i
+                                   << ": Random port assignment gave same port as specific port");
             }
 
         } catch (const std::exception& e) {
@@ -1165,7 +1160,7 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1175,7 +1170,7 @@ BOOST_AUTO_TEST_CASE(property_successful_bind_returns_listener) {
  * Property: For any bind operation without a specified port, the resulting listener
  * SHALL have a unique port that was not previously in use.
  */
-BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1203,13 +1198,15 @@ BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::tim
 
                 if (!listener) {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Listener is null");
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j
+                                                    << ": Listener is null");
                     break;
                 }
 
                 if (!listener->is_listening()) {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Listener is not listening");
+                    BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j
+                                                    << ": Listener is not listening");
                     break;
                 }
 
@@ -1220,7 +1217,7 @@ BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::tim
                 if (used_ports.find(port) != used_ports.end()) {
                     ++failures;
                     BOOST_TEST_MESSAGE("Iteration " << i << ", Listener " << j << ": Port " << port
-                        << " was already used (not unique)");
+                                                    << " was already used (not unique)");
                     break;
                 }
 
@@ -1232,7 +1229,7 @@ BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::tim
             if (used_ports.size() != listener_count) {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Expected " << listener_count
-                    << " unique ports, got " << used_ports.size());
+                                                << " unique ports, got " << used_ports.size());
             }
 
         } catch (const std::exception& e) {
@@ -1242,7 +1239,7 @@ BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::tim
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1252,7 +1249,7 @@ BOOST_AUTO_TEST_CASE(property_bind_assigns_unique_ports, * boost::unit_test::tim
  * Property: For any data written to one end of a connection, reading from the other end
  * SHALL return the same data (subject to network reliability and latency).
  */
-BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1336,8 +1333,9 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, * boost::unit_te
             // Verify data matches
             if (read_data != test_data) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Data mismatch. Expected size: "
-                    << test_data.size() << ", Got size: " << read_data.size());
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Data mismatch. Expected size: " << test_data.size()
+                                   << ", Got size: " << read_data.size());
             }
 
         } catch (const std::exception& e) {
@@ -1347,7 +1345,7 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, * boost::unit_te
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1357,7 +1355,7 @@ BOOST_AUTO_TEST_CASE(property_connection_read_write_round_trip, * boost::unit_te
  * Property: For any read operation with a timeout where no data is available before
  * the timeout expires, the future SHALL enter an error state with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_read_timeout_exception, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_read_timeout_exception, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1412,7 +1410,7 @@ BOOST_AUTO_TEST_CASE(property_read_timeout_exception, * boost::unit_test::timeou
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1475,7 +1473,8 @@ BOOST_AUTO_TEST_CASE(property_successful_write_returns_true) {
             // Verify write returns true
             if (!write_result) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Write returned false when it should return true");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Write returned false when it should return true");
             }
 
         } catch (const std::exception& e) {
@@ -1485,7 +1484,7 @@ BOOST_AUTO_TEST_CASE(property_successful_write_returns_true) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1495,7 +1494,7 @@ BOOST_AUTO_TEST_CASE(property_successful_write_returns_true) {
  * Property: For any write operation with a timeout where the write cannot complete before
  * the timeout expires, the future SHALL enter an error state with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_write_timeout_exception, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_write_timeout_exception, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -1543,7 +1542,8 @@ BOOST_AUTO_TEST_CASE(property_write_timeout_exception, * boost::unit_test::timeo
 
             // If we get here, no exception was thrown - this is a failure
             ++failures;
-            BOOST_TEST_MESSAGE("Iteration " << i << ": Expected TimeoutException but write succeeded");
+            BOOST_TEST_MESSAGE("Iteration " << i
+                                            << ": Expected TimeoutException but write succeeded");
 
         } catch (const TimeoutException&) {
             // Expected - timeout exception thrown
@@ -1554,15 +1554,16 @@ BOOST_AUTO_TEST_CASE(property_write_timeout_exception, * boost::unit_test::timeo
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
-}/**
- *
- Feature: network-simulator, Property 17: Accept Returns Connection on Client Connect
- * Validates: Requirements 7.5
- *
- * Property: For any listener with a pending accept operation, when a client connects to the bound port,
- * the accept future SHALL resolve to a valid connection object.
- */
+                                                      << property_test_iterations << " iterations");
+} /**
+  *
+  Feature: network-simulator, Property 17: Accept Returns Connection on Client Connect
+  * Validates: Requirements 7.5
+  *
+  * Property: For any listener with a pending accept operation, when a client connects to the bound
+  port,
+  * the accept future SHALL resolve to a valid connection object.
+  */
 BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
     std::mt19937 rng(std::random_device{}());
 
@@ -1660,10 +1661,12 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Wrong client remote port");
             }
 
-            // Verify the connections are paired (client's remote port should match server's local port)
+            // Verify the connections are paired (client's remote port should match server's local
+            // port)
             if (server_remote.port != client_local.port) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Connection endpoints not properly paired");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Connection endpoints not properly paired");
             }
 
         } catch (const std::exception& e) {
@@ -1673,7 +1676,7 @@ BOOST_AUTO_TEST_CASE(property_accept_returns_connection_on_client_connect) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }
 
 /**
@@ -1718,7 +1721,8 @@ BOOST_AUTO_TEST_CASE(property_accept_timeout_exception) {
 
             // If we get here, no exception was thrown - this is a failure
             ++failures;
-            BOOST_TEST_MESSAGE("Iteration " << i << ": Expected TimeoutException but got connection");
+            BOOST_TEST_MESSAGE("Iteration " << i
+                                            << ": Expected TimeoutException but got connection");
 
         } catch (const TimeoutException&) {
             // Expected - timeout exception thrown
@@ -1729,5 +1733,5 @@ BOOST_AUTO_TEST_CASE(property_accept_timeout_exception) {
     }
 
     BOOST_TEST(failures == 0, "Property violated in " << failures << " out of "
-        << property_test_iterations << " iterations");
+                                                      << property_test_iterations << " iterations");
 }

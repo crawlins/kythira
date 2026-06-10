@@ -36,7 +36,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_application_failure_handling_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_application_failure_handling_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -49,12 +50,12 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
-    constexpr std::chrono::milliseconds commit_timeout{2000};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{100};
+constexpr std::chrono::milliseconds commit_timeout{2000};
 }
 
 /**
@@ -72,37 +73,21 @@ public:
         std::uint64_t applied_index_after;
     };
 
-    auto record_application_success(
-        std::uint64_t log_index,
-        const std::vector<std::byte>& command,
-        std::uint64_t applied_index_before,
-        std::uint64_t applied_index_after
-    ) -> void {
+    auto record_application_success(std::uint64_t log_index, const std::vector<std::byte>& command,
+                                    std::uint64_t applied_index_before,
+                                    std::uint64_t applied_index_after) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
-        _attempts.push_back({
-            log_index,
-            command,
-            true,
-            std::nullopt,
-            std::chrono::steady_clock::now(),
-            applied_index_before,
-            applied_index_after
-        });
+        _attempts.push_back({log_index, command, true, std::nullopt,
+                             std::chrono::steady_clock::now(), applied_index_before,
+                             applied_index_after});
     }
 
-    auto record_application_failure(
-        std::uint64_t log_index,
-        const std::vector<std::byte>& command,
-        const std::string& error_message,
-        std::uint64_t applied_index_before
-    ) -> void {
+    auto record_application_failure(std::uint64_t log_index, const std::vector<std::byte>& command,
+                                    const std::string& error_message,
+                                    std::uint64_t applied_index_before) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _attempts.push_back({
-            log_index,
-            command,
-            false,
-            error_message,
-            std::chrono::steady_clock::now(),
+            log_index, command, false, error_message, std::chrono::steady_clock::now(),
             applied_index_before,
             applied_index_before  // Applied index doesn't advance on failure
         });
@@ -135,23 +120,22 @@ public:
     auto verify_no_application_after_failure() const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
         if (!_failure_occurred) {
-            return true; // No failure, so this property is trivially satisfied
+            return true;  // No failure, so this property is trivially satisfied
         }
 
         // Find the failure
-        auto failure_it = std::find_if(_attempts.begin(), _attempts.end(),
-            [](const ApplicationAttempt& attempt) {
-                return !attempt.success;
-            });
+        auto failure_it =
+            std::find_if(_attempts.begin(), _attempts.end(),
+                         [](const ApplicationAttempt& attempt) { return !attempt.success; });
 
         if (failure_it == _attempts.end()) {
-            return true; // No failure found
+            return true;  // No failure found
         }
 
         // Check that no successful applications occurred after the failure
         for (auto it = failure_it + 1; it != _attempts.end(); ++it) {
             if (it->success) {
-                return false; // Found successful application after failure
+                return false;  // Found successful application after failure
             }
         }
 
@@ -206,7 +190,7 @@ BOOST_AUTO_TEST_SUITE(application_failure_handling_property_tests)
  * For any state machine application failure, further application
  * is halted and the error is reported.
  */
-BOOST_AUTO_TEST_CASE(property_application_failure_handling, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_application_failure_handling, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> success_count_dist(2, 6);
@@ -223,7 +207,7 @@ BOOST_AUTO_TEST_CASE(property_application_failure_handling, * boost::unit_test::
         // Apply some entries successfully
         for (std::size_t i = 1; i <= success_count; ++i) {
             std::vector<std::byte> command;
-            command.push_back(static_cast<std::byte>(0xAA)); // Success marker
+            command.push_back(static_cast<std::byte>(0xAA));  // Success marker
             command.push_back(static_cast<std::byte>(i & 0xFF));
             for (std::size_t j = 0; j < 4; ++j) {
                 command.push_back(static_cast<std::byte>((i + j) % 256));
@@ -233,50 +217,52 @@ BOOST_AUTO_TEST_CASE(property_application_failure_handling, * boost::unit_test::
             std::uint64_t old_applied_index = current_applied_index;
             current_applied_index = log_index;
 
-            tracker.record_application_success(log_index, command, old_applied_index, current_applied_index);
+            tracker.record_application_success(log_index, command, old_applied_index,
+                                               current_applied_index);
         }
 
         // Introduce a failure
         std::uint64_t failure_log_index = success_count + failure_position;
         std::vector<std::byte> failure_command;
-        failure_command.push_back(static_cast<std::byte>(0xBB)); // Failure marker
+        failure_command.push_back(static_cast<std::byte>(0xBB));  // Failure marker
         failure_command.push_back(static_cast<std::byte>(failure_log_index & 0xFF));
 
         std::string error_message = "Simulated state machine application failure";
-        tracker.record_application_failure(failure_log_index, failure_command, error_message, current_applied_index);
+        tracker.record_application_failure(failure_log_index, failure_command, error_message,
+                                           current_applied_index);
 
         // Try to apply more entries after failure (these should not succeed)
         for (std::size_t i = 1; i <= 3; ++i) {
             std::uint64_t post_failure_index = failure_log_index + i;
             std::vector<std::byte> post_failure_command;
-            post_failure_command.push_back(static_cast<std::byte>(0xCC)); // Post-failure marker
+            post_failure_command.push_back(static_cast<std::byte>(0xCC));  // Post-failure marker
             post_failure_command.push_back(static_cast<std::byte>(post_failure_index & 0xFF));
 
             // These should fail because application is halted after first failure
             std::string halt_error = "Application halted due to previous failure";
-            tracker.record_application_failure(post_failure_index, post_failure_command, halt_error, current_applied_index);
+            tracker.record_application_failure(post_failure_index, post_failure_command, halt_error,
+                                               current_applied_index);
         }
 
         // Property verification
         BOOST_CHECK_MESSAGE(tracker.has_failure_occurred(),
-            "Failure should be detected and recorded");
+                            "Failure should be detected and recorded");
 
         BOOST_CHECK_MESSAGE(tracker.verify_no_application_after_failure(),
-            "No successful applications should occur after a failure");
+                            "No successful applications should occur after a failure");
 
         BOOST_CHECK_MESSAGE(tracker.verify_applied_index_unchanged_on_failure(),
-            "Applied index should not advance when application fails");
+                            "Applied index should not advance when application fails");
 
         BOOST_CHECK_MESSAGE(tracker.get_final_applied_index() == success_count,
-            "Applied index should remain at last successful application");
+                            "Applied index should remain at last successful application");
 
         auto failure_index = tracker.get_failure_index();
-        BOOST_CHECK_MESSAGE(failure_index.has_value(),
-            "Failure index should be recorded");
+        BOOST_CHECK_MESSAGE(failure_index.has_value(), "Failure index should be recorded");
 
         if (failure_index.has_value()) {
             BOOST_CHECK_MESSAGE(failure_index.value() == failure_log_index,
-                "Failure index should match the failed entry's log index");
+                                "Failure index should match the failed entry's log index");
         }
 
         tracker.clear();
@@ -289,7 +275,7 @@ BOOST_AUTO_TEST_CASE(property_application_failure_handling, * boost::unit_test::
  * For any failure that occurs early in the application sequence,
  * no subsequent entries are applied.
  */
-BOOST_AUTO_TEST_CASE(property_early_failure_handling, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_early_failure_handling, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> pending_count_dist(3, 8);
@@ -307,7 +293,7 @@ BOOST_AUTO_TEST_CASE(property_early_failure_handling, * boost::unit_test::timeou
         // Try to apply remaining entries (should all fail due to halt)
         for (std::size_t i = 2; i <= pending_count; ++i) {
             std::vector<std::byte> command;
-            command.push_back(static_cast<std::byte>(0xEE)); // Halted marker
+            command.push_back(static_cast<std::byte>(0xEE));  // Halted marker
             command.push_back(static_cast<std::byte>(i & 0xFF));
 
             std::string halt_error = "Application halted after first failure";
@@ -315,23 +301,22 @@ BOOST_AUTO_TEST_CASE(property_early_failure_handling, * boost::unit_test::timeou
         }
 
         // Verify early failure properties
-        BOOST_CHECK_MESSAGE(tracker.has_failure_occurred(),
-            "Early failure should be detected");
+        BOOST_CHECK_MESSAGE(tracker.has_failure_occurred(), "Early failure should be detected");
 
         BOOST_CHECK_MESSAGE(tracker.get_failure_index().value_or(0) == 1,
-            "First failure should be at index 1");
+                            "First failure should be at index 1");
 
         BOOST_CHECK_MESSAGE(tracker.verify_no_application_after_failure(),
-            "No applications should succeed after early failure");
+                            "No applications should succeed after early failure");
 
         BOOST_CHECK_MESSAGE(tracker.get_final_applied_index() == 0,
-            "Applied index should remain 0 after early failure");
+                            "Applied index should remain 0 after early failure");
 
         // Verify all attempts after the first are failures
         auto attempts = tracker.get_attempts();
         for (std::size_t i = 0; i < attempts.size(); ++i) {
             BOOST_CHECK_MESSAGE(!attempts[i].success,
-                "All application attempts should fail after initial failure");
+                                "All application attempts should fail after initial failure");
         }
 
         tracker.clear();
@@ -344,7 +329,7 @@ BOOST_AUTO_TEST_CASE(property_early_failure_handling, * boost::unit_test::timeou
  * For any failure that occurs in the middle of an application sequence,
  * the applied index stops at the last successful application.
  */
-BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> success_before_dist(3, 7);
@@ -361,42 +346,47 @@ BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, * boost::unit_test::timeout(
         // Apply entries successfully up to the failure point
         for (std::size_t i = 1; i <= success_before; ++i) {
             std::vector<std::byte> command;
-            command.push_back(static_cast<std::byte>(0xFF)); // Pre-failure success
+            command.push_back(static_cast<std::byte>(0xFF));  // Pre-failure success
             command.push_back(static_cast<std::byte>(i & 0xFF));
 
             std::uint64_t old_applied_index = current_applied_index;
             current_applied_index = i;
 
-            tracker.record_application_success(i, command, old_applied_index, current_applied_index);
+            tracker.record_application_success(i, command, old_applied_index,
+                                               current_applied_index);
         }
 
         // Introduce failure at mid-sequence
         std::uint64_t failure_index = success_before + 1;
         std::vector<std::byte> failure_command{std::byte{0x00}, std::byte{failure_index & 0xFF}};
         std::string failure_error = "Mid-sequence application failure";
-        tracker.record_application_failure(failure_index, failure_command, failure_error, current_applied_index);
+        tracker.record_application_failure(failure_index, failure_command, failure_error,
+                                           current_applied_index);
 
         // Attempt more applications after failure (should all fail)
         for (std::size_t i = 1; i <= attempts_after; ++i) {
             std::uint64_t post_failure_index = failure_index + i;
-            std::vector<std::byte> post_command{std::byte{0x11}, std::byte{post_failure_index & 0xFF}};
+            std::vector<std::byte> post_command{std::byte{0x11},
+                                                std::byte{post_failure_index & 0xFF}};
             std::string post_error = "Application halted due to mid-sequence failure";
-            tracker.record_application_failure(post_failure_index, post_command, post_error, current_applied_index);
+            tracker.record_application_failure(post_failure_index, post_command, post_error,
+                                               current_applied_index);
         }
 
         // Verify mid-sequence failure properties
         BOOST_CHECK_MESSAGE(tracker.has_failure_occurred(),
-            "Mid-sequence failure should be detected");
+                            "Mid-sequence failure should be detected");
 
         BOOST_CHECK_MESSAGE(tracker.verify_no_application_after_failure(),
-            "No applications should succeed after mid-sequence failure");
+                            "No applications should succeed after mid-sequence failure");
 
-        BOOST_CHECK_MESSAGE(tracker.get_final_applied_index() == success_before,
+        BOOST_CHECK_MESSAGE(
+            tracker.get_final_applied_index() == success_before,
             "Applied index should remain at last successful application before failure");
 
         auto failure_idx = tracker.get_failure_index();
         BOOST_CHECK_MESSAGE(failure_idx.has_value() && failure_idx.value() == failure_index,
-            "Failure should be recorded at correct index");
+                            "Failure should be recorded at correct index");
 
         tracker.clear();
     }
@@ -407,17 +397,14 @@ BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, * boost::unit_test::timeout(
  *
  * For any application failure, the error is properly reported and recorded.
  */
-BOOST_AUTO_TEST_CASE(property_error_reporting, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_error_reporting, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> error_type_dist(0, 3);
 
     std::vector<std::string> error_messages = {
-        "State machine corruption detected",
-        "Invalid command format",
-        "Resource exhaustion during application",
-        "Timeout during state machine operation"
-    };
+        "State machine corruption detected", "Invalid command format",
+        "Resource exhaustion during application", "Timeout during state machine operation"};
 
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         ApplicationFailureTracker tracker;
@@ -434,21 +421,20 @@ BOOST_AUTO_TEST_CASE(property_error_reporting, * boost::unit_test::timeout(90)) 
 
         // Verify error reporting
         BOOST_CHECK_MESSAGE(tracker.has_failure_occurred(),
-            "Failure should be detected for error reporting test");
+                            "Failure should be detected for error reporting test");
 
         auto attempts = tracker.get_attempts();
         bool found_error = false;
         for (const auto& attempt : attempts) {
             if (!attempt.success && attempt.error_message.has_value()) {
                 BOOST_CHECK_MESSAGE(attempt.error_message.value() == error_message,
-                    "Error message should be properly recorded");
+                                    "Error message should be properly recorded");
                 found_error = true;
                 break;
             }
         }
 
-        BOOST_CHECK_MESSAGE(found_error,
-            "Error message should be found in failure records");
+        BOOST_CHECK_MESSAGE(found_error, "Error message should be found in failure records");
 
         tracker.clear();
     }

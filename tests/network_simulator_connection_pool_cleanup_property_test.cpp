@@ -33,11 +33,11 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds connection_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double perfect_reliability = 1.0;
-    constexpr std::chrono::milliseconds short_idle_time{100};  // Very short for testing
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds connection_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double perfect_reliability = 1.0;
+constexpr std::chrono::milliseconds short_idle_time{100};  // Very short for testing
 }
 
 // Helper to generate random node address
@@ -57,7 +57,7 @@ auto generate_random_port(std::mt19937& rng, std::size_t base) -> unsigned short
  * Property: For any pooled connection that becomes stale or invalid, the connection
  * pool SHALL automatically remove it from the pool during cleanup operations.
  */
-BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -78,7 +78,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
         typename ConnectionPool<DefaultNetworkTypes>::PoolConfig pool_config;
         pool_config.max_connections_per_endpoint = 10;
         pool_config.max_idle_time = short_idle_time;
-        pool_config.max_connection_age = std::chrono::milliseconds{60000}; // 1 minute
+        pool_config.max_connection_age = std::chrono::milliseconds{60000};  // 1 minute
         pool_config.enable_health_checks = true;
 
         auto& pool = sim.get_connection_pool();
@@ -121,15 +121,18 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
             }
 
             // Verify connections are in pool
-            auto initial_pool_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto initial_pool_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (initial_pool_size == num_connections) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool contains " << initial_pool_size << " connections");
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool contains " << initial_pool_size
+                                                << " connections");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Initial pool size incorrect: " << initial_pool_size
-                    << " (expected " << num_connections << ")");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Initial pool size incorrect: " << initial_pool_size
+                                   << " (expected " << num_connections << ")");
             }
 
             // Test Case 2: Wait for connections to become stale
@@ -139,15 +142,18 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
             pool.cleanup_stale_connections();
 
             // Verify stale connections were removed
-            auto pool_size_after_cleanup = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after_cleanup =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (pool_size_after_cleanup == 0) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Stale connections cleaned up successfully");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Stale connections cleaned up successfully");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Stale connections not cleaned up, pool size: "
-                    << pool_size_after_cleanup);
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Stale connections not cleaned up, pool size: "
+                                                << pool_size_after_cleanup);
             }
 
             // Test Case 3: Add closed connections and verify cleanup
@@ -169,19 +175,21 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
             // Run cleanup - should remove closed connections
             pool.cleanup_stale_connections();
 
-            auto pool_size_after_closed_cleanup = pool.get_pool_size(
-                Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after_closed_cleanup =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             // Should have approximately half the connections (the ones that weren't closed)
             // Allow some tolerance
             if (pool_size_after_closed_cleanup <= num_connections / 2 + 1) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Closed connections cleaned up, pool size: "
-                    << pool_size_after_closed_cleanup);
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << ": Closed connections cleaned up, pool size: "
+                                                << pool_size_after_closed_cleanup);
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Closed connections not cleaned up properly, pool size: "
-                    << pool_size_after_closed_cleanup);
+                BOOST_TEST_MESSAGE(
+                    "Iteration " << i << ": Closed connections not cleaned up properly, pool size: "
+                                 << pool_size_after_closed_cleanup);
             }
 
             // Test Case 4: Verify cleanup doesn't remove healthy connections
@@ -192,16 +200,18 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
             pool.cleanup_stale_connections();
 
             // Verify pool is now empty
-            auto pool_size_after_full_cleanup = pool.get_pool_size(
-                Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after_full_cleanup =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (pool_size_after_full_cleanup == 0) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Pool fully cleaned before fresh connection test");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Pool fully cleaned before fresh connection test");
             }
 
             // Now add fresh connections to a clean pool
-            std::vector<std::shared_ptr<typename DefaultNetworkTypes::connection_type>> fresh_connections;
+            std::vector<std::shared_ptr<typename DefaultNetworkTypes::connection_type>>
+                fresh_connections;
             for (std::size_t j = 0; j < 3; ++j) {
                 auto conn_future = client->connect(server_addr, server_port, connection_timeout);
                 auto conn = conn_future.get();
@@ -213,23 +223,27 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
                 pool.return_connection(conn);
             }
 
-            auto pool_size_before_cleanup = pool.get_pool_size(
-                Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_before_cleanup =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             // Run cleanup immediately (connections are fresh, should not be removed)
             pool.cleanup_stale_connections();
 
-            auto pool_size_after_fresh_cleanup = pool.get_pool_size(
-                Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto pool_size_after_fresh_cleanup =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
-            if (pool_size_after_fresh_cleanup >= pool_size_before_cleanup - 1 && pool_size_after_fresh_cleanup >= 2) {
+            if (pool_size_after_fresh_cleanup >= pool_size_before_cleanup - 1 &&
+                pool_size_after_fresh_cleanup >= 2) {
                 ++success_count;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Fresh connections mostly preserved during cleanup ("
-                    << pool_size_before_cleanup << " -> " << pool_size_after_fresh_cleanup << ")");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << ": Fresh connections mostly preserved during cleanup ("
+                                   << pool_size_before_cleanup << " -> "
+                                   << pool_size_after_fresh_cleanup << ")");
             } else {
                 ++failures;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Too many fresh connections removed: "
-                    << pool_size_before_cleanup << " -> " << pool_size_after_fresh_cleanup);
+                                                << pool_size_before_cleanup << " -> "
+                                                << pool_size_after_fresh_cleanup);
             }
 
             // Test Case 5: Multiple cleanup cycles
@@ -241,14 +255,16 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, * boost::unit_test::timeo
                 pool.cleanup_stale_connections();
             }
 
-            auto final_pool_size = pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
+            auto final_pool_size =
+                pool.get_pool_size(Endpoint<DefaultNetworkTypes>{server_addr, server_port});
 
             if (final_pool_size == 0) {
                 ++success_count;
                 BOOST_TEST_MESSAGE("Iteration " << i << ": Multiple cleanup cycles work correctly");
             } else {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << ": Multiple cleanups failed, pool size: " << final_pool_size);
+                BOOST_TEST_MESSAGE("Iteration " << i << ": Multiple cleanups failed, pool size: "
+                                                << final_pool_size);
             }
 
         } catch (const std::exception& e) {

@@ -19,10 +19,10 @@
 #include "../../include/raft/future.hpp"
 
 namespace {
-    constexpr const char* test_string_value = "Factory created future";
-    constexpr const char* test_error_message = "Factory created exception";
-    constexpr int test_int_value = 123;
-    constexpr double test_double_value = 3.14159;
+constexpr const char* test_string_value = "Factory created future";
+constexpr const char* test_error_message = "Factory created exception";
+constexpr int test_int_value = 123;
+constexpr double test_double_value = 3.14159;
 }
 
 class FactoryExampleRunner {
@@ -64,8 +64,8 @@ private:
             // Get the value
             auto result = std::move(future_str).get();
             if (result != test_string_value) {
-                std::cout << "  ❌ Factory future value mismatch: expected '"
-                         << test_string_value << "', got '" << result << "'\n";
+                std::cout << "  ❌ Factory future value mismatch: expected '" << test_string_value
+                          << "', got '" << result << "'\n";
                 return false;
             }
 
@@ -114,8 +114,8 @@ private:
             }
 
             if (exception_message != test_error_message) {
-                std::cout << "  ❌ Exception message mismatch: expected '"
-                         << test_error_message << "', got '" << exception_message << "'\n";
+                std::cout << "  ❌ Exception message mismatch: expected '" << test_error_message
+                          << "', got '" << exception_message << "'\n";
                 return false;
             }
 
@@ -154,8 +154,8 @@ private:
         std::cout << "Test 4: Factory Type Deduction\n";
         try {
             // Test automatic type deduction
-            auto future1 = kythira::FutureFactory::makeFuture(42);  // int
-            auto future2 = kythira::FutureFactory::makeFuture(3.14);  // double
+            auto future1 = kythira::FutureFactory::makeFuture(42);                   // int
+            auto future2 = kythira::FutureFactory::makeFuture(3.14);                 // double
             auto future3 = kythira::FutureFactory::makeFuture(std::string("test"));  // string
 
             // All should be ready

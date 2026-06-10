@@ -16,22 +16,22 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* client_node_id = "client";
-    constexpr const char* server_node_id = "server";
-    constexpr unsigned short base_server_port = 8080;
-    constexpr unsigned short client_port = 9090;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Connection management test";
+constexpr const char* client_node_id = "client";
+constexpr const char* server_node_id = "server";
+constexpr unsigned short base_server_port = 8080;
+constexpr unsigned short client_port = 9090;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Connection management test";
 
-    // Helper to get unique port for each test - uses random to avoid conflicts
-    unsigned short get_test_port() {
-        static std::random_device rd;
-        static std::mt19937 gen(rd());
-        static std::uniform_int_distribution<unsigned short> dist(10000, 60000);
-        return dist(gen);
-    }
+// Helper to get unique port for each test - uses random to avoid conflicts
+unsigned short get_test_port() {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_int_distribution<unsigned short> dist(10000, 60000);
+    return dist(gen);
+}
 }
 
 /**
@@ -39,7 +39,7 @@ namespace {
  * Tests: end-to-end connection establishment with various timeout scenarios
  * _Requirements: 15.1-15.6_
  */
-BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use unique port for this test
@@ -64,8 +64,8 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, * boost::unit
     // Start connection with timeout (no source port specified)
     auto connect_future = std::async(std::launch::async, [&client, server_port]() {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        return std::move(client->connect(server_node_id, server_port,
-                                        std::chrono::seconds{10})).get();
+        return std::move(client->connect(server_node_id, server_port, std::chrono::seconds{10}))
+            .get();
     });
 
     auto accept_future = listener->accept(test_timeout);
@@ -87,7 +87,8 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, * boost::unit
     constexpr std::chrono::milliseconds short_timeout{100};
 
     try {
-        auto connection = std::move(client->connect(unreachable_node, server_port, short_timeout)).get();
+        auto connection =
+            std::move(client->connect(unreachable_node, server_port, short_timeout)).get();
 
         // If we get a connection, it should be null or not open
         if (connection == nullptr || !connection->is_open()) {
@@ -112,14 +113,17 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, * boost::unit
 
     // === TEST 3: Multiple concurrent connection attempts ===
     constexpr std::size_t concurrent_connections = 5;
-    std::vector<std::future<std::shared_ptr<DefaultNetworkTypes::connection_type>>> connection_futures;
+    std::vector<std::future<std::shared_ptr<DefaultNetworkTypes::connection_type>>>
+        connection_futures;
 
     for (std::size_t i = 0; i < concurrent_connections; ++i) {
-        connection_futures.push_back(std::async(std::launch::async,
+        connection_futures.push_back(std::async(
+            std::launch::async,
             [&client, server_port]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
                 std::this_thread::sleep_for(std::chrono::milliseconds{50});
-                return std::move(client->connect(server_node_id, server_port,
-                                                std::chrono::seconds{10})).get();
+                return std::move(
+                           client->connect(server_node_id, server_port, std::chrono::seconds{10}))
+                    .get();
             }));
     }
 
@@ -153,7 +157,7 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, * boost::unit
  * Tests: connection reuse across multiple operations
  * _Requirements: 16.1-16.6_
  */
-BOOST_AUTO_TEST_CASE(connection_pooling_integration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(connection_pooling_integration, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use unique ports for this test
@@ -177,10 +181,11 @@ BOOST_AUTO_TEST_CASE(connection_pooling_integration, * boost::unit_test::timeout
     BOOST_REQUIRE(listener != nullptr);
 
     // === TEST 1: Create initial connection ===
-    auto connect_future1 = std::async(std::launch::async, [&client, server_port, client_port_local]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
-    });
+    auto connect_future1 =
+        std::async(std::launch::async, [&client, server_port, client_port_local]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
+        });
 
     auto server_conn1 = std::move(listener->accept(test_timeout)).get();
     auto client_conn1 = connect_future1.get();
@@ -202,10 +207,11 @@ BOOST_AUTO_TEST_CASE(connection_pooling_integration, * boost::unit_test::timeout
 
     // === TEST 2: Create another connection to same destination ===
     // If pooling is enabled, this might reuse the previous connection
-    auto connect_future2 = std::async(std::launch::async, [&client, server_port, client_port_local]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
-    });
+    auto connect_future2 =
+        std::async(std::launch::async, [&client, server_port, client_port_local]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
+        });
 
     auto server_conn2 = std::move(listener->accept(test_timeout)).get();
     auto client_conn2 = connect_future2.get();
@@ -232,7 +238,7 @@ BOOST_AUTO_TEST_CASE(connection_pooling_integration, * boost::unit_test::timeout
  * Tests: listener creation, cleanup, and port management
  * _Requirements: 17.1-17.6_
  */
-BOOST_AUTO_TEST_CASE(listener_management_integration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(listener_management_integration, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use unique ports for this test
@@ -299,7 +305,7 @@ BOOST_AUTO_TEST_CASE(listener_management_integration, * boost::unit_test::timeou
  * Tests: connection state tracking across full lifecycle
  * _Requirements: 18.1-18.7_
  */
-BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use unique ports for this test
@@ -322,10 +328,11 @@ BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, * boost::unit_test::timeo
     auto listener = std::move(server->bind(server_port)).get();
 
     // === TEST 1: Connection establishment ===
-    auto connect_future = std::async(std::launch::async, [&client, server_port, client_port_local]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
-    });
+    auto connect_future =
+        std::async(std::launch::async, [&client, server_port, client_port_local]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            return std::move(client->connect(server_node_id, server_port, client_port_local)).get();
+        });
 
     auto server_connection = std::move(listener->accept(test_timeout)).get();
     auto client_connection = connect_future.get();
@@ -395,7 +402,7 @@ BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, * boost::unit_test::timeo
  * Tests: multiple concurrent connections with data transfer
  * _Requirements: 15.1-18.7_
  */
-BOOST_AUTO_TEST_CASE(connection_management_stress_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(connection_management_stress_test, *boost::unit_test::timeout(90)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use unique port for this test
@@ -423,7 +430,8 @@ BOOST_AUTO_TEST_CASE(connection_management_stress_test, * boost::unit_test::time
 
     // Establish all connections
     for (std::size_t i = 0; i < connection_count; ++i) {
-        auto connect_future = std::async(std::launch::async,
+        auto connect_future = std::async(
+            std::launch::async,
             [&client, server_port]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
                 std::this_thread::sleep_for(std::chrono::milliseconds{50});
                 return std::move(client->connect(server_node_id, server_port)).get();
@@ -440,7 +448,8 @@ BOOST_AUTO_TEST_CASE(connection_management_stress_test, * boost::unit_test::time
     }
 
     // Transfer data on all connections
-    std::vector<std::byte> test_data{std::byte{0x54}, std::byte{0x65}, std::byte{0x73}, std::byte{0x74}};
+    std::vector<std::byte> test_data{std::byte{0x54}, std::byte{0x65}, std::byte{0x73},
+                                     std::byte{0x74}};
 
     for (std::size_t i = 0; i < connection_count; ++i) {
         bool write_success = std::move(client_connections[i]->write(test_data)).get();

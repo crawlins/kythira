@@ -27,18 +27,18 @@
 #include <unordered_map>
 
 namespace {
-    // Test configuration constants
-    constexpr std::uint64_t leader_node_id = 1;
-    constexpr std::uint64_t test_term = 5;
-    constexpr std::uint64_t test_log_index = 10;
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds medium_timeout{500};
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_node_c = "node_c";
-    constexpr double high_failure_rate = 0.8;  // 80% failure rate
-    constexpr double medium_failure_rate = 0.5;  // 50% failure rate
-    constexpr std::size_t max_retry_attempts = 5;
+// Test configuration constants
+constexpr std::uint64_t leader_node_id = 1;
+constexpr std::uint64_t test_term = 5;
+constexpr std::uint64_t test_log_index = 10;
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds medium_timeout{500};
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_node_c = "node_c";
+constexpr double high_failure_rate = 0.8;    // 80% failure rate
+constexpr double medium_failure_rate = 0.5;  // 50% failure rate
+constexpr std::size_t max_retry_attempts = 5;
 }
 
 // Simple error classification for demonstration
@@ -65,7 +65,7 @@ auto classify_error(const std::exception& e) -> error_classification {
     if (error_msg.find("timeout") != std::string::npos) {
         return {error_type::network_timeout, true, "Network timeout"};
     }
- if (error_msg.find("unreachable") != std::string::npos) {
+    if (error_msg.find("unreachable") != std::string::npos) {
         return {error_type::network_unreachable, true, "Network unreachable"};
     }
     if (error_msg.find("refused") != std::string::npos) {
@@ -130,19 +130,18 @@ public:
 
     mock_error_network_client() : _rng(std::random_device{}()) {}
 
-    auto set_network_condition(const std::string& target, const network_condition& condition) -> void {
+    auto set_network_condition(const std::string& target, const network_condition& condition)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         _network_conditions[target] = condition;
     }
 
-   auto simulate_partition(const std::vector<std::string>& partitioned_nodes) -> void {
+    auto simulate_partition(const std::vector<std::string>& partitioned_nodes) -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         for (const auto& node : partitioned_nodes) {
-            _network_conditions[node] = network_condition{
-                .mode = failure_mode::network_unreachable,
-                .failure_rate = 1.0,
-                .partition_active = true
-            };
+            _network_conditions[node] = network_condition{.mode = failure_mode::network_unreachable,
+                                                          .failure_rate = 1.0,
+                                                          .partition_active = true};
         }
     }
 
@@ -150,27 +149,26 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
         for (auto& [node, condition] : _network_conditions) {
             condition.partition_active = false;
-            if (condition.mode == failure_mode::network_unreachable && condition.failure_rate == 1.0) {
+            if (condition.mode == failure_mode::network_unreachable &&
+                condition.failure_rate == 1.0) {
                 condition.mode = failure_mode::none;
                 condition.failure_rate = 0.0;
             }
         }
     }
 
-    auto send_append_entries(const std::string& target) -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
+    auto send_append_entries(const std::string& target)
+        -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _operation_counts[target]++;
         }
 
-        return simulate_network_operation<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-            target,
-            []() {
-                return kythira::append_entries_response<std::uint64_t, std::uint64_t>{
-                    test_term, true, std::nullopt, std::nullopt
-                };
-            }
-        );
+        return simulate_network_operation<
+            kythira::append_entries_response<std::uint64_t, std::uint64_t>>(target, []() {
+            return kythira::append_entries_response<std::uint64_t, std::uint64_t>{
+                test_term, true, std::nullopt, std::nullopt};
+        });
     }
 
     auto get_operation_count(const std::string& target) const -> std::size_t {
@@ -186,7 +184,8 @@ public:
 
 private:
     template<typename ResponseType, typename OperationFunc>
-    auto simulate_network_operation(const std::string& target, OperationFunc&& operation) -> ResponseType {
+    auto simulate_network_operation(const std::string& target, OperationFunc&& operation)
+        -> ResponseType {
         network_condition condition;
         {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -226,7 +225,8 @@ private:
             std::string error_message;
             switch (condition.mode) {
                 case failure_mode::network_timeout:
-                case failure_mode::deterministic_failures:  // Use timeout message for deterministic failures
+                case failure_mode::deterministic_failures:  // Use timeout message for deterministic
+                                                            // failures
                     error_message = "Network timeout occurred";
                     break;
                 case failure_mode::network_unreachable:
@@ -238,22 +238,19 @@ private:
                 case failure_mode::temporary_failure:
                     error_message = "temporary failure, try again";
                     break;
-                case failure_mode::random_failures:
+                case failure_mode::random_failures: {
+                    std::vector<std::string> random_errors = {"Network timeout occurred",
+                                                              "Connection refused by target",
+                                                              "temporary failure, try again"};
+                    std::uniform_int_distribution<std::size_t> error_dist(0,
+                                                                          random_errors.size() - 1);
+                    std::size_t error_index;
                     {
-                        std::vector<std::string> random_errors = {
-                            "Network timeout occurred",
-                            "Connection refused by target",
-                            "temporary failure, try again"
-                        };
-                        std::uniform_int_distribution<std::size_t> error_dist(0, random_errors.size() - 1);
-                        std::size_t error_index;
-                        {
-                            std::lock_guard<std::mutex> lock(_mutex);
-                            error_index = error_dist(_rng);
-                        }
-                        error_message = random_errors[error_index];
+                        std::lock_guard<std::mutex> lock(_mutex);
+                        error_index = error_dist(_rng);
                     }
-                    break;
+                    error_message = random_errors[error_index];
+                } break;
                 default:
                     error_message = "Unknown network error";
                     break;
@@ -280,13 +277,15 @@ auto test_rpc_retry_behavior() -> bool {
 
         std::cout << "  Testing AppendEntries retry with network timeouts...\n";
 
-        network_client.set_network_condition(test_node_b, {
-            .mode = mock_error_network_client::failure_mode::deterministic_failures,
-            .failure_rate = 0.0,  // Not used for deterministic failures
-            .latency = std::chrono::milliseconds{50},
-            .partition_active = false,
-            .guaranteed_failures = 2  // Fail first 2 attempts, succeed on 3rd
-        });
+        network_client.set_network_condition(
+            test_node_b,
+            {
+                .mode = mock_error_network_client::failure_mode::deterministic_failures,
+                .failure_rate = 0.0,  // Not used for deterministic failures
+                .latency = std::chrono::milliseconds{50},
+                .partition_active = false,
+                .guaranteed_failures = 2  // Fail first 2 attempts, succeed on 3rd
+            });
 
         network_client.reset_counters();
 
@@ -294,21 +293,27 @@ auto test_rpc_retry_behavior() -> bool {
         bool operation_succeeded = false;
 
         try {
-            auto result = execute_with_retry([&network_client]() -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
-                return network_client.send_append_entries(test_node_b);
-            }, max_retry_attempts);
+            auto result = execute_with_retry(
+                [&network_client]()
+                    -> kythira::append_entries_response<std::uint64_t, std::uint64_t> {
+                    return network_client.send_append_entries(test_node_b);
+                },
+                max_retry_attempts);
             operation_succeeded = result.success();
 
             auto end_time = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             std::cout << std::format("    AppendEntries completed in {}ms\n", elapsed.count());
 
         } catch (const std::exception& e) {
             auto end_time = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            std::cout << std::format("    AppendEntries failed after {}ms: {}\n", elapsed.count(), e.what());
+            std::cout << std::format("    AppendEntries failed after {}ms: {}\n", elapsed.count(),
+                                     e.what());
         }
 
         auto final_attempt_count = network_client.get_operation_count(test_node_b);
@@ -344,13 +349,16 @@ auto test_error_classification() -> bool {
 
         std::vector<error_test_case> test_cases = {
             {"Network timeout occurred", error_type::network_timeout, true, "Network timeout"},
-            {"Connection refused by target", error_type::connection_refused, true, "Connection refused"},
-            {"Network is unreachable", error_type::network_unreachable, true, "Network unreachable"},
-            {"serialization error in message", error_type::serialization_error, false, "Serialization error"},
+            {"Connection refused by target", error_type::connection_refused, true,
+             "Connection refused"},
+            {"Network is unreachable", error_type::network_unreachable, true,
+             "Network unreachable"},
+            {"serialization error in message", error_type::serialization_error, false,
+             "Serialization error"},
             {"protocol violation detected", error_type::protocol_error, false, "Protocol error"},
-            {"temporary failure, try again", error_type::temporary_failure, true, "Temporary failure"},
-            {"unknown error occurred", error_type::unknown_error, true, "Unknown error"}
-        };
+            {"temporary failure, try again", error_type::temporary_failure, true,
+             "Temporary failure"},
+            {"unknown error occurred", error_type::unknown_error, true, "Unknown error"}};
 
         bool all_classifications_correct = true;
 
@@ -364,7 +372,8 @@ auto test_error_classification() -> bool {
             if (type_correct && retry_correct) {
                 std::cout << std::format("    ✓ {}: Classified correctly\n", test_case.description);
             } else {
-                std::cout << std::format("    ✗ {}: Classification incorrect\n", test_case.description);
+                std::cout << std::format("    ✗ {}: Classification incorrect\n",
+                                         test_case.description);
                 all_classifications_correct = false;
             }
         }
@@ -394,17 +403,15 @@ auto test_partition_detection_recovery() -> bool {
 
         // Phase 1: Normal operation
         std::cout << "    Phase 1: Normal operation\n";
-        network_client.set_network_condition(test_node_b, {
-            .mode = mock_error_network_client::failure_mode::none,
-            .failure_rate = 0.0,
-            .latency = std::chrono::milliseconds{10}
-        });
+        network_client.set_network_condition(test_node_b,
+                                             {.mode = mock_error_network_client::failure_mode::none,
+                                              .failure_rate = 0.0,
+                                              .latency = std::chrono::milliseconds{10}});
 
-        network_client.set_network_condition(test_node_c, {
-            .mode = mock_error_network_client::failure_mode::none,
-            .failure_rate = 0.0,
-            .latency = std::chrono::milliseconds{10}
-        });
+        network_client.set_network_condition(test_node_c,
+                                             {.mode = mock_error_network_client::failure_mode::none,
+                                              .failure_rate = 0.0,
+                                              .latency = std::chrono::milliseconds{10}});
 
         std::atomic<int> normal_successes{0};
         for (const auto& target : {test_node_b, test_node_c}) {
@@ -418,7 +425,8 @@ auto test_partition_detection_recovery() -> bool {
             }
         }
 
-        std::cout << std::format("    Normal operation: {}/2 operations succeeded\n", normal_successes.load());
+        std::cout << std::format("    Normal operation: {}/2 operations succeeded\n",
+                                 normal_successes.load());
 
         // Phase 2: Simulate network partition
         std::cout << "    Phase 2: Network partition\n";
@@ -457,7 +465,8 @@ auto test_partition_detection_recovery() -> bool {
                 std::cout << "    ✓ Operations to non-partitioned nodes still work\n";
             }
         } catch (const std::exception& e) {
-            std::cout << std::format("    Unexpected failure to non-partitioned node: {}\n", e.what());
+            std::cout << std::format("    Unexpected failure to non-partitioned node: {}\n",
+                                     e.what());
         }
 
         // Phase 3: Partition recovery
@@ -477,7 +486,8 @@ auto test_partition_detection_recovery() -> bool {
             }
         }
 
-        std::cout << std::format("    Recovery: {}/3 operations succeeded\n", recovery_successes.load());
+        std::cout << std::format("    Recovery: {}/3 operations succeeded\n",
+                                 recovery_successes.load());
 
         if (partition_detected && recovery_successes > 0) {
             std::cout << "  ✓ Partition detection and recovery working correctly\n";

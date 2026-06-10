@@ -13,34 +13,25 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30000};
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_bind_port = 19683;
-    constexpr const char* test_cert_file = "/tmp/test_cert.pem";
-    constexpr const char* test_key_file = "/tmp/test_key.pem";
-    constexpr const char* test_ca_file = "/tmp/test_ca.pem";
+constexpr std::size_t test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_bind_port = 19683;
+constexpr const char* test_cert_file = "/tmp/test_cert.pem";
+constexpr const char* test_key_file = "/tmp/test_key.pem";
+constexpr const char* test_ca_file = "/tmp/test_ca.pem";
 
-    // Standard secure cipher suites for testing
-    const std::vector<std::string> secure_cipher_suites = {
-        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
-        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
-        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
-        "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
-        "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
-    };
+// Standard secure cipher suites for testing
+const std::vector<std::string> secure_cipher_suites = {
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",       "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",       "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256", "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",           "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"};
 
-    // Legacy/insecure cipher suites that should be avoided
-    const std::vector<std::string> legacy_cipher_suites = {
-        "TLS_RSA_WITH_AES_128_CBC_SHA",
-        "TLS_RSA_WITH_AES_256_CBC_SHA",
-        "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
-        "TLS_DHE_RSA_WITH_AES_128_CBC_SHA",
-        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"
-    };
+// Legacy/insecure cipher suites that should be avoided
+const std::vector<std::string> legacy_cipher_suites = {
+    "TLS_RSA_WITH_AES_128_CBC_SHA", "TLS_RSA_WITH_AES_256_CBC_SHA", "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
+    "TLS_DHE_RSA_WITH_AES_128_CBC_SHA", "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"};
 }
 
 /**
@@ -51,7 +42,7 @@ namespace {
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -77,29 +68,31 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, * boost::unit_test:
         client_config.verify_peer_cert = true;
 
         switch (config_type) {
-            case 0: // Certificate-based with custom cipher suites
+            case 0:  // Certificate-based with custom cipher suites
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
                 client_config.cipher_suites = selected_ciphers;
                 break;
 
-            case 1: // PSK-based with custom cipher suites
+            case 1:  // PSK-based with custom cipher suites
                 client_config.psk_identity = "test_cipher_suite";
-                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+                client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                         std::byte{0x04}};
                 client_config.cipher_suites = selected_ciphers;
                 break;
 
-            case 2: // Certificate-based with default cipher suites
+            case 2:  // Certificate-based with default cipher suites
                 client_config.cert_file = test_cert_file;
                 client_config.key_file = test_key_file;
                 client_config.ca_file = test_ca_file;
                 // Leave cipher_suites empty for defaults
                 break;
 
-            case 3: // PSK-based with default cipher suites
+            case 3:  // PSK-based with default cipher suites
                 client_config.psk_identity = "test_default_cipher";
-                client_config.psk_key = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF}, std::byte{0x12}};
+                client_config.psk_key = {std::byte{0xAB}, std::byte{0xCD}, std::byte{0xEF},
+                                         std::byte{0x12}};
                 // Leave cipher_suites empty for defaults
                 break;
         }
@@ -109,26 +102,22 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, * boost::unit_test:
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"},
-            {2, "coaps://127.0.0.1:5685"}
-        };
+            {1, "coaps://127.0.0.1:5684"}, {2, "coaps://127.0.0.1:5685"}};
 
         // Test 1: Client with secure cipher suite configuration
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client created successfully with secure cipher suites
+            BOOST_CHECK(true);  // Client created successfully with secure cipher suites
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Secure cipher suite configuration should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL(
+                "Secure cipher suite configuration should not throw unexpected exceptions: " +
+                std::string(e.what()));
         }
 
         // Test 2: Server with matching cipher suite configuration
@@ -149,19 +138,19 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, * boost::unit_test:
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server created successfully with matching cipher suites
+            BOOST_CHECK(true);  // Server created successfully with matching cipher suites
 
         } catch (const coap_security_error& e) {
             // Expected if certificate files don't exist (stub implementation)
-            BOOST_CHECK(true); // This is acceptable in test environment
+            BOOST_CHECK(true);  // This is acceptable in test environment
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Server cipher suite configuration should not throw unexpected exceptions: " + std::string(e.what()));
+            BOOST_FAIL(
+                "Server cipher suite configuration should not throw unexpected exceptions: " +
+                std::string(e.what()));
         }
     }
 }
@@ -174,7 +163,7 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, * boost::unit_test:
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -203,7 +192,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, * boost::unit_t
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "test_validation";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                 std::byte{0x04}};
         client_config.cipher_suites = mixed_ciphers;
 
         // Create test types and client
@@ -211,21 +201,17 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, * boost::unit_t
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         // Test 1: Client should handle mixed cipher suite configuration
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client should handle mixed cipher suites gracefully
+            BOOST_CHECK(true);  // Client should handle mixed cipher suites gracefully
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Mixed cipher suite configuration should not throw exceptions: " + std::string(e.what()));
+            BOOST_FAIL("Mixed cipher suite configuration should not throw exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Test with only secure cipher suites
@@ -235,32 +221,26 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, * boost::unit_t
         }
 
         try {
-            coap_client<test_types> secure_client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> secure_client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client with only secure cipher suites should work
+            BOOST_CHECK(true);  // Client with only secure cipher suites should work
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Secure-only cipher suite configuration should not throw exceptions: " + std::string(e.what()));
+            BOOST_FAIL("Secure-only cipher suite configuration should not throw exceptions: " +
+                       std::string(e.what()));
         }
 
         // Test 3: Test with empty cipher suite list (should use defaults)
         client_config.cipher_suites.clear();
 
         try {
-            coap_client<test_types> default_client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> default_client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client with default cipher suites should work
+            BOOST_CHECK(true);  // Client with default cipher suites should work
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Default cipher suite configuration should not throw exceptions: " + std::string(e.what()));
+            BOOST_FAIL("Default cipher suite configuration should not throw exceptions: " +
+                       std::string(e.what()));
         }
     }
 }
@@ -273,7 +253,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, * boost::unit_t
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -287,8 +267,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, * boost::unit_test::timeou
         test_types::metrics_type client_metrics, server_metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         coap_client_config client_config;
         coap_server_config server_config;
@@ -296,7 +275,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, * boost::unit_test::timeou
         // Configure both for DTLS with PSK
         client_config.enable_dtls = true;
         client_config.psk_identity = "compatibility_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                 std::byte{0x04}};
 
         server_config.enable_dtls = true;
         server_config.psk_identity = client_config.psk_identity;
@@ -304,105 +284,79 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, * boost::unit_test::timeou
 
         // Set up different compatibility scenarios
         switch (compatibility_scenario) {
-            case 0: // Identical cipher suites
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-                };
+            case 0:  // Identical cipher suites
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"};
                 server_config.cipher_suites = client_config.cipher_suites;
                 break;
 
-            case 1: // Overlapping cipher suites
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-                };
-                server_config.cipher_suites = {
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"
-                };
+            case 1:  // Overlapping cipher suites
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
+                server_config.cipher_suites = {"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                                               "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256"};
                 break;
 
-            case 2: // Client subset of server
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
-                };
-                server_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-                };
+            case 2:  // Client subset of server
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"};
+                server_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
                 break;
 
-            case 3: // Server subset of client
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
-                };
-                server_config.cipher_suites = {
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-                };
+            case 3:  // Server subset of client
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
+                server_config.cipher_suites = {"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"};
                 break;
 
-            case 4: // Default cipher suites (empty lists)
+            case 4:  // Default cipher suites (empty lists)
                 // Leave both cipher_suites empty for default behavior
                 break;
         }
 
         // Test 1: Client creation with compatibility scenario
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                client_metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, client_metrics);
 
-            BOOST_CHECK(true); // Client should be created successfully
+            BOOST_CHECK(true);  // Client should be created successfully
 
         } catch (const std::exception& e) {
             BOOST_FAIL("Client creation should not fail in compatibility scenario " +
-                      std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
+                       std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
         }
 
         // Test 2: Server creation with compatibility scenario
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                server_metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, server_metrics);
 
-            BOOST_CHECK(true); // Server should be created successfully
+            BOOST_CHECK(true);  // Server should be created successfully
 
         } catch (const std::exception& e) {
             BOOST_FAIL("Server creation should not fail in compatibility scenario " +
-                      std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
+                       std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
         }
 
         // Test 3: Both client and server should coexist
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                client_metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, client_metrics);
 
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                server_metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, server_metrics);
 
-            BOOST_CHECK(true); // Both should coexist successfully
+            BOOST_CHECK(true);  // Both should coexist successfully
 
         } catch (const std::exception& e) {
             BOOST_FAIL("Client and server should coexist in compatibility scenario " +
-                      std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
+                       std::to_string(compatibility_scenario) + ": " + std::string(e.what()));
         }
     }
 }
@@ -415,7 +369,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, * boost::unit_test::timeou
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -429,61 +383,51 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, * boost::unit_test:
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "security_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                 std::byte{0x04}};
 
         // Configure different security levels
         switch (security_level) {
-            case 0: // High security - only AEAD cipher suites
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
-                    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"
-                };
+            case 0:  // High security - only AEAD cipher suites
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                                               "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                                               "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256"};
                 break;
 
-            case 1: // Medium security - modern cipher suites
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"
-                };
+            case 1:  // Medium security - modern cipher suites
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_DHE_RSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_DHE_RSA_WITH_AES_256_GCM_SHA384"};
                 break;
 
-            case 2: // Mixed security - some legacy allowed
-                client_config.cipher_suites = {
-                    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
-                    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
-                    "TLS_DHE_RSA_WITH_AES_128_CBC_SHA"
-                };
+            case 2:  // Mixed security - some legacy allowed
+                client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                                               "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
+                                               "TLS_DHE_RSA_WITH_AES_128_CBC_SHA"};
                 break;
 
-            case 3: // Default security - use system defaults
+            case 3:  // Default security - use system defaults
                 // Leave cipher_suites empty
                 break;
         }
 
         // Test 1: Client creation with security level
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
-            BOOST_CHECK(true); // Client should handle all security levels
+            BOOST_CHECK(true);  // Client should handle all security levels
 
         } catch (const std::exception& e) {
             BOOST_FAIL("Client should handle security level " + std::to_string(security_level) +
-                      ": " + std::string(e.what()));
+                       ": " + std::string(e.what()));
         }
 
         // Test 2: Verify cipher suite configuration is applied
@@ -500,16 +444,14 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, * boost::unit_test:
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
-            BOOST_CHECK(true); // Server should handle all security levels
+            BOOST_CHECK(true);  // Server should handle all security levels
 
         } catch (const std::exception& e) {
             BOOST_FAIL("Server should handle security level " + std::to_string(security_level) +
-                      ": " + std::string(e.what()));
+                       ": " + std::string(e.what()));
         }
     }
 }
@@ -522,7 +464,7 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, * boost::unit_test:
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact, *boost::unit_test::timeout(30)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -542,55 +484,51 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact, * boost::unit_test::t
         test_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coaps://127.0.0.1:5684"}
-        };
+            {1, "coaps://127.0.0.1:5684"}};
 
         // Test 1: Measure client creation time with large cipher suite list
         coap_client_config client_config;
         client_config.enable_dtls = true;
         client_config.psk_identity = "performance_test";
-        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+        client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                 std::byte{0x04}};
         client_config.cipher_suites = large_cipher_list;
 
         auto start_time = std::chrono::steady_clock::now();
 
         try {
-            coap_client<test_types> client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> client(node_endpoints, client_config, metrics);
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Client creation should complete within reasonable time (less than 1 second)
             BOOST_CHECK_LT(duration.count(), 1000);
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Client creation with large cipher suite list should not throw: " + std::string(e.what()));
+            BOOST_FAIL("Client creation with large cipher suite list should not throw: " +
+                       std::string(e.what()));
         }
 
         // Test 2: Compare with default cipher suite configuration
-        client_config.cipher_suites.clear(); // Use defaults
+        client_config.cipher_suites.clear();  // Use defaults
 
         start_time = std::chrono::steady_clock::now();
 
         try {
-            coap_client<test_types> default_client(
-                node_endpoints,
-                client_config,
-                metrics
-            );
+            coap_client<test_types> default_client(node_endpoints, client_config, metrics);
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Default configuration should also complete quickly
             BOOST_CHECK_LT(duration.count(), 1000);
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Client creation with default cipher suites should not throw: " + std::string(e.what()));
+            BOOST_FAIL("Client creation with default cipher suites should not throw: " +
+                       std::string(e.what()));
         }
 
         // Test 3: Server performance with large cipher suite list
@@ -605,19 +543,19 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact, * boost::unit_test::t
         try {
             coap_server<test_types> server(
                 test_bind_address,
-                test_bind_port + iteration % 1000, // Avoid port conflicts
-                server_config,
-                metrics
-            );
+                test_bind_port + iteration % 1000,  // Avoid port conflicts
+                server_config, metrics);
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Server creation should complete within reasonable time
             BOOST_CHECK_LT(duration.count(), 1000);
 
         } catch (const std::exception& e) {
-            BOOST_FAIL("Server creation with large cipher suite list should not throw: " + std::string(e.what()));
+            BOOST_FAIL("Server creation with large cipher suite list should not throw: " +
+                       std::string(e.what()));
         }
     }
 }

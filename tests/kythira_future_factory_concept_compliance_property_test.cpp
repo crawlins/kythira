@@ -14,19 +14,21 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
-    constexpr std::size_t property_test_iterations = 100;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
+constexpr std::size_t property_test_iterations = 100;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 1: Concept Compliance**
  *
- * Property: For any FutureFactory class and its corresponding concept, the factory should satisfy all concept requirements at compile time and runtime
+ * Property: For any FutureFactory class and its corresponding concept, the factory should satisfy
+ * all concept requirements at compile time and runtime
  * **Validates: Requirements 3.1, 3.2, 3.3**
  */
-BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: Static assertion for concept compliance
     {
         // Test kythira::FutureFactory satisfies future_factory concept
@@ -65,7 +67,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * 
         static_assert(future<decltype(void_future), void>,
                       "makeFuture void result must satisfy future concept");
         BOOST_CHECK(void_future.isReady());
-        void_future.get(); // Should not throw
+        void_future.get();  // Should not throw
 
         BOOST_TEST_MESSAGE("makeFuture methods work correctly with various types");
     }
@@ -95,7 +97,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * 
         BOOST_CHECK(void_future.isReady());
         BOOST_CHECK_THROW(void_future.get(), std::runtime_error);
 
-        BOOST_TEST_MESSAGE("makeExceptionalFuture methods work correctly with folly::exception_wrapper");
+        BOOST_TEST_MESSAGE(
+            "makeExceptionalFuture methods work correctly with folly::exception_wrapper");
     }
 
     // Test 4: makeExceptionalFuture method with std::exception_ptr
@@ -131,7 +134,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * 
         static_assert(future<decltype(ready_future), folly::Unit>,
                       "makeReadyFuture result must satisfy future concept");
         BOOST_CHECK(ready_future.isReady());
-        ready_future.get(); // Should not throw
+        ready_future.get();  // Should not throw
 
         // Test makeReadyFuture with value
         auto ready_int_future = FutureFactory::makeReadyFuture(test_value);
@@ -145,7 +148,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * 
 
     // Test 6: Property-based testing - generate multiple test cases
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
-        int random_value = static_cast<int>(i * 7 + 13); // Simple pseudo-random generation
+        int random_value = static_cast<int>(i * 7 + 13);  // Simple pseudo-random generation
 
         // Test makeFuture with random values
         {
@@ -227,10 +230,11 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_concept_compliance_property_test, * 
 /**
  * Test that types NOT satisfying future_factory concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(future_factory_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_factory_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!future_factory<int>, "int should not satisfy future_factory concept");
-    static_assert(!future_factory<std::string>, "std::string should not satisfy future_factory concept");
+    static_assert(!future_factory<std::string>,
+                  "std::string should not satisfy future_factory concept");
 
     // Test that types missing required methods don't satisfy the concept
     struct IncompleteFutureFactory {
@@ -243,9 +247,13 @@ BOOST_AUTO_TEST_CASE(future_factory_concept_rejection_test, * boost::unit_test::
 
     // Test that non-static methods don't satisfy the concept
     struct NonStaticFutureFactory {
-        auto makeFuture(int value) -> Future<int> { return Future<int>(value); } // Not static
-        auto makeExceptionalFuture(folly::exception_wrapper ex) -> Future<int> { return Future<int>(ex); } // Not static
-        auto makeReadyFuture() -> Future<folly::Unit> { return Future<folly::Unit>(folly::Unit{}); } // Not static
+        auto makeFuture(int value) -> Future<int> { return Future<int>(value); }  // Not static
+        auto makeExceptionalFuture(folly::exception_wrapper ex) -> Future<int> {
+            return Future<int>(ex);
+        }  // Not static
+        auto makeReadyFuture() -> Future<folly::Unit> {
+            return Future<folly::Unit>(folly::Unit{});
+        }  // Not static
     };
 
     static_assert(!future_factory<NonStaticFutureFactory>,
@@ -257,7 +265,7 @@ BOOST_AUTO_TEST_CASE(future_factory_concept_rejection_test, * boost::unit_test::
 /**
  * Test static-only nature of FutureFactory
  */
-BOOST_AUTO_TEST_CASE(future_factory_static_only_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_factory_static_only_test, *boost::unit_test::timeout(30)) {
     // Test that FutureFactory cannot be instantiated
     static_assert(!std::is_default_constructible_v<FutureFactory>,
                   "FutureFactory should not be default constructible");
@@ -276,7 +284,7 @@ BOOST_AUTO_TEST_CASE(future_factory_static_only_test, * boost::unit_test::timeou
 /**
  * Test exception safety and error handling
  */
-BOOST_AUTO_TEST_CASE(future_factory_exception_safety_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_factory_exception_safety_test, *boost::unit_test::timeout(30)) {
     // Test that makeExceptionalFuture properly handles different exception types
     {
         // Test with std::runtime_error

@@ -8,18 +8,19 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_pool_size = 1024 * 1024; // 1MB
-    constexpr std::size_t test_block_size = 4096; // 4KB
-    constexpr std::size_t test_allocation_size = 2048; // 2KB
-    constexpr auto short_leak_threshold = std::chrono::seconds{1};
-    constexpr auto test_timeout_seconds = 30;
+constexpr std::size_t test_pool_size = 1024 * 1024;  // 1MB
+constexpr std::size_t test_block_size = 4096;        // 4KB
+constexpr std::size_t test_allocation_size = 2048;   // 2KB
+constexpr auto short_leak_threshold = std::chrono::seconds{1};
+constexpr auto test_timeout_seconds = 30;
 }
 
 /**
  * Test 1: Leak detection can be enabled/disabled via configuration
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_detection_configuration, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_leak_detection_configuration,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     // Create pool with leak detection disabled (default)
     memory_pool pool1(test_pool_size, test_block_size);
     BOOST_CHECK(!pool1.is_leak_detection_enabled());
@@ -41,9 +42,11 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_configuration, * boost::unit_test::time
  * Test 2: Leak threshold can be configured
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_threshold_configuration, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_leak_threshold_configuration,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     // Create pool with custom leak threshold
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     BOOST_CHECK_EQUAL(pool.get_leak_threshold().count(), short_leak_threshold.count());
 
@@ -57,8 +60,10 @@ BOOST_AUTO_TEST_CASE(test_leak_threshold_configuration, * boost::unit_test::time
  * Test 3: Detect leaks with allocation timestamps
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_detect_leaks_with_timestamps, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_detect_leaks_with_timestamps,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     // Allocate some blocks
     void* ptr1 = pool.allocate(test_allocation_size);
@@ -93,8 +98,10 @@ BOOST_AUTO_TEST_CASE(test_detect_leaks_with_timestamps, * boost::unit_test::time
  * Test 4: Allocation context is captured when leak detection is enabled
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_allocation_context_capture, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_allocation_context_capture,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     // Allocate with custom context
     void* ptr1 = pool.allocate(test_allocation_size, "test_context_1");
@@ -135,8 +142,9 @@ BOOST_AUTO_TEST_CASE(test_allocation_context_capture, * boost::unit_test::timeou
  * Test 5: Thread ID is captured in leak reports
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_thread_id_capture, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_thread_id_capture, *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     void* ptr = pool.allocate(test_allocation_size, "main_thread_allocation");
     BOOST_CHECK(ptr != nullptr);
@@ -160,9 +168,11 @@ BOOST_AUTO_TEST_CASE(test_thread_id_capture, * boost::unit_test::timeout(test_ti
  * Test 6: Leak detection with disabled mode provides basic info
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_detection_disabled_mode, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_leak_detection_disabled_mode,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     // Create pool with leak detection disabled
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, false, short_leak_threshold);
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, false,
+                     short_leak_threshold);
 
     void* ptr = pool.allocate(test_allocation_size);
     BOOST_CHECK(ptr != nullptr);
@@ -191,8 +201,9 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_disabled_mode, * boost::unit_test::time
  * Test 7: Detailed leak reports with addresses and sizes
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_detailed_leak_reports, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_detailed_leak_reports, *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     // Allocate blocks of different contexts
     std::vector<void*> ptrs;
@@ -242,8 +253,10 @@ BOOST_AUTO_TEST_CASE(test_detailed_leak_reports, * boost::unit_test::timeout(tes
  * Test 8: No leaks detected for short-lived allocations
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_no_leaks_for_short_lived_allocations, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_no_leaks_for_short_lived_allocations,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     // Allocate and deallocate quickly
     void* ptr1 = pool.allocate(test_allocation_size);
@@ -268,8 +281,10 @@ BOOST_AUTO_TEST_CASE(test_no_leaks_for_short_lived_allocations, * boost::unit_te
  * Test 9: Leak detection with multiple threads
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_detection_multithreaded, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_leak_detection_multithreaded,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     std::vector<std::thread> threads;
     std::vector<void*> ptrs(4, nullptr);
@@ -314,8 +329,9 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_multithreaded, * boost::unit_test::time
  * Test 10: Leak prevention through early detection
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_prevention, * boost::unit_test::timeout(test_timeout_seconds)) {
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+BOOST_AUTO_TEST_CASE(test_leak_prevention, *boost::unit_test::timeout(test_timeout_seconds)) {
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     short_leak_threshold);
 
     // Allocate some blocks
     std::vector<void*> ptrs;
@@ -345,9 +361,11 @@ BOOST_AUTO_TEST_CASE(test_leak_prevention, * boost::unit_test::timeout(test_time
  * Test 11: Leak detection with custom threshold
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_detection_custom_threshold, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_leak_detection_custom_threshold,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     auto custom_threshold = std::chrono::seconds{2};
-    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true, custom_threshold);
+    memory_pool pool(test_pool_size, test_block_size, std::chrono::seconds{0}, true,
+                     custom_threshold);
 
     void* ptr = pool.allocate(test_allocation_size);
     BOOST_CHECK(ptr != nullptr);
@@ -370,7 +388,8 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_custom_threshold, * boost::unit_test::t
  * Test 12: Leak detection performance impact
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(test_leak_detection_performance, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_leak_detection_performance,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     // Measure allocation performance without leak detection
     memory_pool pool_no_leak(test_pool_size, test_block_size, std::chrono::seconds{0}, false);
 
@@ -399,6 +418,7 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_performance, * boost::unit_test::timeou
     BOOST_CHECK(duration_with_leak.count() > 0);
 
     // Log the overhead for informational purposes
-    double overhead_ratio = static_cast<double>(duration_with_leak.count()) / duration_no_leak.count();
+    double overhead_ratio =
+        static_cast<double>(duration_with_leak.count()) / duration_no_leak.count();
     std::cout << "Leak detection overhead ratio: " << overhead_ratio << "x\n";
 }

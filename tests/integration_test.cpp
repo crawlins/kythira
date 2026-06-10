@@ -15,21 +15,22 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* client_node_id = "client";
-    constexpr const char* server_node_id = "server";
-    constexpr const char* intermediate_node_id = "intermediate";
-    constexpr unsigned short server_port = 8080;
-    constexpr unsigned short client_port = 9090;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 0.99;
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Hello, Server!";
-    constexpr const char* response_message = "Hello, Client!";
+constexpr const char* client_node_id = "client";
+constexpr const char* server_node_id = "server";
+constexpr const char* intermediate_node_id = "intermediate";
+constexpr unsigned short server_port = 8080;
+constexpr unsigned short client_port = 9090;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 0.99;
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Hello, Server!";
+constexpr const char* response_message = "Hello, Client!";
 }
 
 BOOST_AUTO_TEST_SUITE(client_server_integration)
 
-BOOST_AUTO_TEST_CASE(full_connection_establishment_data_transfer_teardown, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(full_connection_establishment_data_transfer_teardown,
+                     *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create network topology: client <-> server
@@ -63,7 +64,8 @@ BOOST_AUTO_TEST_CASE(full_connection_establishment_data_transfer_teardown, * boo
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
     // Client: connect to server
-    auto client_connection = std::move(client->connect(server_node_id, server_port, client_port)).get();
+    auto client_connection =
+        std::move(client->connect(server_node_id, server_port, client_port)).get();
 
     BOOST_TEST(client_connection != nullptr);
     BOOST_TEST(client_connection->is_open());
@@ -134,7 +136,7 @@ BOOST_AUTO_TEST_CASE(full_connection_establishment_data_transfer_teardown, * boo
     sim.stop();
 }
 
-BOOST_AUTO_TEST_CASE(connection_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connection_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create client node but no server node (no route)
@@ -147,7 +149,8 @@ BOOST_AUTO_TEST_CASE(connection_timeout_handling, * boost::unit_test::timeout(30
     constexpr std::chrono::milliseconds short_timeout{100};
 
     try {
-        auto connection = std::move(client->connect(server_node_id, server_port, short_timeout)).get();
+        auto connection =
+            std::move(client->connect(server_node_id, server_port, short_timeout)).get();
 
         // If we get a connection object, check if it's actually usable
         if (connection == nullptr) {
@@ -187,7 +190,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(multi_node_topology_integration)
 
-BOOST_AUTO_TEST_CASE(direct_message_routing_with_latency, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(direct_message_routing_with_latency, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create direct connection: client -> server with latency
@@ -212,11 +215,8 @@ BOOST_AUTO_TEST_CASE(direct_message_routing_with_latency, * boost::unit_test::ti
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg(
-        client_node_id, client_port,
-        server_node_id, server_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg(client_node_id, client_port, server_node_id, server_port,
+                                          payload);
 
     // Send message
     bool send_success = std::move(client->send(msg)).get();
@@ -245,7 +245,7 @@ BOOST_AUTO_TEST_CASE(direct_message_routing_with_latency, * boost::unit_test::ti
     sim.stop();
 }
 
-BOOST_AUTO_TEST_CASE(reliability_based_message_drops, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(reliability_based_message_drops, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create edge with low reliability (30% success rate)
@@ -272,11 +272,8 @@ BOOST_AUTO_TEST_CASE(reliability_based_message_drops, * boost::unit_test::timeou
 
     // Send messages
     for (std::size_t i = 0; i < message_count; ++i) {
-        DefaultNetworkTypes::message_type msg(
-            client_node_id, client_port,
-            server_node_id, server_port,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(client_node_id, client_port, server_node_id,
+                                              server_port, payload);
 
         bool send_success = std::move(client->send(msg)).get();
         if (send_success) {
@@ -312,7 +309,7 @@ BOOST_AUTO_TEST_SUITE_END()
 
 BOOST_AUTO_TEST_SUITE(concurrent_operations_integration)
 
-BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create a star topology: multiple senders -> central receiver
@@ -341,19 +338,16 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, * boost::unit_test::
 
     for (std::size_t sender_idx = 0; sender_idx < sender_count; ++sender_idx) {
         for (std::size_t msg_idx = 0; msg_idx < messages_per_sender; ++msg_idx) {
-            std::string msg_content = "sender_" + std::to_string(sender_idx) + "_msg_" + std::to_string(msg_idx);
+            std::string msg_content =
+                "sender_" + std::to_string(sender_idx) + "_msg_" + std::to_string(msg_idx);
             std::vector<std::byte> payload;
             for (char c : msg_content) {
                 payload.push_back(static_cast<std::byte>(c));
             }
 
-            DefaultNetworkTypes::message_type msg(
-                "sender_" + std::to_string(sender_idx),
-                static_cast<unsigned short>(1000 + sender_idx),
-                receiver_id,
-                server_port,
-                payload
-            );
+            DefaultNetworkTypes::message_type msg("sender_" + std::to_string(sender_idx),
+                                                  static_cast<unsigned short>(1000 + sender_idx),
+                                                  receiver_id, server_port, payload);
 
             // Send messages and collect futures
             send_futures.push_back(senders[sender_idx]->send(msg));

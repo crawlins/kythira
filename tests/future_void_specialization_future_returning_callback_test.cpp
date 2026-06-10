@@ -20,15 +20,17 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::chrono::milliseconds short_delay{10};
-    constexpr std::chrono::milliseconds medium_delay{50};
+constexpr std::chrono::milliseconds short_delay{10};
+constexpr std::chrono::milliseconds medium_delay{50};
 }
 
 // Global fixture to initialize Folly once for all tests
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("future_void_specialization_future_returning_callback_test"), nullptr};
+        char* argv_data[] = {
+            const_cast<char*>("future_void_specialization_future_returning_callback_test"),
+            nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -48,7 +50,7 @@ BOOST_AUTO_TEST_SUITE(future_void_specialization_tests)
  * Validates that thenTry on Future<void> can accept callbacks that return Future<void>
  * and properly flatten the result.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_try_returns_void_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_try_returns_void_future, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
@@ -71,17 +73,17 @@ BOOST_AUTO_TEST_CASE(test_void_then_try_returns_void_future, * boost::unit_test:
  * Validates that thenTry on Future<void> can accept callbacks that return Future<int>
  * and properly convert types.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_try_returns_int_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_try_returns_int_future, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
 
     // Create void future and chain with thenTry returning Future<int>
     auto result = FutureFactory::makeFuture()
-        .thenTry([](Try<void> t) -> Future<int> {
-            BOOST_CHECK(t.hasValue());
-            return FutureFactory::makeFuture(42);
-        })
-        .via(&executor)
-        .get();
+                      .thenTry([](Try<void> t) -> Future<int> {
+                          BOOST_CHECK(t.hasValue());
+                          return FutureFactory::makeFuture(42);
+                      })
+                      .via(&executor)
+                      .get();
 
     BOOST_CHECK_EQUAL(result, 42);
 }
@@ -91,7 +93,7 @@ BOOST_AUTO_TEST_CASE(test_void_then_try_returns_int_future, * boost::unit_test::
  *
  * Validates that thenTry on Future<void> supports async operations with delay.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_try_with_delay, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_try_with_delay, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
@@ -102,8 +104,7 @@ BOOST_AUTO_TEST_CASE(test_void_then_try_with_delay, * boost::unit_test::timeout(
         .thenTry([&counter](Try<void> t) -> Future<void> {
             BOOST_CHECK(t.hasValue());
             counter++;
-            return FutureFactory::makeFuture()
-                .delay(short_delay);
+            return FutureFactory::makeFuture().delay(short_delay);
         })
         .via(&executor)
         .get();
@@ -120,14 +121,14 @@ BOOST_AUTO_TEST_CASE(test_void_then_try_with_delay, * boost::unit_test::timeout(
  *
  * Validates that thenTry on Future<void> properly handles exceptions in Try<void>.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_try_handles_exception, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_try_handles_exception, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> success_counter{0};
     std::atomic<int> error_counter{0};
 
     // Create exceptional void future
     FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("Test error")))
+        folly::exception_wrapper(std::runtime_error("Test error")))
         .thenTry([&success_counter, &error_counter](Try<void> t) -> Future<void> {
             if (t.hasValue()) {
                 success_counter++;
@@ -150,13 +151,13 @@ BOOST_AUTO_TEST_CASE(test_void_then_try_handles_exception, * boost::unit_test::t
  * Validates that thenError on Future<void> can accept callbacks that return Future<void>
  * and properly flatten the result.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_error_returns_void_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_error_returns_void_future, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
     // Create exceptional void future and recover with thenError
     FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("Test error")))
+        folly::exception_wrapper(std::runtime_error("Test error")))
         .thenError([&counter](folly::exception_wrapper ex) -> Future<void> {
             BOOST_CHECK(ex);
             counter++;
@@ -173,7 +174,7 @@ BOOST_AUTO_TEST_CASE(test_void_then_error_returns_void_future, * boost::unit_tes
  *
  * Validates that thenError on Future<void> supports async operations with delay.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_error_with_delay, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_error_with_delay, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
@@ -181,12 +182,11 @@ BOOST_AUTO_TEST_CASE(test_void_then_error_with_delay, * boost::unit_test::timeou
 
     // Create exceptional void future with async delay in recovery
     FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("Test error")))
+        folly::exception_wrapper(std::runtime_error("Test error")))
         .thenError([&counter](folly::exception_wrapper ex) -> Future<void> {
             BOOST_CHECK(ex);
             counter++;
-            return FutureFactory::makeFuture()
-                .delay(short_delay);
+            return FutureFactory::makeFuture().delay(short_delay);
         })
         .via(&executor)
         .get();
@@ -203,13 +203,13 @@ BOOST_AUTO_TEST_CASE(test_void_then_error_with_delay, * boost::unit_test::timeou
  *
  * Validates that thenError on Future<void> works with std::exception_ptr callbacks.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_error_with_exception_ptr, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_error_with_exception_ptr, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
     // Create exceptional void future and recover with std::exception_ptr callback
     FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("Test error")))
+        folly::exception_wrapper(std::runtime_error("Test error")))
         .thenError([&counter](std::exception_ptr ex) -> Future<void> {
             BOOST_CHECK(ex != nullptr);
             counter++;
@@ -226,7 +226,8 @@ BOOST_AUTO_TEST_CASE(test_void_then_error_with_exception_ptr, * boost::unit_test
  *
  * Validates that multiple Future<void> operations can be chained together.
  */
-BOOST_AUTO_TEST_CASE(test_void_chaining_future_returning_callbacks, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_chaining_future_returning_callbacks,
+                     *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
@@ -258,7 +259,7 @@ BOOST_AUTO_TEST_CASE(test_void_chaining_future_returning_callbacks, * boost::uni
  *
  * Validates that type conversions work correctly in chains involving void.
  */
-BOOST_AUTO_TEST_CASE(test_void_type_conversion_chain, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_type_conversion_chain, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> final_value{0};
 
@@ -284,14 +285,14 @@ BOOST_AUTO_TEST_CASE(test_void_type_conversion_chain, * boost::unit_test::timeou
  *
  * Validates that thenError can return an exceptional Future<void>.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_error_propagates_exception, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_error_propagates_exception, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::string first_error = "First error";
     std::string second_error = "Second error";
 
     try {
         FutureFactory::makeExceptionalFuture<void>(
-                folly::exception_wrapper(std::runtime_error(first_error)))
+            folly::exception_wrapper(std::runtime_error(first_error)))
             .thenError([&second_error](folly::exception_wrapper ex) -> Future<void> {
                 BOOST_CHECK(ex);
                 // Return a new exceptional future
@@ -312,7 +313,7 @@ BOOST_AUTO_TEST_CASE(test_void_then_error_propagates_exception, * boost::unit_te
  *
  * Validates that thenValue on Future<void> works with Future-returning callbacks.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_value_returns_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_value_returns_future, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> counter{0};
 
@@ -333,16 +334,14 @@ BOOST_AUTO_TEST_CASE(test_void_then_value_returns_future, * boost::unit_test::ti
  *
  * Validates that thenValue on Future<void> can return Future<int>.
  */
-BOOST_AUTO_TEST_CASE(test_void_then_value_returns_int_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_void_then_value_returns_int_future, *boost::unit_test::timeout(30)) {
     folly::CPUThreadPoolExecutor executor(2);
 
     // Create void future and chain with thenValue returning Future<int>
     auto result = FutureFactory::makeFuture()
-        .thenValue([]() -> Future<int> {
-            return FutureFactory::makeFuture(99);
-        })
-        .via(&executor)
-        .get();
+                      .thenValue([]() -> Future<int> { return FutureFactory::makeFuture(99); })
+                      .via(&executor)
+                      .get();
 
     BOOST_CHECK_EQUAL(result, 99);
 }
@@ -352,7 +351,7 @@ BOOST_AUTO_TEST_CASE(test_void_then_value_returns_int_future, * boost::unit_test
  *
  * Validates that Future<void> supports complex async retry patterns.
  */
-BOOST_AUTO_TEST_CASE(test_void_async_retry_pattern, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_void_async_retry_pattern, *boost::unit_test::timeout(60)) {
     folly::CPUThreadPoolExecutor executor(2);
     std::atomic<int> attempt_count{0};
     constexpr int max_attempts = 3;
@@ -376,9 +375,7 @@ BOOST_AUTO_TEST_CASE(test_void_async_retry_pattern, * boost::unit_test::timeout(
         }
     };
 
-    retry_operation(1)
-        .via(&executor)
-        .get();
+    retry_operation(1).via(&executor).get();
 
     auto end_time = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);

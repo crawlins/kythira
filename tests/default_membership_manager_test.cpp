@@ -5,32 +5,24 @@
 #include <cassert>
 
 namespace {
-    constexpr std::uint64_t node_1 = 1;
-    constexpr std::uint64_t node_2 = 2;
-    constexpr std::uint64_t node_3 = 3;
-    constexpr std::uint64_t node_4 = 4;
-    constexpr std::uint64_t node_5 = 5;
+constexpr std::uint64_t node_1 = 1;
+constexpr std::uint64_t node_2 = 2;
+constexpr std::uint64_t node_3 = 3;
+constexpr std::uint64_t node_4 = 4;
+constexpr std::uint64_t node_5 = 5;
 }
 
 // Verify that default_membership_manager satisfies the membership_manager concept
 static_assert(
-    kythira::membership_manager<
-        kythira::default_membership_manager<std::uint64_t>,
-        std::uint64_t,
-        kythira::cluster_configuration<std::uint64_t>
-    >,
-    "default_membership_manager must satisfy membership_manager concept"
-);
+    kythira::membership_manager<kythira::default_membership_manager<std::uint64_t>, std::uint64_t,
+                                kythira::cluster_configuration<std::uint64_t> >,
+    "default_membership_manager must satisfy membership_manager concept");
 
 // Test with string node IDs
 static_assert(
-    kythira::membership_manager<
-        kythira::default_membership_manager<std::string>,
-        std::string,
-        kythira::cluster_configuration<std::string>
-    >,
-    "default_membership_manager with string IDs must satisfy membership_manager concept"
-);
+    kythira::membership_manager<kythira::default_membership_manager<std::string>, std::string,
+                                kythira::cluster_configuration<std::string> >,
+    "default_membership_manager with string IDs must satisfy membership_manager concept");
 
 auto test_basic_validation() -> bool {
     std::cout << "Testing basic validation...\n";
@@ -209,16 +201,11 @@ auto test_membership_change_notification() -> bool {
 
     // Create old and new configurations
     kythira::cluster_configuration<std::uint64_t> old_config{
-        {node_1, node_2, node_3},
-        false,
-        std::nullopt
-    };
+        {node_1, node_2, node_3}, false, std::nullopt};
 
-    kythira::cluster_configuration<std::uint64_t> new_config{
-        {node_1, node_2},  // node_3 removed
-        false,
-        std::nullopt
-    };
+    kythira::cluster_configuration<std::uint64_t> new_config{{node_1, node_2},  // node_3 removed
+                                                             false,
+                                                             std::nullopt};
 
     // Test handle_cluster_membership_change - should not throw or crash
     manager.handle_cluster_membership_change(old_config, new_config);

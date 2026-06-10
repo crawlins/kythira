@@ -32,12 +32,12 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
-    constexpr std::chrono::milliseconds short_timeout{50};
-    constexpr std::chrono::milliseconds medium_timeout{500};
-    constexpr std::chrono::milliseconds long_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{100};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
+constexpr std::chrono::milliseconds short_timeout{50};
+constexpr std::chrono::milliseconds medium_timeout{500};
+constexpr std::chrono::milliseconds long_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{100};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -59,7 +59,8 @@ auto generate_random_port(std::mt19937& rng) -> unsigned short {
  * connection cannot be established within the timeout period, the operation SHALL fail
  * with a timeout exception and cancel any pending connection attempts.
  */
-BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
+                     *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -103,7 +104,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
 
                 // If we get here, the connection succeeded when it should have timed out
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 1: Connection succeeded when timeout was expected");
+                BOOST_TEST_MESSAGE(
+                    "Iteration " << i << " Case 1: Connection succeeded when timeout was expected");
 
             } catch (const TimeoutException& e) {
                 // Expected timeout exception
@@ -115,7 +117,9 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
 
                 if (elapsed > max_expected_time) {
                     ++timeout_failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << " Case 1: Timeout took too long: "
+                    BOOST_TEST_MESSAGE(
+                        "Iteration "
+                        << i << " Case 1: Timeout took too long: "
                         << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
                         << "ms (expected < " << max_expected_time.count() << "ms)");
                 } else {
@@ -130,7 +134,9 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
 
                 if (elapsed > max_expected_time) {
                     ++timeout_failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << " Case 1: Exception took too long: "
+                    BOOST_TEST_MESSAGE(
+                        "Iteration "
+                        << i << " Case 1: Exception took too long: "
                         << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
                         << "ms (expected < " << max_expected_time.count() << "ms)");
                 }
@@ -159,7 +165,9 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
                 // Connection should succeed
                 if (!conn || !conn->is_open()) {
                     ++failures;
-                    BOOST_TEST_MESSAGE("Iteration " << i << " Case 2: Connection failed when it should have succeeded");
+                    BOOST_TEST_MESSAGE(
+                        "Iteration " << i
+                                     << " Case 2: Connection failed when it should have succeeded");
                 } else {
                     ++success_count;
 
@@ -168,8 +176,11 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
                     auto max_expected_time = test_latency + std::chrono::milliseconds{500};
 
                     if (elapsed > max_expected_time) {
-                        BOOST_TEST_MESSAGE("Iteration " << i << " Case 2: Connection took longer than expected: "
-                            << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()
+                        BOOST_TEST_MESSAGE(
+                            "Iteration "
+                            << i << " Case 2: Connection took longer than expected: "
+                            << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                                   .count()
                             << "ms (expected < " << max_expected_time.count() << "ms)");
                     }
                 }
@@ -180,7 +191,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
 
             } catch (const std::exception& e) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 2: Unexpected exception: " << e.what());
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << " Case 2: Unexpected exception: " << e.what());
             }
 
             // Clean up
@@ -228,7 +240,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
             // At least one connection should succeed (those with long timeout)
             if (concurrent_successes == 0) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 3: No concurrent connections succeeded");
+                BOOST_TEST_MESSAGE("Iteration " << i
+                                                << " Case 3: No concurrent connections succeeded");
             } else {
                 ++success_count;
             }
@@ -248,6 +261,6 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling, * boost
 
     // Property should hold for most iterations (allow some tolerance for timing variations)
     BOOST_CHECK_LE(failures, property_test_iterations / 5);  // Allow up to 20% failures
-    BOOST_CHECK_LE(timeout_failures, property_test_iterations / 5);  // Allow up to 20% timeout timing issues
+    BOOST_CHECK_LE(timeout_failures,
+                   property_test_iterations / 5);  // Allow up to 20% timeout timing issues
 }
-

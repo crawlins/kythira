@@ -22,7 +22,7 @@
  *
  * Validates: Requirements 5.1, 5.2, 5.3, 5.4
  */
-BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeout(60)) {
     // This test validates that the future conversion preserves the behavioral
     // characteristics of async operations including timing, ordering, error
     // handling, and thread safety.
@@ -44,8 +44,8 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
             BOOST_CHECK_EQUAL(immediate_result, 42);
 
             auto end_time = std::chrono::steady_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Should complete very quickly (within 10ms)
             BOOST_CHECK(duration < std::chrono::milliseconds{10});
@@ -83,9 +83,8 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
         // Verify that exception handling and error propagation work correctly
         {
             // Test exception propagation
-            auto exception_future = kythira::Future<int>(
-                folly::exception_wrapper(std::runtime_error("test error"))
-            );
+            auto exception_future =
+                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
 
             BOOST_CHECK(exception_future.isReady());
 
@@ -170,10 +169,10 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
         // Verify that kythira::Future satisfies the future concept correctly
         {
             static_assert(kythira::future<kythira::Future<int>, int>,
-                         "kythira::Future<int> should satisfy future concept");
+                          "kythira::Future<int> should satisfy future concept");
 
             static_assert(kythira::future<kythira::Future<std::string>, std::string>,
-                         "kythira::Future<std::string> should satisfy future concept");
+                          "kythira::Future<std::string> should satisfy future concept");
 
             // Test concept methods work correctly
             kythira::Future<bool> bool_future(true);
@@ -195,16 +194,12 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
         // Verify that exception safety guarantees are maintained
         {
             // Test that futures can handle various exception types
-            std::vector<std::string> exception_messages = {
-                "runtime_error test",
-                "logic_error test",
-                "invalid_argument test"
-            };
+            std::vector<std::string> exception_messages = {"runtime_error test", "logic_error test",
+                                                           "invalid_argument test"};
 
             for (const auto& message : exception_messages) {
                 auto exception_future = kythira::Future<std::string>(
-                    folly::exception_wrapper(std::runtime_error(message))
-                );
+                    folly::exception_wrapper(std::runtime_error(message)));
 
                 BOOST_CHECK(exception_future.isReady());
 
@@ -234,14 +229,14 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
             }
 
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Should complete within reasonable time (less than 1 second)
             BOOST_CHECK(duration < std::chrono::milliseconds{1000});
 
             BOOST_TEST_MESSAGE("Completed " << num_operations << " future operations in "
-                              << duration.count() << "ms");
+                                            << duration.count() << "ms");
         }
 
         // Test 9: Synchronization behavior preservation
@@ -283,6 +278,7 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, * boost::unit_test::timeo
                "Behavioral preservation property violated: " << error_message);
 
     // If we reach this point, all behavioral preservation tests have passed
-    BOOST_TEST_MESSAGE("Behavioral preservation property validated: All async operation "
-                      "behaviors are preserved after future conversion");
+    BOOST_TEST_MESSAGE(
+        "Behavioral preservation property validated: All async operation "
+        "behaviors are preserved after future conversion");
 }

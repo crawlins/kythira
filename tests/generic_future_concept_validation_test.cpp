@@ -20,25 +20,25 @@
 #include <memory>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30000};
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30000};
 
-    // Test constants
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr std::uint64_t test_node_id_a = 1;
-    constexpr std::uint64_t test_node_id_b = 2;
-    constexpr const char* test_endpoint_a = "coap://127.0.0.1:5683";
-    constexpr const char* test_endpoint_b = "coap://127.0.0.1:5684";
-    constexpr const char* test_url_a = "http://127.0.0.1:8080";
-    constexpr const char* test_url_b = "http://127.0.0.1:8081";
+// Test constants
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr std::uint64_t test_node_id_a = 1;
+constexpr std::uint64_t test_node_id_b = 2;
+constexpr const char* test_endpoint_a = "coap://127.0.0.1:5683";
+constexpr const char* test_endpoint_b = "coap://127.0.0.1:5684";
+constexpr const char* test_url_a = "http://127.0.0.1:8080";
+constexpr const char* test_url_b = "http://127.0.0.1:8081";
 }
 
 BOOST_AUTO_TEST_SUITE(generic_future_concept_validation_tests)
 
 // Test that core implementations work with different future types
-BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * boost::unit_test::timeout(120)) {
-
+BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types,
+                     *boost::unit_test::timeout(120)) {
     // Test 1: Verify that kythira::Future satisfies the future concept for various types
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> must satisfy future concept");
@@ -46,30 +46,34 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
                   "kythira::Future<std::string> must satisfy future concept");
     static_assert(kythira::future<kythira::Future<void>, void>,
                   "kythira::Future<void> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::request_vote_response<>>, kythira::request_vote_response<>>,
+    static_assert(kythira::future<kythira::Future<kythira::request_vote_response<>>,
+                                  kythira::request_vote_response<>>,
                   "kythira::Future<request_vote_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::append_entries_response<>>, kythira::append_entries_response<>>,
+    static_assert(kythira::future<kythira::Future<kythira::append_entries_response<>>,
+                                  kythira::append_entries_response<>>,
                   "kythira::Future<append_entries_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::install_snapshot_response<>>, kythira::install_snapshot_response<>>,
+    static_assert(kythira::future<kythira::Future<kythira::install_snapshot_response<>>,
+                                  kythira::install_snapshot_response<>>,
                   "kythira::Future<install_snapshot_response> must satisfy future concept");
 
     // Test 2: Verify HTTP transport client template instantiation
     // Skip - HTTP transport uses Types parameter now, tested in dedicated HTTP tests
-    BOOST_TEST_MESSAGE("Skipping HTTP transport instantiation test - API changed to use Types parameter");
+    BOOST_TEST_MESSAGE(
+        "Skipping HTTP transport instantiation test - API changed to use Types parameter");
 
     // Test 3: Verify CoAP transport client template instantiation
     // Skip - CoAP transport uses Types parameter now, tested in dedicated CoAP tests
-    BOOST_TEST_MESSAGE("Skipping CoAP transport instantiation test - API changed to use Types parameter");
+    BOOST_TEST_MESSAGE(
+        "Skipping CoAP transport instantiation test - API changed to use Types parameter");
 
     // Test 4: Verify network simulator Connection template instantiation
     using SimulatorTypes = network_simulator::DefaultNetworkTypes;
 
-    static_assert(std::is_constructible_v<
-        network_simulator::Connection<SimulatorTypes>,
-        network_simulator::Endpoint<SimulatorTypes>,
-        network_simulator::Endpoint<SimulatorTypes>,
-        network_simulator::NetworkSimulator<SimulatorTypes>*
-    >, "Connection should be constructible with kythira::Future");
+    static_assert(std::is_constructible_v<network_simulator::Connection<SimulatorTypes>,
+                                          network_simulator::Endpoint<SimulatorTypes>,
+                                          network_simulator::Endpoint<SimulatorTypes>,
+                                          network_simulator::NetworkSimulator<SimulatorTypes>*>,
+                  "Connection should be constructible with kythira::Future");
 
     // Test 5: Property-based test - verify concept compliance across iterations
     std::random_device rd;
@@ -102,18 +106,19 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types, * bo
 
         // Test error handling
         {
-            kythira::Future<int> error_future(folly::exception_wrapper(std::runtime_error("test error")));
-            auto recovered = std::move(error_future).onError([random_value](folly::exception_wrapper) {
-                return random_value;
-            });
+            kythira::Future<int> error_future(
+                folly::exception_wrapper(std::runtime_error("test error")));
+            auto recovered =
+                std::move(error_future).onError([random_value](folly::exception_wrapper) {
+                    return random_value;
+                });
             BOOST_CHECK_EQUAL(recovered.get(), random_value);
         }
     }
 }
 
 // Test that concept constraints are properly enforced
-BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::timeout(60)) {
-
+BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, *boost::unit_test::timeout(60)) {
     // Test 1: Verify network_client concept with kythira::Future
     // Skip - HTTP and CoAP clients now use Types parameter, tested in dedicated tests
     BOOST_TEST_MESSAGE("Skipping network_client concept test - API changed to use Types parameter");
@@ -124,7 +129,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
 
     // Test 3: Verify future concept constraints in generic code
     auto test_future_concept = []<typename F, typename T>(F&& future_instance)
-        requires kythira::future<std::remove_cvref_t<F>, T>
+    requires kythira::future<std::remove_cvref_t<F>, T>
     {
         // Test that all required operations are available
         bool is_ready = future_instance.isReady();
@@ -137,19 +142,23 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
     // Test with various future types
     {
         kythira::Future<int> int_future(42);
-        bool result = test_future_concept.template operator()<kythira::Future<int>, int>(std::move(int_future));
+        bool result = test_future_concept.template operator()<kythira::Future<int>, int>(
+            std::move(int_future));
         BOOST_CHECK(result);
     }
 
     {
         kythira::Future<std::string> string_future(std::string("test"));
-        bool result = test_future_concept.template operator()<kythira::Future<std::string>, std::string>(std::move(string_future));
+        bool result =
+            test_future_concept.template operator()<kythira::Future<std::string>, std::string>(
+                std::move(string_future));
         BOOST_CHECK(result);
     }
 
     {
         kythira::Future<void> void_future;
-        bool result = test_future_concept.template operator()<kythira::Future<void>, void>(std::move(void_future));
+        bool result = test_future_concept.template operator()<kythira::Future<void>, void>(
+            std::move(void_future));
         BOOST_CHECK(result);
     }
 
@@ -170,47 +179,54 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, * boost::unit_test::t
         // Test int futures
         {
             kythira::Future<int> future(random_int);
-            bool result = test_future_concept.template operator()<kythira::Future<int>, int>(std::move(future));
+            bool result = test_future_concept.template operator()<kythira::Future<int>, int>(
+                std::move(future));
             BOOST_CHECK(result);
         }
 
         // Test double futures
         {
             kythira::Future<double> future(random_double);
-            bool result = test_future_concept.template operator()<kythira::Future<double>, double>(std::move(future));
+            bool result = test_future_concept.template operator()<kythira::Future<double>, double>(
+                std::move(future));
             BOOST_CHECK(result);
         }
 
         // Test string futures
         {
             kythira::Future<std::string> future(random_string);
-            bool result = test_future_concept.template operator()<kythira::Future<std::string>, std::string>(std::move(future));
+            bool result =
+                test_future_concept.template operator()<kythira::Future<std::string>, std::string>(
+                    std::move(future));
             BOOST_CHECK(result);
         }
     }
 }
 
 // Test template instantiation with kythira::Future as default
-BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::unit_test::timeout(90)) {
-
+BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: Verify that transport implementations can be instantiated with kythira::Future
     // Skip - HTTP and CoAP clients now use Types parameter, tested in dedicated tests
-    BOOST_TEST_MESSAGE("Skipping transport instantiation tests - API changed to use Types parameter");
+    BOOST_TEST_MESSAGE(
+        "Skipping transport instantiation tests - API changed to use Types parameter");
 
     // Test 2: Verify that network simulator components work with kythira::Future
     using SimulatorTypes = network_simulator::DefaultNetworkTypes;
 
     // Test Connection instantiation (we can't actually create a NetworkSimulator here,
     // but we can verify the types are compatible)
-    static_assert(std::is_same_v<
-        decltype(std::declval<network_simulator::Connection<SimulatorTypes>>().read()),
-        typename SimulatorTypes::future_bytes_type
-    >, "Connection read() should return the correct future type");
+    static_assert(
+        std::is_same_v<
+            decltype(std::declval<network_simulator::Connection<SimulatorTypes>>().read()),
+            typename SimulatorTypes::future_bytes_type>,
+        "Connection read() should return the correct future type");
 
-    static_assert(std::is_same_v<
-        decltype(std::declval<network_simulator::Connection<SimulatorTypes>>().write(std::vector<std::byte>{})),
-        typename SimulatorTypes::future_bool_type
-    >, "Connection write() should return the correct future type");
+    static_assert(
+        std::is_same_v<decltype(std::declval<network_simulator::Connection<SimulatorTypes>>().write(
+                           std::vector<std::byte>{})),
+                       typename SimulatorTypes::future_bool_type>,
+        "Connection write() should return the correct future type");
 
     // Test 3: Property-based test for template instantiation
     std::random_device rd;
@@ -256,7 +272,7 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
 
     // Test 4: Verify that generic algorithms work with kythira::Future
     auto process_any_future = []<typename F, typename T>(F future)
-        requires kythira::future<F, T>
+    requires kythira::future<F, T>
     {
         if (!future.isReady()) {
             future.wait(std::chrono::milliseconds(1000));
@@ -267,13 +283,16 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
     // Test with different future types
     {
         kythira::Future<int> int_future(42);
-        int result = process_any_future.template operator()<kythira::Future<int>, int>(std::move(int_future));
+        int result = process_any_future.template operator()<kythira::Future<int>, int>(
+            std::move(int_future));
         BOOST_CHECK_EQUAL(result, 42);
     }
 
     {
         kythira::Future<std::string> string_future(std::string("test"));
-        std::string result = process_any_future.template operator()<kythira::Future<std::string>, std::string>(std::move(string_future));
+        std::string result =
+            process_any_future.template operator()<kythira::Future<std::string>, std::string>(
+                std::move(string_future));
         BOOST_CHECK_EQUAL(result, "test");
     }
 
@@ -286,8 +305,8 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future, * boost::u
 }
 
 // Test that collective operations work with generic future types
-BOOST_AUTO_TEST_CASE(test_collective_operations_with_generic_futures, * boost::unit_test::timeout(60)) {
-
+BOOST_AUTO_TEST_CASE(test_collective_operations_with_generic_futures,
+                     *boost::unit_test::timeout(60)) {
     // Test 1: Verify wait_for_all works with kythira::Future
     {
         std::vector<kythira::Future<int>> futures;
@@ -331,7 +350,7 @@ BOOST_AUTO_TEST_CASE(test_collective_operations_with_generic_futures, * boost::u
     std::mt19937 rng(rd());
 
     for (std::size_t iteration = 0; iteration < 10; ++iteration) {
-        std::size_t num_futures = 3 + (rng() % 5); // 3-7 futures
+        std::size_t num_futures = 3 + (rng() % 5);  // 3-7 futures
 
         // Test wait_for_all with random values
         {

@@ -5,7 +5,7 @@
 #include "raft/examples/register_state_machine.hpp"
 #include "state_machine_test_utilities.hpp"
 
-BOOST_AUTO_TEST_CASE(property_kv_determinism, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_kv_determinism, *boost::unit_test::timeout(30)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -16,11 +16,12 @@ BOOST_AUTO_TEST_CASE(property_kv_determinism, * boost::unit_test::timeout(30)) {
         }
 
         // Use validate_deterministic_application
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::test_key_value_state_machine<std::uint64_t>>(commands));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<
+                    kythira::test_key_value_state_machine<std::uint64_t>>(commands));
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_counter_determinism, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_counter_determinism, *boost::unit_test::timeout(30)) {
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<int> op_dist(0, 2);
 
@@ -30,19 +31,26 @@ BOOST_AUTO_TEST_CASE(property_counter_determinism, * boost::unit_test::timeout(3
         for (int i = 0; i < 50; ++i) {
             std::string cmd;
             switch (op_dist(rng)) {
-                case 0: cmd = "INC"; break;
-                case 1: cmd = "DEC"; break;
-                case 2: cmd = "RESET"; break;
+                case 0:
+                    cmd = "INC";
+                    break;
+                case 1:
+                    cmd = "DEC";
+                    break;
+                case 2:
+                    cmd = "RESET";
+                    break;
             }
             commands.push_back({reinterpret_cast<const std::byte*>(cmd.data()),
-                               reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
+                                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
         }
 
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::examples::counter_state_machine>(commands));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<
+                    kythira::examples::counter_state_machine>(commands));
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_register_determinism, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_register_determinism, *boost::unit_test::timeout(30)) {
     std::mt19937_64 rng(42);
     std::uniform_int_distribution<int> value_dist(0, 1000);
 
@@ -52,14 +60,15 @@ BOOST_AUTO_TEST_CASE(property_register_determinism, * boost::unit_test::timeout(
         for (int i = 0; i < 50; ++i) {
             std::string cmd = "WRITE " + std::to_string(value_dist(rng));
             commands.push_back({reinterpret_cast<const std::byte*>(cmd.data()),
-                               reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
+                                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});
         }
 
-        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<kythira::examples::register_state_machine>(commands));
+        BOOST_CHECK(kythira::test::snapshot_validator::validate_deterministic_application<
+                    kythira::examples::register_state_machine>(commands));
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_multiple_runs_determinism, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_multiple_runs_determinism, *boost::unit_test::timeout(30)) {
     std::random_device rd;
     std::mt19937 rng(rd());
 
@@ -76,7 +85,8 @@ BOOST_AUTO_TEST_CASE(property_multiple_runs_determinism, * boost::unit_test::tim
         for (const auto& cmd : commands) {
             try {
                 sm.apply(cmd, index++);
-            } catch (...) {}
+            } catch (...) {
+            }
         }
         sizes.push_back(sm.size());
     }

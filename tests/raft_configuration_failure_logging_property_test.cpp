@@ -16,9 +16,9 @@
 #include <set>
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::size_t test_max_cluster_size = 10;
-    constexpr const char* test_node_id = "node_1";
+constexpr std::size_t test_iterations = 15;
+constexpr std::size_t test_max_cluster_size = 10;
+constexpr const char* test_node_id = "node_1";
 }
 
 // Mock logger that captures log messages for verification
@@ -35,11 +35,9 @@ public:
         _entries.emplace_back(log_entry{level, std::string(message), {}});
     }
 
-    auto log(
-        kythira::log_level level,
-        std::string_view message,
-        const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs
-    ) -> void {
+    auto log(kythira::log_level level, std::string_view message,
+             const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         std::vector<std::pair<std::string, std::string>> converted_pairs;
         for (const auto& [key, value] : key_value_pairs) {
@@ -56,22 +54,28 @@ public:
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
 
-    auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto trace(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::trace, message, kvp);
     }
-    auto debug(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto debug(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::debug, message, kvp);
     }
-    auto info(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto info(std::string_view message,
+              const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::info, message, kvp);
     }
-    auto warning(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto warning(std::string_view message,
+                 const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::warning, message, kvp);
     }
-    auto error(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto error(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::error, message, kvp);
     }
-    auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto critical(std::string_view message,
+                  const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::critical, message, kvp);
     }
 
@@ -85,12 +89,10 @@ public:
         _entries.clear();
     }
 
-    [[nodiscard]] auto has_error_log_with_context(
-        const std::string& expected_message_part,
-        const std::string& failure_reason,
-        const std::string& config_phase,
-        std::size_t cluster_size
-    ) const -> bool {
+    [[nodiscard]] auto has_error_log_with_context(const std::string& expected_message_part,
+                                                  const std::string& failure_reason,
+                                                  const std::string& config_phase,
+                                                  std::size_t cluster_size) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
 
         for (const auto& entry : _entries) {
@@ -150,18 +152,18 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
  *
  * For any configuration change failure, the failure reason and current cluster state are logged.
  */
-BOOST_AUTO_TEST_CASE(raft_configuration_failure_logging_property_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(raft_configuration_failure_logging_property_test,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<std::size_t> cluster_size_dist(3, test_max_cluster_size);
 
-    std::vector<std::string> failure_reasons = {
-        "Majority not reached", "Network partition detected", "Leadership lost", "Timeout exceeded"
-    };
+    std::vector<std::string> failure_reasons = {"Majority not reached",
+                                                "Network partition detected", "Leadership lost",
+                                                "Timeout exceeded"};
 
-    std::vector<std::string> config_phases = {
-        "joint_consensus", "final_configuration", "rollback", "validation"
-    };
+    std::vector<std::string> config_phases = {"joint_consensus", "final_configuration", "rollback",
+                                              "validation"};
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
@@ -174,22 +176,17 @@ BOOST_AUTO_TEST_CASE(raft_configuration_failure_logging_property_test, * boost::
         // Create capturing logger
         capturing_logger logger;
 
-        // Simulate configuration change failure logging that should occur in the Raft implementation
-        logger.error("Configuration change failed", {
-            {"node_id", test_node_id},
-            {"failure_reason", failure_reason},
-            {"configuration_phase", config_phase},
-            {"cluster_size", std::to_string(cluster_size)},
-            {"operation", "add_server"}
-        });
+        // Simulate configuration change failure logging that should occur in the Raft
+        // implementation
+        logger.error("Configuration change failed", {{"node_id", test_node_id},
+                                                     {"failure_reason", failure_reason},
+                                                     {"configuration_phase", config_phase},
+                                                     {"cluster_size", std::to_string(cluster_size)},
+                                                     {"operation", "add_server"}});
 
         // Verify that the error was logged with proper context
-        BOOST_CHECK(logger.has_error_log_with_context(
-            "Configuration change failed",
-            failure_reason,
-            config_phase,
-            cluster_size
-        ));
+        BOOST_CHECK(logger.has_error_log_with_context("Configuration change failed", failure_reason,
+                                                      config_phase, cluster_size));
 
         // Verify that all required context fields are present
         auto entries = logger.get_entries();
@@ -198,10 +195,9 @@ BOOST_AUTO_TEST_CASE(raft_configuration_failure_logging_property_test, * boost::
         for (const auto& entry : entries) {
             if (entry.level == kythira::log_level::error &&
                 entry.message.find("Configuration change failed") != std::string::npos) {
-
-                std::set<std::string> required_keys = {
-                    "node_id", "failure_reason", "configuration_phase", "cluster_size", "operation"
-                };
+                std::set<std::string> required_keys = {"node_id", "failure_reason",
+                                                       "configuration_phase", "cluster_size",
+                                                       "operation"};
                 std::set<std::string> found_keys;
 
                 for (const auto& [key, value] : entry.key_value_pairs) {
@@ -232,4 +228,4 @@ BOOST_AUTO_TEST_CASE(raft_configuration_failure_logging_property_test, * boost::
 
 // Verify that the capturing_logger satisfies the diagnostic_logger concept
 static_assert(kythira::diagnostic_logger<capturing_logger>,
-    "capturing_logger must satisfy diagnostic_logger concept");
+              "capturing_logger must satisfy diagnostic_logger concept");

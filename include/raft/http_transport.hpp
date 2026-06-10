@@ -21,23 +21,22 @@
 // Forward declarations for folly (when available)
 #ifdef FOLLY_AVAILABLE
 namespace folly {
-    template<typename T> class Future;
+template<typename T> class Future;
 }
 #endif
 
 // Forward declarations for cpp-httplib
 namespace httplib {
-    class Client;
-    class Server;
-    class Request;
-    class Response;
+class Client;
+class Server;
+class Request;
+class Response;
 }
 
 namespace kythira {
 
 // Default HTTP transport types implementation using folly
-template<typename RPC_Serializer, typename Metrics, typename Executor>
-struct http_transport_types {
+template<typename RPC_Serializer, typename Metrics, typename Executor> struct http_transport_types {
 #ifdef FOLLY_AVAILABLE
     template<typename T> using future_template = folly::Future<T>;
 #else
@@ -109,33 +108,25 @@ public:
     template<typename T> using future_template = typename Types::template future_template<T>;
 
     // Constructor
-    cpp_httplib_client(
-        std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
-        cpp_httplib_client_config config,
-        metrics_type metrics
-    );
+    cpp_httplib_client(std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+                       cpp_httplib_client_config config, metrics_type metrics);
 
     // Destructor
     ~cpp_httplib_client();
 
     // Network client interface
-    auto send_request_vote(
-        std::uint64_t target,
-        const kythira::request_vote_request<>& request,
-        std::chrono::milliseconds timeout
-    ) -> typename Types::template future_template<kythira::request_vote_response<>>;
+    auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
+                           std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::request_vote_response<>>;
 
-    auto send_append_entries(
-        std::uint64_t target,
-        const kythira::append_entries_request<>& request,
-        std::chrono::milliseconds timeout
-    ) -> typename Types::template future_template<kythira::append_entries_response<>>;
+    auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& request,
+                             std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::append_entries_response<>>;
 
-    auto send_install_snapshot(
-        std::uint64_t target,
-        const kythira::install_snapshot_request<>& request,
-        std::chrono::milliseconds timeout
-    ) -> typename Types::template future_template<kythira::install_snapshot_response<>>;
+    auto send_install_snapshot(std::uint64_t target,
+                               const kythira::install_snapshot_request<>& request,
+                               std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<kythira::install_snapshot_response<>>;
 
 private:
     serializer_type _serializer;
@@ -153,12 +144,9 @@ private:
     auto validate_certificate_files() const -> void;
 
     template<typename Request, typename Response>
-    auto send_rpc(
-        std::uint64_t target,
-        const std::string& endpoint,
-        const Request& request,
-        std::chrono::milliseconds timeout
-    ) -> typename Types::template future_template<Response>;
+    auto send_rpc(std::uint64_t target, const std::string& endpoint, const Request& request,
+                  std::chrono::milliseconds timeout) ->
+        typename Types::template future_template<Response>;
 };
 
 // HTTP server implementation
@@ -173,28 +161,24 @@ public:
     template<typename T> using future_template = typename Types::template future_template<T>;
 
     // Constructor
-    cpp_httplib_server(
-        std::string bind_address,
-        std::uint16_t bind_port,
-        cpp_httplib_server_config config,
-        metrics_type metrics
-    );
+    cpp_httplib_server(std::string bind_address, std::uint16_t bind_port,
+                       cpp_httplib_server_config config, metrics_type metrics);
 
     // Destructor
     ~cpp_httplib_server();
 
     // Network server interface
     auto register_request_vote_handler(
-        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler
-    ) -> void;
+        std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+            handler) -> void;
 
     auto register_append_entries_handler(
-        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> handler
-    ) -> void;
+        std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+            handler) -> void;
 
-    auto register_install_snapshot_handler(
-        std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> handler
-    ) -> void;
+    auto register_install_snapshot_handler(std::function<kythira::install_snapshot_response<>(
+                                               const kythira::install_snapshot_request<>&)>
+                                               handler) -> void;
 
     auto start() -> void;
     auto stop() -> void;
@@ -203,9 +187,12 @@ public:
 private:
     serializer_type _serializer;
     std::unique_ptr<httplib::Server> _http_server;
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> _request_vote_handler;
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> _append_entries_handler;
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> _install_snapshot_handler;
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+        _request_vote_handler;
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+        _append_entries_handler;
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+        _install_snapshot_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
     cpp_httplib_server_config _config;
@@ -221,11 +208,8 @@ private:
     auto validate_certificate_files() const -> void;
 
     template<typename Request, typename Response>
-    auto handle_rpc_endpoint(
-        const httplib::Request& http_req,
-        httplib::Response& http_resp,
-        std::function<Response(const Request&)> handler
-    ) -> void;
+    auto handle_rpc_endpoint(const httplib::Request& http_req, httplib::Response& http_resp,
+                             std::function<Response(const Request&)> handler) -> void;
 };
 
-} // namespace kythira
+}  // namespace kythira

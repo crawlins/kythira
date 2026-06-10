@@ -24,15 +24,15 @@
 using namespace network_simulator;
 
 namespace {
-    // Test constants
-    constexpr const char* test_server_ip = "192.168.1.100";
-    constexpr const char* test_client_ip = "192.168.1.101";
-    constexpr const char* test_server_port = "8080";
-    constexpr const char* test_client_port = "9090";
-    constexpr const char* test_message_payload = "Hello from custom types!";
-    constexpr std::chrono::milliseconds test_timeout{2000};
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double test_reliability = 0.95;
+// Test constants
+constexpr const char* test_server_ip = "192.168.1.100";
+constexpr const char* test_client_ip = "192.168.1.101";
+constexpr const char* test_server_port = "8080";
+constexpr const char* test_client_port = "9090";
+constexpr const char* test_message_payload = "Hello from custom types!";
+constexpr std::chrono::milliseconds test_timeout{2000};
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double test_reliability = 0.95;
 
 // Custom Types Implementation using IPv4 addresses and string ports
 struct CustomNetworkTypes {
@@ -89,13 +89,10 @@ auto test_concept_satisfaction() -> bool {
         std::vector<std::byte> payload;
         std::string payload_str = test_message_payload;
         std::transform(payload_str.begin(), payload_str.end(), std::back_inserter(payload),
-                      [](char c) { return static_cast<std::byte>(c); });
+                       [](char c) { return static_cast<std::byte>(c); });
 
-        Message<CustomNetworkTypes> msg(
-            client_addr, client_port,
-            server_addr, server_port,
-            payload
-        );
+        Message<CustomNetworkTypes> msg(client_addr, client_port, server_addr, server_port,
+                                        payload);
 
         // Verify message properties
         if (msg.source_address() != client_addr) {
@@ -119,10 +116,10 @@ auto test_concept_satisfaction() -> bool {
         }
 
         std::cout << "  ✓ Custom types satisfy all concepts\n";
-        std::cout << "  ✓ Message created with IPv4 address: "
-                  << ipv4_to_string(server_addr) << ":" << server_port << "\n";
-        std::cout << "  ✓ Message source IPv4 address: "
-                  << ipv4_to_string(client_addr) << ":" << client_port << "\n";
+        std::cout << "  ✓ Message created with IPv4 address: " << ipv4_to_string(server_addr) << ":"
+                  << server_port << "\n";
+        std::cout << "  ✓ Message source IPv4 address: " << ipv4_to_string(client_addr) << ":"
+                  << client_port << "\n";
 
         return true;
 
@@ -188,8 +185,7 @@ auto test_network_simulator_with_custom_types() -> bool {
 
         std::cout << "  ✓ Simulator created with custom types\n";
         std::cout << "  ✓ Topology configured with IPv4 addresses\n";
-        std::cout << "  ✓ Edge properties preserved: "
-                  << test_latency.count() << "ms latency, "
+        std::cout << "  ✓ Edge properties preserved: " << test_latency.count() << "ms latency, "
                   << test_reliability << " reliability\n";
 
         return true;
@@ -240,13 +236,10 @@ auto test_node_operations_with_custom_types() -> bool {
         std::vector<std::byte> payload;
         std::string payload_str = test_message_payload;
         std::transform(payload_str.begin(), payload_str.end(), std::back_inserter(payload),
-                      [](char c) { return static_cast<std::byte>(c); });
+                       [](char c) { return static_cast<std::byte>(c); });
 
-        Message<CustomNetworkTypes> msg(
-            client_addr, test_client_port,
-            server_addr, test_server_port,
-            payload
-        );
+        Message<CustomNetworkTypes> msg(client_addr, test_client_port, server_addr,
+                                        test_server_port, payload);
 
         // Send message (this tests that the API works with custom types)
         auto send_future = client_node->send(msg, test_timeout);
@@ -303,7 +296,7 @@ auto test_comparison_with_default_types() -> bool {
     }
 }
 
-} // anonymous namespace
+}  // anonymous namespace
 
 auto main() -> int {
     std::cout << std::string(60, '=') << "\n";

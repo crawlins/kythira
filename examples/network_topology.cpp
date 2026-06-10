@@ -18,30 +18,30 @@ using namespace network_simulator;
 using namespace std::chrono_literals;
 
 namespace {
-    // Named constants for test configuration
-    constexpr const char* node_a_id = "node_a";
-    constexpr const char* node_b_id = "node_b";
-    constexpr const char* node_c_id = "node_c";
-    constexpr const char* node_d_id = "node_d";
-    constexpr const char* node_e_id = "node_e";
-    constexpr unsigned short port_1000 = 1000;
-    constexpr unsigned short port_2000 = 2000;
-    constexpr const char* test_payload = "Network topology test message";
+// Named constants for test configuration
+constexpr const char* node_a_id = "node_a";
+constexpr const char* node_b_id = "node_b";
+constexpr const char* node_c_id = "node_c";
+constexpr const char* node_d_id = "node_d";
+constexpr const char* node_e_id = "node_e";
+constexpr unsigned short port_1000 = 1000;
+constexpr unsigned short port_2000 = 2000;
+constexpr const char* test_payload = "Network topology test message";
 
-    // Latency configurations
-    constexpr auto fast_latency = 5ms;
-    constexpr auto medium_latency = 20ms;
-    constexpr auto slow_latency = 100ms;
+// Latency configurations
+constexpr auto fast_latency = 5ms;
+constexpr auto medium_latency = 20ms;
+constexpr auto slow_latency = 100ms;
 
-    // Reliability configurations
-    constexpr double perfect_reliability = 1.0;
-    constexpr double high_reliability = 0.95;
-    constexpr double medium_reliability = 0.8;
-    constexpr double low_reliability = 0.3;
-    constexpr double very_low_reliability = 0.1;
+// Reliability configurations
+constexpr double perfect_reliability = 1.0;
+constexpr double high_reliability = 0.95;
+constexpr double medium_reliability = 0.8;
+constexpr double low_reliability = 0.3;
+constexpr double very_low_reliability = 0.1;
 
-    constexpr auto long_timeout = 2000ms;
-    constexpr int reliability_test_messages = 50;
+constexpr auto long_timeout = 2000ms;
+constexpr int reliability_test_messages = 50;
 }
 
 // Helper function to convert string to bytes
@@ -95,9 +95,12 @@ auto test_topology_configuration() -> bool {
             return false;
         }
 
-        if (!simulator.has_edge(node_a_id, node_b_id) || !simulator.has_edge(node_b_id, node_a_id) ||
-            !simulator.has_edge(node_a_id, node_c_id) || !simulator.has_edge(node_c_id, node_a_id) ||
-            !simulator.has_edge(node_a_id, node_d_id) || !simulator.has_edge(node_d_id, node_a_id)) {
+        if (!simulator.has_edge(node_a_id, node_b_id) ||
+            !simulator.has_edge(node_b_id, node_a_id) ||
+            !simulator.has_edge(node_a_id, node_c_id) ||
+            !simulator.has_edge(node_c_id, node_a_id) ||
+            !simulator.has_edge(node_a_id, node_d_id) ||
+            !simulator.has_edge(node_d_id, node_a_id)) {
             std::cerr << "  ✗ Not all edges added to topology\n";
             return false;
         }
@@ -159,12 +162,10 @@ auto test_latency_characteristics() -> bool {
         // Send messages to both destinations simultaneously
         auto payload = string_to_bytes(test_payload);
 
-        DefaultNetworkTypes::message_type msg_to_b(
-            node_a_id, port_1000, node_b_id, port_2000, payload
-        );
-        DefaultNetworkTypes::message_type msg_to_c(
-            node_a_id, port_1000, node_c_id, port_2000, payload
-        );
+        DefaultNetworkTypes::message_type msg_to_b(node_a_id, port_1000, node_b_id, port_2000,
+                                                   payload);
+        DefaultNetworkTypes::message_type msg_to_c(node_a_id, port_1000, node_c_id, port_2000,
+                                                   payload);
 
         auto start_time = std::chrono::steady_clock::now();
 
@@ -185,12 +186,14 @@ auto test_latency_characteristics() -> bool {
         auto receive_b_future = node_b->receive(long_timeout);
         auto receive_c_future = node_c->receive(long_timeout);
 
-        // The fast connection should deliver first (though timing is not guaranteed in this implementation)
+        // The fast connection should deliver first (though timing is not guaranteed in this
+        // implementation)
         auto msg_b = std::move(receive_b_future).get();
         auto msg_c = std::move(receive_c_future).get();
 
         auto end_time = std::chrono::steady_clock::now();
-        auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto total_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         // Verify message content
         if (bytes_to_string(msg_b.payload()) != test_payload ||
@@ -199,8 +202,8 @@ auto test_latency_characteristics() -> bool {
             return false;
         }
 
-        std::cout << "  ✓ Latency characteristics applied (total time: "
-                  << total_time.count() << "ms)\n";
+        std::cout << "  ✓ Latency characteristics applied (total time: " << total_time.count()
+                  << "ms)\n";
         return true;
 
     } catch (const std::exception& e) {
@@ -241,9 +244,8 @@ auto test_reliability_characteristics() -> bool {
 
         for (int i = 0; i < reliability_test_messages; ++i) {
             auto payload = string_to_bytes(std::format("Message {} to B", i));
-            DefaultNetworkTypes::message_type msg_to_b(
-                node_a_id, port_1000, node_b_id, port_2000, payload
-            );
+            DefaultNetworkTypes::message_type msg_to_b(node_a_id, port_1000, node_b_id, port_2000,
+                                                       payload);
 
             auto send_future = node_a->send(std::move(msg_to_b));
             if (std::move(send_future).get()) {
@@ -253,9 +255,8 @@ auto test_reliability_characteristics() -> bool {
 
         for (int i = 0; i < reliability_test_messages; ++i) {
             auto payload = string_to_bytes(std::format("Message {} to C", i));
-            DefaultNetworkTypes::message_type msg_to_c(
-                node_a_id, port_1000, node_c_id, port_2000, payload
-            );
+            DefaultNetworkTypes::message_type msg_to_c(node_a_id, port_1000, node_c_id, port_2000,
+                                                       payload);
 
             auto send_future = node_a->send(std::move(msg_to_c));
             if (std::move(send_future).get()) {
@@ -264,20 +265,23 @@ auto test_reliability_characteristics() -> bool {
         }
 
         // High reliability connection should have most messages succeed
-        double success_rate_b = static_cast<double>(successful_sends_to_b) / reliability_test_messages;
+        double success_rate_b =
+            static_cast<double>(successful_sends_to_b) / reliability_test_messages;
         // Low reliability connection should have few messages succeed
-        double success_rate_c = static_cast<double>(successful_sends_to_c) / reliability_test_messages;
+        double success_rate_c =
+            static_cast<double>(successful_sends_to_c) / reliability_test_messages;
 
-        std::cout << "  ✓ High reliability connection: " << successful_sends_to_b
-                  << "/" << reliability_test_messages << " ("
+        std::cout << "  ✓ High reliability connection: " << successful_sends_to_b << "/"
+                  << reliability_test_messages << " ("
                   << std::format("{:.1f}%", success_rate_b * 100) << ")\n";
-        std::cout << "  ✓ Low reliability connection: " << successful_sends_to_c
-                  << "/" << reliability_test_messages << " ("
+        std::cout << "  ✓ Low reliability connection: " << successful_sends_to_c << "/"
+                  << reliability_test_messages << " ("
                   << std::format("{:.1f}%", success_rate_c * 100) << ")\n";
 
         // Verify that high reliability performs better than low reliability
         if (success_rate_b <= success_rate_c) {
-            std::cerr << "  ✗ High reliability connection should perform better than low reliability\n";
+            std::cerr
+                << "  ✗ High reliability connection should perform better than low reliability\n";
             return false;
         }
 
@@ -331,9 +335,8 @@ auto test_network_partitions() -> bool {
 
         // Test communication within partition 1 (A -> B)
         auto payload_ab = string_to_bytes("Message from A to B");
-        DefaultNetworkTypes::message_type msg_ab(
-            node_a_id, port_1000, node_b_id, port_2000, payload_ab
-        );
+        DefaultNetworkTypes::message_type msg_ab(node_a_id, port_1000, node_b_id, port_2000,
+                                                 payload_ab);
 
         auto send_ab_future = node_a->send(std::move(msg_ab));
         bool send_ab_success = std::move(send_ab_future).get();
@@ -345,9 +348,8 @@ auto test_network_partitions() -> bool {
 
         // Test communication within partition 2 (C -> D)
         auto payload_cd = string_to_bytes("Message from C to D");
-        DefaultNetworkTypes::message_type msg_cd(
-            node_c_id, port_1000, node_d_id, port_2000, payload_cd
-        );
+        DefaultNetworkTypes::message_type msg_cd(node_c_id, port_1000, node_d_id, port_2000,
+                                                 payload_cd);
 
         auto send_cd_future = node_c->send(std::move(msg_cd));
         bool send_cd_success = std::move(send_cd_future).get();
@@ -359,9 +361,8 @@ auto test_network_partitions() -> bool {
 
         // Test communication across partitions (A -> C) - should fail
         auto payload_ac = string_to_bytes("Message from A to C");
-        DefaultNetworkTypes::message_type msg_ac(
-            node_a_id, port_1000, node_c_id, port_2000, payload_ac
-        );
+        DefaultNetworkTypes::message_type msg_ac(node_a_id, port_1000, node_c_id, port_2000,
+                                                 payload_ac);
 
         auto send_ac_future = node_a->send(std::move(msg_ac));
         bool send_ac_success = std::move(send_ac_future).get();
@@ -433,24 +434,21 @@ auto test_complex_topology() -> bool {
         auto payload = string_to_bytes(test_payload);
 
         // A -> B (direct)
-        DefaultNetworkTypes::message_type msg_ab(
-            node_a_id, port_1000, node_b_id, port_2000, payload
-        );
+        DefaultNetworkTypes::message_type msg_ab(node_a_id, port_1000, node_b_id, port_2000,
+                                                 payload);
         auto send_ab_future = node_a->send(std::move(msg_ab));
         bool send_ab_success = std::move(send_ab_future).get();
 
         // B -> D (direct)
-        DefaultNetworkTypes::message_type msg_bd(
-            node_b_id, port_1000, node_d_id, port_2000, payload
-        );
+        DefaultNetworkTypes::message_type msg_bd(node_b_id, port_1000, node_d_id, port_2000,
+                                                 payload);
         auto send_bd_future = node_b->send(std::move(msg_bd));
         bool send_bd_success = std::move(send_bd_future).get();
 
         // Test connection that doesn't exist directly (D -> E)
         // With multi-hop routing, this may succeed via D->B->A->C->E
-        DefaultNetworkTypes::message_type msg_de(
-            node_d_id, port_1000, node_e_id, port_2000, payload
-        );
+        DefaultNetworkTypes::message_type msg_de(node_d_id, port_1000, node_e_id, port_2000,
+                                                 payload);
         auto send_de_future = node_d->send(std::move(msg_de));
         bool send_de_success = std::move(send_de_future).get();
 

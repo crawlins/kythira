@@ -70,11 +70,13 @@ inline auto validate_client_config(const coap_client_config& config) -> void {
         bool has_psk_auth = !config.psk_identity.empty() && !config.psk_key.empty();
 
         if (!has_cert_auth && !has_psk_auth) {
-            throw coap_security_error("DTLS enabled but no authentication method configured (need certificate or PSK)");
+            throw coap_security_error(
+                "DTLS enabled but no authentication method configured (need certificate or PSK)");
         }
 
         if (has_cert_auth && has_psk_auth) {
-            throw coap_security_error("Cannot use both certificate and PSK authentication simultaneously");
+            throw coap_security_error(
+                "Cannot use both certificate and PSK authentication simultaneously");
         }
 
         if (has_psk_auth) {
@@ -95,7 +97,8 @@ inline auto validate_client_config(const coap_client_config& config) -> void {
     // Validate multicast configuration
     if (config.enable_multicast) {
         if (config.multicast_address.empty()) {
-            throw coap_transport_error("multicast_address cannot be empty when multicast is enabled");
+            throw coap_transport_error(
+                "multicast_address cannot be empty when multicast is enabled");
         }
 
         if (config.multicast_port == 0) {
@@ -106,17 +109,21 @@ inline auto validate_client_config(const coap_client_config& config) -> void {
     // Validate performance optimization settings
     if (config.enable_memory_optimization) {
         if (config.memory_pool_size == 0) {
-            throw coap_transport_error("memory_pool_size must be greater than 0 when memory optimization is enabled");
+            throw coap_transport_error(
+                "memory_pool_size must be greater than 0 when memory optimization is enabled");
         }
 
         if (config.memory_pool_block_size == 0) {
-            throw coap_transport_error("memory_pool_block_size must be greater than 0 when memory optimization is enabled");
+            throw coap_transport_error(
+                "memory_pool_block_size must be greater than 0 when memory optimization is "
+                "enabled");
         }
     }
 
     if (config.enable_serialization_caching) {
         if (config.serialization_cache_size == 0) {
-            throw coap_transport_error("serialization_cache_size must be greater than 0 when caching is enabled");
+            throw coap_transport_error(
+                "serialization_cache_size must be greater than 0 when caching is enabled");
         }
     }
 }
@@ -133,7 +140,7 @@ inline auto validate_server_config(const coap_server_config& config) -> void {
         throw coap_transport_error("max_request_size must be greater than 0");
     }
 
-    if (config.max_request_size > 100 * 1024 * 1024) { // 100 MB
+    if (config.max_request_size > 100 * 1024 * 1024) {  // 100 MB
         throw coap_transport_error("max_request_size must not exceed 100 MB");
     }
 
@@ -163,11 +170,13 @@ inline auto validate_server_config(const coap_server_config& config) -> void {
         bool has_psk_auth = !config.psk_identity.empty() && !config.psk_key.empty();
 
         if (!has_cert_auth && !has_psk_auth) {
-            throw coap_security_error("DTLS enabled but no authentication method configured (need certificate or PSK)");
+            throw coap_security_error(
+                "DTLS enabled but no authentication method configured (need certificate or PSK)");
         }
 
         if (has_cert_auth && has_psk_auth) {
-            throw coap_security_error("Cannot use both certificate and PSK authentication simultaneously");
+            throw coap_security_error(
+                "Cannot use both certificate and PSK authentication simultaneously");
         }
 
         if (has_psk_auth) {
@@ -188,7 +197,8 @@ inline auto validate_server_config(const coap_server_config& config) -> void {
     // Validate multicast configuration
     if (config.enable_multicast) {
         if (config.multicast_address.empty()) {
-            throw coap_transport_error("multicast_address cannot be empty when multicast is enabled");
+            throw coap_transport_error(
+                "multicast_address cannot be empty when multicast is enabled");
         }
 
         if (config.multicast_port == 0) {
@@ -199,40 +209,45 @@ inline auto validate_server_config(const coap_server_config& config) -> void {
         const auto& addr = config.multicast_address;
 
         // Check for IPv4 multicast (224.0.0.0 - 239.255.255.255)
-        bool is_ipv4_multicast = addr.find("224.") == 0 || addr.find("225.") == 0 ||
-                                 addr.find("226.") == 0 || addr.find("227.") == 0 ||
-                                 addr.find("228.") == 0 || addr.find("229.") == 0 ||
-                                 addr.find("230.") == 0 || addr.find("231.") == 0 ||
-                                 addr.find("232.") == 0 || addr.find("233.") == 0 ||
-                                 addr.find("234.") == 0 || addr.find("235.") == 0 ||
-                                 addr.find("236.") == 0 || addr.find("237.") == 0 ||
-                                 addr.find("238.") == 0 || addr.find("239.") == 0;
+        bool is_ipv4_multicast =
+            addr.find("224.") == 0 || addr.find("225.") == 0 || addr.find("226.") == 0 ||
+            addr.find("227.") == 0 || addr.find("228.") == 0 || addr.find("229.") == 0 ||
+            addr.find("230.") == 0 || addr.find("231.") == 0 || addr.find("232.") == 0 ||
+            addr.find("233.") == 0 || addr.find("234.") == 0 || addr.find("235.") == 0 ||
+            addr.find("236.") == 0 || addr.find("237.") == 0 || addr.find("238.") == 0 ||
+            addr.find("239.") == 0;
 
         // Check for IPv6 multicast (ff00::/8)
         bool is_ipv6_multicast = addr.find("ff") == 0 || addr.find("FF") == 0;
 
         if (!is_ipv4_multicast && !is_ipv6_multicast) {
-            throw coap_transport_error("multicast_address must be a valid multicast address (IPv4: 224.0.0.0-239.255.255.255, IPv6: ff00::/8)");
+            throw coap_transport_error(
+                "multicast_address must be a valid multicast address (IPv4: "
+                "224.0.0.0-239.255.255.255, IPv6: ff00::/8)");
         }
     }
 
     // Validate performance optimization settings
     if (config.enable_memory_optimization) {
         if (config.memory_pool_size == 0) {
-            throw coap_transport_error("memory_pool_size must be greater than 0 when memory optimization is enabled");
+            throw coap_transport_error(
+                "memory_pool_size must be greater than 0 when memory optimization is enabled");
         }
 
         if (config.memory_pool_block_size == 0) {
-            throw coap_transport_error("memory_pool_block_size must be greater than 0 when memory optimization is enabled");
+            throw coap_transport_error(
+                "memory_pool_block_size must be greater than 0 when memory optimization is "
+                "enabled");
         }
     }
 
     if (config.enable_serialization_caching) {
         if (config.serialization_cache_size == 0) {
-            throw coap_transport_error("serialization_cache_size must be greater than 0 when caching is enabled");
+            throw coap_transport_error(
+                "serialization_cache_size must be greater than 0 when caching is enabled");
         }
     }
 }
 
-} // namespace coap_utils
-} // namespace kythira
+}  // namespace coap_utils
+}  // namespace kythira

@@ -14,9 +14,9 @@
 
 // Forward declarations for kythira future types
 namespace kythira {
-    template<typename T> class Future;
-    template<typename T> class Promise;
-    template<typename T> class Try;
+template<typename T> class Future;
+template<typename T> class Promise;
+template<typename T> class Try;
 }
 
 namespace kythira {
@@ -34,7 +34,9 @@ template<typename T>
 concept log_index = std::unsigned_integral<T>;
 
 // Forward declaration of test state machine (after log_index concept is defined)
-template<typename LogIndex> requires log_index<LogIndex> class test_key_value_state_machine;
+template<typename LogIndex>
+requires log_index<LogIndex>
+class test_key_value_state_machine;
 
 // Server states
 enum class server_state : std::uint8_t {
@@ -118,13 +120,8 @@ concept snapshot_type = requires(const T& snap) {
 // Defines the interface for application-specific state machines that execute committed log entries
 // Requirements: 1.1, 7.4, 10.1-10.4, 15.2, 19.1-19.5, 31.1-31.2
 template<typename SM, typename LogIndex>
-concept state_machine = requires(
-    SM& sm,
-    const SM& const_sm,
-    const std::vector<std::byte>& command,
-    const std::vector<std::byte>& snapshot_data,
-    LogIndex index
-) {
+concept state_machine = requires(SM& sm, const SM& const_sm, const std::vector<std::byte>& command,
+                                 const std::vector<std::byte>& snapshot_data, LogIndex index) {
     requires log_index<LogIndex>;
 
     // Apply a committed log entry to the state machine
@@ -146,7 +143,8 @@ concept state_machine = requires(
 };
 
 // Default snapshot implementation
-template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct snapshot {
     LogIndex _last_included_index;
@@ -157,7 +155,9 @@ struct snapshot {
     auto last_included_index() const -> LogIndex { return _last_included_index; }
     auto last_included_term() const -> TermId { return _last_included_term; }
     auto configuration() const -> const cluster_configuration<NodeId>& { return _configuration; }
-    auto state_machine_state() const -> const std::vector<std::byte>& { return _state_machine_state; }
+    auto state_machine_state() const -> const std::vector<std::byte>& {
+        return _state_machine_state;
+    }
 };
 
 // RequestVote RPC Request concept
@@ -229,7 +229,8 @@ concept install_snapshot_response_type = requires(const T& resp) {
 };
 
 // Default RequestVote RPC Request implementation
-template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct request_vote_request {
     TermId _term;
@@ -255,8 +256,10 @@ struct request_vote_response {
 };
 
 // Default AppendEntries RPC Request implementation
-template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
-requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> && log_entry_type<LogEntry, TermId, LogIndex>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
+         log_entry_type<LogEntry, TermId, LogIndex>
 struct append_entries_request {
     TermId _term;
     NodeId _leader_id;
@@ -289,7 +292,8 @@ struct append_entries_response {
 };
 
 // Default InstallSnapshot RPC Request implementation
-template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
 struct install_snapshot_request {
     TermId _term;
@@ -320,8 +324,8 @@ struct install_snapshot_response {
 
 // Serialized data concept - must be a range of std::byte
 template<typename T>
-concept serialized_data = std::ranges::range<T> &&
-    std::same_as<std::ranges::range_value_t<T>, std::byte>;
+concept serialized_data =
+    std::ranges::range<T> && std::same_as<std::ranges::range_value_t<T>, std::byte>;
 
 // RPC serializer concept - simplified to avoid circular dependency issues
 template<typename S, typename Data>
@@ -343,10 +347,8 @@ struct retry_policy_config {
 
     // Validation method
     auto is_valid() const -> bool {
-        return initial_delay > std::chrono::milliseconds{0} &&
-               max_delay >= initial_delay &&
-               backoff_multiplier > 1.0 &&
-               jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
+        return initial_delay > std::chrono::milliseconds{0} && max_delay >= initial_delay &&
+               backoff_multiplier > 1.0 && jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
                max_attempts > 0;
     }
 };
@@ -360,10 +362,8 @@ struct adaptive_timeout_config {
     std::size_t sample_window_size{10};
 
     auto is_valid() const -> bool {
-        return min_timeout > std::chrono::milliseconds{0} &&
-               max_timeout >= min_timeout &&
-               adaptation_factor > 1.0 &&
-               sample_window_size > 0;
+        return min_timeout > std::chrono::milliseconds{0} && max_timeout >= min_timeout &&
+               adaptation_factor > 1.0 && sample_window_size > 0;
     }
 };
 
@@ -391,9 +391,9 @@ concept raft_configuration_type = requires(const T& config) {
 
 // Application failure handling policy
 enum class application_failure_policy : std::uint8_t {
-    halt,    // Stop applying further entries on failure (safe default)
-    retry,   // Retry application with exponential backoff
-    skip     // Skip failed entry and continue (dangerous - can lead to inconsistency)
+    halt,   // Stop applying further entries on failure (safe default)
+    retry,  // Retry application with exponential backoff
+    skip    // Skip failed entry and continue (dangerous - can lead to inconsistency)
 };
 
 // Default raft configuration implementation
@@ -415,37 +415,31 @@ struct raft_configuration {
     std::size_t _snapshot_chunk_size{1'000'000};
 
     // Retry policies for different RPC operations
-    retry_policy_config _heartbeat_retry_policy{
-        .initial_delay = std::chrono::milliseconds{50},
-        .max_delay = std::chrono::milliseconds{1000},
-        .backoff_multiplier = 1.5,
-        .jitter_factor = 0.1,
-        .max_attempts = 3
-    };
+    retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
+                                                .max_delay = std::chrono::milliseconds{1000},
+                                                .backoff_multiplier = 1.5,
+                                                .jitter_factor = 0.1,
+                                                .max_attempts = 3};
 
     retry_policy_config _append_entries_retry_policy{
         .initial_delay = std::chrono::milliseconds{100},
         .max_delay = std::chrono::milliseconds{5000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.1,
-        .max_attempts = 5
-    };
+        .max_attempts = 5};
 
-    retry_policy_config _request_vote_retry_policy{
-        .initial_delay = std::chrono::milliseconds{100},
-        .max_delay = std::chrono::milliseconds{2000},
-        .backoff_multiplier = 2.0,
-        .jitter_factor = 0.1,
-        .max_attempts = 3
-    };
+    retry_policy_config _request_vote_retry_policy{.initial_delay = std::chrono::milliseconds{100},
+                                                   .max_delay = std::chrono::milliseconds{2000},
+                                                   .backoff_multiplier = 2.0,
+                                                   .jitter_factor = 0.1,
+                                                   .max_attempts = 3};
 
     retry_policy_config _install_snapshot_retry_policy{
         .initial_delay = std::chrono::milliseconds{500},
         .max_delay = std::chrono::milliseconds{30000},
         .backoff_multiplier = 2.0,
         .jitter_factor = 0.1,
-        .max_attempts = 10
-    };
+        .max_attempts = 10};
 
     // Adaptive timeout configuration
     adaptive_timeout_config _adaptive_timeout_config{
@@ -453,8 +447,7 @@ struct raft_configuration {
         .min_timeout = std::chrono::milliseconds{50},
         .max_timeout = std::chrono::milliseconds{10000},
         .adaptation_factor = 1.2,
-        .sample_window_size = 10
-    };
+        .sample_window_size = 10};
 
     // Application failure handling configuration
     application_failure_policy _application_failure_policy{application_failure_policy::halt};
@@ -468,27 +461,49 @@ struct raft_configuration {
     auto election_timeout_max() const -> std::chrono::milliseconds { return _election_timeout_max; }
     auto heartbeat_interval() const -> std::chrono::milliseconds { return _heartbeat_interval; }
     auto rpc_timeout() const -> std::chrono::milliseconds { return _rpc_timeout; }
-    auto append_entries_timeout() const -> std::chrono::milliseconds { return _append_entries_timeout; }
+    auto append_entries_timeout() const -> std::chrono::milliseconds {
+        return _append_entries_timeout;
+    }
     auto request_vote_timeout() const -> std::chrono::milliseconds { return _request_vote_timeout; }
-    auto install_snapshot_timeout() const -> std::chrono::milliseconds { return _install_snapshot_timeout; }
+    auto install_snapshot_timeout() const -> std::chrono::milliseconds {
+        return _install_snapshot_timeout;
+    }
     auto max_entries_per_append() const -> std::size_t { return _max_entries_per_append; }
     auto snapshot_threshold_bytes() const -> std::size_t { return _snapshot_threshold_bytes; }
     auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
-    auto heartbeat_retry_policy() const -> const retry_policy_config& { return _heartbeat_retry_policy; }
-    auto append_entries_retry_policy() const -> const retry_policy_config& { return _append_entries_retry_policy; }
-    auto request_vote_retry_policy() const -> const retry_policy_config& { return _request_vote_retry_policy; }
-    auto install_snapshot_retry_policy() const -> const retry_policy_config& { return _install_snapshot_retry_policy; }
-    auto get_adaptive_timeout_config() const -> const adaptive_timeout_config& { return _adaptive_timeout_config; }
-    auto get_application_failure_policy() const -> application_failure_policy { return _application_failure_policy; }
-    auto application_retry_max_attempts() const -> std::size_t { return _application_retry_max_attempts; }
-    auto application_retry_initial_delay() const -> std::chrono::milliseconds { return _application_retry_initial_delay; }
-    auto application_retry_max_delay() const -> std::chrono::milliseconds { return _application_retry_max_delay; }
-    auto application_retry_backoff_multiplier() const -> double { return _application_retry_backoff_multiplier; }
+    auto heartbeat_retry_policy() const -> const retry_policy_config& {
+        return _heartbeat_retry_policy;
+    }
+    auto append_entries_retry_policy() const -> const retry_policy_config& {
+        return _append_entries_retry_policy;
+    }
+    auto request_vote_retry_policy() const -> const retry_policy_config& {
+        return _request_vote_retry_policy;
+    }
+    auto install_snapshot_retry_policy() const -> const retry_policy_config& {
+        return _install_snapshot_retry_policy;
+    }
+    auto get_adaptive_timeout_config() const -> const adaptive_timeout_config& {
+        return _adaptive_timeout_config;
+    }
+    auto get_application_failure_policy() const -> application_failure_policy {
+        return _application_failure_policy;
+    }
+    auto application_retry_max_attempts() const -> std::size_t {
+        return _application_retry_max_attempts;
+    }
+    auto application_retry_initial_delay() const -> std::chrono::milliseconds {
+        return _application_retry_initial_delay;
+    }
+    auto application_retry_max_delay() const -> std::chrono::milliseconds {
+        return _application_retry_max_delay;
+    }
+    auto application_retry_backoff_multiplier() const -> double {
+        return _application_retry_backoff_multiplier;
+    }
 
     // Configuration validation
-    auto validate() const -> bool {
-        return get_validation_errors().empty();
-    }
+    auto validate() const -> bool { return get_validation_errors().empty(); }
 
     auto get_validation_errors() const -> std::vector<std::string> {
         std::vector<std::string> errors;
@@ -509,7 +524,9 @@ struct raft_configuration {
         // Validate heartbeat interval compatibility with election timeout
         // Heartbeat interval should be significantly smaller than election timeout
         if (_heartbeat_interval > _election_timeout_min / 3) {
-            errors.push_back("heartbeat_interval should be less than or equal to election_timeout_min/3 to prevent false timeouts");
+            errors.push_back(
+                "heartbeat_interval should be less than or equal to election_timeout_min/3 to "
+                "prevent false timeouts");
         }
 
         // Validate RPC timeouts
@@ -579,28 +596,33 @@ struct raft_configuration {
 // Transport types concept - defines the interface for a unified types parameter
 // Used by HTTP and CoAP transport implementations
 template<typename T>
-concept transport_types = requires {
-    // RPC serializer type
-    typename T::serializer_type;
+concept transport_types =
+    requires {
+        // RPC serializer type
+        typename T::serializer_type;
 
-    // Metrics type
-    typename T::metrics_type;
+        // Metrics type
+        typename T::metrics_type;
 
-    // Executor type (optional for some transports)
-    typename T::executor_type;
-} &&
+        // Executor type (optional for some transports)
+        typename T::executor_type;
+    } &&
     // Validate that the types satisfy their respective concepts
     kythira::rpc_serializer<typename T::serializer_type, std::vector<std::byte>> &&
     kythira::metrics<typename T::metrics_type> &&
-    // Future template constraints - validate that future_template can be instantiated with Raft response types
+    // Future template constraints - validate that future_template can be instantiated with Raft
+    // response types
     requires {
         typename T::template future_template<kythira::request_vote_response<>>;
         typename T::template future_template<kythira::append_entries_response<>>;
         typename T::template future_template<kythira::install_snapshot_response<>>;
     } &&
-    future<typename T::template future_template<kythira::request_vote_response<>>, kythira::request_vote_response<>> &&
-    future<typename T::template future_template<kythira::append_entries_response<>>, kythira::append_entries_response<>> &&
-    future<typename T::template future_template<kythira::install_snapshot_response<>>, kythira::install_snapshot_response<>>;
+    future<typename T::template future_template<kythira::request_vote_response<>>,
+           kythira::request_vote_response<>> &&
+    future<typename T::template future_template<kythira::append_entries_response<>>,
+           kythira::append_entries_response<>> &&
+    future<typename T::template future_template<kythira::install_snapshot_response<>>,
+           kythira::install_snapshot_response<>>;
 
 // ============================================================================
 // Unified Types Template Parameter System
@@ -691,7 +713,8 @@ struct default_raft_types {
     class network_server_type;
 
     // Other component types
-    using persistence_engine_type = memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using persistence_engine_type =
+        memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
     using logger_type = console_logger;
     using metrics_type = noop_metrics;
     using membership_manager_type = default_membership_manager<node_id_type>;
@@ -706,11 +729,14 @@ struct default_raft_types {
     using snapshot_type = snapshot<node_id_type, term_id_type, log_index_type>;
 
     // RPC message types
-    using request_vote_request_type = request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_request_type =
+        request_vote_request<node_id_type, term_id_type, log_index_type>;
     using request_vote_response_type = request_vote_response<term_id_type>;
-    using append_entries_request_type = append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_request_type =
+        append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
     using append_entries_response_type = append_entries_response<term_id_type, log_index_type>;
-    using install_snapshot_request_type = install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        install_snapshot_request<node_id_type, term_id_type, log_index_type>;
     using install_snapshot_response_type = install_snapshot_response<term_id_type>;
 };
 
@@ -718,6 +744,7 @@ struct default_raft_types {
 // Note: This static_assert is commented out because test_key_value_state_machine
 // is only forward-declared at this point. The concept will be validated when
 // the node class is instantiated.
-// static_assert(raft_types<default_raft_types>, "default_raft_types must satisfy raft_types concept");
+// static_assert(raft_types<default_raft_types>, "default_raft_types must satisfy raft_types
+// concept");
 
-} // namespace kythira
+}  // namespace kythira

@@ -8,9 +8,9 @@
 #include <string>
 
 namespace {
-    constexpr auto test_timeout = std::chrono::milliseconds{100};
-    constexpr const char* test_value = "test_value";
-    constexpr int test_int_value = 42;
+constexpr auto test_timeout = std::chrono::milliseconds{100};
+constexpr const char* test_value = "test_value";
+constexpr int test_int_value = 42;
 }
 
 /**
@@ -21,7 +21,7 @@ namespace {
  * thenValue, thenTry, thenError, and via methods
  * **Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5**
  */
-BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_future_concept_requirements, *boost::unit_test::timeout(60)) {
     // Test that kythira::Future<int> satisfies the future concept
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> must satisfy future concept");
@@ -90,9 +90,8 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
         kythira::Future<void> future;
         bool callback_called = false;
 
-        auto result_future = std::move(future).thenValue([&callback_called]() {
-            callback_called = true;
-        });
+        auto result_future =
+            std::move(future).thenValue([&callback_called]() { callback_called = true; });
 
         // Get the result to ensure the callback is executed
         std::move(result_future).get();
@@ -104,11 +103,12 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
         kythira::Future<int> future(test_int_value);
         bool callback_called = false;
 
-        auto result_future = std::move(future).thenTry([&callback_called](kythira::Try<int> try_value) {
-            callback_called = true;
-            BOOST_CHECK(try_value.hasValue());
-            BOOST_CHECK_EQUAL(try_value.value(), test_int_value);
-        });
+        auto result_future =
+            std::move(future).thenTry([&callback_called](kythira::Try<int> try_value) {
+                callback_called = true;
+                BOOST_CHECK(try_value.hasValue());
+                BOOST_CHECK_EQUAL(try_value.value(), test_int_value);
+            });
 
         // Get the result to ensure the callback is executed
         std::move(result_future).get();
@@ -120,10 +120,11 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
         kythira::Future<void> future;
         bool callback_called = false;
 
-        auto result_future = std::move(future).thenTry([&callback_called](kythira::Try<void> try_value) {
-            callback_called = true;
-            BOOST_CHECK(try_value.hasValue());
-        });
+        auto result_future =
+            std::move(future).thenTry([&callback_called](kythira::Try<void> try_value) {
+                callback_called = true;
+                BOOST_CHECK(try_value.hasValue());
+            });
 
         // Get the result to ensure the callback is executed
         std::move(result_future).get();
@@ -136,11 +137,12 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
         kythira::Future<int> future(exception_ptr);
         bool error_callback_called = false;
 
-        auto result_future = std::move(future).thenError([&error_callback_called](std::exception_ptr ex) -> int {
-            error_callback_called = true;
-            BOOST_CHECK(ex != nullptr);
-            return test_int_value; // Return a default value
-        });
+        auto result_future =
+            std::move(future).thenError([&error_callback_called](std::exception_ptr ex) -> int {
+                error_callback_called = true;
+                BOOST_CHECK(ex != nullptr);
+                return test_int_value;  // Return a default value
+            });
 
         // Get the result to ensure the error callback is executed
         int result = std::move(result_future).get();
@@ -154,10 +156,11 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
         kythira::Future<void> future(exception_ptr);
         bool error_callback_called = false;
 
-        auto result_future = std::move(future).thenError([&error_callback_called](std::exception_ptr ex) {
-            error_callback_called = true;
-            BOOST_CHECK(ex != nullptr);
-        });
+        auto result_future =
+            std::move(future).thenError([&error_callback_called](std::exception_ptr ex) {
+                error_callback_called = true;
+                BOOST_CHECK(ex != nullptr);
+            });
 
         // Get the result to ensure the error callback is executed
         std::move(result_future).get();
@@ -185,18 +188,16 @@ BOOST_AUTO_TEST_CASE(property_future_concept_requirements, * boost::unit_test::t
 /**
  * Test that the future concept correctly rejects types that don't satisfy it
  */
-BOOST_AUTO_TEST_CASE(property_future_concept_rejection, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_future_concept_rejection, *boost::unit_test::timeout(30)) {
     // Test that int doesn't satisfy future concept
-    static_assert(!kythira::future<int, int>,
-                  "int should not satisfy future concept");
+    static_assert(!kythira::future<int, int>, "int should not satisfy future concept");
 
     // Test that std::string doesn't satisfy future concept
     static_assert(!kythira::future<std::string, std::string>,
                   "std::string should not satisfy future concept");
 
     // Test that void doesn't satisfy future concept
-    static_assert(!kythira::future<void, void>,
-                  "void should not satisfy future concept");
+    static_assert(!kythira::future<void, void>, "void should not satisfy future concept");
 
     BOOST_TEST(true);
 }

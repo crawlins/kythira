@@ -31,34 +31,31 @@
 #include <unordered_set>
 
 namespace {
-    // Test configuration constants
-    constexpr std::uint64_t leader_node_id = 1;
-    constexpr std::uint64_t follower_node_2_id = 2;
-    constexpr std::uint64_t follower_node_3_id = 3;
-    constexpr std::uint64_t new_node_4_id = 4;
-    constexpr std::uint64_t new_node_5_id = 5;
-    constexpr std::uint64_t initial_log_index = 10;
-    constexpr std::uint64_t joint_config_log_index = 11;
-    constexpr std::uint64_t final_config_log_index = 12;
-    constexpr std::chrono::milliseconds config_change_timeout{5000};
-    constexpr std::chrono::milliseconds short_timeout{1000};
-    constexpr std::chrono::milliseconds long_timeout{10000};
-    constexpr const char* config_change_reason_timeout = "Configuration change timed out";
-    constexpr const char* config_change_reason_leadership_lost = "Leadership lost during configuration change";
-    constexpr const char* config_change_reason_rollback = "Configuration change failed, rolling back";
+// Test configuration constants
+constexpr std::uint64_t leader_node_id = 1;
+constexpr std::uint64_t follower_node_2_id = 2;
+constexpr std::uint64_t follower_node_3_id = 3;
+constexpr std::uint64_t new_node_4_id = 4;
+constexpr std::uint64_t new_node_5_id = 5;
+constexpr std::uint64_t initial_log_index = 10;
+constexpr std::uint64_t joint_config_log_index = 11;
+constexpr std::uint64_t final_config_log_index = 12;
+constexpr std::chrono::milliseconds config_change_timeout{5000};
+constexpr std::chrono::milliseconds short_timeout{1000};
+constexpr std::chrono::milliseconds long_timeout{10000};
+constexpr const char* config_change_reason_timeout = "Configuration change timed out";
+constexpr const char* config_change_reason_leadership_lost =
+    "Leadership lost during configuration change";
+constexpr const char* config_change_reason_rollback = "Configuration change failed, rolling back";
 }
 
 // Helper function to create cluster configuration
 auto create_cluster_configuration(
-    const std::vector<std::uint64_t>& nodes,
-    bool is_joint = false,
-    const std::optional<std::vector<std::uint64_t>>& old_nodes = std::nullopt
-) -> kythira::cluster_configuration<std::uint64_t> {
+    const std::vector<std::uint64_t>& nodes, bool is_joint = false,
+    const std::optional<std::vector<std::uint64_t>>& old_nodes = std::nullopt)
+    -> kythira::cluster_configuration<std::uint64_t> {
     return kythira::cluster_configuration<std::uint64_t>{
-        ._nodes = nodes,
-        ._is_joint_consensus = is_joint,
-        ._old_nodes = old_nodes
-    };
+        ._nodes = nodes, ._is_joint_consensus = is_joint, ._old_nodes = old_nodes};
 }
 
 // Mock Raft node for demonstrating configuration changes
@@ -71,18 +68,16 @@ private:
     std::atomic<bool> _simulate_failures{false};
 
 public:
-    explicit mock_raft_node(
-        std::uint64_t node_id,
-        const kythira::cluster_configuration<std::uint64_t>& initial_config
-    ) : _node_id(node_id)
-      , _current_configuration(initial_config)
-      , _current_log_index(initial_log_index)
-      , _is_leader(node_id == leader_node_id) {}
+    explicit mock_raft_node(std::uint64_t node_id,
+                            const kythira::cluster_configuration<std::uint64_t>& initial_config)
+        : _node_id(node_id),
+          _current_configuration(initial_config),
+          _current_log_index(initial_log_index),
+          _is_leader(node_id == leader_node_id) {}
 
     // Simulate appending a configuration entry to the log
-    auto append_configuration_entry(
-        const kythira::cluster_configuration<std::uint64_t>& config
-    ) -> std::uint64_t {
+    auto append_configuration_entry(const kythira::cluster_configuration<std::uint64_t>& config)
+        -> std::uint64_t {
         if (!_is_leader) {
             throw std::runtime_error("Only leader can append configuration entries");
         }
@@ -92,7 +87,8 @@ public:
         }
 
         _current_log_index++;
-        std::cout << std::format("    Appended configuration entry at log index {}\n", _current_log_index);
+        std::cout << std::format("    Appended configuration entry at log index {}\n",
+                                 _current_log_index);
 
         if (config.is_joint_consensus()) {
             std::cout << "      Joint consensus configuration: [";
@@ -142,9 +138,7 @@ public:
     }
 
     // Enable/disable failure simulation
-    auto set_failure_simulation(bool enable) -> void {
-        _simulate_failures = enable;
-    }
+    auto set_failure_simulation(bool enable) -> void { _simulate_failures = enable; }
 
     // Get current configuration
     auto get_current_configuration() const -> const kythira::cluster_configuration<std::uint64_t>& {
@@ -168,7 +162,8 @@ auto test_server_addition_synchronization() -> bool {
 
     try {
         // Create initial cluster configuration (nodes 1, 2, 3)
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto initial_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -178,22 +173,25 @@ auto test_server_addition_synchronization() -> bool {
         std::cout << "  Initial configuration: [1, 2, 3]\n";
 
         // Create target configuration (add node 4)
-        auto target_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto target_config = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
 
         // Start configuration change
-        auto config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+        auto config_future =
+            config_sync.start_configuration_change(target_config, config_change_timeout);
 
         std::cout << "  Started configuration change\n";
         std::cout << std::format("  Configuration change in progress: {}\n",
-                                config_sync.is_configuration_change_in_progress());
+                                 config_sync.is_configuration_change_in_progress());
         std::cout << std::format("  Waiting for joint consensus: {}\n",
-                                config_sync.is_waiting_for_joint_consensus());
+                                 config_sync.is_waiting_for_joint_consensus());
 
         // Phase 1: Append joint consensus configuration
         auto joint_config = create_cluster_configuration(
             {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id},
-            true, // is_joint_consensus
-            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id} // old_nodes
+            true,  // is_joint_consensus
+            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id}
+            // old_nodes
         );
 
         auto joint_log_index = mock_node.append_configuration_entry(joint_config);
@@ -205,7 +203,7 @@ auto test_server_addition_synchronization() -> bool {
 
         std::cout << "  Joint consensus configuration committed\n";
         std::cout << std::format("  Waiting for final configuration: {}\n",
-                                config_sync.is_waiting_for_final_configuration());
+                                 config_sync.is_waiting_for_final_configuration());
 
         // Phase 2: Append final configuration
         auto final_log_index = mock_node.append_configuration_entry(target_config);
@@ -241,7 +239,8 @@ auto test_server_removal_synchronization() -> bool {
 
     try {
         // Create initial cluster configuration (nodes 1, 2, 3, 4)
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto initial_config = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -251,18 +250,21 @@ auto test_server_removal_synchronization() -> bool {
         std::cout << "  Initial configuration: [1, 2, 3, 4]\n";
 
         // Create target configuration (remove node 4)
-        auto target_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto target_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
 
         // Start configuration change
-        auto config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+        auto config_future =
+            config_sync.start_configuration_change(target_config, config_change_timeout);
 
         std::cout << "  Started configuration change for server removal\n";
 
         // Phase 1: Append joint consensus configuration
         auto joint_config = create_cluster_configuration(
-            {leader_node_id, follower_node_2_id, follower_node_3_id}, // new nodes
-            true, // is_joint_consensus
-            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id} // old_nodes
+            {leader_node_id, follower_node_2_id, follower_node_3_id},  // new nodes
+            true,                                                      // is_joint_consensus
+            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id,
+                                       new_node_4_id}  // old_nodes
         );
 
         std::cout << "  Phase 1: Appending joint consensus configuration...\n";
@@ -275,7 +277,7 @@ auto test_server_removal_synchronization() -> bool {
 
         std::cout << "  Phase 1 completed: Joint consensus committed\n";
         std::cout << std::format("  Now waiting for final configuration: {}\n",
-                                config_sync.is_waiting_for_final_configuration());
+                                 config_sync.is_waiting_for_final_configuration());
 
         // Phase 2: Append final configuration
         std::cout << "  Phase 2: Appending final configuration...\n";
@@ -312,7 +314,8 @@ auto test_configuration_change_serialization() -> bool {
 
     try {
         // Create initial cluster configuration
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto initial_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -321,21 +324,25 @@ auto test_configuration_change_serialization() -> bool {
         std::cout << "  Testing prevention of concurrent configuration changes...\n";
 
         // Start first configuration change (add node 4)
-        auto target_config_1 = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
-        auto config_future_1 = config_sync.start_configuration_change(target_config_1, config_change_timeout);
+        auto target_config_1 = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto config_future_1 =
+            config_sync.start_configuration_change(target_config_1, config_change_timeout);
 
         std::cout << "  Started first configuration change (add node 4)\n";
         std::cout << std::format("  Configuration change in progress: {}\n",
-                                config_sync.is_configuration_change_in_progress());
+                                 config_sync.is_configuration_change_in_progress());
 
         // Try to start second configuration change (should return exceptional future)
-        auto target_config_2 = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_5_id});
+        auto target_config_2 = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_5_id});
 
         bool second_change_rejected = false;
         std::string rejection_reason;
 
         try {
-            auto config_future_2 = config_sync.start_configuration_change(target_config_2, config_change_timeout);
+            auto config_future_2 =
+                config_sync.start_configuration_change(target_config_2, config_change_timeout);
             // The future should be exceptional, so getting the result should throw
             auto result_2 = std::move(config_future_2).get();
             std::cerr << "  Unexpected: Second configuration change was not rejected\n";
@@ -352,10 +359,8 @@ auto test_configuration_change_serialization() -> bool {
 
         // Complete the first configuration change
         auto joint_config = create_cluster_configuration(
-            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id},
-            true,
-            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id}
-        );
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id}, true,
+            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id});
 
         auto joint_log_index = mock_node.append_configuration_entry(joint_config);
         mock_node.commit_entry(joint_log_index);
@@ -370,11 +375,12 @@ auto test_configuration_change_serialization() -> bool {
 
         std::cout << "  First configuration change completed\n";
         std::cout << std::format("  Configuration change in progress: {}\n",
-                                config_sync.is_configuration_change_in_progress());
+                                 config_sync.is_configuration_change_in_progress());
 
         // Now try the second configuration change (should succeed)
         try {
-            auto config_future_3 = config_sync.start_configuration_change(target_config_2, config_change_timeout);
+            auto config_future_3 =
+                config_sync.start_configuration_change(target_config_2, config_change_timeout);
             std::cout << "  ✓ Second configuration change now accepted after first completed\n";
 
             // Cancel it to clean up
@@ -382,7 +388,10 @@ auto test_configuration_change_serialization() -> bool {
 
             return true;
         } catch (const std::exception& e) {
-            std::cerr << std::format("  ✗ Failed: Second configuration change should succeed after first completes: {}\n", e.what());
+            std::cerr << std::format(
+                "  ✗ Failed: Second configuration change should succeed after first completes: "
+                "{}\n",
+                e.what());
             return false;
         }
 
@@ -398,7 +407,8 @@ auto test_error_handling_and_rollback() -> bool {
 
     try {
         // Create initial cluster configuration
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto initial_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -407,17 +417,17 @@ auto test_error_handling_and_rollback() -> bool {
         std::cout << "  Testing configuration change cancellation and rollback...\n";
 
         // Start configuration change
-        auto target_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
-        auto config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+        auto target_config = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto config_future =
+            config_sync.start_configuration_change(target_config, config_change_timeout);
 
         std::cout << "  Started configuration change\n";
 
         // Append joint consensus but don't commit it (simulate slow replication)
         auto joint_config = create_cluster_configuration(
-            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id},
-            true,
-            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id}
-        );
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id}, true,
+            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id});
 
         auto joint_log_index = mock_node.append_configuration_entry(joint_config);
         std::cout << "  Appended joint consensus configuration (simulating slow replication)\n";
@@ -449,7 +459,8 @@ auto test_error_handling_and_rollback() -> bool {
             std::cout << "  ✓ Configuration synchronizer state reset after cancellation\n";
             return true;
         } else {
-            std::cerr << "  ✗ Failed: Configuration synchronizer state not reset after cancellation\n";
+            std::cerr
+                << "  ✗ Failed: Configuration synchronizer state not reset after cancellation\n";
             return false;
         }
 
@@ -465,7 +476,8 @@ auto test_leadership_change_during_configuration() -> bool {
 
     try {
         // Create initial cluster configuration
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto initial_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -474,17 +486,17 @@ auto test_leadership_change_during_configuration() -> bool {
         std::cout << "  Testing leadership change during configuration change...\n";
 
         // Start configuration change
-        auto target_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
-        auto config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+        auto target_config = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto config_future =
+            config_sync.start_configuration_change(target_config, config_change_timeout);
 
         std::cout << "  Started configuration change\n";
 
         // Append joint consensus configuration
         auto joint_config = create_cluster_configuration(
-            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id},
-            true,
-            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id}
-        );
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id}, true,
+            std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id});
 
         auto joint_log_index = mock_node.append_configuration_entry(joint_config);
         std::cout << "  Appended joint consensus configuration\n";
@@ -510,7 +522,8 @@ auto test_leadership_change_during_configuration() -> bool {
         }
 
         if (!leadership_loss_handled) {
-            std::cerr << "  ✗ Failed: Configuration change should have been cancelled due to leadership loss\n";
+            std::cerr << "  ✗ Failed: Configuration change should have been cancelled due to "
+                         "leadership loss\n";
             return false;
         }
 
@@ -522,7 +535,8 @@ auto test_leadership_change_during_configuration() -> bool {
             mock_node.become_leader();
 
             try {
-                auto new_config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+                auto new_config_future =
+                    config_sync.start_configuration_change(target_config, config_change_timeout);
                 std::cout << "  ✓ New configuration change started after regaining leadership\n";
 
                 // Cancel to clean up
@@ -530,11 +544,15 @@ auto test_leadership_change_during_configuration() -> bool {
 
                 return true;
             } catch (const std::exception& e) {
-                std::cerr << std::format("  ✗ Failed: Should be able to start new configuration change after regaining leadership: {}\n", e.what());
+                std::cerr << std::format(
+                    "  ✗ Failed: Should be able to start new configuration change after regaining "
+                    "leadership: {}\n",
+                    e.what());
                 return false;
             }
         } else {
-            std::cerr << "  ✗ Failed: Configuration synchronizer state not reset after leadership loss\n";
+            std::cerr
+                << "  ✗ Failed: Configuration synchronizer state not reset after leadership loss\n";
             return false;
         }
 
@@ -550,7 +568,8 @@ auto test_joint_consensus_phase_failure() -> bool {
 
     try {
         // Create initial cluster configuration
-        auto initial_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
+        auto initial_config =
+            create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id});
         auto mock_node = mock_raft_node{leader_node_id, initial_config};
 
         // Create configuration synchronizer
@@ -559,12 +578,14 @@ auto test_joint_consensus_phase_failure() -> bool {
         std::cout << "  Testing failure during joint consensus phase...\n";
 
         // Start configuration change
-        auto target_config = create_cluster_configuration({leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
-        auto config_future = config_sync.start_configuration_change(target_config, config_change_timeout);
+        auto target_config = create_cluster_configuration(
+            {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id});
+        auto config_future =
+            config_sync.start_configuration_change(target_config, config_change_timeout);
 
         std::cout << "  Started configuration change\n";
         std::cout << std::format("  Waiting for joint consensus: {}\n",
-                                config_sync.is_waiting_for_joint_consensus());
+                                 config_sync.is_waiting_for_joint_consensus());
 
         // Enable failure simulation
         mock_node.set_failure_simulation(true);
@@ -575,17 +596,16 @@ auto test_joint_consensus_phase_failure() -> bool {
 
         try {
             auto joint_config = create_cluster_configuration(
-                {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id},
-                true,
-                std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id}
-            );
+                {leader_node_id, follower_node_2_id, follower_node_3_id, new_node_4_id}, true,
+                std::vector<std::uint64_t>{leader_node_id, follower_node_2_id, follower_node_3_id});
 
             auto joint_log_index = mock_node.append_configuration_entry(joint_config);
             std::cerr << "  Unexpected: Joint consensus append should have failed\n";
         } catch (const std::runtime_error& e) {
             append_failed = true;
             append_error = e.what();
-            std::cout << std::format("  ✓ Joint consensus append failed as expected: {}\n", e.what());
+            std::cout << std::format("  ✓ Joint consensus append failed as expected: {}\n",
+                                     e.what());
         }
 
         if (!append_failed) {

@@ -16,19 +16,21 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
-    constexpr std::size_t test_iterations = 100;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
+constexpr std::size_t test_iterations = 100;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 2: Promise Value and Exception Handling**
  *
- * Property: For any promise wrapper and value/exception, setting the value or exception should properly convert types and make the associated future ready with the correct result
+ * Property: For any promise wrapper and value/exception, setting the value or exception should
+ * properly convert types and make the associated future ready with the correct result
  * **Validates: Requirements 1.3, 1.4**
  */
-BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test,
+                     *boost::unit_test::timeout(120)) {
     // Test 1: Value setting with proper void/Unit handling for non-void types
     {
         // Test int type
@@ -40,7 +42,9 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test that double fulfillment throws
         BOOST_CHECK_THROW(int_promise.setValue(456), std::logic_error);
-        BOOST_CHECK_THROW(int_promise.setException(folly::exception_wrapper(std::runtime_error("test"))), std::logic_error);
+        BOOST_CHECK_THROW(
+            int_promise.setException(folly::exception_wrapper(std::runtime_error("test"))),
+            std::logic_error);
     }
 
     // Test 2: Value setting with void/Unit conversion for void type
@@ -67,7 +71,9 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test that double fulfillment throws
         BOOST_CHECK_THROW(promise.setValue(123), std::logic_error);
-        BOOST_CHECK_THROW(promise.setException(folly::exception_wrapper(std::runtime_error("another"))), std::logic_error);
+        BOOST_CHECK_THROW(
+            promise.setException(folly::exception_wrapper(std::runtime_error("another"))),
+            std::logic_error);
     }
 
     // Test 4: Exception setting with std::exception_ptr conversion
@@ -166,7 +172,9 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
             // Verify cannot fulfill again
             BOOST_CHECK_THROW(promise.setValue(123), std::logic_error);
-            BOOST_CHECK_THROW(promise.setException(folly::exception_wrapper(std::runtime_error("another"))), std::logic_error);
+            BOOST_CHECK_THROW(
+                promise.setException(folly::exception_wrapper(std::runtime_error("another"))),
+                std::logic_error);
         }
 
         // Test std::exception_ptr exception fulfillment
@@ -200,7 +208,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 /**
  * Test type conversion behavior for different value types
  */
-BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeout(60)) {
     // Test 1: Custom struct type
     struct CustomType {
         int value;
@@ -252,7 +260,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, * boost::unit_test::time
 /**
  * Test exception type conversion behavior
  */
-BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::timeout(60)) {
     // Test 1: Different exception types with folly::exception_wrapper
     {
         SemiPromise<int> promise1;
@@ -303,6 +311,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, * boost::unit_test:
     public:
         explicit CustomException(const std::string& msg) : _message(msg) {}
         const char* what() const noexcept override { return _message.c_str(); }
+
     private:
         std::string _message;
     };
@@ -328,7 +337,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, * boost::unit_test:
 /**
  * Test resource management during value and exception setting
  */
-BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::timeout(60)) {
     // Test 1: Resource cleanup on value setting
     {
         SemiPromise<std::unique_ptr<int>> promise;
@@ -337,7 +346,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, * boost::unit_test::
 
         promise.setValue(std::move(resource));
         BOOST_CHECK(promise.isFulfilled());
-        BOOST_CHECK(resource == nullptr); // Resource was moved
+        BOOST_CHECK(resource == nullptr);  // Resource was moved
 
         // The promise should now own the resource
         // When promise goes out of scope, resource should be cleaned up

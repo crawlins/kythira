@@ -26,68 +26,67 @@
 #include <sstream>
 
 namespace {
-    using clock_type = std::chrono::steady_clock;
-    using duration_type = std::chrono::microseconds;
+using clock_type = std::chrono::steady_clock;
+using duration_type = std::chrono::microseconds;
 
-    // Benchmark configuration
-    constexpr std::size_t warmup_iterations = 100;
-    constexpr std::size_t benchmark_iterations = 10000;
-    constexpr std::size_t throughput_duration_seconds = 5;
+// Benchmark configuration
+constexpr std::size_t warmup_iterations = 100;
+constexpr std::size_t benchmark_iterations = 10000;
+constexpr std::size_t throughput_duration_seconds = 5;
 
-    // Helper to create commands
-    auto make_command(const std::string& cmd) -> std::vector<std::byte> {
-        return {reinterpret_cast<const std::byte*>(cmd.data()),
-                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
+// Helper to create commands
+auto make_command(const std::string& cmd) -> std::vector<std::byte> {
+    return {reinterpret_cast<const std::byte*>(cmd.data()),
+            reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
+}
+
+// Statistics calculation
+struct statistics {
+    double mean;
+    double median;
+    double p95;
+    double p99;
+    double min;
+    double max;
+    double stddev;
+};
+
+auto calculate_statistics(std::vector<double> values) -> statistics {
+    if (values.empty()) {
+        return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     }
 
-    // Statistics calculation
-    struct statistics {
-        double mean;
-        double median;
-        double p95;
-        double p99;
-        double min;
-        double max;
-        double stddev;
-    };
+    std::sort(values.begin(), values.end());
 
-    auto calculate_statistics(std::vector<double> values) -> statistics {
-        if (values.empty()) {
-            return {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-        }
+    double sum = std::accumulate(values.begin(), values.end(), 0.0);
+    double mean = sum / values.size();
 
-        std::sort(values.begin(), values.end());
+    double median = values[values.size() / 2];
+    double p95 = values[static_cast<std::size_t>(values.size() * 0.95)];
+    double p99 = values[static_cast<std::size_t>(values.size() * 0.99)];
+    double min = values.front();
+    double max = values.back();
 
-        double sum = std::accumulate(values.begin(), values.end(), 0.0);
-        double mean = sum / values.size();
+    double sq_sum = std::accumulate(
+        values.begin(), values.end(), 0.0,
+        [mean](double acc, double val) { return acc + (val - mean) * (val - mean); });
+    double stddev = std::sqrt(sq_sum / values.size());
 
-        double median = values[values.size() / 2];
-        double p95 = values[static_cast<std::size_t>(values.size() * 0.95)];
-        double p99 = values[static_cast<std::size_t>(values.size() * 0.99)];
-        double min = values.front();
-        double max = values.back();
+    return {mean, median, p95, p99, min, max, stddev};
+}
 
-        double sq_sum = std::accumulate(values.begin(), values.end(), 0.0,
-            [mean](double acc, double val) {
-                return acc + (val - mean) * (val - mean);
-            });
-        double stddev = std::sqrt(sq_sum / values.size());
-
-        return {mean, median, p95, p99, min, max, stddev};
-    }
-
-    auto format_statistics(const statistics& stats, const std::string& unit) -> std::string {
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(2);
-        oss << "  Mean: " << stats.mean << " " << unit << "\n";
-        oss << "  Median: " << stats.median << " " << unit << "\n";
-        oss << "  P95: " << stats.p95 << " " << unit << "\n";
-        oss << "  P99: " << stats.p99 << " " << unit << "\n";
-        oss << "  Min: " << stats.min << " " << unit << "\n";
-        oss << "  Max: " << stats.max << " " << unit << "\n";
-        oss << "  StdDev: " << stats.stddev << " " << unit;
-        return oss.str();
-    }
+auto format_statistics(const statistics& stats, const std::string& unit) -> std::string {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "  Mean: " << stats.mean << " " << unit << "\n";
+    oss << "  Median: " << stats.median << " " << unit << "\n";
+    oss << "  P95: " << stats.p95 << " " << unit << "\n";
+    oss << "  P99: " << stats.p99 << " " << unit << "\n";
+    oss << "  Min: " << stats.min << " " << unit << "\n";
+    oss << "  Max: " << stats.max << " " << unit << "\n";
+    oss << "  StdDev: " << stats.stddev << " " << unit;
+    return oss.str();
+}
 }
 
 /**
@@ -96,7 +95,7 @@ namespace {
  * Measures the latency of applying commands to the state machine.
  * This represents the core state machine performance without network overhead.
  */
-BOOST_AUTO_TEST_CASE(benchmark_state_machine_apply_latency, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_state_machine_apply_latency, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("=== Benchmark: State Machine Apply Latency ===");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -128,8 +127,8 @@ BOOST_AUTO_TEST_CASE(benchmark_state_machine_apply_latency, * boost::unit_test::
     BOOST_TEST_MESSAGE(format_statistics(stats, "μs"));
 
     // Sanity checks
-    BOOST_CHECK_LT(stats.mean, 100.0); // Should be very fast (< 100μs)
-    BOOST_CHECK_LT(stats.p99, 500.0);  // P99 should be reasonable
+    BOOST_CHECK_LT(stats.mean, 100.0);  // Should be very fast (< 100μs)
+    BOOST_CHECK_LT(stats.p99, 500.0);   // P99 should be reasonable
 }
 
 /**
@@ -137,7 +136,7 @@ BOOST_AUTO_TEST_CASE(benchmark_state_machine_apply_latency, * boost::unit_test::
  *
  * Measures how many commands per second the state machine can process.
  */
-BOOST_AUTO_TEST_CASE(benchmark_state_machine_throughput, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_state_machine_throughput, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark: State Machine Throughput ===");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -170,8 +169,8 @@ BOOST_AUTO_TEST_CASE(benchmark_state_machine_throughput, * boost::unit_test::tim
     BOOST_TEST_MESSAGE("Throughput Results:");
     BOOST_TEST_MESSAGE("  Operations: " << operations);
     BOOST_TEST_MESSAGE("  Duration: " << duration.count() << " ms");
-    BOOST_TEST_MESSAGE("  Throughput: " << std::fixed << std::setprecision(2)
-                       << ops_per_second << " ops/sec");
+    BOOST_TEST_MESSAGE("  Throughput: " << std::fixed << std::setprecision(2) << ops_per_second
+                                        << " ops/sec");
 
     // Sanity check - should handle at least 100k ops/sec
     BOOST_CHECK_GT(ops_per_second, 100000.0);
@@ -182,7 +181,7 @@ BOOST_AUTO_TEST_CASE(benchmark_state_machine_throughput, * boost::unit_test::tim
  *
  * Measures the time to create snapshots of varying sizes.
  */
-BOOST_AUTO_TEST_CASE(benchmark_snapshot_creation, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_snapshot_creation, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark: Snapshot Creation ===");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -226,7 +225,7 @@ BOOST_AUTO_TEST_CASE(benchmark_snapshot_creation, * boost::unit_test::timeout(12
  *
  * Measures the time to restore from snapshots of varying sizes.
  */
-BOOST_AUTO_TEST_CASE(benchmark_snapshot_restore, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_snapshot_restore, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark: Snapshot Restore ===");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -273,7 +272,7 @@ BOOST_AUTO_TEST_CASE(benchmark_snapshot_restore, * boost::unit_test::timeout(120
  *
  * Compares performance of different state machine implementations.
  */
-BOOST_AUTO_TEST_CASE(benchmark_register_state_machine, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_register_state_machine, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark: Register State Machine ===");
 
     using register_sm = kythira::examples::register_state_machine;
@@ -329,7 +328,7 @@ BOOST_AUTO_TEST_CASE(benchmark_register_state_machine, * boost::unit_test::timeo
  *
  * Measures memory footprint of state machines with varying state sizes.
  */
-BOOST_AUTO_TEST_CASE(benchmark_memory_usage, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(benchmark_memory_usage, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark: Memory Usage ===");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -352,8 +351,8 @@ BOOST_AUTO_TEST_CASE(benchmark_memory_usage, * boost::unit_test::timeout(120)) {
         BOOST_TEST_MESSAGE("State size: " << size << " operations");
         BOOST_TEST_MESSAGE("  Snapshot size: " << snapshot_bytes << " bytes");
         BOOST_TEST_MESSAGE("  Bytes per operation: "
-                          << std::fixed << std::setprecision(2)
-                          << (static_cast<double>(snapshot_bytes) / size));
+                           << std::fixed << std::setprecision(2)
+                           << (static_cast<double>(snapshot_bytes) / size));
     }
 }
 
@@ -362,7 +361,7 @@ BOOST_AUTO_TEST_CASE(benchmark_memory_usage, * boost::unit_test::timeout(120)) {
  *
  * Prints a summary of all benchmark results for easy comparison.
  */
-BOOST_AUTO_TEST_CASE(benchmark_summary, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(benchmark_summary, *boost::unit_test::timeout(10)) {
     BOOST_TEST_MESSAGE("\n=== Benchmark Summary ===");
     BOOST_TEST_MESSAGE("All benchmarks completed successfully.");
     BOOST_TEST_MESSAGE("See individual benchmark results above for detailed metrics.");

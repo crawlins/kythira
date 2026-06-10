@@ -8,8 +8,8 @@
 #include <iostream>
 
 namespace {
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_port = 9095;
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_port = 9095;
 }
 
 BOOST_AUTO_TEST_SUITE(httplib_best_practices_tests)
@@ -25,7 +25,8 @@ BOOST_AUTO_TEST_CASE(test_best_practices_server) {
 
         // Set status and body
         res.status = 200;
-        res.body = R"({"message":")" + req.body + R"(","request_id":)" + std::to_string(request_count.load()) + "}";
+        res.body = R"({"message":")" + req.body + R"(","request_id":)" +
+                   std::to_string(request_count.load()) + "}";
 
         // Set Content-Type (required)
         res.set_header("Content-Type", "application/json");
@@ -35,9 +36,7 @@ BOOST_AUTO_TEST_CASE(test_best_practices_server) {
     });
 
     // Start server
-    std::thread server_thread([&]() {
-        server.listen(test_bind_address, test_port);
-    });
+    std::thread server_thread([&]() { server.listen(test_bind_address, test_port); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
 
@@ -96,9 +95,7 @@ BOOST_AUTO_TEST_CASE(test_manual_content_length_issues) {
     });
 
     // Start server
-    std::thread server_thread([&]() {
-        server.listen(test_bind_address, test_port + 1);
-    });
+    std::thread server_thread([&]() { server.listen(test_bind_address, test_port + 1); });
 
     std::this_thread::sleep_for(std::chrono::milliseconds{300});
 
@@ -130,7 +127,8 @@ BOOST_AUTO_TEST_CASE(test_manual_content_length_issues) {
             // We'll be lenient here since this is demonstrating the problem
             BOOST_TEST(result->status == 200);
         } else {
-            std::cout << "Manual Content-Length test failed: " << httplib::to_string(result.error()) << std::endl;
+            std::cout << "Manual Content-Length test failed: " << httplib::to_string(result.error())
+                      << std::endl;
         }
 
     } catch (const std::exception& e) {

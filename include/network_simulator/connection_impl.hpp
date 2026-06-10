@@ -8,8 +8,7 @@
 
 namespace network_simulator {
 
-template<typename Types>
-auto Connection<Types>::read() -> future_bytes_type {
+template<typename Types> auto Connection<Types>::read() -> future_bytes_type {
     std::unique_lock lock(_buffer_mutex);
 
     if (!_open.load()) {
@@ -33,9 +32,7 @@ auto Connection<Types>::read() -> future_bytes_type {
     }
 
     // No data available - wait indefinitely for data to arrive
-    _data_available.wait(lock, [this] {
-        return !_read_buffer.empty() || !_open.load();
-    });
+    _data_available.wait(lock, [this] { return !_read_buffer.empty() || !_open.load(); });
 
     // Check if connection was closed while waiting
     if (!_open.load()) {
@@ -80,9 +77,8 @@ auto Connection<Types>::read(std::chrono::milliseconds timeout) -> future_bytes_
     }
 
     // Wait for data to become available with timeout
-    bool data_available = _data_available.wait_for(lock, timeout, [this] {
-        return !_read_buffer.empty() || !_open.load();
-    });
+    bool data_available = _data_available.wait_for(
+        lock, timeout, [this] { return !_read_buffer.empty() || !_open.load(); });
 
     // Check if connection was closed while waiting
     if (!_open.load()) {
@@ -117,8 +113,7 @@ template<typename Types>
 auto Connection<Types>::write(std::vector<std::byte> data) -> future_bool_type {
     if (!_open.load()) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(
-            folly::exception_wrapper(ConnectionClosedException{}));
+        return folly::makeFuture<bool>(folly::exception_wrapper(ConnectionClosedException{}));
 #else
         return future_bool_type(std::make_exception_ptr(ConnectionClosedException{}));
 #endif
@@ -129,11 +124,11 @@ auto Connection<Types>::write(std::vector<std::byte> data) -> future_bool_type {
 }
 
 template<typename Types>
-auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::milliseconds timeout) -> future_bool_type {
+auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::milliseconds timeout)
+    -> future_bool_type {
     if (!_open.load()) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(
-            folly::exception_wrapper(ConnectionClosedException{}));
+        return folly::makeFuture<bool>(folly::exception_wrapper(ConnectionClosedException{}));
 #else
         return future_bool_type(std::make_exception_ptr(ConnectionClosedException{}));
 #endif
@@ -148,8 +143,7 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
             // If the write latency is greater than timeout, throw TimeoutException
             if (write_latency > timeout) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-                return folly::makeFuture<bool>(
-                    folly::exception_wrapper(TimeoutException{}));
+                return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
 #else
                 return future_bool_type(std::make_exception_ptr(TimeoutException{}));
 #endif
@@ -157,8 +151,7 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
         } catch (const NoRouteException&) {
             // No route exists, write would timeout
 #ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<bool>(
-                folly::exception_wrapper(TimeoutException{}));
+            return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
 #else
             return future_bool_type(std::make_exception_ptr(TimeoutException{}));
 #endif
@@ -172,8 +165,7 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
     if (timeout < std::chrono::milliseconds(10)) {
         // Very short timeout - simulate timeout for testing
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(
-            folly::exception_wrapper(TimeoutException{}));
+        return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
 #else
         return future_bool_type(std::make_exception_ptr(TimeoutException{}));
 #endif
@@ -182,8 +174,7 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
     return future;
 }
 
-template<typename Types>
-auto Connection<Types>::close() -> void {
+template<typename Types> auto Connection<Types>::close() -> void {
     _open.store(false);
 
     // Notify simulator about connection closure for state tracking
@@ -198,13 +189,11 @@ auto Connection<Types>::close() -> void {
     }
 }
 
-template<typename Types>
-auto Connection<Types>::is_open() const -> bool {
+template<typename Types> auto Connection<Types>::is_open() const -> bool {
     return _open.load();
 }
 
-template<typename Types>
-auto Connection<Types>::deliver_data(std::vector<std::byte> data) -> void {
+template<typename Types> auto Connection<Types>::deliver_data(std::vector<std::byte> data) -> void {
     std::unique_lock lock(_buffer_mutex);
 
     if (_open.load()) {
@@ -213,4 +202,4 @@ auto Connection<Types>::deliver_data(std::vector<std::byte> data) -> void {
     }
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

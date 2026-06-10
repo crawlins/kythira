@@ -15,7 +15,8 @@ auto benchmark_apply(const std::string& name, CommandGen gen, int iterations) ->
     for (int i = 0; i < iterations; ++i) {
         try {
             sm.apply(gen(i), i + 1);
-        } catch (...) {}
+        } catch (...) {
+        }
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -30,7 +31,7 @@ auto benchmark_apply(const std::string& name, CommandGen gen, int iterations) ->
     std::cout << "  Throughput: " << static_cast<int>(ops_per_sec) << " ops/sec\n\n";
 }
 
-BOOST_AUTO_TEST_CASE(benchmark_kv_put, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(benchmark_kv_put, *boost::unit_test::timeout(60)) {
     auto gen = [](int i) {
         std::string key = "key" + std::to_string(i);
         std::string value = "value" + std::to_string(i);
@@ -40,7 +41,7 @@ BOOST_AUTO_TEST_CASE(benchmark_kv_put, * boost::unit_test::timeout(60)) {
     benchmark_apply<kythira::test_key_value_state_machine<>>("KV PUT", gen, 10000);
 }
 
-BOOST_AUTO_TEST_CASE(benchmark_counter_inc, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(benchmark_counter_inc, *boost::unit_test::timeout(60)) {
     auto gen = [](int) {
         std::string cmd = "INC";
         return std::vector<std::byte>(reinterpret_cast<const std::byte*>(cmd.data()),
@@ -50,7 +51,7 @@ BOOST_AUTO_TEST_CASE(benchmark_counter_inc, * boost::unit_test::timeout(60)) {
     benchmark_apply<kythira::examples::counter_state_machine>("Counter INC", gen, 100000);
 }
 
-BOOST_AUTO_TEST_CASE(benchmark_register_write, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(benchmark_register_write, *boost::unit_test::timeout(60)) {
     auto gen = [](int i) {
         std::string cmd = "WRITE " + std::to_string(i);
         return std::vector<std::byte>(reinterpret_cast<const std::byte*>(cmd.data()),
@@ -60,7 +61,7 @@ BOOST_AUTO_TEST_CASE(benchmark_register_write, * boost::unit_test::timeout(60)) 
     benchmark_apply<kythira::examples::register_state_machine>("Register WRITE", gen, 100000);
 }
 
-BOOST_AUTO_TEST_CASE(benchmark_snapshot_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(benchmark_snapshot_operations, *boost::unit_test::timeout(60)) {
     kythira::test_key_value_state_machine sm;
 
     // Populate using binary format

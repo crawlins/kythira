@@ -14,10 +14,10 @@ namespace coap_utils {
 
 // Endpoint parsing utilities
 struct parsed_endpoint {
-    std::string scheme;      // "coap" or "coaps"
-    std::string host;        // hostname or IP address
-    std::uint16_t port;      // port number
-    std::string path;        // resource path (optional)
+    std::string scheme;  // "coap" or "coaps"
+    std::string host;    // hostname or IP address
+    std::uint16_t port;  // port number
+    std::string path;    // resource path (optional)
 
     parsed_endpoint() = default;
     parsed_endpoint(std::string s, std::string h, std::uint16_t p, std::string path = "")
@@ -35,10 +35,10 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
     std::string rest;
     if (endpoint.find("coaps://") == 0) {
         result.scheme = "coaps";
-        rest = endpoint.substr(8); // Remove "coaps://"
+        rest = endpoint.substr(8);  // Remove "coaps://"
     } else if (endpoint.find("coap://") == 0) {
         result.scheme = "coap";
-        rest = endpoint.substr(7); // Remove "coap://"
+        rest = endpoint.substr(7);  // Remove "coap://"
     } else {
         throw coap_network_error("Invalid scheme - must be coap:// or coaps://");
     }
@@ -48,7 +48,7 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
     std::string host_port;
     if (slash_pos != std::string::npos) {
         host_port = rest.substr(0, slash_pos);
-        result.path = rest.substr(slash_pos); // Include the leading slash
+        result.path = rest.substr(slash_pos);  // Include the leading slash
     } else {
         host_port = rest;
     }
@@ -69,7 +69,7 @@ inline auto parse_coap_endpoint(const std::string& endpoint) -> parsed_endpoint 
         }
     } else {
         result.host = host_port;
-        result.port = (result.scheme == "coaps") ? 5684 : 5683; // Default ports
+        result.port = (result.scheme == "coaps") ? 5684 : 5683;  // Default ports
     }
 
     return result;
@@ -86,7 +86,8 @@ inline auto format_coap_endpoint(const parsed_endpoint& endpoint) -> std::string
         throw coap_network_error("Invalid port - must be non-zero");
     }
 
-    return endpoint.scheme + "://" + endpoint.host + ":" + std::to_string(endpoint.port) + endpoint.path;
+    return endpoint.scheme + "://" + endpoint.host + ":" + std::to_string(endpoint.port) +
+           endpoint.path;
 }
 
 inline auto is_valid_coap_endpoint(const std::string& endpoint) -> bool {
@@ -131,7 +132,7 @@ inline auto generate_coap_token(std::size_t length = 4) -> std::vector<std::byte
 }
 
 inline auto is_valid_coap_token(const std::vector<std::byte>& token) -> bool {
-    return token.size() <= 8; // CoAP tokens are max 8 bytes
+    return token.size() <= 8;  // CoAP tokens are max 8 bytes
 }
 
 // CoAP option handling utilities
@@ -145,7 +146,8 @@ enum class coap_content_format : std::uint16_t {
     application_cbor = 60
 };
 
-inline auto get_content_format_for_serializer(const std::string& serializer_name) -> coap_content_format {
+inline auto get_content_format_for_serializer(const std::string& serializer_name)
+    -> coap_content_format {
     // Check for JSON variants
     if (serializer_name.find("json") != std::string::npos ||
         serializer_name.find("JSON") != std::string::npos) {
@@ -202,7 +204,8 @@ inline auto parse_content_format(std::uint16_t format_value) -> coap_content_for
         case 60:  // application_cbor
             return static_cast<coap_content_format>(format_value);
         default:
-            throw coap_protocol_error("Unknown content format value: " + std::to_string(format_value));
+            throw coap_protocol_error("Unknown content format value: " +
+                                      std::to_string(format_value));
     }
 }
 
@@ -244,5 +247,5 @@ inline auto is_valid_block_size(std::size_t block_size) -> bool {
     return block_size >= 16 && block_size <= 1024 && (block_size & (block_size - 1)) == 0;
 }
 
-} // namespace coap_utils
-} // namespace kythira
+}  // namespace coap_utils
+}  // namespace kythira

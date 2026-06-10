@@ -15,10 +15,10 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t cluster_size = 5;
-    constexpr std::size_t majority_size = 3;
-    constexpr std::size_t test_iterations = 8;
-    constexpr std::chrono::milliseconds partition_detection_window{1000};
+constexpr std::size_t cluster_size = 5;
+constexpr std::size_t majority_size = 3;
+constexpr std::size_t test_iterations = 8;
+constexpr std::chrono::milliseconds partition_detection_window{1000};
 }
 
 // Global fixture to initialize Folly
@@ -36,10 +36,12 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 /**
  * **Feature: raft-completion, Property 20: Partition Detection and Handling**
  *
- * Property: When network partitions occur, the system detects the partition and handles it according to Raft safety requirements.
+ * Property: When network partitions occur, the system detects the partition and handles it
+ * according to Raft safety requirements.
  * **Validates: Requirements 4.5**
  */
-BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::unit_test::timeout(240)) {
+BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
+                     *boost::unit_test::timeout(240)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -67,7 +69,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         }
 
         BOOST_TEST_MESSAGE("Partition: " << partitioned_nodes.size() << " nodes unreachable, "
-                          << reachable_nodes.size() << " nodes reachable");
+                                         << reachable_nodes.size() << " nodes reachable");
 
         // Track error patterns for partition detection
         std::vector<kythira::error_classification> recent_errors;
@@ -75,24 +77,25 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Simulate operations to multiple nodes with partition
         for (std::uint64_t target_node : all_nodes) {
-            bool is_partitioned = std::find(partitioned_nodes.begin(), partitioned_nodes.end(), target_node) != partitioned_nodes.end();
+            bool is_partitioned = std::find(partitioned_nodes.begin(), partitioned_nodes.end(),
+                                            target_node) != partitioned_nodes.end();
 
             std::atomic<int> attempt_count{0};
-            auto partition_operation = [&handler, &recent_errors, &node_failure_counts, target_node, is_partitioned, &attempt_count]() -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            auto partition_operation = [&handler, &recent_errors, &node_failure_counts, target_node,
+                                        is_partitioned, &attempt_count]()
+                -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
                 ++attempt_count;
 
                 if (is_partitioned) {
                     // Simulate partition-related errors
                     std::vector<std::string> partition_errors = {
-                        "Network is unreachable",
-                        "Connection timeout",
-                        "No route to host",
-                        "Network timeout occurred"
-                    };
+                        "Network is unreachable", "Connection timeout", "No route to host",
+                        "Network timeout occurred"};
 
                     std::random_device rd;
                     std::mt19937 rng(rd());
-                    std::uniform_int_distribution<std::size_t> error_dist(0, partition_errors.size() - 1);
+                    std::uniform_int_distribution<std::size_t> error_dist(
+                        0, partition_errors.size() - 1);
 
                     auto error_msg = partition_errors[error_dist(rng)];
                     auto classification = handler.classify_error(std::runtime_error(error_msg));
@@ -104,27 +107,30 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
                         recent_errors.erase(recent_errors.begin());
                     }
 
-                    return kythira::FutureFactory::makeExceptionalFuture<kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                    return kythira::FutureFactory::makeExceptionalFuture<
+                        kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                         std::runtime_error(error_msg));
                 } else {
                     // Reachable nodes respond normally
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                        1, // term
-                        true, // success
-                        std::nullopt, // conflict_term
-                        std::nullopt  // conflict_index
+                        1,             // term
+                        true,          // success
+                        std::nullopt,  // conflict_term
+                        std::nullopt   // conflict_index
                     };
                     return kythira::FutureFactory::makeFuture(success_response);
                 }
             };
 
             try {
-                auto result = handler.execute_with_retry("append_entries", partition_operation).get();
+                auto result =
+                    handler.execute_with_retry("append_entries", partition_operation).get();
 
                 if (!is_partitioned) {
                     // Property: Reachable nodes should respond successfully
                     BOOST_CHECK(result.success());
-                    BOOST_TEST_MESSAGE("✓ Node " << target_node << " (reachable) responded successfully");
+                    BOOST_TEST_MESSAGE("✓ Node " << target_node
+                                                 << " (reachable) responded successfully");
                 } else {
                     BOOST_FAIL("Partitioned node should not succeed: " << target_node);
                 }
@@ -132,10 +138,12 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
             } catch (const std::exception& e) {
                 if (is_partitioned) {
                     // Property: Partitioned nodes should fail after retries
-                    BOOST_CHECK_GT(attempt_count.load(), 1); // Should have retried
-                    BOOST_TEST_MESSAGE("✓ Node " << target_node << " (partitioned) failed after " << attempt_count.load() << " attempts");
+                    BOOST_CHECK_GT(attempt_count.load(), 1);  // Should have retried
+                    BOOST_TEST_MESSAGE("✓ Node " << target_node << " (partitioned) failed after "
+                                                 << attempt_count.load() << " attempts");
                 } else {
-                    BOOST_FAIL("Reachable node should not fail: " << target_node << " - " << e.what());
+                    BOOST_FAIL("Reachable node should not fail: " << target_node << " - "
+                                                                  << e.what());
                 }
             }
         }
@@ -146,7 +154,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         if (partitioned_nodes.size() >= 2) {
             // With multiple nodes failing, partition should be detected
             BOOST_CHECK(partition_detected);
-            BOOST_TEST_MESSAGE("✓ Network partition correctly detected with " << partitioned_nodes.size() << " partitioned nodes");
+            BOOST_TEST_MESSAGE("✓ Network partition correctly detected with "
+                               << partitioned_nodes.size() << " partitioned nodes");
         } else if (partitioned_nodes.size() == 1) {
             // Single node failure might or might not be classified as partition
             BOOST_TEST_MESSAGE("Single node partition detection: " << partition_detected);
@@ -154,7 +163,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Property: Majority availability check
         bool has_majority = reachable_nodes.size() >= majority_size;
-        BOOST_TEST_MESSAGE("Majority available: " << has_majority << " (" << reachable_nodes.size() << "/" << cluster_size << " nodes reachable)");
+        BOOST_TEST_MESSAGE("Majority available: " << has_majority << " (" << reachable_nodes.size()
+                                                  << "/" << cluster_size << " nodes reachable)");
 
         if (has_majority) {
             // Property: With majority, operations should be able to proceed
@@ -165,7 +175,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
                 }
             }
             BOOST_CHECK_GE(successful_operations, majority_size);
-            BOOST_TEST_MESSAGE("✓ Majority operations can proceed (" << successful_operations << " successful)");
+            BOOST_TEST_MESSAGE("✓ Majority operations can proceed (" << successful_operations
+                                                                     << " successful)");
         } else {
             // Property: Without majority, cluster should not make progress
             BOOST_TEST_MESSAGE("✓ Minority partition detected - cluster should not make progress");
@@ -212,7 +223,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
         std::vector<kythira::error_classification> gradual_errors;
 
         // Single node failure
-        auto single_failure = handler.classify_error(std::runtime_error("Network timeout occurred"));
+        auto single_failure =
+            handler.classify_error(std::runtime_error("Network timeout occurred"));
         gradual_errors.push_back(single_failure);
 
         bool gradual_detected = handler.detect_network_partition(gradual_errors);
@@ -221,7 +233,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Add more failures to simulate sudden partition
         for (int i = 0; i < 5; ++i) {
-            auto partition_failure = handler.classify_error(std::runtime_error("Network is unreachable"));
+            auto partition_failure =
+                handler.classify_error(std::runtime_error("Network is unreachable"));
             gradual_errors.push_back(partition_failure);
         }
 
@@ -240,7 +253,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Initial partition
         for (int i = 0; i < 4; ++i) {
-            auto partition_error = handler.classify_error(std::runtime_error("Network is unreachable"));
+            auto partition_error =
+                handler.classify_error(std::runtime_error("Network is unreachable"));
             recovery_errors.push_back(partition_error);
         }
 
@@ -267,7 +281,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Node 1 can't reach nodes 2,3,4,5
         for (int i = 0; i < 4; ++i) {
-            auto unreachable_error = handler.classify_error(std::runtime_error("Network is unreachable"));
+            auto unreachable_error =
+                handler.classify_error(std::runtime_error("Network is unreachable"));
             asymmetric_errors.push_back(unreachable_error);
         }
 
@@ -286,11 +301,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Simulate intermittent failures
         std::vector<std::string> intermittent_errors = {
-            "Network timeout occurred",
-            "Connection refused",
-            "Network is unreachable",
-            "Temporary failure"
-        };
+            "Network timeout occurred", "Connection refused", "Network is unreachable",
+            "Temporary failure"};
 
         // Add mixed success and failure patterns
         for (int cycle = 0; cycle < 3; ++cycle) {
@@ -316,32 +328,32 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         // Test different error types and their contribution to partition detection
         std::vector<std::pair<std::string, bool>> error_types = {
-            {"Network is unreachable", true},           // Should contribute to partition detection
-            {"Connection timeout", true},               // Should contribute to partition detection
-            {"No route to host", true},                 // Should contribute to partition detection
-            {"Network timeout occurred", true},         // Should contribute to partition detection
-            {"Connection refused", true},               // Should contribute to partition detection
-            {"serialization error", false},             // Should not contribute to partition detection
-            {"protocol violation", false},              // Should not contribute to partition detection
-            {"invalid format", false}                   // Should not contribute to partition detection
+            {"Network is unreachable", true},    // Should contribute to partition detection
+            {"Connection timeout", true},        // Should contribute to partition detection
+            {"No route to host", true},          // Should contribute to partition detection
+            {"Network timeout occurred", true},  // Should contribute to partition detection
+            {"Connection refused", true},        // Should contribute to partition detection
+            {"serialization error", false},      // Should not contribute to partition detection
+            {"protocol violation", false},       // Should not contribute to partition detection
+            {"invalid format", false}            // Should not contribute to partition detection
         };
 
         for (const auto& [error_msg, contributes_to_partition] : error_types) {
             auto classification = handler.classify_error(std::runtime_error(error_msg));
 
             BOOST_TEST_MESSAGE("Error: " << error_msg
-                              << " -> type=" << static_cast<int>(classification.type)
-                              << ", should_retry=" << classification.should_retry);
+                                         << " -> type=" << static_cast<int>(classification.type)
+                                         << ", should_retry=" << classification.should_retry);
 
             // Property: Network-related errors should be classified appropriately
             if (contributes_to_partition) {
                 BOOST_CHECK(classification.type == kythira::error_type::network_timeout ||
-                           classification.type == kythira::error_type::network_unreachable ||
-                           classification.type == kythira::error_type::connection_refused ||
-                           classification.type == kythira::error_type::temporary_failure);
+                            classification.type == kythira::error_type::network_unreachable ||
+                            classification.type == kythira::error_type::connection_refused ||
+                            classification.type == kythira::error_type::temporary_failure);
             } else {
                 BOOST_CHECK(classification.type == kythira::error_type::serialization_error ||
-                           classification.type == kythira::error_type::protocol_error);
+                            classification.type == kythira::error_type::protocol_error);
             }
         }
 
@@ -369,7 +381,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test, * boost::u
 
         bool mixed_partition_detected = handler.detect_network_partition(mixed_errors);
         BOOST_CHECK(mixed_partition_detected);
-        BOOST_TEST_MESSAGE("✓ Mixed errors still detected as partition when network errors dominate");
+        BOOST_TEST_MESSAGE(
+            "✓ Mixed errors still detected as partition when network errors dominate");
     }
 
     BOOST_TEST_MESSAGE("All partition detection and handling property tests passed!");

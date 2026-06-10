@@ -14,10 +14,10 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::chrono::milliseconds min_timeout{10};
-    constexpr std::chrono::milliseconds max_timeout{60000};
-    constexpr std::chrono::milliseconds default_timeout{100};
+constexpr std::size_t test_iterations = 15;
+constexpr std::chrono::milliseconds min_timeout{10};
+constexpr std::chrono::milliseconds max_timeout{60000};
+constexpr std::chrono::milliseconds default_timeout{100};
 }
 
 // Global fixture to initialize Folly
@@ -35,10 +35,12 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 /**
  * **Feature: raft-completion, Property 42: RPC Timeout Configuration**
  *
- * Property: When configuring RPC timeouts, the system allows separate timeout values for different RPC types.
+ * Property: When configuring RPC timeouts, the system allows separate timeout values for different
+ * RPC types.
  * **Validates: Requirements 9.1**
  */
-BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test,
+                     *boost::unit_test::timeout(180)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -53,10 +55,11 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
         auto install_snapshot_timeout = std::chrono::milliseconds{timeout_dist(gen)};
         auto heartbeat_timeout = std::chrono::milliseconds{timeout_dist(gen)};
 
-        BOOST_TEST_MESSAGE("Testing timeouts - AppendEntries: " << append_entries_timeout.count()
-                          << "ms, RequestVote: " << request_vote_timeout.count()
-                          << "ms, InstallSnapshot: " << install_snapshot_timeout.count()
-                          << "ms, Heartbeat: " << heartbeat_timeout.count() << "ms");
+        BOOST_TEST_MESSAGE("Testing timeouts - AppendEntries: "
+                           << append_entries_timeout.count()
+                           << "ms, RequestVote: " << request_vote_timeout.count()
+                           << "ms, InstallSnapshot: " << install_snapshot_timeout.count()
+                           << "ms, Heartbeat: " << heartbeat_timeout.count() << "ms");
 
         // Create configuration with different timeout values
         raft_configuration config;
@@ -73,11 +76,13 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
 
         // Property: Different RPC types should be able to have different timeout values
         BOOST_CHECK(config.append_entries_timeout() != config.request_vote_timeout() ||
-                   config.request_vote_timeout() != config.install_snapshot_timeout() ||
-                   config.install_snapshot_timeout() != config.rpc_timeout() ||
-                   append_entries_timeout == request_vote_timeout); // Allow equal values by chance
+                    config.request_vote_timeout() != config.install_snapshot_timeout() ||
+                    config.install_snapshot_timeout() != config.rpc_timeout() ||
+                    append_entries_timeout ==
+                        request_vote_timeout);  // Allow equal values by chance
 
-        BOOST_TEST_MESSAGE("✓ RPC timeout configuration supports separate values for different RPC types");
+        BOOST_TEST_MESSAGE(
+            "✓ RPC timeout configuration supports separate values for different RPC types");
     }
 
     // Test 1: Default timeout values
@@ -92,17 +97,21 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
         BOOST_CHECK_GT(default_config.rpc_timeout().count(), 0);
 
         // Property: InstallSnapshot should have the longest timeout (for large data transfers)
-        BOOST_CHECK_GE(default_config.install_snapshot_timeout(), default_config.append_entries_timeout());
-        BOOST_CHECK_GE(default_config.install_snapshot_timeout(), default_config.request_vote_timeout());
+        BOOST_CHECK_GE(default_config.install_snapshot_timeout(),
+                       default_config.append_entries_timeout());
+        BOOST_CHECK_GE(default_config.install_snapshot_timeout(),
+                       default_config.request_vote_timeout());
 
         // Property: AppendEntries should have longer timeout than RequestVote (more data)
-        BOOST_CHECK_GE(default_config.append_entries_timeout(), default_config.request_vote_timeout());
+        BOOST_CHECK_GE(default_config.append_entries_timeout(),
+                       default_config.request_vote_timeout());
 
         BOOST_TEST_MESSAGE("✓ Default timeout values: AppendEntries="
-                          << default_config.append_entries_timeout().count()
-                          << "ms, RequestVote=" << default_config.request_vote_timeout().count()
-                          << "ms, InstallSnapshot=" << default_config.install_snapshot_timeout().count()
-                          << "ms, RPC=" << default_config.rpc_timeout().count() << "ms");
+                           << default_config.append_entries_timeout().count()
+                           << "ms, RequestVote=" << default_config.request_vote_timeout().count()
+                           << "ms, InstallSnapshot="
+                           << default_config.install_snapshot_timeout().count()
+                           << "ms, RPC=" << default_config.rpc_timeout().count() << "ms");
     }
 
     // Test 2: Timeout value boundaries
@@ -191,7 +200,7 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
         valid_config._rpc_timeout = std::chrono::milliseconds{1000};
 
         // Ensure heartbeat interval compatibility (heartbeat should be < election_timeout_min / 3)
-        valid_config._heartbeat_interval = std::chrono::milliseconds{40}; // 150/40 = 3.75 > 3.0
+        valid_config._heartbeat_interval = std::chrono::milliseconds{40};  // 150/40 = 3.75 > 3.0
         valid_config._election_timeout_min = std::chrono::milliseconds{150};
         valid_config._election_timeout_max = std::chrono::milliseconds{300};
 
@@ -203,10 +212,9 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
             BOOST_TEST_MESSAGE("Validation error: " << error);
         }
 
-        bool has_timeout_errors = std::any_of(errors.begin(), errors.end(),
-            [](const std::string& error) {
-                return error.find("timeout") != std::string::npos;
-            });
+        bool has_timeout_errors = std::any_of(
+            errors.begin(), errors.end(),
+            [](const std::string& error) { return error.find("timeout") != std::string::npos; });
         BOOST_CHECK(!has_timeout_errors);
 
         // Test invalid configuration (zero timeouts)
@@ -218,20 +226,20 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
 
         // Property: Invalid timeout configuration should fail validation
         auto invalid_errors = invalid_config.get_validation_errors();
-        bool has_append_entries_error = std::any_of(invalid_errors.begin(), invalid_errors.end(),
-            [](const std::string& error) {
+        bool has_append_entries_error =
+            std::any_of(invalid_errors.begin(), invalid_errors.end(), [](const std::string& error) {
                 return error.find("append_entries_timeout") != std::string::npos;
             });
-        bool has_request_vote_error = std::any_of(invalid_errors.begin(), invalid_errors.end(),
-            [](const std::string& error) {
+        bool has_request_vote_error =
+            std::any_of(invalid_errors.begin(), invalid_errors.end(), [](const std::string& error) {
                 return error.find("request_vote_timeout") != std::string::npos;
             });
-        bool has_install_snapshot_error = std::any_of(invalid_errors.begin(), invalid_errors.end(),
-            [](const std::string& error) {
+        bool has_install_snapshot_error =
+            std::any_of(invalid_errors.begin(), invalid_errors.end(), [](const std::string& error) {
                 return error.find("install_snapshot_timeout") != std::string::npos;
             });
-        bool has_rpc_timeout_error = std::any_of(invalid_errors.begin(), invalid_errors.end(),
-            [](const std::string& error) {
+        bool has_rpc_timeout_error =
+            std::any_of(invalid_errors.begin(), invalid_errors.end(), [](const std::string& error) {
                 return error.find("rpc_timeout") != std::string::npos;
             });
 
@@ -253,9 +261,12 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
         static_assert(raft_configuration_type<raft_configuration>);
 
         // Property: All timeout accessor methods should return chrono::milliseconds
-        static_assert(std::same_as<decltype(config.append_entries_timeout()), std::chrono::milliseconds>);
-        static_assert(std::same_as<decltype(config.request_vote_timeout()), std::chrono::milliseconds>);
-        static_assert(std::same_as<decltype(config.install_snapshot_timeout()), std::chrono::milliseconds>);
+        static_assert(
+            std::same_as<decltype(config.append_entries_timeout()), std::chrono::milliseconds>);
+        static_assert(
+            std::same_as<decltype(config.request_vote_timeout()), std::chrono::milliseconds>);
+        static_assert(
+            std::same_as<decltype(config.install_snapshot_timeout()), std::chrono::milliseconds>);
         static_assert(std::same_as<decltype(config.rpc_timeout()), std::chrono::milliseconds>);
 
         BOOST_TEST_MESSAGE("✓ Configuration satisfies concept requirements");
@@ -272,34 +283,34 @@ BOOST_AUTO_TEST_CASE(raft_rpc_timeout_configuration_property_test, * boost::unit
         config._rpc_timeout = std::chrono::milliseconds{800};
 
         // Create error handlers with different timeout configurations
-        kythira::error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> ae_handler;
+        kythira::error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>>
+            ae_handler;
         kythira::error_handler<kythira::request_vote_response<std::uint64_t>> rv_handler;
         kythira::error_handler<kythira::install_snapshot_response<std::uint64_t>> is_handler;
 
         // Property: Error handlers should be configurable with different timeout policies
-        typename kythira::error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::retry_policy ae_policy{
+        typename kythira::error_handler<
+            kythira::append_entries_response<std::uint64_t, std::uint64_t>>::retry_policy ae_policy{
             .initial_delay = std::chrono::milliseconds{100},
             .max_delay = config.append_entries_timeout(),
             .backoff_multiplier = 2.0,
             .jitter_factor = 0.1,
-            .max_attempts = 5
-        };
+            .max_attempts = 5};
 
-        typename kythira::error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy rv_policy{
-            .initial_delay = std::chrono::milliseconds{50},
-            .max_delay = config.request_vote_timeout(),
-            .backoff_multiplier = 1.8,
-            .jitter_factor = 0.1,
-            .max_attempts = 3
-        };
+        typename kythira::error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy
+            rv_policy{.initial_delay = std::chrono::milliseconds{50},
+                      .max_delay = config.request_vote_timeout(),
+                      .backoff_multiplier = 1.8,
+                      .jitter_factor = 0.1,
+                      .max_attempts = 3};
 
-        typename kythira::error_handler<kythira::install_snapshot_response<std::uint64_t>>::retry_policy is_policy{
+        typename kythira::error_handler<
+            kythira::install_snapshot_response<std::uint64_t>>::retry_policy is_policy{
             .initial_delay = std::chrono::milliseconds{500},
             .max_delay = config.install_snapshot_timeout(),
             .backoff_multiplier = 2.5,
             .jitter_factor = 0.1,
-            .max_attempts = 10
-        };
+            .max_attempts = 10};
 
         // Property: Policies should be valid and configurable
         BOOST_CHECK(ae_policy.is_valid());

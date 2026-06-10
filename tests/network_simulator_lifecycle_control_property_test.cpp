@@ -13,14 +13,14 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr std::chrono::milliseconds default_latency{10};
-    constexpr double default_reliability = 1.0;
-    constexpr std::size_t test_iterations = 50;
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_payload = "test_message";
-    constexpr std::chrono::milliseconds short_timeout{100};
-    constexpr std::chrono::milliseconds medium_timeout{1000};
+constexpr std::chrono::milliseconds default_latency{10};
+constexpr double default_reliability = 1.0;
+constexpr std::size_t test_iterations = 50;
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_payload = "test_message";
+constexpr std::chrono::milliseconds short_timeout{100};
+constexpr std::chrono::milliseconds medium_timeout{1000};
 }
 
 /**
@@ -32,8 +32,8 @@ namespace {
  *
  * **Validates: Requirements 12.1, 12.2, 12.4**
  */
-BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test, * boost::unit_test::timeout(120)) {
-
+BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -63,11 +63,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test, * boost:
         for (char c : std::string(test_payload)) {
             payload.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> msg(
-            test_node_a, 8080,
-            test_node_b, 8081,
-            payload
-        );
+        Message<DefaultNetworkTypes> msg(test_node_a, 8080, test_node_b, 8081, payload);
 
         // Send operation should succeed when simulator is started
         auto send_future = node_a->send(msg, medium_timeout);
@@ -102,11 +98,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test, * boost:
         for (char c : std::string(test_payload)) {
             payload2.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> msg2(
-            test_node_a, 8082,
-            test_node_b, 8083,
-            payload2
-        );
+        Message<DefaultNetworkTypes> msg2(test_node_a, 8082, test_node_b, 8083, payload2);
 
         // Send operation should fail when simulator is stopped
         auto send_future_after_stop = node_a->send(msg2, short_timeout);
@@ -136,11 +128,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test, * boost:
         for (char c : std::string(test_payload)) {
             payload3.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> msg3(
-            test_node_a, 8084,
-            test_node_b, 8085,
-            payload3
-        );
+        Message<DefaultNetworkTypes> msg3(test_node_a, 8084, test_node_b, 8085, payload3);
 
         auto send_future_after_restart = node_a->send(msg3, medium_timeout);
 
@@ -160,7 +148,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test, * boost:
 /**
  * Test multiple start/stop cycles
  */
-BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Set up basic topology
@@ -183,11 +171,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, * boost::unit_test::t
         for (char c : std::string(test_payload)) {
             payload_cycle.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> msg(
-            test_node_a, 8080 + cycle,
-            test_node_b, 8081 + cycle,
-            payload_cycle
-        );
+        Message<DefaultNetworkTypes> msg(test_node_a, 8080 + cycle, test_node_b, 8081 + cycle,
+                                         payload_cycle);
 
         auto send_future = node_a->send(msg, medium_timeout);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -204,11 +189,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, * boost::unit_test::t
         for (char c : std::string(test_payload)) {
             payload_after_stop.push_back(static_cast<std::byte>(c));
         }
-        Message<DefaultNetworkTypes> msg_after_stop(
-            test_node_a, 9080 + cycle,
-            test_node_b, 9081 + cycle,
-            payload_after_stop
-        );
+        Message<DefaultNetworkTypes> msg_after_stop(test_node_a, 9080 + cycle, test_node_b,
+                                                    9081 + cycle, payload_after_stop);
 
         auto send_future_after_stop = node_a->send(msg_after_stop, short_timeout);
         std::this_thread::sleep_for(short_timeout + std::chrono::milliseconds(50));
@@ -225,7 +207,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, * boost::unit_test::t
 /**
  * Test concurrent operations during lifecycle transitions
  */
-BOOST_AUTO_TEST_CASE(lifecycle_concurrent_operations, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(lifecycle_concurrent_operations, *boost::unit_test::timeout(90)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Set up topology
@@ -250,11 +232,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_concurrent_operations, * boost::unit_test::timeou
             for (char c : std::string(test_payload)) {
                 payload_concurrent.push_back(static_cast<std::byte>(c));
             }
-            Message<DefaultNetworkTypes> msg(
-                test_node_a, 8080 + i,
-                test_node_b, 8081 + i,
-                payload_concurrent
-            );
+            Message<DefaultNetworkTypes> msg(test_node_a, 8080 + i, test_node_b, 8081 + i,
+                                             payload_concurrent);
 
             auto send_future = node_a->send(msg, medium_timeout);
             std::this_thread::sleep_for(std::chrono::milliseconds(10 + i * 5));
@@ -288,7 +267,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_concurrent_operations, * boost::unit_test::timeou
     // We expect at least some operations to have succeeded before the stop
     // The exact number depends on timing, but there should be some
     BOOST_TEST_MESSAGE("Successful operations during concurrent lifecycle test: "
-                      << successful_operations << "/10");
+                       << successful_operations << "/10");
 }
 
 /**
@@ -351,7 +330,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     BOOST_CHECK(listener->is_listening());
 
     // Client connect should work when started
-    BOOST_TEST_MESSAGE("Attempting connect from " << test_node_a << " to " << test_node_b << ":8080");
+    BOOST_TEST_MESSAGE("Attempting connect from " << test_node_a << " to " << test_node_b <<
+":8080");
 
     auto connect_future = node_a->connect(test_node_b, 8080, medium_timeout);
     std::this_thread::sleep_for(default_latency + std::chrono::milliseconds(50));
@@ -387,7 +367,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
 /**
  * Test edge case: Multiple starts without stops
  */
-BOOST_AUTO_TEST_CASE(lifecycle_multiple_starts, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(lifecycle_multiple_starts, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Multiple starts should not cause issues
@@ -405,7 +385,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_starts, * boost::unit_test::timeout(30))
 /**
  * Test edge case: Multiple stops without starts
  */
-BOOST_AUTO_TEST_CASE(lifecycle_multiple_stops, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(lifecycle_multiple_stops, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     // Multiple stops should not cause issues

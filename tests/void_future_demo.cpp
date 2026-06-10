@@ -37,19 +37,19 @@ int main(int argc, char* argv[]) {
     // Demo 2: thenTry with Future<int> returning callback
     std::cout << "\n2. thenTry with Future<int> returning callback:" << std::endl;
     auto result = FutureFactory::makeFuture()
-        .thenTry([](Try<void> t) -> Future<int> {
-            std::cout << "   - thenTry callback executed" << std::endl;
-            return FutureFactory::makeFuture(42);
-        })
-        .via(&executor)
-        .get();
+                      .thenTry([](Try<void> t) -> Future<int> {
+                          std::cout << "   - thenTry callback executed" << std::endl;
+                          return FutureFactory::makeFuture(42);
+                      })
+                      .via(&executor)
+                      .get();
     std::cout << "   - Result: " << result << std::endl;
     std::cout << "   ✓ Completed successfully" << std::endl;
 
     // Demo 3: thenError with Future<void> returning callback
     std::cout << "\n3. thenError with Future<void> returning callback:" << std::endl;
     FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("Test error")))
+        folly::exception_wrapper(std::runtime_error("Test error")))
         .thenError([](folly::exception_wrapper ex) -> Future<void> {
             std::cout << "   - thenError callback executed" << std::endl;
             std::cout << "   - Recovered from error: " << ex.what() << std::endl;
@@ -76,8 +76,7 @@ int main(int argc, char* argv[]) {
     FutureFactory::makeFuture()
         .thenTry([](Try<void> t) -> Future<void> {
             std::cout << "   - First callback" << std::endl;
-            return FutureFactory::makeFuture()
-                .delay(std::chrono::milliseconds(10));
+            return FutureFactory::makeFuture().delay(std::chrono::milliseconds(10));
         })
         .thenTry([](Try<void> t) -> Future<void> {
             std::cout << "   - Second callback (after delay)" << std::endl;
@@ -98,7 +97,8 @@ int main(int argc, char* argv[]) {
             return FutureFactory::makeFuture(100);
         })
         .thenTry([](Try<int> t) -> Future<void> {
-            std::cout << "   - Converting int back to void (value was: " << t.value() << ")" << std::endl;
+            std::cout << "   - Converting int back to void (value was: " << t.value() << ")"
+                      << std::endl;
             return FutureFactory::makeFuture();
         })
         .via(&executor)

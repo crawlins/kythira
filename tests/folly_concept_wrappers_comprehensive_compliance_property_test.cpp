@@ -19,27 +19,27 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
-    constexpr std::size_t property_test_iterations = 100;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
+constexpr std::size_t property_test_iterations = 100;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 1: Concept Compliance**
  *
- * Property: For any wrapper class and its corresponding concept, the wrapper should satisfy all concept requirements at compile time and runtime
+ * Property: For any wrapper class and its corresponding concept, the wrapper should satisfy all
+ * concept requirements at compile time and runtime
  * **Validates: Requirements 7.1, 7.2**
  */
-BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, * boost::unit_test::timeout(120)) {
-
+BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test,
+                     *boost::unit_test::timeout(120)) {
     // ========== STATIC ASSERTIONS FOR ALL WRAPPER CLASSES ==========
 
     // Test 1: Future concept compliance with various types
     {
         // Basic types
-        static_assert(future<Future<int>, int>,
-                      "kythira::Future<int> must satisfy future concept");
+        static_assert(future<Future<int>, int>, "kythira::Future<int> must satisfy future concept");
         static_assert(future<Future<std::string>, std::string>,
                       "kythira::Future<std::string> must satisfy future concept");
         static_assert(future<Future<double>, double>,
@@ -120,16 +120,14 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
 
     // Test 4: Executor concept compliance
     {
-        static_assert(executor<Executor>,
-                      "kythira::Executor must satisfy executor concept");
+        static_assert(executor<Executor>, "kythira::Executor must satisfy executor concept");
 
         BOOST_TEST_MESSAGE("kythira::Executor satisfies executor concept");
     }
 
     // Test 5: KeepAlive concept compliance
     {
-        static_assert(keep_alive<KeepAlive>,
-                      "kythira::KeepAlive must satisfy keep_alive concept");
+        static_assert(keep_alive<KeepAlive>, "kythira::KeepAlive must satisfy keep_alive concept");
 
         BOOST_TEST_MESSAGE("kythira::KeepAlive satisfies keep_alive concept");
     }
@@ -153,8 +151,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
     // Test 8: Try concept compliance
     {
         // Basic types
-        static_assert(try_type<Try<int>, int>,
-                      "kythira::Try<int> must satisfy try_type concept");
+        static_assert(try_type<Try<int>, int>, "kythira::Try<int> must satisfy try_type concept");
         static_assert(try_type<Try<std::string>, std::string>,
                       "kythira::Try<std::string> must satisfy try_type concept");
         static_assert(try_type<Try<double>, double>,
@@ -183,7 +180,8 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
                       "kythira::Future<int> must satisfy future_transformable concept");
         static_assert(future_transformable<Future<std::string>, std::string>,
                       "kythira::Future<std::string> must satisfy future_transformable concept");
-        // Note: future_transformable concept doesn't work with void types due to function signature requirements
+        // Note: future_transformable concept doesn't work with void types due to function signature
+        // requirements
 
         BOOST_TEST_MESSAGE("kythira::Future types satisfy future_transformable concept");
     }
@@ -203,8 +201,10 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
         static_assert(!try_type<int, int>, "int should not satisfy try_type concept");
 
         // Standard library types should not satisfy wrapper concepts
-        static_assert(!future<std::string, std::string>, "std::string should not satisfy future concept");
-        static_assert(!promise<std::vector<int>, std::vector<int>>, "std::vector should not satisfy promise concept");
+        static_assert(!future<std::string, std::string>,
+                      "std::string should not satisfy future concept");
+        static_assert(!promise<std::vector<int>, std::vector<int>>,
+                      "std::vector should not satisfy promise concept");
 
         BOOST_TEST_MESSAGE("Non-wrapper types are properly rejected by concepts");
     }
@@ -213,13 +213,15 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
     {
         // Future should not satisfy promise concepts
         static_assert(!promise<Future<int>, int>, "Future should not satisfy promise concept");
-        static_assert(!semi_promise<Future<int>, int>, "Future should not satisfy semi_promise concept");
+        static_assert(!semi_promise<Future<int>, int>,
+                      "Future should not satisfy semi_promise concept");
 
         // Promise should not satisfy future concept
         static_assert(!future<Promise<int>, int>, "Promise should not satisfy future concept");
 
         // SemiPromise should not satisfy full promise concept
-        static_assert(!promise<SemiPromise<int>, int>, "SemiPromise should not satisfy promise concept");
+        static_assert(!promise<SemiPromise<int>, int>,
+                      "SemiPromise should not satisfy promise concept");
 
         // Executor should not satisfy keep_alive concept
         // Note: Due to concept design, Executor may satisfy keep_alive if it has get() method
@@ -250,7 +252,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
         // Test with void type
         Future<void> future_void = FutureFactory::makeFuture();
         BOOST_CHECK(future_void.isReady());
-        future_void.get(); // Should not throw
+        future_void.get();  // Should not throw
 
         BOOST_TEST_MESSAGE("Future concept requirements validated at runtime");
     }
@@ -279,7 +281,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
         promise_void.setValue(folly::Unit{});
         BOOST_CHECK(promise_void.isFulfilled());
         BOOST_CHECK(future_void.isReady());
-        future_void.get(); // Should not throw
+        future_void.get();  // Should not throw
 
         BOOST_TEST_MESSAGE("Promise concept requirements validated at runtime");
     }
@@ -292,9 +294,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
         BOOST_CHECK(wrapper_executor.is_valid());
 
         bool work_executed = false;
-        wrapper_executor.add([&work_executed]() {
-            work_executed = true;
-        });
+        wrapper_executor.add([&work_executed]() { work_executed = true; });
 
         // Give some time for work to execute
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -313,9 +313,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
         BOOST_CHECK(keep_alive.get() != nullptr);
 
         bool work_executed = false;
-        keep_alive.add([&work_executed]() {
-            work_executed = true;
-        });
+        keep_alive.add([&work_executed]() { work_executed = true; });
 
         // Give some time for work to execute
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -434,7 +432,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test, 
 /**
  * Test that validates proper type deduction in generic contexts
  */
-BOOST_AUTO_TEST_CASE(type_deduction_validation_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(type_deduction_validation_test, *boost::unit_test::timeout(60)) {
     // Test template type deduction with concept-constrained parameters
 
     // Test with different Future types using explicit template instantiation
@@ -471,9 +469,7 @@ BOOST_AUTO_TEST_CASE(type_deduction_validation_test, * boost::unit_test::timeout
         Executor wrapper_executor(&cpu_executor);
 
         bool work_done = false;
-        wrapper_executor.add([&work_done]() {
-            work_done = true;
-        });
+        wrapper_executor.add([&work_done]() { work_done = true; });
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         BOOST_CHECK(work_done);
@@ -485,7 +481,7 @@ BOOST_AUTO_TEST_CASE(type_deduction_validation_test, * boost::unit_test::timeout
 /**
  * Test concept-constrained template functions with wrapper types
  */
-BOOST_AUTO_TEST_CASE(concept_constrained_template_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(concept_constrained_template_test, *boost::unit_test::timeout(60)) {
     // Test combining futures of different types
     {
         auto future1 = FutureFactory::makeFuture(42);

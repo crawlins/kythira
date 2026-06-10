@@ -41,11 +41,10 @@ struct enhanced_block_transfer_state {
     std::uint32_t retry_count{0};
 
     enhanced_block_transfer_state(std::string tok, std::uint32_t blk_size)
-        : token(std::move(tok))
-        , block_size(blk_size)
-        , created_time(std::chrono::steady_clock::now())
-        , last_activity(std::chrono::steady_clock::now())
-    {}
+        : token(std::move(tok)),
+          block_size(blk_size),
+          created_time(std::chrono::steady_clock::now()),
+          last_activity(std::chrono::steady_clock::now()) {}
 
     // Calculate transfer progress as percentage
     auto progress_percentage() const -> double {
@@ -62,9 +61,7 @@ struct enhanced_block_transfer_state {
     }
 
     // Update activity timestamp
-    auto update_activity() -> void {
-        last_activity = std::chrono::steady_clock::now();
-    }
+    auto update_activity() -> void { last_activity = std::chrono::steady_clock::now(); }
 };
 
 // Enhanced block transfer manager
@@ -80,48 +77,47 @@ public:
 
         // Default constructor with explicit initialization
         config()
-            : default_timeout(30000)
-            , retry_timeout(5000)
-            , max_retries(3)
-            , max_payload_size(64 * 1024 * 1024)
-            , max_concurrent_transfers(100)
-        {}
+            : default_timeout(30000),
+              retry_timeout(5000),
+              max_retries(3),
+              max_payload_size(64 * 1024 * 1024),
+              max_concurrent_transfers(100) {}
     };
 
 private:
-    std::unordered_map<std::string, std::unique_ptr<enhanced_block_transfer_state>> _active_transfers;
-    std::chrono::milliseconds _default_timeout{30000}; // 30 seconds
-    std::chrono::milliseconds _retry_timeout{5000};    // 5 seconds
+    std::unordered_map<std::string, std::unique_ptr<enhanced_block_transfer_state>>
+        _active_transfers;
+    std::chrono::milliseconds _default_timeout{30000};  // 30 seconds
+    std::chrono::milliseconds _retry_timeout{5000};     // 5 seconds
     std::uint32_t _max_retries{3};
-    std::size_t _max_payload_size{64 * 1024 * 1024}; // 64MB
+    std::size_t _max_payload_size{64 * 1024 * 1024};  // 64MB
     std::size_t _max_concurrent_transfers{100};
 
 public:
     enhanced_block_transfer_manager(const config& cfg = config{})
-        : _default_timeout(cfg.default_timeout)
-        , _retry_timeout(cfg.retry_timeout)
-        , _max_retries(cfg.max_retries)
-        , _max_payload_size(cfg.max_payload_size)
-        , _max_concurrent_transfers(cfg.max_concurrent_transfers)
-    {}
+        : _default_timeout(cfg.default_timeout),
+          _retry_timeout(cfg.retry_timeout),
+          _max_retries(cfg.max_retries),
+          _max_payload_size(cfg.max_payload_size),
+          _max_concurrent_transfers(cfg.max_concurrent_transfers) {}
 
     // Enhanced should_use_block_transfer with better logic
-    auto should_use_block_transfer(const std::vector<std::byte>& payload, std::uint32_t max_block_size) const -> bool {
+    auto should_use_block_transfer(const std::vector<std::byte>& payload,
+                                   std::uint32_t max_block_size) const -> bool {
         if (payload.empty()) return false;
 
         // Account for CoAP header overhead and options
-        constexpr std::size_t coap_overhead = 64; // Conservative estimate
-        std::size_t effective_block_size = max_block_size > coap_overhead ?
-                                          max_block_size - coap_overhead :
-                                          max_block_size;
+        constexpr std::size_t coap_overhead = 64;  // Conservative estimate
+        std::size_t effective_block_size =
+            max_block_size > coap_overhead ? max_block_size - coap_overhead : max_block_size;
 
         return payload.size() > effective_block_size;
     }
 
     // Enhanced payload splitting with proper CoAP block size alignment
-    auto split_payload_into_blocks(const std::vector<std::byte>& payload, std::uint32_t max_block_size) const
+    auto split_payload_into_blocks(const std::vector<std::byte>& payload,
+                                   std::uint32_t max_block_size) const
         -> std::vector<std::pair<std::vector<std::byte>, kythira::block_option>> {
-
         std::vector<std::pair<std::vector<std::byte>, kythira::block_option>> blocks;
 
         if (payload.empty()) {
@@ -130,12 +126,11 @@ public:
 
         // Calculate effective block size accounting for CoAP overhead
         constexpr std::size_t coap_overhead = 64;
-        std::size_t effective_block_size = max_block_size > coap_overhead ?
-                                          max_block_size - coap_overhead :
-                                          max_block_size;
+        std::size_t effective_block_size =
+            max_block_size > coap_overhead ? max_block_size - coap_overhead : max_block_size;
 
         // Ensure block size is aligned to CoAP requirements (power of 2, 16-1024)
-        std::uint32_t aligned_block_size = 16; // Minimum CoAP block size
+        std::uint32_t aligned_block_size = 16;  // Minimum CoAP block size
         while (aligned_block_size < effective_block_size && aligned_block_size < 1024) {
             aligned_block_size <<= 1;
         }
@@ -150,12 +145,14 @@ public:
 
         while (offset < payload.size()) {
             std::size_t remaining = payload.size() - offset;
-            std::size_t current_block_size = std::min(static_cast<std::size_t>(aligned_block_size), remaining);
+            std::size_t current_block_size =
+                std::min(static_cast<std::size_t>(aligned_block_size), remaining);
 
             // Create block data
             std::vector<std::byte> block_data;
             block_data.reserve(current_block_size);
-            block_data.assign(payload.begin() + offset, payload.begin() + offset + current_block_size);
+            block_data.assign(payload.begin() + offset,
+                              payload.begin() + offset + current_block_size);
 
             // Create block option
             kythira::block_option block_opt;
@@ -174,23 +171,25 @@ public:
 
     // Enhanced block reassembly with comprehensive error handling
     auto reassemble_blocks(const std::string& token, const std::vector<std::byte>& block_data,
-                          const kythira::block_option& block_opt) -> std::optional<std::vector<std::byte>> {
-
+                           const kythira::block_option& block_opt)
+        -> std::optional<std::vector<std::byte>> {
         // Check for resource limits
         if (_active_transfers.size() >= _max_concurrent_transfers) {
-            return std::nullopt; // Too many concurrent transfers
+            return std::nullopt;  // Too many concurrent transfers
         }
 
         auto it = _active_transfers.find(token);
         if (it == _active_transfers.end()) {
             // First block - create new transfer state
-            auto transfer_state = std::make_unique<enhanced_block_transfer_state>(token, block_opt.block_size);
+            auto transfer_state =
+                std::make_unique<enhanced_block_transfer_state>(token, block_opt.block_size);
 
             // Estimate total size based on first block and block number
             if (block_opt.more_blocks && block_opt.block_number == 0) {
                 // Conservative estimate for initial reservation - use actual block size
-                std::size_t estimated_blocks = std::max(static_cast<std::size_t>(4),
-                                                       static_cast<std::size_t>(8)); // Minimum reasonable estimate
+                std::size_t estimated_blocks =
+                    std::max(static_cast<std::size_t>(4),
+                             static_cast<std::size_t>(8));  // Minimum reasonable estimate
                 transfer_state->expected_total_size = block_data.size() * estimated_blocks;
                 transfer_state->complete_payload.reserve(transfer_state->expected_total_size);
             } else if (!block_opt.more_blocks) {
@@ -199,7 +198,8 @@ public:
                 transfer_state->complete_payload.reserve(block_data.size());
             } else {
                 // Not the first block but still more blocks - use current data as estimate
-                transfer_state->expected_total_size = block_data.size() * 4; // Conservative estimate
+                transfer_state->expected_total_size =
+                    block_data.size() * 4;  // Conservative estimate
                 transfer_state->complete_payload.reserve(transfer_state->expected_total_size);
             }
 
@@ -240,16 +240,19 @@ public:
         }
 
         // Append block data to complete payload
-        state->complete_payload.insert(state->complete_payload.end(), block_data.begin(), block_data.end());
+        state->complete_payload.insert(state->complete_payload.end(), block_data.begin(),
+                                       block_data.end());
         state->received_size += block_data.size();
         state->next_block_num++;
 
         // Update expected total size if we have better information
         if (!block_opt.more_blocks && state->expected_total_size < state->received_size) {
             state->expected_total_size = state->received_size;
-        } else if (block_opt.more_blocks && state->received_size > state->expected_total_size * 0.8) {
-            // If we're approaching our estimate and there are still more blocks, increase the estimate
-            state->expected_total_size = state->received_size * 2; // Double the estimate
+        } else if (block_opt.more_blocks &&
+                   state->received_size > state->expected_total_size * 0.8) {
+            // If we're approaching our estimate and there are still more blocks, increase the
+            // estimate
+            state->expected_total_size = state->received_size * 2;  // Double the estimate
         }
 
         // Check if transfer is complete
@@ -342,21 +345,20 @@ public:
     }
 
     // Get number of active transfers
-    auto active_transfer_count() const -> std::size_t {
-        return _active_transfers.size();
-    }
+    auto active_transfer_count() const -> std::size_t { return _active_transfers.size(); }
 };
 
 // Named constants for test parameters
 namespace {
-    constexpr std::size_t min_payload_size = 64;
-    constexpr std::size_t max_payload_size = 8192;
-    constexpr std::size_t min_block_size = 64;
-    constexpr std::size_t max_block_size = 1024;
-    constexpr std::size_t test_iterations = 25;
+constexpr std::size_t min_payload_size = 64;
+constexpr std::size_t max_payload_size = 8192;
+constexpr std::size_t min_block_size = 64;
+constexpr std::size_t max_block_size = 1024;
+constexpr std::size_t test_iterations = 25;
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_manager_basic_functionality, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_manager_basic_functionality,
+                     *boost::unit_test::timeout(30)) {
     enhanced_block_transfer_manager manager;
 
     // Test should_use_block_transfer
@@ -371,7 +373,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_manager_basic_functionality, *
     BOOST_CHECK_EQUAL(manager.should_use_block_transfer(empty_payload, 1024), false);
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options,
+                     *boost::unit_test::timeout(60)) {
     enhanced_block_transfer_manager manager;
 
     std::random_device rd;
@@ -417,7 +420,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options, * boost
                     if (block_data.size() >= 16) {
                         std::uint32_t size = static_cast<std::uint32_t>(block_data.size());
                         bool is_power_of_2 = (size & (size - 1)) == 0;
-                        BOOST_CHECK(is_power_of_2 || i == blocks.size() - 1); // Last block can be smaller
+                        BOOST_CHECK(is_power_of_2 ||
+                                    i == blocks.size() - 1);  // Last block can be smaller
                     }
                 }
 
@@ -429,10 +433,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options, * boost
 
                 auto test_payload_uint8 = to_uint8_vector(test_payload);
                 auto reassembled_uint8 = to_uint8_vector(reassembled);
-                BOOST_CHECK_EQUAL_COLLECTIONS(
-                    test_payload_uint8.begin(), test_payload_uint8.end(),
-                    reassembled_uint8.begin(), reassembled_uint8.end()
-                );
+                BOOST_CHECK_EQUAL_COLLECTIONS(test_payload_uint8.begin(), test_payload_uint8.end(),
+                                              reassembled_uint8.begin(), reassembled_uint8.end());
             } else {
                 // Should create single block
                 BOOST_CHECK_EQUAL(blocks.size(), 1);
@@ -444,16 +446,15 @@ BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options, * boost
 
                 auto test_payload_uint8 = to_uint8_vector(test_payload);
                 auto block_data_uint8 = to_uint8_vector(block_data);
-                BOOST_CHECK_EQUAL_COLLECTIONS(
-                    test_payload_uint8.begin(), test_payload_uint8.end(),
-                    block_data_uint8.begin(), block_data_uint8.end()
-                );
+                BOOST_CHECK_EQUAL_COLLECTIONS(test_payload_uint8.begin(), test_payload_uint8.end(),
+                                              block_data_uint8.begin(), block_data_uint8.end());
             }
         }
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_reassembly_with_progress_tracking, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_reassembly_with_progress_tracking,
+                     *boost::unit_test::timeout(60)) {
     enhanced_block_transfer_manager manager;
 
     std::random_device rd;
@@ -508,15 +509,14 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_reassembly_with_progress_tracking, * bo
             // Verify reassembled payload matches original
             auto original_payload_uint8 = to_uint8_vector(original_payload);
             auto result_uint8 = to_uint8_vector(*result);
-            BOOST_CHECK_EQUAL_COLLECTIONS(
-                original_payload_uint8.begin(), original_payload_uint8.end(),
-                result_uint8.begin(), result_uint8.end()
-            );
+            BOOST_CHECK_EQUAL_COLLECTIONS(original_payload_uint8.begin(),
+                                          original_payload_uint8.end(), result_uint8.begin(),
+                                          result_uint8.end());
         }
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, *boost::unit_test::timeout(30)) {
     enhanced_block_transfer_manager manager;
 
     std::string test_token = "error_test_token";
@@ -524,12 +524,12 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, * boost::unit_
 
     // Test out-of-order blocks
     kythira::block_option block_opt1;
-    block_opt1.block_number = 1; // Start with block 1 instead of 0
+    block_opt1.block_number = 1;  // Start with block 1 instead of 0
     block_opt1.more_blocks = true;
     block_opt1.block_size = 100;
 
     auto result1 = manager.reassemble_blocks(test_token, test_data, block_opt1);
-    BOOST_CHECK(!result1.has_value()); // Should fail due to out-of-order
+    BOOST_CHECK(!result1.has_value());  // Should fail due to out-of-order
     BOOST_CHECK_EQUAL(manager.has_active_transfer(test_token), false);
 
     // Test block size mismatch
@@ -539,10 +539,10 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, * boost::unit_
     kythira::block_option block_opt2;
     block_opt2.block_number = 0;
     block_opt2.more_blocks = true;
-    block_opt2.block_size = 100; // Claim larger size than actual data
+    block_opt2.block_size = 100;  // Claim larger size than actual data
 
     auto result2 = manager.reassemble_blocks(test_token2, small_data, block_opt2);
-    BOOST_CHECK(!result2.has_value()); // Should fail due to size mismatch
+    BOOST_CHECK(!result2.has_value());  // Should fail due to size mismatch
     BOOST_CHECK_EQUAL(manager.has_active_transfer(test_token2), false);
 
     // Test empty block with more blocks expected
@@ -555,13 +555,14 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, * boost::unit_
     block_opt3.block_size = 0;
 
     auto result3 = manager.reassemble_blocks(test_token3, empty_data, block_opt3);
-    BOOST_CHECK(!result3.has_value()); // Should fail due to empty block
+    BOOST_CHECK(!result3.has_value());  // Should fail due to empty block
     BOOST_CHECK_EQUAL(manager.has_active_transfer(test_token3), false);
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_timeout_and_cleanup, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_timeout_and_cleanup,
+                     *boost::unit_test::timeout(30)) {
     enhanced_block_transfer_manager::config cfg;
-    cfg.default_timeout = std::chrono::milliseconds(100); // Very short timeout for testing
+    cfg.default_timeout = std::chrono::milliseconds(100);  // Very short timeout for testing
     cfg.max_retries = 2;
 
     enhanced_block_transfer_manager manager(cfg);
@@ -591,10 +592,10 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_timeout_and_cleanup, * boost::
     cleaned = manager.cleanup_expired_transfers();
 
     // After sufficient time and retries, it should be cleaned up
-    BOOST_CHECK_GE(cleaned, 0); // At least 0 transfers cleaned (might be cleaned in previous call)
+    BOOST_CHECK_GE(cleaned, 0);  // At least 0 transfers cleaned (might be cleaned in previous call)
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, *boost::unit_test::timeout(30)) {
     enhanced_block_transfer_manager manager;
 
     // Start multiple transfers
@@ -615,8 +616,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, * boost::unit_test
     auto stats = manager.get_transfer_stats();
 
     BOOST_CHECK_EQUAL(stats["active_transfers"], 3);
-    BOOST_CHECK_EQUAL(stats["total_received_bytes"], 100 + 200 + 300); // 600 bytes total
-    BOOST_CHECK_EQUAL(stats["completed_blocks"], 3); // One block per transfer
+    BOOST_CHECK_EQUAL(stats["total_received_bytes"], 100 + 200 + 300);  // 600 bytes total
+    BOOST_CHECK_EQUAL(stats["completed_blocks"], 3);                    // One block per transfer
 
     // Check individual progress
     for (int i = 0; i < 3; ++i) {
@@ -628,9 +629,10 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, * boost::unit_test
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_concurrent_limits, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_concurrent_limits,
+                     *boost::unit_test::timeout(30)) {
     enhanced_block_transfer_manager::config cfg;
-    cfg.max_concurrent_transfers = 2; // Limit to 2 concurrent transfers
+    cfg.max_concurrent_transfers = 2;  // Limit to 2 concurrent transfers
 
     enhanced_block_transfer_manager manager(cfg);
 
@@ -652,5 +654,5 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_concurrent_limits, * boost::un
     // Third transfer should be rejected due to limit
     auto result3 = manager.reassemble_blocks("token3", test_data, block_opt);
     BOOST_CHECK(!result3.has_value());
-    BOOST_CHECK_EQUAL(manager.active_transfer_count(), 2); // Still 2, third was rejected
+    BOOST_CHECK_EQUAL(manager.active_transfer_count(), 2);  // Still 2, third was rejected
 }

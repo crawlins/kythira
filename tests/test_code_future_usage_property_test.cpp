@@ -11,11 +11,10 @@
 #include <regex>
 #include <filesystem>
 
-
 namespace {
-    constexpr const char* test_directory = "tests";
-    constexpr const char* integration_test_file = "tests/integration_test.cpp";
-    constexpr const char* property_test_pattern = "tests/*property_test.cpp";
+constexpr const char* test_directory = "tests";
+constexpr const char* integration_test_file = "tests/integration_test.cpp";
+constexpr const char* property_test_pattern = "tests/*property_test.cpp";
 }
 
 // **Feature: future-conversion, Property 8: Test code future usage**
@@ -23,16 +22,14 @@ namespace {
 // Property: For any test file, all future-related operations should use kythira::Future
 // instead of std::future or folly::Future
 
-BOOST_AUTO_TEST_CASE(property_integration_tests_use_kythira_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_integration_tests_use_kythira_future,
+                     *boost::unit_test::timeout(30)) {
     // Test that integration tests use kythira::Future instead of std::future
 
     // Try multiple possible paths for the integration test file
     std::vector<std::string> possible_paths = {
-        "../tests/integration_test.cpp",
-        "../../tests/integration_test.cpp",
-        "tests/integration_test.cpp",
-        "./tests/integration_test.cpp"
-    };
+        "../tests/integration_test.cpp", "../../tests/integration_test.cpp",
+        "tests/integration_test.cpp", "./tests/integration_test.cpp"};
 
     std::ifstream file;
     std::string content;
@@ -75,7 +72,8 @@ BOOST_AUTO_TEST_CASE(property_integration_tests_use_kythira_future, * boost::uni
     BOOST_TEST_MESSAGE("Integration test future usage validation passed");
 }
 
-BOOST_AUTO_TEST_CASE(property_test_fixtures_use_consistent_future_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_test_fixtures_use_consistent_future_types,
+                     *boost::unit_test::timeout(30)) {
     // Test that test fixtures use consistent future types
 
     // Verify that kythira::Future satisfies the future concept for common test types
@@ -95,7 +93,8 @@ BOOST_AUTO_TEST_CASE(property_test_fixtures_use_consistent_future_types, * boost
     BOOST_TEST_MESSAGE("Test fixture future type consistency validation passed");
 }
 
-BOOST_AUTO_TEST_CASE(property_async_test_operations_use_kythira_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_async_test_operations_use_kythira_future,
+                     *boost::unit_test::timeout(30)) {
     // Test that async test operations use kythira::Future for synchronization
 
     // Create test futures to verify they work correctly in test context
@@ -103,7 +102,8 @@ BOOST_AUTO_TEST_CASE(property_async_test_operations_use_kythira_future, * boost:
     BOOST_TEST(immediate_future.isReady());
     BOOST_TEST(immediate_future.get() == 42);
 
-    auto exception_future = kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
+    auto exception_future =
+        kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
     BOOST_TEST(exception_future.isReady());
     BOOST_CHECK_THROW(exception_future.get(), std::runtime_error);
 
@@ -122,7 +122,7 @@ BOOST_AUTO_TEST_CASE(property_async_test_operations_use_kythira_future, * boost:
     BOOST_TEST_MESSAGE("Async test operation future usage validation passed");
 }
 
-BOOST_AUTO_TEST_CASE(property_test_validation_uses_kythira_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_test_validation_uses_kythira_future, *boost::unit_test::timeout(30)) {
     // Test that test code validation uses kythira::Future for result verification
 
     // Test future chaining in test context
@@ -153,7 +153,8 @@ BOOST_AUTO_TEST_CASE(property_test_validation_uses_kythira_future, * boost::unit
     BOOST_TEST_MESSAGE("Test validation future usage validation passed");
 }
 
-BOOST_AUTO_TEST_CASE(property_no_direct_folly_future_in_test_interfaces, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_no_direct_folly_future_in_test_interfaces,
+                     *boost::unit_test::timeout(30)) {
     // Property: Test code should not use folly::Future directly in public interfaces
 
     // This test documents the conversion requirement:

@@ -1,0 +1,56 @@
+---
+# Generated with clang-format 22.1.5
+BasedOnStyle: Google
+
+# Layout
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+
+# Access modifiers align with the class keyword (public: at class indent level)
+AccessModifierOffset: -4
+
+# Template keyword: template<...> not template <...>
+SpaceAfterTemplateKeyword: false
+
+# Only break before class/function when template params span multiple lines.
+# Prevents splitting short `template<T> class Foo;` declarations.
+AlwaysBreakTemplateDeclarations: MultiLine
+
+# Namespace closing braces — don't add/alter `// namespace X` comments
+FixNamespaceComments: false
+
+# Include sorting — preserve existing grouping
+SortIncludes: false
+
+# Enums — keep multi-line layout (existing style)
+AllowShortEnumsOnASingleLine: false
+
+# Lambdas: allow short lambdas on one line (common in folly Future chains)
+AllowShortLambdasOnASingleLine: All
+
+# Keep short inline functions on one line
+AllowShortFunctionsOnASingleLine: Inline
+
+# Namespace indentation: none (standard C++ practice)
+NamespaceIndentation: None
+
+# Pointer/reference alignment: left (int& x, not int &x)
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# Braces: attach (K&R / Google style — no line break before opening brace)
+BreakBeforeBraces: Attach
+
+# Case labels indented one level inside switch
+IndentCaseLabels: true
+
+# requires clause: no indent (matches majority of existing usage)
+IndentRequiresClause: false
+RequiresClausePosition: OwnLine
+
+# Penalty tuning to prefer keeping function signatures together
+PenaltyReturnTypeOnItsOwnLine: 200
+...

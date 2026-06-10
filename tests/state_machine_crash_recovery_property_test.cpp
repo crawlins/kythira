@@ -5,15 +5,16 @@
 #include "state_machine_test_utilities.hpp"
 
 namespace {
-    constexpr std::size_t num_iterations = 100;
-    constexpr std::size_t num_commands_before_crash = 50;
-    constexpr std::size_t num_commands_after_recovery = 30;
+constexpr std::size_t num_iterations = 100;
+constexpr std::size_t num_commands_before_crash = 50;
+constexpr std::size_t num_commands_after_recovery = 30;
 }
 
 // Test state machine with crash simulation
 class crash_recoverable_state_machine {
 public:
-    auto apply(const std::vector<std::byte>& command, std::uint64_t index) -> std::vector<std::byte> {
+    auto apply(const std::vector<std::byte>& command, std::uint64_t index)
+        -> std::vector<std::byte> {
         if (command.empty()) return {};
 
         auto cmd_type = static_cast<std::uint8_t>(command[0]);
@@ -27,17 +28,16 @@ public:
         std::string key(reinterpret_cast<const char*>(command.data() + offset), key_len);
         offset += key_len;
 
-        if (cmd_type == 0) { // GET
+        if (cmd_type == 0) {  // GET
             _last_applied_index = index;
             auto it = _store.find(key);
             if (it != _store.end()) {
                 return std::vector<std::byte>(
                     reinterpret_cast<const std::byte*>(it->second.data()),
-                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size())
-                );
+                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size()));
             }
             return {};
-        } else if (cmd_type == 1) { // SET
+        } else if (cmd_type == 1) {  // SET
             std::uint32_t val_len;
             std::memcpy(&val_len, command.data() + offset, sizeof(val_len));
             offset += sizeof(val_len);
@@ -46,7 +46,7 @@ public:
             _store[key] = value;
             _last_applied_index = index;
             return {};
-        } else if (cmd_type == 2) { // DELETE
+        } else if (cmd_type == 2) {  // DELETE
             _store.erase(key);
             _last_applied_index = index;
             return {};
@@ -63,13 +63,11 @@ public:
         state.insert(state.end(), index_bytes, index_bytes + sizeof(_last_applied_index));
 
         for (const auto& [key, value] : _store) {
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(key.data()),
-                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(key.data()),
+                         reinterpret_cast<const std::byte*>(key.data() + key.size()));
             state.push_back(std::byte{0});
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(value.data()),
-                        reinterpret_cast<const std::byte*>(value.data() + value.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(value.data()),
+                         reinterpret_cast<const std::byte*>(value.data() + value.size()));
             state.push_back(std::byte{0});
         }
         return state;
@@ -90,14 +88,14 @@ public:
             while (offset < snapshot.size() && snapshot[offset] != std::byte{0}) {
                 key += static_cast<char>(snapshot[offset++]);
             }
-            offset++; // Skip null terminator
+            offset++;  // Skip null terminator
 
             if (offset >= snapshot.size()) break;
 
             while (offset < snapshot.size() && snapshot[offset] != std::byte{0}) {
                 value += static_cast<char>(snapshot[offset++]);
             }
-            offset++; // Skip null terminator
+            offset++;  // Skip null terminator
 
             if (!key.empty()) {
                 _store[key] = value;
@@ -105,16 +103,14 @@ public:
         }
     }
 
-    auto get_last_applied_index() const -> std::uint64_t {
-        return _last_applied_index;
-    }
+    auto get_last_applied_index() const -> std::uint64_t { return _last_applied_index; }
 
 private:
     std::map<std::string, std::string> _store;
     std::uint64_t _last_applied_index = 0;
 };
 
-BOOST_AUTO_TEST_CASE(property_crash_recovery_preserves_state, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_crash_recovery_preserves_state, *boost::unit_test::timeout(90)) {
     // Property: After crash and recovery from snapshot, state should be preserved
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -147,7 +143,7 @@ BOOST_AUTO_TEST_CASE(property_crash_recovery_preserves_state, * boost::unit_test
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_recovery_continues_from_last_index, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_recovery_continues_from_last_index, *boost::unit_test::timeout(90)) {
     // Property: After recovery, can continue applying commands from last index
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -176,11 +172,11 @@ BOOST_AUTO_TEST_CASE(property_recovery_continues_from_last_index, * boost::unit_
 
         // Should have applied all commands
         BOOST_CHECK_EQUAL(recovered_sm.get_last_applied_index(),
-                         last_index + num_commands_after_recovery);
+                          last_index + num_commands_after_recovery);
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_multiple_crashes_preserve_state, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_multiple_crashes_preserve_state, *boost::unit_test::timeout(120)) {
     // Property: Multiple crash-recovery cycles preserve state correctly
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -216,7 +212,7 @@ BOOST_AUTO_TEST_CASE(property_multiple_crashes_preserve_state, * boost::unit_tes
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_partial_snapshot_recovery_safe, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_partial_snapshot_recovery_safe, *boost::unit_test::timeout(60)) {
     // Property: Recovery from corrupted/partial snapshot should be safe
     std::random_device rd;
     std::mt19937 rng(rd());
@@ -243,7 +239,7 @@ BOOST_AUTO_TEST_CASE(property_partial_snapshot_recovery_safe, * boost::unit_test
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_empty_snapshot_recovery, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_empty_snapshot_recovery, *boost::unit_test::timeout(60)) {
     // Property: Recovery from empty snapshot should result in empty state
     for (std::size_t iter = 0; iter < num_iterations; ++iter) {
         crash_recoverable_state_machine sm;

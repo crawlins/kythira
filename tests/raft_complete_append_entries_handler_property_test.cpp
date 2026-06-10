@@ -6,10 +6,10 @@
 #include <cstddef>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_term = 100;
-    constexpr std::uint64_t max_index = 100;
-    constexpr std::size_t max_entries = 10;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_term = 100;
+constexpr std::uint64_t max_index = 100;
+constexpr std::size_t max_entries = 10;
 }
 
 // Helper to generate random term
@@ -38,7 +38,7 @@ auto generate_random_entry_count(std::mt19937& rng) -> std::size_t {
  * This is the first check in the AppendEntries handler - if the request term
  * is less than the current term, the request must be rejected immediately.
  */
-BOOST_AUTO_TEST_CASE(property_reject_stale_term_requests, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_reject_stale_term_requests, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -65,8 +65,9 @@ BOOST_AUTO_TEST_CASE(property_reject_stale_term_requests, * boost::unit_test::ti
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_term=" << current_term << ", request_term=" << request_term << ", "
-                << "should_reject=" << should_reject);
+                                            << "current_term=" << current_term
+                                            << ", request_term=" << request_term << ", "
+                                            << "should_reject=" << should_reject);
         }
     }
 
@@ -89,7 +90,7 @@ BOOST_AUTO_TEST_CASE(property_reject_stale_term_requests, * boost::unit_test::ti
  * prevLogIndex and prevLogTerm. If the follower's log doesn't contain
  * an entry at prevLogIndex with prevLogTerm, the request must be rejected.
  */
-BOOST_AUTO_TEST_CASE(property_log_consistency_check, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_log_consistency_check, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -135,9 +136,11 @@ BOOST_AUTO_TEST_CASE(property_log_consistency_check, * boost::unit_test::timeout
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "prev_log_index=" << prev_log_index << ", prev_log_term=" << prev_log_term << ", "
-                << "has_entry=" << has_entry_at_index << ", term_matches=" << term_matches << ", "
-                << "should_accept=" << should_accept);
+                                            << "prev_log_index=" << prev_log_index
+                                            << ", prev_log_term=" << prev_log_term << ", "
+                                            << "has_entry=" << has_entry_at_index
+                                            << ", term_matches=" << term_matches << ", "
+                                            << "should_accept=" << should_accept);
         }
     }
 
@@ -162,7 +165,7 @@ BOOST_AUTO_TEST_CASE(property_log_consistency_check, * boost::unit_test::timeout
  * different terms), the handler must delete the existing entry and all that
  * follow it, then append the new entries.
  */
-BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -200,9 +203,10 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
 
         if (i < 5) {
             BOOST_TEST_MESSAGE("Conflict iteration " << i << ": "
-                << "entry_index=" << entry_index << ", "
-                << "existing_term=" << existing_term << ", new_term=" << new_term << ", "
-                << "has_conflict=" << has_conflict);
+                                                     << "entry_index=" << entry_index << ", "
+                                                     << "existing_term=" << existing_term
+                                                     << ", new_term=" << new_term << ", "
+                                                     << "has_conflict=" << has_conflict);
         }
     }
 
@@ -227,9 +231,10 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
 
         if (i < 5) {
             BOOST_TEST_MESSAGE("No-conflict iteration " << i << ": "
-                << "entry_index=" << entry_index << ", "
-                << "existing_term=" << existing_term << ", new_term=" << new_term << ", "
-                << "has_conflict=" << has_conflict);
+                                                        << "entry_index=" << entry_index << ", "
+                                                        << "existing_term=" << existing_term
+                                                        << ", new_term=" << new_term << ", "
+                                                        << "has_conflict=" << has_conflict);
         }
     }
 
@@ -251,7 +256,7 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, * boost::unit_t
  * Property: The handler must append any new entries not already in the log.
  * Each new entry must be persisted before responding to the RPC.
  */
-BOOST_AUTO_TEST_CASE(property_append_new_entries, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_append_new_entries, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -280,8 +285,8 @@ BOOST_AUTO_TEST_CASE(property_append_new_entries, * boost::unit_test::timeout(60
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "num_new_entries=" << num_new_entries << ", "
-                << "has_new_entries=" << has_new_entries);
+                                            << "num_new_entries=" << num_new_entries << ", "
+                                            << "has_new_entries=" << has_new_entries);
         }
     }
 
@@ -304,7 +309,7 @@ BOOST_AUTO_TEST_CASE(property_append_new_entries, * boost::unit_test::timeout(60
  * commitIndex = min(leaderCommit, index of last new entry).
  * This ensures the Log Matching Property is maintained.
  */
-BOOST_AUTO_TEST_CASE(property_commit_index_advancement, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_commit_index_advancement, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -335,10 +340,10 @@ BOOST_AUTO_TEST_CASE(property_commit_index_advancement, * boost::unit_test::time
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_commit=" << current_commit_index << ", "
-                << "leader_commit=" << leader_commit << ", "
-                << "last_new_entry=" << last_new_entry_index << ", "
-                << "should_advance=" << should_advance);
+                                            << "current_commit=" << current_commit_index << ", "
+                                            << "leader_commit=" << leader_commit << ", "
+                                            << "last_new_entry=" << last_new_entry_index << ", "
+                                            << "should_advance=" << should_advance);
         }
     }
 
@@ -361,7 +366,7 @@ BOOST_AUTO_TEST_CASE(property_commit_index_advancement, * boost::unit_test::time
  * log truncations, new entries) before sending the response.
  * This ensures crash recovery correctness.
  */
-BOOST_AUTO_TEST_CASE(property_persistence_before_response, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_persistence_before_response, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -398,9 +403,9 @@ BOOST_AUTO_TEST_CASE(property_persistence_before_response, * boost::unit_test::t
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "term_update=" << needs_term_update << ", "
-                << "log_truncation=" << needs_log_truncation << ", "
-                << "new_entries=" << has_new_entries);
+                                            << "term_update=" << needs_term_update << ", "
+                                            << "log_truncation=" << needs_log_truncation << ", "
+                                            << "new_entries=" << has_new_entries);
         }
     }
 
@@ -425,7 +430,7 @@ BOOST_AUTO_TEST_CASE(property_persistence_before_response, * boost::unit_test::t
  * the node must update its term and become follower before
  * processing the request.
  */
-BOOST_AUTO_TEST_CASE(property_higher_term_discovery, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_higher_term_discovery, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -458,8 +463,9 @@ BOOST_AUTO_TEST_CASE(property_higher_term_discovery, * boost::unit_test::timeout
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_term=" << current_term << ", request_term=" << request_term << ", "
-                << "should_update=" << should_update_term);
+                                            << "current_term=" << current_term
+                                            << ", request_term=" << request_term << ", "
+                                            << "should_update=" << should_update_term);
         }
     }
 
@@ -482,7 +488,7 @@ BOOST_AUTO_TEST_CASE(property_higher_term_discovery, * boost::unit_test::timeout
  * AppendEntries from the current leader. This prevents unnecessary
  * elections while the leader is active.
  */
-BOOST_AUTO_TEST_CASE(property_election_timer_reset, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_election_timer_reset, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -510,8 +516,9 @@ BOOST_AUTO_TEST_CASE(property_election_timer_reset, * boost::unit_test::timeout(
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_term=" << current_term << ", request_term=" << request_term << ", "
-                << "should_reset=" << should_reset);
+                                            << "current_term=" << current_term
+                                            << ", request_term=" << request_term << ", "
+                                            << "should_reset=" << should_reset);
         }
     }
 
@@ -526,7 +533,7 @@ BOOST_AUTO_TEST_CASE(property_election_timer_reset, * boost::unit_test::timeout(
     BOOST_CHECK_EQUAL(tests_passed, property_test_iterations);
 }
 
-BOOST_AUTO_TEST_CASE(test_all_properties_passed, * boost::unit_test::timeout(5)) {
+BOOST_AUTO_TEST_CASE(test_all_properties_passed, *boost::unit_test::timeout(5)) {
     BOOST_TEST_MESSAGE("✓ All complete AppendEntries handler property tests passed!");
     BOOST_TEST_MESSAGE("✓ Implementation verified to follow Raft specification:");
     BOOST_TEST_MESSAGE("  - Stale term rejection (request_term < current_term)");

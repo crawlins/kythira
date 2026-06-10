@@ -13,7 +13,8 @@ namespace kythira::examples {
 class replicated_log_state_machine {
 public:
     // Apply command: APPEND <data>
-    auto apply(const std::vector<std::byte>& command, std::uint64_t index) -> std::vector<std::byte> {
+    auto apply(const std::vector<std::byte>& command, std::uint64_t index)
+        -> std::vector<std::byte> {
         if (command.size() < 7 || std::memcmp(command.data(), "APPEND ", 7) != 0) {
             throw std::invalid_argument("Invalid command format");
         }
@@ -21,7 +22,7 @@ public:
         std::vector<std::byte> data(command.begin() + 7, command.end());
         _entries.push_back({index, std::move(data)});
 
-        return {}; // Empty response
+        return {};  // Empty response
     }
 
     // Get current state (all entries)
@@ -41,7 +42,8 @@ public:
     }
 
     // Restore from snapshot
-    auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t last_index) -> void {
+    auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t last_index)
+        -> void {
         _entries.clear();
 
         std::size_t offset = 0;
@@ -73,4 +75,4 @@ private:
     std::vector<entry> _entries;
 };
 
-} // namespace kythira::examples
+}  // namespace kythira::examples

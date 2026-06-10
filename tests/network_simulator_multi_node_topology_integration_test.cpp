@@ -15,15 +15,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* node_a_id = "node_a";
-    constexpr const char* node_b_id = "node_b";
-    constexpr const char* node_c_id = "node_c";
-    constexpr const char* node_d_id = "node_d";
-    constexpr unsigned short test_port = 8080;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Multi-hop message";
+constexpr const char* node_a_id = "node_a";
+constexpr const char* node_b_id = "node_b";
+constexpr const char* node_c_id = "node_c";
+constexpr const char* node_d_id = "node_d";
+constexpr unsigned short test_port = 8080;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Multi-hop message";
 }
 
 /**
@@ -31,7 +31,7 @@ namespace {
  * Tests: messages routed through intermediate nodes
  * _Requirements: 1.1-1.5_
  */
-BOOST_AUTO_TEST_CASE(multi_node_topology_routing, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(multi_node_topology_routing, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create a linear topology: A -> B -> C -> D
@@ -76,11 +76,8 @@ BOOST_AUTO_TEST_CASE(multi_node_topology_routing, * boost::unit_test::timeout(60
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg_a_to_d(
-        node_a_id, test_port,
-        node_d_id, test_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg_a_to_d(node_a_id, test_port, node_d_id, test_port,
+                                                 payload);
 
     // Node A sends message to Node D
     auto send_future = node_a->send(msg_a_to_d);
@@ -115,11 +112,8 @@ BOOST_AUTO_TEST_CASE(multi_node_topology_routing, * boost::unit_test::timeout(60
         response_payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg_d_to_a(
-        node_d_id, test_port,
-        node_a_id, test_port,
-        response_payload
-    );
+    DefaultNetworkTypes::message_type msg_d_to_a(node_d_id, test_port, node_a_id, test_port,
+                                                 response_payload);
 
     // Node D sends response to Node A
     auto response_send_future = node_d->send(msg_d_to_a);
@@ -153,7 +147,7 @@ BOOST_AUTO_TEST_CASE(multi_node_topology_routing, * boost::unit_test::timeout(60
  * Tests: messages routed through a central hub node
  * _Requirements: 1.1-1.5_
  */
-BOOST_AUTO_TEST_CASE(star_topology_routing, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(star_topology_routing, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create a star topology with B as the central hub
@@ -194,11 +188,8 @@ BOOST_AUTO_TEST_CASE(star_topology_routing, * boost::unit_test::timeout(60)) {
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg_a_to_c(
-        node_a_id, test_port,
-        node_c_id, test_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg_a_to_c(node_a_id, test_port, node_c_id, test_port,
+                                                 payload);
 
     // Node A sends message to Node C (should route through B)
     auto send_future = node_a->send(msg_a_to_c);
@@ -224,11 +215,8 @@ BOOST_AUTO_TEST_CASE(star_topology_routing, * boost::unit_test::timeout(60)) {
 
     // === TEST ROUTING FROM A TO D THROUGH HUB B ===
 
-    DefaultNetworkTypes::message_type msg_a_to_d(
-        node_a_id, test_port,
-        node_d_id, test_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg_a_to_d(node_a_id, test_port, node_d_id, test_port,
+                                                 payload);
 
     auto send_future_2 = node_a->send(msg_a_to_d);
     bool send_success_2 = std::move(send_future_2).get();
@@ -253,7 +241,7 @@ BOOST_AUTO_TEST_CASE(star_topology_routing, * boost::unit_test::timeout(60)) {
  * Tests: routing in a fully connected mesh network
  * _Requirements: 1.1-1.5_
  */
-BOOST_AUTO_TEST_CASE(mesh_topology_routing, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(mesh_topology_routing, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create a mesh topology where every node connects to every other node
@@ -293,22 +281,15 @@ BOOST_AUTO_TEST_CASE(mesh_topology_routing, * boost::unit_test::timeout(60)) {
     }
 
     // Test all possible node-to-node communications
-    std::vector<std::pair<std::string, std::shared_ptr<DefaultNetworkTypes::node_type>>> node_pairs = {
-        {node_a_id, node_a},
-        {node_b_id, node_b},
-        {node_c_id, node_c},
-        {node_d_id, node_d}
-    };
+    std::vector<std::pair<std::string, std::shared_ptr<DefaultNetworkTypes::node_type>>>
+        node_pairs = {
+            {node_a_id, node_a}, {node_b_id, node_b}, {node_c_id, node_c}, {node_d_id, node_d}};
 
     // Test communication from A to all other nodes
     for (const auto& [dest_id, dest_node] : node_pairs) {
         if (dest_id == node_a_id) continue;  // Skip self
 
-        DefaultNetworkTypes::message_type msg(
-            node_a_id, test_port,
-            dest_id, test_port,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(node_a_id, test_port, dest_id, test_port, payload);
 
         // Send message
         auto send_future = node_a->send(msg);
@@ -341,7 +322,7 @@ BOOST_AUTO_TEST_CASE(mesh_topology_routing, * boost::unit_test::timeout(60)) {
  * Tests: routing behavior with different edge characteristics
  * _Requirements: 1.1-1.5_
  */
-BOOST_AUTO_TEST_CASE(topology_with_varying_characteristics, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(topology_with_varying_characteristics, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology with different edge characteristics
@@ -385,11 +366,8 @@ BOOST_AUTO_TEST_CASE(topology_with_varying_characteristics, * boost::unit_test::
     }
 
     // Test A -> B (fast edge)
-    DefaultNetworkTypes::message_type msg_a_to_b(
-        node_a_id, test_port,
-        node_b_id, test_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg_a_to_b(node_a_id, test_port, node_b_id, test_port,
+                                                 payload);
 
     auto start_time = std::chrono::steady_clock::now();
     auto send_future = node_a->send(msg_a_to_b);
@@ -413,11 +391,8 @@ BOOST_AUTO_TEST_CASE(topology_with_varying_characteristics, * boost::unit_test::
     // === TEST ROUTING WITH UNRELIABLE EDGE ===
 
     // Test C -> D (unreliable edge) - may need multiple attempts
-    DefaultNetworkTypes::message_type msg_c_to_d(
-        node_c_id, test_port,
-        node_d_id, test_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg_c_to_d(node_c_id, test_port, node_d_id, test_port,
+                                                 payload);
 
     bool message_delivered = false;
     constexpr int max_attempts = 10;  // With 80% reliability, should succeed within 10 attempts
@@ -459,7 +434,7 @@ BOOST_AUTO_TEST_CASE(topology_with_varying_characteristics, * boost::unit_test::
  * Tests: TCP-like connections routed through intermediate nodes
  * _Requirements: 1.1-1.5, 6.1-6.5, 7.1-7.8, 8.1-8.6_
  */
-BOOST_AUTO_TEST_CASE(connection_oriented_multi_hop, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(connection_oriented_multi_hop, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create linear topology: A -> B -> C

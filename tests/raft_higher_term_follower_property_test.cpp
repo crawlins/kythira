@@ -47,54 +47,63 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
 }
 
 BOOST_AUTO_TEST_SUITE(higher_term_follower_property_tests)
@@ -142,8 +151,7 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -168,9 +176,9 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
         // Directly invoke the RPC handler (this is what would be called when receiving the RPC)
         // We use a private method accessor pattern by making the test a friend, but since we can't
         // modify the node class, we'll test the observable behavior instead.
-        // The handler is registered and will be called by the network server when it receives messages.
-        // For this test, we verify that the implementation correctly handles higher terms by
-        // checking the code logic and testing with actual network delivery.
+        // The handler is registered and will be called by the network server when it receives
+        // messages. For this test, we verify that the implementation correctly handles higher terms
+        // by checking the code logic and testing with actual network delivery.
 
         // Since we can't directly call the private handler, we'll verify the property holds
         // by examining the implementation. The handle_request_vote method checks:
@@ -181,7 +189,8 @@ BOOST_AUTO_TEST_CASE(leader_becomes_follower_on_higher_term_request_vote) {
 
         // Alternative: Test that the implementation exists and is correct by code inspection
         // The property is: For any leader that discovers higher term, it becomes follower
-        // This is implemented in handle_request_vote, handle_append_entries, and handle_install_snapshot
+        // This is implemented in handle_request_vote, handle_append_entries, and
+        // handle_install_snapshot
 
         node.stop();
 
@@ -232,8 +241,7 @@ BOOST_AUTO_TEST_CASE(candidate_becomes_follower_on_higher_term_append_entries) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -242,9 +250,9 @@ BOOST_AUTO_TEST_CASE(candidate_becomes_follower_on_higher_term_append_entries) {
         node.check_election_timeout();
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
-        // Note: In a single-node cluster, the node becomes leader immediately after starting election
-        // The property still holds: if a candidate receives AppendEntries with higher term, it becomes follower
-        // This is verified by the implementation in handle_append_entries
+        // Note: In a single-node cluster, the node becomes leader immediately after starting
+        // election The property still holds: if a candidate receives AppendEntries with higher
+        // term, it becomes follower This is verified by the implementation in handle_append_entries
 
         node.stop();
 
@@ -297,8 +305,7 @@ BOOST_AUTO_TEST_CASE(server_becomes_follower_on_higher_term_install_snapshot) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -353,9 +360,8 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         constexpr std::uint64_t node2_id = 2;  // Will send higher term RequestVote
 
         // Set up network topology with edges for bidirectional communication
-        network_simulator::NetworkEdge edge(
-            std::chrono::milliseconds{10},  // Low latency
-            1.0  // Perfect reliability for test
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{10},  // Low latency
+                                            1.0  // Perfect reliability for test
         );
         simulator.add_edge(std::to_string(node1_id), std::to_string(node2_id), edge);
         simulator.add_edge(std::to_string(node2_id), std::to_string(node1_id), edge);
@@ -383,8 +389,7 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node1.start();
 
@@ -399,8 +404,7 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
 
         // Create and send RequestVote with higher term from node2 to node1
         kythira::request_vote_request<std::uint64_t, std::uint64_t, std::uint64_t> rv_request{
-            higher_term,
-            node2_id,
+            higher_term, node2_id,
             0,  // last_log_index
             0   // last_log_term
         };
@@ -412,11 +416,10 @@ BOOST_AUTO_TEST_CASE(leader_rejects_request_vote_from_non_cluster_member) {
         // Note: Raft RPC port is 5000 (default port used by simulator_network_server)
         auto msg = network_simulator::Message<test_raft_types::raft_network_types>{
             std::to_string(node2_id),  // src_addr
-            0,         // src_port (connectionless)
+            0,                         // src_port (connectionless)
             std::to_string(node1_id),  // dst_addr
-            5000,      // dst_port (Raft RPC port)
-            std::vector<std::byte>(data.begin(), data.end())
-        };
+            5000,                      // dst_port (Raft RPC port)
+            std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
         BOOST_REQUIRE(send_result);  // Message was routed successfully
@@ -471,10 +474,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
         constexpr std::uint64_t node2_id = 2;
 
         // Set up network topology
-        network_simulator::NetworkEdge edge(
-            std::chrono::milliseconds{10},
-            1.0
-        );
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
         simulator.add_edge(std::to_string(node1_id), std::to_string(node2_id), edge);
         simulator.add_edge(std::to_string(node2_id), std::to_string(node1_id), edge);
 
@@ -500,8 +500,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node1.start();
 
@@ -516,10 +515,10 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
         kythira::append_entries_request<std::uint64_t, std::uint64_t, std::uint64_t> ae_request{
             higher_term,
             node2_id,
-            0,  // prev_log_index
-            0,  // prev_log_term
+            0,   // prev_log_index
+            0,   // prev_log_term
             {},  // empty entries (heartbeat)
-            0   // leader_commit
+            0    // leader_commit
         };
 
         auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
@@ -531,8 +530,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_append_entries_with_higher_term) {
             0,  // src_port (connectionless)
             std::to_string(node1_id),
             5000,  // dst_port (Raft RPC port)
-            std::vector<std::byte>(data.begin(), data.end())
-        };
+            std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
         BOOST_REQUIRE(send_result);
@@ -577,10 +575,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
         constexpr std::uint64_t node2_id = 2;
 
         // Set up network topology
-        network_simulator::NetworkEdge edge(
-            std::chrono::milliseconds{10},
-            1.0
-        );
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{10}, 1.0);
         simulator.add_edge(std::to_string(node1_id), std::to_string(node2_id), edge);
         simulator.add_edge(std::to_string(node2_id), std::to_string(node1_id), edge);
 
@@ -606,8 +601,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node1.start();
 
@@ -620,8 +614,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
 
         // Send InstallSnapshot with higher term
         kythira::install_snapshot_request<std::uint64_t, std::uint64_t, std::uint64_t> is_request{
-            higher_term,
-            node2_id,
+            higher_term, node2_id,
             0,    // last_included_index
             0,    // last_included_term
             0,    // offset
@@ -638,8 +631,7 @@ BOOST_AUTO_TEST_CASE(leader_transitions_on_install_snapshot_with_higher_term) {
             0,  // src_port (connectionless)
             std::to_string(node1_id),
             5000,  // dst_port (Raft RPC port)
-            std::vector<std::byte>(data.begin(), data.end())
-        };
+            std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
         BOOST_REQUIRE(send_result);

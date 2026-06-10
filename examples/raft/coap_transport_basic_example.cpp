@@ -18,11 +18,11 @@
 #include <cstdint>
 
 namespace {
-    constexpr const char* server_bind_address = "127.0.0.1";
-    constexpr std::uint16_t server_bind_port = 5683;
-    constexpr const char* server_endpoint = "coap://127.0.0.1:5683";
-    constexpr std::uint64_t node_id = 1;
-    constexpr std::chrono::milliseconds rpc_timeout{5000};
+constexpr const char* server_bind_address = "127.0.0.1";
+constexpr std::uint16_t server_bind_port = 5683;
+constexpr const char* server_endpoint = "coap://127.0.0.1:5683";
+constexpr std::uint64_t node_id = 1;
+constexpr std::chrono::milliseconds rpc_timeout{5000};
 }
 
 // Mock configuration structures for demonstration
@@ -47,16 +47,16 @@ auto test_coap_transport_basic_usage() -> bool {
         // Create server configuration
         coap_server_config server_config;
         server_config.max_concurrent_sessions = 10;
-        server_config.max_request_size = 1024 * 1024; // 1 MB
+        server_config.max_request_size = 1024 * 1024;  // 1 MB
         server_config.session_timeout = std::chrono::seconds{10};
-        server_config.enable_dtls = false; // Basic example without DTLS
+        server_config.enable_dtls = false;  // Basic example without DTLS
 
         // Create client configuration
         coap_client_config client_config;
         client_config.max_sessions = 5;
         client_config.ack_timeout = std::chrono::milliseconds{3000};
         client_config.max_retransmit = 3;
-        client_config.enable_dtls = false; // Basic example without DTLS
+        client_config.enable_dtls = false;  // Basic example without DTLS
 
         std::cout << "  ✓ CoAP server configuration created\n";
         std::cout << "  ✓ CoAP client configuration created\n";
@@ -151,7 +151,7 @@ auto test_error_handling() -> bool {
         client_config.enable_dtls = false;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints;
-        node_endpoints[node_id] = "coap://127.0.0.1:9999"; // Non-existent server
+        node_endpoints[node_id] = "coap://127.0.0.1:9999";  // Non-existent server
 
         std::cout << "  ✓ CoAP client for error testing configured\n";
 
@@ -184,14 +184,14 @@ auto test_configuration_options() -> bool {
         client_config.max_sessions = 20;
         client_config.ack_timeout = std::chrono::milliseconds{2000};
         client_config.max_retransmit = 5;
-        client_config.enable_dtls = false; // For testing only
+        client_config.enable_dtls = false;  // For testing only
 
         // Test various server configurations
         coap_server_config server_config;
         server_config.max_concurrent_sessions = 50;
-        server_config.max_request_size = 5 * 1024 * 1024; // 5 MB
+        server_config.max_request_size = 5 * 1024 * 1024;  // 5 MB
         server_config.session_timeout = std::chrono::seconds{120};
-        server_config.enable_dtls = false; // For testing
+        server_config.enable_dtls = false;  // For testing
 
         std::cout << "  ✓ Client and server configurations created\n";
 

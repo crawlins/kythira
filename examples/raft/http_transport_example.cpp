@@ -17,18 +17,16 @@
 #include <chrono>
 
 namespace {
-    constexpr const char* server_bind_address = "127.0.0.1";
-    constexpr std::uint16_t server_bind_port = 8090;
-    constexpr const char* server_url = "http://127.0.0.1:8090";
-    constexpr std::uint64_t node_id = 1;
-    constexpr std::chrono::milliseconds rpc_timeout{5000};
+constexpr const char* server_bind_address = "127.0.0.1";
+constexpr std::uint16_t server_bind_port = 8090;
+constexpr const char* server_url = "http://127.0.0.1:8090";
+constexpr std::uint64_t node_id = 1;
+constexpr std::chrono::milliseconds rpc_timeout{5000};
 
-    // Define our transport types using the provided http_transport_types template
-    using example_transport_types = kythira::http_transport_types<
-        kythira::json_serializer,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define our transport types using the provided http_transport_types template
+using example_transport_types =
+    kythira::http_transport_types<kythira::json_serializer, kythira::noop_metrics,
+                                  folly::CPUThreadPoolExecutor>;
 }
 
 // Define our HTTP client and server types using transport_types concept
@@ -48,7 +46,7 @@ auto test_http_transport_basic_usage() -> bool {
         // Create server configuration
         kythira::cpp_httplib_server_config server_config;
         server_config.max_concurrent_connections = 10;
-        server_config.max_request_body_size = 1024 * 1024; // 1 MB
+        server_config.max_request_body_size = 1024 * 1024;  // 1 MB
         server_config.request_timeout = std::chrono::seconds{10};
 
         // Create client configuration
@@ -131,7 +129,7 @@ auto test_rpc_communication() -> bool {
 
         auto append_response = kythira::append_entries_response<>{};
         append_response._term = append_req._term;
-        append_response._success = true; // Accept empty entries for simplicity
+        append_response._success = true;  // Accept empty entries for simplicity
 
         // Note: In actual implementation, this would be:
         // auto append_future = client.send_append_entries(node_id, append_req, rpc_timeout);
@@ -183,7 +181,7 @@ auto test_error_handling() -> bool {
         example_transport_types::metrics_type metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_urls;
-        node_urls[node_id] = "http://127.0.0.1:9999"; // Non-existent server
+        node_urls[node_id] = "http://127.0.0.1:9999";  // Non-existent server
 
         HttpClient client(std::move(node_urls), client_config, metrics);
 
@@ -223,17 +221,18 @@ auto test_configuration_options() -> bool {
         client_config.connection_timeout = std::chrono::milliseconds{2000};
         client_config.request_timeout = std::chrono::milliseconds{8000};
         client_config.keep_alive_timeout = std::chrono::milliseconds{30000};
-        client_config.enable_ssl_verification = false; // For testing only
+        client_config.enable_ssl_verification = false;  // For testing only
         client_config.user_agent = "test-raft-client-transport-types/1.0";
 
         // Test various server configurations
         kythira::cpp_httplib_server_config server_config;
         server_config.max_concurrent_connections = 50;
-        server_config.max_request_body_size = 5 * 1024 * 1024; // 5 MB
+        server_config.max_request_body_size = 5 * 1024 * 1024;  // 5 MB
         server_config.request_timeout = std::chrono::seconds{20};
-        server_config.enable_ssl = false; // For testing
+        server_config.enable_ssl = false;  // For testing
 
-        std::cout << "  ✓ Client and server configurations created for transport_types architecture\n";
+        std::cout
+            << "  ✓ Client and server configurations created for transport_types architecture\n";
 
         // Test HTTPS configuration (without actually using it)
         kythira::cpp_httplib_server_config https_config;
@@ -254,7 +253,7 @@ auto test_configuration_options() -> bool {
         // }
         // auto all_results = folly::collectAll(std::move(vote_futures)).get();
 
-        int granted_votes = 2; // Mock result
+        int granted_votes = 2;  // Mock result
         int total_votes = 3;
 
         std::cout << "  Collected " << granted_votes << " votes out of " << total_votes << "\n";

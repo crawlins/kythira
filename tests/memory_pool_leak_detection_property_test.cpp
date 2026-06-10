@@ -12,43 +12,43 @@
 using namespace kythira;
 
 namespace {
-    // Test constants
-    constexpr std::size_t min_pool_size = 64 * 1024;      // 64KB
-    constexpr std::size_t max_pool_size = 1024 * 1024;    // 1MB
-    constexpr std::size_t min_block_size = 1024;          // 1KB
-    constexpr std::size_t max_block_size = 8192;          // 8KB
-    constexpr std::size_t num_property_iterations = 10;
-    constexpr auto test_timeout_seconds = 120;
-    constexpr auto short_leak_threshold = std::chrono::seconds{1};
-    constexpr auto medium_leak_threshold = std::chrono::seconds{2};
+// Test constants
+constexpr std::size_t min_pool_size = 64 * 1024;    // 64KB
+constexpr std::size_t max_pool_size = 1024 * 1024;  // 1MB
+constexpr std::size_t min_block_size = 1024;        // 1KB
+constexpr std::size_t max_block_size = 8192;        // 8KB
+constexpr std::size_t num_property_iterations = 10;
+constexpr auto test_timeout_seconds = 120;
+constexpr auto short_leak_threshold = std::chrono::seconds{1};
+constexpr auto medium_leak_threshold = std::chrono::seconds{2};
 
-    // Random number generator
-    std::random_device rd;
-    std::mt19937 gen(rd());
+// Random number generator
+std::random_device rd;
+std::mt19937 gen(rd());
 
-    // Generate random pool size
-    auto random_pool_size() -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(min_pool_size, max_pool_size);
-        return dist(gen);
-    }
+// Generate random pool size
+auto random_pool_size() -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(min_pool_size, max_pool_size);
+    return dist(gen);
+}
 
-    // Generate random block size
-    auto random_block_size() -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(min_block_size, max_block_size);
-        return dist(gen);
-    }
+// Generate random block size
+auto random_block_size() -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(min_block_size, max_block_size);
+    return dist(gen);
+}
 
-    // Generate random allocation count
-    auto random_allocation_count(std::size_t max_blocks) -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(1, std::min(max_blocks, std::size_t{50}));
-        return dist(gen);
-    }
+// Generate random allocation count
+auto random_allocation_count(std::size_t max_blocks) -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(1, std::min(max_blocks, std::size_t{50}));
+    return dist(gen);
+}
 
-    // Generate random allocation size
-    auto random_allocation_size(std::size_t block_size) -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(1, block_size);
-        return dist(gen);
-    }
+// Generate random allocation size
+auto random_allocation_size(std::size_t block_size) -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(1, block_size);
+    return dist(gen);
+}
 }
 
 /**
@@ -60,7 +60,8 @@ namespace {
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         // Generate random pool configuration
         std::size_t pool_size = random_pool_size();
@@ -71,7 +72,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy, * boost::unit_t
         if (pool_size == 0) continue;
 
         // Create pool with leak detection enabled
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
 
@@ -103,7 +105,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy, * boost::unit_t
         for (const auto& leak : leaks) {
             // Address should be valid and in our allocations
             BOOST_CHECK(leak.address != nullptr);
-            BOOST_CHECK(std::find(allocations.begin(), allocations.end(), leak.address) != allocations.end());
+            BOOST_CHECK(std::find(allocations.begin(), allocations.end(), leak.address) !=
+                        allocations.end());
 
             // Size should be positive
             BOOST_CHECK_GT(leak.size, 0);
@@ -136,7 +139,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy, * boost::unit_t
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -144,7 +148,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification, * boost::
         pool_size = (pool_size / block_size) * block_size;
         if (pool_size == 0) continue;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, medium_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         medium_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
 
@@ -177,8 +182,10 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification, * boost::
 
         // Property: All detected leaks should be from long-lived allocations
         for (const auto& leak : leaks) {
-            BOOST_CHECK(std::find(long_lived.begin(), long_lived.end(), leak.address) != long_lived.end());
-            BOOST_CHECK(std::find(short_lived.begin(), short_lived.end(), leak.address) == short_lived.end());
+            BOOST_CHECK(std::find(long_lived.begin(), long_lived.end(), leak.address) !=
+                        long_lived.end());
+            BOOST_CHECK(std::find(short_lived.begin(), short_lived.end(), leak.address) ==
+                        short_lived.end());
             BOOST_CHECK(leak.allocation_context.find("long_lived") != std::string::npos);
         }
 
@@ -201,12 +208,14 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification, * boost::
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_multithreaded_accuracy, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_multithreaded_accuracy,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
-        std::size_t pool_size = 512 * 1024; // Fixed size for faster test
+        std::size_t pool_size = 512 * 1024;  // Fixed size for faster test
         std::size_t block_size = 4096;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
 
         constexpr int num_threads = 4;
         std::vector<std::thread> threads;
@@ -254,7 +263,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_multithreaded_accuracy, * boost::un
         for (const auto& leak : leaks) {
             unique_thread_ids.insert(leak.thread_id);
         }
-        BOOST_CHECK_GT(unique_thread_ids.size(), 1); // At least 2 different threads
+        BOOST_CHECK_GT(unique_thread_ids.size(), 1);  // At least 2 different threads
 
         // Clean up
         for (auto& thread_ptrs : thread_allocations) {
@@ -274,7 +283,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_multithreaded_accuracy, * boost::un
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -282,7 +292,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking, * boost::uni
         pool_size = (pool_size / block_size) * block_size;
         if (pool_size == 0) continue;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
 
@@ -358,7 +369,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking, * boost::uni
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_configuration, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_configuration,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -421,7 +433,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_configuration, * boost::u
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -433,7 +446,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence, * boost::unit_te
         std::size_t alloc_count = random_allocation_count(max_blocks);
 
         // Test with leak detection enabled
-        memory_pool pool_enabled(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool_enabled(pool_size, block_size, std::chrono::seconds{0}, true,
+                                 short_leak_threshold);
         std::vector<void*> allocs_enabled;
 
         for (std::size_t i = 0; i < alloc_count; ++i) {
@@ -444,7 +458,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence, * boost::unit_te
         }
 
         // Test with leak detection disabled
-        memory_pool pool_disabled(pool_size, block_size, std::chrono::seconds{0}, false, short_leak_threshold);
+        memory_pool pool_disabled(pool_size, block_size, std::chrono::seconds{0}, false,
+                                  short_leak_threshold);
         std::vector<void*> allocs_disabled;
 
         for (std::size_t i = 0; i < alloc_count; ++i) {
@@ -511,12 +526,14 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence, * boost::unit_te
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_prevention_through_detection, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_prevention_through_detection,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
-        std::size_t pool_size = 256 * 1024; // Fixed size for faster test
+        std::size_t pool_size = 256 * 1024;  // Fixed size for faster test
         std::size_t block_size = 4096;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
 
         std::vector<void*> allocations;
@@ -584,7 +601,8 @@ BOOST_AUTO_TEST_CASE(property_leak_prevention_through_detection, * boost::unit_t
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -592,12 +610,13 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy, * boost::unit_test::
         pool_size = (pool_size / block_size) * block_size;
         if (pool_size == 0) continue;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
 
         // Allocate blocks with varying sizes
-        std::vector<std::pair<void*, std::size_t>> allocations; // ptr, requested_size
+        std::vector<std::pair<void*, std::size_t>> allocations;  // ptr, requested_size
 
         for (std::size_t i = 0; i < alloc_count; ++i) {
             std::size_t requested_size = random_allocation_size(block_size);
@@ -620,8 +639,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy, * boost::unit_test::
         // Property: Each leak should report the correct size
         for (const auto& leak : leaks) {
             // Find the corresponding allocation
-            auto it = std::find_if(allocations.begin(), allocations.end(),
-                [&leak](const auto& alloc) { return alloc.first == leak.address; });
+            auto it =
+                std::find_if(allocations.begin(), allocations.end(),
+                             [&leak](const auto& alloc) { return alloc.first == leak.address; });
 
             BOOST_CHECK(it != allocations.end());
 
@@ -647,12 +667,14 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy, * boost::unit_test::
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_thread_safety, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_thread_safety,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
         std::size_t pool_size = 512 * 1024;
         std::size_t block_size = 4096;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
 
         // Allocate some blocks that will become leaks
         std::vector<void*> allocations;
@@ -685,10 +707,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_thread_safety, * boost::unit_test::
 
                     // Property: Each leak should have valid information
                     for (const auto& leak : leaks) {
-                        if (leak.address == nullptr ||
-                            leak.size == 0 ||
-                            leak.age < short_leak_threshold ||
-                            leak.allocation_context.empty() ||
+                        if (leak.address == nullptr || leak.size == 0 ||
+                            leak.age < short_leak_threshold || leak.allocation_context.empty() ||
                             leak.thread_id.empty()) {
                             consistency_violation = true;
                         }
@@ -729,7 +749,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_thread_safety, * boost::unit_test::
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
         std::size_t pool_size = 256 * 1024;
         std::size_t block_size = 4096;
@@ -746,11 +767,12 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact, * boost::unit_t
             }
         }
         auto end_disabled = std::chrono::steady_clock::now();
-        auto duration_disabled = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_disabled - start_disabled);
+        auto duration_disabled =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_disabled - start_disabled);
 
         // Measure performance with leak detection
-        memory_pool pool_enabled(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool_enabled(pool_size, block_size, std::chrono::seconds{0}, true,
+                                 short_leak_threshold);
 
         auto start_enabled = std::chrono::steady_clock::now();
         for (int i = 0; i < operations; ++i) {
@@ -760,16 +782,16 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact, * boost::unit_t
             }
         }
         auto end_enabled = std::chrono::steady_clock::now();
-        auto duration_enabled = std::chrono::duration_cast<std::chrono::microseconds>(
-            end_enabled - start_enabled);
+        auto duration_enabled =
+            std::chrono::duration_cast<std::chrono::microseconds>(end_enabled - start_enabled);
 
         // Property: Both modes should complete successfully
         BOOST_CHECK_GT(duration_disabled.count(), 0);
         BOOST_CHECK_GT(duration_enabled.count(), 0);
 
         // Property: Overhead should be reasonable (less than 10x)
-        double overhead_ratio = static_cast<double>(duration_enabled.count()) /
-                               duration_disabled.count();
+        double overhead_ratio =
+            static_cast<double>(duration_enabled.count()) / duration_disabled.count();
         BOOST_CHECK_LT(overhead_ratio, 10.0);
 
         // Property: Leak detection should still work correctly after performance test
@@ -803,7 +825,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact, * boost::unit_t
  *
  * **Validates: Requirements 14.4**
  */
-BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -811,7 +834,8 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset, * boost::unit_test::ti
         pool_size = (pool_size / block_size) * block_size;
         if (pool_size == 0) continue;
 
-        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true, short_leak_threshold);
+        memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
+                         short_leak_threshold);
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
 

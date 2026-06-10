@@ -46,89 +46,99 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{200};
-    constexpr std::uint64_t test_client_id = 12345;
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{200};
+constexpr std::uint64_t test_client_id = 12345;
 
-    // Helper function to create a properly formatted PUT command for test_key_value_state_machine
-    auto create_put_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
-        std::vector<std::byte> command;
+// Helper function to create a properly formatted PUT command for test_key_value_state_machine
+auto create_put_command(const std::string& key, const std::string& value)
+    -> std::vector<std::byte> {
+    std::vector<std::byte> command;
 
-        // Command type (PUT = 1)
-        command.push_back(std::byte{1});
+    // Command type (PUT = 1)
+    command.push_back(std::byte{1});
 
-        // Key length (4 bytes)
-        std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
-        std::size_t offset = command.size();
-        command.resize(offset + sizeof(std::uint32_t));
-        std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
+    // Key length (4 bytes)
+    std::uint32_t key_length = static_cast<std::uint32_t>(key.size());
+    std::size_t offset = command.size();
+    command.resize(offset + sizeof(std::uint32_t));
+    std::memcpy(command.data() + offset, &key_length, sizeof(std::uint32_t));
 
-        // Key
-        offset = command.size();
-        command.resize(offset + key.size());
-        std::memcpy(command.data() + offset, key.data(), key.size());
+    // Key
+    offset = command.size();
+    command.resize(offset + key.size());
+    std::memcpy(command.data() + offset, key.data(), key.size());
 
-        // Value length (4 bytes)
-        std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
-        offset = command.size();
-        command.resize(offset + sizeof(std::uint32_t));
-        std::memcpy(command.data() + offset, &value_length, sizeof(std::uint32_t));
+    // Value length (4 bytes)
+    std::uint32_t value_length = static_cast<std::uint32_t>(value.size());
+    offset = command.size();
+    command.resize(offset + sizeof(std::uint32_t));
+    std::memcpy(command.data() + offset, &value_length, sizeof(std::uint32_t));
 
-        // Value
-        offset = command.size();
-        command.resize(offset + value.size());
-        std::memcpy(command.data() + offset, value.data(), value.size());
+    // Value
+    offset = command.size();
+    command.resize(offset + value.size());
+    std::memcpy(command.data() + offset, value.data(), value.size());
 
-        return command;
-    }
+    return command;
+}
 }
 
 BOOST_AUTO_TEST_SUITE(duplicate_detection_property_tests)
@@ -167,8 +177,7 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -186,12 +195,8 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         auto command = create_put_command("test_key", "test_value");
         constexpr std::uint64_t serial_number = 1;
 
-        auto first_future = node.submit_command_with_session(
-            test_client_id,
-            serial_number,
-            command,
-            rpc_timeout
-        );
+        auto first_future =
+            node.submit_command_with_session(test_client_id, serial_number, command, rpc_timeout);
 
         // Wait for first submission to complete
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -202,12 +207,8 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         auto first_response = first_future.value();
 
         // Submit the same command with the same serial number (duplicate)
-        auto second_future = node.submit_command_with_session(
-            test_client_id,
-            serial_number,
-            command,
-            rpc_timeout
-        );
+        auto second_future =
+            node.submit_command_with_session(test_client_id, serial_number, command, rpc_timeout);
 
         // Wait for second submission to complete
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -259,8 +260,7 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -279,12 +279,8 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
         auto command = create_put_command("test_key", "test_value");
 
         for (std::uint64_t serial = 1; serial <= num_commands; ++serial) {
-            auto future = node.submit_command_with_session(
-                test_client_id,
-                serial,
-                command,
-                rpc_timeout
-            );
+            auto future =
+                node.submit_command_with_session(test_client_id, serial, command, rpc_timeout);
 
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -294,12 +290,8 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
 
         // Now resubmit an old serial number (e.g., serial number 3)
         constexpr std::uint64_t old_serial = 3;
-        auto retry_future = node.submit_command_with_session(
-            test_client_id,
-            old_serial,
-            command,
-            rpc_timeout
-        );
+        auto retry_future =
+            node.submit_command_with_session(test_client_id, old_serial, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -345,8 +337,7 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -365,12 +356,8 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
         constexpr std::uint64_t new_client_id = 99999;
         constexpr std::uint64_t invalid_serial = 5;
 
-        auto future = node.submit_command_with_session(
-            new_client_id,
-            invalid_serial,
-            command,
-            rpc_timeout
-        );
+        auto future =
+            node.submit_command_with_session(new_client_id, invalid_serial, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -379,12 +366,8 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
         BOOST_CHECK(future.hasException());
 
         // Now try with serial number 1 - should succeed
-        auto valid_future = node.submit_command_with_session(
-            new_client_id,
-            1,
-            command,
-            rpc_timeout
-        );
+        auto valid_future =
+            node.submit_command_with_session(new_client_id, 1, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -429,8 +412,7 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -447,12 +429,8 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         // Submit command with serial number 1
         auto command = create_put_command("test_key", "test_value");
 
-        auto first_future = node.submit_command_with_session(
-            test_client_id,
-            1,
-            command,
-            rpc_timeout
-        );
+        auto first_future =
+            node.submit_command_with_session(test_client_id, 1, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -460,12 +438,8 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         BOOST_REQUIRE(!first_future.hasException());
 
         // Try to skip to serial number 3 (should fail)
-        auto skip_future = node.submit_command_with_session(
-            test_client_id,
-            3,
-            command,
-            rpc_timeout
-        );
+        auto skip_future =
+            node.submit_command_with_session(test_client_id, 3, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -474,12 +448,8 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         BOOST_CHECK(skip_future.hasException());
 
         // Now submit with serial number 2 (should succeed)
-        auto valid_future = node.submit_command_with_session(
-            test_client_id,
-            2,
-            command,
-            rpc_timeout
-        );
+        auto valid_future =
+            node.submit_command_with_session(test_client_id, 2, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -523,8 +493,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -544,12 +513,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         auto command = create_put_command("test_key", "test_value");
 
         // Client 1 submits with serial 1
-        auto client1_future1 = node.submit_command_with_session(
-            client_1,
-            1,
-            command,
-            rpc_timeout
-        );
+        auto client1_future1 = node.submit_command_with_session(client_1, 1, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -557,12 +521,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         BOOST_REQUIRE(!client1_future1.hasException());
 
         // Client 2 should also be able to submit with serial 1 (independent session)
-        auto client2_future1 = node.submit_command_with_session(
-            client_2,
-            1,
-            command,
-            rpc_timeout
-        );
+        auto client2_future1 = node.submit_command_with_session(client_2, 1, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -570,12 +529,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         BOOST_CHECK(!client2_future1.hasException());
 
         // Client 1 submits with serial 2
-        auto client1_future2 = node.submit_command_with_session(
-            client_1,
-            2,
-            command,
-            rpc_timeout
-        );
+        auto client1_future2 = node.submit_command_with_session(client_1, 2, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -583,12 +537,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         BOOST_CHECK(!client1_future2.hasException());
 
         // Client 2 submits with serial 2
-        auto client2_future2 = node.submit_command_with_session(
-            client_2,
-            2,
-            command,
-            rpc_timeout
-        );
+        auto client2_future2 = node.submit_command_with_session(client_2, 2, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -633,8 +582,7 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -652,12 +600,8 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
         auto command = create_put_command("test_key", "test_value");
         constexpr std::uint64_t serial_number = 1;
 
-        auto first_future = node.submit_command_with_session(
-            test_client_id,
-            serial_number,
-            command,
-            rpc_timeout
-        );
+        auto first_future =
+            node.submit_command_with_session(test_client_id, serial_number, command, rpc_timeout);
 
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
@@ -669,12 +613,8 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
         // Retry multiple times with the same serial number
         constexpr std::size_t num_retries = 5;
         for (std::size_t retry = 0; retry < num_retries; ++retry) {
-            auto retry_future = node.submit_command_with_session(
-                test_client_id,
-                serial_number,
-                command,
-                rpc_timeout
-            );
+            auto retry_future = node.submit_command_with_session(test_client_id, serial_number,
+                                                                 command, rpc_timeout);
 
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
 

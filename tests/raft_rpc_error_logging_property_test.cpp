@@ -16,10 +16,10 @@
 #include <set>
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::size_t test_max_retries = 10;
-    constexpr const char* test_failure_message = "Network failure";
-    constexpr const char* test_target_node = "node_2";
+constexpr std::size_t test_iterations = 15;
+constexpr std::size_t test_max_retries = 10;
+constexpr const char* test_failure_message = "Network failure";
+constexpr const char* test_target_node = "node_2";
 }
 
 // Mock logger that captures log messages for verification
@@ -36,11 +36,9 @@ public:
         _entries.emplace_back(log_entry{level, std::string(message), {}});
     }
 
-    auto log(
-        kythira::log_level level,
-        std::string_view message,
-        const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs
-    ) -> void {
+    auto log(kythira::log_level level, std::string_view message,
+             const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         std::vector<std::pair<std::string, std::string>> converted_pairs;
         for (const auto& [key, value] : key_value_pairs) {
@@ -57,22 +55,28 @@ public:
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
 
-    auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto trace(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::trace, message, kvp);
     }
-    auto debug(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto debug(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::debug, message, kvp);
     }
-    auto info(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto info(std::string_view message,
+              const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::info, message, kvp);
     }
-    auto warning(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto warning(std::string_view message,
+                 const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::warning, message, kvp);
     }
-    auto error(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto error(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::error, message, kvp);
     }
-    auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto critical(std::string_view message,
+                  const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::critical, message, kvp);
     }
 
@@ -86,12 +90,10 @@ public:
         _entries.clear();
     }
 
-    [[nodiscard]] auto has_error_log_with_context(
-        const std::string& expected_message_part,
-        const std::string& failure_type,
-        const std::string& target_node,
-        std::size_t retry_count
-    ) const -> bool {
+    [[nodiscard]] auto has_error_log_with_context(const std::string& expected_message_part,
+                                                  const std::string& failure_type,
+                                                  const std::string& target_node,
+                                                  std::size_t retry_count) const -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
 
         for (const auto& entry : _entries) {
@@ -149,18 +151,16 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
  * For any RPC operation failure, detailed error information including failure type,
  * target node, and retry attempts is logged.
  */
-BOOST_AUTO_TEST_CASE(raft_rpc_error_logging_property_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(raft_rpc_error_logging_property_test, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<std::size_t> retry_dist(0, test_max_retries);
 
-    std::vector<std::string> rpc_types = {
-        "append_entries", "request_vote", "install_snapshot", "heartbeat"
-    };
+    std::vector<std::string> rpc_types = {"append_entries", "request_vote", "install_snapshot",
+                                          "heartbeat"};
 
-    std::vector<std::string> failure_types = {
-        "Network timeout", "Connection refused", "DNS resolution failed", "SSL handshake failed"
-    };
+    std::vector<std::string> failure_types = {"Network timeout", "Connection refused",
+                                              "DNS resolution failed", "SSL handshake failed"};
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
@@ -174,20 +174,14 @@ BOOST_AUTO_TEST_CASE(raft_rpc_error_logging_property_test, * boost::unit_test::t
         capturing_logger logger;
 
         // Simulate RPC failure logging that should occur in the Raft implementation
-        logger.error("RPC operation failed", {
-            {"failure_type", failure_type},
-            {"target_node", test_target_node},
-            {"retry_count", std::to_string(retry_count)},
-            {"rpc_type", rpc_type}
-        });
+        logger.error("RPC operation failed", {{"failure_type", failure_type},
+                                              {"target_node", test_target_node},
+                                              {"retry_count", std::to_string(retry_count)},
+                                              {"rpc_type", rpc_type}});
 
         // Verify that the error was logged with proper context
-        BOOST_CHECK(logger.has_error_log_with_context(
-            "RPC operation failed",
-            failure_type,
-            test_target_node,
-            retry_count
-        ));
+        BOOST_CHECK(logger.has_error_log_with_context("RPC operation failed", failure_type,
+                                                      test_target_node, retry_count));
 
         // Verify that all required context fields are present
         auto entries = logger.get_entries();
@@ -196,10 +190,8 @@ BOOST_AUTO_TEST_CASE(raft_rpc_error_logging_property_test, * boost::unit_test::t
         for (const auto& entry : entries) {
             if (entry.level == kythira::log_level::error &&
                 entry.message.find("RPC operation failed") != std::string::npos) {
-
-                std::set<std::string> required_keys = {
-                    "failure_type", "target_node", "retry_count", "rpc_type"
-                };
+                std::set<std::string> required_keys = {"failure_type", "target_node", "retry_count",
+                                                       "rpc_type"};
                 std::set<std::string> found_keys;
 
                 for (const auto& [key, value] : entry.key_value_pairs) {
@@ -230,4 +222,4 @@ BOOST_AUTO_TEST_CASE(raft_rpc_error_logging_property_test, * boost::unit_test::t
 
 // Verify that the capturing_logger satisfies the diagnostic_logger concept
 static_assert(kythira::diagnostic_logger<capturing_logger>,
-    "capturing_logger must satisfy diagnostic_logger concept");
+              "capturing_logger must satisfy diagnostic_logger concept");

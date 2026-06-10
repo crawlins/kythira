@@ -16,10 +16,10 @@
 #include <set>
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::size_t test_max_log_index = 1000;
-    constexpr std::size_t test_max_term = 100;
-    constexpr const char* test_node_id = "node_1";
+constexpr std::size_t test_iterations = 15;
+constexpr std::size_t test_max_log_index = 1000;
+constexpr std::size_t test_max_term = 100;
+constexpr const char* test_node_id = "node_1";
 }
 
 // Mock logger that captures log messages for verification
@@ -36,11 +36,9 @@ public:
         _entries.emplace_back(log_entry{level, std::string(message), {}});
     }
 
-    auto log(
-        kythira::log_level level,
-        std::string_view message,
-        const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs
-    ) -> void {
+    auto log(kythira::log_level level, std::string_view message,
+             const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+        -> void {
         std::lock_guard<std::mutex> lock(_mutex);
         std::vector<std::pair<std::string, std::string>> converted_pairs;
         for (const auto& [key, value] : key_value_pairs) {
@@ -57,22 +55,28 @@ public:
     auto error(std::string_view message) -> void { log(kythira::log_level::error, message); }
     auto critical(std::string_view message) -> void { log(kythira::log_level::critical, message); }
 
-    auto trace(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto trace(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::trace, message, kvp);
     }
-    auto debug(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto debug(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::debug, message, kvp);
     }
-    auto info(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto info(std::string_view message,
+              const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::info, message, kvp);
     }
-    auto warning(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto warning(std::string_view message,
+                 const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::warning, message, kvp);
     }
-    auto error(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto error(std::string_view message,
+               const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::error, message, kvp);
     }
-    auto critical(std::string_view message, const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
+    auto critical(std::string_view message,
+                  const std::vector<std::pair<std::string_view, std::string_view>>& kvp) -> void {
         log(kythira::log_level::critical, message, kvp);
     }
 
@@ -86,12 +90,10 @@ public:
         _entries.clear();
     }
 
-    [[nodiscard]] auto has_critical_log_with_context(
-        const std::string& expected_message_part,
-        std::size_t log_index,
-        std::size_t term,
-        const std::string& error_details
-    ) const -> bool {
+    [[nodiscard]] auto has_critical_log_with_context(const std::string& expected_message_part,
+                                                     std::size_t log_index, std::size_t term,
+                                                     const std::string& error_details) const
+        -> bool {
         std::lock_guard<std::mutex> lock(_mutex);
 
         for (const auto& entry : _entries) {
@@ -151,15 +153,15 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
  *
  * For any state machine application failure, the failing entry and error details are logged.
  */
-BOOST_AUTO_TEST_CASE(raft_application_failure_logging_property_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(raft_application_failure_logging_property_test,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<std::size_t> log_index_dist(1, test_max_log_index);
     std::uniform_int_distribution<std::size_t> term_dist(1, test_max_term);
 
-    std::vector<std::string> error_types = {
-        "State machine exception", "Serialization error", "Invalid command format", "Resource exhaustion"
-    };
+    std::vector<std::string> error_types = {"State machine exception", "Serialization error",
+                                            "Invalid command format", "Resource exhaustion"};
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
@@ -172,22 +174,18 @@ BOOST_AUTO_TEST_CASE(raft_application_failure_logging_property_test, * boost::un
         // Create capturing logger
         capturing_logger logger;
 
-        // Simulate state machine application failure logging that should occur in the Raft implementation
-        logger.critical("State machine application failed", {
-            {"node_id", test_node_id},
-            {"log_index", std::to_string(log_index)},
-            {"term", std::to_string(term)},
-            {"error_details", error_details},
-            {"action", "halt_application"}
-        });
+        // Simulate state machine application failure logging that should occur in the Raft
+        // implementation
+        logger.critical("State machine application failed",
+                        {{"node_id", test_node_id},
+                         {"log_index", std::to_string(log_index)},
+                         {"term", std::to_string(term)},
+                         {"error_details", error_details},
+                         {"action", "halt_application"}});
 
         // Verify that the critical error was logged with proper context
-        BOOST_CHECK(logger.has_critical_log_with_context(
-            "State machine application failed",
-            log_index,
-            term,
-            error_details
-        ));
+        BOOST_CHECK(logger.has_critical_log_with_context("State machine application failed",
+                                                         log_index, term, error_details));
 
         // Verify that all required context fields are present
         auto entries = logger.get_entries();
@@ -196,10 +194,8 @@ BOOST_AUTO_TEST_CASE(raft_application_failure_logging_property_test, * boost::un
         for (const auto& entry : entries) {
             if (entry.level == kythira::log_level::critical &&
                 entry.message.find("State machine application failed") != std::string::npos) {
-
-                std::set<std::string> required_keys = {
-                    "node_id", "log_index", "term", "error_details", "action"
-                };
+                std::set<std::string> required_keys = {"node_id", "log_index", "term",
+                                                       "error_details", "action"};
                 std::set<std::string> found_keys;
 
                 for (const auto& [key, value] : entry.key_value_pairs) {
@@ -230,4 +226,4 @@ BOOST_AUTO_TEST_CASE(raft_application_failure_logging_property_test, * boost::un
 
 // Verify that the capturing_logger satisfies the diagnostic_logger concept
 static_assert(kythira::diagnostic_logger<capturing_logger>,
-    "capturing_logger must satisfy diagnostic_logger concept");
+              "capturing_logger must satisfy diagnostic_logger concept");

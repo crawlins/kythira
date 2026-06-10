@@ -18,9 +18,9 @@
 #include <unordered_map>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t max_node_id = 1000;
-    constexpr std::chrono::milliseconds min_timeout{100};
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t max_node_id = 1000;
+constexpr std::chrono::milliseconds min_timeout{100};
 }
 
 // Define test types for CoAP transport
@@ -33,8 +33,7 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
@@ -47,12 +46,13 @@ BOOST_AUTO_TEST_SUITE(coap_confirmable_message_property_tests)
 // wait for acknowledgment and handle retransmission according to RFC 7252.
 //
 // REWRITTEN: Tests behavior through public API instead of private methods
-BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
+                     *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
     std::uniform_int_distribution<std::chrono::milliseconds::rep> timeout_dist(
-        min_timeout.count(), 1000); // Shorter timeout for testing
+        min_timeout.count(), 1000);  // Shorter timeout for testing
     std::uniform_int_distribution<int> bool_dist(0, 1);
 
     std::size_t failures = 0;
@@ -77,8 +77,8 @@ BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling, * boo
 
             // Create client
             kythira::noop_metrics metrics;
-            kythira::coap_client<test_transport_types> client(
-                std::move(endpoints), config, metrics);
+            kythira::coap_client<test_transport_types> client(std::move(endpoints), config,
+                                                              metrics);
 
             // Create test requests
             kythira::request_vote_request<> request1;
@@ -124,12 +124,14 @@ BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling, * boo
 
         } catch (const std::exception& e) {
             failures++;
-            BOOST_TEST_MESSAGE("Exception during confirmable message test " << i << ": " << e.what());
+            BOOST_TEST_MESSAGE("Exception during confirmable message test " << i << ": "
+                                                                            << e.what());
         }
     }
 
     BOOST_TEST_MESSAGE("Confirmable message acknowledgment handling: "
-        << (property_test_iterations - failures) << "/" << property_test_iterations << " passed");
+                       << (property_test_iterations - failures) << "/" << property_test_iterations
+                       << " passed");
 
     BOOST_CHECK_EQUAL(failures, 0);
 }

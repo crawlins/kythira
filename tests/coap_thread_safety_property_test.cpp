@@ -15,13 +15,13 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 10;  // Reduced for faster execution
-    constexpr std::chrono::milliseconds test_timeout{45000};
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_bind_port = 16683;
-    constexpr std::size_t test_thread_count = 8;
-    constexpr std::size_t test_operations_per_thread = 50;  // Reduced for faster execution
-    constexpr std::uint64_t test_node_id = 1;
+constexpr std::size_t test_iterations = 10;  // Reduced for faster execution
+constexpr std::chrono::milliseconds test_timeout{45000};
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_bind_port = 16683;
+constexpr std::size_t test_thread_count = 8;
+constexpr std::size_t test_operations_per_thread = 50;  // Reduced for faster execution
+constexpr std::uint64_t test_node_id = 1;
 }
 
 // Define test types for CoAP transport
@@ -31,8 +31,7 @@ struct test_transport_types {
     using logger_type = kythira::console_logger;
     using executor_type = kythira::console_logger;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 };
 
 /**
@@ -45,7 +44,7 @@ struct test_transport_types {
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, *boost::unit_test::timeout(45)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -60,7 +59,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, * boost::unit_test::time
         coap_server_config server_config;
         server_config.max_concurrent_sessions = thread_count * 10;
         server_config.enable_memory_optimization = true;
-        server_config.memory_pool_size = 1024 * 1024; // 1MB
+        server_config.memory_pool_size = 1024 * 1024;  // 1MB
         server_config.enable_serialization_caching = true;
         server_config.serialization_cache_size = 200;
         server_config.enable_concurrent_processing = true;
@@ -70,10 +69,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, * boost::unit_test::time
 
         coap_server<test_transport_types> server(
             test_bind_address,
-            test_bind_port + iteration % 1000, // Avoid port conflicts
-            server_config,
-            metrics
-        );
+            test_bind_port + iteration % 1000,  // Avoid port conflicts
+            server_config, metrics);
 
         // Test 1: Concurrent slot acquisition (public API)
         std::vector<std::thread> threads;
@@ -82,7 +79,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, * boost::unit_test::time
         std::atomic<bool> start_flag{false};
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([&server, &successful_operations, &failed_operations, &start_flag, operations_per_thread]() {
+            threads.emplace_back([&server, &successful_operations, &failed_operations, &start_flag,
+                                  operations_per_thread]() {
                 // Wait for all threads to be ready
                 while (!start_flag.load()) {
                     std::this_thread::yield();
@@ -131,7 +129,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, * boost::unit_test::time
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, *boost::unit_test::timeout(45)) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -146,7 +144,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, * boost::unit_test::time
         coap_client_config client_config;
         client_config.max_sessions = thread_count * 5;
         client_config.enable_memory_optimization = true;
-        client_config.memory_pool_size = 1024 * 1024; // 1MB
+        client_config.memory_pool_size = 1024 * 1024;  // 1MB
         client_config.enable_serialization_caching = true;
         client_config.serialization_cache_size = 200;
         client_config.connection_pool_size = 50;
@@ -158,14 +156,9 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, * boost::unit_test::time
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
             {1, "coap://127.0.0.1:5683"},
             {2, "coap://127.0.0.1:5684"},
-            {3, "coap://127.0.0.1:5685"}
-        };
+            {3, "coap://127.0.0.1:5685"}};
 
-        coap_client<test_transport_types> client(
-            node_endpoints,
-            client_config,
-            metrics
-        );
+        coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 
         // Test 1: Concurrent client slot acquisition (public API)
         std::vector<std::thread> threads;
@@ -174,7 +167,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, * boost::unit_test::time
         std::atomic<bool> start_flag{false};
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([&client, &successful_operations, &failed_operations, &start_flag, operations_per_thread]() {
+            threads.emplace_back([&client, &successful_operations, &failed_operations, &start_flag,
+                                  operations_per_thread]() {
                 // Wait for all threads to be ready
                 while (!start_flag.load()) {
                     std::this_thread::yield();
@@ -222,7 +216,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, * boost::unit_test::time
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, *boost::unit_test::timeout(45)) {
     // Create client configuration
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
@@ -231,14 +225,9 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, * boost::unit_test::timeout(4
     noop_metrics metrics;
 
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-        {test_node_id, "coap://127.0.0.1:5683"}
-    };
+        {test_node_id, "coap://127.0.0.1:5683"}};
 
-    coap_client<test_transport_types> client(
-        node_endpoints,
-        client_config,
-        metrics
-    );
+    coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 
     // Test: Concurrent RPC requests
     std::vector<std::thread> threads;
@@ -246,17 +235,14 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, * boost::unit_test::timeout(4
     std::atomic<std::size_t> failed_requests{0};
 
     request_vote_request<> vote_request{
-        ._term = 1,
-        ._candidate_id = 100,
-        ._last_log_index = 0,
-        ._last_log_term = 0
-    };
+        ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     for (std::size_t t = 0; t < 10; ++t) {
         threads.emplace_back([&client, &successful_requests, &failed_requests, vote_request]() {
             for (std::size_t op = 0; op < 20; ++op) {
                 try {
-                    auto future = client.send_request_vote(test_node_id, vote_request, std::chrono::milliseconds{1000});
+                    auto future = client.send_request_vote(test_node_id, vote_request,
+                                                           std::chrono::milliseconds{1000});
                     successful_requests.fetch_add(1);
                 } catch (const std::exception&) {
                     failed_requests.fetch_add(1);
@@ -283,7 +269,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, * boost::unit_test::timeout(4
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks, * boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks, *boost::unit_test::timeout(45)) {
     // Create client configuration
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
@@ -291,14 +277,9 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks, * boost::unit_test::t
     noop_metrics metrics;
 
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-        {test_node_id, "coap://127.0.0.1:5683"}
-    };
+        {test_node_id, "coap://127.0.0.1:5683"}};
 
-    coap_client<test_transport_types> client(
-        node_endpoints,
-        client_config,
-        metrics
-    );
+    coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 
     // Test: Concurrent configuration status checks
     std::vector<std::thread> threads;

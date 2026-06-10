@@ -17,18 +17,18 @@ using namespace network_simulator;
 using namespace std::chrono_literals;
 
 namespace {
-    // Named constants for test configuration
-    constexpr const char* node_a_id = "node_a";
-    constexpr const char* node_b_id = "node_b";
-    constexpr const char* node_c_id = "node_c";
-    constexpr unsigned short port_1000 = 1000;
-    constexpr unsigned short port_2000 = 2000;
-    constexpr const char* test_payload = "Hello, Network Simulator!";
-    constexpr auto default_latency = 10ms;
-    constexpr double high_reliability = 0.99;
-    constexpr double low_reliability = 0.1;
-    constexpr auto short_timeout = 50ms;
-    constexpr auto long_timeout = 1000ms;
+// Named constants for test configuration
+constexpr const char* node_a_id = "node_a";
+constexpr const char* node_b_id = "node_b";
+constexpr const char* node_c_id = "node_c";
+constexpr unsigned short port_1000 = 1000;
+constexpr unsigned short port_2000 = 2000;
+constexpr const char* test_payload = "Hello, Network Simulator!";
+constexpr auto default_latency = 10ms;
+constexpr double high_reliability = 0.99;
+constexpr double low_reliability = 0.1;
+constexpr auto short_timeout = 50ms;
+constexpr auto long_timeout = 1000ms;
 }
 
 // Helper function to convert string to bytes
@@ -73,11 +73,7 @@ auto test_basic_send_receive() -> bool {
 
         // Create and send message using DefaultNetworkTypes::message_type
         auto payload = string_to_bytes(test_payload);
-        DefaultNetworkTypes::message_type msg(
-            node_a_id, port_1000,
-            node_b_id, port_2000,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(node_a_id, port_1000, node_b_id, port_2000, payload);
 
         // Send message
         auto send_future = node_a->send(std::move(msg));
@@ -93,8 +89,7 @@ auto test_basic_send_receive() -> bool {
         auto received_msg = std::move(receive_future).get();
 
         // Verify message content
-        if (received_msg.source_address() != node_a_id ||
-            received_msg.source_port() != port_1000 ||
+        if (received_msg.source_address() != node_a_id || received_msg.source_port() != port_1000 ||
             received_msg.destination_address() != node_b_id ||
             received_msg.destination_port() != port_2000) {
             std::cerr << "  ✗ Message addressing incorrect\n";
@@ -103,8 +98,8 @@ auto test_basic_send_receive() -> bool {
 
         auto received_payload = bytes_to_string(received_msg.payload());
         if (received_payload != test_payload) {
-            std::cerr << "  ✗ Message payload incorrect. Expected: '"
-                      << test_payload << "', Got: '" << received_payload << "'\n";
+            std::cerr << "  ✗ Message payload incorrect. Expected: '" << test_payload << "', Got: '"
+                      << received_payload << "'\n";
             return false;
         }
 
@@ -138,11 +133,7 @@ auto test_send_timeout() -> bool {
 
         // Create message
         auto payload = string_to_bytes(test_payload);
-        DefaultNetworkTypes::message_type msg(
-            node_a_id, port_1000,
-            node_b_id, port_2000,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(node_a_id, port_1000, node_b_id, port_2000, payload);
 
         // Send message with short timeout - should fail due to no route
         auto send_future = node_a->send(std::move(msg), short_timeout);
@@ -224,11 +215,8 @@ auto test_reliability_drops() -> bool {
 
         for (int i = 0; i < message_count; ++i) {
             auto payload = string_to_bytes(std::format("Message {}", i));
-            DefaultNetworkTypes::message_type msg(
-                node_a_id, port_1000,
-                node_b_id, port_2000,
-                payload
-            );
+            DefaultNetworkTypes::message_type msg(node_a_id, port_1000, node_b_id, port_2000,
+                                                  payload);
 
             auto send_future = node_a->send(std::move(msg));
             bool send_result = std::move(send_future).get();
@@ -241,12 +229,12 @@ auto test_reliability_drops() -> bool {
         // With 10% reliability, we expect roughly 2 successful sends out of 20
         // Allow some variance due to randomness (0-8 is reasonable range)
         if (successful_sends >= 0 && successful_sends <= 8) {
-            std::cout << "  ✓ Reliability simulation working ("
-                      << successful_sends << "/" << message_count << " messages sent)\n";
+            std::cout << "  ✓ Reliability simulation working (" << successful_sends << "/"
+                      << message_count << " messages sent)\n";
             return true;
         } else {
-            std::cerr << "  ✗ Unexpected reliability behavior ("
-                      << successful_sends << "/" << message_count << " messages sent)\n";
+            std::cerr << "  ✗ Unexpected reliability behavior (" << successful_sends << "/"
+                      << message_count << " messages sent)\n";
             return false;
         }
 
@@ -281,11 +269,7 @@ auto test_multi_hop_routing() -> bool {
 
         // Try to send from A to C through B
         auto payload = string_to_bytes(test_payload);
-        DefaultNetworkTypes::message_type msg(
-            node_a_id, port_1000,
-            node_c_id, port_2000,
-            payload
-        );
+        DefaultNetworkTypes::message_type msg(node_a_id, port_1000, node_c_id, port_2000, payload);
 
         auto send_future = node_a->send(std::move(msg));
         bool send_result = std::move(send_future).get();

@@ -33,10 +33,10 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
-    constexpr std::chrono::milliseconds test_latency{100};
-    constexpr std::chrono::milliseconds long_timeout{5000};
-    constexpr double perfect_reliability = 1.0;
+constexpr std::size_t property_test_iterations = 10;  // Reduced for faster testing
+constexpr std::chrono::milliseconds test_latency{100};
+constexpr std::chrono::milliseconds long_timeout{5000};
+constexpr double perfect_reliability = 1.0;
 }
 
 // Helper to generate random node address
@@ -56,7 +56,8 @@ auto generate_random_address(std::mt19937& rng, std::size_t id) -> std::string {
  * and that resources are properly cleaned up. Full cancellation support would require
  * additional API methods for explicit cancellation.
  */
-BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation,
+                     *boost::unit_test::timeout(120)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t failures = 0;
@@ -119,7 +120,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation, * boost::un
             // Verify that the connection did not complete successfully
             if (connection_completed.load()) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 1: Connection completed after simulator stop");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << " Case 1: Connection completed after simulator stop");
             } else {
                 ++success_count;
             }
@@ -161,7 +163,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation, * boost::un
             // Verify that the connection did not complete successfully
             if (connection_completed.load()) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 2: Connection completed after simulator reset");
+                BOOST_TEST_MESSAGE("Iteration "
+                                   << i << " Case 2: Connection completed after simulator reset");
             } else {
                 ++success_count;
             }
@@ -206,8 +209,8 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation, * boost::un
             // Verify that no connections completed successfully
             if (completed_connections.load() > 0) {
                 ++failures;
-                BOOST_TEST_MESSAGE("Iteration " << i << " Case 3: "
-                    << completed_connections.load() << " connections completed after simulator stop");
+                BOOST_TEST_MESSAGE("Iteration " << i << " Case 3: " << completed_connections.load()
+                                                << " connections completed after simulator stop");
             } else {
                 ++success_count;
             }

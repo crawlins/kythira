@@ -8,24 +8,22 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 namespace {
-    constexpr const char* test_http_url = "http://localhost:8080";
-    constexpr const char* test_https_url = "https://localhost:8443";
-    constexpr std::uint64_t test_node_id_1 = 1;
-    constexpr std::uint64_t test_node_id_2 = 2;
-    constexpr std::uint64_t test_node_id_3 = 3;
+constexpr const char* test_http_url = "http://localhost:8080";
+constexpr const char* test_https_url = "https://localhost:8443";
+constexpr std::uint64_t test_node_id_1 = 1;
+constexpr std::uint64_t test_node_id_2 = 2;
+constexpr std::uint64_t test_node_id_3 = 3;
 
-    // Define transport types for testing
-    using test_transport_types = kythira::http_transport_types<
-        kythira::json_rpc_serializer<std::vector<std::byte>>,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define transport types for testing
+using test_transport_types =
+    kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                  kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_comprehensive_tests)
 
 // Test client construction with multiple nodes
-BOOST_AUTO_TEST_CASE(test_multi_node_construction, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_multi_node_construction, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
     // Skip HTTPS URLs when OpenSSL is not available
@@ -59,7 +57,7 @@ BOOST_AUTO_TEST_CASE(test_multi_node_construction, * boost::unit_test::timeout(3
 }
 
 // Test client with empty node map
-BOOST_AUTO_TEST_CASE(test_empty_node_map_construction, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_empty_node_map_construction, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> empty_node_map;
 
     kythira::cpp_httplib_client_config config;
@@ -72,7 +70,7 @@ BOOST_AUTO_TEST_CASE(test_empty_node_map_construction, * boost::unit_test::timeo
 }
 
 // Test client with various URL formats
-BOOST_AUTO_TEST_CASE(test_various_url_formats, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_various_url_formats, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[1] = "http://localhost:8080";
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
@@ -98,7 +96,7 @@ BOOST_AUTO_TEST_CASE(test_various_url_formats, * boost::unit_test::timeout(30)) 
 }
 
 // Test client configuration edge cases
-BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
 
@@ -134,7 +132,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_edge_cases, * boost::unit_test::timeout(
 }
 
 // Test SSL configuration options
-BOOST_AUTO_TEST_CASE(test_ssl_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_ssl_configuration, *boost::unit_test::timeout(30)) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_https_url;
@@ -171,7 +169,7 @@ BOOST_AUTO_TEST_CASE(test_ssl_configuration, * boost::unit_test::timeout(30)) {
 }
 
 // Test user agent configuration
-BOOST_AUTO_TEST_CASE(test_user_agent_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_user_agent_configuration, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
 
@@ -186,7 +184,7 @@ BOOST_AUTO_TEST_CASE(test_user_agent_configuration, * boost::unit_test::timeout(
 }
 
 // Test that client properly handles move semantics
-BOOST_AUTO_TEST_CASE(test_move_semantics, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_move_semantics, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id_1] = test_http_url;
 
@@ -203,7 +201,7 @@ BOOST_AUTO_TEST_CASE(test_move_semantics, * boost::unit_test::timeout(30)) {
 }
 
 // Test client with large node maps
-BOOST_AUTO_TEST_CASE(test_large_node_map, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_large_node_map, *boost::unit_test::timeout(30)) {
     std::unordered_map<std::uint64_t, std::string> large_node_map;
 
     // Create a map with 100 nodes

@@ -17,17 +17,14 @@ struct test_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T>
-    using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::Future<T>;
 
     using future_type = kythira::Future<std::vector<std::byte>>;
 };
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {1, "coap://localhost:5683"}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -39,11 +36,9 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, * boost::unit_test:
     BOOST_CHECK_EQUAL(groups.size(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {1, "coap://localhost:5683"}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -61,11 +56,9 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, * boost::unit_
     BOOST_CHECK(std::find(groups.begin(), groups.end(), multicast_address) != groups.end());
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {1, "coap://localhost:5683"}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -73,11 +66,8 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, * boost::unit_te
     kythira::coap_client<test_types> client(endpoints, config, metrics);
 
     // Join multiple multicast groups
-    const std::vector<std::string> multicast_addresses = {
-        "224.0.1.187",
-        "224.0.1.188",
-        "224.0.1.189"
-    };
+    const std::vector<std::string> multicast_addresses = {"224.0.1.187", "224.0.1.188",
+                                                          "224.0.1.189"};
 
     for (const auto& address : multicast_addresses) {
         bool joined = client.join_multicast_group(address);
@@ -93,11 +83,9 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, * boost::unit_te
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {1, "coap://localhost:5683"}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -119,5 +107,6 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, * boost::unit
     // Verify the group is no longer in the list
     auto groups_after = client.get_joined_multicast_groups();
     BOOST_CHECK_EQUAL(groups_after.size(), 0);
-    BOOST_CHECK(std::find(groups_after.begin(), groups_after.end(), multicast_address) == groups_after.end());
+    BOOST_CHECK(std::find(groups_after.begin(), groups_after.end(), multicast_address) ==
+                groups_after.end());
 }

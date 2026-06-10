@@ -14,15 +14,15 @@ using namespace std;
 
 // Named constants for test parameters
 namespace {
-    constexpr std::size_t min_payload_size = 64;
-    constexpr std::size_t max_payload_size = 8192;
-    constexpr std::size_t min_block_size = 64;
-    constexpr std::size_t max_block_size = 1024;
-    constexpr std::size_t test_iterations = 50;
-    constexpr std::chrono::milliseconds test_timeout{30000}; // 30 seconds
+constexpr std::size_t min_payload_size = 64;
+constexpr std::size_t max_payload_size = 8192;
+constexpr std::size_t min_block_size = 64;
+constexpr std::size_t max_block_size = 1024;
+constexpr std::size_t test_iterations = 50;
+constexpr std::chrono::milliseconds test_timeout{30000};  // 30 seconds
 }
 
-BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding, *boost::unit_test::timeout(30)) {
     // Test block option encoding/decoding functionality
     // This tests the core block transfer protocol without requiring full CoAP transport
 
@@ -46,12 +46,13 @@ BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding, * boost::unit_test::ti
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_block_size_calculation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_size_calculation, *boost::unit_test::timeout(30)) {
     // Test block size calculation and alignment
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> payload_size_dist(min_payload_size, max_payload_size);
+    std::uniform_int_distribution<std::size_t> payload_size_dist(min_payload_size,
+                                                                 max_payload_size);
     std::uniform_int_distribution<std::size_t> block_size_dist(min_block_size, max_block_size);
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
@@ -60,9 +61,8 @@ BOOST_AUTO_TEST_CASE(test_block_size_calculation, * boost::unit_test::timeout(30
 
         // Test should_use_block_transfer logic
         constexpr std::size_t coap_overhead = 64;
-        std::size_t effective_block_size = block_size > coap_overhead ?
-                                          block_size - coap_overhead :
-                                          block_size;
+        std::size_t effective_block_size =
+            block_size > coap_overhead ? block_size - coap_overhead : block_size;
         bool expected_use_blocks = payload_size > effective_block_size;
 
         // Verify the logic is consistent
@@ -70,7 +70,8 @@ BOOST_AUTO_TEST_CASE(test_block_size_calculation, * boost::unit_test::timeout(30
 
         if (expected_use_blocks) {
             // Calculate expected number of blocks
-            std::size_t expected_blocks = (payload_size + effective_block_size - 1) / effective_block_size;
+            std::size_t expected_blocks =
+                (payload_size + effective_block_size - 1) / effective_block_size;
             BOOST_CHECK_GT(expected_blocks, 1);
 
             // Verify last block size calculation
@@ -83,7 +84,7 @@ BOOST_AUTO_TEST_CASE(test_block_size_calculation, * boost::unit_test::timeout(30
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, *boost::unit_test::timeout(60)) {
     // Test payload splitting logic without requiring full CoAP transport
 
     std::random_device rd;
@@ -92,11 +93,11 @@ BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, * boost::unit_test::timeout(6
 
     // Test various payload and block size combinations
     std::vector<std::pair<std::size_t, std::size_t>> test_cases = {
-        {100, 64},   // Small payload, small blocks
-        {500, 128},  // Medium payload, medium blocks
-        {1024, 256}, // Large payload, medium blocks
-        {2048, 512}, // Large payload, large blocks
-        {4096, 1024} // Very large payload, very large blocks
+        {100, 64},    // Small payload, small blocks
+        {500, 128},   // Medium payload, medium blocks
+        {1024, 256},  // Large payload, medium blocks
+        {2048, 512},  // Large payload, large blocks
+        {4096, 1024}  // Very large payload, very large blocks
     };
 
     for (const auto& [payload_size, block_size] : test_cases) {
@@ -109,16 +110,16 @@ BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, * boost::unit_test::timeout(6
 
         // Simulate block splitting logic
         constexpr std::size_t coap_overhead = 64;
-        std::size_t effective_block_size = block_size > coap_overhead ?
-                                          block_size - coap_overhead :
-                                          block_size;
+        std::size_t effective_block_size =
+            block_size > coap_overhead ? block_size - coap_overhead : block_size;
 
         if (payload_size > effective_block_size) {
             // Calculate expected blocks
             std::vector<std::vector<std::byte>> blocks;
 
             for (std::size_t offset = 0; offset < payload_size; offset += effective_block_size) {
-                std::size_t current_block_size = std::min(effective_block_size, payload_size - offset);
+                std::size_t current_block_size =
+                    std::min(effective_block_size, payload_size - offset);
 
                 std::vector<std::byte> block;
                 block.reserve(current_block_size);
@@ -151,10 +152,8 @@ BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, * boost::unit_test::timeout(6
                 original_as_uint8.push_back(static_cast<std::uint8_t>(byte));
             }
 
-            BOOST_CHECK_EQUAL_COLLECTIONS(
-                original_as_uint8.begin(), original_as_uint8.end(),
-                reassembled.begin(), reassembled.end()
-            );
+            BOOST_CHECK_EQUAL_COLLECTIONS(original_as_uint8.begin(), original_as_uint8.end(),
+                                          reassembled.begin(), reassembled.end());
 
             // Verify block sizes are appropriate
             for (std::size_t i = 0; i < blocks.size(); ++i) {
@@ -174,7 +173,7 @@ BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, * boost::unit_test::timeout(6
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_block_reassembly_logic, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_block_reassembly_logic, *boost::unit_test::timeout(60)) {
     // Test block reassembly logic without requiring full CoAP transport
 
     std::random_device rd;
@@ -246,13 +245,11 @@ BOOST_AUTO_TEST_CASE(test_block_reassembly_logic, * boost::unit_test::timeout(60
         reassembled_as_uint8.push_back(static_cast<std::uint8_t>(byte));
     }
 
-    BOOST_CHECK_EQUAL_COLLECTIONS(
-        original_as_uint8.begin(), original_as_uint8.end(),
-        reassembled_as_uint8.begin(), reassembled_as_uint8.end()
-    );
+    BOOST_CHECK_EQUAL_COLLECTIONS(original_as_uint8.begin(), original_as_uint8.end(),
+                                  reassembled_as_uint8.begin(), reassembled_as_uint8.end());
 }
 
-BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, *boost::unit_test::timeout(30)) {
     // Test error conditions in block transfer logic
 
     // Test empty payload
@@ -268,7 +265,7 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, * boost::unit_test::t
     kythira::block_option invalid_opt;
     invalid_opt.block_number = 0;
     invalid_opt.more_blocks = true;
-    invalid_opt.block_size = 0; // Invalid size
+    invalid_opt.block_size = 0;  // Invalid size
 
     // Encoding should handle invalid size gracefully
     std::uint32_t encoded = invalid_opt.encode();
@@ -280,9 +277,9 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, * boost::unit_test::t
 
     // Test maximum values
     kythira::block_option max_opt;
-    max_opt.block_number = 0xFFFFFF; // 24-bit max
+    max_opt.block_number = 0xFFFFFF;  // 24-bit max
     max_opt.more_blocks = true;
-    max_opt.block_size = 1024; // Max supported size
+    max_opt.block_size = 1024;  // Max supported size
 
     std::uint32_t max_encoded = max_opt.encode();
     kythira::block_option max_decoded = kythira::block_option::parse(max_encoded);
@@ -292,7 +289,8 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, * boost::unit_test::t
     BOOST_CHECK_EQUAL(max_decoded.block_size, max_opt.block_size);
 }
 
-BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics,
+                     *boost::unit_test::timeout(60)) {
     // Test performance characteristics of block transfer logic
 
     std::random_device rd;
@@ -317,14 +315,15 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics, * boost::u
 
             // Simulate block splitting
             constexpr std::size_t coap_overhead = 64;
-            std::size_t effective_block_size = block_size > coap_overhead ?
-                                              block_size - coap_overhead :
-                                              block_size;
+            std::size_t effective_block_size =
+                block_size > coap_overhead ? block_size - coap_overhead : block_size;
 
             std::vector<std::vector<std::byte>> blocks;
             if (payload_size > effective_block_size) {
-                for (std::size_t offset = 0; offset < payload_size; offset += effective_block_size) {
-                    std::size_t current_block_size = std::min(effective_block_size, payload_size - offset);
+                for (std::size_t offset = 0; offset < payload_size;
+                     offset += effective_block_size) {
+                    std::size_t current_block_size =
+                        std::min(effective_block_size, payload_size - offset);
 
                     std::vector<std::byte> block;
                     block.reserve(current_block_size);
@@ -336,17 +335,20 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics, * boost::u
             }
 
             auto end_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+            auto duration =
+                std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
             // Verify performance is reasonable (should complete in under 10ms for largest payload)
-            BOOST_CHECK_LT(duration.count(), 10000); // 10ms in microseconds
+            BOOST_CHECK_LT(duration.count(), 10000);  // 10ms in microseconds
 
             // Verify block count is reasonable
             if (payload_size > effective_block_size) {
-                std::size_t expected_blocks = (payload_size + effective_block_size - 1) / effective_block_size;
+                std::size_t expected_blocks =
+                    (payload_size + effective_block_size - 1) / effective_block_size;
                 BOOST_CHECK_EQUAL(blocks.size(), expected_blocks);
 
-                // Verify memory efficiency - total block memory should not exceed payload size by more than block_size
+                // Verify memory efficiency - total block memory should not exceed payload size by
+                // more than block_size
                 std::size_t total_block_memory = 0;
                 for (const auto& block : blocks) {
                     total_block_memory += block.capacity();
@@ -357,18 +359,18 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics, * boost::u
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_coap_block_option_compliance, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_coap_block_option_compliance, *boost::unit_test::timeout(30)) {
     // Test compliance with CoAP Block-wise Transfer specification (RFC 7959)
 
     // Test SZX (Size Exponent) encoding/decoding
     std::vector<std::pair<std::uint32_t, std::uint32_t>> szx_tests = {
-        {16, 0},    // 16 = 2^4, SZX = 0
-        {32, 1},    // 32 = 2^5, SZX = 1
-        {64, 2},    // 64 = 2^6, SZX = 2
-        {128, 3},   // 128 = 2^7, SZX = 3
-        {256, 4},   // 256 = 2^8, SZX = 4
-        {512, 5},   // 512 = 2^9, SZX = 5
-        {1024, 6}   // 1024 = 2^10, SZX = 6
+        {16, 0},   // 16 = 2^4, SZX = 0
+        {32, 1},   // 32 = 2^5, SZX = 1
+        {64, 2},   // 64 = 2^6, SZX = 2
+        {128, 3},  // 128 = 2^7, SZX = 3
+        {256, 4},  // 256 = 2^8, SZX = 4
+        {512, 5},  // 512 = 2^9, SZX = 5
+        {1024, 6}  // 1024 = 2^10, SZX = 6
     };
 
     for (const auto& [block_size, expected_szx] : szx_tests) {

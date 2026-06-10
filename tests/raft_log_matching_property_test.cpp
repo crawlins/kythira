@@ -44,11 +44,11 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{50};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{50};
 }
 
 BOOST_AUTO_TEST_SUITE(log_matching_property_tests)

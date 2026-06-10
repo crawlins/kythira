@@ -21,4 +21,4 @@ inline constexpr int version_patch = 0;
 // Convenience alias for the default network simulator
 using DefaultNetworkSimulator = NetworkSimulator<DefaultNetworkTypes>;
 
-} // namespace network_simulator
+}  // namespace network_simulator

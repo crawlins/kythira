@@ -15,23 +15,23 @@
 using namespace network_simulator;
 
 namespace {
-    // Test constants for IPv4 custom types
-    constexpr const char* test_server_ipv4 = "192.168.1.100";
-    constexpr const char* test_client_ipv4 = "192.168.1.101";
-    constexpr const char* test_server_string_port = "8080";
-    constexpr const char* test_client_string_port = "9090";
+// Test constants for IPv4 custom types
+constexpr const char* test_server_ipv4 = "192.168.1.100";
+constexpr const char* test_client_ipv4 = "192.168.1.101";
+constexpr const char* test_server_string_port = "8080";
+constexpr const char* test_client_string_port = "9090";
 
-    // Test constants for unsigned long custom types
-    constexpr unsigned long test_server_ulong = 0x12345678UL;
-    constexpr unsigned long test_client_ulong = 0x87654321UL;
-    constexpr unsigned short test_server_ushort_port = 8080;
-    constexpr unsigned short test_client_ushort_port = 9090;
+// Test constants for unsigned long custom types
+constexpr unsigned long test_server_ulong = 0x12345678UL;
+constexpr unsigned long test_client_ulong = 0x87654321UL;
+constexpr unsigned short test_server_ushort_port = 8080;
+constexpr unsigned short test_client_ushort_port = 9090;
 
-    // Common test constants
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Integration test message";
+// Common test constants
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Integration test message";
 }
 
 // Custom Types Implementation 1: IPv4 addresses with string ports
@@ -94,7 +94,7 @@ auto ipv4_to_string(const IPv4Address& addr) -> std::string {
  * Tests: basic functionality with string addresses and unsigned short ports
  * _Requirements: 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(default_types_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(default_types_integration, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Use string addresses and unsigned short ports (default types)
@@ -128,11 +128,8 @@ BOOST_AUTO_TEST_CASE(default_types_integration, * boost::unit_test::timeout(30))
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg(
-        client_addr, client_port,
-        server_addr, server_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg(client_addr, client_port, server_addr, server_port,
+                                          payload);
 
     // Send message
     auto send_future = client->send(msg);
@@ -208,7 +205,7 @@ BOOST_AUTO_TEST_CASE(default_types_integration, * boost::unit_test::timeout(30))
  * Tests: custom Types using IPv4Address and std::string
  * _Requirements: 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(ipv4_string_port_types_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(ipv4_string_port_types_integration, *boost::unit_test::timeout(30)) {
     NetworkSimulator<IPv4StringPortTypes> sim;
 
     // Use IPv4 addresses and string ports
@@ -248,11 +245,8 @@ BOOST_AUTO_TEST_CASE(ipv4_string_port_types_integration, * boost::unit_test::tim
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    IPv4StringPortTypes::message_type msg(
-        client_addr, client_port,
-        server_addr, server_port,
-        payload
-    );
+    IPv4StringPortTypes::message_type msg(client_addr, client_port, server_addr, server_port,
+                                          payload);
 
     // Send message
     auto send_future = client->send(msg);
@@ -338,7 +332,7 @@ BOOST_AUTO_TEST_CASE(ipv4_string_port_types_integration, * boost::unit_test::tim
  * Tests: custom Types using unsigned long and unsigned short
  * _Requirements: 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(ulong_ushort_port_types_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(ulong_ushort_port_types_integration, *boost::unit_test::timeout(30)) {
     NetworkSimulator<ULongUShortPortTypes> sim;
 
     // Use unsigned long addresses and unsigned short ports
@@ -378,11 +372,8 @@ BOOST_AUTO_TEST_CASE(ulong_ushort_port_types_integration, * boost::unit_test::ti
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    ULongUShortPortTypes::message_type msg(
-        client_addr, client_port,
-        server_addr, server_port,
-        payload
-    );
+    ULongUShortPortTypes::message_type msg(client_addr, client_port, server_addr, server_port,
+                                           payload);
 
     // Send message
     auto send_future = client->send(msg);
@@ -468,7 +459,7 @@ BOOST_AUTO_TEST_CASE(ulong_ushort_port_types_integration, * boost::unit_test::ti
  * Tests: different simulators with different Types can coexist
  * _Requirements: 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(multiple_types_coexistence, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(multiple_types_coexistence, *boost::unit_test::timeout(30)) {
     // Create simulators with different Types implementations
     NetworkSimulator<DefaultNetworkTypes> default_sim;
     NetworkSimulator<IPv4StringPortTypes> ipv4_sim;
@@ -555,23 +546,15 @@ BOOST_AUTO_TEST_CASE(multiple_types_coexistence, * boost::unit_test::timeout(30)
     }
 
     // Send messages on all simulators simultaneously
-    DefaultNetworkTypes::message_type default_msg(
-        default_client, static_cast<unsigned short>(9090),
-        default_server, static_cast<unsigned short>(8080),
-        payload
-    );
+    DefaultNetworkTypes::message_type default_msg(default_client, static_cast<unsigned short>(9090),
+                                                  default_server, static_cast<unsigned short>(8080),
+                                                  payload);
 
-    IPv4StringPortTypes::message_type ipv4_msg(
-        ipv4_client, test_client_string_port,
-        ipv4_server, test_server_string_port,
-        payload
-    );
+    IPv4StringPortTypes::message_type ipv4_msg(ipv4_client, test_client_string_port, ipv4_server,
+                                               test_server_string_port, payload);
 
-    ULongUShortPortTypes::message_type ulong_msg(
-        ulong_client, test_client_ushort_port,
-        ulong_server, test_server_ushort_port,
-        payload
-    );
+    ULongUShortPortTypes::message_type ulong_msg(ulong_client, test_client_ushort_port,
+                                                 ulong_server, test_server_ushort_port, payload);
 
     // Send all messages
     auto default_send = default_client_node->send(default_msg);
@@ -594,7 +577,7 @@ BOOST_AUTO_TEST_CASE(multiple_types_coexistence, * boost::unit_test::timeout(30)
  * Tests: that different Types cannot be mixed incorrectly
  * _Requirements: 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(type_safety_verification, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(type_safety_verification, *boost::unit_test::timeout(30)) {
     // This test verifies that the type system prevents incorrect usage
     // Most verification happens at compile time through static_assert
 
@@ -645,7 +628,7 @@ BOOST_AUTO_TEST_CASE(type_safety_verification, * boost::unit_test::timeout(30)) 
  * Tests: that edge latency and reliability work with all Types
  * _Requirements: 1.1-1.5, 2.1-2.15_
  */
-BOOST_AUTO_TEST_CASE(edge_properties_with_different_types, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(edge_properties_with_different_types, *boost::unit_test::timeout(30)) {
     // Test different edge characteristics with different Types
 
     constexpr std::chrono::milliseconds fast_latency{5};

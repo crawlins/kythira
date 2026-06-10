@@ -15,21 +15,22 @@
 #endif
 
 namespace {
-    constexpr const char* test_name = "coap_concept_conformance_test";
-    constexpr const char* test_bind_address = "127.0.0.1";
-    constexpr std::uint16_t test_bind_port = 5683;
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr const char* test_endpoint = "coap://127.0.0.1:5683";
+constexpr const char* test_name = "coap_concept_conformance_test";
+constexpr const char* test_bind_address = "127.0.0.1";
+constexpr std::uint16_t test_bind_port = 5683;
+constexpr std::uint64_t test_node_id = 1;
+constexpr const char* test_endpoint = "coap://127.0.0.1:5683";
 
-    // Test serializer type alias
-    using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
-    using test_metrics = kythira::noop_metrics;
+// Test serializer type alias
+using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+using test_metrics = kythira::noop_metrics;
 
 #ifdef LIBCOAP_AVAILABLE
-    using future_type = kythira::Future<kythira::request_vote_response<>>;
-    using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics, kythira::console_logger>;
-    using test_client = kythira::coap_client<test_types>;
-    using test_server = kythira::coap_server<test_types>;
+using future_type = kythira::Future<kythira::request_vote_response<>>;
+using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics,
+                                                    kythira::console_logger>;
+using test_client = kythira::coap_client<test_types>;
+using test_server = kythira::coap_server<test_types>;
 #endif
 }
 
@@ -37,7 +38,7 @@ BOOST_AUTO_TEST_SUITE(coap_concept_conformance_tests)
 
 #ifdef LIBCOAP_AVAILABLE
 // Test that coap_client satisfies network_client concept
-BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, *boost::unit_test::timeout(15)) {
     // Static assertion to verify concept satisfaction
     static_assert(kythira::network_client<test_client, future_type>,
                   "coap_client must satisfy network_client concept");
@@ -47,7 +48,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, * boost::unit_test
 }
 
 // Test that coap_server satisfies network_server concept
-BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, *boost::unit_test::timeout(15)) {
     // Static assertion to verify concept satisfaction
     static_assert(kythira::network_server<test_server, future_type>,
                   "coap_server must satisfy network_server concept");
@@ -58,16 +59,14 @@ BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, * boost::unit_test
 #endif
 
 // Test RPC serializer integration with coap_client
-BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, *boost::unit_test::timeout(15)) {
     // Verify that the serializer satisfies rpc_serializer concept
     static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>,
                   "json_rpc_serializer must satisfy rpc_serializer concept");
 
 #ifdef LIBCOAP_AVAILABLE
     // Test client instantiation with serializer
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {test_node_id, test_endpoint}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{test_node_id, test_endpoint}};
 
     kythira::coap_client_config config;
     test_metrics metrics;
@@ -83,7 +82,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, * boost::unit_
 }
 
 // Test RPC serializer integration with coap_server
-BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, *boost::unit_test::timeout(15)) {
     // Verify that the serializer satisfies rpc_serializer concept
     static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>,
                   "json_rpc_serializer must satisfy rpc_serializer concept");
@@ -104,16 +103,13 @@ BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, * boost::unit_
 }
 
 // Test metrics concept integration
-BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, *boost::unit_test::timeout(15)) {
     // Verify that noop_metrics satisfies metrics concept
-    static_assert(kythira::metrics<test_metrics>,
-                  "noop_metrics must satisfy metrics concept");
+    static_assert(kythira::metrics<test_metrics>, "noop_metrics must satisfy metrics concept");
 
 #ifdef LIBCOAP_AVAILABLE
     // Test that both client and server can use metrics
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {test_node_id, test_endpoint}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{test_node_id, test_endpoint}};
 
     kythira::coap_client_config client_config;
     kythira::coap_server_config server_config;
@@ -132,11 +128,9 @@ BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, * boost::unit_test::timeo
 }
 
 // Test network_client concept requirements in detail
-BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, *boost::unit_test::timeout(30)) {
 #ifdef LIBCOAP_AVAILABLE
-    std::unordered_map<std::uint64_t, std::string> endpoints = {
-        {test_node_id, test_endpoint}
-    };
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{test_node_id, test_endpoint}};
 
     kythira::coap_client_config config;
     test_metrics metrics;
@@ -157,9 +151,12 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
     auto is_future = client.send_install_snapshot(target, is_request, timeout);
 
     // Verify return types (these will be checked at compile time)
-    static_assert(std::same_as<decltype(rv_future), folly::Future<kythira::request_vote_response<>>>);
-    static_assert(std::same_as<decltype(ae_future), folly::Future<kythira::append_entries_response<>>>);
-    static_assert(std::same_as<decltype(is_future), folly::Future<kythira::install_snapshot_response<>>>);
+    static_assert(
+        std::same_as<decltype(rv_future), folly::Future<kythira::request_vote_response<>>>);
+    static_assert(
+        std::same_as<decltype(ae_future), folly::Future<kythira::append_entries_response<>>>);
+    static_assert(
+        std::same_as<decltype(is_future), folly::Future<kythira::install_snapshot_response<>>>);
 
     BOOST_TEST_MESSAGE("network_client concept requirements verified");
 #else
@@ -169,7 +166,7 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, * boost::unit_tes
 }
 
 // Test network_server concept requirements in detail
-BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, *boost::unit_test::timeout(30)) {
 #ifdef LIBCOAP_AVAILABLE
     kythira::coap_server_config config;
     test_metrics metrics;
@@ -178,15 +175,18 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, * boost::unit_tes
     // Test that all required methods exist and have correct signatures
 
     // Create test handlers
-    auto rv_handler = [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+    auto rv_handler =
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
         return kythira::request_vote_response<>{req.term(), false};
     };
 
-    auto ae_handler = [](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
+    auto ae_handler =
+        [](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
         return kythira::append_entries_response<>{req.term(), false};
     };
 
-    auto is_handler = [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
+    auto is_handler =
+        [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
         return kythira::install_snapshot_response<>{req.term()};
     };
 
@@ -208,7 +208,7 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, * boost::unit_tes
 }
 
 // Test that non-conforming types do not satisfy concepts
-BOOST_AUTO_TEST_CASE(test_non_conforming_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_non_conforming_types, *boost::unit_test::timeout(15)) {
     // Test that a non-conforming serializer does not satisfy rpc_serializer concept
     // Make it not satisfy by using a non-byte data type
     class non_serializer {
@@ -227,15 +227,14 @@ BOOST_AUTO_TEST_CASE(test_non_conforming_types, * boost::unit_test::timeout(15))
         auto add_one() -> void {}
     };
 
-    static_assert(!kythira::metrics<non_metrics>,
-                  "non_metrics must not satisfy metrics concept");
+    static_assert(!kythira::metrics<non_metrics>, "non_metrics must not satisfy metrics concept");
 
     BOOST_TEST_MESSAGE("Non-conforming types correctly rejected by concepts");
     BOOST_TEST(true);
 }
 
 // Test template parameter constraints
-BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, *boost::unit_test::timeout(15)) {
 #ifdef LIBCOAP_AVAILABLE
     // Verify that coap_client and coap_server have proper template constraints
 
@@ -244,16 +243,12 @@ BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, * boost::unit_test::ti
     using valid_server = kythira::coap_server<test_serializer, test_metrics>;
 
     // Verify the types are instantiable
-    static_assert(std::is_constructible_v<valid_client,
-                  std::unordered_map<std::uint64_t, std::string>,
-                  kythira::coap_client_config,
-                  test_metrics>);
+    static_assert(
+        std::is_constructible_v<valid_client, std::unordered_map<std::uint64_t, std::string>,
+                                kythira::coap_client_config, test_metrics>);
 
-    static_assert(std::is_constructible_v<valid_server,
-                  std::string,
-                  std::uint16_t,
-                  kythira::coap_server_config,
-                  test_metrics>);
+    static_assert(std::is_constructible_v<valid_server, std::string, std::uint16_t,
+                                          kythira::coap_server_config, test_metrics>);
 
     BOOST_TEST_MESSAGE("Template parameter constraints verified");
 #else

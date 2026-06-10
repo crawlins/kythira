@@ -5,7 +5,7 @@
 #include <raft/future.hpp>
 
 namespace {
-    constexpr const char* test_name = "kythira_future_concept_compliance_test";
+constexpr const char* test_name = "kythira_future_concept_compliance_test";
 }
 
 BOOST_AUTO_TEST_SUITE(kythira_future_concept_compliance_tests)
@@ -15,7 +15,7 @@ BOOST_AUTO_TEST_SUITE(kythira_future_concept_compliance_tests)
  * Test that kythira::Try<T> satisfies try_type concept
  * Requirements: 10.5
  */
-BOOST_AUTO_TEST_CASE(test_kythira_future_concept_compliance, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_kythira_future_concept_compliance, *boost::unit_test::timeout(30)) {
     // Test kythira::Future<int> satisfies future concept
     static_assert(kythira::future<kythira::Future<int>, int>,
                   "kythira::Future<int> must satisfy future concept");
@@ -57,13 +57,14 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_concept_compliance, * boost::unit_test:
     static_assert(kythira::try_type<kythira::Try<CustomType>, CustomType>,
                   "kythira::Try<CustomType> must satisfy try_type concept");
 
-    BOOST_TEST_MESSAGE("All kythira::Future and kythira::Try types satisfy their respective concepts");
+    BOOST_TEST_MESSAGE(
+        "All kythira::Future and kythira::Try types satisfy their respective concepts");
 }
 
 /**
  * Test runtime behavior of kythira::Future and kythira::Try
  */
-BOOST_AUTO_TEST_CASE(test_kythira_future_runtime_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_kythira_future_runtime_behavior, *boost::unit_test::timeout(30)) {
     // Test kythira::Future<int> behavior
     {
         kythira::Future<int> future(42);
@@ -112,7 +113,8 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_runtime_behavior, * boost::unit_test::t
         BOOST_CHECK_THROW(try_exception.value(), std::runtime_error);
     }
 
-    BOOST_TEST_MESSAGE("kythira::Future and kythira::Try runtime behavior matches concept requirements");
+    BOOST_TEST_MESSAGE(
+        "kythira::Future and kythira::Try runtime behavior matches concept requirements");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

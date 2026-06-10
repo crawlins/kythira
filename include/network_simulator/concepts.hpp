@@ -45,26 +45,33 @@ concept port = requires(T p, T q) {
 
 // Future Concept - matches kythira::Future API
 template<typename F, typename T>
-concept future = requires(F f, const F cf) {
-    // Must be able to check if ready
-    { cf.isReady() } -> std::convertible_to<bool>;
+concept future =
+    requires(F f, const F cf) {
+        // Must be able to check if ready
+        { cf.isReady() } -> std::convertible_to<bool>;
 
-    // Must support timeout
-    { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
+        // Must support timeout
+        { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
 
-    // Must support error handling (legacy method name for compatibility)
-    { f.onError([](std::exception_ptr) {}) };
-} && (
-    // Handle void case - get() returns void
-    std::is_void_v<T> ? requires(F f) {
-        { std::move(f).get() } -> std::same_as<void>;
-        { f.then([]() {}) };
-    } : requires(F f) {
-        // Handle non-void case - get() returns T
-        { std::move(f).get() } -> std::same_as<T>;
-        { f.then([](T val) { return val; }) };
-    }
-);
+        // Must support error handling (legacy method name for compatibility)
+        {
+            f.onError([](std::exception_ptr) {})
+        };
+    } &&
+    (
+        // Handle void case - get() returns void
+        std::is_void_v<T> ? requires(F f) {
+            { std::move(f).get() } -> std::same_as<void>;
+            {
+                f.then([]() {})
+            };
+        } : requires(F f) {
+            // Handle non-void case - get() returns T
+            { std::move(f).get() } -> std::same_as<T>;
+            {
+                f.then([](T val) { return val; })
+            };
+        });
 
 // Message Concept
 template<typename M, typename Addr, typename Port>
@@ -133,19 +140,31 @@ concept network_node = requires(N node, typename Types::message_type msg,
                                 typename Types::address_type addr, typename Types::port_type port) {
     // Connectionless operations
     { node.send(msg) } -> std::same_as<typename Types::future_bool_type>;
-    { node.send(msg, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_bool_type>;
+    {
+        node.send(msg, std::chrono::milliseconds{100})
+    } -> std::same_as<typename Types::future_bool_type>;
     { node.receive() } -> std::same_as<typename Types::future_message_type>;
-    { node.receive(std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_message_type>;
+    {
+        node.receive(std::chrono::milliseconds{100})
+    } -> std::same_as<typename Types::future_message_type>;
 
     // Connection-oriented client operations
     { node.connect(addr, port) } -> std::same_as<typename Types::future_connection_type>;
-    { node.connect(addr, port, port) } -> std::same_as<typename Types::future_connection_type>;  // with source port
-    { node.connect(addr, port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_connection_type>;
+    {
+        node.connect(addr, port, port)
+    } -> std::same_as<typename Types::future_connection_type>;  // with source port
+    {
+        node.connect(addr, port, std::chrono::milliseconds{100})
+    } -> std::same_as<typename Types::future_connection_type>;
 
     // Connection-oriented server operations
     { node.bind() } -> std::same_as<typename Types::future_listener_type>;  // bind to random port
-    { node.bind(port) } -> std::same_as<typename Types::future_listener_type>;  // bind to specific port
-    { node.bind(port, std::chrono::milliseconds{100}) } -> std::same_as<typename Types::future_listener_type>;
+    {
+        node.bind(port)
+    } -> std::same_as<typename Types::future_listener_type>;  // bind to specific port
+    {
+        node.bind(port, std::chrono::milliseconds{100})
+    } -> std::same_as<typename Types::future_listener_type>;
 
     // Node identity
     { node.address() } -> std::same_as<typename Types::address_type>;
@@ -201,7 +220,8 @@ concept network_simulator_types = requires {
     // Future constraints
     requires future<typename T::future_bool_type, bool>;
     requires future<typename T::future_message_type, typename T::message_type>;
-    requires future<typename T::future_connection_type, std::shared_ptr<typename T::connection_type>>;
+    requires future<typename T::future_connection_type,
+                    std::shared_ptr<typename T::connection_type>>;
     requires future<typename T::future_listener_type, std::shared_ptr<typename T::listener_type>>;
     requires future<typename T::future_bytes_type, std::vector<std::byte>>;
 
@@ -209,4 +229,4 @@ concept network_simulator_types = requires {
     requires network_node<typename T::node_type, T>;
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator

@@ -13,14 +13,13 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
 }
 
 // Mock SemiPromise implementation for testing the concept
-template<typename T>
-class MockSemiPromise {
+template<typename T> class MockSemiPromise {
 public:
     MockSemiPromise() = default;
 
@@ -55,18 +54,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool {
-        return _fulfilled;
-    }
+    auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasValue() const -> bool {
-        return _has_value;
-    }
+    auto hasValue() const -> bool { return _has_value; }
 
-    auto hasException() const -> bool {
-        return _has_exception;
-    }
+    auto hasException() const -> bool { return _has_exception; }
 
     template<typename U = T>
     auto getValue() const -> std::enable_if_t<!std::is_void_v<U>, const U&> {
@@ -76,21 +69,18 @@ public:
         return _value;
     }
 
-    auto getException() const -> folly::exception_wrapper {
-        return _exception;
-    }
+    auto getException() const -> folly::exception_wrapper { return _exception; }
 
 private:
     bool _fulfilled = false;
     bool _has_value = false;
     bool _has_exception = false;
-    T _value{}; // Only valid for non-void types, but we'll handle this with specialization
+    T _value{};  // Only valid for non-void types, but we'll handle this with specialization
     folly::exception_wrapper _exception;
 };
 
 // Specialization for void type
-template<>
-class MockSemiPromise<void> {
+template<> class MockSemiPromise<void> {
 public:
     MockSemiPromise() = default;
 
@@ -113,18 +103,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool {
-        return _fulfilled;
-    }
+    auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasException() const -> bool {
-        return _has_exception;
-    }
+    auto hasException() const -> bool { return _has_exception; }
 
-    auto getException() const -> folly::exception_wrapper {
-        return _exception;
-    }
+    auto getException() const -> folly::exception_wrapper { return _exception; }
 
 private:
     bool _fulfilled = false;
@@ -135,10 +119,12 @@ private:
 /**
  * **Feature: folly-concepts-enhancement, Property 3: SemiPromise concept requirements**
  *
- * Property: For any type that satisfies semi_promise concept, it should provide setValue, setException, and isFulfilled methods
+ * Property: For any type that satisfies semi_promise concept, it should provide setValue,
+ * setException, and isFulfilled methods
  * **Validates: Requirements 2.1, 2.2, 2.3**
  */
-BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: MockSemiPromise<int> should satisfy semi_promise concept
     {
         static_assert(semi_promise<MockSemiPromise<int>, int>,
@@ -158,7 +144,9 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test, * boost::u
 
         // Verify cannot fulfill again
         BOOST_CHECK_THROW(promise.setValue(123), std::logic_error);
-        BOOST_CHECK_THROW(promise.setException(folly::exception_wrapper(std::runtime_error("test"))), std::logic_error);
+        BOOST_CHECK_THROW(
+            promise.setException(folly::exception_wrapper(std::runtime_error("test"))),
+            std::logic_error);
     }
 
     // Test 2: MockSemiPromise<std::string> should satisfy semi_promise concept
@@ -208,7 +196,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test, * boost::u
 
     // Test 5: Property-based testing - generate multiple test cases
     for (int i = 0; i < 100; ++i) {
-        int random_value = i * 7 + 13; // Simple pseudo-random generation
+        int random_value = i * 7 + 13;  // Simple pseudo-random generation
 
         // Test value fulfillment
         {
@@ -227,7 +215,8 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test, * boost::u
             MockSemiPromise<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
-            auto ex = folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+            auto ex =
+                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
             BOOST_CHECK(!promise.hasValue());
@@ -250,10 +239,11 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_requirements_property_test, * boost::u
 /**
  * Test that types NOT satisfying semi_promise concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!semi_promise<int, int>, "int should not satisfy semi_promise concept");
-    static_assert(!semi_promise<std::string, std::string>, "std::string should not satisfy semi_promise concept");
+    static_assert(!semi_promise<std::string, std::string>,
+                  "std::string should not satisfy semi_promise concept");
 
     // Test that types missing required methods don't satisfy the concept
     struct IncompletePromise {
@@ -261,22 +251,24 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, * boost::unit_test::ti
         // Missing setException() and isFulfilled()
     };
 
-    static_assert(!semi_promise<IncompletePromise, int>, "IncompletePromise should not satisfy semi_promise concept");
+    static_assert(!semi_promise<IncompletePromise, int>,
+                  "IncompletePromise should not satisfy semi_promise concept");
 
     // Test that types with wrong method signatures don't satisfy the concept
     struct WrongSignaturePromise {
-        int setValue(int value) { return 0; } // Wrong return type
+        int setValue(int value) { return 0; }  // Wrong return type
         void setException(folly::exception_wrapper ex) {}
         bool isFulfilled() const { return false; }
     };
 
-    static_assert(!semi_promise<WrongSignaturePromise, int>, "WrongSignaturePromise should not satisfy semi_promise concept");
+    static_assert(!semi_promise<WrongSignaturePromise, int>,
+                  "WrongSignaturePromise should not satisfy semi_promise concept");
 }
 
 /**
  * Test void specialization requirements
  */
-BOOST_AUTO_TEST_CASE(semi_promise_void_specialization_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(semi_promise_void_specialization_test, *boost::unit_test::timeout(30)) {
     MockSemiPromise<void> void_promise;
 
     // Test that void promises can be fulfilled with folly::Unit
@@ -295,7 +287,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_void_specialization_test, * boost::unit_test::
 /**
  * Test fulfillment prevention requirements
  */
-BOOST_AUTO_TEST_CASE(semi_promise_fulfillment_prevention_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(semi_promise_fulfillment_prevention_test, *boost::unit_test::timeout(30)) {
     // Test that fulfilled promises prevent further fulfillment attempts
     MockSemiPromise<int> promise;
 
@@ -305,7 +297,8 @@ BOOST_AUTO_TEST_CASE(semi_promise_fulfillment_prevention_test, * boost::unit_tes
 
     // Attempt to fulfill again should fail
     BOOST_CHECK_THROW(promise.setValue(456), std::logic_error);
-    BOOST_CHECK_THROW(promise.setException(folly::exception_wrapper(std::runtime_error("test"))), std::logic_error);
+    BOOST_CHECK_THROW(promise.setException(folly::exception_wrapper(std::runtime_error("test"))),
+                      std::logic_error);
 
     // Test with exception fulfillment
     MockSemiPromise<int> promise_ex;
@@ -315,13 +308,15 @@ BOOST_AUTO_TEST_CASE(semi_promise_fulfillment_prevention_test, * boost::unit_tes
 
     // Attempt to fulfill again should fail
     BOOST_CHECK_THROW(promise_ex.setValue(789), std::logic_error);
-    BOOST_CHECK_THROW(promise_ex.setException(folly::exception_wrapper(std::runtime_error("another"))), std::logic_error);
+    BOOST_CHECK_THROW(
+        promise_ex.setException(folly::exception_wrapper(std::runtime_error("another"))),
+        std::logic_error);
 }
 
 /**
  * Test move semantics for setValue
  */
-BOOST_AUTO_TEST_CASE(semi_promise_move_semantics_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(semi_promise_move_semantics_test, *boost::unit_test::timeout(30)) {
     MockSemiPromise<std::string> promise;
 
     std::string movable_string = "movable test string";

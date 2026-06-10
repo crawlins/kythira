@@ -7,14 +7,15 @@
 #include "state_machine_test_utilities.hpp"
 
 namespace {
-    constexpr std::size_t num_threads = 4;
-    constexpr std::size_t operations_per_thread = 100;
+constexpr std::size_t num_threads = 4;
+constexpr std::size_t operations_per_thread = 100;
 }
 
 // Thread-safe test state machine
 class concurrent_state_machine {
 public:
-    auto apply(const std::vector<std::byte>& command, std::uint64_t index) -> std::vector<std::byte> {
+    auto apply(const std::vector<std::byte>& command, std::uint64_t index)
+        -> std::vector<std::byte> {
         std::unique_lock lock(_mutex);
 
         if (command.empty()) return {};
@@ -30,16 +31,15 @@ public:
         std::string key(reinterpret_cast<const char*>(command.data() + offset), key_len);
         offset += key_len;
 
-        if (cmd_type == 0) { // GET
+        if (cmd_type == 0) {  // GET
             auto it = _store.find(key);
             if (it != _store.end()) {
                 return std::vector<std::byte>(
                     reinterpret_cast<const std::byte*>(it->second.data()),
-                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size())
-                );
+                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size()));
             }
             return {};
-        } else if (cmd_type == 1) { // SET
+        } else if (cmd_type == 1) {  // SET
             std::uint32_t val_len;
             std::memcpy(&val_len, command.data() + offset, sizeof(val_len));
             offset += sizeof(val_len);
@@ -48,7 +48,7 @@ public:
             _store[key] = value;
             _operations_applied++;
             return {};
-        } else if (cmd_type == 2) { // DELETE
+        } else if (cmd_type == 2) {  // DELETE
             _store.erase(key);
             _operations_applied++;
             return {};
@@ -61,13 +61,11 @@ public:
         std::shared_lock lock(_mutex);
         std::vector<std::byte> state;
         for (const auto& [key, value] : _store) {
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(key.data()),
-                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(key.data()),
+                         reinterpret_cast<const std::byte*>(key.data() + key.size()));
             state.push_back(std::byte{0});
-            state.insert(state.end(),
-                        reinterpret_cast<const std::byte*>(value.data()),
-                        reinterpret_cast<const std::byte*>(value.data() + value.size()));
+            state.insert(state.end(), reinterpret_cast<const std::byte*>(value.data()),
+                         reinterpret_cast<const std::byte*>(value.data() + value.size()));
             state.push_back(std::byte{0});
         }
         return state;
@@ -109,7 +107,7 @@ private:
     std::size_t _operations_applied = 0;
 };
 
-BOOST_AUTO_TEST_CASE(test_concurrent_writes, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_writes, *boost::unit_test::timeout(60)) {
     concurrent_state_machine sm;
     std::vector<std::thread> threads;
     std::atomic<std::uint64_t> index_counter{0};
@@ -138,7 +136,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_writes, * boost::unit_test::timeout(60)) {
     BOOST_CHECK_EQUAL(sm.get_operations_applied(), num_threads * operations_per_thread);
 }
 
-BOOST_AUTO_TEST_CASE(test_concurrent_reads_and_writes, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_reads_and_writes, *boost::unit_test::timeout(60)) {
     concurrent_state_machine sm;
     std::atomic<std::uint64_t> index_counter{0};
     std::atomic<bool> stop{false};
@@ -191,7 +189,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_reads_and_writes, * boost::unit_test::timeo
     BOOST_CHECK_GT(read_count.load(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(test_snapshot_during_concurrent_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_snapshot_during_concurrent_operations, *boost::unit_test::timeout(60)) {
     concurrent_state_machine sm;
     std::atomic<std::uint64_t> index_counter{0};
     std::atomic<bool> stop{false};
@@ -240,7 +238,7 @@ BOOST_AUTO_TEST_CASE(test_snapshot_during_concurrent_operations, * boost::unit_t
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_high_contention_same_keys, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_high_contention_same_keys, *boost::unit_test::timeout(60)) {
     concurrent_state_machine sm;
     std::atomic<std::uint64_t> index_counter{0};
     std::vector<std::thread> threads;
@@ -267,7 +265,7 @@ BOOST_AUTO_TEST_CASE(test_high_contention_same_keys, * boost::unit_test::timeout
     BOOST_CHECK_EQUAL(sm.get_operations_applied(), num_threads * operations_per_thread);
 }
 
-BOOST_AUTO_TEST_CASE(test_mixed_operations_stress, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_mixed_operations_stress, *boost::unit_test::timeout(90)) {
     concurrent_state_machine sm;
     std::atomic<std::uint64_t> index_counter{0};
     std::atomic<bool> stop{false};

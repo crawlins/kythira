@@ -12,28 +12,32 @@
 #include <atomic>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr const char* test_name = "folly_concept_wrappers_exception_safety_property_test";
+constexpr std::size_t property_test_iterations = 100;
+constexpr const char* test_name = "folly_concept_wrappers_exception_safety_property_test";
 
-    // Test exception types for property testing
-    class test_exception : public std::runtime_error {
-    public:
-        explicit test_exception(const std::string& msg) : std::runtime_error(msg) {}
-    };
+// Test exception types for property testing
+class test_exception : public std::runtime_error {
+public:
+    explicit test_exception(const std::string& msg) : std::runtime_error(msg) {}
+};
 
-    // Helper to generate random exceptions
-    auto generate_random_exception(std::size_t seed) -> std::exception_ptr {
-        switch (seed % 3) {
-            case 0:
-                return std::make_exception_ptr(test_exception("Test exception " + std::to_string(seed)));
-            case 1:
-                return std::make_exception_ptr(std::invalid_argument("Invalid argument " + std::to_string(seed)));
-            case 2:
-                return std::make_exception_ptr(std::runtime_error("Runtime error " + std::to_string(seed)));
-            default:
-                return std::make_exception_ptr(std::runtime_error("Default error " + std::to_string(seed)));
-        }
+// Helper to generate random exceptions
+auto generate_random_exception(std::size_t seed) -> std::exception_ptr {
+    switch (seed % 3) {
+        case 0:
+            return std::make_exception_ptr(
+                test_exception("Test exception " + std::to_string(seed)));
+        case 1:
+            return std::make_exception_ptr(
+                std::invalid_argument("Invalid argument " + std::to_string(seed)));
+        case 2:
+            return std::make_exception_ptr(
+                std::runtime_error("Runtime error " + std::to_string(seed)));
+        default:
+            return std::make_exception_ptr(
+                std::runtime_error("Default error " + std::to_string(seed)));
     }
+}
 }
 
 BOOST_AUTO_TEST_SUITE(folly_concept_wrappers_exception_safety_property_tests)
@@ -42,10 +46,10 @@ BOOST_AUTO_TEST_SUITE(folly_concept_wrappers_exception_safety_property_tests)
  * **Feature: folly-concept-wrappers, Property 8: Exception and Type Conversion**
  * **Validates: Requirements 8.3**
  *
- * Property: For any wrapper operation, the system should maintain proper exception safety guarantees
- * and leave objects in valid states even when exceptions occur
+ * Property: For any wrapper operation, the system should maintain proper exception safety
+ * guarantees and leave objects in valid states even when exceptions occur
  */
-BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, *boost::unit_test::timeout(90)) {
     // Test basic exception safety guarantees for wrapper operations
 
     // Test 1: Promise exception safety
@@ -101,9 +105,7 @@ BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, * boost::unit_t
             std::atomic<bool> work_executed{false};
 
             // Normal work should execute
-            BOOST_CHECK_NO_THROW(executor.add([&work_executed]() {
-                work_executed = true;
-            }));
+            BOOST_CHECK_NO_THROW(executor.add([&work_executed]() { work_executed = true; }));
 
             BOOST_CHECK(work_executed.load());
 
@@ -113,12 +115,11 @@ BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, * boost::unit_t
             BOOST_CHECK_THROW(executor.add([&work_count]() {
                 work_count++;
                 throw std::runtime_error("Test exception in work");
-            }), std::runtime_error);
+            }),
+                              std::runtime_error);
 
             // Executor should still be usable after exception
-            BOOST_CHECK_NO_THROW(executor.add([&work_count]() {
-                work_count++;
-            }));
+            BOOST_CHECK_NO_THROW(executor.add([&work_count]() { work_count++; }));
 
             BOOST_CHECK_EQUAL(work_count.load(), 2);
         }
@@ -186,7 +187,7 @@ BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, * boost::unit_t
     }
 
     BOOST_TEST_MESSAGE("Basic exception safety guarantees validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
@@ -196,7 +197,7 @@ BOOST_AUTO_TEST_CASE(property_basic_exception_safety_guarantees, * boost::unit_t
  * Property: For any move operation, the system should maintain proper exception safety
  * and leave moved-from objects in valid but unspecified states
  */
-BOOST_AUTO_TEST_CASE(property_move_semantics_exception_safety, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_move_semantics_exception_safety, *boost::unit_test::timeout(90)) {
     // Test move semantics exception safety
 
     // Test 1: Promise move safety
@@ -248,9 +249,7 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_exception_safety, * boost::unit_tes
 
             // Moved executor should work
             std::atomic<bool> work_executed{false};
-            BOOST_CHECK_NO_THROW(moved_executor.add([&work_executed]() {
-                work_executed = true;
-            }));
+            BOOST_CHECK_NO_THROW(moved_executor.add([&work_executed]() { work_executed = true; }));
             BOOST_CHECK(work_executed.load());
         }
     }
@@ -269,15 +268,13 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_exception_safety, * boost::unit_tes
 
             // Moved-to KeepAlive should work
             std::atomic<bool> work_executed{false};
-            BOOST_CHECK_NO_THROW(keep_alive2.add([&work_executed]() {
-                work_executed = true;
-            }));
+            BOOST_CHECK_NO_THROW(keep_alive2.add([&work_executed]() { work_executed = true; }));
             BOOST_CHECK(work_executed.load());
         }
     }
 
     BOOST_TEST_MESSAGE("Move semantics exception safety validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
@@ -287,7 +284,7 @@ BOOST_AUTO_TEST_CASE(property_move_semantics_exception_safety, * boost::unit_tes
  * Property: For any type conversion operation, the system should handle errors gracefully
  * and provide meaningful error messages
  */
-BOOST_AUTO_TEST_CASE(property_type_conversion_exception_safety, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_type_conversion_exception_safety, *boost::unit_test::timeout(90)) {
     // Test type conversion exception safety
 
     // Test 1: Exception conversion safety
@@ -347,7 +344,7 @@ BOOST_AUTO_TEST_CASE(property_type_conversion_exception_safety, * boost::unit_te
     }
 
     BOOST_TEST_MESSAGE("Type conversion exception safety validated across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

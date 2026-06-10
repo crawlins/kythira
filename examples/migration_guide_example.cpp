@@ -23,10 +23,10 @@
 #include <thread>
 
 namespace {
-    constexpr int example_value = 42;
-    constexpr const char* example_message = "Migration Example";
-    constexpr const char* error_message = "Example error for migration";
-    constexpr std::chrono::milliseconds example_timeout{1000};
+constexpr int example_value = 42;
+constexpr const char* example_message = "Migration Example";
+constexpr const char* error_message = "Example error for migration";
+constexpr std::chrono::milliseconds example_timeout{1000};
 }
 
 auto demonstrate_basic_migration() -> bool {
@@ -35,9 +35,7 @@ auto demonstrate_basic_migration() -> bool {
     try {
         std::cout << "  OLD PATTERN (std::future):\n";
         // Old way with std::future
-        auto std_future = std::async(std::launch::async, []() {
-            return example_value;
-        });
+        auto std_future = std::async(std::launch::async, []() { return example_value; });
         int std_result = std_future.get();
         std::cout << "    std::future result: " << std_result << "\n";
 
@@ -64,23 +62,18 @@ auto demonstrate_chaining_migration() -> bool {
     try {
         std::cout << "  OLD PATTERN (manual chaining):\n";
         // Old way - manual chaining with std::future
-        auto step1 = std::async(std::launch::async, []() {
-            return example_value;
-        });
+        auto step1 = std::async(std::launch::async, []() { return example_value; });
         int intermediate = step1.get();
-        auto step2 = std::async(std::launch::async, [intermediate]() {
-            return intermediate * 2;
-        });
+        auto step2 = std::async(std::launch::async, [intermediate]() { return intermediate * 2; });
         int old_final = step2.get();
         std::cout << "    Manual chaining result: " << old_final << "\n";
 
         std::cout << "  NEW PATTERN (kythira::Future chaining):\n";
         // New way - fluent chaining with kythira::Future
-        auto new_result = kythira::Future<int>(example_value)
-            .then([](int value) {
-                std::cout << "    Chaining step 1: " << value << " -> " << (value * 2) << "\n";
-                return value * 2;
-            });
+        auto new_result = kythira::Future<int>(example_value).then([](int value) {
+            std::cout << "    Chaining step 1: " << value << " -> " << (value * 2) << "\n";
+            return value * 2;
+        });
 
         int new_final = new_result.get();
         std::cout << "    Fluent chaining result: " << new_final << "\n";
@@ -103,10 +96,9 @@ auto demonstrate_error_handling_migration() -> bool {
         std::cout << "  OLD PATTERN (try-catch with std::future):\n";
         // Old way - try-catch around future operations
         try {
-            auto error_future = std::async(std::launch::async, []() -> int {
-                throw std::runtime_error(error_message);
-            });
-            int result = error_future.get(); // This will throw
+            auto error_future = std::async(
+                std::launch::async, []() -> int { throw std::runtime_error(error_message); });
+            int result = error_future.get();  // This will throw
             std::cout << "    Unexpected success: " << result << "\n";
         } catch (const std::exception& e) {
             std::cout << "    Caught exception: " << e.what() << "\n";
@@ -114,16 +106,15 @@ auto demonstrate_error_handling_migration() -> bool {
 
         std::cout << "  NEW PATTERN (kythira::Future onError):\n";
         // New way - fluent error handling with kythira::Future
-        auto error_future = kythira::Future<int>(
-            std::make_exception_ptr(std::runtime_error(error_message))
-        );
+        auto error_future =
+            kythira::Future<int>(std::make_exception_ptr(std::runtime_error(error_message)));
 
         auto handled_future = error_future.onError([](std::exception_ptr ex) {
             try {
                 std::rethrow_exception(ex);
             } catch (const std::exception& e) {
                 std::cout << "    Handled exception: " << e.what() << "\n";
-                return -1; // Default value
+                return -1;  // Default value
             }
         });
 
@@ -184,9 +175,7 @@ auto demonstrate_collective_operations_migration() -> bool {
         // Old way - manually collecting std::future results
         std::vector<std::future<int>> old_futures;
         for (int i = 1; i <= 3; ++i) {
-            old_futures.push_back(std::async(std::launch::async, [i]() {
-                return i * 10;
-            }));
+            old_futures.push_back(std::async(std::launch::async, [i]() { return i * 10; }));
         }
 
         std::vector<int> old_results;

@@ -13,8 +13,8 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30};
+constexpr int test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30};
 }
 
 // Mock Executor implementation for testing the concept
@@ -29,14 +29,10 @@ public:
     }
 
     // Get keep alive token for lifetime management
-    auto getKeepAliveToken() -> std::shared_ptr<MockExecutor> {
-        return shared_from_this();
-    }
+    auto getKeepAliveToken() -> std::shared_ptr<MockExecutor> { return shared_from_this(); }
 
     // Helper methods for testing
-    auto getTaskCount() const -> std::size_t {
-        return _task_count.load(std::memory_order_relaxed);
-    }
+    auto getTaskCount() const -> std::size_t { return _task_count.load(std::memory_order_relaxed); }
 
     auto executeTasks() -> void {
         for (auto& task : _tasks) {
@@ -47,9 +43,7 @@ public:
         _tasks.clear();
     }
 
-    auto getTasks() const -> const std::vector<std::function<void()>>& {
-        return _tasks;
-    }
+    auto getTasks() const -> const std::vector<std::function<void()>>& { return _tasks; }
 
 private:
     std::atomic<std::size_t> _task_count{0};
@@ -57,7 +51,7 @@ private:
 
     // Enable shared_from_this for getKeepAliveToken
     std::shared_ptr<MockExecutor> shared_from_this() {
-        static std::shared_ptr<MockExecutor> instance(this, [](MockExecutor*){});
+        static std::shared_ptr<MockExecutor> instance(this, [](MockExecutor*) {});
         return instance;
     }
 };
@@ -82,14 +76,10 @@ public:
     }
 
     // Get underlying executor
-    auto get() -> MockExecutor* {
-        return _executor.get();
-    }
+    auto get() -> MockExecutor* { return _executor.get(); }
 
     // Get underlying executor (const version)
-    auto get() const -> void* {
-        return const_cast<MockExecutor*>(_executor.get());
-    }
+    auto get() const -> void* { return const_cast<MockExecutor*>(_executor.get()); }
 
 private:
     std::shared_ptr<MockExecutor> _executor;
@@ -98,14 +88,14 @@ private:
 /**
  * **Feature: folly-concepts-enhancement, Property 5: Executor concept requirements**
  *
- * Property: For any type that satisfies executor concept, it should provide add and getKeepAliveToken methods
+ * Property: For any type that satisfies executor concept, it should provide add and
+ * getKeepAliveToken methods
  * **Validates: Requirements 4.1, 4.3**
  */
-BOOST_AUTO_TEST_CASE(executor_concept_requirements_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(executor_concept_requirements_property_test, *boost::unit_test::timeout(90)) {
     // Test 1: MockExecutor should satisfy executor concept
     {
-        static_assert(executor<MockExecutor>,
-                      "MockExecutor should satisfy executor concept");
+        static_assert(executor<MockExecutor>, "MockExecutor should satisfy executor concept");
 
         MockExecutor exec;
 
@@ -156,7 +146,7 @@ BOOST_AUTO_TEST_CASE(executor_concept_requirements_property_test, * boost::unit_
         BOOST_CHECK_EQUAL(exec.getTaskCount(), 3);
 
         exec.executeTasks();
-        BOOST_CHECK_EQUAL(counter, 111); // 1 + 10 + 100
+        BOOST_CHECK_EQUAL(counter, 111);  // 1 + 10 + 100
     }
 
     // Test 4: Property-based testing - generate multiple test cases
@@ -165,12 +155,11 @@ BOOST_AUTO_TEST_CASE(executor_concept_requirements_property_test, * boost::unit_
 
         // Add multiple tasks
         std::atomic<int> task_counter{0};
-        int num_tasks = (i % 10) + 1; // 1 to 10 tasks
+        int num_tasks = (i % 10) + 1;  // 1 to 10 tasks
 
         for (int j = 0; j < num_tasks; ++j) {
-            exec.add([&task_counter, j]() {
-                task_counter.fetch_add(j + 1, std::memory_order_relaxed);
-            });
+            exec.add(
+                [&task_counter, j]() { task_counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
         BOOST_CHECK_EQUAL(exec.getTaskCount(), static_cast<std::size_t>(num_tasks));
@@ -194,7 +183,7 @@ BOOST_AUTO_TEST_CASE(executor_concept_requirements_property_test, * boost::unit_
 /**
  * Test that types NOT satisfying executor concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(executor_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!executor<int>, "int should not satisfy executor concept");
     static_assert(!executor<std::string>, "std::string should not satisfy executor concept");
@@ -204,19 +193,21 @@ BOOST_AUTO_TEST_CASE(executor_concept_rejection_test, * boost::unit_test::timeou
         // Missing add method
     };
 
-    static_assert(!executor<IncompleteExecutor>, "IncompleteExecutor should not satisfy executor concept");
+    static_assert(!executor<IncompleteExecutor>,
+                  "IncompleteExecutor should not satisfy executor concept");
 
     // Test that types with wrong method signatures don't satisfy the concept
     struct WrongSignatureExecutor {
-        int add(std::function<void()> func) { return 0; } // Wrong return type
+        int add(std::function<void()> func) { return 0; }  // Wrong return type
     };
 
-    static_assert(!executor<WrongSignatureExecutor>, "WrongSignatureExecutor should not satisfy executor concept");
+    static_assert(!executor<WrongSignatureExecutor>,
+                  "WrongSignatureExecutor should not satisfy executor concept");
 
     // Test executor without add method
     struct NoAddExecutor {
         auto getKeepAliveToken() -> std::shared_ptr<NoAddExecutor> {
-            return std::shared_ptr<NoAddExecutor>(this, [](NoAddExecutor*){});
+            return std::shared_ptr<NoAddExecutor>(this, [](NoAddExecutor*) {});
         }
         // Missing add method
     };
@@ -227,10 +218,9 @@ BOOST_AUTO_TEST_CASE(executor_concept_rejection_test, * boost::unit_test::timeou
 /**
  * Test keep_alive concept requirements
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_test, *boost::unit_test::timeout(60)) {
     // Test that MockKeepAlive satisfies keep_alive concept
-    static_assert(keep_alive<MockKeepAlive>,
-                  "MockKeepAlive should satisfy keep_alive concept");
+    static_assert(keep_alive<MockKeepAlive>, "MockKeepAlive should satisfy keep_alive concept");
 
     auto executor = std::make_shared<MockExecutor>();
     MockKeepAlive keep_alive(executor);
@@ -251,16 +241,14 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_test, * boost::unit_test::t
 /**
  * Test executor lifetime management
  */
-BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, *boost::unit_test::timeout(30)) {
     MockExecutor exec;
 
     // Test that executor can manage work properly
     std::vector<bool> task_results(10, false);
 
     for (std::size_t i = 0; i < task_results.size(); ++i) {
-        exec.add([&task_results, i]() {
-            task_results[i] = true;
-        });
+        exec.add([&task_results, i]() { task_results[i] = true; });
     }
 
     BOOST_CHECK_EQUAL(exec.getTaskCount(), task_results.size());
@@ -277,7 +265,7 @@ BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, * boost::unit_test::time
 /**
  * Test move semantics for function objects
  */
-BOOST_AUTO_TEST_CASE(executor_move_semantics_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_move_semantics_test, *boost::unit_test::timeout(30)) {
     MockExecutor exec;
 
     // Test with movable function object
@@ -296,15 +284,13 @@ BOOST_AUTO_TEST_CASE(executor_move_semantics_test, * boost::unit_test::timeout(3
 /**
  * Test that priority support is optional (commented out in concept)
  */
-BOOST_AUTO_TEST_CASE(executor_optional_priority_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(executor_optional_priority_test, *boost::unit_test::timeout(30)) {
     // Test that executor without priority support still satisfies concept
     struct NoPriorityExecutor {
-        void add(std::function<void()> func) {
-            _tasks.push_back(std::move(func));
-        }
+        void add(std::function<void()> func) { _tasks.push_back(std::move(func)); }
 
         auto getKeepAliveToken() -> std::shared_ptr<NoPriorityExecutor> {
-            return std::shared_ptr<NoPriorityExecutor>(this, [](NoPriorityExecutor*){});
+            return std::shared_ptr<NoPriorityExecutor>(this, [](NoPriorityExecutor*) {});
         }
 
         // No getNumPriorities() method - should still satisfy concept

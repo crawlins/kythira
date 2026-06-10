@@ -19,19 +19,19 @@
 #include <cstdint>
 
 namespace {
-    constexpr const char* server_bind_address = "0.0.0.0"; // Bind to all interfaces for multicast
-    constexpr std::uint16_t multicast_port = 5683;
-    constexpr const char* multicast_address = "224.0.1.187"; // CoAP multicast address
-    constexpr const char* multicast_endpoint = "coap://224.0.1.187:5683";
-    constexpr std::chrono::milliseconds rpc_timeout{5000};
+constexpr const char* server_bind_address = "0.0.0.0";  // Bind to all interfaces for multicast
+constexpr std::uint16_t multicast_port = 5683;
+constexpr const char* multicast_address = "224.0.1.187";  // CoAP multicast address
+constexpr const char* multicast_endpoint = "coap://224.0.1.187:5683";
+constexpr std::chrono::milliseconds rpc_timeout{5000};
 
-    // Multiple node IDs for multicast testing
-    constexpr std::uint64_t node_1_id = 1;
-    constexpr std::uint64_t node_2_id = 2;
-    constexpr std::uint64_t node_3_id = 3;
-    constexpr std::uint16_t node_1_port = 5690;
-    constexpr std::uint16_t node_2_port = 5691;
-    constexpr std::uint16_t node_3_port = 5692;
+// Multiple node IDs for multicast testing
+constexpr std::uint64_t node_1_id = 1;
+constexpr std::uint64_t node_2_id = 2;
+constexpr std::uint64_t node_3_id = 3;
+constexpr std::uint16_t node_1_port = 5690;
+constexpr std::uint16_t node_2_port = 5691;
+constexpr std::uint16_t node_3_port = 5692;
 }
 
 // Mock configuration structures for demonstration
@@ -47,7 +47,7 @@ struct coap_client_config {
     bool enable_dtls{false};
     std::size_t max_sessions{100};
     std::chrono::milliseconds ack_timeout{3000};
-    std::size_t max_retransmit{2}; // Fewer retries for multicast
+    std::size_t max_retransmit{2};  // Fewer retries for multicast
 };
 
 // Mock response structures for demonstration
@@ -66,16 +66,17 @@ auto test_multicast_configuration() -> bool {
         server_config.multicast_address = multicast_address;
         server_config.multicast_port = multicast_port;
         server_config.max_concurrent_sessions = 20;
-        server_config.enable_dtls = false; // Multicast typically uses plain CoAP
+        server_config.enable_dtls = false;  // Multicast typically uses plain CoAP
 
         // Create client configuration for multicast
         coap_client_config client_config;
-        client_config.enable_dtls = false; // Multicast typically uses plain CoAP
+        client_config.enable_dtls = false;  // Multicast typically uses plain CoAP
         client_config.max_sessions = 10;
         client_config.ack_timeout = std::chrono::milliseconds{3000};
 
         std::cout << "  ✓ Multicast configuration created\n";
-        std::cout << "  ✓ Multicast address: " << multicast_address << ":" << multicast_port << "\n";
+        std::cout << "  ✓ Multicast address: " << multicast_address << ":" << multicast_port
+                  << "\n";
 
         // Validate multicast configuration
         if (!server_config.enable_multicast) {
@@ -176,7 +177,7 @@ auto test_multicast_message_delivery() -> bool {
         coap_client_config client_config;
         client_config.enable_dtls = false;
         client_config.ack_timeout = std::chrono::milliseconds{2000};
-        client_config.max_retransmit = 2; // Fewer retries for multicast
+        client_config.max_retransmit = 2;  // Fewer retries for multicast
 
         std::cout << "  ✓ Multicast client configuration created\n";
 
@@ -255,7 +256,7 @@ auto test_multicast_response_aggregation() -> bool {
 
         // Response from Node 3
         request_vote_response resp3;
-        resp3.term = 6; // Higher term
+        resp3.term = 6;  // Higher term
         resp3.vote_granted = false;
         responses.push_back(resp3);
 
@@ -311,7 +312,7 @@ auto test_multicast_error_handling() -> bool {
         // Test invalid multicast address configuration
         coap_server_config invalid_config;
         invalid_config.enable_multicast = true;
-        invalid_config.multicast_address = "999.999.999.999"; // Invalid IP
+        invalid_config.multicast_address = "999.999.999.999";  // Invalid IP
         invalid_config.multicast_port = multicast_port;
 
         std::cout << "  ✓ Invalid multicast address configuration created for testing\n";
@@ -329,7 +330,7 @@ auto test_multicast_error_handling() -> bool {
         // Test multicast with DTLS (typically not supported)
         coap_server_config dtls_multicast_config;
         dtls_multicast_config.enable_multicast = true;
-        dtls_multicast_config.enable_dtls = true; // Conflicting configuration
+        dtls_multicast_config.enable_dtls = true;  // Conflicting configuration
         dtls_multicast_config.multicast_address = multicast_address;
         dtls_multicast_config.multicast_port = multicast_port;
 
@@ -342,7 +343,7 @@ auto test_multicast_error_handling() -> bool {
 
         // Test multicast timeout scenarios
         coap_client_config timeout_config;
-        timeout_config.ack_timeout = std::chrono::milliseconds{100}; // Very short timeout
+        timeout_config.ack_timeout = std::chrono::milliseconds{100};  // Very short timeout
         timeout_config.max_retransmit = 1;
 
         std::cout << "  ✓ Short timeout configuration for multicast testing\n";
@@ -351,7 +352,7 @@ auto test_multicast_error_handling() -> bool {
         coap_server_config port_conflict_config;
         port_conflict_config.enable_multicast = true;
         port_conflict_config.multicast_address = multicast_address;
-        port_conflict_config.multicast_port = 1; // Privileged port
+        port_conflict_config.multicast_port = 1;  // Privileged port
 
         std::cout << "  ✓ Port conflict configuration created for testing\n";
 

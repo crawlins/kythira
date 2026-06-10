@@ -24,14 +24,14 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t num_property_iterations = 50;
-    constexpr std::chrono::milliseconds short_delay{50};
-    constexpr std::chrono::milliseconds medium_delay{100};
-    constexpr std::chrono::milliseconds long_delay{200};
+constexpr std::size_t num_property_iterations = 50;
+constexpr std::chrono::milliseconds short_delay{50};
+constexpr std::chrono::milliseconds medium_delay{100};
+constexpr std::chrono::milliseconds long_delay{200};
 
-    // Random number generator for property tests
-    std::random_device rd;
-    std::mt19937 gen(rd());
+// Random number generator for property tests
+std::random_device rd;
+std::mt19937 gen(rd());
 }
 
 // Global fixture to initialize Folly once for all tests
@@ -60,20 +60,18 @@ BOOST_AUTO_TEST_SUITE(error_handler_async_retry_property_tests)
  *
  * **Validates: Requirement 32.1**
  */
-BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
 
         // Configure with short delays for faster testing
-        typename error_handler<int>::retry_policy policy{
-            .initial_delay = short_delay,
-            .max_delay = medium_delay,
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.0,
-            .max_attempts = 3
-        };
+        typename error_handler<int>::retry_policy policy{.initial_delay = short_delay,
+                                                         .max_delay = medium_delay,
+                                                         .backoff_multiplier = 2.0,
+                                                         .jitter_factor = 0.0,
+                                                         .max_attempts = 3};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -94,9 +92,7 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, * boost::unit_test::timeo
         };
 
         // Execute with retry - should complete without blocking threads
-        auto result = handler.execute_with_retry("test_operation", operation)
-            .via(&executor)
-            .get();
+        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
 
         BOOST_CHECK_EQUAL(result, expected_value);
         BOOST_CHECK_EQUAL(attempt_count.load(), 3);
@@ -111,19 +107,18 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, * boost::unit_test::timeo
  *
  * **Validates: Requirement 32.2**
  */
-BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks,
+                     *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
 
-        typename error_handler<int>::retry_policy policy{
-            .initial_delay = short_delay,
-            .max_delay = long_delay,
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.1,
-            .max_attempts = 4
-        };
+        typename error_handler<int>::retry_policy policy{.initial_delay = short_delay,
+                                                         .max_delay = long_delay,
+                                                         .backoff_multiplier = 2.0,
+                                                         .jitter_factor = 0.1,
+                                                         .max_attempts = 4};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -148,9 +143,7 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks, * boost
             return FutureFactory::makeFuture(42);
         };
 
-        auto result = handler.execute_with_retry("test_operation", operation)
-            .via(&executor)
-            .get();
+        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
 
         BOOST_CHECK_EQUAL(result, 42);
         BOOST_CHECK_EQUAL(attempt_count.load(), 4);
@@ -160,7 +153,7 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks, * boost
 
         for (std::size_t j = 1; j < attempt_times.size(); ++j) {
             auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-                attempt_times[j] - attempt_times[j-1]);
+                attempt_times[j] - attempt_times[j - 1]);
 
             // Should have some delay (at least 80% of expected to account for jitter)
             BOOST_CHECK_GE(delay.count(), short_delay.count() * 0.8);
@@ -177,20 +170,18 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks, * boost
  *
  * **Validates: Requirement 32.3**
  */
-BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, *boost::unit_test::timeout(90)) {
     // Use a small thread pool to make blocking more obvious
     folly::CPUThreadPoolExecutor executor(2);
 
     for (std::size_t i = 0; i < 10; ++i) {  // Fewer iterations for this expensive test
         error_handler<int> handler;
 
-        typename error_handler<int>::retry_policy policy{
-            .initial_delay = medium_delay,
-            .max_delay = long_delay,
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.0,
-            .max_attempts = 3
-        };
+        typename error_handler<int>::retry_policy policy{.initial_delay = medium_delay,
+                                                         .max_delay = long_delay,
+                                                         .backoff_multiplier = 2.0,
+                                                         .jitter_factor = 0.0,
+                                                         .max_attempts = 3};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -210,18 +201,18 @@ BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, * boost::unit_tes
         };
 
         // Start retry operation
-        auto retry_future = handler.execute_with_retry("test_operation", retry_operation)
-            .via(&executor);
+        auto retry_future =
+            handler.execute_with_retry("test_operation", retry_operation).via(&executor);
 
         // Submit other work to the executor while retry is happening
         std::vector<Future<int>> other_futures;
         for (int j = 0; j < 10; ++j) {
             auto other_future = FutureFactory::makeFuture(folly::Unit{})
-                .via(&executor)
-                .thenValue([&other_work_count, j]() {
-                    other_work_count++;
-                    return j;
-                });
+                                    .via(&executor)
+                                    .thenValue([&other_work_count, j]() {
+                                        other_work_count++;
+                                        return j;
+                                    });
             other_futures.push_back(std::move(other_future));
         }
 
@@ -250,19 +241,18 @@ BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, * boost::unit_tes
  *
  * **Validates: Requirement 32.4**
  */
-BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains,
+                     *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
 
-        typename error_handler<int>::retry_policy policy{
-            .initial_delay = short_delay,
-            .max_delay = medium_delay,
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.0,
-            .max_attempts = 3
-        };
+        typename error_handler<int>::retry_policy policy{.initial_delay = short_delay,
+                                                         .max_delay = medium_delay,
+                                                         .backoff_multiplier = 2.0,
+                                                         .jitter_factor = 0.0,
+                                                         .max_attempts = 3};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -273,15 +263,13 @@ BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains, * boos
             ++attempt_count;
 
             // Always fail
-            return FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error(error_message));
+            return FutureFactory::makeExceptionalFuture<int>(std::runtime_error(error_message));
         };
 
         // Execute with retry - should throw after all attempts
         try {
-            auto result = handler.execute_with_retry("test_operation", operation)
-                .via(&executor)
-                .get();
+            auto result =
+                handler.execute_with_retry("test_operation", operation).via(&executor).get();
 
             BOOST_FAIL("Expected exception after exhausting retries");
         } catch (const std::runtime_error& e) {
@@ -302,19 +290,17 @@ BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains, * boos
  *
  * **Validates: Requirement 32.5**
  */
-BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
 
-        typename error_handler<int>::retry_policy policy{
-            .initial_delay = medium_delay,
-            .max_delay = long_delay,
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.0,
-            .max_attempts = 3
-        };
+        typename error_handler<int>::retry_policy policy{.initial_delay = medium_delay,
+                                                         .max_delay = long_delay,
+                                                         .backoff_multiplier = 2.0,
+                                                         .jitter_factor = 0.0,
+                                                         .max_attempts = 3};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -336,8 +322,7 @@ BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, * boost::unit_tes
         // Measure time to get the future (should be immediate)
         auto start_time = std::chrono::steady_clock::now();
 
-        auto future = handler.execute_with_retry("test_operation", operation)
-            .via(&executor);
+        auto future = handler.execute_with_retry("test_operation", operation).via(&executor);
 
         auto future_creation_time = std::chrono::steady_clock::now();
         auto creation_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -350,8 +335,8 @@ BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, * boost::unit_tes
         auto result = std::move(future).get();
 
         auto completion_time = std::chrono::steady_clock::now();
-        auto total_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-            completion_time - start_time);
+        auto total_duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(completion_time - start_time);
 
         // Total duration should include retry delays
         // Expected: ~150ms (50ms + 100ms delays)
@@ -370,7 +355,8 @@ BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, * boost::unit_tes
  *
  * **Validates: Requirements 32.1, 32.2**
  */
-BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays,
+                     *boost::unit_test::timeout(90)) {
     folly::CPUThreadPoolExecutor executor(4);
 
     for (std::size_t i = 0; i < 20; ++i) {  // Fewer iterations for timing-sensitive test
@@ -381,8 +367,7 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays, * boost::un
             .max_delay = long_delay,
             .backoff_multiplier = 2.0,
             .jitter_factor = 0.0,  // No jitter for predictable timing
-            .max_attempts = 4
-        };
+            .max_attempts = 4};
 
         handler.set_retry_policy("test_operation", policy);
 
@@ -406,21 +391,19 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays, * boost::un
             return FutureFactory::makeFuture(42);
         };
 
-        auto result = handler.execute_with_retry("test_operation", operation)
-            .via(&executor)
-            .get();
+        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
 
         BOOST_CHECK_EQUAL(result, 42);
         BOOST_REQUIRE_EQUAL(attempt_times.size(), 4);
 
         // Verify exponential backoff
         // Expected delays: 0ms, 50ms, 100ms, 200ms (capped)
-        auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(
-            attempt_times[1] - attempt_times[0]);
-        auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(
-            attempt_times[2] - attempt_times[1]);
-        auto delay3 = std::chrono::duration_cast<std::chrono::milliseconds>(
-            attempt_times[3] - attempt_times[2]);
+        auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[1] -
+                                                                            attempt_times[0]);
+        auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[2] -
+                                                                            attempt_times[1]);
+        auto delay3 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[3] -
+                                                                            attempt_times[2]);
 
         // Allow 20% tolerance for timing variations
         BOOST_CHECK_GE(delay1.count(), short_delay.count() * 0.8);

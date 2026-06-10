@@ -6,15 +6,12 @@
 namespace network_simulator {
 
 template<typename Types>
-ConnectionPool<Types>::ConnectionPool(PoolConfig config)
-    : _config(std::move(config))
-{}
+ConnectionPool<Types>::ConnectionPool(PoolConfig config) : _config(std::move(config)) {}
 
 template<typename Types>
 auto ConnectionPool<Types>::get_or_create_connection(
-    endpoint_type destination,
-    std::function<future_connection_type()> create_fn) -> future_connection_type {
-
+    endpoint_type destination, std::function<future_connection_type()> create_fn)
+    -> future_connection_type {
     // First, try to find a healthy pooled connection
     {
         std::unique_lock lock(_pool_mutex);
@@ -42,13 +39,13 @@ auto ConnectionPool<Types>::get_or_create_connection(
             }
 
             // No healthy connections found, remove stale ones
-            pool_it->second.erase(
-                std::remove_if(pool_it->second.begin(), pool_it->second.end(),
-                    [this](const PooledConnection& pc) {
-                        return !is_connection_healthy(pc) || !pc.connection || !pc.connection->is_open();
-                    }),
-                pool_it->second.end()
-            );
+            pool_it->second.erase(std::remove_if(pool_it->second.begin(), pool_it->second.end(),
+                                                 [this](const PooledConnection& pc) {
+                                                     return !is_connection_healthy(pc) ||
+                                                            !pc.connection ||
+                                                            !pc.connection->is_open();
+                                                 }),
+                                  pool_it->second.end());
         }
     }
 
@@ -59,7 +56,7 @@ auto ConnectionPool<Types>::get_or_create_connection(
 template<typename Types>
 auto ConnectionPool<Types>::return_connection(std::shared_ptr<connection_type> conn) -> void {
     if (!conn || !conn->is_open()) {
-        return; // Don't pool closed connections
+        return;  // Don't pool closed connections
     }
 
     std::unique_lock lock(_pool_mutex);
@@ -79,22 +76,18 @@ auto ConnectionPool<Types>::return_connection(std::shared_ptr<connection_type> c
     pool.emplace_back(conn);
 }
 
-template<typename Types>
-auto ConnectionPool<Types>::cleanup_stale_connections() -> void {
+template<typename Types> auto ConnectionPool<Types>::cleanup_stale_connections() -> void {
     std::unique_lock lock(_pool_mutex);
 
     for (auto& [endpoint, pool] : _connection_pools) {
         // Remove stale or unhealthy connections
-        pool.erase(
-            std::remove_if(pool.begin(), pool.end(),
-                [this](const PooledConnection& pc) {
-                    return !is_connection_healthy(pc) ||
-                           pc.is_stale(_config.max_idle_time) ||
-                           !pc.connection ||
-                           !pc.connection->is_open();
-                }),
-            pool.end()
-        );
+        pool.erase(std::remove_if(pool.begin(), pool.end(),
+                                  [this](const PooledConnection& pc) {
+                                      return !is_connection_healthy(pc) ||
+                                             pc.is_stale(_config.max_idle_time) || !pc.connection ||
+                                             !pc.connection->is_open();
+                                  }),
+                   pool.end());
     }
 
     // Remove empty pools
@@ -107,8 +100,7 @@ auto ConnectionPool<Types>::cleanup_stale_connections() -> void {
     }
 }
 
-template<typename Types>
-auto ConnectionPool<Types>::configure_pool(PoolConfig config) -> void {
+template<typename Types> auto ConnectionPool<Types>::configure_pool(PoolConfig config) -> void {
     std::unique_lock lock(_pool_mutex);
     _config = std::move(config);
 }
@@ -135,9 +127,9 @@ auto ConnectionPool<Types>::evict_lru_connection(endpoint_type destination) -> v
 
     // Find LRU connection (oldest last_used time)
     auto lru_it = std::min_element(pool_it->second.begin(), pool_it->second.end(),
-        [](const PooledConnection& a, const PooledConnection& b) {
-            return a.last_used < b.last_used;
-        });
+                                   [](const PooledConnection& a, const PooledConnection& b) {
+                                       return a.last_used < b.last_used;
+                                   });
 
     if (lru_it != pool_it->second.end()) {
         // Close the connection before removing
@@ -149,9 +141,10 @@ auto ConnectionPool<Types>::evict_lru_connection(endpoint_type destination) -> v
 }
 
 template<typename Types>
-auto ConnectionPool<Types>::is_connection_healthy(const PooledConnection& pooled_conn) const -> bool {
+auto ConnectionPool<Types>::is_connection_healthy(const PooledConnection& pooled_conn) const
+    -> bool {
     if (!_config.enable_health_checks) {
-        return true; // Skip health checks if disabled
+        return true;  // Skip health checks if disabled
     }
 
     // Check if connection is too old
@@ -173,4 +166,4 @@ auto ConnectionPool<Types>::is_connection_healthy(const PooledConnection& pooled
     return pooled_conn.is_healthy;
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

@@ -6,13 +6,13 @@
 #include <vector>
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test_value";
-    constexpr const char* error_message = "test_error";
-    constexpr std::chrono::milliseconds short_timeout{10};
+constexpr int test_value = 42;
+constexpr const char* test_string = "test_value";
+constexpr const char* error_message = "test_error";
+constexpr std::chrono::milliseconds short_timeout{10};
 }
 
-BOOST_AUTO_TEST_CASE(test_create_ready_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_create_ready_future, *boost::unit_test::timeout(30)) {
     // Test creating a ready future with an integer value
     auto int_future = test_utilities::create_ready_future(test_value);
 
@@ -26,7 +26,7 @@ BOOST_AUTO_TEST_CASE(test_create_ready_future, * boost::unit_test::timeout(30)) 
     BOOST_TEST(string_future.get() == test_string);
 }
 
-BOOST_AUTO_TEST_CASE(test_create_failed_future, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_create_failed_future, *boost::unit_test::timeout(30)) {
     // Test creating a failed future
     auto failed_future = test_utilities::create_failed_future<int>(error_message);
 
@@ -34,7 +34,7 @@ BOOST_AUTO_TEST_CASE(test_create_failed_future, * boost::unit_test::timeout(30))
     BOOST_CHECK_THROW(failed_future.get(), std::runtime_error);
 }
 
-BOOST_AUTO_TEST_CASE(test_wait_for_all_futures, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_wait_for_all_futures, *boost::unit_test::timeout(30)) {
     // Test waiting for multiple futures
     std::vector<int> test_values = {1, 2, 3, 4, 5};
     auto futures = test_utilities::create_ready_futures(test_values);
@@ -47,7 +47,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_all_futures, * boost::unit_test::timeout(30))
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_create_ready_futures, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_create_ready_futures, *boost::unit_test::timeout(30)) {
     // Test creating multiple ready futures
     std::vector<std::string> test_strings = {"one", "two", "three"};
     auto futures = test_utilities::create_ready_futures(test_strings);
@@ -60,7 +60,7 @@ BOOST_AUTO_TEST_CASE(test_create_ready_futures, * boost::unit_test::timeout(30))
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_wait_for_future_with_timeout, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_wait_for_future_with_timeout, *boost::unit_test::timeout(30)) {
     // Test waiting for a ready future with timeout
     auto ready_future = test_utilities::create_ready_future(test_value);
 
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(test_wait_for_future_with_timeout, * boost::unit_test::time
     BOOST_TEST(ready_future.get() == test_value);
 }
 
-BOOST_AUTO_TEST_CASE(test_future_utilities_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_utilities_integration, *boost::unit_test::timeout(30)) {
     // Test integration of multiple utility functions
     std::vector<int> values = {10, 20, 30};
 

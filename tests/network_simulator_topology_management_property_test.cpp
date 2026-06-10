@@ -12,12 +12,12 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr std::chrono::milliseconds default_latency{50};
-    constexpr double default_reliability = 0.99;
-    constexpr std::size_t test_iterations = 100;
-    constexpr const char* node_prefix = "node_";
-    constexpr std::size_t max_nodes_per_test = 20;
-    constexpr std::size_t max_edges_per_test = 50;
+constexpr std::chrono::milliseconds default_latency{50};
+constexpr double default_reliability = 0.99;
+constexpr std::size_t test_iterations = 100;
+constexpr const char* node_prefix = "node_";
+constexpr std::size_t max_nodes_per_test = 20;
+constexpr std::size_t max_edges_per_test = 50;
 }
 
 /**
@@ -29,8 +29,8 @@ namespace {
  *
  * **Validates: Requirements 11.1, 11.2, 11.4, 11.5**
  */
-BOOST_AUTO_TEST_CASE(network_simulator_topology_management_property_test, * boost::unit_test::timeout(120)) {
-
+BOOST_AUTO_TEST_CASE(network_simulator_topology_management_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -46,7 +46,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_topology_management_property_test, * boos
         // Generate random number of nodes for this iteration
         std::size_t node_count = node_count_dist(gen);
         std::vector<std::string> nodes;
-        std::set<std::string> node_set; // For uniqueness checking
+        std::set<std::string> node_set;  // For uniqueness checking
 
         // Generate unique node addresses
         for (std::size_t i = 0; i < node_count; ++i) {
@@ -74,7 +74,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_topology_management_property_test, * boos
         // Generate random edges between existing nodes
         std::size_t edge_count = std::min(edge_count_dist(gen), node_count * (node_count - 1));
         std::vector<std::pair<std::string, std::string>> edges;
-        std::set<std::pair<std::string, std::string>> edge_set; // For uniqueness
+        std::set<std::pair<std::string, std::string>> edge_set;  // For uniqueness
 
         std::uniform_int_distribution<std::size_t> node_index_dist(0, nodes.size() - 1);
 
@@ -145,7 +145,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_topology_management_property_test, * boos
 /**
  * Test edge case: Adding duplicate nodes
  */
-BOOST_AUTO_TEST_CASE(topology_duplicate_node_addition, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_duplicate_node_addition, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string node_addr = "duplicate_node";
@@ -162,7 +162,7 @@ BOOST_AUTO_TEST_CASE(topology_duplicate_node_addition, * boost::unit_test::timeo
 /**
  * Test edge case: Adding duplicate edges
  */
-BOOST_AUTO_TEST_CASE(topology_duplicate_edge_addition, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_duplicate_edge_addition, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string from_node = "node_a";
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(topology_duplicate_edge_addition, * boost::unit_test::timeo
 /**
  * Test edge case: Removing non-existent nodes and edges
  */
-BOOST_AUTO_TEST_CASE(topology_remove_non_existent, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_remove_non_existent, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string non_existent_node = "non_existent";
@@ -213,7 +213,7 @@ BOOST_AUTO_TEST_CASE(topology_remove_non_existent, * boost::unit_test::timeout(3
 /**
  * Test node removal cascades to edge removal
  */
-BOOST_AUTO_TEST_CASE(topology_node_removal_cascades_edges, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(topology_node_removal_cascades_edges, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     std::string node_a = "node_a";
@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE(topology_node_removal_cascades_edges, * boost::unit_test::t
 /**
  * Test large topology operations
  */
-BOOST_AUTO_TEST_CASE(topology_large_scale_operations, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(topology_large_scale_operations, *boost::unit_test::timeout(60)) {
     NetworkSimulator<DefaultNetworkTypes> simulator;
 
     constexpr std::size_t large_node_count = 100;

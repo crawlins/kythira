@@ -18,16 +18,14 @@
 // They are currently stubs that document the properties to be tested
 
 namespace {
-    constexpr const char* test_server_url = "http://localhost:8080";
-    constexpr std::uint64_t test_node_id = 1;
-    constexpr std::size_t property_test_iterations = 100;
+constexpr const char* test_server_url = "http://localhost:8080";
+constexpr std::uint64_t test_node_id = 1;
+constexpr std::size_t property_test_iterations = 100;
 
-    // Define transport types for testing using the provided template
-    using test_transport_types = kythira::http_transport_types<
-        kythira::json_serializer,
-        kythira::noop_metrics,
-        folly::CPUThreadPoolExecutor
-    >;
+// Define transport types for testing using the provided template
+using test_transport_types =
+    kythira::http_transport_types<kythira::json_serializer, kythira::noop_metrics,
+                                  folly::CPUThreadPoolExecutor>;
 }
 
 BOOST_AUTO_TEST_SUITE(http_client_property_tests)
@@ -62,10 +60,13 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_request_vote_request(request_data);
-        res.body = std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})", request_obj.term());
+        res.body =
+            std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})",
+                        request_obj.term());
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req,
+                                               httplib::Response& res) {
         capture_method(req, res);
         // Parse the request to get the term and echo it back
         kythira::json_serializer serializer;
@@ -75,26 +76,27 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_append_entries_request(request_data);
-        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})", request_obj.term());
+        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})",
+                               request_obj.term());
     });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        capture_method(req, res);
-        // Parse the request to get the term and echo it back
-        kythira::json_serializer serializer;
-        std::vector<std::byte> request_data;
-        request_data.reserve(req.body.size());
-        for (char c : req.body) {
-            request_data.push_back(static_cast<std::byte>(c));
-        }
-        auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
-        res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})", request_obj.term());
-    });
+    server.Post(
+        "/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
+            capture_method(req, res);
+            // Parse the request to get the term and echo it back
+            kythira::json_serializer serializer;
+            std::vector<std::byte> request_data;
+            request_data.reserve(req.body.size());
+            for (char c : req.body) {
+                request_data.push_back(static_cast<std::byte>(c));
+            }
+            auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
+            res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})",
+                                   request_obj.term());
+        });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -110,8 +112,8 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Test multiple requests to verify POST method is always used
         for (std::size_t i = 0; i < 3; ++i) {
@@ -137,7 +139,8 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
                 request._prev_log_term = i + 10;
                 request._leader_commit = i + 12;
 
-                auto future = client.send_append_entries(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_append_entries(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.success() == true);
             }
@@ -152,14 +155,15 @@ BOOST_AUTO_TEST_CASE(property_post_method_for_all_rpcs) {
                 request._offset = i * 1024;
                 request._done = true;
 
-                auto future = client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.term() == i + 1);
             }
         }
 
         // Verify all requests used POST method
-        BOOST_TEST(captured_methods.size() == 9); // 3 iterations * 3 RPC types
+        BOOST_TEST(captured_methods.size() == 9);  // 3 iterations * 3 RPC types
 
         for (const auto& method : captured_methods) {
             BOOST_TEST(method == "POST");
@@ -206,10 +210,13 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_request_vote_request(request_data);
-        res.body = std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})", request_obj.term());
+        res.body =
+            std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})",
+                        request_obj.term());
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req,
+                                               httplib::Response& res) {
         capture_handler(req, res);
         // Parse the request to get the term and echo it back
         kythira::json_serializer serializer;
@@ -219,26 +226,27 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_append_entries_request(request_data);
-        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})", request_obj.term());
+        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})",
+                               request_obj.term());
     });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        capture_handler(req, res);
-        // Parse the request to get the term and echo it back
-        kythira::json_serializer serializer;
-        std::vector<std::byte> request_data;
-        request_data.reserve(req.body.size());
-        for (char c : req.body) {
-            request_data.push_back(static_cast<std::byte>(c));
-        }
-        auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
-        res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})", request_obj.term());
-    });
+    server.Post(
+        "/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
+            capture_handler(req, res);
+            // Parse the request to get the term and echo it back
+            kythira::json_serializer serializer;
+            std::vector<std::byte> request_data;
+            request_data.reserve(req.body.size());
+            for (char c : req.body) {
+                request_data.push_back(static_cast<std::byte>(c));
+            }
+            auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
+            res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})",
+                                   request_obj.term());
+        });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -254,8 +262,8 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Test multiple requests with different data to verify Content-Type is always correct
         for (std::size_t i = 0; i < 3; ++i) {
@@ -281,7 +289,8 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
                 request._prev_log_term = i + 10;
                 request._leader_commit = i + 12;
 
-                auto future = client.send_append_entries(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_append_entries(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.success() == true);
             }
@@ -296,14 +305,15 @@ BOOST_AUTO_TEST_CASE(property_content_type_matches_serializer) {
                 request._offset = i * 1024;
                 request._done = true;
 
-                auto future = client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.term() == i + 1);
             }
         }
 
         // Verify all requests had the correct Content-Type header for JSON serializer
-        BOOST_TEST(captured_content_types.size() == 9); // 3 iterations * 3 RPC types
+        BOOST_TEST(captured_content_types.size() == 9);  // 3 iterations * 3 RPC types
 
         for (const auto& content_type : captured_content_types) {
             BOOST_TEST(content_type == "application/json");
@@ -330,7 +340,8 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
 
     // Create a simple HTTP server to capture headers and body
     httplib::Server server;
-    std::vector<std::pair<std::string, std::size_t>> captured_content_lengths; // header value, actual body size
+    std::vector<std::pair<std::string, std::size_t>>
+        captured_content_lengths;  // header value, actual body size
 
     // Set up endpoints to capture Content-Length headers and body sizes
     auto capture_content_length = [&](const httplib::Request& req, httplib::Response& res) {
@@ -350,10 +361,13 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_request_vote_request(request_data);
-        res.body = std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})", request_obj.term());
+        res.body =
+            std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})",
+                        request_obj.term());
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req,
+                                               httplib::Response& res) {
         capture_content_length(req, res);
         // Parse the request to get the term and echo it back
         kythira::json_serializer serializer;
@@ -363,26 +377,27 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_append_entries_request(request_data);
-        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})", request_obj.term());
+        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})",
+                               request_obj.term());
     });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        capture_content_length(req, res);
-        // Parse the request to get the term and echo it back
-        kythira::json_serializer serializer;
-        std::vector<std::byte> request_data;
-        request_data.reserve(req.body.size());
-        for (char c : req.body) {
-            request_data.push_back(static_cast<std::byte>(c));
-        }
-        auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
-        res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})", request_obj.term());
-    });
+    server.Post(
+        "/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
+            capture_content_length(req, res);
+            // Parse the request to get the term and echo it back
+            kythira::json_serializer serializer;
+            std::vector<std::byte> request_data;
+            request_data.reserve(req.body.size());
+            for (char c : req.body) {
+                request_data.push_back(static_cast<std::byte>(c));
+            }
+            auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
+            res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})",
+                                   request_obj.term());
+        });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -398,8 +413,8 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Test requests with varying sizes to verify Content-Length accuracy
         for (std::size_t i = 0; i < 3; ++i) {
@@ -434,7 +449,8 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
                     request._entries.push_back(entry);
                 }
 
-                auto future = client.send_append_entries(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_append_entries(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.success() == true);
             }
@@ -454,14 +470,15 @@ BOOST_AUTO_TEST_CASE(property_content_length_for_requests) {
                     request._data.push_back(std::byte{static_cast<unsigned char>('A' + (j % 26))});
                 }
 
-                auto future = client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.term() == i + 1);
             }
         }
 
         // Verify all requests had correct Content-Length headers
-        BOOST_TEST(captured_content_lengths.size() == 9); // 3 iterations * 3 RPC types
+        BOOST_TEST(captured_content_lengths.size() == 9);  // 3 iterations * 3 RPC types
 
         for (const auto& [header_value, actual_size] : captured_content_lengths) {
             BOOST_REQUIRE(!header_value.empty());
@@ -505,11 +522,14 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_request_vote_request(request_data);
-        res.body = std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})", request_obj.term());
+        res.body =
+            std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})",
+                        request_obj.term());
         res.set_header("Content-Type", "application/json");
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
+    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req,
+                                               httplib::Response& res) {
         auto user_agent = req.get_header_value("User-Agent");
         captured_user_agents.push_back(user_agent);
         res.status = 200;
@@ -521,30 +541,31 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_append_entries_request(request_data);
-        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})", request_obj.term());
+        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})",
+                               request_obj.term());
         res.set_header("Content-Type", "application/json");
     });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        auto user_agent = req.get_header_value("User-Agent");
-        captured_user_agents.push_back(user_agent);
-        res.status = 200;
-        // Parse the request to get the term and echo it back
-        kythira::json_serializer serializer;
-        std::vector<std::byte> request_data;
-        request_data.reserve(req.body.size());
-        for (char c : req.body) {
-            request_data.push_back(static_cast<std::byte>(c));
-        }
-        auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
-        res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})", request_obj.term());
-        res.set_header("Content-Type", "application/json");
-    });
+    server.Post(
+        "/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
+            auto user_agent = req.get_header_value("User-Agent");
+            captured_user_agents.push_back(user_agent);
+            res.status = 200;
+            // Parse the request to get the term and echo it back
+            kythira::json_serializer serializer;
+            std::vector<std::byte> request_data;
+            request_data.reserve(req.body.size());
+            for (char c : req.body) {
+                request_data.push_back(static_cast<std::byte>(c));
+            }
+            auto request_obj = serializer.deserialize_install_snapshot_request(request_data);
+            res.body = std::format(R"({{"type":"install_snapshot_response","term":{}}})",
+                                   request_obj.term());
+            res.set_header("Content-Type", "application/json");
+        });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -561,8 +582,8 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Test multiple requests to verify User-Agent is always sent
         for (std::size_t i = 0; i < 3; ++i) {
@@ -588,7 +609,8 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
                 request._prev_log_term = i + 10;
                 request._leader_commit = i + 12;
 
-                auto future = client.send_append_entries(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_append_entries(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.success() == true);
             }
@@ -603,14 +625,15 @@ BOOST_AUTO_TEST_CASE(property_user_agent_for_requests) {
                 request._offset = i * 1024;
                 request._done = true;
 
-                auto future = client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_install_snapshot(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.term() == i + 1);
             }
         }
 
         // Verify all requests had the correct User-Agent header
-        BOOST_TEST(captured_user_agents.size() == 9); // 3 iterations * 3 RPC types
+        BOOST_TEST(captured_user_agents.size() == 9);  // 3 iterations * 3 RPC types
 
         for (const auto& user_agent : captured_user_agents) {
             BOOST_TEST(user_agent == "test-raft-client/1.0");
@@ -662,7 +685,9 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_request_vote_request(request_data);
-        res.body = std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})", request_obj.term());
+        res.body =
+            std::format(R"({{"type":"request_vote_response","term":{},"vote_granted":true}})",
+                        request_obj.term());
         res.set_header("Content-Type", "application/json");
     });
 
@@ -676,14 +701,13 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
             request_data.push_back(static_cast<std::byte>(c));
         }
         auto request_obj = serializer.deserialize_append_entries_request(request_data);
-        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})", request_obj.term());
+        res.body = std::format(R"({{"type":"append_entries_response","term":{},"success":true}})",
+                               request_obj.term());
         res.set_header("Content-Type", "application/json");
     });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -699,8 +723,8 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         // Send multiple requests to the same target in sequence
         // Connection reuse should keep the connection count low
@@ -727,7 +751,8 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
                 request._prev_log_term = i + 10;
                 request._leader_commit = i + 12;
 
-                auto future = client.send_append_entries(1, request, std::chrono::milliseconds{1000});
+                auto future =
+                    client.send_append_entries(1, request, std::chrono::milliseconds{1000});
                 auto response = std::move(future).get();
                 BOOST_TEST(response.success() == true);
             }
@@ -737,11 +762,12 @@ BOOST_AUTO_TEST_CASE(property_connection_reuse) {
         // and depends on HTTP/1.1 keep-alive behavior, which cpp-httplib handles internally.
         // The main verification is that multiple requests complete successfully,
         // indicating the client can handle sequential requests to the same target.
-        BOOST_TEST_MESSAGE("Connection reuse test completed - " << connection_count.load() << " connections tracked");
+        BOOST_TEST_MESSAGE("Connection reuse test completed - " << connection_count.load()
+                                                                << " connections tracked");
 
         // The property we're really testing is that sequential requests to the same
         // target work correctly, which indicates proper connection management
-        BOOST_TEST(true); // Test passes if we reach here without exceptions
+        BOOST_TEST(true);  // Test passes if we reach here without exceptions
 
     } catch (const std::exception& e) {
         BOOST_TEST_MESSAGE("Exception during connection reuse property test: " << e.what());
@@ -775,24 +801,24 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
         res.set_header("Content-Type", "application/json");
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
-        res.status = status_codes_4xx[status_index % status_codes_4xx.size()];
-        status_index++;
-        res.body = R"({"error":"Client error"})";
-        res.set_header("Content-Type", "application/json");
-    });
+    server.Post("/v1/raft/append_entries",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                    res.status = status_codes_4xx[status_index % status_codes_4xx.size()];
+                    status_index++;
+                    res.body = R"({"error":"Client error"})";
+                    res.set_header("Content-Type", "application/json");
+                });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        res.status = status_codes_4xx[status_index % status_codes_4xx.size()];
-        status_index++;
-        res.body = R"({"error":"Client error"})";
-        res.set_header("Content-Type", "application/json");
-    });
+    server.Post("/v1/raft/install_snapshot",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                    res.status = status_codes_4xx[status_index % status_codes_4xx.size()];
+                    status_index++;
+                    res.body = R"({"error":"Client error"})";
+                    res.set_header("Content-Type", "application/json");
+                });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -808,8 +834,8 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         std::size_t client_errors_caught = 0;
 
@@ -843,7 +869,8 @@ BOOST_AUTO_TEST_CASE(property_4xx_produces_client_errors) {
 
         // Verify that errors were detected (either through exceptions or other means)
         // The exact exception type may vary depending on implementation
-        BOOST_TEST_MESSAGE("Client errors caught: " << client_errors_caught << " out of " << status_codes_4xx.size());
+        BOOST_TEST_MESSAGE("Client errors caught: " << client_errors_caught << " out of "
+                                                    << status_codes_4xx.size());
         // Accept any error handling mechanism
         BOOST_TEST(true);
 
@@ -879,24 +906,24 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
         res.set_header("Content-Type", "application/json");
     });
 
-    server.Post("/v1/raft/append_entries", [&](const httplib::Request& req, httplib::Response& res) {
-        res.status = status_codes_5xx[status_index % status_codes_5xx.size()];
-        status_index++;
-        res.body = R"({"error":"Server error"})";
-        res.set_header("Content-Type", "application/json");
-    });
+    server.Post("/v1/raft/append_entries",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                    res.status = status_codes_5xx[status_index % status_codes_5xx.size()];
+                    status_index++;
+                    res.body = R"({"error":"Server error"})";
+                    res.set_header("Content-Type", "application/json");
+                });
 
-    server.Post("/v1/raft/install_snapshot", [&](const httplib::Request& req, httplib::Response& res) {
-        res.status = status_codes_5xx[status_index % status_codes_5xx.size()];
-        status_index++;
-        res.body = R"({"error":"Server error"})";
-        res.set_header("Content-Type", "application/json");
-    });
+    server.Post("/v1/raft/install_snapshot",
+                [&](const httplib::Request& req, httplib::Response& res) {
+                    res.status = status_codes_5xx[status_index % status_codes_5xx.size()];
+                    status_index++;
+                    res.body = R"({"error":"Server error"})";
+                    res.set_header("Content-Type", "application/json");
+                });
 
     // Start server in a thread
-    std::thread server_thread([&]() {
-        server.listen("127.0.0.1", unique_port);
-    });
+    std::thread server_thread([&]() { server.listen("127.0.0.1", unique_port); });
 
     // Give server time to start
     std::this_thread::sleep_for(std::chrono::milliseconds{100});
@@ -912,8 +939,8 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
         std::unordered_map<std::uint64_t, std::string> node_urls;
         node_urls[1] = server_url;
 
-        kythira::cpp_httplib_client<test_transport_types> client(
-            std::move(node_urls), client_config, metrics);
+        kythira::cpp_httplib_client<test_transport_types> client(std::move(node_urls),
+                                                                 client_config, metrics);
 
         std::size_t server_errors_caught = 0;
 
@@ -947,7 +974,8 @@ BOOST_AUTO_TEST_CASE(property_5xx_produces_server_errors) {
 
         // Verify that errors were detected (either through exceptions or other means)
         // The exact exception type may vary depending on implementation
-        BOOST_TEST_MESSAGE("Server errors caught: " << server_errors_caught << " out of " << status_codes_5xx.size());
+        BOOST_TEST_MESSAGE("Server errors caught: " << server_errors_caught << " out of "
+                                                    << status_codes_5xx.size());
         // Accept any error handling mechanism
         BOOST_TEST(true);
 
@@ -1052,14 +1080,16 @@ BOOST_AUTO_TEST_CASE(property_serialization_round_trip) {
         // Handle optional conflict fields
         if (original_resp.conflict_index().has_value()) {
             BOOST_REQUIRE(deserialized.conflict_index().has_value());
-            BOOST_TEST(deserialized.conflict_index().value() == original_resp.conflict_index().value());
+            BOOST_TEST(deserialized.conflict_index().value() ==
+                       original_resp.conflict_index().value());
         } else {
             BOOST_TEST(!deserialized.conflict_index().has_value());
         }
 
         if (original_resp.conflict_term().has_value()) {
             BOOST_REQUIRE(deserialized.conflict_term().has_value());
-            BOOST_TEST(deserialized.conflict_term().value() == original_resp.conflict_term().value());
+            BOOST_TEST(deserialized.conflict_term().value() ==
+                       original_resp.conflict_term().value());
         } else {
             BOOST_TEST(!deserialized.conflict_term().has_value());
         }

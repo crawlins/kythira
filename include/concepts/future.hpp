@@ -20,29 +20,30 @@ template<typename T> class Future;
 
 // Concept for Try types (matches folly::Try interface)
 template<typename T, typename ValueType>
-concept try_type = requires(T t, const T ct) {
-    // Check if contains value (folly naming)
-    { t.hasValue() } -> std::convertible_to<bool>;
+concept try_type =
+    requires(T t, const T ct) {
+        // Check if contains value (folly naming)
+        { t.hasValue() } -> std::convertible_to<bool>;
 
-    // Check if contains exception (folly naming)
-    { t.hasException() } -> std::convertible_to<bool>;
+        // Check if contains exception (folly naming)
+        { t.hasException() } -> std::convertible_to<bool>;
 
-    // Access exception (folly::Try uses exception_wrapper)
-    { t.exception() }; // Returns folly::exception_wrapper or similar
-} && (
-    // Handle void case - no value() method required
-    std::is_void_v<ValueType> || requires(T t, const T ct) {
-        // Access value (throws if contains exception) - proper const correctness
-        { t.value() } -> std::same_as<ValueType&>;
-        { ct.value() } -> std::same_as<const ValueType&>;
-    }
-);
+        // Access exception (folly::Try uses exception_wrapper)
+        { t.exception() };  // Returns folly::exception_wrapper or similar
+    } &&
+    (
+        // Handle void case - no value() method required
+        std::is_void_v<ValueType> || requires(T t, const T ct) {
+            // Access value (throws if contains exception) - proper const correctness
+            { t.value() } -> std::same_as<ValueType&>;
+            { ct.value() } -> std::same_as<const ValueType&>;
+        });
 
 // Concept for Future types (matches folly::Future interface)
 template<typename F, typename T>
 concept future = requires(F f, const F cf) {
     // Get value (blocking) - requires move semantics for proper resource management
-    { std::move(f).get() }; // Returns T for folly::Future<T>
+    { std::move(f).get() };  // Returns T for folly::Future<T>
 
     // Check if ready - const correctness
     { cf.isReady() } -> std::convertible_to<bool>;
@@ -56,33 +57,33 @@ concept future = requires(F f, const F cf) {
     { f.wait(std::chrono::milliseconds{}).isReady() } -> std::convertible_to<bool>;
 };
 
-// Concept for SemiPromise types (matches folly::Promise interface since folly doesn't have separate SemiPromise)
+// Concept for SemiPromise types (matches folly::Promise interface since folly doesn't have separate
+// SemiPromise)
 template<typename P, typename T>
-concept semi_promise = requires(P p, const P cp) {
-    // Check if fulfilled - const correctness
-    { cp.isFulfilled() } -> std::convertible_to<bool>;
+concept semi_promise =
+    requires(P p, const P cp) {
+        // Check if fulfilled - const correctness
+        { cp.isFulfilled() } -> std::convertible_to<bool>;
 
-    // Set exception - use folly::exception_wrapper for compatibility
-    { p.setException(std::declval<folly::exception_wrapper>()) } -> std::same_as<void>;
-} && (
-    // Set value - handle void specialization properly (folly uses Unit instead of void)
-    std::is_void_v<T> ?
-        requires(P p) {
+        // Set exception - use folly::exception_wrapper for compatibility
+        { p.setException(std::declval<folly::exception_wrapper>()) } -> std::same_as<void>;
+    } &&
+    (
+        // Set value - handle void specialization properly (folly uses Unit instead of void)
+        std::is_void_v<T> ? requires(P p) {
             { p.setValue(folly::Unit{}) } -> std::same_as<void>;
-        } :
-        requires(P p, T value) {
+        } : requires(P p, T value) {
             { p.setValue(std::move(value)) } -> std::same_as<void>;
-        }
-);
+        });
 
 // Concept for Promise types (matches folly::Promise interface)
 template<typename P, typename T>
 concept promise = semi_promise<P, T> && requires(P p, const P cp) {
     // Get associated future
-    { p.getFuture() }; // Returns folly::Future<T> or similar
+    { p.getFuture() };  // Returns folly::Future<T> or similar
 
     // Get associated semi-future
-    { p.getSemiFuture() }; // Returns folly::SemiFuture<T> or similar
+    { p.getSemiFuture() };  // Returns folly::SemiFuture<T> or similar
 };
 
 // Concept for Executor types (matches folly::Executor interface)
@@ -116,7 +117,9 @@ concept future_factory = requires() {
     { Factory::makeFuture(std::declval<int>()) } -> future<int>;
 
     // Make future from exception - matches folly::makeExceptionalFuture signature
-    { Factory::template makeExceptionalFuture<int>(std::declval<folly::exception_wrapper>()) } -> future<int>;
+    {
+        Factory::template makeExceptionalFuture<int>(std::declval<folly::exception_wrapper>())
+    } -> future<int>;
 
     // Make ready future - matches folly::makeReadyFuture signature
     { Factory::makeReadyFuture() } -> future<folly::Unit>;
@@ -164,4 +167,4 @@ concept future_transformable = future<F, T> && requires(F f) {
     { f.ensure(std::declval<std::function<void()>>()) } -> future<T>;
 };
 
-} // namespace kythira
+}  // namespace kythira

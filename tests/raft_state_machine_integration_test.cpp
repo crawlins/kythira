@@ -24,23 +24,23 @@
 #include <string>
 
 namespace {
-    // Test constants
-    constexpr std::size_t concurrent_command_count = 10;
+// Test constants
+constexpr std::size_t concurrent_command_count = 10;
 
-    // Helper functions
-    auto make_command(const std::string& cmd) -> std::vector<std::byte> {
-        return {reinterpret_cast<const std::byte*>(cmd.data()),
-                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
-    }
+// Helper functions
+auto make_command(const std::string& cmd) -> std::vector<std::byte> {
+    return {reinterpret_cast<const std::byte*>(cmd.data()),
+            reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
+}
 
-    auto parse_counter_result(const std::vector<std::byte>& result) -> std::int64_t {
-        std::string str(reinterpret_cast<const char*>(result.data()), result.size());
-        return std::stoll(str);
-    }
+auto parse_counter_result(const std::vector<std::byte>& result) -> std::int64_t {
+    std::string str(reinterpret_cast<const char*>(result.data()), result.size());
+    return std::stoll(str);
+}
 
-    auto parse_register_result(const std::vector<std::byte>& result) -> std::string {
-        return std::string(reinterpret_cast<const char*>(result.data()), result.size());
-    }
+auto parse_register_result(const std::vector<std::byte>& result) -> std::string {
+    return std::string(reinterpret_cast<const char*>(result.data()), result.size());
+}
 }
 
 /**
@@ -51,7 +51,7 @@ namespace {
  * - Results from state machine apply are returned to the client
  * - The state machine state is updated correctly
  */
-BOOST_AUTO_TEST_CASE(test_basic_command_application, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_basic_command_application, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Basic command submission and state machine application");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -100,7 +100,7 @@ BOOST_AUTO_TEST_CASE(test_basic_command_application, * boost::unit_test::timeout
  * - State machine sees commands in the correct sequence
  * - Last applied index is updated correctly
  */
-BOOST_AUTO_TEST_CASE(test_sequential_application_order, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_sequential_application_order, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Sequential application order");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -119,7 +119,7 @@ BOOST_AUTO_TEST_CASE(test_sequential_application_order, * boost::unit_test::time
         BOOST_CHECK_EQUAL(state_machine.get_value(), expected_total);
     }
 
-    BOOST_CHECK_EQUAL(state_machine.get_value(), 15); // 1+2+3+4+5
+    BOOST_CHECK_EQUAL(state_machine.get_value(), 15);  // 1+2+3+4+5
 
     BOOST_TEST_MESSAGE("✓ Commands applied in correct sequential order");
 }
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(test_sequential_application_order, * boost::unit_test::time
  * - Results include both value and version
  * - Version is incremented on writes
  */
-BOOST_AUTO_TEST_CASE(test_register_state_machine_operations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_register_state_machine_operations, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Register state machine operations");
 
     using register_sm = kythira::examples::register_state_machine;
@@ -184,7 +184,7 @@ BOOST_AUTO_TEST_CASE(test_register_state_machine_operations, * boost::unit_test:
  * - Exceptions are properly propagated
  * - State machine remains in consistent state after errors
  */
-BOOST_AUTO_TEST_CASE(test_state_machine_error_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_state_machine_error_handling, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: State machine error handling");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -222,7 +222,7 @@ BOOST_AUTO_TEST_CASE(test_state_machine_error_handling, * boost::unit_test::time
  * - restore_from_snapshot restores state correctly
  * - Last applied index is updated on restore
  */
-BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Snapshot and restore");
 
     using counter_sm = kythira::examples::counter_state_machine;
@@ -263,7 +263,7 @@ BOOST_AUTO_TEST_CASE(test_snapshot_and_restore, * boost::unit_test::timeout(30))
  * - Final state is consistent with all operations
  * - Order of application is preserved
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_command_simulation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_command_simulation, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Concurrent command simulation");
 
     using counter_sm = kythira::examples::counter_state_machine;

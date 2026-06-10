@@ -10,35 +10,36 @@ namespace kythira {
 // Network client concept - defines interface for sending RPC requests
 // Each RPC method returns its own specific future type
 template<typename C>
-concept network_client = requires(
-    C client,
-    std::uint64_t target,
-    const kythira::request_vote_request<>& rvr,
-    const kythira::append_entries_request<>& aer,
-    const kythira::install_snapshot_request<>& isr,
-    std::chrono::milliseconds timeout
-) {
-    // Send RequestVote RPC - returns Future<request_vote_response<>>
-    { client.send_request_vote(target, rvr, timeout) }
-        -> std::same_as<kythira::Future<kythira::request_vote_response<>>>;
+concept network_client =
+    requires(C client, std::uint64_t target, const kythira::request_vote_request<>& rvr,
+             const kythira::append_entries_request<>& aer,
+             const kythira::install_snapshot_request<>& isr, std::chrono::milliseconds timeout) {
+        // Send RequestVote RPC - returns Future<request_vote_response<>>
+        {
+            client.send_request_vote(target, rvr, timeout)
+        } -> std::same_as<kythira::Future<kythira::request_vote_response<>>>;
 
-    // Send AppendEntries RPC - returns Future<append_entries_response<>>
-    { client.send_append_entries(target, aer, timeout) }
-        -> std::same_as<kythira::Future<kythira::append_entries_response<>>>;
+        // Send AppendEntries RPC - returns Future<append_entries_response<>>
+        {
+            client.send_append_entries(target, aer, timeout)
+        } -> std::same_as<kythira::Future<kythira::append_entries_response<>>>;
 
-    // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
-    { client.send_install_snapshot(target, isr, timeout) }
-        -> std::same_as<kythira::Future<kythira::install_snapshot_response<>>>;
-};
+        // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
+        {
+            client.send_install_snapshot(target, isr, timeout)
+        } -> std::same_as<kythira::Future<kythira::install_snapshot_response<>>>;
+    };
 
 // Network server concept - defines interface for receiving RPC requests
 template<typename S>
 concept network_server = requires(
     S server,
-    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> rv_handler,
-    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)> ae_handler,
-    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)> is_handler
-) {
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
+        rv_handler,
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+        ae_handler,
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+        is_handler) {
     // Register RPC handlers
     { server.register_request_vote_handler(rv_handler) } -> std::same_as<void>;
     { server.register_append_entries_handler(ae_handler) } -> std::same_as<void>;
@@ -50,4 +51,4 @@ concept network_server = requires(
     { server.is_running() } -> std::convertible_to<bool>;
 };
 
-} // namespace kythira
+}  // namespace kythira

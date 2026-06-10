@@ -11,12 +11,12 @@
 using namespace std;
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::size_t min_cluster_size = 3;
-    constexpr std::size_t max_cluster_size = 9;
-    constexpr std::size_t test_iterations = 30;
-    constexpr std::size_t min_log_entries = 1;
-    constexpr std::size_t max_log_entries = 10;
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::size_t min_cluster_size = 3;
+constexpr std::size_t max_cluster_size = 9;
+constexpr std::size_t test_iterations = 30;
+constexpr std::size_t min_log_entries = 1;
+constexpr std::size_t max_log_entries = 10;
 }
 
 // Simplified types for testing the property
@@ -32,8 +32,7 @@ private:
     std::unordered_map<LogIndex, std::unordered_set<NodeId>> _acknowledgments;
 
 public:
-    explicit CommitIndexManager(std::size_t cluster_size)
-        : _cluster_size(cluster_size) {}
+    explicit CommitIndexManager(std::size_t cluster_size) : _cluster_size(cluster_size) {}
 
     // Record an acknowledgment from a follower for a specific log entry
     void record_acknowledgment(LogIndex log_index, NodeId follower_id) {
@@ -42,9 +41,7 @@ public:
     }
 
     // Get current commit index
-    LogIndex get_commit_index() const {
-        return _commit_index;
-    }
+    LogIndex get_commit_index() const { return _commit_index; }
 
     // Get the number of acknowledgments for a log entry (including leader)
     std::size_t get_acknowledgment_count(LogIndex log_index) const {
@@ -85,7 +82,8 @@ private:
         // Get all acknowledged entries in order
         auto acknowledged_entries = get_acknowledged_entries();
 
-        for (LogIndex log_index = _commit_index + 1; log_index <= acknowledged_entries.back(); ++log_index) {
+        for (LogIndex log_index = _commit_index + 1; log_index <= acknowledged_entries.back();
+             ++log_index) {
             if (has_majority_acknowledgment(log_index)) {
                 new_commit_index = log_index;
             } else {
@@ -101,31 +99,34 @@ private:
 /**
  * **Feature: raft-completion, Property 28: Majority Commit Index Advancement**
  *
- * Property: For any entry acknowledged by majority of followers, the commit index advances to include that entry.
+ * Property: For any entry acknowledged by majority of followers, the commit index advances to
+ * include that entry.
  * **Validates: Requirements 6.2**
  */
-BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test,
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
     std::uniform_int_distribution<std::size_t> entry_count_dist(min_log_entries, max_log_entries);
-    std::uniform_int_distribution<int> ack_rate_dist(60, 100); // percentage
+    std::uniform_int_distribution<int> ack_rate_dist(60, 100);  // percentage
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++; // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
 
-        const std::size_t follower_count = cluster_size - 1; // Exclude leader
+        const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t majority_needed = (cluster_size / 2) + 1;
         const std::size_t entry_count = entry_count_dist(gen);
 
         BOOST_TEST_MESSAGE("Testing cluster size: " << cluster_size
-                          << ", majority needed: " << majority_needed
-                          << ", followers: " << follower_count
-                          << ", log entries: " << entry_count);
+                                                    << ", majority needed: " << majority_needed
+                                                    << ", followers: " << follower_count
+                                                    << ", log entries: " << entry_count);
 
         // Create follower IDs (leader is ID 1, followers are 2, 3, 4, ...)
         std::vector<NodeId> follower_ids;
@@ -144,7 +145,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
             BOOST_TEST_MESSAGE("Processing log entry " << log_index);
 
             // Simulate acknowledgments from followers
-            std::size_t ack_count = 1; // Leader always acknowledges implicitly
+            std::size_t ack_count = 1;  // Leader always acknowledges implicitly
             std::vector<NodeId> acknowledging_followers;
 
             for (const auto& follower_id : follower_ids) {
@@ -155,13 +156,16 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
                     manager.record_acknowledgment(log_index, follower_id);
                     acknowledging_followers.push_back(follower_id);
                     ack_count++;
-                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry " << log_index);
+                    BOOST_TEST_MESSAGE("  Follower " << follower_id << " acknowledged entry "
+                                                     << log_index);
                 }
             }
 
-            BOOST_TEST_MESSAGE("  Entry " << log_index << " has " << ack_count << " acknowledgments");
+            BOOST_TEST_MESSAGE("  Entry " << log_index << " has " << ack_count
+                                          << " acknowledgments");
 
-            // Property 1: Commit index should advance if this entry has majority and all previous entries are committed
+            // Property 1: Commit index should advance if this entry has majority and all previous
+            // entries are committed
             const bool has_majority = ack_count >= majority_needed;
             const bool can_advance = has_majority && (log_index == expected_commit_index + 1);
 
@@ -185,13 +189,13 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
             if (manager.has_majority_acknowledgment(log_index)) {
                 final_expected_commit = log_index;
             } else {
-                break; // Can't advance past an entry without majority
+                break;  // Can't advance past an entry without majority
             }
         }
 
         BOOST_CHECK_EQUAL(manager.get_commit_index(), final_expected_commit);
         BOOST_TEST_MESSAGE("Final commit index: " << manager.get_commit_index()
-                          << ", expected: " << final_expected_commit);
+                                                  << ", expected: " << final_expected_commit);
     }
 
     // Test edge cases
@@ -202,7 +206,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
         CommitIndexManager single_manager(1);
 
         // Leader implicitly acknowledges, so entry should be committed immediately
-        single_manager.record_acknowledgment(1, 999); // Any follower ID (won't affect single node)
+        single_manager.record_acknowledgment(1, 999);  // Any follower ID (won't affect single node)
 
         // Property: Single node cluster should commit immediately (leader is majority)
         BOOST_CHECK_EQUAL(single_manager.get_commit_index(), 1);
@@ -213,21 +217,22 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
     // Test three node cluster with exact majority
     {
         const std::size_t cluster_size = 3;
-        const std::size_t majority_needed = 2; // (3/2) + 1 = 2
+        const std::size_t majority_needed = 2;  // (3/2) + 1 = 2
         CommitIndexManager three_manager(cluster_size);
 
         // Test entry with exactly majority acknowledgments
-        three_manager.record_acknowledgment(1, 2); // One follower acknowledges (leader + 1 follower = 2)
+        three_manager.record_acknowledgment(
+            1, 2);  // One follower acknowledges (leader + 1 follower = 2)
 
-        BOOST_CHECK_EQUAL(three_manager.get_acknowledgment_count(1), 2); // Leader + 1 follower
+        BOOST_CHECK_EQUAL(three_manager.get_acknowledgment_count(1), 2);  // Leader + 1 follower
         BOOST_CHECK(three_manager.has_majority_acknowledgment(1));
         BOOST_CHECK_EQUAL(three_manager.get_commit_index(), 1);
 
         // Test entry with less than majority
         // Don't record any acknowledgments for entry 2 (only leader = 1, need 2)
-        BOOST_CHECK_EQUAL(three_manager.get_acknowledgment_count(2), 1); // Only leader
+        BOOST_CHECK_EQUAL(three_manager.get_acknowledgment_count(2), 1);  // Only leader
         BOOST_CHECK(!three_manager.has_majority_acknowledgment(2));
-        BOOST_CHECK_EQUAL(three_manager.get_commit_index(), 1); // Should not advance
+        BOOST_CHECK_EQUAL(three_manager.get_commit_index(), 1);  // Should not advance
 
         BOOST_TEST_MESSAGE("✓ Three node exact majority test passed");
     }
@@ -254,7 +259,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
         BOOST_CHECK(gap_manager.has_majority_acknowledgment(1));
         BOOST_CHECK(!gap_manager.has_majority_acknowledgment(2));
         BOOST_CHECK(gap_manager.has_majority_acknowledgment(3));
-        BOOST_CHECK_EQUAL(gap_manager.get_commit_index(), 1); // Should stop at entry 1
+        BOOST_CHECK_EQUAL(gap_manager.get_commit_index(), 1);  // Should stop at entry 1
 
         BOOST_TEST_MESSAGE("✓ Commit index gap handling test passed");
     }
@@ -277,7 +282,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
             BOOST_CHECK(sequential_manager.has_majority_acknowledgment(log_index));
 
             BOOST_TEST_MESSAGE("Entry " << log_index << " committed, commit index: "
-                              << sequential_manager.get_commit_index());
+                                        << sequential_manager.get_commit_index());
         }
 
         BOOST_CHECK_EQUAL(sequential_manager.get_commit_index(), entry_count);
@@ -287,7 +292,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
     // Test large cluster behavior
     {
         const std::size_t large_cluster_size = 9;
-        const std::size_t majority_needed = 5; // (9/2) + 1 = 5
+        const std::size_t majority_needed = 5;  // (9/2) + 1 = 5
         CommitIndexManager large_manager(large_cluster_size);
 
         // Test with exactly majority acknowledgments
@@ -295,7 +300,7 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
             large_manager.record_acknowledgment(1, follower_id);
         }
 
-        BOOST_CHECK_EQUAL(large_manager.get_acknowledgment_count(1), 5); // Leader + 4 followers
+        BOOST_CHECK_EQUAL(large_manager.get_acknowledgment_count(1), 5);  // Leader + 4 followers
         BOOST_CHECK(large_manager.has_majority_acknowledgment(1));
         BOOST_CHECK_EQUAL(large_manager.get_commit_index(), 1);
 
@@ -304,9 +309,9 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
             large_manager.record_acknowledgment(2, follower_id);
         }
 
-        BOOST_CHECK_EQUAL(large_manager.get_acknowledgment_count(2), 4); // Leader + 3 followers
+        BOOST_CHECK_EQUAL(large_manager.get_acknowledgment_count(2), 4);  // Leader + 3 followers
         BOOST_CHECK(!large_manager.has_majority_acknowledgment(2));
-        BOOST_CHECK_EQUAL(large_manager.get_commit_index(), 1); // Should not advance
+        BOOST_CHECK_EQUAL(large_manager.get_commit_index(), 1);  // Should not advance
 
         BOOST_TEST_MESSAGE("✓ Large cluster behavior test passed");
     }
@@ -318,13 +323,13 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
 
         // Test various acknowledgment counts
         std::vector<std::pair<LogIndex, std::vector<NodeId>>> test_cases = {
-            {1, {}}, // Only leader
-            {2, {2}}, // Leader + 1 follower
-            {3, {2, 3}}, // Leader + 2 followers
-            {4, {2, 3, 4}}, // Leader + 3 followers
-            {5, {2, 3, 4, 5}}, // Leader + 4 followers (majority)
-            {6, {2, 3, 4, 5, 6}}, // Leader + 5 followers
-            {7, {2, 3, 4, 5, 6, 7}} // Leader + 6 followers (all)
+            {1, {}},                 // Only leader
+            {2, {2}},                // Leader + 1 follower
+            {3, {2, 3}},             // Leader + 2 followers
+            {4, {2, 3, 4}},          // Leader + 3 followers
+            {5, {2, 3, 4, 5}},       // Leader + 4 followers (majority)
+            {6, {2, 3, 4, 5, 6}},    // Leader + 5 followers
+            {7, {2, 3, 4, 5, 6, 7}}  // Leader + 6 followers (all)
         };
 
         for (const auto& [log_index, followers] : test_cases) {
@@ -332,18 +337,21 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test, * boo
                 count_manager.record_acknowledgment(log_index, follower_id);
             }
 
-            const std::size_t expected_count = followers.size() + 1; // +1 for leader
-            const bool should_have_majority = expected_count >= 4; // Majority of 7 is 4
+            const std::size_t expected_count = followers.size() + 1;  // +1 for leader
+            const bool should_have_majority = expected_count >= 4;    // Majority of 7 is 4
 
             BOOST_CHECK_EQUAL(count_manager.get_acknowledgment_count(log_index), expected_count);
-            BOOST_CHECK_EQUAL(count_manager.has_majority_acknowledgment(log_index), should_have_majority);
+            BOOST_CHECK_EQUAL(count_manager.has_majority_acknowledgment(log_index),
+                              should_have_majority);
 
             BOOST_TEST_MESSAGE("Entry " << log_index << ": " << expected_count
-                              << " acknowledgments, majority: " << (should_have_majority ? "YES" : "NO"));
+                                        << " acknowledgments, majority: "
+                                        << (should_have_majority ? "YES" : "NO"));
         }
 
         // Property: Only entries 5, 6, 7 should be committed (have majority)
-        BOOST_CHECK_EQUAL(count_manager.get_commit_index(), 0); // No sequential majority from entry 1
+        BOOST_CHECK_EQUAL(count_manager.get_commit_index(),
+                          0);  // No sequential majority from entry 1
 
         BOOST_TEST_MESSAGE("✓ Acknowledgment count accuracy test passed");
     }

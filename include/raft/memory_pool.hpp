@@ -31,31 +31,27 @@ struct memory_pool_metrics {
 
 // Memory leak information structure
 struct memory_leak_info {
-    void* address{nullptr};              // Address of leaked memory
-    std::size_t size{0};                 // Size of allocation
+    void* address{nullptr};  // Address of leaked memory
+    std::size_t size{0};     // Size of allocation
     std::chrono::steady_clock::time_point allocation_time;
-    std::string allocation_context;      // Stack trace or context info
-    std::chrono::seconds age;            // Age of allocation
-    std::string thread_id;               // Thread that allocated
+    std::string allocation_context;  // Stack trace or context info
+    std::chrono::seconds age;        // Age of allocation
+    std::string thread_id;           // Thread that allocated
 };
 
 // Memory block structure for fixed-size block allocation
 struct memory_block {
-    std::byte* data{nullptr};            // Pointer to block data
-    std::size_t size{0};                 // Size of the block
-    bool is_free{true};                  // Whether block is available
+    std::byte* data{nullptr};  // Pointer to block data
+    std::size_t size{0};       // Size of the block
+    bool is_free{true};        // Whether block is available
     std::chrono::steady_clock::time_point allocation_time;
-    std::string allocation_context;      // Context info for leak detection
-    std::string thread_id;               // Thread ID that allocated
+    std::string allocation_context;  // Context info for leak detection
+    std::string thread_id;           // Thread ID that allocated
 
     memory_block() = default;
 
     memory_block(std::byte* ptr, std::size_t sz)
-        : data(ptr)
-        , size(sz)
-        , is_free(true)
-        , allocation_time(std::chrono::steady_clock::now())
-    {}
+        : data(ptr), size(sz), is_free(true), allocation_time(std::chrono::steady_clock::now()) {}
 };
 
 // Memory pool class with fixed-size block allocation
@@ -66,14 +62,13 @@ public:
                 std::chrono::seconds reset_interval = std::chrono::seconds{0},
                 bool enable_leak_detection = false,
                 std::chrono::seconds leak_threshold = std::chrono::seconds{60})
-        : _pool_size(pool_size)
-        , _block_size(block_size)
-        , _pool_memory(pool_size)
-        , _reset_interval(reset_interval)
-        , _periodic_reset_enabled(reset_interval.count() > 0)
-        , _leak_detection_enabled(enable_leak_detection)
-        , _leak_threshold(leak_threshold)
-    {
+        : _pool_size(pool_size),
+          _block_size(block_size),
+          _pool_memory(pool_size),
+          _reset_interval(reset_interval),
+          _periodic_reset_enabled(reset_interval.count() > 0),
+          _leak_detection_enabled(enable_leak_detection),
+          _leak_threshold(leak_threshold) {
         _metrics.total_size = pool_size;
         _metrics.free_size = pool_size;
         _metrics.last_reset = std::chrono::steady_clock::now();
@@ -118,7 +113,7 @@ public:
 
         // Find a free block
         if (_free_blocks.empty()) {
-            return nullptr; // Pool exhausted
+            return nullptr;  // Pool exhausted
         }
 
         // Get a free block from the front
@@ -166,7 +161,7 @@ public:
         // Check if this is a valid allocation
         auto it = _allocations.find(ptr);
         if (it == _allocations.end()) {
-            return; // Not a valid allocation from this pool
+            return;  // Not a valid allocation from this pool
         }
 
         // Remove from allocations
@@ -202,7 +197,8 @@ public:
     }
 
     // Enable or disable periodic reset
-    auto set_periodic_reset(bool enabled, std::chrono::seconds interval = std::chrono::seconds{300}) -> void {
+    auto set_periodic_reset(bool enabled, std::chrono::seconds interval = std::chrono::seconds{300})
+        -> void {
         std::unique_lock<std::shared_mutex> lock(_mutex);
 
         if (enabled && !_periodic_reset_enabled) {
@@ -239,8 +235,8 @@ public:
             std::size_t used_blocks = _allocations.size();
             std::size_t total_blocks = _pool_size / _block_size;
             if (total_blocks > 0) {
-                metrics.fragmentation_ratio =
-                    static_cast<std::size_t>((1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
+                metrics.fragmentation_ratio = static_cast<std::size_t>(
+                    (1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
             }
         }
 
@@ -273,7 +269,8 @@ public:
                         leak.allocation_context = info.context;
                         leak.thread_id = info.thread_id;
                     } else {
-                        leak.allocation_context = "Long-lived allocation detected (enable leak detection for details)";
+                        leak.allocation_context =
+                            "Long-lived allocation detected (enable leak detection for details)";
                         leak.thread_id = "unknown";
                     }
 
@@ -286,7 +283,8 @@ public:
     }
 
     // Enable or disable leak detection
-    auto set_leak_detection(bool enabled, std::chrono::seconds threshold = std::chrono::seconds{60}) -> void {
+    auto set_leak_detection(bool enabled, std::chrono::seconds threshold = std::chrono::seconds{60})
+        -> void {
         std::unique_lock<std::shared_mutex> lock(_mutex);
         _leak_detection_enabled = enabled;
         _leak_threshold = threshold;
@@ -387,9 +385,8 @@ private:
             std::unique_lock<std::shared_mutex> lock(_mutex);
 
             // Wait for reset interval or shutdown
-            _reset_cv.wait_for(lock, _reset_interval, [this]() {
-                return _shutdown || !_periodic_reset_enabled;
-            });
+            _reset_cv.wait_for(lock, _reset_interval,
+                               [this]() { return _shutdown || !_periodic_reset_enabled; });
 
             if (_shutdown) {
                 break;
@@ -440,10 +437,7 @@ private:
 // RAII guard for automatic memory pool cleanup
 class memory_pool_guard {
 public:
-    memory_pool_guard(memory_pool& pool, void* ptr)
-        : _pool(pool)
-        , _ptr(ptr)
-    {}
+    memory_pool_guard(memory_pool& pool, void* ptr) : _pool(pool), _ptr(ptr) {}
 
     ~memory_pool_guard() {
         if (_ptr) {
@@ -456,10 +450,7 @@ public:
     memory_pool_guard& operator=(const memory_pool_guard&) = delete;
 
     // Enable move
-    memory_pool_guard(memory_pool_guard&& other) noexcept
-        : _pool(other._pool)
-        , _ptr(other._ptr)
-    {
+    memory_pool_guard(memory_pool_guard&& other) noexcept : _pool(other._pool), _ptr(other._ptr) {
         other._ptr = nullptr;
     }
 
@@ -487,9 +478,10 @@ private:
 };
 
 // Implementation of allocate_guarded
-inline auto memory_pool::allocate_guarded(std::size_t size, const std::string& context) -> memory_pool_guard {
+inline auto memory_pool::allocate_guarded(std::size_t size, const std::string& context)
+    -> memory_pool_guard {
     void* ptr = allocate(size, context);
     return memory_pool_guard(*this, ptr);
 }
 
-} // namespace kythira
+}  // namespace kythira

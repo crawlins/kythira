@@ -8,7 +8,7 @@
 using namespace network_simulator;
 
 // Test that various types satisfy the address concept
-BOOST_AUTO_TEST_CASE(test_address_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_address_concept, *boost::unit_test::timeout(15)) {
     // std::string should satisfy address concept
     static_assert(address<std::string>, "std::string should satisfy address concept");
 
@@ -25,7 +25,7 @@ BOOST_AUTO_TEST_CASE(test_address_concept, * boost::unit_test::timeout(15)) {
 }
 
 // Test that various types satisfy the port concept
-BOOST_AUTO_TEST_CASE(test_port_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_port_concept, *boost::unit_test::timeout(15)) {
     // unsigned short should satisfy port concept
     static_assert(port<unsigned short>, "unsigned short should satisfy port concept");
 
@@ -37,29 +37,24 @@ BOOST_AUTO_TEST_CASE(test_port_concept, * boost::unit_test::timeout(15)) {
 
 // Test constants
 namespace {
-    constexpr const char* test_src_addr = "192.168.1.1";
-    constexpr unsigned short test_src_port = 8080;
-    constexpr const char* test_dst_addr = "192.168.1.2";
-    constexpr unsigned short test_dst_port = 9090;
-    constexpr const char* test_payload_str = "Hello, World!";
-    constexpr auto test_latency = std::chrono::milliseconds{100};
-    constexpr double test_reliability = 0.95;
+constexpr const char* test_src_addr = "192.168.1.1";
+constexpr unsigned short test_src_port = 8080;
+constexpr const char* test_dst_addr = "192.168.1.2";
+constexpr unsigned short test_dst_port = 9090;
+constexpr const char* test_payload_str = "Hello, World!";
+constexpr auto test_latency = std::chrono::milliseconds{100};
+constexpr double test_reliability = 0.95;
 }
 
 // Test Message type
-BOOST_AUTO_TEST_CASE(test_message_type, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_message_type, *boost::unit_test::timeout(15)) {
     std::vector<std::byte> payload;
     for (char c : std::string(test_payload_str)) {
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    Message<DefaultNetworkTypes> msg(
-        test_src_addr,
-        test_src_port,
-        test_dst_addr,
-        test_dst_port,
-        payload
-    );
+    Message<DefaultNetworkTypes> msg(test_src_addr, test_src_port, test_dst_addr, test_dst_port,
+                                     payload);
 
     BOOST_TEST(msg.source_address() == test_src_addr);
     BOOST_TEST(msg.source_port() == test_src_port);
@@ -69,7 +64,7 @@ BOOST_AUTO_TEST_CASE(test_message_type, * boost::unit_test::timeout(15)) {
 }
 
 // Test NetworkEdge type
-BOOST_AUTO_TEST_CASE(test_network_edge_type, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_network_edge_type, *boost::unit_test::timeout(15)) {
     NetworkEdge edge(test_latency, test_reliability);
 
     BOOST_TEST(edge.latency() == test_latency);
@@ -80,7 +75,7 @@ BOOST_AUTO_TEST_CASE(test_network_edge_type, * boost::unit_test::timeout(15)) {
 }
 
 // Test Endpoint type
-BOOST_AUTO_TEST_CASE(test_endpoint_type, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_endpoint_type, *boost::unit_test::timeout(15)) {
     Endpoint<DefaultNetworkTypes> ep1(test_src_addr, test_src_port);
     Endpoint<DefaultNetworkTypes> ep2(test_src_addr, test_src_port);
     Endpoint<DefaultNetworkTypes> ep3(test_dst_addr, test_src_port);
@@ -98,7 +93,7 @@ BOOST_AUTO_TEST_CASE(test_endpoint_type, * boost::unit_test::timeout(15)) {
 }
 
 // Test IPv4Address wrapper
-BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper, *boost::unit_test::timeout(15)) {
     in_addr addr1{};
     addr1.s_addr = htonl(0xC0A80101);  // 192.168.1.1
 
@@ -124,7 +119,7 @@ BOOST_AUTO_TEST_CASE(test_ipv4_address_wrapper, * boost::unit_test::timeout(15))
 }
 
 // Test IPv6Address wrapper
-BOOST_AUTO_TEST_CASE(test_ipv6_address_wrapper, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_ipv6_address_wrapper, *boost::unit_test::timeout(15)) {
     in6_addr addr1{};
     addr1.s6_addr[0] = 0x20;
     addr1.s6_addr[1] = 0x01;
@@ -156,11 +151,14 @@ BOOST_AUTO_TEST_CASE(test_ipv6_address_wrapper, * boost::unit_test::timeout(15))
 }
 
 // Test SimpleFuture type satisfies future concept
-BOOST_AUTO_TEST_CASE(test_simple_future_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_simple_future_concept, *boost::unit_test::timeout(15)) {
     // Test that SimpleFuture satisfies the future concept
-    static_assert(future<SimpleFuture<bool>, bool>, "SimpleFuture<bool> should satisfy future concept");
-    static_assert(future<SimpleFuture<int>, int>, "SimpleFuture<int> should satisfy future concept");
-    static_assert(future<SimpleFuture<std::string>, std::string>, "SimpleFuture<std::string> should satisfy future concept");
+    static_assert(future<SimpleFuture<bool>, bool>,
+                  "SimpleFuture<bool> should satisfy future concept");
+    static_assert(future<SimpleFuture<int>, int>,
+                  "SimpleFuture<int> should satisfy future concept");
+    static_assert(future<SimpleFuture<std::string>, std::string>,
+                  "SimpleFuture<std::string> should satisfy future concept");
 
     // Test basic functionality
     SimpleFuture<int> fut(42);
@@ -173,7 +171,7 @@ BOOST_AUTO_TEST_CASE(test_simple_future_concept, * boost::unit_test::timeout(15)
 }
 
 // Test Message concept satisfaction
-BOOST_AUTO_TEST_CASE(test_message_concept_satisfaction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_message_concept_satisfaction, *boost::unit_test::timeout(15)) {
     using TestMessage = Message<DefaultNetworkTypes>;
 
     // Verify Message satisfies the message concept
@@ -184,7 +182,7 @@ BOOST_AUTO_TEST_CASE(test_message_concept_satisfaction, * boost::unit_test::time
 }
 
 // Test DefaultNetworkTypes satisfies network_simulator_types concept
-BOOST_AUTO_TEST_CASE(test_default_network_types_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_default_network_types_concept, *boost::unit_test::timeout(15)) {
     // This is the main test for the network_simulator_types concept
     static_assert(network_simulator_types<DefaultNetworkTypes>,
                   "DefaultNetworkTypes should satisfy network_simulator_types concept");
@@ -199,13 +197,16 @@ BOOST_AUTO_TEST_CASE(test_default_network_types_concept, * boost::unit_test::tim
     static_assert(future<DefaultNetworkTypes::future_bool_type, bool>,
                   "DefaultNetworkTypes::future_bool_type should satisfy future concept");
 
-    static_assert(future<DefaultNetworkTypes::future_message_type, DefaultNetworkTypes::message_type>,
-                  "DefaultNetworkTypes::future_message_type should satisfy future concept");
+    static_assert(
+        future<DefaultNetworkTypes::future_message_type, DefaultNetworkTypes::message_type>,
+        "DefaultNetworkTypes::future_message_type should satisfy future concept");
 
-    static_assert(future<DefaultNetworkTypes::future_connection_type, std::shared_ptr<DefaultNetworkTypes::connection_type>>,
+    static_assert(future<DefaultNetworkTypes::future_connection_type,
+                         std::shared_ptr<DefaultNetworkTypes::connection_type>>,
                   "DefaultNetworkTypes::future_connection_type should satisfy future concept");
 
-    static_assert(future<DefaultNetworkTypes::future_listener_type, std::shared_ptr<DefaultNetworkTypes::listener_type>>,
+    static_assert(future<DefaultNetworkTypes::future_listener_type,
+                         std::shared_ptr<DefaultNetworkTypes::listener_type>>,
                   "DefaultNetworkTypes::future_listener_type should satisfy future concept");
 
     static_assert(future<DefaultNetworkTypes::future_bytes_type, std::vector<std::byte>>,
@@ -215,7 +216,7 @@ BOOST_AUTO_TEST_CASE(test_default_network_types_concept, * boost::unit_test::tim
 }
 
 // Test alternative Types implementation with different address/port types
-BOOST_AUTO_TEST_CASE(test_alternative_types_concept, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_alternative_types_concept, *boost::unit_test::timeout(15)) {
     // Define an alternative Types implementation using IPv4 addresses and string ports
     struct IPv4NetworkTypes {
         using address_type = IPv4Address;
@@ -240,7 +241,7 @@ BOOST_AUTO_TEST_CASE(test_alternative_types_concept, * boost::unit_test::timeout
 }
 
 // Test that in_addr and in6_addr satisfy address concept through wrappers
-BOOST_AUTO_TEST_CASE(test_native_address_types, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_native_address_types, *boost::unit_test::timeout(15)) {
     // Test that the raw types don't satisfy the concept (they lack hash specialization)
     // but our wrappers do
     static_assert(address<IPv4Address>, "IPv4Address wrapper should satisfy address concept");

@@ -21,13 +21,13 @@
 #include <set>
 
 namespace {
-    // Test constants
-    constexpr std::size_t small_cluster_size = 3;
-    constexpr std::size_t medium_cluster_size = 5;
-    constexpr std::size_t large_cluster_size = 7;
-    constexpr auto short_timeout = std::chrono::milliseconds(100);
-    constexpr auto medium_timeout = std::chrono::milliseconds(500);
-    constexpr auto long_timeout = std::chrono::milliseconds(1000);
+// Test constants
+constexpr std::size_t small_cluster_size = 3;
+constexpr std::size_t medium_cluster_size = 5;
+constexpr std::size_t large_cluster_size = 7;
+constexpr auto short_timeout = std::chrono::milliseconds(100);
+constexpr auto medium_timeout = std::chrono::milliseconds(500);
+constexpr auto long_timeout = std::chrono::milliseconds(1000);
 }
 
 /**
@@ -35,7 +35,7 @@ namespace {
  *
  * Validates: Requirements 1.1, 1.2
  */
-BOOST_AUTO_TEST_CASE(test_fixture_initialization, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_fixture_initialization, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Fixture initialization with different cluster sizes");
 
     // Test 1: Initialize 3-node cluster
@@ -85,10 +85,8 @@ BOOST_AUTO_TEST_CASE(test_fixture_initialization, * boost::unit_test::timeout(30
         kythira::test::cluster_config config;
         config.node_count = 4;  // Even number - invalid
 
-        BOOST_CHECK_THROW(
-            kythira::test::raft_multi_node_fixture fixture(config),
-            std::invalid_argument
-        );
+        BOOST_CHECK_THROW(kythira::test::raft_multi_node_fixture fixture(config),
+                          std::invalid_argument);
     }
 
     // Test 5: Invalid cluster size (too small) should throw
@@ -96,10 +94,8 @@ BOOST_AUTO_TEST_CASE(test_fixture_initialization, * boost::unit_test::timeout(30
         kythira::test::cluster_config config;
         config.node_count = 1;  // Too small
 
-        BOOST_CHECK_THROW(
-            kythira::test::raft_multi_node_fixture fixture(config),
-            std::invalid_argument
-        );
+        BOOST_CHECK_THROW(kythira::test::raft_multi_node_fixture fixture(config),
+                          std::invalid_argument);
     }
 
     BOOST_TEST_MESSAGE("✓ Fixture initialization works correctly");
@@ -110,7 +106,7 @@ BOOST_AUTO_TEST_CASE(test_fixture_initialization, * boost::unit_test::timeout(30
  *
  * Validates: Requirements 1.3, 2.1
  */
-BOOST_AUTO_TEST_CASE(test_node_lifecycle_management, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_node_lifecycle_management, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Node lifecycle management");
 
     kythira::test::cluster_config config;
@@ -163,7 +159,7 @@ BOOST_AUTO_TEST_CASE(test_node_lifecycle_management, * boost::unit_test::timeout
  *
  * Validates: Requirements 1.2, 2.1
  */
-BOOST_AUTO_TEST_CASE(test_network_topology_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_topology_configuration, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Network topology configuration");
 
     kythira::test::cluster_config config;
@@ -197,7 +193,7 @@ BOOST_AUTO_TEST_CASE(test_network_topology_configuration, * boost::unit_test::ti
  *
  * Validates: Requirements 1.2, 2.1
  */
-BOOST_AUTO_TEST_CASE(test_network_partition_simulation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_partition_simulation, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Network partition simulation");
 
     kythira::test::cluster_config config;
@@ -229,7 +225,7 @@ BOOST_AUTO_TEST_CASE(test_network_partition_simulation, * boost::unit_test::time
  *
  * Validates: Requirements 1.3, 2.1
  */
-BOOST_AUTO_TEST_CASE(test_time_advancement, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_time_advancement, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Time advancement and timeout triggers");
 
     kythira::test::cluster_config config;
@@ -261,7 +257,7 @@ BOOST_AUTO_TEST_CASE(test_time_advancement, * boost::unit_test::timeout(30)) {
  *
  * Validates: Requirements 1.1, 1.2
  */
-BOOST_AUTO_TEST_CASE(test_cluster_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cluster_configuration, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Cluster configuration management");
 
     kythira::test::cluster_config config;
@@ -293,7 +289,7 @@ BOOST_AUTO_TEST_CASE(test_cluster_configuration, * boost::unit_test::timeout(30)
  *
  * Validates: Requirements 1.3
  */
-BOOST_AUTO_TEST_CASE(test_fixture_cleanup, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_fixture_cleanup, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Fixture cleanup and resource management");
 
     kythira::test::cluster_config config;

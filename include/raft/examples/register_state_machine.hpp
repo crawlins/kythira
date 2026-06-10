@@ -70,4 +70,4 @@ private:
     }
 };
 
-} // namespace kythira::examples
+}  // namespace kythira::examples

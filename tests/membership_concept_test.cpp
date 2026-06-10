@@ -3,8 +3,7 @@
 #include <cstdint>
 
 // Test implementation that satisfies the membership_manager concept
-template<typename NodeId = std::uint64_t>
-class test_membership_manager {
+template<typename NodeId = std::uint64_t> class test_membership_manager {
 public:
     auto validate_new_node(const NodeId& node) -> bool {
         // Basic validation - always accept for testing
@@ -16,10 +15,9 @@ public:
         return true;
     }
 
-    auto create_joint_configuration(
-        const kythira::cluster_configuration<NodeId>& old_config,
-        const kythira::cluster_configuration<NodeId>& new_config
-    ) -> kythira::cluster_configuration<NodeId> {
+    auto create_joint_configuration(const kythira::cluster_configuration<NodeId>& old_config,
+                                    const kythira::cluster_configuration<NodeId>& new_config)
+        -> kythira::cluster_configuration<NodeId> {
         // Create joint consensus configuration
         kythira::cluster_configuration<NodeId> joint_config;
         joint_config._nodes = new_config._nodes;
@@ -28,10 +26,8 @@ public:
         return joint_config;
     }
 
-    auto is_node_in_configuration(
-        const NodeId& node,
-        const kythira::cluster_configuration<NodeId>& config
-    ) -> bool {
+    auto is_node_in_configuration(const NodeId& node,
+                                  const kythira::cluster_configuration<NodeId>& config) -> bool {
         // Check if node is in the configuration
         for (const auto& n : config.nodes()) {
             if (n == node) {
@@ -52,10 +48,9 @@ public:
         return false;
     }
 
-    auto handle_cluster_membership_change(
-        const kythira::cluster_configuration<NodeId>& old_config,
-        const kythira::cluster_configuration<NodeId>& new_config
-    ) -> void {
+    auto handle_cluster_membership_change(const kythira::cluster_configuration<NodeId>& old_config,
+                                          const kythira::cluster_configuration<NodeId>& new_config)
+        -> void {
         // Notification for cluster membership change
         // In a real implementation, this might notify external systems,
         // close connections to removed nodes, establish connections to new nodes, etc.
@@ -63,24 +58,14 @@ public:
 };
 
 // Verify that test_membership_manager satisfies the membership_manager concept
-static_assert(
-    kythira::membership_manager<
-        test_membership_manager<std::uint64_t>,
-        std::uint64_t,
-        kythira::cluster_configuration<std::uint64_t>
-    >,
-    "test_membership_manager must satisfy membership_manager concept"
-);
+static_assert(kythira::membership_manager<test_membership_manager<std::uint64_t>, std::uint64_t,
+                                          kythira::cluster_configuration<std::uint64_t> >,
+              "test_membership_manager must satisfy membership_manager concept");
 
 // Test with string node IDs
-static_assert(
-    kythira::membership_manager<
-        test_membership_manager<std::string>,
-        std::string,
-        kythira::cluster_configuration<std::string>
-    >,
-    "test_membership_manager with string IDs must satisfy membership_manager concept"
-);
+static_assert(kythira::membership_manager<test_membership_manager<std::string>, std::string,
+                                          kythira::cluster_configuration<std::string> >,
+              "test_membership_manager with string IDs must satisfy membership_manager concept");
 
 // Test that a non-conforming type does not satisfy the concept
 class non_membership_manager {
@@ -89,14 +74,9 @@ public:
     // Missing other required methods
 };
 
-static_assert(
-    !kythira::membership_manager<
-        non_membership_manager,
-        std::uint64_t,
-        kythira::cluster_configuration<std::uint64_t>
-    >,
-    "non_membership_manager must not satisfy membership_manager concept"
-);
+static_assert(!kythira::membership_manager<non_membership_manager, std::uint64_t,
+                                           kythira::cluster_configuration<std::uint64_t> >,
+              "non_membership_manager must not satisfy membership_manager concept");
 
 int main() {
     // Instantiate to ensure it compiles

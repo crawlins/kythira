@@ -8,15 +8,16 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_pool_size = 1024 * 1024; // 1MB
-    constexpr std::size_t test_block_size = 4096; // 4KB
-    constexpr std::size_t test_allocation_size = 2048; // 2KB
-    constexpr auto short_reset_interval = std::chrono::seconds{1};
-    constexpr auto test_timeout_seconds = 30;
+constexpr std::size_t test_pool_size = 1024 * 1024;  // 1MB
+constexpr std::size_t test_block_size = 4096;        // 4KB
+constexpr std::size_t test_allocation_size = 2048;   // 2KB
+constexpr auto short_reset_interval = std::chrono::seconds{1};
+constexpr auto test_timeout_seconds = 30;
 }
 
 // Test 1: Basic reset functionality
-BOOST_AUTO_TEST_CASE(test_reset_clears_allocations, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_reset_clears_allocations,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Allocate several blocks
@@ -45,7 +46,8 @@ BOOST_AUTO_TEST_CASE(test_reset_clears_allocations, * boost::unit_test::timeout(
 }
 
 // Test 2: Reset updates last_reset timestamp
-BOOST_AUTO_TEST_CASE(test_reset_updates_timestamp, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_reset_updates_timestamp,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     auto initial_metrics = pool.get_metrics();
@@ -65,7 +67,7 @@ BOOST_AUTO_TEST_CASE(test_reset_updates_timestamp, * boost::unit_test::timeout(t
 }
 
 // Test 3: time_since_last_reset works correctly
-BOOST_AUTO_TEST_CASE(test_time_since_last_reset, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_time_since_last_reset, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Check initial time
@@ -77,16 +79,17 @@ BOOST_AUTO_TEST_CASE(test_time_since_last_reset, * boost::unit_test::timeout(tes
 
     // Check time again
     auto time2 = pool.time_since_last_reset();
-    BOOST_CHECK_GE(time2.count(), time1.count()); // Should be at least as much
+    BOOST_CHECK_GE(time2.count(), time1.count());  // Should be at least as much
 
     // Reset and check time is near zero
     pool.reset();
     auto time3 = pool.time_since_last_reset();
-    BOOST_CHECK_LT(time3.count(), 1); // Should be less than 1 second
+    BOOST_CHECK_LT(time3.count(), 1);  // Should be less than 1 second
 }
 
 // Test 4: Periodic reset with manual enable/disable
-BOOST_AUTO_TEST_CASE(test_periodic_reset_manual_control, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_periodic_reset_manual_control,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Enable periodic reset with short interval
@@ -102,14 +105,15 @@ BOOST_AUTO_TEST_CASE(test_periodic_reset_manual_control, * boost::unit_test::tim
 
     // Check that time since last reset is small (reset should have occurred)
     auto time_since = pool.time_since_last_reset();
-    BOOST_CHECK_LT(time_since.count(), 2); // Should be less than 2 seconds
+    BOOST_CHECK_LT(time_since.count(), 2);  // Should be less than 2 seconds
 
     // Disable periodic reset
     pool.set_periodic_reset(false);
 }
 
 // Test 5: Periodic reset doesn't reset when allocations are active
-BOOST_AUTO_TEST_CASE(test_periodic_reset_respects_active_allocations, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_periodic_reset_respects_active_allocations,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Enable periodic reset
@@ -135,7 +139,8 @@ BOOST_AUTO_TEST_CASE(test_periodic_reset_respects_active_allocations, * boost::u
 }
 
 // Test 6: Periodic reset at construction time
-BOOST_AUTO_TEST_CASE(test_periodic_reset_at_construction, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_periodic_reset_at_construction,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     // Create pool with periodic reset enabled
     memory_pool pool(test_pool_size, test_block_size, short_reset_interval);
 
@@ -153,7 +158,7 @@ BOOST_AUTO_TEST_CASE(test_periodic_reset_at_construction, * boost::unit_test::ti
 }
 
 // Test 7: RAII guard basic functionality
-BOOST_AUTO_TEST_CASE(test_raii_guard_basic, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_raii_guard_basic, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     {
@@ -163,7 +168,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_basic, * boost::unit_test::timeout(test_tim
         auto metrics = pool.get_metrics();
         BOOST_CHECK_EQUAL(metrics.allocation_count, 1);
         BOOST_CHECK_GT(metrics.allocated_size, 0);
-    } // guard goes out of scope, should deallocate
+    }  // guard goes out of scope, should deallocate
 
     auto metrics_after = pool.get_metrics();
     BOOST_CHECK_EQUAL(metrics_after.deallocation_count, 1);
@@ -171,7 +176,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_basic, * boost::unit_test::timeout(test_tim
 }
 
 // Test 8: RAII guard move semantics
-BOOST_AUTO_TEST_CASE(test_raii_guard_move, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_raii_guard_move, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     memory_pool_guard guard1 = pool.allocate_guarded(test_allocation_size);
@@ -181,7 +186,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_move, * boost::unit_test::timeout(test_time
     // Move construct
     memory_pool_guard guard2(std::move(guard1));
     BOOST_CHECK(guard2.get() == ptr1);
-    BOOST_CHECK(guard1.get() == nullptr); // Original should be null
+    BOOST_CHECK(guard1.get() == nullptr);  // Original should be null
 
     auto metrics = pool.get_metrics();
     BOOST_CHECK_EQUAL(metrics.allocation_count, 1);
@@ -189,7 +194,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_move, * boost::unit_test::timeout(test_time
 }
 
 // Test 9: RAII guard release
-BOOST_AUTO_TEST_CASE(test_raii_guard_release, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_raii_guard_release, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     void* released_ptr = nullptr;
@@ -201,11 +206,11 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_release, * boost::unit_test::timeout(test_t
         released_ptr = guard.release();
         BOOST_CHECK(released_ptr != nullptr);
         BOOST_CHECK(guard.get() == nullptr);
-    } // guard goes out of scope, but shouldn't deallocate
+    }  // guard goes out of scope, but shouldn't deallocate
 
     auto metrics = pool.get_metrics();
     BOOST_CHECK_EQUAL(metrics.allocation_count, 1);
-    BOOST_CHECK_GT(metrics.allocated_size, 0); // Still allocated
+    BOOST_CHECK_GT(metrics.allocated_size, 0);  // Still allocated
 
     // Manual cleanup
     pool.deallocate(released_ptr);
@@ -215,7 +220,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_release, * boost::unit_test::timeout(test_t
 }
 
 // Test 10: Multiple RAII guards
-BOOST_AUTO_TEST_CASE(test_multiple_raii_guards, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_multiple_raii_guards, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     {
@@ -229,7 +234,7 @@ BOOST_AUTO_TEST_CASE(test_multiple_raii_guards, * boost::unit_test::timeout(test
 
         auto metrics = pool.get_metrics();
         BOOST_CHECK_EQUAL(metrics.allocation_count, 3);
-    } // All guards go out of scope
+    }  // All guards go out of scope
 
     auto metrics_after = pool.get_metrics();
     BOOST_CHECK_EQUAL(metrics_after.deallocation_count, 3);
@@ -237,7 +242,8 @@ BOOST_AUTO_TEST_CASE(test_multiple_raii_guards, * boost::unit_test::timeout(test
 }
 
 // Test 11: RAII guard with exception safety
-BOOST_AUTO_TEST_CASE(test_raii_guard_exception_safety, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_raii_guard_exception_safety,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     try {
@@ -258,7 +264,7 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_exception_safety, * boost::unit_test::timeo
 }
 
 // Test 12: Destructor cleanup with active allocations
-BOOST_AUTO_TEST_CASE(test_destructor_cleanup, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_destructor_cleanup, *boost::unit_test::timeout(test_timeout_seconds)) {
     {
         memory_pool pool(test_pool_size, test_block_size);
 
@@ -280,7 +286,8 @@ BOOST_AUTO_TEST_CASE(test_destructor_cleanup, * boost::unit_test::timeout(test_t
 }
 
 // Test 13: Destructor cleanup with periodic reset thread
-BOOST_AUTO_TEST_CASE(test_destructor_cleanup_with_periodic_reset, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_destructor_cleanup_with_periodic_reset,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     {
         memory_pool pool(test_pool_size, test_block_size, short_reset_interval);
 
@@ -295,7 +302,7 @@ BOOST_AUTO_TEST_CASE(test_destructor_cleanup_with_periodic_reset, * boost::unit_
 }
 
 // Test 14: Reset defragmentation
-BOOST_AUTO_TEST_CASE(test_reset_defragmentation, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_reset_defragmentation, *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     // Allocate and deallocate in a pattern that could cause fragmentation
@@ -329,7 +336,8 @@ BOOST_AUTO_TEST_CASE(test_reset_defragmentation, * boost::unit_test::timeout(tes
 }
 
 // Test 15: Concurrent reset and allocation
-BOOST_AUTO_TEST_CASE(test_concurrent_reset_and_allocation, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_reset_and_allocation,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     memory_pool pool(test_pool_size, test_block_size);
 
     std::atomic<bool> stop{false};

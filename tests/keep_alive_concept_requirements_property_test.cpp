@@ -14,8 +14,8 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_iterations = 100;
-    constexpr std::chrono::milliseconds test_timeout{30};
+constexpr int test_iterations = 100;
+constexpr std::chrono::milliseconds test_timeout{30};
 }
 
 // Mock Executor implementation for testing
@@ -29,13 +29,9 @@ public:
         _tasks.push_back(std::move(func));
     }
 
-    auto getKeepAliveToken() -> std::shared_ptr<MockExecutor> {
-        return shared_from_this();
-    }
+    auto getKeepAliveToken() -> std::shared_ptr<MockExecutor> { return shared_from_this(); }
 
-    auto getTaskCount() const -> std::size_t {
-        return _task_count.load(std::memory_order_relaxed);
-    }
+    auto getTaskCount() const -> std::size_t { return _task_count.load(std::memory_order_relaxed); }
 
     auto executeTasks() -> void {
         std::lock_guard<std::mutex> lock(_mutex);
@@ -89,14 +85,10 @@ public:
     }
 
     // Get method for executor access - requirement 5.2
-    auto get() -> MockExecutor* {
-        return _executor.get();
-    }
+    auto get() -> MockExecutor* { return _executor.get(); }
 
     // Const version of get
-    auto get() const -> MockExecutor* {
-        return _executor.get();
-    }
+    auto get() const -> MockExecutor* { return _executor.get(); }
 
 private:
     std::shared_ptr<MockExecutor> _executor;
@@ -105,14 +97,15 @@ private:
 /**
  * **Feature: folly-concepts-enhancement, Property 6: KeepAlive concept requirements**
  *
- * Property: For any type that satisfies keep_alive concept, it should provide add, get methods and support copy/move construction
+ * Property: For any type that satisfies keep_alive concept, it should provide add, get methods and
+ * support copy/move construction
  * **Validates: Requirements 5.1, 5.2, 5.3**
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: MockKeepAlive should satisfy keep_alive concept
     {
-        static_assert(keep_alive<MockKeepAlive>,
-                      "MockKeepAlive should satisfy keep_alive concept");
+        static_assert(keep_alive<MockKeepAlive>, "MockKeepAlive should satisfy keep_alive concept");
 
         auto executor = std::make_shared<MockExecutor>();
         MockKeepAlive keep_alive(executor);
@@ -214,12 +207,11 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_property_test, * boost::uni
 
         // Test add method delegation with varying number of tasks
         std::atomic<int> task_counter{0};
-        int num_tasks = (i % 10) + 1; // 1 to 10 tasks
+        int num_tasks = (i % 10) + 1;  // 1 to 10 tasks
 
         for (int j = 0; j < num_tasks; ++j) {
-            keep_alive.add([&task_counter, j]() {
-                task_counter.fetch_add(j + 1, std::memory_order_relaxed);
-            });
+            keep_alive.add(
+                [&task_counter, j]() { task_counter.fetch_add(j + 1, std::memory_order_relaxed); });
         }
 
         BOOST_CHECK_EQUAL(executor->getTaskCount(), static_cast<std::size_t>(num_tasks));
@@ -250,7 +242,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_requirements_property_test, * boost::uni
 /**
  * Test that types NOT satisfying keep_alive concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(keep_alive_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(keep_alive_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!keep_alive<int>, "int should not satisfy keep_alive concept");
     static_assert(!keep_alive<std::string>, "std::string should not satisfy keep_alive concept");
@@ -268,7 +260,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_rejection_test, * boost::unit_test::time
 
     // Test that types with wrong method signatures don't satisfy the concept
     struct WrongSignatureKeepAlive {
-        void get() {} // Wrong return type (should return pointer-like)
+        void get() {}  // Wrong return type (should return pointer-like)
         WrongSignatureKeepAlive(const WrongSignatureKeepAlive&) = default;
         WrongSignatureKeepAlive(WrongSignatureKeepAlive&&) = default;
     };
@@ -301,13 +293,13 @@ BOOST_AUTO_TEST_CASE(keep_alive_concept_rejection_test, * boost::unit_test::time
 /**
  * Test reference counting semantics (requirement 5.4)
  */
-BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, *boost::unit_test::timeout(60)) {
     auto executor = std::make_shared<MockExecutor>();
 
     // Test that multiple KeepAlive instances can share the same executor
     {
         MockKeepAlive keep_alive1(executor);
-        MockKeepAlive keep_alive2(keep_alive1); // Copy construction
+        MockKeepAlive keep_alive2(keep_alive1);  // Copy construction
         MockKeepAlive keep_alive3(executor);     // Direct construction
 
         // All should reference the same executor
@@ -325,13 +317,13 @@ BOOST_AUTO_TEST_CASE(keep_alive_reference_counting_test, * boost::unit_test::tim
 
     // Executor should still be valid after KeepAlive instances are destroyed
     BOOST_CHECK(executor.get() != nullptr);
-    executor->executeTasks(); // Should not crash
+    executor->executeTasks();  // Should not crash
 }
 
 /**
  * Test proper cleanup semantics (requirement 5.5)
  */
-BOOST_AUTO_TEST_CASE(keep_alive_cleanup_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(keep_alive_cleanup_test, *boost::unit_test::timeout(30)) {
     std::weak_ptr<MockExecutor> weak_executor;
 
     {
@@ -361,7 +353,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_cleanup_test, * boost::unit_test::timeout(30)) {
 /**
  * Test thread safety of KeepAlive operations
  */
-BOOST_AUTO_TEST_CASE(keep_alive_thread_safety_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(keep_alive_thread_safety_test, *boost::unit_test::timeout(60)) {
     auto executor = std::make_shared<MockExecutor>();
     MockKeepAlive keep_alive(executor);
 
@@ -401,7 +393,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_thread_safety_test, * boost::unit_test::timeout(
 /**
  * Test KeepAlive with different function object types
  */
-BOOST_AUTO_TEST_CASE(keep_alive_function_object_types_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(keep_alive_function_object_types_test, *boost::unit_test::timeout(30)) {
     auto executor = std::make_shared<MockExecutor>();
     MockKeepAlive keep_alive(executor);
 
@@ -428,5 +420,5 @@ BOOST_AUTO_TEST_CASE(keep_alive_function_object_types_test, * boost::unit_test::
     BOOST_CHECK_EQUAL(executor->getTaskCount(), 4);
 
     executor->executeTasks();
-    BOOST_CHECK_EQUAL(counter, 1111); // 1 + 10 + 100 + 1000
+    BOOST_CHECK_EQUAL(counter, 1111);  // 1 + 10 + 100 + 1000
 }

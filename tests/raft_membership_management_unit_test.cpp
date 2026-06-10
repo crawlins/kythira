@@ -29,22 +29,22 @@
  */
 
 namespace {
-    // Test constants
-    constexpr std::chrono::milliseconds test_timeout{5000};
-    constexpr std::chrono::milliseconds short_timeout{1000};
-    constexpr std::chrono::milliseconds election_timeout_min{150};
-    constexpr std::chrono::milliseconds election_timeout_max{300};
-    constexpr std::chrono::milliseconds heartbeat_interval{50};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
+// Test constants
+constexpr std::chrono::milliseconds test_timeout{5000};
+constexpr std::chrono::milliseconds short_timeout{1000};
+constexpr std::chrono::milliseconds election_timeout_min{150};
+constexpr std::chrono::milliseconds election_timeout_max{300};
+constexpr std::chrono::milliseconds heartbeat_interval{50};
+constexpr std::chrono::milliseconds rpc_timeout{100};
 
-    constexpr const char* test_leader_id = "leader";
-    constexpr const char* test_follower_1_id = "follower1";
-    constexpr const char* test_follower_2_id = "follower2";
-    constexpr const char* test_new_node_id = "new_node";
-    constexpr const char* test_node_to_remove_id = "node_to_remove";
+constexpr const char* test_leader_id = "leader";
+constexpr const char* test_follower_1_id = "follower1";
+constexpr const char* test_follower_2_id = "follower2";
+constexpr const char* test_new_node_id = "new_node";
+constexpr const char* test_node_to_remove_id = "node_to_remove";
 
-    constexpr std::size_t default_cluster_size = 3;
-    constexpr std::size_t extended_cluster_size = 5;
+constexpr std::size_t default_cluster_size = 3;
+constexpr std::size_t extended_cluster_size = 5;
 }
 
 /**
@@ -58,7 +58,7 @@ namespace {
  *
  * **Validates: Requirements 11.1**
  */
-BOOST_AUTO_TEST_CASE(test_add_server_with_joint_consensus, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_add_server_with_joint_consensus, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Test: Add server operation with joint consensus");
 
     // Create cluster configuration
@@ -102,7 +102,7 @@ BOOST_AUTO_TEST_CASE(test_add_server_with_joint_consensus, * boost::unit_test::t
  *
  * **Validates: Requirements 11.2**
  */
-BOOST_AUTO_TEST_CASE(test_remove_server_with_cleanup, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_remove_server_with_cleanup, *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Test: Remove server operation with proper cleanup");
 
     // Create cluster configuration with more nodes
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(test_remove_server_with_cleanup, * boost::unit_test::timeou
  *
  * **Validates: Requirements 11.3**
  */
-BOOST_AUTO_TEST_CASE(test_configuration_change_safety, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_configuration_change_safety, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Test: Configuration change safety (no split-brain)");
 
     // Create cluster configuration
@@ -207,7 +207,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_change_safety, * boost::unit_test::timeo
  *
  * **Validates: Requirements 11.4**
  */
-BOOST_AUTO_TEST_CASE(test_new_node_catch_up_phase, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_new_node_catch_up_phase, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Test: Catch-up phase for new nodes");
 
     // Create cluster configuration
@@ -252,7 +252,7 @@ BOOST_AUTO_TEST_CASE(test_new_node_catch_up_phase, * boost::unit_test::timeout(9
  *
  * **Validates: Requirements 11.5**
  */
-BOOST_AUTO_TEST_CASE(test_leader_step_down_on_self_removal, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_leader_step_down_on_self_removal, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Test: Leader step-down when removing self");
 
     // Create cluster configuration with more nodes
@@ -296,7 +296,8 @@ BOOST_AUTO_TEST_CASE(test_leader_step_down_on_self_removal, * boost::unit_test::
  *
  * **Validates: Requirements 11.1, 11.2**
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_configuration_change_rejection, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_configuration_change_rejection,
+                     *boost::unit_test::timeout(60)) {
     BOOST_TEST_MESSAGE("Test: Concurrent configuration change rejection");
 
     // Create cluster configuration
@@ -336,7 +337,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_change_rejection, * boost::un
  *
  * **Validates: Requirements 11.3**
  */
-BOOST_AUTO_TEST_CASE(test_network_partition_during_config_change, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_network_partition_during_config_change, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Test: Network partition during configuration change");
 
     // Create cluster configuration
@@ -394,7 +395,7 @@ BOOST_AUTO_TEST_CASE(test_network_partition_during_config_change, * boost::unit_
  *
  * **Validates: Requirements 11.3**
  */
-BOOST_AUTO_TEST_CASE(test_node_failure_during_config_change, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_node_failure_during_config_change, *boost::unit_test::timeout(90)) {
     BOOST_TEST_MESSAGE("Test: Node failure during configuration change");
 
     // Create cluster configuration
@@ -452,7 +453,7 @@ BOOST_AUTO_TEST_CASE(test_node_failure_during_config_change, * boost::unit_test:
  *
  * **Validates: Requirements 11.1, 11.2**
  */
-BOOST_AUTO_TEST_CASE(test_sequential_configuration_changes, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_sequential_configuration_changes, *boost::unit_test::timeout(120)) {
     BOOST_TEST_MESSAGE("Test: Multiple sequential configuration changes");
 
     // Create cluster configuration
@@ -484,4 +485,3 @@ BOOST_AUTO_TEST_CASE(test_sequential_configuration_changes, * boost::unit_test::
 
     BOOST_TEST_MESSAGE("✓ Sequential configuration changes infrastructure validated");
 }
-

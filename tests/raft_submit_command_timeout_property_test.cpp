@@ -12,12 +12,12 @@
 #include <atomic>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::uint64_t min_timeout_ms = 10;
-    constexpr std::uint64_t max_timeout_ms = 500;
-    constexpr std::uint64_t min_commit_delay_ms = 5;
-    constexpr std::uint64_t max_commit_delay_ms = 600;
-    constexpr std::uint64_t test_log_index = 1;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::uint64_t min_timeout_ms = 10;
+constexpr std::uint64_t max_timeout_ms = 500;
+constexpr std::uint64_t min_commit_delay_ms = 5;
+constexpr std::uint64_t max_commit_delay_ms = 600;
+constexpr std::uint64_t test_log_index = 1;
 }
 
 // Helper to generate random timeout duration
@@ -46,7 +46,7 @@ auto generate_random_bool(std::mt19937& rng) -> bool {
  * Commands that complete within the timeout should succeed, while commands that exceed
  * the timeout should fail with a timeout exception.
  */
-BOOST_AUTO_TEST_CASE(property_timeout_parameter_respected, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_timeout_parameter_respected, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -86,8 +86,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_parameter_respected, * boost::unit_test::t
                 }
                 operation_completed = true;
             },
-            std::make_optional(timeout)
-        );
+            std::make_optional(timeout));
 
         if (should_timeout) {
             ++timeout_before_commit_tests;
@@ -120,11 +119,11 @@ BOOST_AUTO_TEST_CASE(property_timeout_parameter_respected, * boost::unit_test::t
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "timeout=" << timeout.count() << "ms, "
-                << "commit_delay=" << commit_delay.count() << "ms, "
-                << "should_timeout=" << should_timeout
-                << ", timed_out=" << operation_timed_out.load()
-                << ", succeeded=" << operation_succeeded.load());
+                                            << "timeout=" << timeout.count() << "ms, "
+                                            << "commit_delay=" << commit_delay.count() << "ms, "
+                                            << "should_timeout=" << should_timeout
+                                            << ", timed_out=" << operation_timed_out.load()
+                                            << ", succeeded=" << operation_succeeded.load());
         }
     }
 
@@ -147,7 +146,8 @@ BOOST_AUTO_TEST_CASE(property_timeout_parameter_respected, * boost::unit_test::t
  * committed (replicated to majority) AND applied to the state machine.
  * Completing before either of these steps violates linearizability.
  */
-BOOST_AUTO_TEST_CASE(property_complete_after_commit_and_application, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_complete_after_commit_and_application,
+                     *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -171,14 +171,9 @@ BOOST_AUTO_TEST_CASE(property_complete_after_commit_and_application, * boost::un
         // Register operation without timeout
         waiter.register_operation(
             test_log_index,
-            [&operation_completed](std::vector<std::byte> result) {
-                operation_completed = true;
-            },
-            [&operation_completed](std::exception_ptr ex) {
-                operation_completed = true;
-            },
-            std::nullopt
-        );
+            [&operation_completed](std::vector<std::byte> result) { operation_completed = true; },
+            [&operation_completed](std::exception_ptr ex) { operation_completed = true; },
+            std::nullopt);
 
         // Simulate commit and application based on test scenario
         if (is_committed && is_applied) {
@@ -206,10 +201,10 @@ BOOST_AUTO_TEST_CASE(property_complete_after_commit_and_application, * boost::un
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "committed=" << is_committed << ", "
-                << "applied=" << is_applied << ", "
-                << "should_complete=" << should_complete
-                << ", completed=" << operation_completed.load());
+                                            << "committed=" << is_committed << ", "
+                                            << "applied=" << is_applied << ", "
+                                            << "should_complete=" << should_complete
+                                            << ", completed=" << operation_completed.load());
         }
     }
 
@@ -234,7 +229,7 @@ BOOST_AUTO_TEST_CASE(property_complete_after_commit_and_application, * boost::un
  * with a commit_timeout_exception that includes the entry index and timeout duration.
  * This allows clients to distinguish timeouts from other failures.
  */
-BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -282,8 +277,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::make_optional(timeout)
-            );
+                std::make_optional(timeout));
 
             // Wait for timeout
             std::this_thread::sleep_for(timeout + std::chrono::milliseconds{20});
@@ -307,7 +301,8 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
                     got_success = true;
                     operation_completed = true;
                 },
-                [&got_timeout_exception, &got_other_exception, &operation_completed](std::exception_ptr ex) {
+                [&got_timeout_exception, &got_other_exception,
+                 &operation_completed](std::exception_ptr ex) {
                     try {
                         std::rethrow_exception(ex);
                     } catch (const kythira::commit_timeout_exception<std::uint64_t>& e) {
@@ -317,8 +312,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             // Cancel with leadership loss
             waiter.cancel_all_operations_leadership_lost<std::uint64_t>(1, 2);
@@ -339,7 +333,8 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
                     got_success = true;
                     operation_completed = true;
                 },
-                [&got_timeout_exception, &got_other_exception, &operation_completed](std::exception_ptr ex) {
+                [&got_timeout_exception, &got_other_exception,
+                 &operation_completed](std::exception_ptr ex) {
                     try {
                         std::rethrow_exception(ex);
                     } catch (const kythira::commit_timeout_exception<std::uint64_t>& e) {
@@ -349,8 +344,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             // Complete successfully
             waiter.notify_committed_and_applied(test_log_index);
@@ -366,9 +360,9 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": scenario=" << scenario
-                << ", timeout_ex=" << got_timeout_exception.load()
-                << ", other_ex=" << got_other_exception.load()
-                << ", success=" << got_success.load());
+                                            << ", timeout_ex=" << got_timeout_exception.load()
+                                            << ", other_ex=" << got_other_exception.load()
+                                            << ", success=" << got_success.load());
         }
     }
 
@@ -393,7 +387,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_errors_properly_reported, * boost::unit_te
  * all pending operations for that entry must be rejected with a
  * leadership_lost_exception containing the old and new term information.
  */
-BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -425,7 +419,8 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
                     got_success = true;
                     operation_completed = true;
                 },
-                [&got_leadership_lost, &operation_completed, &old_term, &new_term](std::exception_ptr ex) {
+                [&got_leadership_lost, &operation_completed, &old_term,
+                 &new_term](std::exception_ptr ex) {
                     try {
                         std::rethrow_exception(ex);
                     } catch (const kythira::leadership_lost_exception<std::uint64_t>& e) {
@@ -437,8 +432,7 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             // Simulate leadership loss before commit
             waiter.cancel_all_operations_leadership_lost<std::uint64_t>(1, 2);
@@ -471,8 +465,7 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             // Simulate leadership loss
             waiter.cancel_all_operations_leadership_lost<std::uint64_t>(2, 3);
@@ -502,8 +495,7 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
                     }
                     operation_completed = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             // Complete successfully
             waiter.notify_committed_and_applied(test_log_index);
@@ -518,15 +510,17 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": scenario=" << scenario
-                << ", leadership_lost=" << got_leadership_lost.load()
-                << ", success=" << got_success.load());
+                                            << ", leadership_lost=" << got_leadership_lost.load()
+                                            << ", success=" << got_success.load());
         }
     }
 
     BOOST_TEST_MESSAGE("Leadership loss handling tests:");
     BOOST_TEST_MESSAGE("  Total tests: " << tests_passed);
-    BOOST_TEST_MESSAGE("  Leadership lost before commit (reject): " << leadership_lost_before_commit_tests);
-    BOOST_TEST_MESSAGE("  Leadership lost after commit (reject): " << leadership_lost_after_commit_tests);
+    BOOST_TEST_MESSAGE(
+        "  Leadership lost before commit (reject): " << leadership_lost_before_commit_tests);
+    BOOST_TEST_MESSAGE(
+        "  Leadership lost after commit (reject): " << leadership_lost_after_commit_tests);
     BOOST_TEST_MESSAGE("  No leadership loss (proceed): " << no_leadership_loss_tests);
 
     // Property: All scenarios should be tested
@@ -547,7 +541,7 @@ BOOST_AUTO_TEST_CASE(property_leadership_loss_properly_handled, * boost::unit_te
  * Note: This test validates the CommitWaiter's callback mechanism which is used
  * by submit_command_with_session to emit logging and metrics.
  */
-BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -580,8 +574,7 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
                 [&reject_callback_invoked](std::exception_ptr ex) {
                     reject_callback_invoked = true;
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             waiter.notify_committed_and_applied(test_log_index);
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
@@ -602,8 +595,7 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
                     reject_callback_invoked = true;
                     // In real implementation, this would log timeout and emit metrics
                 },
-                std::make_optional(std::chrono::milliseconds{50})
-            );
+                std::make_optional(std::chrono::milliseconds{50}));
 
             std::this_thread::sleep_for(std::chrono::milliseconds{60});
             waiter.cancel_timed_out_operations();
@@ -625,8 +617,7 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
                     reject_callback_invoked = true;
                     // In real implementation, this would log leadership loss and emit metrics
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             waiter.cancel_all_operations_leadership_lost<std::uint64_t>(1, 2);
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
@@ -647,8 +638,7 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
                     reject_callback_invoked = true;
                     // In real implementation, this would log error and emit metrics
                 },
-                std::nullopt
-            );
+                std::nullopt);
 
             waiter.cancel_all_operations("test error");
             std::this_thread::sleep_for(std::chrono::milliseconds{10});
@@ -661,8 +651,8 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": outcome=" << outcome
-                << ", fulfill=" << fulfill_callback_invoked.load()
-                << ", reject=" << reject_callback_invoked.load());
+                                            << ", fulfill=" << fulfill_callback_invoked.load()
+                                            << ", reject=" << reject_callback_invoked.load());
         }
     }
 
@@ -689,7 +679,7 @@ BOOST_AUTO_TEST_CASE(property_comprehensive_logging_and_metrics, * boost::unit_t
  * the CommitWaiter's pending operations map. This prevents memory leaks
  * and ensures timed-out operations don't interfere with future operations.
  */
-BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -710,11 +700,8 @@ BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, * boost::unit_test::
 
             // Register operation with timeout
             waiter.register_operation(
-                test_log_index,
-                [](std::vector<std::byte> result) {},
-                [](std::exception_ptr ex) {},
-                std::make_optional(timeout)
-            );
+                test_log_index, [](std::vector<std::byte> result) {}, [](std::exception_ptr ex) {},
+                std::make_optional(timeout));
 
             // Verify operation is pending
             BOOST_CHECK_EQUAL(waiter.get_pending_count(), 1);
@@ -737,11 +724,8 @@ BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, * boost::unit_test::
 
             // Register operation without timeout or with long timeout
             waiter.register_operation(
-                test_log_index,
-                [](std::vector<std::byte> result) {},
-                [](std::exception_ptr ex) {},
-                std::nullopt
-            );
+                test_log_index, [](std::vector<std::byte> result) {}, [](std::exception_ptr ex) {},
+                std::nullopt);
 
             // Verify operation is pending
             BOOST_CHECK_EQUAL(waiter.get_pending_count(), 1);
@@ -759,9 +743,9 @@ BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, * boost::unit_test::
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "timeout=" << timeout.count() << "ms, "
-                << "commit_delay=" << commit_delay.count() << "ms, "
-                << "will_timeout=" << will_timeout);
+                                            << "timeout=" << timeout.count() << "ms, "
+                                            << "commit_delay=" << commit_delay.count() << "ms, "
+                                            << "will_timeout=" << will_timeout);
         }
     }
 
@@ -786,7 +770,7 @@ BOOST_AUTO_TEST_CASE(property_timeout_cancellation_cleanup, * boost::unit_test::
  * Note: This test validates the CommitWaiter's ability to handle immediate rejections,
  * which is used by submit_command_with_session when the node is not a leader.
  */
-BOOST_AUTO_TEST_CASE(property_non_leader_rejection, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_non_leader_rejection, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -825,11 +809,8 @@ BOOST_AUTO_TEST_CASE(property_non_leader_rejection, * boost::unit_test::timeout(
                 [&operation_succeeded](std::vector<std::byte> result) {
                     operation_succeeded = true;
                 },
-                [&operation_rejected](std::exception_ptr ex) {
-                    operation_rejected = true;
-                },
-                std::nullopt
-            );
+                [&operation_rejected](std::exception_ptr ex) { operation_rejected = true; },
+                std::nullopt);
 
             // Verify operation is registered
             BOOST_CHECK_EQUAL(waiter.get_pending_count(), 1);
@@ -847,7 +828,7 @@ BOOST_AUTO_TEST_CASE(property_non_leader_rejection, * boost::unit_test::timeout(
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "should_reject=" << should_reject_immediately);
+                                            << "should_reject=" << should_reject_immediately);
         }
     }
 
@@ -874,7 +855,7 @@ BOOST_AUTO_TEST_CASE(property_non_leader_rejection, * boost::unit_test::timeout(
  * only after successful persistence, and that failed persistence doesn't
  * leave operations in the pending map.
  */
-BOOST_AUTO_TEST_CASE(property_persistence_before_registration, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_persistence_before_registration, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -893,11 +874,8 @@ BOOST_AUTO_TEST_CASE(property_persistence_before_registration, * boost::unit_tes
             // Simulate successful persistence followed by registration
             // Property: After successful persistence, operation is registered
             waiter.register_operation(
-                test_log_index,
-                [](std::vector<std::byte> result) {},
-                [](std::exception_ptr ex) {},
-                std::nullopt
-            );
+                test_log_index, [](std::vector<std::byte> result) {}, [](std::exception_ptr ex) {},
+                std::nullopt);
 
             // Verify operation is registered
             BOOST_CHECK_EQUAL(waiter.get_pending_count(), 1);
@@ -927,7 +905,7 @@ BOOST_AUTO_TEST_CASE(property_persistence_before_registration, * boost::unit_tes
 
         if (i < 10) {
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "persistence_succeeds=" << persistence_succeeds);
+                                            << "persistence_succeeds=" << persistence_succeeds);
         }
     }
 
@@ -942,7 +920,7 @@ BOOST_AUTO_TEST_CASE(property_persistence_before_registration, * boost::unit_tes
     BOOST_CHECK_EQUAL(tests_passed, property_test_iterations);
 }
 
-BOOST_AUTO_TEST_CASE(test_all_properties_passed, * boost::unit_test::timeout(5)) {
+BOOST_AUTO_TEST_CASE(test_all_properties_passed, *boost::unit_test::timeout(5)) {
     BOOST_TEST_MESSAGE("✓ All submit_command with timeout property tests passed!");
     BOOST_TEST_MESSAGE("✓ Implementation verified to follow Raft specification:");
     BOOST_TEST_MESSAGE("  - Timeout parameter is respected");

@@ -11,8 +11,8 @@
 #include <cstddef>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr std::size_t max_random_bytes = 1000;
+constexpr std::size_t property_test_iterations = 100;
+constexpr std::size_t max_random_bytes = 1000;
 }
 
 // Helper to generate random byte sequence
@@ -72,7 +72,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_request_vote_request_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Malformed RequestVote request rejection: "
-        << rejection_count << "/" << property_test_iterations << " rejected");
+                       << rejection_count << "/" << property_test_iterations << " rejected");
 
     // We expect most random byte sequences to be rejected
     // Allow a small margin for the unlikely case of valid JSON
@@ -113,7 +113,7 @@ BOOST_AUTO_TEST_CASE(property_wrong_message_type_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Wrong message type rejection: "
-        << rejection_count << "/" << wrong_type_messages.size() << " rejected");
+                       << rejection_count << "/" << wrong_type_messages.size() << " rejected");
     BOOST_CHECK_EQUAL(rejection_count, wrong_type_messages.size());
 }
 
@@ -152,7 +152,7 @@ BOOST_AUTO_TEST_CASE(property_missing_fields_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Missing fields rejection: "
-        << rejection_count << "/" << missing_field_messages.size() << " rejected");
+                       << rejection_count << "/" << missing_field_messages.size() << " rejected");
     BOOST_CHECK_EQUAL(rejection_count, missing_field_messages.size());
 }
 
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(property_invalid_json_syntax_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Invalid JSON syntax rejection: "
-        << rejection_count << "/" << invalid_json_messages.size() << " rejected");
+                       << rejection_count << "/" << invalid_json_messages.size() << " rejected");
     BOOST_CHECK_EQUAL(rejection_count, invalid_json_messages.size());
 }
 
@@ -227,7 +227,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_append_entries_request_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Malformed AppendEntries request rejection: "
-        << rejection_count << "/" << property_test_iterations << " rejected");
+                       << rejection_count << "/" << property_test_iterations << " rejected");
     BOOST_CHECK_GE(rejection_count, property_test_iterations * 95 / 100);
 }
 
@@ -260,7 +260,7 @@ BOOST_AUTO_TEST_CASE(property_malformed_install_snapshot_request_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Malformed InstallSnapshot request rejection: "
-        << rejection_count << "/" << property_test_iterations << " rejected");
+                       << rejection_count << "/" << property_test_iterations << " rejected");
     BOOST_CHECK_GE(rejection_count, property_test_iterations * 95 / 100);
 }
 
@@ -297,7 +297,6 @@ BOOST_AUTO_TEST_CASE(property_invalid_entry_data_rejection) {
     }
 
     BOOST_TEST_MESSAGE("Invalid entry data rejection: "
-        << rejection_count << "/" << invalid_entry_messages.size() << " rejected");
+                       << rejection_count << "/" << invalid_entry_messages.size() << " rejected");
     BOOST_CHECK_EQUAL(rejection_count, invalid_entry_messages.size());
 }
-

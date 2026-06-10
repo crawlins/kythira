@@ -22,7 +22,7 @@
 #include <exception>
 
 namespace {
-    constexpr std::chrono::milliseconds test_timeout{1000};
+constexpr std::chrono::milliseconds test_timeout{1000};
 }
 
 BOOST_AUTO_TEST_SUITE(commit_waiting_completion_property_tests)
@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_SUITE(commit_waiting_completion_property_tests)
  * This test directly validates the commit_waiter mechanism that ensures futures
  * only complete after both commit and application have occurred.
  */
-BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, *boost::unit_test::timeout(10)) {
     // Test the commit_waiter mechanism directly
     using commit_waiter_t = kythira::commit_waiter<std::uint64_t>;
     commit_waiter_t waiter;
@@ -56,17 +56,15 @@ BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::tim
             // Should not be called in this test
             BOOST_FAIL("Operation should not be rejected");
         },
-        test_timeout
-    );
+        test_timeout);
 
     // Property: Future should not be fulfilled immediately after registration
     BOOST_CHECK(!fulfilled);
 
     // Simulate commit and application
     std::vector<std::byte> expected_result{std::byte{42}, std::byte{24}};
-    waiter.notify_committed_and_applied(1, [&expected_result](std::uint64_t) {
-        return expected_result;
-    });
+    waiter.notify_committed_and_applied(
+        1, [&expected_result](std::uint64_t) { return expected_result; });
 
     // Property: Future should be fulfilled after notification
     BOOST_CHECK(fulfilled);
@@ -85,7 +83,8 @@ BOOST_AUTO_TEST_CASE(property_commit_waiting_completion, * boost::unit_test::tim
  * This test validates that the commit_waiter mechanism ensures proper ordering:
  * application must complete before the fulfillment callback is invoked.
  */
-BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment,
+                     *boost::unit_test::timeout(10)) {
     // Test that application happens before fulfillment
     using commit_waiter_t = kythira::commit_waiter<std::uint64_t>;
     commit_waiter_t waiter;
@@ -101,11 +100,7 @@ BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment, * boost::un
             BOOST_CHECK(application_happened);
             fulfillment_happened = true;
         },
-        [](std::exception_ptr) {
-            BOOST_FAIL("Operation should not be rejected");
-        },
-        test_timeout
-    );
+        [](std::exception_ptr) { BOOST_FAIL("Operation should not be rejected"); }, test_timeout);
 
     // Verify neither has happened yet
     BOOST_CHECK(!application_happened);
@@ -115,9 +110,8 @@ BOOST_AUTO_TEST_CASE(property_application_before_future_fulfillment, * boost::un
     application_happened = true;
 
     // Then notify commit waiter (this triggers fulfillment)
-    waiter.notify_committed_and_applied(1, [](std::uint64_t) {
-        return std::vector<std::byte>{std::byte{1}, std::byte{2}};
-    });
+    waiter.notify_committed_and_applied(
+        1, [](std::uint64_t) { return std::vector<std::byte>{std::byte{1}, std::byte{2}}; });
 
     // Property: Both should have happened, with application before fulfillment
     BOOST_CHECK(application_happened);

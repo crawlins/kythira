@@ -15,9 +15,9 @@
 #include <chrono>
 
 namespace {
-    constexpr int example_value = 42;
-    constexpr const char* example_message = "Hello, Generic Futures!";
-    constexpr std::chrono::milliseconds example_timeout{1000};
+constexpr int example_value = 42;
+constexpr const char* example_message = "Hello, Generic Futures!";
+constexpr std::chrono::milliseconds example_timeout{1000};
 }
 
 auto demonstrate_basic_future_usage() -> bool {
@@ -33,16 +33,15 @@ auto demonstrate_basic_future_usage() -> bool {
         std::cout << "  String future result: " << string_future.get() << "\n";
 
         // Create future from exception using folly::exception_wrapper
-        auto error_future = kythira::Future<int>(
-            folly::exception_wrapper(std::runtime_error("Example error"))
-        );
+        auto error_future =
+            kythira::Future<int>(folly::exception_wrapper(std::runtime_error("Example error")));
 
         std::cout << "  Created future from exception\n";
 
         // Handle the exception
         auto safe_future = error_future.onError([](folly::exception_wrapper ex) {
             std::cout << "  Caught exception in future: " << ex.what() << "\n";
-            return -1; // Default value
+            return -1;  // Default value
         });
 
         int error_result = safe_future.get();
@@ -61,18 +60,21 @@ auto demonstrate_future_chaining() -> bool {
     try {
         // Chain multiple operations
         auto result = kythira::Future<int>(10)
-            .then([](int value) {
-                std::cout << "  First operation: " << value << " -> " << (value * 2) << "\n";
-                return value * 2;
-            })
-            .then([](int doubled) {
-                std::cout << "  Second operation: " << doubled << " -> " << (doubled + 5) << "\n";
-                return doubled + 5;
-            })
-            .then([](int final_value) {
-                std::cout << "  Third operation: " << final_value << " -> " << std::to_string(final_value) << "\n";
-                return std::to_string(final_value);
-            });
+                          .then([](int value) {
+                              std::cout << "  First operation: " << value << " -> " << (value * 2)
+                                        << "\n";
+                              return value * 2;
+                          })
+                          .then([](int doubled) {
+                              std::cout << "  Second operation: " << doubled << " -> "
+                                        << (doubled + 5) << "\n";
+                              return doubled + 5;
+                          })
+                          .then([](int final_value) {
+                              std::cout << "  Third operation: " << final_value << " -> "
+                                        << std::to_string(final_value) << "\n";
+                              return std::to_string(final_value);
+                          });
 
         std::string final_result = result.get();
         std::cout << "  Final chained result: " << final_result << "\n";

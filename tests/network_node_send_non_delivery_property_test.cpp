@@ -7,15 +7,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_payload = "test_message";
-    constexpr std::chrono::milliseconds test_latency{10};
-    constexpr double low_reliability = 0.1; // 10% reliability - high chance of drops
-    constexpr std::size_t test_iterations = 50; // More iterations to see drops
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_payload = "test_message";
+constexpr std::chrono::milliseconds test_latency{10};
+constexpr double low_reliability = 0.1;      // 10% reliability - high chance of drops
+constexpr std::size_t test_iterations = 50;  // More iterations to see drops
 }
 
-BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, *boost::unit_test::timeout(30)) {
     // **Property 8: Send Does Not Guarantee Delivery**
     // **Validates: Requirements 4.4**
 
@@ -49,13 +49,9 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, * boost::unit
         }
 
         // Create message from node_a to node_b
-        Message<DefaultNetworkTypes> msg(
-            test_node_a,
-            static_cast<unsigned short>(8000 + i),
-            test_node_b,
-            static_cast<unsigned short>(9000 + i),
-            std::move(payload)
-        );
+        Message<DefaultNetworkTypes> msg(test_node_a, static_cast<unsigned short>(8000 + i),
+                                         test_node_b, static_cast<unsigned short>(9000 + i),
+                                         std::move(payload));
 
         // Send message
         auto send_future = node_a->send(std::move(msg));
@@ -80,7 +76,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, * boost::unit
 
     // Property: Send success does not guarantee delivery
     // With low reliability, we should have some successful sends but fewer deliveries
-    BOOST_CHECK(successful_sends > 0); // Some sends should succeed
+    BOOST_CHECK(successful_sends > 0);  // Some sends should succeed
 
     // The key property: delivered messages should be <= successful sends
     // (send success doesn't guarantee delivery)
@@ -88,8 +84,8 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, * boost::unit
 
     // With 10% reliability and many iterations, we expect some message loss
     // This demonstrates that send success != delivery guarantee
-    BOOST_TEST_MESSAGE("Successful sends: " << successful_sends <<
-                      ", Delivered messages: " << delivered_messages);
+    BOOST_TEST_MESSAGE("Successful sends: " << successful_sends
+                                            << ", Delivered messages: " << delivered_messages);
 
     simulator.stop();
 }

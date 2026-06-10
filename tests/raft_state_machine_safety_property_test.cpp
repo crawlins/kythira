@@ -47,60 +47,69 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
 
-    // Types for simulator-based testing
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Network types
-        using raft_network_types = kythira::raft_simulator_network_types<std::string>;
-        using network_client_type = kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+    // Network types
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type,
+                                          serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type,
+                                          serialized_data_type>;
 
-        // Component types
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
-    constexpr std::size_t min_cluster_size = 3;
-    constexpr std::size_t max_cluster_size = 5;
-    constexpr std::size_t min_commands = 5;
-    constexpr std::size_t max_commands = 15;
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{100};
+constexpr std::size_t min_cluster_size = 3;
+constexpr std::size_t max_cluster_size = 5;
+constexpr std::size_t min_commands = 5;
+constexpr std::size_t max_commands = 15;
 }
 
 /**
@@ -171,8 +180,7 @@ BOOST_AUTO_TEST_CASE(sequential_application_order) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -227,7 +235,8 @@ BOOST_AUTO_TEST_CASE(sequential_application_order) {
 BOOST_AUTO_TEST_CASE(consistent_application_across_nodes) {
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size, max_cluster_size);
+    std::uniform_int_distribution<std::size_t> cluster_size_dist(min_cluster_size,
+                                                                 max_cluster_size);
     std::uniform_int_distribution<std::size_t> command_count_dist(min_commands, max_commands);
 
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
@@ -255,7 +264,8 @@ BOOST_AUTO_TEST_CASE(consistent_application_across_nodes) {
         config._rpc_timeout = rpc_timeout;
 
         // Create persistence engines to track applications
-        std::unordered_map<std::uint64_t, std::shared_ptr<kythira::memory_persistence_engine<>>> persistence_engines;
+        std::unordered_map<std::uint64_t, std::shared_ptr<kythira::memory_persistence_engine<>>>
+            persistence_engines;
 
         using node_type = kythira::node<test_raft_types>;
 
@@ -273,10 +283,8 @@ BOOST_AUTO_TEST_CASE(consistent_application_across_nodes) {
                 test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
                 test_raft_types::persistence_engine_type{},
                 test_raft_types::logger_type{kythira::log_level::error},
-                test_raft_types::metrics_type{},
-                test_raft_types::membership_manager_type{},
-                config
-            );
+                test_raft_types::metrics_type{}, test_raft_types::membership_manager_type{},
+                config);
 
             node->start();
             nodes.push_back(std::move(node));
@@ -317,9 +325,9 @@ BOOST_AUTO_TEST_CASE(consistent_application_across_nodes) {
         for (std::size_t i = 0; i < num_commands; ++i) {
             std::vector<std::byte> command;
             // Create a unique command with a recognizable pattern
-            command.push_back(static_cast<std::byte>(0xFF)); // Marker byte
-            command.push_back(static_cast<std::byte>(i & 0xFF)); // Command index low byte
-            command.push_back(static_cast<std::byte>((i >> 8) & 0xFF)); // Command index high byte
+            command.push_back(static_cast<std::byte>(0xFF));             // Marker byte
+            command.push_back(static_cast<std::byte>(i & 0xFF));         // Command index low byte
+            command.push_back(static_cast<std::byte>((i >> 8) & 0xFF));  // Command index high byte
             for (std::size_t j = 0; j < 5; ++j) {
                 command.push_back(static_cast<std::byte>((i * 5 + j) % 256));
             }
@@ -406,8 +414,7 @@ BOOST_AUTO_TEST_CASE(committed_entries_eventually_applied) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -482,8 +489,7 @@ BOOST_AUTO_TEST_CASE(no_gaps_in_application_sequence) {
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 

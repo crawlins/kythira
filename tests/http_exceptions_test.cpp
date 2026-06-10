@@ -9,14 +9,14 @@
 BOOST_AUTO_TEST_SUITE(http_exceptions_test)
 
 // Test http_transport_error base class
-BOOST_AUTO_TEST_CASE(test_http_transport_error_construction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_transport_error_construction, *boost::unit_test::timeout(15)) {
     const std::string error_message = "Transport error occurred";
     kythira::http_transport_error error(error_message);
 
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
-BOOST_AUTO_TEST_CASE(test_http_transport_error_inheritance, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_transport_error_inheritance, *boost::unit_test::timeout(15)) {
     kythira::http_transport_error error("Test error");
 
     // Should be catchable as std::runtime_error
@@ -28,7 +28,7 @@ BOOST_AUTO_TEST_CASE(test_http_transport_error_inheritance, * boost::unit_test::
 }
 
 // Test http_client_error (4xx status codes)
-BOOST_AUTO_TEST_CASE(test_http_client_error_construction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_client_error_construction, *boost::unit_test::timeout(15)) {
     constexpr int status_code_404 = 404;
     const std::string error_message = "Not Found";
     kythira::http_client_error error(status_code_404, error_message);
@@ -37,7 +37,7 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_construction, * boost::unit_test::ti
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
-BOOST_AUTO_TEST_CASE(test_http_client_error_inheritance, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_client_error_inheritance, *boost::unit_test::timeout(15)) {
     constexpr int status_code_400 = 400;
     kythira::http_client_error error(status_code_400, "Bad Request");
 
@@ -49,7 +49,7 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_inheritance, * boost::unit_test::tim
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_http_client_error_various_status_codes, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_client_error_various_status_codes, *boost::unit_test::timeout(15)) {
     constexpr int status_code_400 = 400;
     constexpr int status_code_401 = 401;
     constexpr int status_code_403 = 403;
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(test_http_client_error_various_status_codes, * boost::unit_
 }
 
 // Test http_server_error (5xx status codes)
-BOOST_AUTO_TEST_CASE(test_http_server_error_construction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_server_error_construction, *boost::unit_test::timeout(15)) {
     constexpr int status_code_500 = 500;
     const std::string error_message = "Internal Server Error";
     kythira::http_server_error error(status_code_500, error_message);
@@ -79,7 +79,7 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_construction, * boost::unit_test::ti
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
-BOOST_AUTO_TEST_CASE(test_http_server_error_inheritance, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_server_error_inheritance, *boost::unit_test::timeout(15)) {
     constexpr int status_code_503 = 503;
     kythira::http_server_error error(status_code_503, "Service Unavailable");
 
@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_inheritance, * boost::unit_test::tim
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_http_server_error_various_status_codes, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_server_error_various_status_codes, *boost::unit_test::timeout(15)) {
     constexpr int status_code_500 = 500;
     constexpr int status_code_502 = 502;
     constexpr int status_code_503 = 503;
@@ -109,14 +109,14 @@ BOOST_AUTO_TEST_CASE(test_http_server_error_various_status_codes, * boost::unit_
 }
 
 // Test http_timeout_error
-BOOST_AUTO_TEST_CASE(test_http_timeout_error_construction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_timeout_error_construction, *boost::unit_test::timeout(15)) {
     const std::string error_message = "Request timeout after 5000ms";
     kythira::http_timeout_error error(error_message);
 
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
-BOOST_AUTO_TEST_CASE(test_http_timeout_error_inheritance, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_http_timeout_error_inheritance, *boost::unit_test::timeout(15)) {
     kythira::http_timeout_error error("Connection timeout");
 
     // Should be catchable as http_transport_error
@@ -128,14 +128,14 @@ BOOST_AUTO_TEST_CASE(test_http_timeout_error_inheritance, * boost::unit_test::ti
 }
 
 // Test serialization_error
-BOOST_AUTO_TEST_CASE(test_serialization_error_construction, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_serialization_error_construction, *boost::unit_test::timeout(15)) {
     const std::string error_message = "Failed to deserialize JSON response";
     kythira::serialization_error error(error_message);
 
     BOOST_CHECK_EQUAL(error.what(), error_message);
 }
 
-BOOST_AUTO_TEST_CASE(test_serialization_error_inheritance, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_serialization_error_inheritance, *boost::unit_test::timeout(15)) {
     kythira::serialization_error error("Invalid JSON format");
 
     // Should be catchable as http_transport_error
@@ -147,7 +147,7 @@ BOOST_AUTO_TEST_CASE(test_serialization_error_inheritance, * boost::unit_test::t
 }
 
 // Test exception hierarchy
-BOOST_AUTO_TEST_CASE(test_exception_hierarchy, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_exception_hierarchy, *boost::unit_test::timeout(15)) {
     constexpr int status_code_404 = 404;
     constexpr int status_code_500 = 500;
 
@@ -185,7 +185,7 @@ BOOST_AUTO_TEST_CASE(test_exception_hierarchy, * boost::unit_test::timeout(15)) 
 }
 
 // Test that status_code is preserved correctly
-BOOST_AUTO_TEST_CASE(test_status_code_preservation, * boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_status_code_preservation, *boost::unit_test::timeout(15)) {
     constexpr int client_status = 418;  // I'm a teapot
     constexpr int server_status = 507;  // Insufficient Storage
 

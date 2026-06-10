@@ -5,7 +5,7 @@
 #include <boost/test/included/unit_test.hpp>
 
 namespace {
-    constexpr const char* test_name = "rpc_serializer_concept_test";
+constexpr const char* test_name = "rpc_serializer_concept_test";
 }
 
 BOOST_AUTO_TEST_CASE(test_serialized_data_concept) {
@@ -24,7 +24,8 @@ BOOST_AUTO_TEST_CASE(test_serialized_data_concept) {
 
 BOOST_AUTO_TEST_CASE(test_rpc_serializer_concept) {
     // Test that json_rpc_serializer satisfies rpc_serializer concept
-    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>,
+    static_assert(kythira::rpc_serializer<kythira::json_rpc_serializer<std::vector<std::byte>>,
+                                          std::vector<std::byte>>,
                   "json_rpc_serializer should satisfy rpc_serializer concept");
 }
 

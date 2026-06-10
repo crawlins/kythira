@@ -30,11 +30,11 @@ struct test_network_types {
 using TestNetworkSimulator = NetworkSimulator<test_network_types>;
 
 namespace {
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_node_c = "node_c";
-    constexpr std::chrono::milliseconds test_latency{50};
-    constexpr double test_reliability = 0.95;
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_node_c = "node_c";
+constexpr std::chrono::milliseconds test_latency{50};
+constexpr double test_reliability = 0.95;
 }
 
 BOOST_AUTO_TEST_SUITE(topology_management)
@@ -245,7 +245,6 @@ BOOST_AUTO_TEST_CASE(reset_allows_reuse) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
-
 BOOST_AUTO_TEST_SUITE(reliability_simulation)
 
 BOOST_AUTO_TEST_CASE(check_reliability_drops_messages) {
@@ -269,7 +268,8 @@ BOOST_AUTO_TEST_CASE(check_reliability_drops_messages) {
     // Allow for statistical variation (20% to 40%)
     double success_rate = static_cast<double>(successes) / static_cast<double>(trials);
 
-    BOOST_TEST_MESSAGE("Success rate: " << success_rate << " (" << successes << "/" << trials << ")");
+    BOOST_TEST_MESSAGE("Success rate: " << success_rate << " (" << successes << "/" << trials
+                                        << ")");
 
     BOOST_TEST(success_rate >= 0.20);
     BOOST_TEST(success_rate <= 0.40);

@@ -15,13 +15,13 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::size_t test_iterations = 15;
-    constexpr std::chrono::milliseconds min_timeout{10};
-    constexpr std::chrono::milliseconds max_timeout{30000};
-    constexpr double min_adaptation_factor = 1.1;
-    constexpr double max_adaptation_factor = 3.0;
-    constexpr std::size_t min_sample_window = 3;
-    constexpr std::size_t max_sample_window = 50;
+constexpr std::size_t test_iterations = 15;
+constexpr std::chrono::milliseconds min_timeout{10};
+constexpr std::chrono::milliseconds max_timeout{30000};
+constexpr double min_adaptation_factor = 1.1;
+constexpr double max_adaptation_factor = 3.0;
+constexpr std::size_t min_sample_window = 3;
+constexpr std::size_t max_sample_window = 50;
 }
 
 // Global fixture to initialize Folly
@@ -63,9 +63,7 @@ public:
         }
     }
 
-    auto get_current_timeout() const -> std::chrono::milliseconds {
-        return _current_timeout;
-    }
+    auto get_current_timeout() const -> std::chrono::milliseconds { return _current_timeout; }
 
     auto get_average_response_time() const -> std::chrono::milliseconds {
         if (_response_times.empty()) {
@@ -73,7 +71,7 @@ public:
         }
 
         auto total = std::accumulate(_response_times.begin(), _response_times.end(),
-                                   std::chrono::milliseconds{0});
+                                     std::chrono::milliseconds{0});
         return total / _response_times.size();
     }
 
@@ -86,8 +84,7 @@ private:
     auto adapt_timeout() -> void {
         auto avg_response_time = get_average_response_time();
         auto new_timeout = std::chrono::milliseconds{
-            static_cast<long long>(avg_response_time.count() * _config.adaptation_factor)
-        };
+            static_cast<long long>(avg_response_time.count() * _config.adaptation_factor)};
 
         // Clamp to configured bounds
         new_timeout = std::max(new_timeout, _config.min_timeout);
@@ -100,10 +97,12 @@ private:
 /**
  * **Feature: raft-completion, Property 45: Adaptive Timeout Behavior**
  *
- * Property: When network conditions change, the system adapts timeout and retry behavior within configured bounds.
+ * Property: When network conditions change, the system adapts timeout and retry behavior within
+ * configured bounds.
  * **Validates: Requirements 9.4**
  */
-BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test,
+                     *boost::unit_test::timeout(180)) {
     std::random_device rd;
     std::mt19937 gen(rd());
 
@@ -112,27 +111,28 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
 
         // Generate random adaptive timeout configuration
         std::uniform_int_distribution<int> timeout_dist(min_timeout.count(), max_timeout.count());
-        std::uniform_real_distribution<double> factor_dist(min_adaptation_factor, max_adaptation_factor);
-        std::uniform_int_distribution<std::size_t> window_dist(min_sample_window, max_sample_window);
+        std::uniform_real_distribution<double> factor_dist(min_adaptation_factor,
+                                                           max_adaptation_factor);
+        std::uniform_int_distribution<std::size_t> window_dist(min_sample_window,
+                                                               max_sample_window);
 
         auto min_timeout_val = std::chrono::milliseconds{timeout_dist(gen)};
-        auto max_timeout_val = std::chrono::milliseconds{std::max(static_cast<int>(min_timeout_val.count()), timeout_dist(gen))};
+        auto max_timeout_val = std::chrono::milliseconds{
+            std::max(static_cast<int>(min_timeout_val.count()), timeout_dist(gen))};
         auto adaptation_factor = factor_dist(gen);
         auto sample_window_size = window_dist(gen);
 
-        BOOST_TEST_MESSAGE("Testing adaptive config - Min: " << min_timeout_val.count()
-                          << "ms, Max: " << max_timeout_val.count()
-                          << "ms, Factor: " << adaptation_factor
-                          << ", Window: " << sample_window_size);
+        BOOST_TEST_MESSAGE("Testing adaptive config - Min: "
+                           << min_timeout_val.count() << "ms, Max: " << max_timeout_val.count()
+                           << "ms, Factor: " << adaptation_factor
+                           << ", Window: " << sample_window_size);
 
         // Create adaptive timeout configuration
-        adaptive_timeout_config config{
-            .enabled = true,
-            .min_timeout = min_timeout_val,
-            .max_timeout = max_timeout_val,
-            .adaptation_factor = adaptation_factor,
-            .sample_window_size = sample_window_size
-        };
+        adaptive_timeout_config config{.enabled = true,
+                                       .min_timeout = min_timeout_val,
+                                       .max_timeout = max_timeout_val,
+                                       .adaptation_factor = adaptation_factor,
+                                       .sample_window_size = sample_window_size};
 
         // Property: Valid adaptive timeout configuration should pass validation
         BOOST_CHECK(config.is_valid());
@@ -144,10 +144,8 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_CHECK_EQUAL(manager.get_current_timeout(), min_timeout_val);
 
         // Simulate network conditions and verify adaptation
-        std::uniform_int_distribution<int> response_time_dist(
-            min_timeout_val.count() / 2,
-            max_timeout_val.count() / 2
-        );
+        std::uniform_int_distribution<int> response_time_dist(min_timeout_val.count() / 2,
+                                                              max_timeout_val.count() / 2);
 
         // Record enough response times to trigger adaptation
         for (std::size_t i = 0; i < sample_window_size; ++i) {
@@ -165,16 +163,15 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
 
         // Property: Adapted timeout should be related to average response time by adaptation factor
         auto expected_timeout = std::chrono::milliseconds{
-            static_cast<long long>(avg_response_time.count() * adaptation_factor)
-        };
+            static_cast<long long>(avg_response_time.count() * adaptation_factor)};
         expected_timeout = std::max(expected_timeout, min_timeout_val);
         expected_timeout = std::min(expected_timeout, max_timeout_val);
 
         BOOST_CHECK_EQUAL(adapted_timeout, expected_timeout);
 
         BOOST_TEST_MESSAGE("✓ Adaptive timeout behavior working correctly - Adapted: "
-                          << adapted_timeout.count() << "ms, Avg response: "
-                          << avg_response_time.count() << "ms");
+                           << adapted_timeout.count()
+                           << "ms, Avg response: " << avg_response_time.count() << "ms");
     }
 
     // Test 1: Default adaptive timeout configuration
@@ -191,7 +188,7 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         // Property: Default bounds should be reasonable
         BOOST_CHECK_GT(config.get_adaptive_timeout_config().min_timeout.count(), 0);
         BOOST_CHECK_GT(config.get_adaptive_timeout_config().max_timeout,
-                      config.get_adaptive_timeout_config().min_timeout);
+                       config.get_adaptive_timeout_config().min_timeout);
         BOOST_CHECK_GT(config.get_adaptive_timeout_config().adaptation_factor, 1.0);
         BOOST_CHECK_GT(config.get_adaptive_timeout_config().sample_window_size, 0);
 
@@ -203,13 +200,11 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_TEST_MESSAGE("Test 2: Adaptive timeout configuration validation");
 
         // Test valid configuration
-        adaptive_timeout_config valid_config{
-            .enabled = true,
-            .min_timeout = std::chrono::milliseconds{100},
-            .max_timeout = std::chrono::milliseconds{5000},
-            .adaptation_factor = 1.5,
-            .sample_window_size = 10
-        };
+        adaptive_timeout_config valid_config{.enabled = true,
+                                             .min_timeout = std::chrono::milliseconds{100},
+                                             .max_timeout = std::chrono::milliseconds{5000},
+                                             .adaptation_factor = 1.5,
+                                             .sample_window_size = 10};
 
         // Property: Valid configuration should pass validation
         BOOST_CHECK(valid_config.is_valid());
@@ -217,41 +212,36 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         // Test invalid configurations
         std::vector<std::pair<adaptive_timeout_config, std::string>> invalid_configs = {
             // Zero min timeout
-            {adaptive_timeout_config{
-                .enabled = true,
-                .min_timeout = std::chrono::milliseconds{0},
-                .max_timeout = std::chrono::milliseconds{5000},
-                .adaptation_factor = 1.5,
-                .sample_window_size = 10
-            }, "zero min timeout"},
+            {adaptive_timeout_config{.enabled = true,
+                                     .min_timeout = std::chrono::milliseconds{0},
+                                     .max_timeout = std::chrono::milliseconds{5000},
+                                     .adaptation_factor = 1.5,
+                                     .sample_window_size = 10},
+             "zero min timeout"},
 
             // Max timeout less than min timeout
-            {adaptive_timeout_config{
-                .enabled = true,
-                .min_timeout = std::chrono::milliseconds{1000},
-                .max_timeout = std::chrono::milliseconds{500},
-                .adaptation_factor = 1.5,
-                .sample_window_size = 10
-            }, "max timeout less than min timeout"},
+            {adaptive_timeout_config{.enabled = true,
+                                     .min_timeout = std::chrono::milliseconds{1000},
+                                     .max_timeout = std::chrono::milliseconds{500},
+                                     .adaptation_factor = 1.5,
+                                     .sample_window_size = 10},
+             "max timeout less than min timeout"},
 
             // Invalid adaptation factor (too small)
-            {adaptive_timeout_config{
-                .enabled = true,
-                .min_timeout = std::chrono::milliseconds{100},
-                .max_timeout = std::chrono::milliseconds{5000},
-                .adaptation_factor = 1.0,
-                .sample_window_size = 10
-            }, "adaptation factor too small"},
+            {adaptive_timeout_config{.enabled = true,
+                                     .min_timeout = std::chrono::milliseconds{100},
+                                     .max_timeout = std::chrono::milliseconds{5000},
+                                     .adaptation_factor = 1.0,
+                                     .sample_window_size = 10},
+             "adaptation factor too small"},
 
             // Zero sample window size
-            {adaptive_timeout_config{
-                .enabled = true,
-                .min_timeout = std::chrono::milliseconds{100},
-                .max_timeout = std::chrono::milliseconds{5000},
-                .adaptation_factor = 1.5,
-                .sample_window_size = 0
-            }, "zero sample window size"}
-        };
+            {adaptive_timeout_config{.enabled = true,
+                                     .min_timeout = std::chrono::milliseconds{100},
+                                     .max_timeout = std::chrono::milliseconds{5000},
+                                     .adaptation_factor = 1.5,
+                                     .sample_window_size = 0},
+             "zero sample window size"}};
 
         for (const auto& [invalid_config, description] : invalid_configs) {
             // Property: Invalid configurations should fail validation
@@ -264,24 +254,19 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
     {
         BOOST_TEST_MESSAGE("Test 3: Adaptation to improving network conditions");
 
-        adaptive_timeout_config config{
-            .enabled = true,
-            .min_timeout = std::chrono::milliseconds{100},
-            .max_timeout = std::chrono::milliseconds{5000},
-            .adaptation_factor = 2.0,
-            .sample_window_size = 5
-        };
+        adaptive_timeout_config config{.enabled = true,
+                                       .min_timeout = std::chrono::milliseconds{100},
+                                       .max_timeout = std::chrono::milliseconds{5000},
+                                       .adaptation_factor = 2.0,
+                                       .sample_window_size = 5};
 
         adaptive_timeout_manager manager(config);
 
         // Start with slow response times
         std::vector<std::chrono::milliseconds> slow_responses = {
-            std::chrono::milliseconds{800},
-            std::chrono::milliseconds{900},
-            std::chrono::milliseconds{850},
-            std::chrono::milliseconds{950},
-            std::chrono::milliseconds{880}
-        };
+            std::chrono::milliseconds{800}, std::chrono::milliseconds{900},
+            std::chrono::milliseconds{850}, std::chrono::milliseconds{950},
+            std::chrono::milliseconds{880}};
 
         for (auto response_time : slow_responses) {
             manager.record_response_time(response_time);
@@ -295,12 +280,9 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         // Now simulate improving network conditions
         manager.reset();
         std::vector<std::chrono::milliseconds> fast_responses = {
-            std::chrono::milliseconds{50},
-            std::chrono::milliseconds{60},
-            std::chrono::milliseconds{45},
-            std::chrono::milliseconds{55},
-            std::chrono::milliseconds{52}
-        };
+            std::chrono::milliseconds{50}, std::chrono::milliseconds{60},
+            std::chrono::milliseconds{45}, std::chrono::milliseconds{55},
+            std::chrono::milliseconds{52}};
 
         for (auto response_time : fast_responses) {
             manager.record_response_time(response_time);
@@ -313,31 +295,26 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_CHECK_GE(timeout_after_fast, config.min_timeout);
 
         BOOST_TEST_MESSAGE("✓ Adaptation to improving conditions - Slow: "
-                          << timeout_after_slow.count() << "ms, Fast: "
-                          << timeout_after_fast.count() << "ms");
+                           << timeout_after_slow.count()
+                           << "ms, Fast: " << timeout_after_fast.count() << "ms");
     }
 
     // Test 4: Adaptation to degrading network conditions
     {
         BOOST_TEST_MESSAGE("Test 4: Adaptation to degrading network conditions");
 
-        adaptive_timeout_config config{
-            .enabled = true,
-            .min_timeout = std::chrono::milliseconds{50},
-            .max_timeout = std::chrono::milliseconds{3000},
-            .adaptation_factor = 1.8,
-            .sample_window_size = 4
-        };
+        adaptive_timeout_config config{.enabled = true,
+                                       .min_timeout = std::chrono::milliseconds{50},
+                                       .max_timeout = std::chrono::milliseconds{3000},
+                                       .adaptation_factor = 1.8,
+                                       .sample_window_size = 4};
 
         adaptive_timeout_manager manager(config);
 
         // Start with fast response times
         std::vector<std::chrono::milliseconds> fast_responses = {
-            std::chrono::milliseconds{30},
-            std::chrono::milliseconds{35},
-            std::chrono::milliseconds{28},
-            std::chrono::milliseconds{32}
-        };
+            std::chrono::milliseconds{30}, std::chrono::milliseconds{35},
+            std::chrono::milliseconds{28}, std::chrono::milliseconds{32}};
 
         for (auto response_time : fast_responses) {
             manager.record_response_time(response_time);
@@ -348,11 +325,8 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         // Now simulate degrading network conditions
         manager.reset();
         std::vector<std::chrono::milliseconds> slow_responses = {
-            std::chrono::milliseconds{400},
-            std::chrono::milliseconds{450},
-            std::chrono::milliseconds{380},
-            std::chrono::milliseconds{420}
-        };
+            std::chrono::milliseconds{400}, std::chrono::milliseconds{450},
+            std::chrono::milliseconds{380}, std::chrono::milliseconds{420}};
 
         for (auto response_time : slow_responses) {
             manager.record_response_time(response_time);
@@ -365,30 +339,26 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_CHECK_LE(timeout_after_slow, config.max_timeout);
 
         BOOST_TEST_MESSAGE("✓ Adaptation to degrading conditions - Fast: "
-                          << timeout_after_fast.count() << "ms, Slow: "
-                          << timeout_after_slow.count() << "ms");
+                           << timeout_after_fast.count()
+                           << "ms, Slow: " << timeout_after_slow.count() << "ms");
     }
 
     // Test 5: Timeout bounds enforcement
     {
         BOOST_TEST_MESSAGE("Test 5: Timeout bounds enforcement");
 
-        adaptive_timeout_config config{
-            .enabled = true,
-            .min_timeout = std::chrono::milliseconds{200},
-            .max_timeout = std::chrono::milliseconds{1000},
-            .adaptation_factor = 3.0,
-            .sample_window_size = 3
-        };
+        adaptive_timeout_config config{.enabled = true,
+                                       .min_timeout = std::chrono::milliseconds{200},
+                                       .max_timeout = std::chrono::milliseconds{1000},
+                                       .adaptation_factor = 3.0,
+                                       .sample_window_size = 3};
 
         adaptive_timeout_manager manager(config);
 
         // Test lower bound enforcement with very fast responses
-        std::vector<std::chrono::milliseconds> very_fast_responses = {
-            std::chrono::milliseconds{1},
-            std::chrono::milliseconds{2},
-            std::chrono::milliseconds{1}
-        };
+        std::vector<std::chrono::milliseconds> very_fast_responses = {std::chrono::milliseconds{1},
+                                                                      std::chrono::milliseconds{2},
+                                                                      std::chrono::milliseconds{1}};
 
         for (auto response_time : very_fast_responses) {
             manager.record_response_time(response_time);
@@ -402,10 +372,8 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         // Test upper bound enforcement with very slow responses
         manager.reset();
         std::vector<std::chrono::milliseconds> very_slow_responses = {
-            std::chrono::milliseconds{2000},
-            std::chrono::milliseconds{2500},
-            std::chrono::milliseconds{2200}
-        };
+            std::chrono::milliseconds{2000}, std::chrono::milliseconds{2500},
+            std::chrono::milliseconds{2200}};
 
         for (auto response_time : very_slow_responses) {
             manager.record_response_time(response_time);
@@ -417,21 +385,19 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_CHECK_LE(timeout_after_very_slow, config.max_timeout);
 
         BOOST_TEST_MESSAGE("✓ Timeout bounds enforced - Min bound: "
-                          << timeout_after_very_fast.count() << "ms, Max bound: "
-                          << timeout_after_very_slow.count() << "ms");
+                           << timeout_after_very_fast.count()
+                           << "ms, Max bound: " << timeout_after_very_slow.count() << "ms");
     }
 
     // Test 6: Sample window behavior
     {
         BOOST_TEST_MESSAGE("Test 6: Sample window behavior");
 
-        adaptive_timeout_config config{
-            .enabled = true,
-            .min_timeout = std::chrono::milliseconds{100},
-            .max_timeout = std::chrono::milliseconds{2000},
-            .adaptation_factor = 2.0,
-            .sample_window_size = 3
-        };
+        adaptive_timeout_config config{.enabled = true,
+                                       .min_timeout = std::chrono::milliseconds{100},
+                                       .max_timeout = std::chrono::milliseconds{2000},
+                                       .adaptation_factor = 2.0,
+                                       .sample_window_size = 3};
 
         adaptive_timeout_manager manager(config);
 
@@ -451,7 +417,8 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         auto first_adaptation = manager.get_current_timeout();
 
         // Add more samples to test sliding window
-        manager.record_response_time(std::chrono::milliseconds{200}); // Should replace oldest sample
+        manager.record_response_time(
+            std::chrono::milliseconds{200});  // Should replace oldest sample
 
         auto second_adaptation = manager.get_current_timeout();
 
@@ -459,21 +426,19 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
         BOOST_CHECK_LT(second_adaptation, first_adaptation);
 
         BOOST_TEST_MESSAGE("✓ Sample window behavior correct - First: "
-                          << first_adaptation.count() << "ms, Second: "
-                          << second_adaptation.count() << "ms");
+                           << first_adaptation.count()
+                           << "ms, Second: " << second_adaptation.count() << "ms");
     }
 
     // Test 7: Disabled adaptive timeout behavior
     {
         BOOST_TEST_MESSAGE("Test 7: Disabled adaptive timeout behavior");
 
-        adaptive_timeout_config config{
-            .enabled = false,
-            .min_timeout = std::chrono::milliseconds{100},
-            .max_timeout = std::chrono::milliseconds{2000},
-            .adaptation_factor = 2.0,
-            .sample_window_size = 3
-        };
+        adaptive_timeout_config config{.enabled = false,
+                                       .min_timeout = std::chrono::milliseconds{100},
+                                       .max_timeout = std::chrono::milliseconds{2000},
+                                       .adaptation_factor = 2.0,
+                                       .sample_window_size = 3};
 
         adaptive_timeout_manager manager(config);
 
@@ -509,15 +474,17 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
 
         // Property: Configuration should store modified values
         BOOST_CHECK(config.get_adaptive_timeout_config().enabled);
-        BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().min_timeout, std::chrono::milliseconds{150});
-        BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().max_timeout, std::chrono::milliseconds{3000});
+        BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().min_timeout,
+                          std::chrono::milliseconds{150});
+        BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().max_timeout,
+                          std::chrono::milliseconds{3000});
         BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().adaptation_factor, 1.8);
         BOOST_CHECK_EQUAL(config.get_adaptive_timeout_config().sample_window_size, 8);
 
         // Property: Overall configuration should still be valid
         auto validation_errors = config.get_validation_errors();
-        bool has_adaptive_timeout_errors = std::any_of(validation_errors.begin(), validation_errors.end(),
-            [](const std::string& error) {
+        bool has_adaptive_timeout_errors = std::any_of(
+            validation_errors.begin(), validation_errors.end(), [](const std::string& error) {
                 return error.find("adaptive_timeout") != std::string::npos;
             });
         BOOST_CHECK(!has_adaptive_timeout_errors);
@@ -536,17 +503,16 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test, * boost::unit
 
         for (int i = 0; i < 20; ++i) {
             auto min_timeout_val = std::chrono::milliseconds{timeout_dist(gen)};
-            auto max_timeout_val = std::chrono::milliseconds{std::max(static_cast<int>(min_timeout_val.count()), timeout_dist(gen))};
+            auto max_timeout_val = std::chrono::milliseconds{
+                std::max(static_cast<int>(min_timeout_val.count()), timeout_dist(gen))};
             auto adaptation_factor = factor_dist(gen);
             auto sample_window_size = window_dist(gen);
 
-            adaptive_timeout_config config{
-                .enabled = true,
-                .min_timeout = min_timeout_val,
-                .max_timeout = max_timeout_val,
-                .adaptation_factor = adaptation_factor,
-                .sample_window_size = sample_window_size
-            };
+            adaptive_timeout_config config{.enabled = true,
+                                           .min_timeout = min_timeout_val,
+                                           .max_timeout = max_timeout_val,
+                                           .adaptation_factor = adaptation_factor,
+                                           .sample_window_size = sample_window_size};
 
             // Property: Random valid configurations should pass validation
             BOOST_CHECK(config.is_valid());

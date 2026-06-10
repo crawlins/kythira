@@ -20,7 +20,8 @@ namespace kythira {
 struct block_option {
     std::uint32_t block_number{0};  // Block number (0-based)
     bool more_blocks{false};        // More blocks flag (M bit)
-    std::uint32_t block_size{16};   // Block size (must be power of 2: 16, 32, 64, 128, 256, 512, 1024)
+    std::uint32_t block_size{
+        16};  // Block size (must be power of 2: 16, 32, 64, 128, 256, 512, 1024)
 
     // Parse Block1/Block2 option value according to RFC 7959
     static auto parse(std::uint32_t option_value) -> block_option {
@@ -54,12 +55,12 @@ struct block_option {
 
         // RFC 7959: Encode as NUM (upper bits) | M (bit 3) | SZX (bits 0-2)
         std::uint32_t result = 0;
-        result |= (szx & 0x7);                    // SZX (bits 0-2)
-        result |= (more_blocks ? 1 : 0) << 3;     // More flag (bit 3)
-        result |= (block_number << 4);            // Block number (bit 4 and above)
+        result |= (szx & 0x7);                 // SZX (bits 0-2)
+        result |= (more_blocks ? 1 : 0) << 3;  // More flag (bit 3)
+        result |= (block_number << 4);         // Block number (bit 4 and above)
 
         return result;
     }
 };
 
-} // namespace kythira
+}  // namespace kythira

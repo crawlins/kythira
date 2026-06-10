@@ -7,36 +7,27 @@
 #include <unordered_map>
 
 namespace {
-    constexpr const char* test_name = "persistence_concept_test";
+constexpr const char* test_name = "persistence_concept_test";
 }
 
 // Mock persistence engine for testing the concept
-template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
 requires kythira::node_id<NodeId> && kythira::term_id<TermId> && kythira::log_index<LogIndex>
 class mock_persistence_engine {
 public:
     using log_entry_t = kythira::log_entry<TermId, LogIndex>;
     using snapshot_t = kythira::snapshot<NodeId, TermId, LogIndex>;
 
-    auto save_current_term(TermId term) -> void {
-        _current_term = term;
-    }
+    auto save_current_term(TermId term) -> void { _current_term = term; }
 
-    auto load_current_term() -> TermId {
-        return _current_term;
-    }
+    auto load_current_term() -> TermId { return _current_term; }
 
-    auto save_voted_for(NodeId node) -> void {
-        _voted_for = node;
-    }
+    auto save_voted_for(NodeId node) -> void { _voted_for = node; }
 
-    auto load_voted_for() -> std::optional<NodeId> {
-        return _voted_for;
-    }
+    auto load_voted_for() -> std::optional<NodeId> { return _voted_for; }
 
-    auto append_log_entry(const log_entry_t& entry) -> void {
-        _log[entry.index()] = entry;
-    }
+    auto append_log_entry(const log_entry_t& entry) -> void { _log[entry.index()] = entry; }
 
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         auto it = _log.find(index);
@@ -81,13 +72,9 @@ public:
         }
     }
 
-    auto save_snapshot(const snapshot_t& snap) -> void {
-        _snapshot = snap;
-    }
+    auto save_snapshot(const snapshot_t& snap) -> void { _snapshot = snap; }
 
-    auto load_snapshot() -> std::optional<snapshot_t> {
-        return _snapshot;
-    }
+    auto load_snapshot() -> std::optional<snapshot_t> { return _snapshot; }
 
     auto delete_log_entries_before(LogIndex index) -> void {
         auto it = _log.begin();
@@ -107,7 +94,7 @@ private:
     std::optional<snapshot_t> _snapshot;
 };
 
-BOOST_AUTO_TEST_CASE(test_persistence_engine_concept, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_persistence_engine_concept, *boost::unit_test::timeout(30)) {
     // Test that mock_persistence_engine satisfies persistence_engine concept
     using engine_t = mock_persistence_engine<>;
     using node_id_t = std::uint64_t;
@@ -116,21 +103,19 @@ BOOST_AUTO_TEST_CASE(test_persistence_engine_concept, * boost::unit_test::timeou
     using log_entry_t = kythira::log_entry<term_id_t, log_index_t>;
     using snapshot_t = kythira::snapshot<node_id_t, term_id_t, log_index_t>;
 
-    static_assert(
-        kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
-        "mock_persistence_engine should satisfy persistence_engine concept"
-    );
+    static_assert(kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t,
+                                              log_entry_t, snapshot_t>,
+                  "mock_persistence_engine should satisfy persistence_engine concept");
 
     // Test that memory_persistence_engine satisfies persistence_engine concept
     using memory_engine_t = kythira::memory_persistence_engine<>;
 
-    static_assert(
-        kythira::persistence_engine<memory_engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
-        "memory_persistence_engine should satisfy persistence_engine concept"
-    );
+    static_assert(kythira::persistence_engine<memory_engine_t, node_id_t, term_id_t, log_index_t,
+                                              log_entry_t, snapshot_t>,
+                  "memory_persistence_engine should satisfy persistence_engine concept");
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations, *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Test term operations
@@ -141,7 +126,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_term_operations, * boost::unit_test::
     BOOST_TEST(engine.load_current_term() == 10);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations, *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Initially no vote
@@ -155,7 +140,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_voted_for_operations, * boost::unit_t
     BOOST_TEST(*voted_for == 42);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations, *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Create and append log entries
@@ -184,7 +169,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_log_operations, * boost::unit_test::t
     BOOST_TEST(entries[2].index() == 3);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log, *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Add entries
@@ -209,7 +194,8 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_truncate_log, * boost::unit_test::tim
     BOOST_TEST(engine.get_log_entry(2).has_value());
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before,
+                     *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Add entries
@@ -234,7 +220,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_delete_log_entries_before, * boost::u
     BOOST_TEST(engine.get_last_log_index() == 4);
 }
 
-BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, *boost::unit_test::timeout(30)) {
     mock_persistence_engine<> engine;
 
     // Initially no snapshot
@@ -255,7 +241,7 @@ BOOST_AUTO_TEST_CASE(test_mock_persistence_snapshot_operations, * boost::unit_te
     BOOST_TEST(snapshot->configuration().nodes().size() == 3);
 }
 
-BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept, *boost::unit_test::timeout(30)) {
     // Test that memory_persistence_engine satisfies persistence_engine concept
     using engine_t = kythira::memory_persistence_engine<>;
     using node_id_t = std::uint64_t;
@@ -264,8 +250,7 @@ BOOST_AUTO_TEST_CASE(test_memory_persistence_engine_concept, * boost::unit_test:
     using log_entry_t = kythira::log_entry<term_id_t, log_index_t>;
     using snapshot_t = kythira::snapshot<node_id_t, term_id_t, log_index_t>;
 
-    static_assert(
-        kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t, log_entry_t, snapshot_t>,
-        "memory_persistence_engine should satisfy persistence_engine concept"
-    );
+    static_assert(kythira::persistence_engine<engine_t, node_id_t, term_id_t, log_index_t,
+                                              log_entry_t, snapshot_t>,
+                  "memory_persistence_engine should satisfy persistence_engine concept");
 }

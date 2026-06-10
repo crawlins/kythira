@@ -6,10 +6,10 @@
 #include <cstddef>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 50;
-    constexpr std::uint64_t max_term = 100;
-    constexpr std::uint64_t max_index = 1000;
-    constexpr std::size_t max_chunk_size = 4096;
+constexpr std::size_t property_test_iterations = 50;
+constexpr std::uint64_t max_term = 100;
+constexpr std::uint64_t max_index = 1000;
+constexpr std::size_t max_chunk_size = 4096;
 }
 
 // Helper to generate random term
@@ -34,8 +34,8 @@ auto generate_random_chunk_size(std::mt19937& rng) -> std::size_t {
  * Feature: raft-consensus, Property 87: Complete InstallSnapshot Handler Logic
  * Validates: Requirements 10.3, 10.4, 5.5
  *
- * Property: The InstallSnapshot handler must correctly implement all Raft snapshot installation rules.
- * This test validates the chunked snapshot receiving and assembly logic.
+ * Property: The InstallSnapshot handler must correctly implement all Raft snapshot installation
+ * rules. This test validates the chunked snapshot receiving and assembly logic.
  *
  * InstallSnapshot rules:
  * 1. Reply immediately if term < currentTerm
@@ -44,12 +44,13 @@ auto generate_random_chunk_size(std::mt19937& rng) -> std::size_t {
  * 4. Reply and wait for more data chunks if done is false
  * 5. Save snapshot file when done is true
  * 6. Discard any existing or partial snapshot with smaller index
- * 7. If existing log entry has same index and term as snapshot's last included entry, retain log entries following it
+ * 7. If existing log entry has same index and term as snapshot's last included entry, retain log
+ * entries following it
  * 8. Discard entire log if no such entry exists
  * 9. Reset state machine using snapshot contents
  * 10. Reply with current term
  */
-BOOST_AUTO_TEST_CASE(property_snapshot_chunk_assembly, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_snapshot_chunk_assembly, *boost::unit_test::timeout(90)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -83,7 +84,8 @@ BOOST_AUTO_TEST_CASE(property_snapshot_chunk_assembly, * boost::unit_test::timeo
         std::size_t expected_offset = 0;
         for (std::size_t j = 0; j < num_chunks; ++j) {
             // Verify offset calculation
-            BOOST_CHECK_EQUAL(expected_offset,
+            BOOST_CHECK_EQUAL(
+                expected_offset,
                 std::accumulate(chunk_sizes.begin(), chunk_sizes.begin() + j, std::size_t{0}));
 
             expected_offset += chunk_sizes[j];
@@ -102,10 +104,10 @@ BOOST_AUTO_TEST_CASE(property_snapshot_chunk_assembly, * boost::unit_test::timeo
 
         if (i < 10) {  // Log first 10 iterations for visibility
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "last_included_index=" << last_included_index << ", "
-                << "last_included_term=" << last_included_term << ", "
-                << "num_chunks=" << num_chunks << ", "
-                << "total_size=" << total_size);
+                                            << "last_included_index=" << last_included_index << ", "
+                                            << "last_included_term=" << last_included_term << ", "
+                                            << "num_chunks=" << num_chunks << ", "
+                                            << "total_size=" << total_size);
         }
     }
 
@@ -126,7 +128,7 @@ BOOST_AUTO_TEST_CASE(property_snapshot_chunk_assembly, * boost::unit_test::timeo
  * The InstallSnapshot handler must reject chunks with incorrect offsets.
  * This ensures data integrity during snapshot transfer.
  */
-BOOST_AUTO_TEST_CASE(property_snapshot_offset_validation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_snapshot_offset_validation, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -161,10 +163,10 @@ BOOST_AUTO_TEST_CASE(property_snapshot_offset_validation, * boost::unit_test::ti
 
         if (i < 10) {  // Log first 10 iterations for visibility
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "chunks_received=" << chunks_received << ", "
-                << "expected_offset=" << expected_offset << ", "
-                << "incorrect_offset=" << incorrect_offset << ", "
-                << "should_reject=" << (should_reject ? "yes" : "no"));
+                                            << "chunks_received=" << chunks_received << ", "
+                                            << "expected_offset=" << expected_offset << ", "
+                                            << "incorrect_offset=" << incorrect_offset << ", "
+                                            << "should_reject=" << (should_reject ? "yes" : "no"));
         }
     }
 
@@ -180,7 +182,7 @@ BOOST_AUTO_TEST_CASE(property_snapshot_offset_validation, * boost::unit_test::ti
  * All chunks of a snapshot must have consistent metadata (last_included_index, last_included_term).
  * If metadata changes mid-transfer, the partial snapshot should be discarded.
  */
-BOOST_AUTO_TEST_CASE(property_snapshot_metadata_consistency, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_snapshot_metadata_consistency, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -196,8 +198,8 @@ BOOST_AUTO_TEST_CASE(property_snapshot_metadata_consistency, * boost::unit_test:
 
         // Property: Metadata consistency check
         // If subsequent metadata differs from initial, the chunk should be rejected
-        bool metadata_matches = (initial_index == subsequent_index) &&
-                               (initial_term == subsequent_term);
+        bool metadata_matches =
+            (initial_index == subsequent_index) && (initial_term == subsequent_term);
         bool should_reject = !metadata_matches;
 
         BOOST_CHECK_EQUAL(should_reject, !metadata_matches);
@@ -206,9 +208,11 @@ BOOST_AUTO_TEST_CASE(property_snapshot_metadata_consistency, * boost::unit_test:
 
         if (i < 10) {  // Log first 10 iterations for visibility
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "initial (index=" << initial_index << ", term=" << initial_term << "), "
-                << "subsequent (index=" << subsequent_index << ", term=" << subsequent_term << "), "
-                << "should_reject=" << (should_reject ? "yes" : "no"));
+                                            << "initial (index=" << initial_index
+                                            << ", term=" << initial_term << "), "
+                                            << "subsequent (index=" << subsequent_index
+                                            << ", term=" << subsequent_term << "), "
+                                            << "should_reject=" << (should_reject ? "yes" : "no"));
         }
     }
 
@@ -223,7 +227,7 @@ BOOST_AUTO_TEST_CASE(property_snapshot_metadata_consistency, * boost::unit_test:
  *
  * The InstallSnapshot handler must reject snapshots from leaders with stale terms.
  */
-BOOST_AUTO_TEST_CASE(property_snapshot_term_validation, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_snapshot_term_validation, *boost::unit_test::timeout(60)) {
     std::mt19937 rng(std::random_device{}());
 
     std::size_t tests_passed = 0;
@@ -272,9 +276,9 @@ BOOST_AUTO_TEST_CASE(property_snapshot_term_validation, * boost::unit_test::time
 
         if (i < 10) {  // Log first 10 iterations for visibility
             BOOST_TEST_MESSAGE("Iteration " << i << ": "
-                << "current_term=" << current_term << ", "
-                << "request_term=" << request_term << ", "
-                << "should_reject=" << (should_reject ? "yes" : "no"));
+                                            << "current_term=" << current_term << ", "
+                                            << "request_term=" << request_term << ", "
+                                            << "should_reject=" << (should_reject ? "yes" : "no"));
         }
     }
 
@@ -290,4 +294,3 @@ BOOST_AUTO_TEST_CASE(property_snapshot_term_validation, * boost::unit_test::time
     BOOST_CHECK_GT(higher_term_tests, 0);
     BOOST_CHECK_EQUAL(tests_passed, property_test_iterations);
 }
-

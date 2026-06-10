@@ -5,64 +5,60 @@
 #include <folly/Unit.h>
 
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_error_message = "Test exception";
+constexpr int test_value = 42;
+constexpr const char* test_error_message = "Test exception";
 }
 
 // Mock Future implementation for testing
 namespace kythira {
-    template<typename T>
-    class MockFuture {
-    public:
-        explicit MockFuture(T value) : value_(std::move(value)) {}
-        explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
-        MockFuture() = default;
+template<typename T> class MockFuture {
+public:
+    explicit MockFuture(T value) : value_(std::move(value)) {}
+    explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
+    MockFuture() = default;
 
-        auto get() -> T {
-            if (exception_) {
-                exception_.throw_exception();
-            }
-            return std::move(value_);
+    auto get() -> T {
+        if (exception_) {
+            exception_.throw_exception();
         }
+        return std::move(value_);
+    }
 
-        auto isReady() const -> bool { return true; }
-        auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
+    auto isReady() const -> bool { return true; }
+    auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
 
-        template<typename F>
-        auto thenValue(F&& func) -> MockFuture<int> {
-            return MockFuture<int>(test_value);
+    template<typename F> auto thenValue(F&& func) -> MockFuture<int> {
+        return MockFuture<int>(test_value);
+    }
+
+private:
+    T value_{};
+    folly::exception_wrapper exception_;
+};
+
+// Specialization for folly::Unit
+template<> class MockFuture<folly::Unit> {
+public:
+    explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
+    MockFuture() = default;
+
+    auto get() -> folly::Unit {
+        if (exception_) {
+            exception_.throw_exception();
         }
+        return folly::Unit{};
+    }
 
-    private:
-        T value_{};
-        folly::exception_wrapper exception_;
-    };
+    auto isReady() const -> bool { return true; }
+    auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
 
-    // Specialization for folly::Unit
-    template<>
-    class MockFuture<folly::Unit> {
-    public:
-        explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
-        MockFuture() = default;
+    template<typename F> auto thenValue(F&& func) -> MockFuture<int> {
+        return MockFuture<int>(test_value);
+    }
 
-        auto get() -> folly::Unit {
-            if (exception_) {
-                exception_.throw_exception();
-            }
-            return folly::Unit{};
-        }
-
-        auto isReady() const -> bool { return true; }
-        auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
-
-        template<typename F>
-        auto thenValue(F&& func) -> MockFuture<int> {
-            return MockFuture<int>(test_value);
-        }
-
-    private:
-        folly::exception_wrapper exception_;
-    };
+private:
+    folly::exception_wrapper exception_;
+};
 }
 
 // Test factory implementation that satisfies the concept
@@ -90,7 +86,7 @@ struct InvalidFactory {
     // Missing makeExceptionalFuture and makeReadyFuture methods
 };
 
-BOOST_AUTO_TEST_CASE(test_future_factory_concept_validation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_future_factory_concept_validation, *boost::unit_test::timeout(30)) {
     // **Feature: folly-concepts-enhancement, Property 1: Concept compilation validation**
     // Test that valid factory satisfies the concept
     static_assert(kythira::future_factory<ValidFactory>,
@@ -101,23 +97,24 @@ BOOST_AUTO_TEST_CASE(test_future_factory_concept_validation, * boost::unit_test:
                   "InvalidFactory should NOT satisfy future_factory concept");
 
     // Test that the concept correctly identifies the required methods
-    BOOST_CHECK(true); // If we get here, static assertions passed
+    BOOST_CHECK(true);  // If we get here, static assertions passed
 }
 
-BOOST_AUTO_TEST_CASE(test_factory_method_signatures, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_factory_method_signatures, *boost::unit_test::timeout(30)) {
     // Test that the factory methods have the expected signatures
     auto future_from_value = ValidFactory::makeFuture(test_value);
     BOOST_CHECK(future_from_value.isReady());
 
     auto exception_wrapper = folly::exception_wrapper(std::runtime_error(test_error_message));
-    auto future_from_exception = ValidFactory::makeExceptionalFuture<int>(std::move(exception_wrapper));
+    auto future_from_exception =
+        ValidFactory::makeExceptionalFuture<int>(std::move(exception_wrapper));
     BOOST_CHECK(future_from_exception.isReady());
 
     auto ready_future = ValidFactory::makeReadyFuture();
     BOOST_CHECK(ready_future.isReady());
 }
 
-BOOST_AUTO_TEST_CASE(test_concept_return_type_constraints, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_concept_return_type_constraints, *boost::unit_test::timeout(30)) {
     // Test that the concept enforces correct return types
     using MakeFutureReturnType = decltype(ValidFactory::makeFuture(test_value));
     using MakeExceptionalReturnType = decltype(ValidFactory::makeExceptionalFuture<int>(
@@ -132,5 +129,5 @@ BOOST_AUTO_TEST_CASE(test_concept_return_type_constraints, * boost::unit_test::t
     static_assert(kythira::future<MakeReadyReturnType, folly::Unit>,
                   "makeReadyFuture return type should satisfy future concept");
 
-    BOOST_CHECK(true); // If we get here, static assertions passed
+    BOOST_CHECK(true);  // If we get here, static assertions passed
 }

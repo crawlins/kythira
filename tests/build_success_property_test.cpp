@@ -22,7 +22,7 @@
  *
  * Validates: Requirements 9.3
  */
-BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
     // This test validates that the future conversion has been successful
     // by ensuring that key components can be instantiated and used without
     // compilation errors related to future types.
@@ -41,7 +41,7 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
         // Test 2: Future concept is properly defined and accessible
         {
             static_assert(kythira::future<kythira::Future<int>, int>,
-                         "kythira::Future should satisfy the future concept");
+                          "kythira::Future should satisfy the future concept");
         }
 
         // Test 3: Network concepts compile with kythira::Future
@@ -52,7 +52,7 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
 
             // Test that the future concept works with our future type
             static_assert(kythira::future<TestFuture, bool>,
-                         "kythira::Future<bool> should satisfy future concept");
+                          "kythira::Future<bool> should satisfy future concept");
         }
 
         // Test 4: HTTP transport types can be instantiated
@@ -73,26 +73,27 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
         {
             // Test that network simulator can be instantiated with kythira::Future
             // Use the standard DefaultNetworkTypes which includes all required type members
-            using SimulatorType = network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>;
+            using SimulatorType =
+                network_simulator::NetworkSimulator<network_simulator::DefaultNetworkTypes>;
 
             // If this compiles, the network simulator templates are working
             static_assert(std::is_constructible_v<SimulatorType>,
-                         "Network simulator should be constructible");
+                          "Network simulator should be constructible");
         }
 
         // Test 7: Connection and Listener types can be instantiated
         {
-            using ConnectionType = network_simulator::Connection<network_simulator::DefaultNetworkTypes>;
-            using ListenerType = network_simulator::Listener<network_simulator::DefaultNetworkTypes>;
+            using ConnectionType =
+                network_simulator::Connection<network_simulator::DefaultNetworkTypes>;
+            using ListenerType =
+                network_simulator::Listener<network_simulator::DefaultNetworkTypes>;
 
             // If these compile, the connection types are working
             // Note: These constructors require specific parameters, so we just
             // test that the types are well-formed
-            static_assert(std::is_class_v<ConnectionType>,
-                         "Connection should be a class type");
+            static_assert(std::is_class_v<ConnectionType>, "Connection should be a class type");
 
-            static_assert(std::is_class_v<ListenerType>,
-                         "Listener should be a class type");
+            static_assert(std::is_class_v<ListenerType>, "Listener should be a class type");
         }
 
         // Test 8: Future-related headers can be included without conflicts
@@ -113,9 +114,8 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
         // Test 9: Exception handling works correctly
         {
             // Test that future exception handling compiles and works
-            auto exception_future = kythira::Future<int>(
-                folly::exception_wrapper(std::runtime_error("test error"))
-            );
+            auto exception_future =
+                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
 
             BOOST_CHECK(exception_future.isReady());
 
@@ -154,12 +154,12 @@ BOOST_AUTO_TEST_CASE(property_build_success, * boost::unit_test::timeout(30)) {
     }
 
     // Final validation
-    BOOST_TEST(all_components_compile,
-               "Build success property violated: " << error_message);
+    BOOST_TEST(all_components_compile, "Build success property violated: " << error_message);
 
     // If we reach this point, all the template instantiations and
     // type checks have passed, which means the build is successful
     // for the core future conversion components.
-    BOOST_TEST_MESSAGE("Build success property validated: All future-related "
-                      "components compile successfully");
+    BOOST_TEST_MESSAGE(
+        "Build success property validated: All future-related "
+        "components compile successfully");
 }

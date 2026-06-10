@@ -16,19 +16,21 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
-    constexpr std::size_t property_test_iterations = 100;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
+constexpr std::size_t property_test_iterations = 100;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 4: Factory Future Creation**
  *
- * Property: For any value or exception, factory methods should create futures that are immediately ready with the correct value or exception
+ * Property: For any value or exception, factory methods should create futures that are immediately
+ * ready with the correct value or exception
  * **Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**
  */
-BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: makeFuture creates immediately ready futures with correct values
     {
         // Test with int
@@ -50,7 +52,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
         // Test with void
         auto void_future = FutureFactory::makeFuture();
         BOOST_CHECK(void_future.isReady());
-        void_future.get(); // Should not throw
+        void_future.get();  // Should not throw
 
         BOOST_TEST_MESSAGE("makeFuture creates immediately ready futures with correct values");
     }
@@ -74,7 +76,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
         BOOST_CHECK(void_future.isReady());
         BOOST_CHECK_THROW(void_future.get(), std::runtime_error);
 
-        BOOST_TEST_MESSAGE("makeExceptionalFuture creates immediately ready futures with correct exceptions");
+        BOOST_TEST_MESSAGE(
+            "makeExceptionalFuture creates immediately ready futures with correct exceptions");
     }
 
     // Test 3: makeReadyFuture creates immediately ready futures
@@ -82,7 +85,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
         // Test makeReadyFuture (void/Unit)
         auto ready_future = FutureFactory::makeReadyFuture();
         BOOST_CHECK(ready_future.isReady());
-        ready_future.get(); // Should not throw
+        ready_future.get();  // Should not throw
 
         // Test makeReadyFuture with value
         auto ready_int_future = FutureFactory::makeReadyFuture(test_value);
@@ -245,14 +248,14 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
         static_assert(std::is_same_v<decltype(void_future1), Future<void>>,
                       "makeFuture() should return Future<void>");
         BOOST_CHECK(void_future1.isReady());
-        void_future1.get(); // Should not throw
+        void_future1.get();  // Should not throw
 
         // Test void makeReadyFuture
         auto void_future2 = FutureFactory::makeReadyFuture();
         static_assert(std::is_same_v<decltype(void_future2), Future<folly::Unit>>,
                       "makeReadyFuture() should return Future<folly::Unit>");
         BOOST_CHECK(void_future2.isReady());
-        void_future2.get(); // Should not throw
+        void_future2.get();  // Should not throw
 
         // Test void makeExceptionalFuture
         auto void_ex_future = FutureFactory::makeExceptionalFuture<void>(
@@ -278,7 +281,8 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
             folly::exception_wrapper(std::runtime_error("test")));
 
         auto end_time = std::chrono::steady_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto duration =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
         // All futures should be immediately ready
         BOOST_CHECK(int_future.isReady());
@@ -297,7 +301,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test, * boost::uni
 /**
  * Test edge cases and boundary conditions for factory future creation
  */
-BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, *boost::unit_test::timeout(30)) {
     // Test with empty string
     {
         std::string empty_str;
@@ -350,7 +354,8 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, * boost::unit_test
             // The behavior with null exception_ptr is implementation-defined
         } catch (...) {
             // It's acceptable if this throws during construction
-            BOOST_TEST_MESSAGE("Null exception_ptr handling throws during construction (acceptable)");
+            BOOST_TEST_MESSAGE(
+                "Null exception_ptr handling throws during construction (acceptable)");
         }
     }
 
@@ -360,7 +365,7 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, * boost::unit_test
 /**
  * Test concurrent factory future creation
  */
-BOOST_AUTO_TEST_CASE(future_factory_creation_concurrent_test, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(future_factory_creation_concurrent_test, *boost::unit_test::timeout(60)) {
     constexpr std::size_t num_threads = 4;
     constexpr std::size_t operations_per_thread = 100;
 
@@ -415,14 +420,16 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_concurrent_test, * boost::unit_test
     }
 
     // Verify that most operations succeeded (allow for some potential race conditions)
-    std::size_t expected_operations = num_threads * operations_per_thread * 3; // 3 operations per iteration
+    std::size_t expected_operations =
+        num_threads * operations_per_thread * 3;  // 3 operations per iteration
     BOOST_CHECK_EQUAL(total_operations.load(), expected_operations);
 
     // At least 95% of operations should succeed
-    double success_rate = static_cast<double>(successful_operations.load()) / total_operations.load();
+    double success_rate =
+        static_cast<double>(successful_operations.load()) / total_operations.load();
     BOOST_CHECK(success_rate >= 0.95);
 
     BOOST_TEST_MESSAGE("Concurrent factory future creation test completed with "
-                      << successful_operations.load() << "/" << total_operations.load()
-                      << " successful operations (" << (success_rate * 100) << "%)");
+                       << successful_operations.load() << "/" << total_operations.load()
+                       << " successful operations (" << (success_rate * 100) << "%)");
 }

@@ -20,10 +20,10 @@
 #include "../../include/raft/future.hpp"
 
 namespace {
-    constexpr const char* test_value = "Hello, Promise!";
-    constexpr const char* test_error_message = "Test exception";
-    constexpr int test_int_value = 42;
-    constexpr std::chrono::milliseconds test_delay{100};
+constexpr const char* test_value = "Hello, Promise!";
+constexpr const char* test_error_message = "Test exception";
+constexpr int test_int_value = 42;
+constexpr std::chrono::milliseconds test_delay{100};
 }
 
 class PromiseExampleRunner {
@@ -117,8 +117,8 @@ private:
             // Get the value from the future (this should be ready immediately)
             auto result = std::move(future).get();
             if (result != test_int_value) {
-                std::cout << "  ❌ Future value mismatch: expected " << test_int_value
-                         << ", got " << result << "\n";
+                std::cout << "  ❌ Future value mismatch: expected " << test_int_value << ", got "
+                          << result << "\n";
                 return false;
             }
 

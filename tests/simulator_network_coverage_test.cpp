@@ -38,11 +38,11 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
 
-using net_types   = kythira::raft_simulator_network_types<std::string>;
-using serializer  = kythira::json_rpc_serializer<std::vector<std::byte>>;
-using data_t      = std::vector<std::byte>;
-using client_t    = kythira::simulator_network_client<net_types, serializer, data_t>;
-using server_t    = kythira::simulator_network_server<net_types, serializer, data_t>;
+using net_types = kythira::raft_simulator_network_types<std::string>;
+using serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
+using data_t = std::vector<std::byte>;
+using client_t = kythira::simulator_network_client<net_types, serializer, data_t>;
+using server_t = kythira::simulator_network_server<net_types, serializer, data_t>;
 
 template<typename Pred>
 bool wait_for(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{2000}) {
@@ -54,13 +54,13 @@ bool wait_for(Pred pred, std::chrono::milliseconds deadline = std::chrono::milli
     return true;
 }
 
-} // namespace
+}  // namespace
 
 // ── Suite: server lifecycle ───────────────────────────────────────────────────
 
 BOOST_AUTO_TEST_SUITE(server_lifecycle_suite)
 
-BOOST_AUTO_TEST_CASE(start_stop_is_running, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(start_stop_is_running, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
     auto node = sim.create_node("1");
@@ -83,7 +83,7 @@ BOOST_AUTO_TEST_CASE(start_stop_is_running, * boost::unit_test::timeout(10)) {
     BOOST_CHECK(!srv.is_running());
 }
 
-BOOST_AUTO_TEST_CASE(move_constructor_stopped, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(move_constructor_stopped, *boost::unit_test::timeout(10)) {
     // Moving a stopped server is safe — the thread hasn't captured `this` yet.
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
@@ -102,7 +102,7 @@ BOOST_AUTO_TEST_CASE(move_constructor_stopped, * boost::unit_test::timeout(10)) 
     BOOST_CHECK(!srv2.is_running());
 }
 
-BOOST_AUTO_TEST_CASE(move_assignment_stopped, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(move_assignment_stopped, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
     auto node1 = sim.create_node("1");
@@ -136,26 +136,21 @@ BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE(handler_dispatch_suite)
 
 // Helper: create a two-node simulator with a bidirectional edge so messages route.
-void add_edge_both(
-    network_simulator::NetworkSimulator<net_types>& sim,
-    const std::string& a, const std::string& b)
-{
+void add_edge_both(network_simulator::NetworkSimulator<net_types>& sim, const std::string& a,
+                   const std::string& b) {
     network_simulator::NetworkEdge edge{std::chrono::milliseconds{0}, 1.0};
     sim.add_edge(a, b, edge);
     sim.add_edge(b, a, edge);
 }
 
 // Helper: send a raw serialized message from node_src to node_dst address.
-void send_raw(
-    std::shared_ptr<network_simulator::NetworkNode<net_types>> src,
-    const std::string& dst_addr,
-    const std::vector<std::byte>& payload)
-{
+void send_raw(std::shared_ptr<network_simulator::NetworkNode<net_types>> src,
+              const std::string& dst_addr, const std::vector<std::byte>& payload) {
     net_types::message_type msg(src->address(), 0, dst_addr, 5000, payload);
     src->send(std::move(msg));  // fire-and-forget; delivers synchronously to dst queue
 }
 
-BOOST_AUTO_TEST_CASE(install_snapshot_handler, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(install_snapshot_handler, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
 
@@ -166,33 +161,33 @@ BOOST_AUTO_TEST_CASE(install_snapshot_handler, * boost::unit_test::timeout(10)) 
     std::atomic<int> handler_calls{0};
 
     server_t srv{node2, serializer{}};
-    srv.register_install_snapshot_handler(
-        [&](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
-            ++handler_calls;
-            return kythira::install_snapshot_response<>{req._term};
-        }
-    );
+    srv.register_install_snapshot_handler([&](const kythira::install_snapshot_request<>& req)
+                                              -> kythira::install_snapshot_response<> {
+        ++handler_calls;
+        return kythira::install_snapshot_response<>{req._term};
+    });
     srv.start();
 
     kythira::install_snapshot_request<> req;
-    req._leader_id            = 1;
-    req._term                 = 5;
-    req._last_included_index  = 10;
-    req._last_included_term   = 3;
-    req._offset               = 0;
-    req._done                 = true;
+    req._leader_id = 1;
+    req._term = 5;
+    req._last_included_index = 10;
+    req._last_included_term = 3;
+    req._offset = 0;
+    req._done = true;
 
     serializer ser;
     send_raw(node1, "2", ser.serialize(req));
 
     // The server's background thread polls every 100 ms; give it time to process
-    BOOST_CHECK(wait_for([&]{ return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
+    BOOST_CHECK(
+        wait_for([&] { return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_GE(handler_calls.load(), 1);
 
     srv.stop();
 }
 
-BOOST_AUTO_TEST_CASE(append_entries_handler, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(append_entries_handler, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
 
@@ -207,27 +202,27 @@ BOOST_AUTO_TEST_CASE(append_entries_handler, * boost::unit_test::timeout(10)) {
         [&](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
             ++handler_calls;
             return kythira::append_entries_response<>{req._term, true, std::nullopt, std::nullopt};
-        }
-    );
+        });
     srv.start();
 
     kythira::append_entries_request<> req;
-    req._leader_id      = 1;
-    req._term           = 3;
+    req._leader_id = 1;
+    req._term = 3;
     req._prev_log_index = 0;
-    req._prev_log_term  = 0;
-    req._leader_commit  = 0;
+    req._prev_log_term = 0;
+    req._leader_commit = 0;
 
     serializer ser;
     send_raw(node1, "2", ser.serialize(req));
 
-    BOOST_CHECK(wait_for([&]{ return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
+    BOOST_CHECK(
+        wait_for([&] { return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_GE(handler_calls.load(), 1);
 
     srv.stop();
 }
 
-BOOST_AUTO_TEST_CASE(request_vote_handler, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(request_vote_handler, *boost::unit_test::timeout(10)) {
     auto sim = network_simulator::NetworkSimulator<net_types>{};
     sim.start();
 
@@ -242,20 +237,20 @@ BOOST_AUTO_TEST_CASE(request_vote_handler, * boost::unit_test::timeout(10)) {
         [&](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
             ++handler_calls;
             return kythira::request_vote_response<>{req._term, true};
-        }
-    );
+        });
     srv.start();
 
     kythira::request_vote_request<> req;
-    req._candidate_id   = 1;
-    req._term           = 2;
+    req._candidate_id = 1;
+    req._term = 2;
     req._last_log_index = 0;
-    req._last_log_term  = 0;
+    req._last_log_term = 0;
 
     serializer ser;
     send_raw(node1, "2", ser.serialize(req));
 
-    BOOST_CHECK(wait_for([&]{ return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
+    BOOST_CHECK(
+        wait_for([&] { return handler_calls.load() >= 1; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_GE(handler_calls.load(), 1);
 
     srv.stop();

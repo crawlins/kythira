@@ -19,17 +19,18 @@ using namespace network_simulator;
 using namespace std::chrono_literals;
 
 namespace {
-    // Named constants for test configuration
-    constexpr const char* server_node_id = "server";
-    constexpr const char* client_node_id = "client";
-    constexpr unsigned short server_port = 8080;
-    constexpr unsigned short client_port = 9090;
-    constexpr const char* client_request = "GET /hello HTTP/1.1";
-    constexpr const char* server_response = "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!";
-    constexpr auto default_latency = 10ms;
-    constexpr double high_reliability = 0.99;
-    constexpr auto short_timeout = 100ms;
-    constexpr auto long_timeout = 2000ms;
+// Named constants for test configuration
+constexpr const char* server_node_id = "server";
+constexpr const char* client_node_id = "client";
+constexpr unsigned short server_port = 8080;
+constexpr unsigned short client_port = 9090;
+constexpr const char* client_request = "GET /hello HTTP/1.1";
+constexpr const char* server_response =
+    "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nHello, World!";
+constexpr auto default_latency = 10ms;
+constexpr double high_reliability = 0.99;
+constexpr auto short_timeout = 100ms;
+constexpr auto long_timeout = 2000ms;
 }
 
 // Helper function to convert string to bytes
@@ -63,8 +64,10 @@ auto test_basic_connection_establishment() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);
@@ -104,8 +107,7 @@ auto test_basic_connection_establishment() -> bool {
         auto client_local = client_connection->local_endpoint();
         auto client_remote = client_connection->remote_endpoint();
 
-        if (client_local.address != client_node_id ||
-            client_remote.address != server_node_id ||
+        if (client_local.address != client_node_id || client_remote.address != server_node_id ||
             client_remote.port != server_port) {
             std::cerr << "  ✗ Client connection endpoints incorrect\n";
             return false;
@@ -114,8 +116,7 @@ auto test_basic_connection_establishment() -> bool {
         auto server_local = server_connection->local_endpoint();
         auto server_remote = server_connection->remote_endpoint();
 
-        if (server_local.address != server_node_id ||
-            server_local.port != server_port ||
+        if (server_local.address != server_node_id || server_local.port != server_port ||
             server_remote.address != client_node_id) {
             std::cerr << "  ✗ Server connection endpoints incorrect\n";
             return false;
@@ -141,8 +142,10 @@ auto test_bidirectional_data_transfer() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);
@@ -172,8 +175,8 @@ auto test_bidirectional_data_transfer() -> bool {
         auto received_request = bytes_to_string(received_data);
 
         if (received_request != client_request) {
-            std::cerr << "  ✗ Server received incorrect request. Expected: '"
-                      << client_request << "', Got: '" << received_request << "'\n";
+            std::cerr << "  ✗ Server received incorrect request. Expected: '" << client_request
+                      << "', Got: '" << received_request << "'\n";
             return false;
         }
 
@@ -193,8 +196,8 @@ auto test_bidirectional_data_transfer() -> bool {
         auto received_response = bytes_to_string(response_received);
 
         if (received_response != server_response) {
-            std::cerr << "  ✗ Client received incorrect response. Expected: '"
-                      << server_response << "', Got: '" << received_response << "'\n";
+            std::cerr << "  ✗ Client received incorrect response. Expected: '" << server_response
+                      << "', Got: '" << received_response << "'\n";
             return false;
         }
 
@@ -218,8 +221,10 @@ auto test_specified_source_port() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);
@@ -232,7 +237,8 @@ auto test_specified_source_port() -> bool {
         auto listener = std::move(server_node->bind(server_port)).get();
 
         // Client: Connect with specified source port
-        auto client_connection = std::move(client_node->connect(server_node_id, server_port, client_port)).get();
+        auto client_connection =
+            std::move(client_node->connect(server_node_id, server_port, client_port)).get();
 
         // Verify client connection uses specified source port
         auto client_local = client_connection->local_endpoint();
@@ -262,8 +268,10 @@ auto test_connection_timeout() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto client_node = simulator.create_node(client_node_id);
@@ -301,7 +309,8 @@ auto test_connection_timeout() -> bool {
                     return false;
                 }
             } catch (const std::exception& e) {
-                std::cout << "  ✓ Connection established but write failed as expected: " << e.what() << "\n";
+                std::cout << "  ✓ Connection established but write failed as expected: " << e.what()
+                          << "\n";
                 return true;
             }
 
@@ -369,8 +378,10 @@ auto test_read_write_timeout() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);
@@ -432,8 +443,10 @@ auto test_connection_lifecycle() -> bool {
         // Configure topology
         simulator.add_node(server_node_id);
         simulator.add_node(client_node_id);
-        simulator.add_edge(server_node_id, client_node_id, NetworkEdge(default_latency, high_reliability));
-        simulator.add_edge(client_node_id, server_node_id, NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(server_node_id, client_node_id,
+                           NetworkEdge(default_latency, high_reliability));
+        simulator.add_edge(client_node_id, server_node_id,
+                           NetworkEdge(default_latency, high_reliability));
 
         // Create nodes
         auto server_node = simulator.create_node(server_node_id);

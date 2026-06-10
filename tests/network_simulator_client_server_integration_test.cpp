@@ -16,15 +16,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* client_node_id = "client";
-    constexpr const char* server_node_id = "server";
-    constexpr unsigned short server_port = 8080;
-    constexpr unsigned short client_port = 9090;
-    constexpr std::chrono::milliseconds network_latency{10};
-    constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
-    constexpr std::chrono::seconds test_timeout{5};
-    constexpr const char* test_message = "Hello, Server!";
-    constexpr const char* response_message = "Hello, Client!";
+constexpr const char* client_node_id = "client";
+constexpr const char* server_node_id = "server";
+constexpr unsigned short server_port = 8080;
+constexpr unsigned short client_port = 9090;
+constexpr std::chrono::milliseconds network_latency{10};
+constexpr double network_reliability = 1.0;  // Perfect reliability for integration tests
+constexpr std::chrono::seconds test_timeout{5};
+constexpr const char* test_message = "Hello, Server!";
+constexpr const char* response_message = "Hello, Client!";
 }
 
 /**
@@ -32,7 +32,7 @@ namespace {
  * Tests: basic send/receive operations using DefaultNetworkTypes
  * _Requirements: 4.1-4.4, 5.1-5.3_
  */
-BOOST_AUTO_TEST_CASE(connectionless_communication_integration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connectionless_communication_integration, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create bidirectional network topology: client <-> server
@@ -59,11 +59,8 @@ BOOST_AUTO_TEST_CASE(connectionless_communication_integration, * boost::unit_tes
         payload.push_back(static_cast<std::byte>(c));
     }
 
-    DefaultNetworkTypes::message_type msg(
-        client_node_id, client_port,
-        server_node_id, server_port,
-        payload
-    );
+    DefaultNetworkTypes::message_type msg(client_node_id, client_port, server_node_id, server_port,
+                                          payload);
 
     // Client sends message to server
     auto send_future = client->send(msg);
@@ -103,7 +100,7 @@ BOOST_AUTO_TEST_CASE(connectionless_communication_integration, * boost::unit_tes
  * Tests: connection establishment, data transfer, and teardown using DefaultNetworkTypes
  * _Requirements: 6.1-6.5, 7.1-7.8, 8.1-8.6_
  */
-BOOST_AUTO_TEST_CASE(full_client_server_communication_lifecycle, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(full_client_server_communication_lifecycle, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create bidirectional network topology: client <-> server
@@ -234,7 +231,7 @@ BOOST_AUTO_TEST_CASE(full_client_server_communication_lifecycle, * boost::unit_t
  * Tests: timeout exceptions when connecting to unreachable destinations
  * _Requirements: 6.5_
  */
-BOOST_AUTO_TEST_CASE(connection_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connection_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create client node but no server node (no route)
@@ -247,7 +244,8 @@ BOOST_AUTO_TEST_CASE(connection_timeout_handling, * boost::unit_test::timeout(30
     constexpr std::chrono::milliseconds short_timeout{100};
 
     try {
-        auto connection = std::move(client->connect(server_node_id, server_port, short_timeout)).get();
+        auto connection =
+            std::move(client->connect(server_node_id, server_port, short_timeout)).get();
 
         // If we get a connection object, check if it's actually usable
         if (connection == nullptr) {
@@ -288,7 +286,7 @@ BOOST_AUTO_TEST_CASE(connection_timeout_handling, * boost::unit_test::timeout(30
  * Tests: timeout exceptions when binding fails
  * _Requirements: 7.5_
  */
-BOOST_AUTO_TEST_CASE(bind_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(bind_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     sim.add_node(server_node_id);
@@ -339,7 +337,7 @@ BOOST_AUTO_TEST_CASE(bind_timeout_handling, * boost::unit_test::timeout(30)) {
  * Tests: timeout exceptions when no clients connect
  * _Requirements: 7.8_
  */
-BOOST_AUTO_TEST_CASE(accept_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(accept_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     sim.add_node(server_node_id);
@@ -378,7 +376,7 @@ BOOST_AUTO_TEST_CASE(accept_timeout_handling, * boost::unit_test::timeout(30)) {
  * Tests: timeout exceptions when no data is available
  * _Requirements: 8.3_
  */
-BOOST_AUTO_TEST_CASE(read_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(read_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create bidirectional topology
@@ -440,7 +438,7 @@ BOOST_AUTO_TEST_CASE(read_timeout_handling, * boost::unit_test::timeout(30)) {
  * Tests: timeout exceptions when write operations cannot complete
  * _Requirements: 8.6_
  */
-BOOST_AUTO_TEST_CASE(write_timeout_handling, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(write_timeout_handling, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology with very low reliability to simulate congestion
@@ -479,7 +477,8 @@ BOOST_AUTO_TEST_CASE(write_timeout_handling, * boost::unit_test::timeout(30)) {
     // The write timeout behavior depends on implementation details
     // We'll accept either timeout exception or successful completion
     try {
-        auto write_result = std::move(client_connection->write(large_data, very_short_timeout)).get();
+        auto write_result =
+            std::move(client_connection->write(large_data, very_short_timeout)).get();
         // Write completed - this is acceptable behavior
         BOOST_CHECK(true);
     } catch (const TimeoutException&) {
@@ -502,7 +501,7 @@ BOOST_AUTO_TEST_CASE(write_timeout_handling, * boost::unit_test::timeout(30)) {
  * Tests: automatic assignment of unique ephemeral ports
  * _Requirements: 6.3_
  */
-BOOST_AUTO_TEST_CASE(ephemeral_port_allocation, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(ephemeral_port_allocation, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology
@@ -568,7 +567,7 @@ BOOST_AUTO_TEST_CASE(ephemeral_port_allocation, * boost::unit_test::timeout(30))
  * Tests: handling multiple simultaneous client-server connections
  * _Requirements: 6.1-6.5, 7.1-7.8, 8.1-8.6, 14.1-14.5_
  */
-BOOST_AUTO_TEST_CASE(multiple_concurrent_connections, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(multiple_concurrent_connections, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology
@@ -660,7 +659,7 @@ BOOST_AUTO_TEST_CASE(multiple_concurrent_connections, * boost::unit_test::timeou
  * Tests: proper handling of connection lifecycle and state transitions
  * _Requirements: 8.1-8.6_
  */
-BOOST_AUTO_TEST_CASE(connection_state_management, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(connection_state_management, *boost::unit_test::timeout(30)) {
     NetworkSimulator<DefaultNetworkTypes> sim;
 
     // Create topology

@@ -14,11 +14,11 @@
 using namespace kythira;
 
 namespace {
-    constexpr std::chrono::milliseconds base_delay{100};
-    constexpr std::chrono::milliseconds max_delay{2000};
-    constexpr double backoff_multiplier = 2.0;
-    constexpr std::size_t max_attempts = 3; // Elections are time-sensitive
-    constexpr std::size_t test_iterations = 12;
+constexpr std::chrono::milliseconds base_delay{100};
+constexpr std::chrono::milliseconds max_delay{2000};
+constexpr double backoff_multiplier = 2.0;
+constexpr std::size_t max_attempts = 3;  // Elections are time-sensitive
+constexpr std::size_t test_iterations = 12;
 }
 
 // Global fixture to initialize Folly
@@ -36,13 +36,16 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 /**
  * **Feature: raft-completion, Property 19: Vote Request Failure Handling**
  *
- * Property: For any RequestVote RPC failure during election, the system handles the failure and continues the election process.
+ * Property: For any RequestVote RPC failure during election, the system handles the failure and
+ * continues the election process.
  * **Validates: Requirements 4.4**
  */
-BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
+                     *boost::unit_test::timeout(180)) {
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> failure_count_dist(1, 2); // Limited failures for time-sensitive elections
+    std::uniform_int_distribution<int> failure_count_dist(
+        1, 2);  // Limited failures for time-sensitive elections
 
     for (std::size_t iteration = 0; iteration < test_iterations; ++iteration) {
         BOOST_TEST_MESSAGE("Iteration " << iteration + 1 << "/" << test_iterations);
@@ -50,18 +53,18 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         // Create error handler with RequestVote-specific retry policy
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
-        typename error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy vote_policy{
-            .initial_delay = base_delay,
-            .max_delay = max_delay,
-            .backoff_multiplier = backoff_multiplier,
-            .jitter_factor = 0.1,
-            .max_attempts = max_attempts
-        };
+        typename error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy
+            vote_policy{.initial_delay = base_delay,
+                        .max_delay = max_delay,
+                        .backoff_multiplier = backoff_multiplier,
+                        .jitter_factor = 0.1,
+                        .max_attempts = max_attempts};
 
         handler.set_retry_policy("request_vote", vote_policy);
 
         const int failures_before_success = failure_count_dist(gen);
-        BOOST_TEST_MESSAGE("Testing with " << failures_before_success << " failures before success");
+        BOOST_TEST_MESSAGE("Testing with " << failures_before_success
+                                           << " failures before success");
 
         // Track retry attempts and election state
         std::vector<std::string> failure_modes_encountered;
@@ -69,18 +72,17 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         std::atomic<bool> vote_granted{false};
 
         // Create operation that simulates vote request with failures
-        auto vote_request_operation = [&attempt_count, failures_before_success, &failure_modes_encountered, &vote_granted]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto vote_request_operation =
+            [&attempt_count, failures_before_success, &failure_modes_encountered,
+             &vote_granted]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt <= failures_before_success) {
                 // Simulate different types of vote request failures
                 std::vector<std::string> failure_messages = {
-                    "Network timeout during vote request",
-                    "Connection refused by voter node",
-                    "Network is unreachable for vote request",
-                    "Temporary failure during election",
-                    "RPC timeout in election process"
-                };
+                    "Network timeout during vote request", "Connection refused by voter node",
+                    "Network is unreachable for vote request", "Temporary failure during election",
+                    "RPC timeout in election process"};
 
                 std::random_device rd;
                 std::mt19937 rng(rd());
@@ -89,14 +91,15 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
                 auto selected_failure = failure_messages[msg_dist(rng)];
                 failure_modes_encountered.push_back(selected_failure);
 
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
                     std::runtime_error(selected_failure));
             } else {
                 // Success case - vote granted
                 vote_granted = true;
                 kythira::request_vote_response<std::uint64_t> success_response{
-                    5, // term
-                    true // vote_granted
+                    5,    // term
+                    true  // vote_granted
                 };
                 return kythira::FutureFactory::makeFuture(success_response);
             }
@@ -108,14 +111,16 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         try {
             auto result = handler.execute_with_retry("request_vote", vote_request_operation).get();
             auto end_time = std::chrono::steady_clock::now();
-            auto total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto total_elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
             // Property: Should eventually succeed after retries
             BOOST_CHECK(result.vote_granted());
             BOOST_CHECK_EQUAL(result.term(), 5);
             BOOST_CHECK(vote_granted.load());
-            BOOST_TEST_MESSAGE("✓ Vote request succeeded after " << attempt_count.load() << " attempts in "
-                              << total_elapsed.count() << "ms");
+            BOOST_TEST_MESSAGE("✓ Vote request succeeded after "
+                               << attempt_count.load() << " attempts in " << total_elapsed.count()
+                               << "ms");
 
             // Property: Should make exactly failures_before_success + 1 attempts
             BOOST_CHECK_EQUAL(attempt_count.load(), failures_before_success + 1);
@@ -123,7 +128,8 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
             // Property: Should handle different failure modes appropriately
             for (const auto& failure_mode : failure_modes_encountered) {
                 auto classification = handler.classify_error(std::runtime_error(failure_mode));
-                BOOST_TEST_MESSAGE("Failure mode: " << failure_mode << " -> should_retry=" << classification.should_retry);
+                BOOST_TEST_MESSAGE("Failure mode: " << failure_mode << " -> should_retry="
+                                                    << classification.should_retry);
 
                 // Most network-related election failures should be retryable
                 if (failure_mode.find("timeout") != std::string::npos ||
@@ -136,14 +142,16 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
 
             // Property: Election should complete within reasonable time
             // Elections are time-sensitive, so total time should be bounded
-            BOOST_CHECK_LE(total_elapsed.count(), 5000); // Max 5 seconds for election
+            BOOST_CHECK_LE(total_elapsed.count(), 5000);  // Max 5 seconds for election
 
         } catch (const std::exception& e) {
             auto end_time = std::chrono::steady_clock::now();
-            auto total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto total_elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            BOOST_TEST_MESSAGE("Vote request failed after " << attempt_count.load() << " attempts in "
-                              << total_elapsed.count() << "ms: " << e.what());
+            BOOST_TEST_MESSAGE("Vote request failed after "
+                               << attempt_count.load() << " attempts in " << total_elapsed.count()
+                               << "ms: " << e.what());
 
             // If we expected success but got failure, this might be due to max attempts exceeded
             if (failures_before_success < max_attempts) {
@@ -177,25 +185,28 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto vote_rejection_operation = [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto vote_rejection_operation =
+            [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
                 // Vote rejected (not an error - should not retry)
                 kythira::request_vote_response<std::uint64_t> rejection_response{
-                    3, // term
-                    false // vote_granted = false
+                    3,     // term
+                    false  // vote_granted = false
                 };
                 return kythira::FutureFactory::makeFuture(rejection_response);
             } else {
                 BOOST_FAIL("Should not retry on vote rejection");
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
                     std::runtime_error("Unexpected retry"));
             }
         };
 
         try {
-            auto result = handler.execute_with_retry("request_vote", vote_rejection_operation).get();
+            auto result =
+                handler.execute_with_retry("request_vote", vote_rejection_operation).get();
 
             // Property: Vote rejections should be returned immediately (not retried)
             BOOST_CHECK(!result.vote_granted());
@@ -214,19 +225,21 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto higher_term_operation = [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto higher_term_operation =
+            [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
                 // Higher term response (should not retry - this is protocol level)
                 kythira::request_vote_response<std::uint64_t> higher_term_response{
-                    10, // higher term
-                    false // vote_granted = false
+                    10,    // higher term
+                    false  // vote_granted = false
                 };
                 return kythira::FutureFactory::makeFuture(higher_term_response);
             } else {
                 BOOST_FAIL("Should not retry on higher term response");
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
                     std::runtime_error("Unexpected retry"));
             }
         };
@@ -252,24 +265,27 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
 
         // Test different error types in election context
         std::vector<std::pair<std::string, bool>> election_error_scenarios = {
-            {"Network timeout during vote request", true},        // Should retry
-            {"Connection refused by voter node", true},           // Should retry
-            {"Network is unreachable for vote request", true},    // Should retry
-            {"Temporary failure during election", true},          // Should retry
-            {"RPC timeout in election process", true},            // Should retry
-            {"Invalid candidate credentials", false},             // Should not retry
-            {"Election protocol violation", false},               // Should not retry
-            {"Malformed vote request", false}                     // Should not retry
+            {"Network timeout during vote request", true},      // Should retry
+            {"Connection refused by voter node", true},         // Should retry
+            {"Network is unreachable for vote request", true},  // Should retry
+            {"Temporary failure during election", true},        // Should retry
+            {"RPC timeout in election process", true},          // Should retry
+            {"Invalid candidate credentials", false},           // Should not retry
+            {"Election protocol violation", false},             // Should not retry
+            {"Malformed vote request", false}                   // Should not retry
         };
 
         for (const auto& [error_msg, should_retry] : election_error_scenarios) {
-            BOOST_TEST_MESSAGE("Testing election error: " << error_msg << " (should_retry=" << should_retry << ")");
+            BOOST_TEST_MESSAGE("Testing election error: " << error_msg << " (should_retry="
+                                                          << should_retry << ")");
 
             std::atomic<int> attempt_count{0};
-            auto error_operation = [&attempt_count, error_msg]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+            auto error_operation =
+                [&attempt_count,
+                 error_msg]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
                 ++attempt_count;
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
-                    std::runtime_error(error_msg));
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(std::runtime_error(error_msg));
             };
 
             try {
@@ -282,16 +298,21 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
                 if (should_retry) {
                     if (classification.should_retry) {
                         BOOST_CHECK_GT(attempt_count.load(), 1);
-                        BOOST_TEST_MESSAGE("✓ Retryable election error made " << attempt_count.load() << " attempts");
+                        BOOST_TEST_MESSAGE("✓ Retryable election error made "
+                                           << attempt_count.load() << " attempts");
                     } else {
-                        BOOST_TEST_MESSAGE("Note: Expected retryable error was not retried - may be conservative for elections");
+                        BOOST_TEST_MESSAGE(
+                            "Note: Expected retryable error was not retried - may be conservative "
+                            "for elections");
                     }
                 } else {
                     if (!classification.should_retry) {
                         BOOST_CHECK_EQUAL(attempt_count.load(), 1);
                         BOOST_TEST_MESSAGE("✓ Non-retryable election error failed immediately");
                     } else {
-                        BOOST_TEST_MESSAGE("Note: Expected non-retryable error was retried - may be permissive classification");
+                        BOOST_TEST_MESSAGE(
+                            "Note: Expected non-retryable error was retried - may be permissive "
+                            "classification");
                     }
                 }
             }
@@ -303,25 +324,27 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         BOOST_TEST_MESSAGE("Test 4: Election timing constraints");
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
-        typename error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy timing_policy{
-            .initial_delay = std::chrono::milliseconds{50},
-            .max_delay = std::chrono::milliseconds{400},
-            .backoff_multiplier = 2.0,
-            .jitter_factor = 0.0, // No jitter for predictable timing
-            .max_attempts = 4
-        };
+        typename error_handler<kythira::request_vote_response<std::uint64_t>>::retry_policy
+            timing_policy{.initial_delay = std::chrono::milliseconds{50},
+                          .max_delay = std::chrono::milliseconds{400},
+                          .backoff_multiplier = 2.0,
+                          .jitter_factor = 0.0,  // No jitter for predictable timing
+                          .max_attempts = 4};
 
         handler.set_retry_policy("request_vote", timing_policy);
 
         std::vector<std::chrono::steady_clock::time_point> attempt_times;
         std::atomic<int> attempt_count{0};
 
-        auto timing_test_operation = [&attempt_count, &attempt_times]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto timing_test_operation =
+            [&attempt_count,
+             &attempt_times]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
             if (current_attempt < 3) {
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
                     std::runtime_error("Network timeout during vote request"));
             } else {
                 kythira::request_vote_response<std::uint64_t> success_response{4, true};
@@ -334,20 +357,24 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
         try {
             auto result = handler.execute_with_retry("request_vote", timing_test_operation).get();
             auto election_end = std::chrono::steady_clock::now();
-            auto total_election_time = std::chrono::duration_cast<std::chrono::milliseconds>(election_end - election_start);
+            auto total_election_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                election_end - election_start);
 
             BOOST_CHECK(result.vote_granted());
             BOOST_CHECK_EQUAL(attempt_count.load(), 3);
 
             // Property: Election should complete quickly (time-sensitive)
-            BOOST_CHECK_LE(total_election_time.count(), 1000); // Max 1 second for this test
+            BOOST_CHECK_LE(total_election_time.count(), 1000);  // Max 1 second for this test
 
             // Property: Should follow fast backoff for elections
             if (attempt_times.size() >= 3) {
-                auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[1] - attempt_times[0]);
-                auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[2] - attempt_times[1]);
+                auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    attempt_times[1] - attempt_times[0]);
+                auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    attempt_times[2] - attempt_times[1]);
 
-                BOOST_TEST_MESSAGE("Election delays: " << delay1.count() << "ms, " << delay2.count() << "ms");
+                BOOST_TEST_MESSAGE("Election delays: " << delay1.count() << "ms, " << delay2.count()
+                                                       << "ms");
                 BOOST_TEST_MESSAGE("Total election time: " << total_election_time.count() << "ms");
 
                 // Expected: 50ms, 100ms (with timing tolerance)
@@ -373,15 +400,15 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
             {"Vote granted", true},
             {"Vote rejected - already voted", false},
             {"Vote rejected - higher term", false},
-            {"Network timeout", false}, // This one will retry but ultimately fail
-            {"Vote granted after retry", true}
-        };
+            {"Network timeout", false},  // This one will retry but ultimately fail
+            {"Vote granted after retry", true}};
 
         for (const auto& [outcome_desc, should_succeed] : vote_outcomes) {
             BOOST_TEST_MESSAGE("Testing vote outcome: " << outcome_desc);
 
             std::atomic<int> attempt_count{0};
-            auto vote_outcome_operation = [&attempt_count, outcome_desc, should_succeed]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+            auto vote_outcome_operation = [&attempt_count, outcome_desc, should_succeed]()
+                -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
                 int current_attempt = ++attempt_count;
 
                 if (outcome_desc == "Vote granted") {
@@ -394,11 +421,13 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
                     kythira::request_vote_response<std::uint64_t> response{5, false};
                     return kythira::FutureFactory::makeFuture(response);
                 } else if (outcome_desc == "Network timeout") {
-                    return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                    return kythira::FutureFactory::makeExceptionalFuture<
+                        kythira::request_vote_response<std::uint64_t>>(
                         std::runtime_error("Network timeout during vote request"));
                 } else if (outcome_desc == "Vote granted after retry") {
                     if (current_attempt == 1) {
-                        return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                        return kythira::FutureFactory::makeExceptionalFuture<
+                            kythira::request_vote_response<std::uint64_t>>(
                             std::runtime_error("Network timeout during vote request"));
                     } else {
                         kythira::request_vote_response<std::uint64_t> response{2, true};
@@ -406,12 +435,14 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test, * boost::
                     }
                 }
 
-                return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<std::uint64_t>>(
+                return kythira::FutureFactory::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
                     std::runtime_error("Unknown outcome"));
             };
 
             try {
-                auto result = handler.execute_with_retry("request_vote", vote_outcome_operation).get();
+                auto result =
+                    handler.execute_with_retry("request_vote", vote_outcome_operation).get();
 
                 if (should_succeed) {
                     // Property: Successful votes should be properly handled

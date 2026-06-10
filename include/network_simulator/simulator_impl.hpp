@@ -44,8 +44,7 @@ inline auto address_to_string(const AddressType& addr) -> std::string {
 }
 
 // Helper function to convert port to string
-template<typename PortType>
-inline auto port_to_string(const PortType& port) -> std::string {
+template<typename PortType> inline auto port_to_string(const PortType& port) -> std::string {
     if constexpr (std::is_same_v<PortType, std::string>) {
         return port;
     } else {
@@ -55,8 +54,7 @@ inline auto port_to_string(const PortType& port) -> std::string {
 
 // NetworkSimulator Implementation
 
-template<typename Types>
-auto NetworkSimulator<Types>::add_node(address_type address) -> void {
+template<typename Types> auto NetworkSimulator<Types>::add_node(address_type address) -> void {
     std::unique_lock lock(_mutex);
 
     // Add node to topology if not already present
@@ -70,8 +68,7 @@ auto NetworkSimulator<Types>::add_node(address_type address) -> void {
     }
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::remove_node(address_type address) -> void {
+template<typename Types> auto NetworkSimulator<Types>::remove_node(address_type address) -> void {
     std::unique_lock lock(_mutex);
 
     // Remove node from topology
@@ -112,7 +109,8 @@ auto NetworkSimulator<Types>::remove_node(address_type address) -> void {
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::add_edge(address_type from, address_type to, NetworkEdge edge) -> void {
+auto NetworkSimulator<Types>::add_edge(address_type from, address_type to, NetworkEdge edge)
+    -> void {
     std::unique_lock lock(_mutex);
 
     // Ensure both nodes exist in topology
@@ -197,20 +195,18 @@ auto NetworkSimulator<Types>::get_edge(address_type from, address_type to) const
     return to_it->second;
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::seed_rng(std::uint32_t seed) -> void {
+template<typename Types> auto NetworkSimulator<Types>::seed_rng(std::uint32_t seed) -> void {
     std::unique_lock lock(_mutex);
     _rng.seed(seed);
 }
 
 // Simulation Control Methods
 
-template<typename Types>
-auto NetworkSimulator<Types>::start() -> void {
+template<typename Types> auto NetworkSimulator<Types>::start() -> void {
     std::unique_lock lock(_mutex);
 
     if (_started.load()) {
-        return; // Already started
+        return;  // Already started
     }
 
     _started.store(true);
@@ -219,12 +215,11 @@ auto NetworkSimulator<Types>::start() -> void {
     // to avoid threading complexity while maintaining correct behavior
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::stop() -> void {
+template<typename Types> auto NetworkSimulator<Types>::stop() -> void {
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        return; // Already stopped
+        return;  // Already stopped
     }
 
     _started.store(false);
@@ -250,8 +245,7 @@ auto NetworkSimulator<Types>::stop() -> void {
     }
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::reset() -> void {
+template<typename Types> auto NetworkSimulator<Types>::reset() -> void {
     std::unique_lock lock(_mutex);
 
     // Stop the simulator first
@@ -291,7 +285,8 @@ auto NetworkSimulator<Types>::reset() -> void {
 // Path Finding for Multi-hop Routing
 
 template<typename Types>
-auto NetworkSimulator<Types>::find_path(address_type from, address_type to) -> std::vector<address_type> {
+auto NetworkSimulator<Types>::find_path(address_type from, address_type to)
+    -> std::vector<address_type> {
     // Note: This method is called from within other methods that already hold the lock
     // So we don't acquire the lock here to avoid deadlock
 
@@ -364,7 +359,8 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
     auto dst_addr = msg.destination_address();
 
     // Check if source and destination nodes exist
-    if (_topology.find(src_addr) == _topology.end() || _topology.find(dst_addr) == _topology.end()) {
+    if (_topology.find(src_addr) == _topology.end() ||
+        _topology.find(dst_addr) == _topology.end()) {
         if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
             return future_bool_type(false);
         } else {
@@ -432,7 +428,8 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::apply_latency(address_type from, address_type to) -> std::chrono::milliseconds {
+auto NetworkSimulator<Types>::apply_latency(address_type from, address_type to)
+    -> std::chrono::milliseconds {
     // Note: This method is called from within other methods that already hold the lock
     // So we don't acquire the lock here to avoid deadlock
 
@@ -480,8 +477,7 @@ auto NetworkSimulator<Types>::check_reliability(address_type from, address_type 
 
 // Message Delivery
 
-template<typename Types>
-auto NetworkSimulator<Types>::deliver_message(message_type msg) -> void {
+template<typename Types> auto NetworkSimulator<Types>::deliver_message(message_type msg) -> void {
     // Note: This method is called from within other methods that already hold the lock
     // So we don't acquire the lock here to avoid deadlock
 
@@ -523,15 +519,16 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address) -> future_m
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::retrieve_message(address_type address, std::chrono::milliseconds timeout) -> future_message_type {
+auto NetworkSimulator<Types>::retrieve_message(address_type address,
+                                               std::chrono::milliseconds timeout)
+    -> future_message_type {
     std::unique_lock lock(_mutex);
 
     auto queue_it = _message_queues.find(address);
     if (queue_it == _message_queues.end() || queue_it->second.empty()) {
         // No messages available - throw TimeoutException for timeout version
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(
-            folly::exception_wrapper(TimeoutException()));
+        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
 #else
         return future_message_type(std::make_exception_ptr(TimeoutException()));
 #endif
@@ -550,7 +547,8 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, std::chrono
 
 template<typename Types>
 auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_type src_port,
-                                                  address_type dst_addr, port_type dst_port) -> future_connection_type {
+                                                   address_type dst_addr, port_type dst_port)
+    -> future_connection_type {
     // Check if connection pooling is enabled and try to reuse existing connection
     endpoint_type destination_endpoint(dst_addr, dst_port);
 
@@ -566,8 +564,11 @@ auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_t
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::establish_connection_internal(address_type src_addr, port_type src_port,
-                                                           address_type dst_addr, port_type dst_port) -> future_connection_type {
+auto NetworkSimulator<Types>::establish_connection_internal(address_type src_addr,
+                                                            port_type src_port,
+                                                            address_type dst_addr,
+                                                            port_type dst_port)
+    -> future_connection_type {
     // First, check basic conditions without holding the lock for too long
     {
         std::shared_lock lock(_mutex);
@@ -578,7 +579,8 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             return folly::makeFuture<std::shared_ptr<connection_type>>(
                 folly::exception_wrapper(std::runtime_error("Simulator not started")));
 #else
-            return future_connection_type(std::make_exception_ptr(std::runtime_error("Simulator not started")));
+            return future_connection_type(
+                std::make_exception_ptr(std::runtime_error("Simulator not started")));
 #endif
         }
 
@@ -593,8 +595,8 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             return folly::makeFuture<std::shared_ptr<connection_type>>(
                 folly::exception_wrapper(NoRouteException(error_msg, error_msg)));
 #else
-            return future_connection_type(std::make_exception_ptr(
-                NoRouteException(error_msg, error_msg)));
+            return future_connection_type(
+                std::make_exception_ptr(NoRouteException(error_msg, error_msg)));
 #endif
         }
     }
@@ -612,17 +614,18 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             // Debug: Print available listeners
             std::string available_listeners;
             for (const auto& [ep, l] : _listeners) {
-                available_listeners += "(" + address_to_string(ep.address) + ":" + port_to_string(ep.port) + ") ";
+                available_listeners +=
+                    "(" + address_to_string(ep.address) + ":" + port_to_string(ep.port) + ") ";
             }
-            std::string error_msg = "Connection refused: no listener on " + address_to_string(dst_addr) + ":" + port_to_string(dst_port) +
-                                  ". Available listeners: " + available_listeners;
+            std::string error_msg = "Connection refused: no listener on " +
+                                    address_to_string(dst_addr) + ":" + port_to_string(dst_port) +
+                                    ". Available listeners: " + available_listeners;
 #ifdef FOLLY_FUTURES_AVAILABLE
             // For folly::Future, return exception for no listener - this should cause timeout
             return folly::makeFuture<std::shared_ptr<connection_type>>(
                 folly::exception_wrapper(std::runtime_error(error_msg)));
 #else
-            return future_connection_type(std::make_exception_ptr(
-                std::runtime_error(error_msg)));
+            return future_connection_type(std::make_exception_ptr(std::runtime_error(error_msg)));
 #endif
         }
 
@@ -630,8 +633,8 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         if (!listener->is_listening()) {
 #ifdef FOLLY_FUTURES_AVAILABLE
             // For folly::Future, return exception for listener not listening
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(std::runtime_error("Connection refused: listener not accepting connections")));
+            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+                std::runtime_error("Connection refused: listener not accepting connections")));
 #else
             return future_connection_type(std::make_exception_ptr(
                 std::runtime_error("Connection refused: listener not accepting connections")));
@@ -641,18 +644,19 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
 
     // Create connection IDs using 4-tuple
     connection_id_type client_conn_id(src_addr, src_port, dst_addr, dst_port);
-    connection_id_type server_conn_id(dst_addr, dst_port, src_addr, src_port);  // Reversed for server side
+    connection_id_type server_conn_id(dst_addr, dst_port, src_addr,
+                                      src_port);  // Reversed for server side
 
     // Apply reliability check for connection establishment
-    // Note: For connection establishment, we use perfect reliability to ensure connections can be made
-    // Reliability is applied to data transfer, not connection establishment
+    // Note: For connection establishment, we use perfect reliability to ensure connections can be
+    // made Reliability is applied to data transfer, not connection establishment
     bool reliability_passed = true;  // Always allow connection establishment
 
     if (!reliability_passed) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         // For folly::Future, return exception for reliability failure
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(std::runtime_error("Connection failed due to network unreliability")));
+        return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+            std::runtime_error("Connection failed due to network unreliability")));
 #else
         return future_connection_type(std::make_exception_ptr(
             std::runtime_error("Connection failed due to network unreliability")));
@@ -674,8 +678,8 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         std::shared_lock lock(_mutex);
         if (!_started.load()) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(std::runtime_error("Simulator stopped during connection establishment")));
+            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+                std::runtime_error("Simulator stopped during connection establishment")));
 #else
             return future_connection_type(std::make_exception_ptr(
                 std::runtime_error("Simulator stopped during connection establishment")));
@@ -684,10 +688,11 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
 
         // Re-check listener is still available after delay
         auto listener_it = _listeners.find(server_endpoint);
-        if (listener_it == _listeners.end() || !listener_it->second || !listener_it->second->is_listening()) {
+        if (listener_it == _listeners.end() || !listener_it->second ||
+            !listener_it->second->is_listening()) {
 #ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(std::runtime_error("Connection refused: listener unavailable after delay")));
+            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+                std::runtime_error("Connection refused: listener unavailable after delay")));
 #else
             return future_connection_type(std::make_exception_ptr(
                 std::runtime_error("Connection refused: listener unavailable after delay")));
@@ -697,8 +702,10 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
     }
 
     // Create connections
-    auto client_connection = std::make_shared<connection_type>(client_endpoint, server_endpoint, this);
-    auto server_connection = std::make_shared<connection_type>(server_endpoint, client_endpoint, this);
+    auto client_connection =
+        std::make_shared<connection_type>(client_endpoint, server_endpoint, this);
+    auto server_connection =
+        std::make_shared<connection_type>(server_endpoint, client_endpoint, this);
 
     // Store connections with unique lock
     {
@@ -709,8 +716,10 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
 
     // Register connections with the connection tracker
     if (_connection_tracker) {
-        _connection_tracker->register_connection(client_endpoint, server_endpoint, client_connection);
-        _connection_tracker->register_connection(server_endpoint, client_endpoint, server_connection);
+        _connection_tracker->register_connection(client_endpoint, server_endpoint,
+                                                 client_connection);
+        _connection_tracker->register_connection(server_endpoint, client_endpoint,
+                                                 server_connection);
     }
 
     // Notify the listener about the incoming connection
@@ -725,7 +734,8 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port) -> future_listener_type {
+auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
+    -> future_listener_type {
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
@@ -733,7 +743,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
         return folly::makeFuture<std::shared_ptr<listener_type>>(
             folly::exception_wrapper(std::runtime_error("Simulator not started")));
 #else
-        return future_listener_type(std::make_exception_ptr(std::runtime_error("Simulator not started")));
+        return future_listener_type(
+            std::make_exception_ptr(std::runtime_error("Simulator not started")));
 #endif
     }
 
@@ -743,11 +754,11 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     if (_listener_manager && !_listener_manager->is_port_available(addr, port)) {
         std::string port_str = port_to_string(port);
 #ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(PortInUseException("Port " + port_str + " is already in use")));
-#else
-        return future_listener_type(std::make_exception_ptr(
+        return folly::makeFuture<std::shared_ptr<listener_type>>(folly::exception_wrapper(
             PortInUseException("Port " + port_str + " is already in use")));
+#else
+        return future_listener_type(
+            std::make_exception_ptr(PortInUseException("Port " + port_str + " is already in use")));
 #endif
     }
 
@@ -761,8 +772,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
             // Port is still in use by an active listener
             std::string port_str = port_to_string(port);
 #ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<listener_type>>(
-                folly::exception_wrapper(PortInUseException("Port " + port_str + " is already in use")));
+            return folly::makeFuture<std::shared_ptr<listener_type>>(folly::exception_wrapper(
+                PortInUseException("Port " + port_str + " is already in use")));
 #else
             return future_listener_type(std::make_exception_ptr(
                 PortInUseException("Port " + port_str + " is already in use")));
@@ -787,8 +798,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
 
 // Timer and Scheduling Implementation
 
-template<typename Types>
-auto NetworkSimulator<Types>::timer_thread_main() -> void {
+template<typename Types> auto NetworkSimulator<Types>::timer_thread_main() -> void {
     while (_started.load()) {
         std::unique_lock<std::mutex> timer_lock(_timer_mutex);
 
@@ -797,7 +807,7 @@ auto NetworkSimulator<Types>::timer_thread_main() -> void {
 
         // Calculate next wake-up time
         auto now = std::chrono::steady_clock::now();
-        auto next_wake_time = now + std::chrono::milliseconds(10); // Check every 10ms
+        auto next_wake_time = now + std::chrono::milliseconds(10);  // Check every 10ms
 
         // Check if there are any scheduled messages that need earlier wake-up
         if (!_scheduled_messages.empty()) {
@@ -825,7 +835,8 @@ auto NetworkSimulator<Types>::timer_thread_main() -> void {
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::schedule_message_delivery(message_type msg, std::chrono::milliseconds delay) -> void {
+auto NetworkSimulator<Types>::schedule_message_delivery(message_type msg,
+                                                        std::chrono::milliseconds delay) -> void {
     auto delivery_time = std::chrono::steady_clock::now() + delay;
 
     {
@@ -836,29 +847,35 @@ auto NetworkSimulator<Types>::schedule_message_delivery(message_type msg, std::c
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::schedule_connection_data_delivery(connection_id_type conn_id, std::vector<std::byte> data, std::chrono::milliseconds delay) -> void {
+auto NetworkSimulator<Types>::schedule_connection_data_delivery(connection_id_type conn_id,
+                                                                std::vector<std::byte> data,
+                                                                std::chrono::milliseconds delay)
+    -> void {
     auto delivery_time = std::chrono::steady_clock::now() + delay;
 
     {
         std::lock_guard<std::mutex> timer_lock(_timer_mutex);
-        _scheduled_connection_data.emplace(ScheduledConnectionData{delivery_time, conn_id, std::move(data)});
+        _scheduled_connection_data.emplace(
+            ScheduledConnectionData{delivery_time, conn_id, std::move(data)});
         _timer_cv.notify_one();  // Wake up timer thread for new scheduled data
     }
 }
 
 template<typename Types>
-auto NetworkSimulator<Types>::schedule_connection_establishment(std::shared_ptr<listener_type> listener, std::shared_ptr<connection_type> connection, std::chrono::milliseconds delay) -> void {
+auto NetworkSimulator<Types>::schedule_connection_establishment(
+    std::shared_ptr<listener_type> listener, std::shared_ptr<connection_type> connection,
+    std::chrono::milliseconds delay) -> void {
     auto delivery_time = std::chrono::steady_clock::now() + delay;
 
     {
         std::lock_guard<std::mutex> timer_lock(_timer_mutex);
-        _scheduled_connection_establishments.emplace(ScheduledConnectionEstablishment{delivery_time, listener, connection});
+        _scheduled_connection_establishments.emplace(
+            ScheduledConnectionEstablishment{delivery_time, listener, connection});
         _timer_cv.notify_one();  // Wake up timer thread for new scheduled connection
     }
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::process_scheduled_deliveries() -> void {
+template<typename Types> auto NetworkSimulator<Types>::process_scheduled_deliveries() -> void {
     auto now = std::chrono::steady_clock::now();
 
     // Process scheduled messages
@@ -878,7 +895,8 @@ auto NetworkSimulator<Types>::process_scheduled_deliveries() -> void {
     }
 
     // Process scheduled connection data
-    while (!_scheduled_connection_data.empty() && _scheduled_connection_data.top().delivery_time <= now) {
+    while (!_scheduled_connection_data.empty() &&
+           _scheduled_connection_data.top().delivery_time <= now) {
         auto scheduled_data = _scheduled_connection_data.top();
         _scheduled_connection_data.pop();
 
@@ -904,13 +922,15 @@ auto NetworkSimulator<Types>::process_scheduled_deliveries() -> void {
     }
 
     // Process scheduled connection establishments
-    while (!_scheduled_connection_establishments.empty() && _scheduled_connection_establishments.top().delivery_time <= now) {
+    while (!_scheduled_connection_establishments.empty() &&
+           _scheduled_connection_establishments.top().delivery_time <= now) {
         auto scheduled_establishment = _scheduled_connection_establishments.top();
         _scheduled_connection_establishments.pop();
 
         // Queue the connection to the listener (outside of any locks to avoid deadlock)
         if (scheduled_establishment.listener && scheduled_establishment.connection) {
-            scheduled_establishment.listener->queue_pending_connection(scheduled_establishment.connection);
+            scheduled_establishment.listener->queue_pending_connection(
+                scheduled_establishment.connection);
         }
     }
 }
@@ -920,7 +940,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        if constexpr (std::is_same_v<future_listener_type, SimpleFuture<std::shared_ptr<listener_type>>>) {
+        if constexpr (std::is_same_v<future_listener_type,
+                                     SimpleFuture<std::shared_ptr<listener_type>>>) {
             return future_listener_type(std::shared_ptr<listener_type>{});
         } else {
             return future_listener_type(std::shared_ptr<listener_type>{});
@@ -937,7 +958,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
         constexpr unsigned short ephemeral_end = 65535;
 
         bool found_port = false;
-        for (unsigned short candidate_port = ephemeral_start; candidate_port <= ephemeral_end; ++candidate_port) {
+        for (unsigned short candidate_port = ephemeral_start; candidate_port <= ephemeral_end;
+             ++candidate_port) {
             local_endpoint = endpoint_type(addr, candidate_port);
             if (_listeners.find(local_endpoint) == _listeners.end()) {
                 port = candidate_port;
@@ -948,7 +970,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports
-            if constexpr (std::is_same_v<future_listener_type, SimpleFuture<std::shared_ptr<listener_type>>>) {
+            if constexpr (std::is_same_v<future_listener_type,
+                                         SimpleFuture<std::shared_ptr<listener_type>>>) {
                 return future_listener_type(std::shared_ptr<listener_type>{});
             } else {
                 return future_listener_type(std::shared_ptr<listener_type>{});
@@ -974,7 +997,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports after many attempts
-            if constexpr (std::is_same_v<future_listener_type, SimpleFuture<std::shared_ptr<listener_type>>>) {
+            if constexpr (std::is_same_v<future_listener_type,
+                                         SimpleFuture<std::shared_ptr<listener_type>>>) {
                 return future_listener_type(std::shared_ptr<listener_type>{});
             } else {
                 return future_listener_type(std::shared_ptr<listener_type>{});
@@ -982,16 +1006,17 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
         }
 
     } else {
-        static_assert(std::is_same_v<port_type, unsigned short> ||
-                     std::is_same_v<port_type, std::string>,
-                     "Port type must be unsigned short or std::string");
+        static_assert(
+            std::is_same_v<port_type, unsigned short> || std::is_same_v<port_type, std::string>,
+            "Port type must be unsigned short or std::string");
     }
 
     // Create the listener with the found port
     auto listener = std::make_shared<listener_type>(local_endpoint, this);
     _listeners[local_endpoint] = listener;
 
-    if constexpr (std::is_same_v<future_listener_type, SimpleFuture<std::shared_ptr<listener_type>>>) {
+    if constexpr (std::is_same_v<future_listener_type,
+                                 SimpleFuture<std::shared_ptr<listener_type>>>) {
         return future_listener_type(listener);
     } else {
         return future_listener_type(listener);
@@ -1000,7 +1025,8 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
 template<typename Types>
 auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port,
-                                             std::chrono::milliseconds timeout) -> future_listener_type {
+                                              std::chrono::milliseconds timeout)
+    -> future_listener_type {
     // For this basic implementation, timeout behavior is the same as non-timeout version
     return create_listener(addr, port);
 }
@@ -1008,19 +1034,18 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port,
 // Connection Establishment with Timeout Handling
 
 template<typename Types>
-auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src_addr, port_type src_port,
-                                                               address_type dst_addr, port_type dst_port,
-                                                               std::chrono::milliseconds timeout) -> future_connection_type {
+auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src_addr,
+                                                                port_type src_port,
+                                                                address_type dst_addr,
+                                                                port_type dst_port,
+                                                                std::chrono::milliseconds timeout)
+    -> future_connection_type {
     // Record the connection request with timeout tracking
     endpoint_type source_endpoint(src_addr, src_port);
     endpoint_type destination_endpoint(dst_addr, dst_port);
 
-    ConnectionRequest request{
-        source_endpoint,
-        destination_endpoint,
-        std::chrono::steady_clock::now(),
-        timeout
-    };
+    ConnectionRequest request{source_endpoint, destination_endpoint,
+                              std::chrono::steady_clock::now(), timeout};
 
     // Add to pending connections for tracking
     {
@@ -1033,37 +1058,40 @@ auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src
 
 #ifdef FOLLY_FUTURES_AVAILABLE
     // For folly::Future, use within() for timeout handling
-    return std::move(connection_future).within(timeout).onError([=](const folly::FutureTimeout& e) {
-        // Remove from pending connections on timeout
-        {
-            std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-            _pending_connections.erase(
-                std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                    [&](const ConnectionRequest& req) {
-                        return req.source == source_endpoint && req.destination == destination_endpoint;
-                    }),
-                _pending_connections.end()
-            );
-        }
+    return std::move(connection_future)
+        .within(timeout)
+        .onError([=](const folly::FutureTimeout& e) {
+            // Remove from pending connections on timeout
+            {
+                std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+                _pending_connections.erase(
+                    std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+                                   [&](const ConnectionRequest& req) {
+                                       return req.source == source_endpoint &&
+                                              req.destination == destination_endpoint;
+                                   }),
+                    _pending_connections.end());
+            }
 
-        // Throw TimeoutException
-        throw TimeoutException();
-    }).onError([=](const std::exception& e) {
-        // Remove from pending connections on any error
-        {
-            std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-            _pending_connections.erase(
-                std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                    [&](const ConnectionRequest& req) {
-                        return req.source == source_endpoint && req.destination == destination_endpoint;
-                    }),
-                _pending_connections.end()
-            );
-        }
+            // Throw TimeoutException
+            throw TimeoutException();
+        })
+        .onError([=](const std::exception& e) {
+            // Remove from pending connections on any error
+            {
+                std::lock_guard<std::mutex> lock(_connection_requests_mutex);
+                _pending_connections.erase(
+                    std::remove_if(_pending_connections.begin(), _pending_connections.end(),
+                                   [&](const ConnectionRequest& req) {
+                                       return req.source == source_endpoint &&
+                                              req.destination == destination_endpoint;
+                                   }),
+                    _pending_connections.end());
+            }
 
-        // Re-throw the exception
-        throw;
-    });
+            // Re-throw the exception
+            throw;
+        });
 #else
     // For SimpleFuture, we don't have timeout support built-in
     // Just return the connection future and let the caller handle timeout
@@ -1074,19 +1102,18 @@ auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src
         std::lock_guard<std::mutex> lock(_connection_requests_mutex);
         _pending_connections.erase(
             std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                [&](const ConnectionRequest& req) {
-                    return req.source == source_endpoint && req.destination == destination_endpoint;
-                }),
-            _pending_connections.end()
-        );
+                           [&](const ConnectionRequest& req) {
+                               return req.source == source_endpoint &&
+                                      req.destination == destination_endpoint;
+                           }),
+            _pending_connections.end());
     }
 
     return connection_future;
 #endif
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
+template<typename Types> auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
     std::lock_guard<std::mutex> lock(_connection_requests_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -1094,15 +1121,11 @@ auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
     // Find and remove expired connection requests
     _pending_connections.erase(
         std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-            [now](const ConnectionRequest& req) {
-                return req.is_expired();
-            }),
-        _pending_connections.end()
-    );
+                       [now](const ConnectionRequest& req) { return req.is_expired(); }),
+        _pending_connections.end());
 }
 
-template<typename Types>
-auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
+template<typename Types> auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
     std::lock_guard<std::mutex> lock(_connection_requests_mutex);
 
     auto now = std::chrono::steady_clock::now();
@@ -1118,11 +1141,8 @@ auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
     // Remove expired requests from pending list
     _pending_connections.erase(
         std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-            [now](const ConnectionRequest& req) {
-                return req.is_expired();
-            }),
-        _pending_connections.end()
-    );
+                       [now](const ConnectionRequest& req) { return req.is_expired(); }),
+        _pending_connections.end());
 
     // Note: In a more complete implementation, we would also cancel any
     // in-flight connection establishment operations here. For now, we just
@@ -1132,7 +1152,9 @@ auto NetworkSimulator<Types>::cancel_expired_connections() -> void {
 // Connection Data Routing
 
 template<typename Types>
-auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id, std::vector<std::byte> data) -> future_bool_type {
+auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
+                                                    std::vector<std::byte> data)
+    -> future_bool_type {
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
@@ -1176,7 +1198,8 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id, 
 
     // Find the destination connection using the reverse connection ID
     // When client (A,a) -> (B,b) writes data, it should be delivered to server (B,b) -> (A,a)
-    connection_id_type dest_conn_id(conn_id.dst_addr, conn_id.dst_port, conn_id.src_addr, conn_id.src_port);
+    connection_id_type dest_conn_id(conn_id.dst_addr, conn_id.dst_port, conn_id.src_addr,
+                                    conn_id.src_port);
 
     auto conn_it = _connections.find(dest_conn_id);
     if (conn_it == _connections.end() || !conn_it->second) {
@@ -1267,4 +1290,4 @@ auto NetworkSimulator<Types>::get_connection_tracker() -> ConnectionTracker<Type
     return *_connection_tracker;
 }
 
-} // namespace network_simulator
+}  // namespace network_simulator

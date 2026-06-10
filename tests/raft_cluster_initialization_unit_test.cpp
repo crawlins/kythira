@@ -26,22 +26,22 @@
 #include <algorithm>
 
 namespace {
-    // Test constants
-    constexpr std::size_t small_cluster_size = 3;
-    constexpr std::size_t medium_cluster_size = 5;
-    constexpr std::chrono::milliseconds election_timeout_min{150};
-    constexpr std::chrono::milliseconds election_timeout_max{300};
-    constexpr std::chrono::milliseconds heartbeat_interval{50};
-    constexpr std::size_t randomization_sample_size = 100;
+// Test constants
+constexpr std::size_t small_cluster_size = 3;
+constexpr std::size_t medium_cluster_size = 5;
+constexpr std::chrono::milliseconds election_timeout_min{150};
+constexpr std::chrono::milliseconds election_timeout_max{300};
+constexpr std::chrono::milliseconds heartbeat_interval{50};
+constexpr std::size_t randomization_sample_size = 100;
 
-    // Helper to create cluster configuration
-    auto create_cluster_config(std::size_t node_count) -> std::vector<std::uint64_t> {
-        std::vector<std::uint64_t> node_ids;
-        for (std::size_t i = 0; i < node_count; ++i) {
-            node_ids.push_back(static_cast<std::uint64_t>(i + 1));
-        }
-        return node_ids;
+// Helper to create cluster configuration
+auto create_cluster_config(std::size_t node_count) -> std::vector<std::uint64_t> {
+    std::vector<std::uint64_t> node_ids;
+    for (std::size_t i = 0; i < node_count; ++i) {
+        node_ids.push_back(static_cast<std::uint64_t>(i + 1));
     }
+    return node_ids;
+}
 }
 
 BOOST_AUTO_TEST_SUITE(cluster_initialization_unit_tests)
@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_SUITE(cluster_initialization_unit_tests)
  *
  * Property: The server_state enum must have follower, candidate, and leader states.
  */
-BOOST_AUTO_TEST_CASE(test_server_state_enum, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_server_state_enum, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Server state enum values");
 
     // Verify server state enum has required values
@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE(test_server_state_enum, * boost::unit_test::timeout(30)) {
  * Property: The default Raft configuration should have sensible values
  * and maintain invariants (e.g., heartbeat < election timeout).
  */
-BOOST_AUTO_TEST_CASE(test_configuration_defaults, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_configuration_defaults, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Configuration defaults");
 
     auto config = kythira::raft_configuration{};
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_defaults, * boost::unit_test::timeout(30
  *
  * Property: Configuration values can be customized and validated.
  */
-BOOST_AUTO_TEST_CASE(test_configuration_customization, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_configuration_customization, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Configuration customization");
 
     auto config = kythira::raft_configuration{};
@@ -132,7 +132,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_customization, * boost::unit_test::timeo
  * Property: Election timeouts should be randomized within the configured range
  * to prevent simultaneous elections and split votes.
  */
-BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Election timeout randomization");
 
     auto config = kythira::raft_configuration{};
@@ -145,10 +145,8 @@ BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, * boost::unit_test::ti
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(
-        config.election_timeout_min().count(),
-        config.election_timeout_max().count()
-    );
+    std::uniform_int_distribution<> dis(config.election_timeout_min().count(),
+                                        config.election_timeout_max().count());
 
     for (std::size_t i = 0; i < randomization_sample_size; ++i) {
         auto random_timeout = std::chrono::milliseconds{dis(gen)};
@@ -167,8 +165,8 @@ BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, * boost::unit_test::ti
     }
 
     BOOST_TEST_MESSAGE("✓ Election timeout randomization verified (got "
-                      << unique_timeouts.size() << " unique values from "
-                      << randomization_sample_size << " samples)");
+                       << unique_timeouts.size() << " unique values from "
+                       << randomization_sample_size << " samples)");
 }
 
 /**
@@ -179,7 +177,7 @@ BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, * boost::unit_test::ti
  * Property: Cluster configurations can be created with different sizes
  * and all node IDs should be unique.
  */
-BOOST_AUTO_TEST_CASE(test_cluster_configuration_structure, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cluster_configuration_structure, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Cluster configuration structure");
 
     for (std::size_t cluster_size : {small_cluster_size, medium_cluster_size, std::size_t{7}}) {
@@ -210,7 +208,7 @@ BOOST_AUTO_TEST_CASE(test_cluster_configuration_structure, * boost::unit_test::t
  *
  * Property: Invalid configurations should be detected by validation.
  */
-BOOST_AUTO_TEST_CASE(test_configuration_validation_errors, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_configuration_validation_errors, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Configuration validation errors");
 
     // Test 1: Invalid election timeout (min >= max)
@@ -254,7 +252,7 @@ BOOST_AUTO_TEST_CASE(test_configuration_validation_errors, * boost::unit_test::t
  *
  * Property: Retry policies should be properly configured with reasonable defaults.
  */
-BOOST_AUTO_TEST_CASE(test_retry_policy_configuration, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_retry_policy_configuration, *boost::unit_test::timeout(30)) {
     BOOST_TEST_MESSAGE("Test: Retry policy configuration");
 
     auto config = kythira::raft_configuration{};

@@ -18,8 +18,8 @@
 #include <chrono>
 
 namespace {
-    constexpr std::size_t property_test_iterations = 50;
-    constexpr const char* test_name = "folly_future_concept_compliance_property_test";
+constexpr std::size_t property_test_iterations = 50;
+constexpr const char* test_name = "folly_future_concept_compliance_property_test";
 }
 
 BOOST_AUTO_TEST_SUITE(folly_future_concept_compliance_property_tests)
@@ -29,7 +29,7 @@ BOOST_AUTO_TEST_SUITE(folly_future_concept_compliance_property_tests)
  * **Validates: Requirements 10.4**
  * Property: For any value type T, folly::Future<T> should satisfy the future concept
  */
-BOOST_AUTO_TEST_CASE(property_folly_future_concept_compliance, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_folly_future_concept_compliance, *boost::unit_test::timeout(60)) {
     // Test folly::Future<int> satisfies future concept
     static_assert(kythira::future<folly::Future<int>, int>,
                   "folly::Future<int> must satisfy future concept");
@@ -126,7 +126,7 @@ BOOST_AUTO_TEST_CASE(property_folly_future_concept_compliance, * boost::unit_tes
 /**
  * Test folly::Future continuation methods
  */
-BOOST_AUTO_TEST_CASE(test_folly_future_continuation_behavior, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_folly_future_continuation_behavior, *boost::unit_test::timeout(30)) {
     // Test thenValue continuation
     {
         folly::Promise<int> promise;

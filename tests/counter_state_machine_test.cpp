@@ -5,18 +5,18 @@
 using namespace kythira::examples;
 
 namespace {
-    auto make_command(const std::string& cmd) -> std::vector<std::byte> {
-        return {reinterpret_cast<const std::byte*>(cmd.data()),
-                reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
-    }
-
-    auto parse_result(const std::vector<std::byte>& result) -> std::int64_t {
-        std::string str(reinterpret_cast<const char*>(result.data()), result.size());
-        return std::stoll(str);
-    }
+auto make_command(const std::string& cmd) -> std::vector<std::byte> {
+    return {reinterpret_cast<const std::byte*>(cmd.data()),
+            reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())};
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_increment, * boost::unit_test::timeout(10)) {
+auto parse_result(const std::vector<std::byte>& result) -> std::int64_t {
+    std::string str(reinterpret_cast<const char*>(result.data()), result.size());
+    return std::stoll(str);
+}
+}
+
+BOOST_AUTO_TEST_CASE(test_counter_increment, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Increment
@@ -31,7 +31,7 @@ BOOST_AUTO_TEST_CASE(test_counter_increment, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(parse_result(result), 2);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_decrement, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_decrement, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Start with some value
@@ -53,7 +53,7 @@ BOOST_AUTO_TEST_CASE(test_counter_decrement, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(parse_result(result), 8);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_reset, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_reset, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Set counter to some value
@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(test_counter_reset, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(parse_result(result), 0);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_get, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_get, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Set counter to some value
@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(test_counter_get, * boost::unit_test::timeout(10)) {
     BOOST_CHECK_EQUAL(sm.get_value(), 100);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_negative_values, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_negative_values, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Decrement from zero
@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(test_counter_negative_values, * boost::unit_test::timeout(1
     BOOST_CHECK_EQUAL(sm.get_value(), 5);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_snapshot_round_trip, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_snapshot_round_trip, *boost::unit_test::timeout(10)) {
     counter_state_machine sm1;
 
     // Set counter to some value
@@ -130,7 +130,7 @@ BOOST_AUTO_TEST_CASE(test_counter_snapshot_round_trip, * boost::unit_test::timeo
     BOOST_CHECK_EQUAL(sm2.get_value(), 35);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_empty_snapshot, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_empty_snapshot, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Restore from empty snapshot
@@ -140,7 +140,7 @@ BOOST_AUTO_TEST_CASE(test_counter_empty_snapshot, * boost::unit_test::timeout(10
     BOOST_CHECK_EQUAL(sm.get_value(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(test_counter_invalid_command, * boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(test_counter_invalid_command, *boost::unit_test::timeout(10)) {
     counter_state_machine sm;
 
     // Empty command

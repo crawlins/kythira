@@ -38,4 +38,4 @@ public:
         : NetworkException("No route from " + from + " to " + to) {}
 };
 
-} // namespace network_simulator
+}  // namespace network_simulator

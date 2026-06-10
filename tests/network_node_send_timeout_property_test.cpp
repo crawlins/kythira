@@ -7,15 +7,15 @@
 using namespace network_simulator;
 
 namespace {
-    constexpr const char* test_node_a = "node_a";
-    constexpr const char* test_node_b = "node_b";
-    constexpr const char* test_payload = "test_message";
-    constexpr std::chrono::milliseconds short_timeout{1}; // Very short timeout
-    constexpr std::chrono::milliseconds test_latency{100}; // High latency
-    constexpr double test_reliability = 1.0;
+constexpr const char* test_node_a = "node_a";
+constexpr const char* test_node_b = "node_b";
+constexpr const char* test_payload = "test_message";
+constexpr std::chrono::milliseconds short_timeout{1};   // Very short timeout
+constexpr std::chrono::milliseconds test_latency{100};  // High latency
+constexpr double test_reliability = 1.0;
 }
 
-BOOST_AUTO_TEST_CASE(network_node_send_timeout_property_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(network_node_send_timeout_property_test, *boost::unit_test::timeout(30)) {
     // **Property 7: Send Timeout Result**
     // **Validates: Requirements 4.3**
 
@@ -47,13 +47,9 @@ BOOST_AUTO_TEST_CASE(network_node_send_timeout_property_test, * boost::unit_test
         }
 
         // Create message from node_a to node_b
-        Message<DefaultNetworkTypes> msg(
-            test_node_a,
-            static_cast<unsigned short>(8000 + i),
-            test_node_b,
-            static_cast<unsigned short>(9000 + i),
-            std::move(payload)
-        );
+        Message<DefaultNetworkTypes> msg(test_node_a, static_cast<unsigned short>(8000 + i),
+                                         test_node_b, static_cast<unsigned short>(9000 + i),
+                                         std::move(payload));
 
         // Send message with very short timeout
         auto send_future = node_a->send(std::move(msg), short_timeout);

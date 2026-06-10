@@ -3,8 +3,7 @@
 #include <chrono>
 
 // Test that noop_metrics satisfies the metrics concept
-static_assert(kythira::metrics<kythira::noop_metrics>,
-    "noop_metrics must satisfy metrics concept");
+static_assert(kythira::metrics<kythira::noop_metrics>, "noop_metrics must satisfy metrics concept");
 
 int main() {
     // Create a noop_metrics instance

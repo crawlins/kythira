@@ -37,7 +37,8 @@
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
-        char* argv_data[] = {const_cast<char*>("raft_batch_entry_application_property_test"), nullptr};
+        char* argv_data[] = {const_cast<char*>("raft_batch_entry_application_property_test"),
+                             nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
     }
@@ -50,54 +51,63 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 
 namespace {
-    constexpr std::size_t property_test_iterations = 10;
-    constexpr std::chrono::milliseconds election_timeout_min{50};
-    constexpr std::chrono::milliseconds election_timeout_max{100};
-    constexpr std::chrono::milliseconds heartbeat_interval{25};
-    constexpr std::chrono::milliseconds rpc_timeout{100};
-    constexpr std::chrono::milliseconds commit_timeout{2000};
+constexpr std::size_t property_test_iterations = 10;
+constexpr std::chrono::milliseconds election_timeout_min{50};
+constexpr std::chrono::milliseconds election_timeout_max{100};
+constexpr std::chrono::milliseconds heartbeat_interval{25};
+constexpr std::chrono::milliseconds rpc_timeout{100};
+constexpr std::chrono::milliseconds commit_timeout{2000};
 
-    // Types for simulator-based testing with uint64_t node IDs
-    struct test_raft_types {
-        // Future types
-        using future_type = kythira::Future<std::vector<std::byte>>;
-        using promise_type = kythira::Promise<std::vector<std::byte>>;
-        using try_type = kythira::Try<std::vector<std::byte>>;
+// Types for simulator-based testing with uint64_t node IDs
+struct test_raft_types {
+    // Future types
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-        // Basic data types
-        using node_id_type = std::uint64_t;
-        using term_id_type = std::uint64_t;
-        using log_index_type = std::uint64_t;
+    // Basic data types
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-        // Serializer and data types
-        using serialized_data_type = std::vector<std::byte>;
-        using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+    // Serializer and data types
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
 
-        // Component types with proper template parameters
-        using network_client_type = kythira::simulator_network_client<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-        using network_server_type = kythira::simulator_network_server<kythira::raft_simulator_network_types<node_id_type>, serializer_type, serialized_data_type>;
-        using persistence_engine_type = kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
-        using logger_type = kythira::console_logger;
-        using metrics_type = kythira::noop_metrics;
-        using membership_manager_type = kythira::default_membership_manager<node_id_type>;
-        using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
+    // Component types with proper template parameters
+    using network_client_type =
+        kythira::simulator_network_client<kythira::raft_simulator_network_types<node_id_type>,
+                                          serializer_type, serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<kythira::raft_simulator_network_types<node_id_type>,
+                                          serializer_type, serialized_data_type>;
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = kythira::test_key_value_state_machine<log_index_type>;
 
-        // Configuration type
-        using configuration_type = kythira::raft_configuration;
+    // Configuration type
+    using configuration_type = kythira::raft_configuration;
 
-        // Type aliases for commonly used compound types
-        using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
-        using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
-        using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    // Type aliases for commonly used compound types
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
 
-        // RPC message types
-        using request_vote_request_type = kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
-        using request_vote_response_type = kythira::request_vote_response<term_id_type>;
-        using append_entries_request_type = kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
-        using append_entries_response_type = kythira::append_entries_response<term_id_type, log_index_type>;
-        using install_snapshot_request_type = kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
-        using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
-    };
+    // RPC message types
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
+};
 }
 
 BOOST_AUTO_TEST_SUITE(batch_entry_application_property_tests)
@@ -108,7 +118,7 @@ BOOST_AUTO_TEST_SUITE(batch_entry_application_property_tests)
  * For any commit index advance, all entries between old and new commit
  * index are applied to the state machine.
  */
-BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_batch_entry_application, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> cluster_size_dist(3, 5);
@@ -118,11 +128,12 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
         // Generate random cluster size (odd number for clear majority)
         auto cluster_size = cluster_size_dist(rng);
         if (cluster_size % 2 == 0) {
-            cluster_size++; // Make it odd
+            cluster_size++;  // Make it odd
         }
 
         // Create network simulator
-        using raft_network_types = kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
+        using raft_network_types =
+            kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
         auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
         simulator.start();
 
@@ -148,18 +159,12 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
 
             auto node = std::make_unique<node_type>(
                 node_id,
-                test_raft_types::network_client_type{
-                    sim_node, test_raft_types::serializer_type{}
-                },
-                test_raft_types::network_server_type{
-                    sim_node, test_raft_types::serializer_type{}
-                },
+                test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+                test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
                 test_raft_types::persistence_engine_type{},
                 test_raft_types::logger_type{kythira::log_level::error},
-                test_raft_types::metrics_type{},
-                test_raft_types::membership_manager_type{},
-                config
-            );
+                test_raft_types::metrics_type{}, test_raft_types::membership_manager_type{},
+                config);
 
             node->start();
             nodes.push_back(std::move(node));
@@ -200,9 +205,9 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
         // Create a batch of commands with identifiable patterns
         for (std::size_t i = 0; i < batch_size; ++i) {
             std::vector<std::byte> command;
-            command.push_back(static_cast<std::byte>(0xCC)); // Batch marker
-            command.push_back(static_cast<std::byte>(iteration & 0xFF)); // Iteration marker
-            command.push_back(static_cast<std::byte>(i & 0xFF)); // Command index in batch
+            command.push_back(static_cast<std::byte>(0xCC));              // Batch marker
+            command.push_back(static_cast<std::byte>(iteration & 0xFF));  // Iteration marker
+            command.push_back(static_cast<std::byte>(i & 0xFF));          // Command index in batch
             for (std::size_t j = 0; j < 6; ++j) {
                 command.push_back(static_cast<std::byte>((i * 6 + j) % 256));
             }
@@ -251,15 +256,16 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
 
         // Verify all nodes are still running
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            BOOST_CHECK_MESSAGE(nodes[i]->is_running(),
+            BOOST_CHECK_MESSAGE(
+                nodes[i]->is_running(),
                 "Node " + std::to_string(i) + " should still be running after batch application");
         }
 
         // Verify leader is still functioning
         BOOST_CHECK_MESSAGE(leader->is_running(),
-            "Leader should still be running after batch application");
+                            "Leader should still be running after batch application");
         BOOST_CHECK_MESSAGE(leader->is_leader(),
-            "Leader should maintain leadership after batch application");
+                            "Leader should maintain leadership after batch application");
 
         // Property: The Raft implementation ensures batch application through
         // the apply_committed_entries() method, which applies all entries from
@@ -268,10 +274,8 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
         // Additional verification: Submit one more command to ensure the system
         // is still responsive after batch application
         try {
-            std::vector<std::byte> verification_command{
-                std::byte{0xDD}, // Verification marker
-                std::byte{iteration & 0xFF}
-            };
+            std::vector<std::byte> verification_command{std::byte{0xDD},  // Verification marker
+                                                        std::byte{iteration & 0xFF}};
             auto verification_future = leader->submit_command(verification_command, commit_timeout);
 
             // Send heartbeats to commit the verification command
@@ -282,7 +286,7 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
 
             // The fact that we can still submit and the system responds
             // indicates that batch application is working correctly
-            BOOST_CHECK(true); // System is responsive after batch application
+            BOOST_CHECK(true);  // System is responsive after batch application
         } catch (...) {
             // Even if the verification command fails, the main property
             // is verified by the system still running correctly
@@ -296,7 +300,7 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
 
         // Verify we had some successful submissions
         BOOST_CHECK_MESSAGE(successful_submissions.load() > 0,
-            "At least some command submissions should succeed for batch testing");
+                            "At least some command submissions should succeed for batch testing");
     }
 }
 
@@ -306,14 +310,15 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, * boost::unit_test::timeo
  * For any single node cluster, when multiple commands are submitted and
  * committed together, they should all be applied in a single batch.
  */
-BOOST_AUTO_TEST_CASE(property_single_node_batch_application, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_single_node_batch_application, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> batch_size_dist(3, 7);
 
     for (std::size_t iteration = 0; iteration < property_test_iterations; ++iteration) {
         // Create a single-node cluster for deterministic testing
-        using raft_network_types = kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
+        using raft_network_types =
+            kythira::raft_simulator_network_types<test_raft_types::node_id_type>;
         auto simulator = network_simulator::NetworkSimulator<raft_network_types>{};
         simulator.start();
 
@@ -328,18 +333,13 @@ BOOST_AUTO_TEST_CASE(property_single_node_batch_application, * boost::unit_test:
 
         auto node = kythira::node<test_raft_types>{
             node_id,
-            test_raft_types::network_client_type{
-                sim_node, test_raft_types::serializer_type{}
-            },
-            test_raft_types::network_server_type{
-                sim_node, test_raft_types::serializer_type{}
-            },
+            test_raft_types::network_client_type{sim_node, test_raft_types::serializer_type{}},
+            test_raft_types::network_server_type{sim_node, test_raft_types::serializer_type{}},
             test_raft_types::persistence_engine_type{},
             test_raft_types::logger_type{kythira::log_level::error},
             test_raft_types::metrics_type{},
             test_raft_types::membership_manager_type{},
-            config
-        };
+            config};
 
         node.start();
 
@@ -351,7 +351,7 @@ BOOST_AUTO_TEST_CASE(property_single_node_batch_application, * boost::unit_test:
         // Verify node is leader
         if (!node.is_leader()) {
             node.stop();
-            continue; // Skip this iteration if leadership wasn't established
+            continue;  // Skip this iteration if leadership wasn't established
         }
 
         // Submit a batch of commands quickly
@@ -360,9 +360,9 @@ BOOST_AUTO_TEST_CASE(property_single_node_batch_application, * boost::unit_test:
 
         for (std::size_t i = 0; i < batch_size; ++i) {
             std::vector<std::byte> command;
-            command.push_back(static_cast<std::byte>(0xEE)); // Single node batch marker
-            command.push_back(static_cast<std::byte>(iteration & 0xFF)); // Iteration marker
-            command.push_back(static_cast<std::byte>(i & 0xFF)); // Command index
+            command.push_back(static_cast<std::byte>(0xEE));  // Single node batch marker
+            command.push_back(static_cast<std::byte>(iteration & 0xFF));  // Iteration marker
+            command.push_back(static_cast<std::byte>(i & 0xFF));          // Command index
             for (std::size_t j = 0; j < 5; ++j) {
                 command.push_back(static_cast<std::byte>((i + j) % 256));
             }
@@ -390,9 +390,9 @@ BOOST_AUTO_TEST_CASE(property_single_node_batch_application, * boost::unit_test:
         // We verify this by checking that the node is still running correctly
         // and maintains its state consistency after batch application
         BOOST_CHECK_MESSAGE(node.is_running(),
-            "Node should still be running after single-node batch application");
+                            "Node should still be running after single-node batch application");
         BOOST_CHECK_MESSAGE(node.is_leader(),
-            "Node should maintain leadership after single-node batch application");
+                            "Node should maintain leadership after single-node batch application");
 
         // The batch application property is ensured by the apply_committed_entries()
         // method, which applies all entries from last_applied + 1 to commit_index

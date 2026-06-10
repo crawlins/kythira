@@ -10,8 +10,7 @@ namespace test_utilities {
  * Test utility function to create a future with a value
  * This demonstrates how test utilities should use kythira::Future
  */
-template<typename T>
-auto create_ready_future(T value) -> kythira::Future<T> {
+template<typename T> auto create_ready_future(T value) -> kythira::Future<T> {
     return kythira::Future<T>(std::move(value));
 }
 
@@ -61,8 +60,7 @@ auto create_ready_futures(const std::vector<T>& values) -> std::vector<kythira::
  * Test utility function to verify future readiness
  * This demonstrates how to check future state in tests
  */
-template<typename T>
-auto is_future_ready(const kythira::Future<T>& future) -> bool {
+template<typename T> auto is_future_ready(const kythira::Future<T>& future) -> bool {
     return future.isReady();
 }
 
@@ -71,9 +69,9 @@ auto is_future_ready(const kythira::Future<T>& future) -> bool {
  * This demonstrates timeout handling in test utilities
  */
 template<typename T>
-auto wait_for_future_with_timeout(kythira::Future<T>& future,
-                                  std::chrono::milliseconds timeout) -> bool {
+auto wait_for_future_with_timeout(kythira::Future<T>& future, std::chrono::milliseconds timeout)
+    -> bool {
     return future.wait(timeout);
 }
 
-} // namespace test_utilities
+}  // namespace test_utilities

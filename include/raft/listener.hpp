@@ -11,8 +11,7 @@
 namespace kythira {
 
 // Listener class for Raft network operations
-template<typename AddressType, typename PortType, typename FutureType>
-class Listener {
+template<typename AddressType, typename PortType, typename FutureType> class Listener {
 public:
     using address_type = AddressType;
     using port_type = PortType;
@@ -22,20 +21,15 @@ public:
     // Endpoint structure (same as Connection)
     using endpoint = typename connection_type::endpoint;
 
-    Listener(endpoint local_endpoint)
-        : _local(std::move(local_endpoint))
-        , _listening(true)
-    {}
+    Listener(endpoint local_endpoint) : _local(std::move(local_endpoint)), _listening(true) {}
 
     // Accept incoming connections
-    auto accept() -> future_connection_type {
-        return accept(std::chrono::milliseconds{5000});
-    }
+    auto accept() -> future_connection_type { return accept(std::chrono::milliseconds{5000}); }
 
     auto accept(std::chrono::milliseconds timeout) -> future_connection_type {
         if (!_listening) {
-            return FutureType(std::make_exception_ptr(
-                network_exception("Listener is not listening")));
+            return FutureType(
+                std::make_exception_ptr(network_exception("Listener is not listening")));
         }
 
         // For now, create a dummy connection - this would be implemented by concrete transport
@@ -46,23 +40,17 @@ public:
     }
 
     // Close the listener
-    auto close() -> void {
-        _listening = false;
-    }
+    auto close() -> void { _listening = false; }
 
     // Check if listener is active
-    auto is_listening() const -> bool {
-        return _listening;
-    }
+    auto is_listening() const -> bool { return _listening; }
 
     // Get local endpoint
-    auto local_endpoint() const -> endpoint {
-        return _local;
-    }
+    auto local_endpoint() const -> endpoint { return _local; }
 
 private:
     endpoint _local;
     std::atomic<bool> _listening;
 };
 
-} // namespace kythira
+}  // namespace kythira

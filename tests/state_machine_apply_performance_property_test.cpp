@@ -5,10 +5,10 @@
 #include "state_machine_test_utilities.hpp"
 #include <chrono>
 
-BOOST_AUTO_TEST_CASE(property_apply_completes_quickly, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_apply_completes_quickly, *boost::unit_test::timeout(30)) {
     std::random_device rd;
     std::mt19937 rng(rd());
-    constexpr auto max_latency_us = 1000; // 1ms
+    constexpr auto max_latency_us = 1000;  // 1ms
 
     for (int iteration = 0; iteration < 100; ++iteration) {
         kythira::test_key_value_state_machine sm;
@@ -17,7 +17,8 @@ BOOST_AUTO_TEST_CASE(property_apply_completes_quickly, * boost::unit_test::timeo
         auto start = std::chrono::high_resolution_clock::now();
         try {
             sm.apply(cmd, 1);
-        } catch (...) {}
+        } catch (...) {
+        }
         auto end = std::chrono::high_resolution_clock::now();
 
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -25,7 +26,7 @@ BOOST_AUTO_TEST_CASE(property_apply_completes_quickly, * boost::unit_test::timeo
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_apply_scales_linearly, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_apply_scales_linearly, *boost::unit_test::timeout(60)) {
     kythira::test_key_value_state_machine sm;
 
     std::vector<long long> durations;
@@ -41,7 +42,8 @@ BOOST_AUTO_TEST_CASE(property_apply_scales_linearly, * boost::unit_test::timeout
         }
 
         auto end = std::chrono::high_resolution_clock::now();
-        durations.push_back(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+        durations.push_back(
+            std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
     }
 
     // Check that performance doesn't degrade significantly
@@ -51,9 +53,9 @@ BOOST_AUTO_TEST_CASE(property_apply_scales_linearly, * boost::unit_test::timeout
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_counter_performance, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_counter_performance, *boost::unit_test::timeout(30)) {
     kythira::examples::counter_state_machine sm;
-    constexpr auto max_latency_us = 100; // Counter should be very fast
+    constexpr auto max_latency_us = 100;  // Counter should be very fast
 
     std::string cmd = "INC";
     std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(cmd.data()),
@@ -69,7 +71,7 @@ BOOST_AUTO_TEST_CASE(property_counter_performance, * boost::unit_test::timeout(3
     }
 }
 
-BOOST_AUTO_TEST_CASE(property_concurrent_load_performance, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_concurrent_load_performance, *boost::unit_test::timeout(60)) {
     kythira::test_key_value_state_machine sm;
 
     // Simulate high load

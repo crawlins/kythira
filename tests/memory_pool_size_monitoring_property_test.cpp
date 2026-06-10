@@ -11,41 +11,41 @@
 using namespace kythira;
 
 namespace {
-    // Test constants
-    constexpr std::size_t min_pool_size = 64 * 1024;      // 64KB
-    constexpr std::size_t max_pool_size = 1024 * 1024;    // 1MB
-    constexpr std::size_t min_block_size = 1024;          // 1KB
-    constexpr std::size_t max_block_size = 8192;          // 8KB
-    constexpr std::size_t num_property_iterations = 100;
-    constexpr auto test_timeout_seconds = 120;
+// Test constants
+constexpr std::size_t min_pool_size = 64 * 1024;    // 64KB
+constexpr std::size_t max_pool_size = 1024 * 1024;  // 1MB
+constexpr std::size_t min_block_size = 1024;        // 1KB
+constexpr std::size_t max_block_size = 8192;        // 8KB
+constexpr std::size_t num_property_iterations = 100;
+constexpr auto test_timeout_seconds = 120;
 
-    // Random number generator
-    std::random_device rd;
-    std::mt19937 gen(rd());
+// Random number generator
+std::random_device rd;
+std::mt19937 gen(rd());
 
-    // Generate random pool size
-    auto random_pool_size() -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(min_pool_size, max_pool_size);
-        return dist(gen);
-    }
+// Generate random pool size
+auto random_pool_size() -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(min_pool_size, max_pool_size);
+    return dist(gen);
+}
 
-    // Generate random block size
-    auto random_block_size() -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(min_block_size, max_block_size);
-        return dist(gen);
-    }
+// Generate random block size
+auto random_block_size() -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(min_block_size, max_block_size);
+    return dist(gen);
+}
 
-    // Generate random allocation count
-    auto random_allocation_count(std::size_t max_blocks) -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(1, std::min(max_blocks, std::size_t{100}));
-        return dist(gen);
-    }
+// Generate random allocation count
+auto random_allocation_count(std::size_t max_blocks) -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(1, std::min(max_blocks, std::size_t{100}));
+    return dist(gen);
+}
 
-    // Generate random allocation size
-    auto random_allocation_size(std::size_t block_size) -> std::size_t {
-        std::uniform_int_distribution<std::size_t> dist(1, block_size);
-        return dist(gen);
-    }
+// Generate random allocation size
+auto random_allocation_size(std::size_t block_size) -> std::size_t {
+    std::uniform_int_distribution<std::size_t> dist(1, block_size);
+    return dist(gen);
+}
 }
 
 /**
@@ -57,7 +57,8 @@ namespace {
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_size_tracking_invariant, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_size_tracking_invariant,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         // Generate random pool configuration
         std::size_t pool_size = random_pool_size();
@@ -129,7 +130,8 @@ BOOST_AUTO_TEST_CASE(property_size_tracking_invariant, * boost::unit_test::timeo
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -190,7 +192,8 @@ BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic, * boost::unit_test::ti
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_peak_usage_tracking, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -271,7 +274,8 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking, * boost::unit_test::timeout(t
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -313,12 +317,13 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation, * boost::unit_tes
 
         // Calculate expected fragmentation
         std::size_t used_blocks = allocations.size() - dealloc_count;
-        std::size_t expected_frag = static_cast<std::size_t>(
-            (1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
+        std::size_t expected_frag =
+            static_cast<std::size_t>((1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
 
         // Allow small rounding differences (within 5%)
         std::size_t tolerance = 5;
-        BOOST_CHECK_GE(half_metrics.fragmentation_ratio, expected_frag > tolerance ? expected_frag - tolerance : 0);
+        BOOST_CHECK_GE(half_metrics.fragmentation_ratio,
+                       expected_frag > tolerance ? expected_frag - tolerance : 0);
         BOOST_CHECK_LE(half_metrics.fragmentation_ratio, expected_frag + tolerance);
 
         // Clean up remaining allocations
@@ -340,9 +345,10 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation, * boost::unit_tes
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_concurrent_metrics_consistency, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_concurrent_metrics_consistency,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
-        std::size_t pool_size = 512 * 1024; // Fixed size for faster test
+        std::size_t pool_size = 512 * 1024;  // Fixed size for faster test
         std::size_t block_size = 4096;
 
         memory_pool pool(pool_size, block_size);
@@ -426,7 +432,7 @@ BOOST_AUTO_TEST_CASE(property_concurrent_metrics_consistency, * boost::unit_test
         // Property: Final metrics should be consistent
         auto final_metrics = pool.get_metrics();
         BOOST_CHECK_EQUAL(final_metrics.allocated_size + final_metrics.free_size,
-                         final_metrics.total_size);
+                          final_metrics.total_size);
     }
 }
 
@@ -438,7 +444,8 @@ BOOST_AUTO_TEST_CASE(property_concurrent_metrics_consistency, * boost::unit_test
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -463,7 +470,8 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics, * boost::unit_test::tim
                 double utilization = pool.get_utilization_percentage();
 
                 // Property: Utilization should match allocated_size / total_size
-                double expected_util = (static_cast<double>(metrics.allocated_size) / pool_size) * 100.0;
+                double expected_util =
+                    (static_cast<double>(metrics.allocated_size) / pool_size) * 100.0;
                 BOOST_CHECK_CLOSE(utilization, expected_util, 0.1);
 
                 // Property: Utilization should be in valid range
@@ -513,7 +521,8 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics, * boost::unit_test::tim
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -583,7 +592,8 @@ BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy, * boost::unit_test::ti
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_metrics_after_reset, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_metrics_after_reset,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -649,7 +659,8 @@ BOOST_AUTO_TEST_CASE(property_metrics_after_reset, * boost::unit_test::timeout(t
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -726,7 +737,8 @@ BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion, * boost::unit_test::timeout
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations; ++iteration) {
         std::size_t pool_size = random_pool_size();
         std::size_t block_size = random_block_size();
@@ -748,7 +760,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes, * boost::unit_test::ti
 
             if (ptr) {
                 allocations.push_back(ptr);
-                expected_allocated += block_size; // Each allocation uses one block
+                expected_allocated += block_size;  // Each allocation uses one block
 
                 auto metrics = pool.get_metrics();
 
@@ -785,9 +797,10 @@ BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes, * boost::unit_test::ti
  *
  * **Validates: Requirements 14.3**
  */
-BOOST_AUTO_TEST_CASE(property_metrics_long_term_stability, * boost::unit_test::timeout(test_timeout_seconds)) {
+BOOST_AUTO_TEST_CASE(property_metrics_long_term_stability,
+                     *boost::unit_test::timeout(test_timeout_seconds)) {
     for (std::size_t iteration = 0; iteration < num_property_iterations / 10; ++iteration) {
-        std::size_t pool_size = 256 * 1024; // Fixed size for faster test
+        std::size_t pool_size = 256 * 1024;  // Fixed size for faster test
         std::size_t block_size = 4096;
 
         memory_pool pool(pool_size, block_size);

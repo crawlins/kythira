@@ -15,8 +15,8 @@
 #include "../include/concepts/future.hpp"
 
 namespace {
-    constexpr std::size_t property_test_iterations = 100;
-    constexpr const char* test_name = "kythira_executor_concept_compliance_property_test";
+constexpr std::size_t property_test_iterations = 100;
+constexpr const char* test_name = "kythira_executor_concept_compliance_property_test";
 }
 
 BOOST_AUTO_TEST_SUITE(kythira_executor_concept_compliance_property_tests)
@@ -26,7 +26,7 @@ BOOST_AUTO_TEST_SUITE(kythira_executor_concept_compliance_property_tests)
  * **Validates: Requirements 2.1**
  * Property: For any kythira::Executor wrapper, it should satisfy the executor concept
  */
-BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, * boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, *boost::unit_test::timeout(60)) {
     // Test that kythira::Executor satisfies executor concept
     static_assert(kythira::executor<kythira::Executor>,
                   "kythira::Executor must satisfy executor concept");
@@ -50,9 +50,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, * boost::unit
 
             // Test add() method with simple function
             std::atomic<bool> executed{false};
-            wrapper.add([&executed]() {
-                executed.store(true);
-            });
+            wrapper.add([&executed]() { executed.store(true); });
 
             // Wait for execution (with timeout)
             auto start = std::chrono::steady_clock::now();
@@ -77,9 +75,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, * boost::unit
 
             // Test add() method - should execute immediately
             std::atomic<bool> executed{false};
-            wrapper.add([&executed]() {
-                executed.store(true);
-            });
+            wrapper.add([&executed]() { executed.store(true); });
 
             // Should be executed immediately with InlineExecutor
             BOOST_CHECK(executed.load());
@@ -98,9 +94,7 @@ BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, * boost::unit
 
             // Test add() method - should not execute until run()
             std::atomic<bool> executed{false};
-            wrapper.add([&executed]() {
-                executed.store(true);
-            });
+            wrapper.add([&executed]() { executed.store(true); });
 
             // Should not be executed yet
             BOOST_CHECK(!executed.load());
@@ -114,13 +108,13 @@ BOOST_AUTO_TEST_CASE(property_kythira_executor_concept_compliance, * boost::unit
     }
 
     BOOST_TEST_MESSAGE("kythira::Executor behavior matches executor concept requirements across "
-                      << property_test_iterations << " iterations");
+                       << property_test_iterations << " iterations");
 }
 
 /**
  * Test null executor handling and error conditions
  */
-BOOST_AUTO_TEST_CASE(test_executor_error_conditions, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_executor_error_conditions, *boost::unit_test::timeout(30)) {
     // Test 1: Default constructor creates invalid executor
     {
         kythira::Executor wrapper;
@@ -128,7 +122,7 @@ BOOST_AUTO_TEST_CASE(test_executor_error_conditions, * boost::unit_test::timeout
         BOOST_CHECK_EQUAL(wrapper.get(), nullptr);
 
         // Test that add() throws with null executor
-        BOOST_CHECK_THROW(wrapper.add([](){}), std::runtime_error);
+        BOOST_CHECK_THROW(wrapper.add([]() {}), std::runtime_error);
 
         // Test that get_keep_alive() throws with null executor
         BOOST_CHECK_THROW(wrapper.get_keep_alive(), std::runtime_error);
@@ -145,7 +139,7 @@ BOOST_AUTO_TEST_CASE(test_executor_error_conditions, * boost::unit_test::timeout
 /**
  * Test copy and move semantics
  */
-BOOST_AUTO_TEST_CASE(test_executor_copy_move_semantics, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_executor_copy_move_semantics, *boost::unit_test::timeout(30)) {
     folly::InlineExecutor inline_executor;
 
     // Test copy constructor
@@ -194,7 +188,7 @@ BOOST_AUTO_TEST_CASE(test_executor_copy_move_semantics, * boost::unit_test::time
 /**
  * Test KeepAlive functionality
  */
-BOOST_AUTO_TEST_CASE(test_executor_keep_alive, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_executor_keep_alive, *boost::unit_test::timeout(30)) {
     auto cpu_executor = std::make_unique<folly::CPUThreadPoolExecutor>(1);
     kythira::Executor wrapper(cpu_executor.get());
 
@@ -211,9 +205,7 @@ BOOST_AUTO_TEST_CASE(test_executor_keep_alive, * boost::unit_test::timeout(30)) 
 
     // Test that we can add work through KeepAlive
     std::atomic<bool> executed{false};
-    keep_alive.add([&executed]() {
-        executed.store(true);
-    });
+    keep_alive.add([&executed]() { executed.store(true); });
 
     // Wait for execution (with timeout)
     auto start = std::chrono::steady_clock::now();

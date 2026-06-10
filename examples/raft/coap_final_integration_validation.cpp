@@ -28,19 +28,19 @@
 #include <fstream>
 
 namespace {
-    // Integration test constants
-    constexpr std::size_t integration_iterations = 100;
-    constexpr std::size_t load_test_duration_seconds = 10;
-    constexpr std::size_t interop_test_iterations = 50;
+// Integration test constants
+constexpr std::size_t integration_iterations = 100;
+constexpr std::size_t load_test_duration_seconds = 10;
+constexpr std::size_t interop_test_iterations = 50;
 
-    // Test cluster configuration
-    constexpr std::size_t cluster_size = 3;
-    constexpr std::uint16_t coap_base_port = 5683;
-    constexpr std::uint16_t http_base_port = 8080;
+// Test cluster configuration
+constexpr std::size_t cluster_size = 3;
+constexpr std::uint16_t coap_base_port = 5683;
+constexpr std::uint16_t http_base_port = 8080;
 
-    using steady_clock = std::chrono::steady_clock;
-    using microseconds = std::chrono::microseconds;
-    using milliseconds = std::chrono::milliseconds;
+using steady_clock = std::chrono::steady_clock;
+using microseconds = std::chrono::microseconds;
+using milliseconds = std::chrono::milliseconds;
 }
 
 class FinalIntegrationValidator {
@@ -141,18 +141,24 @@ private:
             // Test serialization compatibility
             kythira::json_serializer serializer;
             auto vote_serialized = serializer.serialize(vote_request);
-            auto vote_deserialized = serializer.template deserialize<kythira::request_vote_request<>>(vote_serialized);
+            auto vote_deserialized =
+                serializer.template deserialize<kythira::request_vote_request<>>(vote_serialized);
 
             auto append_serialized = serializer.serialize(append_request);
-            auto append_deserialized = serializer.template deserialize<kythira::append_entries_request<>>(append_serialized);
+            auto append_deserialized =
+                serializer.template deserialize<kythira::append_entries_request<>>(
+                    append_serialized);
 
             std::cout << "  ✓ Message serialization compatibility validated\n";
             operations++;
 
             // Test CoAP-specific features
-            std::cout << "  ✓ Block transfer support: " << (client_config.enable_block_transfer ? "enabled" : "disabled") << "\n";
-            std::cout << "  ✓ Session reuse support: " << (client_config.enable_session_reuse ? "enabled" : "disabled") << "\n";
-            std::cout << "  ✓ Connection pooling: " << (client_config.enable_connection_pooling ? "enabled" : "disabled") << "\n";
+            std::cout << "  ✓ Block transfer support: "
+                      << (client_config.enable_block_transfer ? "enabled" : "disabled") << "\n";
+            std::cout << "  ✓ Session reuse support: "
+                      << (client_config.enable_session_reuse ? "enabled" : "disabled") << "\n";
+            std::cout << "  ✓ Connection pooling: "
+                      << (client_config.enable_connection_pooling ? "enabled" : "disabled") << "\n";
             operations++;
 
         } catch (const std::exception& e) {
@@ -163,14 +169,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "Raft Integration",
-            passed,
-            duration,
-            passed ? "All Raft integration tests passed" : "Some integration tests failed",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back(
+            {"Raft Integration", passed, duration,
+             passed ? "All Raft integration tests passed" : "Some integration tests failed",
+             operations, passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ Raft integration validation passed\n";
@@ -226,7 +228,7 @@ private:
 
             // Test timeout and retry compatibility
             auto coap_timeout = coap_config.ack_timeout;
-            auto coap_server_timeout = coap_server_config.max_request_size; // Use a valid member
+            auto coap_server_timeout = coap_server_config.max_request_size;  // Use a valid member
 
             std::cout << "  ✓ CoAP client timeout: " << coap_timeout.count() << " ms\n";
             std::cout << "  ✓ CoAP server max request size: " << coap_server_timeout << " bytes\n";
@@ -240,14 +242,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "Transport Interoperability",
-            passed,
-            duration,
-            passed ? "CoAP transport configurations validated" : "Configuration issues found",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back(
+            {"Transport Interoperability", passed, duration,
+             passed ? "CoAP transport configurations validated" : "Configuration issues found",
+             operations, passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ Transport interoperability validation passed\n";
@@ -289,12 +287,14 @@ private:
             kythira::coap_client_config psk_client_config;
             psk_client_config.enable_dtls = true;
             psk_client_config.psk_identity = "client_identity";
-            psk_client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+            psk_client_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                         std::byte{0x04}};
 
             kythira::coap_server_config psk_server_config;
             psk_server_config.enable_dtls = true;
             psk_server_config.psk_identity = "server_identity";
-            psk_server_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+            psk_server_config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03},
+                                         std::byte{0x04}};
 
             std::cout << "  ✓ PSK client configuration created\n";
             std::cout << "  ✓ PSK server configuration created\n";
@@ -307,12 +307,12 @@ private:
 
             // Validate security settings
             bool dtls_valid = dtls_client_config.enable_dtls &&
-                             !dtls_client_config.cert_file.empty() &&
-                             !dtls_client_config.key_file.empty();
+                              !dtls_client_config.cert_file.empty() &&
+                              !dtls_client_config.key_file.empty();
 
             bool psk_valid = psk_client_config.enable_dtls &&
-                            !psk_client_config.psk_identity.empty() &&
-                            !psk_client_config.psk_key.empty();
+                             !psk_client_config.psk_identity.empty() &&
+                             !psk_client_config.psk_key.empty();
 
             std::cout << "  ✓ DTLS configuration: " << (dtls_valid ? "valid" : "invalid") << "\n";
             std::cout << "  ✓ PSK configuration: " << (psk_valid ? "valid" : "invalid") << "\n";
@@ -328,14 +328,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "Security Configuration",
-            passed,
-            duration,
-            passed ? "Security configurations validated" : "Security configuration issues found",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back(
+            {"Security Configuration", passed, duration,
+             passed ? "Security configurations validated" : "Security configuration issues found",
+             operations, passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ Security configuration validation passed\n";
@@ -371,7 +367,9 @@ private:
 
                         kythira::json_serializer serializer;
                         auto serialized = serializer.serialize(request);
-                        auto deserialized = serializer.template deserialize<kythira::request_vote_request<>>(serialized);
+                        auto deserialized =
+                            serializer.template deserialize<kythira::request_vote_request<>>(
+                                serialized);
 
                         // Simulate network delay
                         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -396,9 +394,10 @@ private:
             std::cout << "  ✓ Load test operations: " << operations << "\n";
             std::cout << "  ✓ Successful operations: " << successful_operations.load() << "\n";
             std::cout << "  ✓ Failed operations: " << failed_operations.load() << "\n";
-            std::cout << "  ✓ Success rate: " << std::fixed << std::setprecision(1) << success_rate << "%\n";
+            std::cout << "  ✓ Success rate: " << std::fixed << std::setprecision(1) << success_rate
+                      << "%\n";
 
-            passed = success_rate >= 95.0; // 95% success rate threshold
+            passed = success_rate >= 95.0;  // 95% success rate threshold
 
         } catch (const std::exception& e) {
             std::cout << "  ✗ Load testing failed: " << e.what() << "\n";
@@ -408,16 +407,12 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        double success_rate = operations > 0 ? (successful_operations.load() * 100.0) / operations : 0.0;
+        double success_rate =
+            operations > 0 ? (successful_operations.load() * 100.0) / operations : 0.0;
 
-        _results.push_back({
-            "Load Testing",
-            passed,
-            duration,
-            passed ? "Load testing completed successfully" : "Load testing failed",
-            operations,
-            success_rate
-        });
+        _results.push_back({"Load Testing", passed, duration,
+                            passed ? "Load testing completed successfully" : "Load testing failed",
+                            operations, success_rate});
 
         if (passed) {
             std::cout << "  ✓ Load testing validation passed\n";
@@ -471,7 +466,9 @@ private:
 
                         kythira::json_serializer serializer;
                         auto serialized = serializer.serialize(vote_request);
-                        auto deserialized = serializer.template deserialize<kythira::request_vote_request<>>(serialized);
+                        auto deserialized =
+                            serializer.template deserialize<kythira::request_vote_request<>>(
+                                serialized);
 
                         operations++;
                     }
@@ -490,7 +487,9 @@ private:
 
             kythira::json_serializer serializer;
             auto append_serialized = serializer.serialize(append_request);
-            auto append_deserialized = serializer.template deserialize<kythira::append_entries_request<>>(append_serialized);
+            auto append_deserialized =
+                serializer.template deserialize<kythira::append_entries_request<>>(
+                    append_serialized);
 
             std::cout << "  ✓ AppendEntries scenario validated\n";
             operations++;
@@ -513,14 +512,9 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "End-to-End Scenarios",
-            passed,
-            duration,
-            passed ? "All end-to-end scenarios validated" : "Some scenarios failed",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back({"End-to-End Scenarios", passed, duration,
+                            passed ? "All end-to-end scenarios validated" : "Some scenarios failed",
+                            operations, passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ End-to-end scenario validation passed\n";
@@ -544,16 +538,13 @@ private:
 
             // Test timeout configurations
             std::vector<std::chrono::milliseconds> timeouts = {
-                std::chrono::milliseconds(100),
-                std::chrono::milliseconds(1000),
-                std::chrono::milliseconds(5000),
-                std::chrono::milliseconds(10000)
-            };
+                std::chrono::milliseconds(100), std::chrono::milliseconds(1000),
+                std::chrono::milliseconds(5000), std::chrono::milliseconds(10000)};
 
             for (auto timeout : timeouts) {
                 config.ack_timeout = timeout;
                 bool valid = config.ack_timeout >= std::chrono::milliseconds(100) &&
-                            config.ack_timeout <= std::chrono::milliseconds(10000);
+                             config.ack_timeout <= std::chrono::milliseconds(10000);
 
                 if (!valid) {
                     passed = false;
@@ -595,10 +586,10 @@ private:
 
             // Test feature flag combinations
             std::vector<std::tuple<bool, bool, bool>> feature_combinations = {
-                {true, true, true},   // All features enabled
-                {false, false, false}, // All features disabled
-                {true, false, true},   // Mixed configuration
-                {false, true, false}   // Mixed configuration
+                {true, true, true},     // All features enabled
+                {false, false, false},  // All features disabled
+                {true, false, true},    // Mixed configuration
+                {false, true, false}    // Mixed configuration
             };
 
             for (auto [dtls, pooling, caching] : feature_combinations) {
@@ -620,14 +611,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "Configuration Compatibility",
-            passed,
-            duration,
-            passed ? "All configurations compatible" : "Configuration compatibility issues found",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back(
+            {"Configuration Compatibility", passed, duration,
+             passed ? "All configurations compatible" : "Configuration compatibility issues found",
+             operations, passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ Configuration compatibility validation passed\n";
@@ -684,11 +671,8 @@ private:
             operations++;
 
             // Test all Raft message types
-            std::vector<std::string> message_types = {
-                "RequestVote",
-                "AppendEntries",
-                "InstallSnapshot"
-            };
+            std::vector<std::string> message_types = {"RequestVote", "AppendEntries",
+                                                      "InstallSnapshot"};
 
             for (const auto& msg_type : message_types) {
                 if (msg_type == "RequestVote") {
@@ -700,9 +684,10 @@ private:
 
                     kythira::json_serializer serializer;
                     auto serialized = serializer.serialize(request);
-                    auto deserialized = serializer.template deserialize<kythira::request_vote_request<>>(serialized);
-                }
-                else if (msg_type == "AppendEntries") {
+                    auto deserialized =
+                        serializer.template deserialize<kythira::request_vote_request<>>(
+                            serialized);
+                } else if (msg_type == "AppendEntries") {
                     kythira::append_entries_request<> request;
                     request._term = 1;
                     request._leader_id = 1;
@@ -712,7 +697,9 @@ private:
 
                     kythira::json_serializer serializer;
                     auto serialized = serializer.serialize(request);
-                    auto deserialized = serializer.template deserialize<kythira::append_entries_request<>>(serialized);
+                    auto deserialized =
+                        serializer.template deserialize<kythira::append_entries_request<>>(
+                            serialized);
                 }
 
                 operations++;
@@ -732,7 +719,8 @@ private:
 
                 kythira::json_serializer serializer;
                 auto serialized = serializer.serialize(request);
-                auto deserialized = serializer.template deserialize<kythira::request_vote_request<>>(serialized);
+                auto deserialized =
+                    serializer.template deserialize<kythira::request_vote_request<>>(serialized);
             }
 
             auto perf_end = steady_clock::now();
@@ -746,14 +734,16 @@ private:
 
             // Final validation checks
             bool config_valid = final_client_config.max_sessions > 0 &&
-                               final_server_config.max_concurrent_sessions > 0;
+                                final_server_config.max_concurrent_sessions > 0;
 
-            bool performance_valid = ops_per_second >= 1000.0; // 1K ops/second minimum
+            bool performance_valid = ops_per_second >= 1000.0;  // 1K ops/second minimum
 
             passed = config_valid && performance_valid;
 
-            std::cout << "  ✓ Configuration validity: " << (config_valid ? "passed" : "failed") << "\n";
-            std::cout << "  ✓ Performance validity: " << (performance_valid ? "passed" : "failed") << "\n";
+            std::cout << "  ✓ Configuration validity: " << (config_valid ? "passed" : "failed")
+                      << "\n";
+            std::cout << "  ✓ Performance validity: " << (performance_valid ? "passed" : "failed")
+                      << "\n";
 
         } catch (const std::exception& e) {
             std::cout << "  ✗ Final system validation failed: " << e.what() << "\n";
@@ -763,14 +753,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        _results.push_back({
-            "Final System Validation",
-            passed,
-            duration,
-            passed ? "Complete system validation passed" : "System validation failed",
-            operations,
-            passed ? 100.0 : 0.0
-        });
+        _results.push_back(
+            {"Final System Validation", passed, duration,
+             passed ? "Complete system validation passed" : "System validation failed", operations,
+             passed ? 100.0 : 0.0});
 
         if (passed) {
             std::cout << "  ✓ Final system validation passed\n";
@@ -783,13 +769,9 @@ private:
 
     auto create_test_certificates() -> void {
         // Create test certificate files (stub implementation)
-        std::vector<std::string> cert_files = {
-            "/tmp/client_cert.pem",
-            "/tmp/client_key.pem",
-            "/tmp/server_cert.pem",
-            "/tmp/server_key.pem",
-            "/tmp/ca_cert.pem"
-        };
+        std::vector<std::string> cert_files = {"/tmp/client_cert.pem", "/tmp/client_key.pem",
+                                               "/tmp/server_cert.pem", "/tmp/server_key.pem",
+                                               "/tmp/ca_cert.pem"};
 
         for (const auto& file : cert_files) {
             std::ofstream cert_file(file);
@@ -834,8 +816,8 @@ private:
 
         std::cout << "\n";
         std::cout << "Overall Results:\n";
-        std::cout << "  Tests Passed: " << passed_tests << "/" << total_tests
-                  << " (" << std::fixed << std::setprecision(1) << overall_success_rate << "%)\n";
+        std::cout << "  Tests Passed: " << passed_tests << "/" << total_tests << " (" << std::fixed
+                  << std::setprecision(1) << overall_success_rate << "%)\n";
         std::cout << "  Total Operations: " << total_operations << "\n";
         std::cout << "  Total Duration: " << total_duration.count() << " ms\n";
         std::cout << "  Average Operations/Test: " << (total_operations / total_tests) << "\n";

@@ -24,8 +24,8 @@ public:
     test_key_value_state_machine() = default;
 
     // Apply a committed log entry to the state machine
-    // Command format: [command_type (1 byte)][key_length (4 bytes)][key][value_length (4 bytes)][value]
-    // Returns: For GET commands, returns the value; for PUT/DEL, returns empty
+    // Command format: [command_type (1 byte)][key_length (4 bytes)][key][value_length (4
+    // bytes)][value] Returns: For GET commands, returns the value; for PUT/DEL, returns empty
     auto apply(const std::vector<std::byte>& command, LogIndex index) -> std::vector<std::byte> {
         if (command.empty()) {
             throw std::invalid_argument("Empty command");
@@ -67,19 +67,20 @@ public:
                 offset += sizeof(std::uint32_t);
 
                 if (offset + value_length > command.size()) {
-                    throw std::invalid_argument("Invalid PUT command: value length exceeds command size");
+                    throw std::invalid_argument(
+                        "Invalid PUT command: value length exceeds command size");
                 }
 
                 std::string value(reinterpret_cast<const char*>(&command[offset]), value_length);
                 _store[key] = value;
 
-                return {}; // PUT returns empty
+                return {};  // PUT returns empty
             }
 
             case command_type::get: {
                 auto it = _store.find(key);
                 if (it == _store.end()) {
-                    return {}; // Key not found, return empty
+                    return {};  // Key not found, return empty
                 }
 
                 // Return value as bytes
@@ -91,7 +92,7 @@ public:
 
             case command_type::del: {
                 _store.erase(key);
-                return {}; // DEL returns empty
+                return {};  // DEL returns empty
             }
 
             default:
@@ -100,7 +101,8 @@ public:
     }
 
     // Get the current state of the state machine for snapshot creation
-    // Format: [num_entries (8 bytes)][entry1_key_len (4 bytes)][entry1_key][entry1_val_len (4 bytes)][entry1_val]...
+    // Format: [num_entries (8 bytes)][entry1_key_len (4 bytes)][entry1_key][entry1_val_len (4
+    // bytes)][entry1_val]...
     auto get_state() const -> std::vector<std::byte> {
         std::vector<std::byte> state;
 
@@ -134,12 +136,13 @@ public:
     }
 
     // Restore the state machine from a snapshot
-    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, LogIndex index) -> void {
+    auto restore_from_snapshot(const std::vector<std::byte>& snapshot_data, LogIndex index)
+        -> void {
         _store.clear();
         _last_applied_index = index;
 
         if (snapshot_data.empty()) {
-            return; // Empty snapshot is valid (empty state machine)
+            return;  // Empty snapshot is valid (empty state machine)
         }
 
         std::size_t offset = 0;
@@ -165,10 +168,12 @@ public:
             offset += sizeof(std::uint32_t);
 
             if (offset + key_length > snapshot_data.size()) {
-                throw std::invalid_argument("Invalid snapshot format: key length exceeds data size");
+                throw std::invalid_argument(
+                    "Invalid snapshot format: key length exceeds data size");
             }
 
-            std::string key(reinterpret_cast<const char*>(snapshot_data.data() + offset), key_length);
+            std::string key(reinterpret_cast<const char*>(snapshot_data.data() + offset),
+                            key_length);
             offset += key_length;
 
             // Read value
@@ -181,10 +186,12 @@ public:
             offset += sizeof(std::uint32_t);
 
             if (offset + value_length > snapshot_data.size()) {
-                throw std::invalid_argument("Invalid snapshot format: value length exceeds data size");
+                throw std::invalid_argument(
+                    "Invalid snapshot format: value length exceeds data size");
             }
 
-            std::string value(reinterpret_cast<const char*>(snapshot_data.data() + offset), value_length);
+            std::string value(reinterpret_cast<const char*>(snapshot_data.data() + offset),
+                              value_length);
             offset += value_length;
 
             _store[key] = value;
@@ -192,9 +199,7 @@ public:
     }
 
     // Helper methods for testing
-    [[nodiscard]] auto size() const -> std::size_t {
-        return _store.size();
-    }
+    [[nodiscard]] auto size() const -> std::size_t { return _store.size(); }
 
     [[nodiscard]] auto contains(const std::string& key) const -> bool {
         return _store.find(key) != _store.end();
@@ -208,12 +213,11 @@ public:
         return it->second;
     }
 
-    [[nodiscard]] auto get_last_applied_index() const -> LogIndex {
-        return _last_applied_index;
-    }
+    [[nodiscard]] auto get_last_applied_index() const -> LogIndex { return _last_applied_index; }
 
     // Helper to create PUT command
-    static auto make_put_command(const std::string& key, const std::string& value) -> std::vector<std::byte> {
+    static auto make_put_command(const std::string& key, const std::string& value)
+        -> std::vector<std::byte> {
         std::vector<std::byte> command;
 
         // Command type
@@ -283,4 +287,4 @@ private:
 static_assert(state_machine<test_key_value_state_machine<std::uint64_t>, std::uint64_t>,
               "test_key_value_state_machine must satisfy state_machine concept");
 
-} // namespace kythira
+}  // namespace kythira

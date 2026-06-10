@@ -14,18 +14,20 @@ using namespace kythira;
 
 // Test constants
 namespace {
-    constexpr int test_value = 42;
-    constexpr const char* test_string = "test exception";
-    constexpr double test_double = 3.14;
+constexpr int test_value = 42;
+constexpr const char* test_string = "test exception";
+constexpr double test_double = 3.14;
 }
 
 /**
  * **Feature: folly-concept-wrappers, Property 1: Concept Compliance**
  *
- * Property: For any Promise wrapper class and its corresponding concept, the wrapper should satisfy all concept requirements at compile time and runtime
+ * Property: For any Promise wrapper class and its corresponding concept, the wrapper should satisfy
+ * all concept requirements at compile time and runtime
  * **Validates: Requirements 1.1**
  */
-BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
+                     *boost::unit_test::timeout(90)) {
     // Test 1: Static assertions for concept compliance
     {
         // Test kythira::Promise<int> satisfies promise concept
@@ -115,7 +117,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::
         BOOST_CHECK(future.isReady());
 
         // Get the value from future (void)
-        future.get(); // Should not throw
+        future.get();  // Should not throw
     }
 
     // Test 5: Exception handling with folly::exception_wrapper
@@ -167,7 +169,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::
 
     // Test 8: Property-based testing - generate multiple test cases
     for (int i = 0; i < 100; ++i) {
-        int random_value = i * 7 + 13; // Simple pseudo-random generation
+        int random_value = i * 7 + 13;  // Simple pseudo-random generation
 
         // Test value fulfillment with getFuture
         {
@@ -205,7 +207,8 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::
             BOOST_CHECK(!promise.isFulfilled());
 
             auto future = promise.getFuture();
-            auto ex = folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+            auto ex =
+                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
             BOOST_CHECK(future.isReady());
@@ -225,7 +228,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::
             BOOST_CHECK(void_promise.isFulfilled());
             BOOST_CHECK(void_future.isReady());
 
-            void_future.get(); // Should not throw
+            void_future.get();  // Should not throw
         }
 
         // Test move semantics
@@ -248,13 +251,15 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test, * boost::
 /**
  * Test that types NOT satisfying promise concept are properly rejected
  */
-BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
     static_assert(!promise<int, int>, "int should not satisfy promise concept");
-    static_assert(!promise<std::string, std::string>, "std::string should not satisfy promise concept");
+    static_assert(!promise<std::string, std::string>,
+                  "std::string should not satisfy promise concept");
 
     // Test that SemiPromise doesn't satisfy promise concept (missing getFuture/getSemiFuture)
-    static_assert(!promise<SemiPromise<int>, int>, "SemiPromise should not satisfy promise concept");
+    static_assert(!promise<SemiPromise<int>, int>,
+                  "SemiPromise should not satisfy promise concept");
 
     // Test that types missing required methods don't satisfy the concept
     struct IncompletePromise {
@@ -264,7 +269,8 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, * boost::unit_test::timeout
         // Missing getFuture() and getSemiFuture()
     };
 
-    static_assert(!promise<IncompletePromise, int>, "IncompletePromise should not satisfy promise concept");
+    static_assert(!promise<IncompletePromise, int>,
+                  "IncompletePromise should not satisfy promise concept");
 
     // Note: We can't easily test wrong return types because the concept doesn't specify
     // exact return types for getFuture() and getSemiFuture() - they just need to exist
@@ -273,12 +279,15 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, * boost::unit_test::timeout
 /**
  * Test move-only semantics of Promise
  */
-BOOST_AUTO_TEST_CASE(promise_move_only_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_move_only_test, *boost::unit_test::timeout(30)) {
     // Test that Promise is move-only (cannot be copied)
-    static_assert(std::is_move_constructible_v<Promise<int>>, "Promise should be move constructible");
+    static_assert(std::is_move_constructible_v<Promise<int>>,
+                  "Promise should be move constructible");
     static_assert(std::is_move_assignable_v<Promise<int>>, "Promise should be move assignable");
-    static_assert(!std::is_copy_constructible_v<Promise<int>>, "Promise should not be copy constructible");
-    static_assert(!std::is_copy_assignable_v<Promise<int>>, "Promise should not be copy assignable");
+    static_assert(!std::is_copy_constructible_v<Promise<int>>,
+                  "Promise should not be copy constructible");
+    static_assert(!std::is_copy_assignable_v<Promise<int>>,
+                  "Promise should not be copy assignable");
 
     // Test move construction
     Promise<int> promise1;
@@ -296,7 +305,7 @@ BOOST_AUTO_TEST_CASE(promise_move_only_test, * boost::unit_test::timeout(30)) {
 /**
  * Test resource management and proper cleanup
  */
-BOOST_AUTO_TEST_CASE(promise_resource_management_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_resource_management_test, *boost::unit_test::timeout(30)) {
     // Test that Promise properly manages underlying folly::Promise
     {
         Promise<int> promise;
@@ -307,7 +316,7 @@ BOOST_AUTO_TEST_CASE(promise_resource_management_test, * boost::unit_test::timeo
         promise.setValue(test_value);
         BOOST_CHECK(promise.isFulfilled());
         BOOST_CHECK_EQUAL(future.get(), test_value);
-    } // promise goes out of scope - should clean up properly
+    }  // promise goes out of scope - should clean up properly
 
     // Test with void type
     {
@@ -317,8 +326,8 @@ BOOST_AUTO_TEST_CASE(promise_resource_management_test, * boost::unit_test::timeo
         auto void_future = void_promise.getFuture();
         void_promise.setValue(folly::Unit{});
         BOOST_CHECK(void_promise.isFulfilled());
-        void_future.get(); // Should not throw
-    } // void_promise goes out of scope - should clean up properly
+        void_future.get();  // Should not throw
+    }  // void_promise goes out of scope - should clean up properly
 
     // Test with exception
     {
@@ -327,20 +336,20 @@ BOOST_AUTO_TEST_CASE(promise_resource_management_test, * boost::unit_test::timeo
         exception_promise.setException(folly::exception_wrapper(std::runtime_error("test")));
         BOOST_CHECK(exception_promise.isFulfilled());
         BOOST_CHECK_THROW(future.get(), std::runtime_error);
-    } // exception_promise goes out of scope - should clean up properly
+    }  // exception_promise goes out of scope - should clean up properly
 }
 
 /**
  * Test promise-future relationship integrity
  */
-BOOST_AUTO_TEST_CASE(promise_future_relationship_test, * boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(promise_future_relationship_test, *boost::unit_test::timeout(30)) {
     // Test that multiple getFuture calls return different futures
     {
         Promise<int> promise;
 
         auto future1 = promise.getFuture();
-        // Note: folly::Promise::getFuture() can only be called once, so we can't test multiple calls
-        // This is expected behavior - each promise can only have one associated future
+        // Note: folly::Promise::getFuture() can only be called once, so we can't test multiple
+        // calls This is expected behavior - each promise can only have one associated future
 
         promise.setValue(test_value);
         BOOST_CHECK_EQUAL(future1.get(), test_value);
