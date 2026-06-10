@@ -529,6 +529,265 @@ BOOST_AUTO_TEST_CASE(submit_command_with_session_dedup, * boost::unit_test::time
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// ── Tests: read_state ─────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(read_state_suite)
+
+/**
+ * read_state on a follower must return a future that faults immediately with
+ * a leadership error.  Exercises: read_state not-leader path (lines ~866-882).
+ */
+BOOST_AUTO_TEST_CASE(read_state_on_follower_fails, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        make_fast_config()
+    };
+    node.start();
+    BOOST_REQUIRE_EQUAL(node.get_state(), kythira::server_state::follower);
+
+    auto future = node.read_state(std::chrono::milliseconds{500});
+    BOOST_CHECK_THROW(std::move(future).get(), std::exception);
+
+    node.stop();
+}
+
+/**
+ * read_state on a single-node leader returns the state machine state
+ * immediately (no heartbeat round-trip needed).
+ * Exercises: single-node fast path in read_state (lines ~885-937).
+ */
+BOOST_AUTO_TEST_CASE(read_state_on_single_node_leader_succeeds, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+    auto cfg = make_fast_config();
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        cfg
+    };
+    node.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node.check_election_timeout();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    BOOST_REQUIRE(node.is_leader());
+
+    auto future = node.read_state(std::chrono::milliseconds{1000});
+    // Single-node path resolves immediately; empty state machine → empty state
+    auto state = std::move(future).get();
+    (void)state;
+
+    node.stop();
+}
+
+/**
+ * read_state after a command is committed reflects the applied state.
+ */
+BOOST_AUTO_TEST_CASE(read_state_reflects_committed_command, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+    auto cfg = make_fast_config();
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        cfg
+    };
+    node.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node.check_election_timeout();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    BOOST_REQUIRE(node.is_leader());
+
+    // Commit a command
+    std::move(node.submit_command(make_put_cmd("hello", "world"), std::chrono::milliseconds{2000})).get();
+
+    // read_state must not throw
+    auto state = std::move(node.read_state(std::chrono::milliseconds{1000})).get();
+    // State machine serialised state is non-empty after a PUT
+    BOOST_CHECK(!state.empty());
+
+    node.stop();
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Tests: session edge cases ─────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(session_edge_cases)
+
+/**
+ * A new client sending serial_number != 1 must be rejected immediately.
+ * Exercises: invalid-initial-serial path (lines ~722-741).
+ */
+BOOST_AUTO_TEST_CASE(submit_command_with_session_invalid_initial_serial, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+    auto cfg = make_fast_config();
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        cfg
+    };
+    node.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node.check_election_timeout();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    BOOST_REQUIRE(node.is_leader());
+
+    // client_id=99 is new; serial_number=5 (not 1) must be rejected
+    auto future = node.submit_command_with_session(
+        99, 5, make_put_cmd("k", "v"), std::chrono::milliseconds{500});
+    BOOST_CHECK_THROW(std::move(future).get(), std::exception);
+
+    node.stop();
+}
+
+/**
+ * Skipping a serial number (going from 1 → 3, skipping 2) must be rejected.
+ * Exercises: skipped-serial path (lines ~773-793).
+ */
+BOOST_AUTO_TEST_CASE(submit_command_with_session_skipped_serial, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+    auto cfg = make_fast_config();
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        cfg
+    };
+    node.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node.check_election_timeout();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    BOOST_REQUIRE(node.is_leader());
+
+    // First commit serial=1 (establishes the session)
+    std::move(node.submit_command_with_session(
+        5, 1, make_put_cmd("a", "1"), std::chrono::milliseconds{2000})).get();
+
+    // Skip serial=2 and try serial=3 — must be rejected
+    auto future = node.submit_command_with_session(
+        5, 3, make_put_cmd("a", "2"), std::chrono::milliseconds{500});
+    BOOST_CHECK_THROW(std::move(future).get(), std::exception);
+
+    node.stop();
+}
+
+/**
+ * Calling check_heartbeat_timeout() on a single-node leader after the
+ * heartbeat interval has elapsed exercises send_heartbeats() with no peers.
+ * Exercises: leader heartbeat path (lines ~1530-1546).
+ */
+BOOST_AUTO_TEST_CASE(check_heartbeat_timeout_as_single_node_leader, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+    auto cfg = make_fast_config();
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        cfg
+    };
+    node.start();
+
+    std::this_thread::sleep_for(cfg._election_timeout_max + std::chrono::milliseconds{30});
+    node.check_election_timeout();
+    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    BOOST_REQUIRE(node.is_leader());
+
+    // Wait past heartbeat interval then drive the check
+    std::this_thread::sleep_for(cfg._heartbeat_interval + std::chrono::milliseconds{20});
+    BOOST_CHECK_NO_THROW(node.check_heartbeat_timeout());
+
+    // Single-node leader remains leader
+    BOOST_CHECK(node.is_leader());
+
+    node.stop();
+}
+
+/**
+ * Calling check_heartbeat_timeout() as a follower must not crash.
+ * Exercises: the early-return follower path in check_heartbeat_timeout (line ~1530).
+ */
+BOOST_AUTO_TEST_CASE(check_heartbeat_timeout_as_follower, * boost::unit_test::timeout(10)) {
+    auto sim = network_simulator::NetworkSimulator<test_raft_types::raft_network_types>{};
+    sim.start();
+    auto net = sim.create_node("1");
+    auto ser = test_raft_types::serializer_type{};
+
+    raft_node_type node{
+        1,
+        test_raft_types::network_client_type{net, ser},
+        test_raft_types::network_server_type{net, ser},
+        test_raft_types::persistence_engine_type{},
+        kythira::console_logger{},
+        test_raft_types::metrics_type{},
+        test_raft_types::membership_manager_type{},
+        make_fast_config()
+    };
+    node.start();
+    BOOST_REQUIRE_EQUAL(node.get_state(), kythira::server_state::follower);
+
+    BOOST_CHECK_NO_THROW(node.check_heartbeat_timeout());
+
+    node.stop();
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 // ── Tests: multi-node independent ────────────────────────────────────────
 //
 // The network simulator's message queue design does not support concurrent

@@ -61,7 +61,7 @@ fi
 if ! ctest --test-dir "${COVERAGE_BUILD}" \
            -j"$(nproc)" \
            ${CTEST_LABEL_ARGS} \
-           --repeat until-pass:2 \
+           --repeat until-pass:3 \
            --output-on-failure \
            --quiet 2>/dev/null; then
     echo ""

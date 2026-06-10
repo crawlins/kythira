@@ -73,6 +73,9 @@ add_raft_completion_test(state_machine_idempotency_property_test state_machine_i
 add_raft_completion_test(state_machine_determinism_property_test state_machine_determinism_property_test.cpp)
 add_raft_completion_test(state_machine_performance_benchmark state_machine_performance_benchmark.cpp)
 add_raft_completion_test(state_machine_apply_performance_property_test state_machine_apply_performance_property_test.cpp)
+set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
+    LABELS "performance;state_machine"
+)
 
 # Comprehensive Raft performance benchmarking framework (Requirements 13.1-13.5)
 add_raft_completion_test(raft_comprehensive_performance_benchmark raft_comprehensive_performance_benchmark.cpp)
@@ -647,6 +650,8 @@ target_link_libraries(logger_concept_test PRIVATE
     network_simulator
 )
 target_compile_features(logger_concept_test PRIVATE cxx_std_23)
+add_test(NAME logger_concept_test COMMAND logger_concept_test)
+set_tests_properties(logger_concept_test PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # Console logger test
 add_executable(console_logger_test console_logger_test.cpp)
@@ -662,6 +667,8 @@ target_link_libraries(metrics_concept_test PRIVATE
     network_simulator
 )
 target_compile_features(metrics_concept_test PRIVATE cxx_std_23)
+add_test(NAME metrics_concept_test COMMAND metrics_concept_test)
+set_tests_properties(metrics_concept_test PROPERTIES TIMEOUT 30 LABELS "unit")
 
 # No-op metrics test
 add_executable(noop_metrics_test noop_metrics_test.cpp)
@@ -1451,4 +1458,41 @@ add_test(NAME raft_membership_management_unit_test COMMAND raft_membership_manag
 set_tests_properties(raft_membership_management_unit_test PROPERTIES
     TIMEOUT 120
     LABELS "unit;raft;membership;configuration"
+)
+
+# Coverage-targeted tests
+add_raft_completion_test(error_handler_coverage_test error_handler_coverage_test.cpp)
+set_tests_properties(error_handler_coverage_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;coverage;error_handler"
+)
+
+add_executable(commit_waiter_coverage_test commit_waiter_coverage_test.cpp)
+target_link_libraries(commit_waiter_coverage_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(commit_waiter_coverage_test PRIVATE cxx_std_23)
+add_test(NAME commit_waiter_coverage_test COMMAND commit_waiter_coverage_test)
+set_tests_properties(commit_waiter_coverage_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;coverage;commit_waiter"
+)
+
+add_raft_completion_test(raft_node_rpc_handler_test raft_node_rpc_handler_test.cpp)
+set_tests_properties(raft_node_rpc_handler_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;coverage;raft"
+)
+
+add_raft_completion_test(simulator_network_coverage_test simulator_network_coverage_test.cpp)
+set_tests_properties(simulator_network_coverage_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;coverage;simulator_network"
+)
+
+add_raft_completion_test(raft_rpc_handler_coverage_test raft_rpc_handler_coverage_test.cpp)
+set_tests_properties(raft_rpc_handler_coverage_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;coverage;raft"
 )

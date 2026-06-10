@@ -689,17 +689,31 @@ public:
 
     /**
      * @brief Configure all handlers with custom policies
+     *
+     * Accepts any struct with the same fields as retry_policy (initial_delay, max_delay,
+     * backoff_multiplier, jitter_factor, max_attempts) to avoid cross-specialization
+     * type mismatch when callers build a policy from one handler type and pass it to another.
      */
+    template<typename PolicyLike>
     static auto configure_all_handlers(
-        const typename error_handler<int>::retry_policy& heartbeat_policy,
-        const typename error_handler<int>::retry_policy& append_entries_policy,
-        const typename error_handler<int>::retry_policy& vote_policy,
-        const typename error_handler<int>::retry_policy& snapshot_policy
+        const PolicyLike& heartbeat_policy,
+        const PolicyLike& append_entries_policy,
+        const PolicyLike& vote_policy,
+        const PolicyLike& snapshot_policy
     ) -> void {
-        get_append_entries_handler().set_retry_policy("append_entries", append_entries_policy);
-        get_append_entries_handler().set_retry_policy("heartbeat", heartbeat_policy);
-        get_request_vote_handler().set_retry_policy("request_vote", vote_policy);
-        get_install_snapshot_handler().set_retry_policy("install_snapshot", snapshot_policy);
+        auto adapt = []<typename H>(H& handler, const std::string& name, const PolicyLike& src) {
+            typename H::retry_policy p;
+            p.initial_delay      = src.initial_delay;
+            p.max_delay          = src.max_delay;
+            p.backoff_multiplier = src.backoff_multiplier;
+            p.jitter_factor      = src.jitter_factor;
+            p.max_attempts       = src.max_attempts;
+            handler.set_retry_policy(name, p);
+        };
+        adapt(get_append_entries_handler(), "append_entries", append_entries_policy);
+        adapt(get_append_entries_handler(), "heartbeat",      heartbeat_policy);
+        adapt(get_request_vote_handler(),   "request_vote",   vote_policy);
+        adapt(get_install_snapshot_handler(), "install_snapshot", snapshot_policy);
     }
 };
 
