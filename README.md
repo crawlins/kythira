@@ -412,6 +412,51 @@ ctest --test-dir build --rerun-failed --output-on-failure
 
 See [test_results/README.md](test_results/README.md) for more analysis examples.
 
+## Code Style
+
+All C++ sources (`*.cpp`, `*.hpp`) are formatted with [clang-format](https://clang.llvm.org/docs/ClangFormat.html)
+using the configuration in `.clang-format` at the repo root (based on Google style, 4-space indent,
+100-column limit).
+
+### Auto-format the whole project
+
+```bash
+cmake --build build --target format
+```
+
+### Check compliance without modifying files
+
+```bash
+cmake --build build --target format-check
+```
+
+This exits non-zero and prints the offending paths if any file is out of compliance.
+
+### Pre-commit enforcement
+
+The pre-commit hook checks only staged `.cpp`/`.hpp` files, so it typically completes in under a
+second. If a staged file is non-compliant the hook prints the fix command and blocks the commit:
+
+```
+  [format] FAILED — the following file(s) need formatting:
+    src/foo.cpp
+
+  Fix with:
+    clang-format -i src/foo.cpp
+  or reformat the whole project:
+    cmake --build build --target format
+
+  (To skip: SKIP_FORMAT_CHECK=1 git commit)
+```
+
+To skip the format check on a WIP commit:
+
+```bash
+SKIP_FORMAT_CHECK=1 git commit -m "wip: ..."
+```
+
+---
+
 ## Code Coverage
 
 ### Quick start
@@ -456,7 +501,8 @@ bash scripts/install-hooks.sh
 ```
 
 Run this once after cloning. It symlinks `scripts/pre-commit-coverage.sh` to
-`.git/hooks/pre-commit`.
+`.git/hooks/pre-commit`. The hook runs the format check first (fast, staged files only), then the
+coverage ratchet (slow, full build + tests).
 
 ### Property-Based Testing
 

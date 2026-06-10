@@ -1,23 +1,74 @@
 #!/usr/bin/env bash
-# Pre-commit hook: enforce the coverage ratchet.
+# Pre-commit hook: check code formatting and enforce the coverage ratchet.
 #
-# Builds the instrumented tree, runs a label-filtered test subset, measures
-# line coverage, and rejects the commit if coverage would fall below the value
-# stored in coverage_floor.txt.
+# Step 1 — clang-format (fast, staged files only):
+#   Rejects the commit if any staged .cpp/.hpp file differs from its formatted form.
+#   Fix: clang-format -i <file>  or  cmake --build build --target format
 #
-# Escape hatch for WIP commits (skips the check entirely):
-#   SKIP_COVERAGE_CHECK=1 git commit -m "..."
+# Step 2 — coverage ratchet (slow, full instrumented build + test run):
+#   Builds the instrumented tree, runs a label-filtered test subset, measures
+#   line coverage, and rejects the commit if coverage would fall below the value
+#   stored in coverage_floor.txt.
 #
-# To run the full suite (slow) instead of the fast subset:
+# Escape hatches for WIP commits:
+#   SKIP_FORMAT_CHECK=1 git commit -m "..."    (skip format check only)
+#   SKIP_COVERAGE_CHECK=1 git commit -m "..."  (skip coverage check only)
+#   SKIP_FORMAT_CHECK=1 SKIP_COVERAGE_CHECK=1 git commit -m "..."  (skip both)
+#
+# To run the full test suite for coverage (slow):
 #   COVERAGE_FULL_SUITE=1 git commit -m "..."
 set -euo pipefail
 
-START=$(date +%s)
 REPO=$(git rev-parse --show-toplevel)
+
+# ── Format check (staged files only) ─────────────────────────────────────────
+if [[ "${SKIP_FORMAT_CHECK:-0}" == "1" ]]; then
+    echo "  [format] Skipped (SKIP_FORMAT_CHECK=1)"
+else
+    CLANG_FORMAT=$(command -v clang-format 2>/dev/null \
+        || command -v "${HOME}/.local/bin/clang-format" 2>/dev/null \
+        || true)
+
+    if [[ -z "$CLANG_FORMAT" ]]; then
+        echo "  [format] WARNING: clang-format not found — skipping format check."
+        echo "           Install with: pip3 install clang-format"
+    else
+        STAGED=$(git diff --cached --name-only --diff-filter=ACMR \
+                 | grep -E '\.(cpp|hpp)$' || true)
+
+        if [[ -n "$STAGED" ]]; then
+            BAD_FILES=()
+            for f in $STAGED; do
+                if ! "$CLANG_FORMAT" --dry-run --Werror "$f" 2>/dev/null; then
+                    BAD_FILES+=("$f")
+                fi
+            done
+
+            N=$(echo "$STAGED" | wc -w)
+            if [[ ${#BAD_FILES[@]} -gt 0 ]]; then
+                echo ""
+                echo "  [format] FAILED — the following file(s) need formatting:"
+                printf '    %s\n' "${BAD_FILES[@]}"
+                echo ""
+                echo "  Fix with:"
+                # shellcheck disable=SC2145
+                echo "    clang-format -i ${BAD_FILES[*]}"
+                echo "  or reformat the whole project:"
+                echo "    cmake --build build --target format"
+                echo ""
+                echo "  (To skip: SKIP_FORMAT_CHECK=1 git commit)"
+                exit 1
+            fi
+            echo "  [format] ${N} file(s) OK"
+        fi
+    fi
+fi
+
+START=$(date +%s)
 FLOOR_FILE="${REPO}/coverage_floor.txt"
 COVERAGE_BUILD="${REPO}/build-coverage"
 
-# ── Escape hatch ──────────────────────────────────────────────────────────────
+# ── Coverage escape hatch ─────────────────────────────────────────────────────
 if [[ "${SKIP_COVERAGE_CHECK:-0}" == "1" ]]; then
     echo "  [coverage] Skipped (SKIP_COVERAGE_CHECK=1)"
     exit 0

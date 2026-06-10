@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: June 9, 2026
+**Last Updated**: June 10, 2026
 
 ## Current Status
 
@@ -10,6 +10,14 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - **0 tests failing, 0 tests disabled, 0 flaky tests**
 - All specifications complete across all 6 feature areas
 - Build clean with no errors or warnings
+
+### What Changed (June 10, 2026)
+
+- **clang-format integration**: `.clang-format` config (Google base, 4-space
+  indent, 100-column limit); CMake `format` and `format-check` targets;
+  pre-commit hook now checks staged files before the coverage ratchet;
+  `SKIP_FORMAT_CHECK=1` escape hatch; 349 source files reformatted in a
+  style-only commit; spec at `.kiro/specs/clang-format/`.
 
 ### What Changed (June 9, 2026)
 
@@ -43,8 +51,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Build Tooling
 
-- [ ] **clang-format integration** — add `.clang-format` config and CMake
-  `format`/`format-check` targets; wire into pre-commit hook
+- [x] **clang-format integration** — `.clang-format` config (Google base, 4-space
+  indent, 100-col); CMake `format`/`format-check` targets; pre-commit hook
+  checks staged files first; `SKIP_FORMAT_CHECK=1` escape hatch
 - [ ] **clang-tidy integration** — add `.clang-tidy` config and CMake
   `static-analysis` target; configure checks and suppressions
 - [x] **Code coverage** — CMake `ENABLE_COVERAGE` option with gcovr targets,

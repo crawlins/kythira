@@ -253,3 +253,43 @@ if(ENABLE_COVERAGE)
         )
     endif()
 endif()
+
+# ── clang-format targets ──────────────────────────────────────────────────────
+find_program(CLANG_FORMAT_EXECUTABLE clang-format
+    HINTS "$ENV{HOME}/.local/bin" /usr/local/bin /usr/bin
+)
+
+file(GLOB_RECURSE FORMAT_SOURCES
+    "${CMAKE_SOURCE_DIR}/src/*.cpp"      "${CMAKE_SOURCE_DIR}/src/*.hpp"
+    "${CMAKE_SOURCE_DIR}/include/*.cpp"  "${CMAKE_SOURCE_DIR}/include/*.hpp"
+    "${CMAKE_SOURCE_DIR}/tests/*.cpp"    "${CMAKE_SOURCE_DIR}/tests/*.hpp"
+    "${CMAKE_SOURCE_DIR}/examples/*.cpp" "${CMAKE_SOURCE_DIR}/examples/*.hpp"
+)
+list(LENGTH FORMAT_SOURCES FORMAT_SOURCES_COUNT)
+
+if(NOT CLANG_FORMAT_EXECUTABLE)
+    message(WARNING "clang-format not found — 'format' and 'format-check' targets unavailable. "
+                    "Install with: pip3 install clang-format  or  apt install clang-format")
+    foreach(_t format format-check)
+        add_custom_target(${_t}
+            COMMAND ${CMAKE_COMMAND} -E echo "ERROR: clang-format not found."
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endforeach()
+else()
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT_EXECUTABLE} -i ${FORMAT_SOURCES}
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "format: reformatted ${FORMAT_SOURCES_COUNT} files"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Reformatting C++ sources with clang-format"
+    )
+
+    add_custom_target(format-check
+        COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run --Werror ${FORMAT_SOURCES}
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "format-check: all ${FORMAT_SOURCES_COUNT} files OK"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Checking C++ formatting with clang-format"
+    )
+endif()
