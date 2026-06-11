@@ -249,10 +249,13 @@ BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, *boost::unit_test::timeo
     MockExecutor exec;
 
     // Test that executor can manage work properly
-    std::vector<bool> task_results(10, false);
+    // Use uint8_t instead of bool: std::vector<bool> is a packed-bit
+    // specialisation whose range-for yields a temporary proxy, making
+    // capture-by-reference in lambdas a dangling reference.
+    std::vector<std::uint8_t> task_results(10, 0);
 
-    for (auto&& task_result : task_results) {
-        exec.add([&task_results, &task_result]() { task_result = true; });
+    for (auto& task_result : task_results) {
+        exec.add([&task_result]() { task_result = 1; });
     }
 
     BOOST_CHECK_EQUAL(exec.getTaskCount(), task_results.size());
@@ -261,8 +264,8 @@ BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, *boost::unit_test::timeo
     exec.executeTasks();
 
     // Verify all tasks were executed
-    for (bool result : task_results) {
-        BOOST_CHECK(result);
+    for (auto result : task_results) {
+        BOOST_CHECK(result != 0);
     }
 }
 
