@@ -55,7 +55,7 @@ concept future =
 
         // Must support error handling (legacy method name for compatibility)
         {
-            f.onError([](std::exception_ptr) {})
+            f.onError([](const std::exception_ptr&) {})
         };
     } &&
     (

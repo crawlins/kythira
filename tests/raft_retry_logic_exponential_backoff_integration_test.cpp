@@ -169,7 +169,7 @@ private:
 
         // Check if should fail
         bool should_fail = false;
-        std::string actual_error = error_message;
+        const std::string& actual_error = error_message;
 
         if (_always_fail[target]) {
             should_fail = true;

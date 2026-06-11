@@ -39,7 +39,7 @@ auto generate_random_double() -> double {
 auto generate_random_string() -> std::string {
     const std::string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     std::uniform_int_distribution<> length_dist(5, 20);
-    std::uniform_int_distribution<> char_dist(0, chars.size() - 1);
+    std::uniform_int_distribution<> char_dist(0, static_cast<int>(chars.size() - 1));
 
     std::string result;
     int length = length_dist(gen);

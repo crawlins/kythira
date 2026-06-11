@@ -369,10 +369,8 @@ BOOST_AUTO_TEST_CASE(test_void_async_retry_pattern, *boost::unit_test::timeout(6
                 .thenValue([&retry_operation, attempt]() -> Future<void> {
                     return retry_operation(attempt + 1);
                 });
-        } else {
-            // Success after retries
-            return FutureFactory::makeFuture();
-        }
+        }  // Success after retries
+        return FutureFactory::makeFuture();
     };
 
     retry_operation(1).via(&executor).get();

@@ -22,8 +22,8 @@ struct MockExecutor {
 // Mock future type that supports executor attachment via 'via' method
 template<typename T> struct MockFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
 
     // Continuation methods required by future concept
     template<typename F> auto thenValue(F&& func) -> MockFuture<T> { return MockFuture<T>{}; }
@@ -49,8 +49,8 @@ template<typename T> struct MockFuture {
 // Void specialization
 template<> struct MockFuture<void> {
     void get() {}
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
 
     template<typename F> auto thenValue(F&& func) -> MockFuture<void> { return MockFuture<void>{}; }
 
@@ -74,8 +74,8 @@ template<> struct MockFuture<void> {
 // Mock future type that does NOT support executor attachment
 template<typename T> struct IncompleteFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
 
     template<typename F> auto thenValue(F&& func) -> IncompleteFuture<T> {
         return IncompleteFuture<T>{};
@@ -111,8 +111,8 @@ struct ThreadPoolExecutor {
 // Mock future that works with any executor type
 template<typename T> struct GenericFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
 
     template<typename F> auto thenValue(F&& func) -> GenericFuture<T> { return GenericFuture<T>{}; }
 
@@ -141,8 +141,8 @@ struct ChainableExecutor {
 
 template<typename T> struct ChainableFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
 
     template<typename F> auto thenValue(F&& func) -> ChainableFuture<T> {
         return ChainableFuture<T>{};

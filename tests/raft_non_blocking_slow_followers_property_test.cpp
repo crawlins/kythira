@@ -27,7 +27,7 @@ using LogIndex = std::uint64_t;
 using Term = std::uint64_t;
 
 // Enum to represent follower responsiveness states
-enum class FollowerState {
+enum class FollowerState : std::uint8_t {
     responsive,
     slow,
     unresponsive
@@ -204,7 +204,9 @@ BOOST_AUTO_TEST_CASE(raft_non_blocking_slow_followers_property_test,
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number for clear majority
+        }
 
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t entry_count = entry_count_dist(gen);
@@ -230,7 +232,7 @@ BOOST_AUTO_TEST_CASE(raft_non_blocking_slow_followers_property_test,
         std::size_t unresponsive_followers_count = 0;
 
         for (const auto& follower_id : follower_ids) {
-            const int state_roll = gen() % 100;
+            const int state_roll = static_cast<int>(gen() % 100);
 
             if (state_roll < unresponsive_rate) {
                 manager.mark_follower_unresponsive(follower_id);

@@ -56,7 +56,7 @@ public:
         : _executor(std::move(executor)) {}
 
     // Copy constructor - requirement 5.3
-    MockKeepAlive(const MockKeepAlive& other) : _executor(other._executor) {}
+    MockKeepAlive(const MockKeepAlive& other) = default;
 
     // Move constructor - requirement 5.3
     MockKeepAlive(MockKeepAlive&& other) noexcept : _executor(std::move(other._executor)) {}
@@ -88,7 +88,7 @@ public:
     auto get() -> MockExecutor* { return _executor.get(); }
 
     // Const version of get
-    auto get() const -> MockExecutor* { return _executor.get(); }
+    [[nodiscard]] auto get() const -> MockExecutor* { return _executor.get(); }
 
 private:
     std::shared_ptr<MockExecutor> _executor;

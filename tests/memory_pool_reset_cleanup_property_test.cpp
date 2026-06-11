@@ -68,7 +68,9 @@ BOOST_AUTO_TEST_CASE(property_reset_reclaims_all_memory,
 
         // Ensure pool size is multiple of block size
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
 
@@ -80,7 +82,7 @@ BOOST_AUTO_TEST_CASE(property_reset_reclaims_all_memory,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -103,7 +105,7 @@ BOOST_AUTO_TEST_CASE(property_reset_reclaims_all_memory,
         for (std::size_t i = 0; i < max_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
             BOOST_CHECK(ptr != nullptr);
-            if (ptr) {
+            if (ptr != nullptr) {
                 new_allocations.push_back(ptr);
             }
         }
@@ -128,7 +130,9 @@ BOOST_AUTO_TEST_CASE(property_reset_defragments_pool,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -137,7 +141,7 @@ BOOST_AUTO_TEST_CASE(property_reset_defragments_pool,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < max_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -162,7 +166,7 @@ BOOST_AUTO_TEST_CASE(property_reset_defragments_pool,
         for (std::size_t i = 0; i < max_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
             BOOST_CHECK(ptr != nullptr);
-            if (ptr) {
+            if (ptr != nullptr) {
                 new_allocations.push_back(ptr);
             }
         }
@@ -191,7 +195,9 @@ BOOST_AUTO_TEST_CASE(property_destructor_cleanup,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         {
             memory_pool pool(pool_size, block_size);
@@ -228,7 +234,9 @@ BOOST_AUTO_TEST_CASE(property_destructor_stops_periodic_reset_thread,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         auto reset_interval = random_reset_interval();
 
@@ -331,7 +339,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_automatic_cleanup,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -374,7 +384,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_move_semantics,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
 
@@ -388,7 +400,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_move_semantics,
 
             // Property: Ownership should be transferred
             BOOST_CHECK(guard2.get() == ptr1);
-            BOOST_CHECK(guard1.get() == nullptr);
+            BOOST_CHECK(guard1.get() ==
+                        nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+                                   // - intentional move-semantics test
 
             auto metrics = pool.get_metrics();
             BOOST_CHECK_EQUAL(metrics.allocation_count, 1);
@@ -417,7 +431,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_release,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
 
@@ -462,7 +478,9 @@ BOOST_AUTO_TEST_CASE(property_raii_guard_exception_safety,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
 
@@ -509,7 +527,7 @@ BOOST_AUTO_TEST_CASE(property_concurrent_reset_and_allocation,
         std::thread alloc_thread([&]() {
             while (!stop) {
                 void* ptr = pool.allocate(block_size / 2);
-                if (ptr) {
+                if (ptr != nullptr) {
                     successful_allocations++;
                     pool.deallocate(ptr);
                 }
@@ -555,7 +573,9 @@ BOOST_AUTO_TEST_CASE(property_reset_updates_timestamp,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
 

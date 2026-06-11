@@ -6,6 +6,7 @@
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <shared_mutex>
 #include <atomic>
@@ -33,7 +34,7 @@ public:
 
         ListenerResource(std::shared_ptr<listener_type> l, endpoint_type ep)
             : listener(std::move(l)),
-              bound_endpoint(ep),
+              bound_endpoint(std::move(ep)),
               created(std::chrono::steady_clock::now()) {}
 
         // Delete copy constructor and assignment due to atomic member

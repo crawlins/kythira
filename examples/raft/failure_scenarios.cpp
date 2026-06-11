@@ -277,9 +277,15 @@ auto main(int argc, char* argv[]) -> int {
 
     int failed_scenarios = 0;
 
-    if (!test_leader_failure_and_reelection()) failed_scenarios++;
-    if (!test_follower_crash_and_recovery()) failed_scenarios++;
-    if (!test_election_timeout_handling()) failed_scenarios++;
+    if (!test_leader_failure_and_reelection()) {
+        failed_scenarios++;
+    }
+    if (!test_follower_crash_and_recovery()) {
+        failed_scenarios++;
+    }
+    if (!test_election_timeout_handling()) {
+        failed_scenarios++;
+    }
 
     std::cout << "\n========================================\n";
     if (failed_scenarios > 0) {

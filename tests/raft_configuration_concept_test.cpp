@@ -87,45 +87,57 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, *boost::unit_test::timeout(
             .adaptation_factor = 1.2,
             .sample_window_size = 10};
 
-        auto election_timeout_min() const -> std::chrono::milliseconds {
+        [[nodiscard]] auto election_timeout_min() const -> std::chrono::milliseconds {
             return _election_timeout_min;
         }
-        auto election_timeout_max() const -> std::chrono::milliseconds {
+        [[nodiscard]] auto election_timeout_max() const -> std::chrono::milliseconds {
             return _election_timeout_max;
         }
-        auto heartbeat_interval() const -> std::chrono::milliseconds { return _heartbeat_interval; }
-        auto rpc_timeout() const -> std::chrono::milliseconds { return _rpc_timeout; }
-        auto append_entries_timeout() const -> std::chrono::milliseconds {
+        [[nodiscard]] auto heartbeat_interval() const -> std::chrono::milliseconds {
+            return _heartbeat_interval;
+        }
+        [[nodiscard]] auto rpc_timeout() const -> std::chrono::milliseconds { return _rpc_timeout; }
+        [[nodiscard]] auto append_entries_timeout() const -> std::chrono::milliseconds {
             return _append_entries_timeout;
         }
-        auto request_vote_timeout() const -> std::chrono::milliseconds {
+        [[nodiscard]] auto request_vote_timeout() const -> std::chrono::milliseconds {
             return _request_vote_timeout;
         }
-        auto install_snapshot_timeout() const -> std::chrono::milliseconds {
+        [[nodiscard]] auto install_snapshot_timeout() const -> std::chrono::milliseconds {
             return _install_snapshot_timeout;
         }
-        auto max_entries_per_append() const -> std::size_t { return _max_entries_per_append; }
-        auto snapshot_threshold_bytes() const -> std::size_t { return _snapshot_threshold_bytes; }
-        auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
-        auto heartbeat_retry_policy() const -> const kythira::retry_policy_config& {
+        [[nodiscard]] auto max_entries_per_append() const -> std::size_t {
+            return _max_entries_per_append;
+        }
+        [[nodiscard]] auto snapshot_threshold_bytes() const -> std::size_t {
+            return _snapshot_threshold_bytes;
+        }
+        [[nodiscard]] auto snapshot_chunk_size() const -> std::size_t {
+            return _snapshot_chunk_size;
+        }
+        [[nodiscard]] auto heartbeat_retry_policy() const -> const kythira::retry_policy_config& {
             return _heartbeat_retry_policy;
         }
-        auto append_entries_retry_policy() const -> const kythira::retry_policy_config& {
+        [[nodiscard]] auto append_entries_retry_policy() const
+            -> const kythira::retry_policy_config& {
             return _append_entries_retry_policy;
         }
-        auto request_vote_retry_policy() const -> const kythira::retry_policy_config& {
+        [[nodiscard]] auto request_vote_retry_policy() const
+            -> const kythira::retry_policy_config& {
             return _request_vote_retry_policy;
         }
-        auto install_snapshot_retry_policy() const -> const kythira::retry_policy_config& {
+        [[nodiscard]] auto install_snapshot_retry_policy() const
+            -> const kythira::retry_policy_config& {
             return _install_snapshot_retry_policy;
         }
-        auto get_adaptive_timeout_config() const -> const kythira::adaptive_timeout_config& {
+        [[nodiscard]] auto get_adaptive_timeout_config() const
+            -> const kythira::adaptive_timeout_config& {
             return _adaptive_timeout_config;
         }
 
-        auto validate() const -> bool { return get_validation_errors().empty(); }
+        [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
 
-        auto get_validation_errors() const -> std::vector<std::string> {
+        [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> {
             std::vector<std::string> errors;
             if (_election_timeout_min <= std::chrono::milliseconds{0}) {
                 errors.push_back("election_timeout_min must be positive");

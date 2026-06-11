@@ -66,7 +66,9 @@ BOOST_AUTO_TEST_CASE(property_size_tracking_invariant,
 
         // Ensure pool size is multiple of block size
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -80,7 +82,7 @@ BOOST_AUTO_TEST_CASE(property_size_tracking_invariant,
             std::size_t alloc_size = random_allocation_size(block_size);
             void* ptr = pool.allocate(alloc_size);
 
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
 
                 // Property: Invariant must hold after each allocation
@@ -111,7 +113,9 @@ BOOST_AUTO_TEST_CASE(property_size_tracking_invariant,
 
         // Clean up remaining allocations
         for (void* ptr : allocations) {
-            if (ptr) pool.deallocate(ptr);
+            if (ptr != nullptr) {
+                pool.deallocate(ptr);
+            }
         }
 
         // Property: After all deallocations, all memory should be free
@@ -137,7 +141,9 @@ BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -150,7 +156,7 @@ BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic,
         // Perform allocations
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
                 expected_alloc_count++;
 
@@ -163,7 +169,7 @@ BOOST_AUTO_TEST_CASE(property_allocation_count_monotonic,
 
         // Perform deallocations
         for (void* ptr : allocations) {
-            if (ptr) {
+            if (ptr != nullptr) {
                 pool.deallocate(ptr);
                 expected_dealloc_count++;
 
@@ -199,7 +205,9 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -211,7 +219,7 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
         std::size_t alloc_count = std::min(max_blocks, std::size_t{50});
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
 
                 auto metrics = pool.get_metrics();
@@ -229,7 +237,7 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
         // Deallocate some blocks
         std::size_t dealloc_count = allocations.size() / 2;
         for (std::size_t i = 0; i < dealloc_count; ++i) {
-            if (allocations[i]) {
+            if (allocations[i] != nullptr) {
                 pool.deallocate(allocations[i]);
                 allocations[i] = nullptr;
 
@@ -244,7 +252,7 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
         // Allocate more to potentially exceed previous peak
         for (std::size_t i = 0; i < dealloc_count && allocations.size() < max_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
 
                 auto metrics = pool.get_metrics();
@@ -261,7 +269,9 @@ BOOST_AUTO_TEST_CASE(property_peak_usage_tracking,
 
         // Clean up
         for (void* ptr : allocations) {
-            if (ptr) pool.deallocate(ptr);
+            if (ptr != nullptr) {
+                pool.deallocate(ptr);
+            }
         }
     }
 }
@@ -281,7 +291,9 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t total_blocks = pool_size / block_size;
@@ -294,7 +306,7 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < total_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -317,8 +329,8 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation,
 
         // Calculate expected fragmentation
         std::size_t used_blocks = allocations.size() - dealloc_count;
-        std::size_t expected_frag =
-            static_cast<std::size_t>((1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
+        std::size_t expected_frag = static_cast<std::size_t>(
+            (1.0 - static_cast<double>(used_blocks) / static_cast<double>(total_blocks)) * 100);
 
         // Allow small rounding differences (within 5%)
         std::size_t tolerance = 5;
@@ -328,7 +340,9 @@ BOOST_AUTO_TEST_CASE(property_fragmentation_ratio_calculation,
 
         // Clean up remaining allocations
         for (void* ptr : allocations) {
-            if (ptr) pool.deallocate(ptr);
+            if (ptr != nullptr) {
+                pool.deallocate(ptr);
+            }
         }
 
         // Property: After all deallocations, fragmentation should be 100%
@@ -365,7 +379,7 @@ BOOST_AUTO_TEST_CASE(property_concurrent_metrics_consistency,
                 while (!stop) {
                     // Allocate
                     void* ptr = pool.allocate(block_size / 2);
-                    if (ptr) {
+                    if (ptr != nullptr) {
                         local_ptrs.push_back(ptr);
                         total_allocations++;
                     }
@@ -451,7 +465,9 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -463,7 +479,7 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics,
         // Ramp up allocations
         for (std::size_t i = 0; i < target_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
 
                 auto metrics = pool.get_metrics();
@@ -471,7 +487,8 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics,
 
                 // Property: Utilization should match allocated_size / total_size
                 double expected_util =
-                    (static_cast<double>(metrics.allocated_size) / pool_size) * 100.0;
+                    (static_cast<double>(metrics.allocated_size) / static_cast<double>(pool_size)) *
+                    100.0;
                 BOOST_CHECK_CLOSE(utilization, expected_util, 0.1);
 
                 // Property: Utilization should be in valid range
@@ -504,7 +521,9 @@ BOOST_AUTO_TEST_CASE(property_capacity_planning_metrics,
 
         // Clean up
         for (void* ptr : allocations) {
-            if (ptr) pool.deallocate(ptr);
+            if (ptr != nullptr) {
+                pool.deallocate(ptr);
+            }
         }
 
         // Property: After cleanup, utilization should be 0%
@@ -528,7 +547,9 @@ BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -549,7 +570,7 @@ BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy,
             if (should_allocate && allocations.size() < max_blocks) {
                 // Allocate
                 void* ptr = pool.allocate(block_size / 2);
-                if (ptr) {
+                if (ptr != nullptr) {
                     allocations.push_back(ptr);
                     expected_alloc_count++;
                     expected_allocated_size += block_size;
@@ -579,7 +600,9 @@ BOOST_AUTO_TEST_CASE(property_real_time_metrics_accuracy,
 
         // Clean up
         for (void* ptr : allocations) {
-            if (ptr) pool.deallocate(ptr);
+            if (ptr != nullptr) {
+                pool.deallocate(ptr);
+            }
         }
     }
 }
@@ -599,7 +622,9 @@ BOOST_AUTO_TEST_CASE(property_metrics_after_reset,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -609,7 +634,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_after_reset,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -637,7 +662,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_after_reset,
         std::vector<void*> new_allocations;
         for (std::size_t i = 0; i < max_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 new_allocations.push_back(ptr);
             }
         }
@@ -666,7 +691,9 @@ BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t total_blocks = pool_size / block_size;
@@ -675,7 +702,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < total_blocks; ++i) {
             void* ptr = pool.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -724,7 +751,9 @@ BOOST_AUTO_TEST_CASE(property_metrics_at_exhaustion,
 
         // Clean up
         for (void* p : allocations) {
-            if (p) pool.deallocate(p);
+            if (p != nullptr) {
+                pool.deallocate(p);
+            }
         }
     }
 }
@@ -744,7 +773,9 @@ BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size);
         std::size_t max_blocks = pool_size / block_size;
@@ -758,7 +789,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_with_varying_sizes,
             std::size_t requested_size = random_allocation_size(block_size);
             void* ptr = pool.allocate(requested_size);
 
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
                 expected_allocated += block_size;  // Each allocation uses one block
 
@@ -818,7 +849,7 @@ BOOST_AUTO_TEST_CASE(property_metrics_long_term_stability,
             // Allocate a few blocks
             for (int i = 0; i < 5 && allocations.size() < max_blocks; ++i) {
                 void* ptr = pool.allocate(block_size / 2);
-                if (ptr) {
+                if (ptr != nullptr) {
                     allocations.push_back(ptr);
                     total_allocs++;
                 }

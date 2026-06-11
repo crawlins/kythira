@@ -287,7 +287,9 @@ BOOST_AUTO_TEST_CASE(mesh_topology_routing, *boost::unit_test::timeout(60)) {
 
     // Test communication from A to all other nodes
     for (const auto& [dest_id, dest_node] : node_pairs) {
-        if (dest_id == node_a_id) continue;  // Skip self
+        if (dest_id == node_a_id) {
+            continue;  // Skip self
+        }
 
         DefaultNetworkTypes::message_type msg(node_a_id, test_port, dest_id, test_port, payload);
 

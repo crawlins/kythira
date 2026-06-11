@@ -58,7 +58,7 @@ private:
         /**
          * @brief Check if this operation has timed out
          */
-        auto is_timed_out() const -> bool {
+        [[nodiscard]] auto is_timed_out() const -> bool {
             if (!timeout.has_value()) {
                 return false;
             }

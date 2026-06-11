@@ -42,7 +42,7 @@ struct coap_pdu_t;
 struct coap_resource_t;
 struct coap_string_t;
 struct coap_string_t;
-typedef std::uint8_t coap_pdu_code_t;
+using coap_pdu_code_t = std::uint8_t;
 
 namespace kythira {
 
@@ -263,12 +263,12 @@ struct cache_entry {
         access_count++;
     }
 
-    auto age() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto age() const -> std::chrono::milliseconds {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - created);
     }
 
-    auto time_since_last_access() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto time_since_last_access() const -> std::chrono::milliseconds {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - last_accessed);
     }

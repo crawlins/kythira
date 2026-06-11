@@ -32,11 +32,21 @@ public:
 
         std::cout << "=== Folly Concept Wrapper Factory Examples ===\n\n";
 
-        if (!test_make_future_with_value()) failed_scenarios++;
-        if (!test_make_exceptional_future()) failed_scenarios++;
-        if (!test_make_ready_future_void()) failed_scenarios++;
-        if (!test_factory_type_deduction()) failed_scenarios++;
-        if (!test_factory_different_types()) failed_scenarios++;
+        if (!test_make_future_with_value()) {
+            failed_scenarios++;
+        }
+        if (!test_make_exceptional_future()) {
+            failed_scenarios++;
+        }
+        if (!test_make_ready_future_void()) {
+            failed_scenarios++;
+        }
+        if (!test_factory_type_deduction()) {
+            failed_scenarios++;
+        }
+        if (!test_factory_different_types()) {
+            failed_scenarios++;
+        }
 
         std::cout << "\n=== Summary ===\n";
         if (failed_scenarios > 0) {

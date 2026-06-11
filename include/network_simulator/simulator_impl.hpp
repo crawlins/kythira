@@ -32,11 +32,11 @@ inline auto address_to_string(const AddressType& addr) -> std::string {
     } else if constexpr (std::is_same_v<AddressType, IPv4Address>) {
         char buf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &addr.get(), buf, INET_ADDRSTRLEN);
-        return std::string(buf);
+        return {buf};
     } else if constexpr (std::is_same_v<AddressType, IPv6Address>) {
         char buf[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, &addr.get(), buf, INET6_ADDRSTRLEN);
-        return std::string(buf);
+        return {buf};
     } else {
         // For other types, try to use std::to_string
         return std::to_string(addr);
@@ -348,11 +348,7 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
     if (!_started.load()) {
         // Return false if simulator is not started
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     auto src_addr = msg.source_address();
@@ -361,22 +357,14 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
     // Check if source and destination nodes exist
     if (_topology.find(src_addr) == _topology.end() ||
         _topology.find(dst_addr) == _topology.end()) {
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     // Find path from source to destination using BFS
     auto path = find_path(src_addr, dst_addr);
     if (path.empty()) {
         // No route exists
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     // Apply reliability and latency for the entire path
@@ -389,11 +377,7 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
         // Apply reliability check for this hop
         if (!check_reliability(hop_from, hop_to)) {
-            if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-                return future_bool_type(false);
-            } else {
-                return future_bool_type(false);
-            }
+            return future_bool_type(false);
         }
 
         // Accumulate latency for this hop
@@ -409,22 +393,14 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
         // Check if simulator is still started after the delay
         if (!_started.load()) {
-            if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-                return future_bool_type(false);
-            } else {
-                return future_bool_type(false);
-            }
+            return future_bool_type(false);
         }
     }
 
     // Deliver message immediately after delay
     deliver_message(std::move(msg));
 
-    if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-        return future_bool_type(true);
-    } else {
-        return future_bool_type(true);
-    }
+    return future_bool_type(true);
 }
 
 template<typename Types>
@@ -502,20 +478,12 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address) -> future_m
     if (queue_it == _message_queues.end() || queue_it->second.empty()) {
         // No messages available - in a full implementation, this would block
         // For now, return an empty message
-        if constexpr (std::is_same_v<future_message_type, SimpleFuture<message_type>>) {
-            return future_message_type(message_type{});
-        } else {
-            return future_message_type(message_type{});
-        }
+        return future_message_type(message_type{});
     }
 
     auto msg = queue_it->second.front();
     queue_it->second.pop();
-    if constexpr (std::is_same_v<future_message_type, SimpleFuture<message_type>>) {
-        return future_message_type(std::move(msg));
-    } else {
-        return future_message_type(std::move(msg));
-    }
+    return future_message_type(std::move(msg));
 }
 
 template<typename Types>
@@ -536,11 +504,7 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address,
 
     auto msg = queue_it->second.front();
     queue_it->second.pop();
-    if constexpr (std::is_same_v<future_message_type, SimpleFuture<message_type>>) {
-        return future_message_type(std::move(msg));
-    } else {
-        return future_message_type(std::move(msg));
-    }
+    return future_message_type(std::move(msg));
 }
 
 // Connection and Listener Management (stubs for now)
@@ -557,10 +521,9 @@ auto NetworkSimulator<Types>::establish_connection(address_type src_addr, port_t
         return _connection_pool->get_or_create_connection(destination_endpoint, [&]() {
             return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
         });
-    } else {
-        // Connection pooling disabled, create connection directly
-        return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
     }
+    // Connection pooling disabled, create connection directly
+    return establish_connection_internal(src_addr, src_port, dst_addr, dst_port);
 }
 
 template<typename Types>
@@ -940,12 +903,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        if constexpr (std::is_same_v<future_listener_type,
-                                     SimpleFuture<std::shared_ptr<listener_type>>>) {
-            return future_listener_type(std::shared_ptr<listener_type>{});
-        } else {
-            return future_listener_type(std::shared_ptr<listener_type>{});
-        }
+        return future_listener_type(std::shared_ptr<listener_type>{});
     }
 
     // Find an unused port
@@ -970,12 +928,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports
-            if constexpr (std::is_same_v<future_listener_type,
-                                         SimpleFuture<std::shared_ptr<listener_type>>>) {
-                return future_listener_type(std::shared_ptr<listener_type>{});
-            } else {
-                return future_listener_type(std::shared_ptr<listener_type>{});
-            }
+            return future_listener_type(std::shared_ptr<listener_type>{});
         }
 
     } else if constexpr (std::is_same_v<port_type, std::string>) {
@@ -997,12 +950,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports after many attempts
-            if constexpr (std::is_same_v<future_listener_type,
-                                         SimpleFuture<std::shared_ptr<listener_type>>>) {
-                return future_listener_type(std::shared_ptr<listener_type>{});
-            } else {
-                return future_listener_type(std::shared_ptr<listener_type>{});
-            }
+            return future_listener_type(std::shared_ptr<listener_type>{});
         }
 
     } else {
@@ -1015,12 +963,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
     auto listener = std::make_shared<listener_type>(local_endpoint, this);
     _listeners[local_endpoint] = listener;
 
-    if constexpr (std::is_same_v<future_listener_type,
-                                 SimpleFuture<std::shared_ptr<listener_type>>>) {
-        return future_listener_type(listener);
-    } else {
-        return future_listener_type(listener);
-    }
+    return future_listener_type(listener);
 }
 
 template<typename Types>
@@ -1158,21 +1101,13 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     // Check if there's a route between the addresses using path finding
     auto path = find_path(conn_id.src_addr, conn_id.dst_addr);
     if (path.empty()) {
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     // Apply reliability and latency for the entire path
@@ -1185,11 +1120,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
         // Apply reliability check for this hop
         if (!check_reliability(hop_from, hop_to)) {
-            if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-                return future_bool_type(false);
-            } else {
-                return future_bool_type(false);
-            }
+            return future_bool_type(false);
         }
 
         // Accumulate latency for this hop
@@ -1203,20 +1134,12 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
     auto conn_it = _connections.find(dest_conn_id);
     if (conn_it == _connections.end() || !conn_it->second) {
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     auto dest_connection = conn_it->second;
     if (!dest_connection->is_open()) {
-        if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-            return future_bool_type(false);
-        } else {
-            return future_bool_type(false);
-        }
+        return future_bool_type(false);
     }
 
     // Apply the total latency delay
@@ -1228,11 +1151,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
         // Check if simulator is still started and connection is still open after the delay
         if (!_started.load() || !dest_connection->is_open()) {
-            if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-                return future_bool_type(false);
-            } else {
-                return future_bool_type(false);
-            }
+            return future_bool_type(false);
         }
     }
 
@@ -1246,11 +1165,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
     lock.unlock();
     dest_connection->deliver_data(std::move(data));
 
-    if constexpr (std::is_same_v<future_bool_type, SimpleFuture<bool>>) {
-        return future_bool_type(true);
-    } else {
-        return future_bool_type(true);
-    }
+    return future_bool_type(true);
 }
 
 // Connection Management Configuration

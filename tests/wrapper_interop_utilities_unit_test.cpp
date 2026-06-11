@@ -84,11 +84,12 @@ BOOST_AUTO_TEST_CASE(move_semantics_optimization_placeholder, *boost::unit_test:
 
     // Test current manual move handling
     std::string large_string(1000, 'x');
-    auto original_data = large_string.data();
+    auto* original_data = large_string.data();
 
     auto moved_string = std::move(large_string);
     BOOST_CHECK_EQUAL(moved_string.data(), original_data);
-    BOOST_CHECK(large_string.empty());  // Original should be empty after move
+    BOOST_CHECK(
+        large_string.empty());  // NOLINT(bugprone-use-after-move) - intentional move-semantics test
 }
 
 BOOST_AUTO_TEST_SUITE_END()

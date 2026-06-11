@@ -314,8 +314,8 @@ BOOST_AUTO_TEST_CASE(property_early_failure_handling, *boost::unit_test::timeout
 
         // Verify all attempts after the first are failures
         auto attempts = tracker.get_attempts();
-        for (std::size_t i = 0; i < attempts.size(); ++i) {
-            BOOST_CHECK_MESSAGE(!attempts[i].success,
+        for (auto& attempt : attempts) {
+            BOOST_CHECK_MESSAGE(!attempt.success,
                                 "All application attempts should fail after initial failure");
         }
 
@@ -358,7 +358,8 @@ BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, *boost::unit_test::timeout(9
 
         // Introduce failure at mid-sequence
         std::uint64_t failure_index = success_before + 1;
-        std::vector<std::byte> failure_command{std::byte{0x00}, std::byte{failure_index & 0xFF}};
+        std::vector<std::byte> failure_command{std::byte{0x00},
+                                               static_cast<std::byte>(failure_index & 0xFF)};
         std::string failure_error = "Mid-sequence application failure";
         tracker.record_application_failure(failure_index, failure_command, failure_error,
                                            current_applied_index);
@@ -367,7 +368,7 @@ BOOST_AUTO_TEST_CASE(property_mid_sequence_failure, *boost::unit_test::timeout(9
         for (std::size_t i = 1; i <= attempts_after; ++i) {
             std::uint64_t post_failure_index = failure_index + i;
             std::vector<std::byte> post_command{std::byte{0x11},
-                                                std::byte{post_failure_index & 0xFF}};
+                                                static_cast<std::byte>(post_failure_index & 0xFF)};
             std::string post_error = "Application halted due to mid-sequence failure";
             tracker.record_application_failure(post_failure_index, post_command, post_error,
                                                current_applied_index);

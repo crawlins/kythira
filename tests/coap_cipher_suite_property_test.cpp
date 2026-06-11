@@ -95,6 +95,9 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, *boost::unit_test::
                                          std::byte{0x12}};
                 // Leave cipher_suites empty for defaults
                 break;
+
+            default:
+                break;
         }
 
         // Create test types and client
@@ -313,8 +316,11 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, *boost::unit_test::timeout
                 server_config.cipher_suites = {"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"};
                 break;
 
-            case 4:  // Default cipher suites (empty lists)
+            case 4:  // NOLINT(bugprone-branch-clone) - default case is identical by design
                 // Leave both cipher_suites empty for default behavior
+                break;
+
+            default:
                 break;
         }
 
@@ -414,8 +420,11 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, *boost::unit_test::
                                                "TLS_DHE_RSA_WITH_AES_128_CBC_SHA"};
                 break;
 
-            case 3:  // Default security - use system defaults
+            case 3:  // NOLINT(bugprone-branch-clone) - default case is identical by design
                 // Leave cipher_suites empty
+                break;
+
+            default:
                 break;
         }
 

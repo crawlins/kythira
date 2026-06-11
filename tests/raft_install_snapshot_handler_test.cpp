@@ -243,7 +243,7 @@ BOOST_AUTO_TEST_CASE(property_snapshot_term_validation, *boost::unit_test::timeo
         std::uniform_int_distribution<int> scenario_dist(0, 2);
         auto scenario = scenario_dist(rng);
 
-        std::uint64_t request_term;
+        std::uint64_t request_term = 0;
         if (scenario == 0 && current_term > 1) {
             // Stale term: request_term < current_term
             std::uniform_int_distribution<std::uint64_t> stale_dist(1, current_term - 1);

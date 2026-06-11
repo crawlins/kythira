@@ -2,8 +2,8 @@
 
 #include <vector>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
-#include <algorithm>
 #include <stdexcept>
 
 namespace kythira::examples {
@@ -26,14 +26,16 @@ public:
     }
 
     // Get current state (all entries)
-    auto get_state() const -> std::vector<std::byte> {
+    [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
         std::vector<std::byte> state;
         for (const auto& entry : _entries) {
-            auto idx_bytes = reinterpret_cast<const std::byte*>(&entry.index);
+            const auto* idx_bytes = reinterpret_cast<const std::byte*>(
+                &entry.index);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             state.insert(state.end(), idx_bytes, idx_bytes + sizeof(entry.index));
 
             auto size = static_cast<std::uint64_t>(entry.data.size());
-            auto size_bytes = reinterpret_cast<const std::byte*>(&size);
+            const auto* size_bytes = reinterpret_cast<const std::byte*>(
+                &size);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
             state.insert(state.end(), size_bytes, size_bytes + sizeof(size));
 
             state.insert(state.end(), entry.data.begin(), entry.data.end());
@@ -48,24 +50,28 @@ public:
 
         std::size_t offset = 0;
         while (offset + sizeof(std::uint64_t) * 2 <= state.size()) {
-            std::uint64_t index;
+            std::uint64_t index{};
             std::memcpy(&index, state.data() + offset, sizeof(index));
             offset += sizeof(index);
 
-            std::uint64_t size;
+            std::uint64_t size{};
             std::memcpy(&size, state.data() + offset, sizeof(size));
             offset += sizeof(size);
 
-            if (offset + size > state.size()) break;
+            if (offset + size > state.size()) {
+                break;
+            }
 
-            std::vector<std::byte> data(state.begin() + offset, state.begin() + offset + size);
+            std::vector<std::byte> data(state.begin() + static_cast<std::ptrdiff_t>(offset),
+                                        state.begin() + static_cast<std::ptrdiff_t>(offset) +
+                                            static_cast<std::ptrdiff_t>(size));
             offset += size;
 
             _entries.push_back({index, std::move(data)});
         }
     }
 
-    auto entry_count() const -> std::size_t { return _entries.size(); }
+    [[nodiscard]] auto entry_count() const -> std::size_t { return _entries.size(); }
 
 private:
     struct entry {

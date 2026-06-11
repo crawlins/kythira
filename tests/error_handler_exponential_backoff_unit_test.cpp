@@ -83,8 +83,8 @@ BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, *boost::unit_test::ti
     for (std::size_t i = 1; i < test_max_attempts; ++i) {
         auto delay = test_initial_delay;
         for (std::size_t j = 1; j < i; ++j) {
-            delay = std::chrono::milliseconds{
-                static_cast<long long>(delay.count() * test_backoff_multiplier)};
+            delay = std::chrono::milliseconds{static_cast<long long>(
+                static_cast<double>(delay.count()) * test_backoff_multiplier)};
         }
         delay = std::min(delay, test_max_delay);
         expected_min_delay += delay;

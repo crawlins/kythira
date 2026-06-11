@@ -163,9 +163,8 @@ BOOST_AUTO_TEST_CASE(test_folly_future_continuation_behavior, *boost::unit_test:
             continuation_called = true;
             if (t.hasValue()) {
                 return t.value() * 3;
-            } else {
-                return -1;
             }
+            return -1;
         });
 
         // Fulfill the original promise

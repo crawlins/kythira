@@ -52,7 +52,9 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
 
         // Generate random cluster size (odd numbers for clear majority)
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number
+        }
 
         const std::size_t majority_count = (cluster_size / 2) + 1;
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader
@@ -68,7 +70,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
         BOOST_TEST_MESSAGE("Current term: " << current_term << ", higher term: " << higher_term);
 
         // Create different scenarios of leadership loss during read
-        const int scenario = gen() % 4;
+        const int scenario = static_cast<int>(gen() % 4);
 
         // Declare heartbeat_futures outside the scenario blocks
         std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
@@ -175,7 +177,8 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
 
             for (std::size_t i = 0; i < follower_count; ++i) {
                 const int delay_ms = delay_dist(gen);
-                const int term_type = gen() % 4;  // 0=higher, 1=current, 2=current, 3=lower (rare)
+                const int term_type =
+                    static_cast<int>(gen() % 4);  // 0=higher, 1=current, 2=current, 3=lower (rare)
 
                 if (term_type == 0 || (higher_term_responses == 0 && i == follower_count - 1)) {
                     // Ensure at least one higher term response

@@ -389,7 +389,8 @@ private:
             }
 
             operations = successful_operations.load() + failed_operations.load();
-            double success_rate = (successful_operations.load() * 100.0) / operations;
+            double success_rate = (static_cast<double>(successful_operations.load()) * 100.0) /
+                                  static_cast<double>(operations);
 
             std::cout << "  ✓ Load test operations: " << operations << "\n";
             std::cout << "  ✓ Successful operations: " << successful_operations.load() << "\n";
@@ -407,8 +408,10 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<milliseconds>(end_time - start_time);
 
-        double success_rate =
-            operations > 0 ? (successful_operations.load() * 100.0) / operations : 0.0;
+        double success_rate = operations > 0
+                                  ? (static_cast<double>(successful_operations.load()) * 100.0) /
+                                        static_cast<double>(operations)
+                                  : 0.0;
 
         _results.push_back({"Load Testing", passed, duration,
                             passed ? "Load testing completed successfully" : "Load testing failed",
@@ -726,7 +729,7 @@ private:
             auto perf_end = steady_clock::now();
             auto perf_duration = std::chrono::duration_cast<microseconds>(perf_end - perf_start);
 
-            double ops_per_second = (1000 * 1000000.0) / perf_duration.count();
+            double ops_per_second = (1000 * 1000000.0) / static_cast<double>(perf_duration.count());
 
             std::cout << "  ✓ System performance: " << std::fixed << std::setprecision(0)
                       << ops_per_second << " ops/second\n";
@@ -812,7 +815,8 @@ private:
                       << result.success_rate << "%\n";
         }
 
-        double overall_success_rate = (passed_tests * 100.0) / total_tests;
+        double overall_success_rate =
+            (static_cast<double>(passed_tests) * 100.0) / static_cast<double>(total_tests);
 
         std::cout << "\n";
         std::cout << "Overall Results:\n";
@@ -841,11 +845,11 @@ auto main() -> int {
             std::cout << "Summary: All final integration validation tests passed!\n";
             std::cout << "Exit code: 0\n";
             return 0;
-        } else {
-            std::cout << "Summary: Some final integration validation tests failed!\n";
-            std::cout << "Exit code: 1\n";
-            return 1;
         }
+        std::cout << "Summary: Some final integration validation tests failed!\n";
+        std::cout << "Exit code: 1\n";
+        return 1;
+
     } catch (const std::exception& e) {
         std::cerr << "Final integration validation failed with exception: " << e.what() << "\n";
         return 2;

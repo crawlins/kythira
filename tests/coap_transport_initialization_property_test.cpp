@@ -184,6 +184,9 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
                                            std::byte{0x08}};
                     dtls_config.verify_peer_cert = false;
                     break;
+
+                default:
+                    break;
             }
 
             std::unordered_map<std::uint64_t, std::string> endpoints;

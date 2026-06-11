@@ -364,10 +364,18 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_node_creation()) failed_scenarios++;
-    if (!test_leader_election()) failed_scenarios++;
-    if (!test_command_submission()) failed_scenarios++;
-    if (!test_state_reading()) failed_scenarios++;
+    if (!test_node_creation()) {
+        failed_scenarios++;
+    }
+    if (!test_leader_election()) {
+        failed_scenarios++;
+    }
+    if (!test_command_submission()) {
+        failed_scenarios++;
+    }
+    if (!test_state_reading()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n========================================\n";

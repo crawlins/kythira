@@ -293,3 +293,95 @@ else()
         COMMENT "Checking C++ formatting with clang-format"
     )
 endif()
+
+# ── clang-tidy targets ────────────────────────────────────────────────────────
+find_program(CLANG_TIDY_EXECUTABLE clang-tidy
+    HINTS "$ENV{HOME}/.local/bin" /usr/local/bin /usr/bin
+)
+find_program(RUN_CLANG_TIDY_EXECUTABLE
+    NAMES run-clang-tidy run-clang-tidy-18 run-clang-tidy.py run-clang-tidy-18.py
+    HINTS /usr/bin /usr/lib/llvm-18/bin "$ENV{HOME}/.local/bin"
+)
+
+# .cpp files only — headers are checked transitively through their TUs
+file(GLOB_RECURSE TIDY_SOURCES
+    "${CMAKE_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_SOURCE_DIR}/tests/*.cpp"
+    "${CMAKE_SOURCE_DIR}/examples/*.cpp"
+)
+list(LENGTH TIDY_SOURCES TIDY_SOURCES_COUNT)
+
+if(NOT CLANG_TIDY_EXECUTABLE)
+    message(WARNING "clang-tidy not found — 'static-analysis' and 'static-analysis-fix' targets "
+                    "unavailable.  Install with: apt install clang-tidy")
+    foreach(_t static-analysis static-analysis-fix)
+        add_custom_target(${_t}
+            COMMAND ${CMAKE_COMMAND} -E echo "ERROR: clang-tidy not found."
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endforeach()
+else()
+    # Verify compile_commands.json exists before defining targets that need it
+    set(_COMPDB "${CMAKE_BINARY_DIR}/compile_commands.json")
+
+    if(RUN_CLANG_TIDY_EXECUTABLE)
+        # Parallel path via run-clang-tidy
+        if(CMAKE_BUILD_PARALLEL_LEVEL)
+            set(_TIDY_JOBS ${CMAKE_BUILD_PARALLEL_LEVEL})
+        else()
+            cmake_host_system_information(RESULT _TIDY_JOBS QUERY NUMBER_OF_LOGICAL_CORES)
+        endif()
+
+        add_custom_target(static-analysis
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
+                "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, parallel"
+            COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
+            COMMAND ${RUN_CLANG_TIDY_EXECUTABLE}
+                    -p ${CMAKE_BINARY_DIR}
+                    -j ${_TIDY_JOBS}
+                    ${TIDY_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "static-analysis: all ${TIDY_SOURCES_COUNT} files clean"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy static analysis"
+        )
+
+        add_custom_target(static-analysis-fix
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
+                "static-analysis-fix: applying clang-tidy fixes on ${TIDY_SOURCES_COUNT} files"
+            COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
+            COMMAND ${RUN_CLANG_TIDY_EXECUTABLE}
+                    -p ${CMAKE_BINARY_DIR}
+                    -fix
+                    ${TIDY_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Applying clang-tidy auto-fixes"
+        )
+    else()
+        # Sequential fallback — run-clang-tidy not found
+        add_custom_target(static-analysis
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
+                "static-analysis: running clang-tidy on ${TIDY_SOURCES_COUNT} files, sequential"
+            COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
+            COMMAND ${CLANG_TIDY_EXECUTABLE} -p ${CMAKE_BINARY_DIR} ${TIDY_SOURCES}
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "static-analysis: all ${TIDY_SOURCES_COUNT} files clean"
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Running clang-tidy static analysis, sequential"
+        )
+
+        add_custom_target(static-analysis-fix
+            COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan
+                "static-analysis-fix: applying clang-tidy fixes on ${TIDY_SOURCES_COUNT} files"
+            COMMAND ${CMAKE_COMMAND} -DFILE=${_COMPDB}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/check_compdb.cmake
+            COMMAND ${CLANG_TIDY_EXECUTABLE} -p ${CMAKE_BINARY_DIR} --fix --fix-errors
+                    ${TIDY_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Applying clang-tidy auto-fixes, sequential"
+        )
+    endif()
+endif()

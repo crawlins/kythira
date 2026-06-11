@@ -141,11 +141,21 @@ auto main() -> int {
 
     int failed_tests = 0;
 
-    if (!test_basic_logging()) failed_tests++;
-    if (!test_structured_logging()) failed_tests++;
-    if (!test_log_level_filtering()) failed_tests++;
-    if (!test_thread_safety()) failed_tests++;
-    if (!test_concept_satisfaction()) failed_tests++;
+    if (!test_basic_logging()) {
+        failed_tests++;
+    }
+    if (!test_structured_logging()) {
+        failed_tests++;
+    }
+    if (!test_log_level_filtering()) {
+        failed_tests++;
+    }
+    if (!test_thread_safety()) {
+        failed_tests++;
+    }
+    if (!test_concept_satisfaction()) {
+        failed_tests++;
+    }
 
     std::cout << std::string(60, '=') << "\n";
 

@@ -33,11 +33,21 @@ public:
 
         std::cout << "=== Folly Concept Wrapper Promise Examples ===\n\n";
 
-        if (!test_semi_promise_value_setting()) failed_scenarios++;
-        if (!test_semi_promise_exception_setting()) failed_scenarios++;
-        if (!test_promise_future_retrieval()) failed_scenarios++;
-        if (!test_promise_void_handling()) failed_scenarios++;
-        if (!test_promise_lifecycle()) failed_scenarios++;
+        if (!test_semi_promise_value_setting()) {
+            failed_scenarios++;
+        }
+        if (!test_semi_promise_exception_setting()) {
+            failed_scenarios++;
+        }
+        if (!test_promise_future_retrieval()) {
+            failed_scenarios++;
+        }
+        if (!test_promise_void_handling()) {
+            failed_scenarios++;
+        }
+        if (!test_promise_lifecycle()) {
+            failed_scenarios++;
+        }
 
         std::cout << "\n=== Summary ===\n";
         if (failed_scenarios > 0) {

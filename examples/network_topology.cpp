@@ -489,19 +489,29 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_topology_configuration()) failed_scenarios++;
+    if (!test_topology_configuration()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_latency_characteristics()) failed_scenarios++;
+    if (!test_latency_characteristics()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_reliability_characteristics()) failed_scenarios++;
+    if (!test_reliability_characteristics()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_network_partitions()) failed_scenarios++;
+    if (!test_network_partitions()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_complex_topology()) failed_scenarios++;
+    if (!test_complex_topology()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
     // Report final results
@@ -510,9 +520,8 @@ auto main(int argc, char* argv[]) -> int {
         std::cout << "All scenarios passed! ✓\n";
         std::cout << "Exit code: 0\n";
         return 0;
-    } else {
-        std::cout << failed_scenarios << " scenario(s) failed ✗\n";
-        std::cout << "Exit code: 1\n";
-        return 1;
     }
+    std::cout << failed_scenarios << " scenario(s) failed ✗\n";
+    std::cout << "Exit code: 1\n";
+    return 1;
 }

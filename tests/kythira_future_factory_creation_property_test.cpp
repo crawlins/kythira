@@ -425,8 +425,8 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_concurrent_test, *boost::unit_test:
     BOOST_CHECK_EQUAL(total_operations.load(), expected_operations);
 
     // At least 95% of operations should succeed
-    double success_rate =
-        static_cast<double>(successful_operations.load()) / total_operations.load();
+    double success_rate = static_cast<double>(successful_operations.load()) /
+                          static_cast<double>(total_operations.load());
     BOOST_CHECK(success_rate >= 0.95);
 
     BOOST_TEST_MESSAGE("Concurrent factory future creation test completed with "

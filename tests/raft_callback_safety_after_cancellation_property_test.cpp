@@ -422,10 +422,9 @@ BOOST_AUTO_TEST_CASE(raft_callback_safety_after_cancellation_property_test,
                         // Some callbacks throw exceptions
                         exception_callbacks.fetch_add(1);
                         throw std::runtime_error("Callback exception for testing");
-                    } else {
-                        // Normal callbacks
-                        normal_callbacks.fetch_add(1);
-                    }
+                    }  // Normal callbacks
+                    normal_callbacks.fetch_add(1);
+
                 } catch (const std::exception& e) {
                     // Catch the exception to prevent it from propagating to the test framework
                     BOOST_TEST_MESSAGE("Caught expected callback exception: " << e.what());

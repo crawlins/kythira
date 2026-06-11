@@ -102,7 +102,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, *boost::unit_test::timeout(
             BOOST_REQUIRE(conn1->is_open());
 
             // Get the connection pointer for comparison
-            auto conn1_ptr = conn1.get();
+            auto* conn1_ptr = conn1.get();
 
             // Return connection to pool (simulate connection being released)
             auto& pool = sim.get_connection_pool();
@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_reuse, *boost::unit_test::timeout(
             BOOST_REQUIRE(conn2->is_open());
 
             // Get the connection pointer for comparison
-            auto conn2_ptr = conn2.get();
+            auto* conn2_ptr = conn2.get();
 
             // Verify that the same connection was reused
             if (conn1_ptr == conn2_ptr) {

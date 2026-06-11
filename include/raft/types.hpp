@@ -77,9 +77,9 @@ struct log_entry {
     LogIndex _index;
     std::vector<std::byte> _command;
 
-    auto term() const -> TermId { return _term; }
-    auto index() const -> LogIndex { return _index; }
-    auto command() const -> const std::vector<std::byte>& { return _command; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto index() const -> LogIndex { return _index; }
+    [[nodiscard]] auto command() const -> const std::vector<std::byte>& { return _command; }
 };
 
 // Cluster configuration concept
@@ -99,9 +99,11 @@ struct cluster_configuration {
     bool _is_joint_consensus;
     std::optional<std::vector<NodeId>> _old_nodes;
 
-    auto nodes() const -> const std::vector<NodeId>& { return _nodes; }
-    auto is_joint_consensus() const -> bool { return _is_joint_consensus; }
-    auto old_nodes() const -> const std::optional<std::vector<NodeId>>& { return _old_nodes; }
+    [[nodiscard]] auto nodes() const -> const std::vector<NodeId>& { return _nodes; }
+    [[nodiscard]] auto is_joint_consensus() const -> bool { return _is_joint_consensus; }
+    [[nodiscard]] auto old_nodes() const -> const std::optional<std::vector<NodeId>>& {
+        return _old_nodes;
+    }
 };
 
 // Snapshot concept
@@ -152,10 +154,12 @@ struct snapshot {
     cluster_configuration<NodeId> _configuration;
     std::vector<std::byte> _state_machine_state;
 
-    auto last_included_index() const -> LogIndex { return _last_included_index; }
-    auto last_included_term() const -> TermId { return _last_included_term; }
-    auto configuration() const -> const cluster_configuration<NodeId>& { return _configuration; }
-    auto state_machine_state() const -> const std::vector<std::byte>& {
+    [[nodiscard]] auto last_included_index() const -> LogIndex { return _last_included_index; }
+    [[nodiscard]] auto last_included_term() const -> TermId { return _last_included_term; }
+    [[nodiscard]] auto configuration() const -> const cluster_configuration<NodeId>& {
+        return _configuration;
+    }
+    [[nodiscard]] auto state_machine_state() const -> const std::vector<std::byte>& {
         return _state_machine_state;
     }
 };
@@ -238,10 +242,10 @@ struct request_vote_request {
     LogIndex _last_log_index;
     TermId _last_log_term;
 
-    auto term() const -> TermId { return _term; }
-    auto candidate_id() const -> NodeId { return _candidate_id; }
-    auto last_log_index() const -> LogIndex { return _last_log_index; }
-    auto last_log_term() const -> TermId { return _last_log_term; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto candidate_id() const -> NodeId { return _candidate_id; }
+    [[nodiscard]] auto last_log_index() const -> LogIndex { return _last_log_index; }
+    [[nodiscard]] auto last_log_term() const -> TermId { return _last_log_term; }
 };
 
 // Default RequestVote RPC Response implementation
@@ -251,8 +255,8 @@ struct request_vote_response {
     TermId _term;
     bool _vote_granted;
 
-    auto term() const -> TermId { return _term; }
-    auto vote_granted() const -> bool { return _vote_granted; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
 };
 
 // Default AppendEntries RPC Request implementation
@@ -268,12 +272,12 @@ struct append_entries_request {
     std::vector<LogEntry> _entries;
     LogIndex _leader_commit;
 
-    auto term() const -> TermId { return _term; }
-    auto leader_id() const -> NodeId { return _leader_id; }
-    auto prev_log_index() const -> LogIndex { return _prev_log_index; }
-    auto prev_log_term() const -> TermId { return _prev_log_term; }
-    auto entries() const -> const std::vector<LogEntry>& { return _entries; }
-    auto leader_commit() const -> LogIndex { return _leader_commit; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
+    [[nodiscard]] auto prev_log_index() const -> LogIndex { return _prev_log_index; }
+    [[nodiscard]] auto prev_log_term() const -> TermId { return _prev_log_term; }
+    [[nodiscard]] auto entries() const -> const std::vector<LogEntry>& { return _entries; }
+    [[nodiscard]] auto leader_commit() const -> LogIndex { return _leader_commit; }
 };
 
 // Default AppendEntries RPC Response implementation
@@ -285,10 +289,10 @@ struct append_entries_response {
     std::optional<LogIndex> _conflict_index;
     std::optional<TermId> _conflict_term;
 
-    auto term() const -> TermId { return _term; }
-    auto success() const -> bool { return _success; }
-    auto conflict_index() const -> std::optional<LogIndex> { return _conflict_index; }
-    auto conflict_term() const -> std::optional<TermId> { return _conflict_term; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto success() const -> bool { return _success; }
+    [[nodiscard]] auto conflict_index() const -> std::optional<LogIndex> { return _conflict_index; }
+    [[nodiscard]] auto conflict_term() const -> std::optional<TermId> { return _conflict_term; }
 };
 
 // Default InstallSnapshot RPC Request implementation
@@ -304,13 +308,13 @@ struct install_snapshot_request {
     std::vector<std::byte> _data;
     bool _done;
 
-    auto term() const -> TermId { return _term; }
-    auto leader_id() const -> NodeId { return _leader_id; }
-    auto last_included_index() const -> LogIndex { return _last_included_index; }
-    auto last_included_term() const -> TermId { return _last_included_term; }
-    auto offset() const -> std::size_t { return _offset; }
-    auto data() const -> const std::vector<std::byte>& { return _data; }
-    auto done() const -> bool { return _done; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto leader_id() const -> NodeId { return _leader_id; }
+    [[nodiscard]] auto last_included_index() const -> LogIndex { return _last_included_index; }
+    [[nodiscard]] auto last_included_term() const -> TermId { return _last_included_term; }
+    [[nodiscard]] auto offset() const -> std::size_t { return _offset; }
+    [[nodiscard]] auto data() const -> const std::vector<std::byte>& { return _data; }
+    [[nodiscard]] auto done() const -> bool { return _done; }
 };
 
 // Default InstallSnapshot RPC Response implementation
@@ -319,7 +323,7 @@ requires term_id<TermId>
 struct install_snapshot_response {
     TermId _term;
 
-    auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto term() const -> TermId { return _term; }
 };
 
 // Serialized data concept - must be a range of std::byte
@@ -346,7 +350,7 @@ struct retry_policy_config {
     std::size_t max_attempts{5};
 
     // Validation method
-    auto is_valid() const -> bool {
+    [[nodiscard]] auto is_valid() const -> bool {
         return initial_delay > std::chrono::milliseconds{0} && max_delay >= initial_delay &&
                backoff_multiplier > 1.0 && jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
                max_attempts > 0;
@@ -361,7 +365,7 @@ struct adaptive_timeout_config {
     double adaptation_factor{1.2};
     std::size_t sample_window_size{10};
 
-    auto is_valid() const -> bool {
+    [[nodiscard]] auto is_valid() const -> bool {
         return min_timeout > std::chrono::milliseconds{0} && max_timeout >= min_timeout &&
                adaptation_factor > 1.0 && sample_window_size > 0;
     }
@@ -457,132 +461,144 @@ struct raft_configuration {
     double _application_retry_backoff_multiplier{2.0};
 
     // Accessor methods
-    auto election_timeout_min() const -> std::chrono::milliseconds { return _election_timeout_min; }
-    auto election_timeout_max() const -> std::chrono::milliseconds { return _election_timeout_max; }
-    auto heartbeat_interval() const -> std::chrono::milliseconds { return _heartbeat_interval; }
-    auto rpc_timeout() const -> std::chrono::milliseconds { return _rpc_timeout; }
-    auto append_entries_timeout() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto election_timeout_min() const -> std::chrono::milliseconds {
+        return _election_timeout_min;
+    }
+    [[nodiscard]] auto election_timeout_max() const -> std::chrono::milliseconds {
+        return _election_timeout_max;
+    }
+    [[nodiscard]] auto heartbeat_interval() const -> std::chrono::milliseconds {
+        return _heartbeat_interval;
+    }
+    [[nodiscard]] auto rpc_timeout() const -> std::chrono::milliseconds { return _rpc_timeout; }
+    [[nodiscard]] auto append_entries_timeout() const -> std::chrono::milliseconds {
         return _append_entries_timeout;
     }
-    auto request_vote_timeout() const -> std::chrono::milliseconds { return _request_vote_timeout; }
-    auto install_snapshot_timeout() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto request_vote_timeout() const -> std::chrono::milliseconds {
+        return _request_vote_timeout;
+    }
+    [[nodiscard]] auto install_snapshot_timeout() const -> std::chrono::milliseconds {
         return _install_snapshot_timeout;
     }
-    auto max_entries_per_append() const -> std::size_t { return _max_entries_per_append; }
-    auto snapshot_threshold_bytes() const -> std::size_t { return _snapshot_threshold_bytes; }
-    auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
-    auto heartbeat_retry_policy() const -> const retry_policy_config& {
+    [[nodiscard]] auto max_entries_per_append() const -> std::size_t {
+        return _max_entries_per_append;
+    }
+    [[nodiscard]] auto snapshot_threshold_bytes() const -> std::size_t {
+        return _snapshot_threshold_bytes;
+    }
+    [[nodiscard]] auto snapshot_chunk_size() const -> std::size_t { return _snapshot_chunk_size; }
+    [[nodiscard]] auto heartbeat_retry_policy() const -> const retry_policy_config& {
         return _heartbeat_retry_policy;
     }
-    auto append_entries_retry_policy() const -> const retry_policy_config& {
+    [[nodiscard]] auto append_entries_retry_policy() const -> const retry_policy_config& {
         return _append_entries_retry_policy;
     }
-    auto request_vote_retry_policy() const -> const retry_policy_config& {
+    [[nodiscard]] auto request_vote_retry_policy() const -> const retry_policy_config& {
         return _request_vote_retry_policy;
     }
-    auto install_snapshot_retry_policy() const -> const retry_policy_config& {
+    [[nodiscard]] auto install_snapshot_retry_policy() const -> const retry_policy_config& {
         return _install_snapshot_retry_policy;
     }
-    auto get_adaptive_timeout_config() const -> const adaptive_timeout_config& {
+    [[nodiscard]] auto get_adaptive_timeout_config() const -> const adaptive_timeout_config& {
         return _adaptive_timeout_config;
     }
-    auto get_application_failure_policy() const -> application_failure_policy {
+    [[nodiscard]] auto get_application_failure_policy() const -> application_failure_policy {
         return _application_failure_policy;
     }
-    auto application_retry_max_attempts() const -> std::size_t {
+    [[nodiscard]] auto application_retry_max_attempts() const -> std::size_t {
         return _application_retry_max_attempts;
     }
-    auto application_retry_initial_delay() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto application_retry_initial_delay() const -> std::chrono::milliseconds {
         return _application_retry_initial_delay;
     }
-    auto application_retry_max_delay() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto application_retry_max_delay() const -> std::chrono::milliseconds {
         return _application_retry_max_delay;
     }
-    auto application_retry_backoff_multiplier() const -> double {
+    [[nodiscard]] auto application_retry_backoff_multiplier() const -> double {
         return _application_retry_backoff_multiplier;
     }
 
     // Configuration validation
-    auto validate() const -> bool { return get_validation_errors().empty(); }
+    [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
 
-    auto get_validation_errors() const -> std::vector<std::string> {
+    [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> {
         std::vector<std::string> errors;
 
         // Validate basic timing constraints
         if (_election_timeout_min <= std::chrono::milliseconds{0}) {
-            errors.push_back("election_timeout_min must be positive");
+            errors.emplace_back("election_timeout_min must be positive");
         }
 
         if (_election_timeout_max <= _election_timeout_min) {
-            errors.push_back("election_timeout_max must be greater than election_timeout_min");
+            errors.emplace_back("election_timeout_max must be greater than election_timeout_min");
         }
 
         if (_heartbeat_interval <= std::chrono::milliseconds{0}) {
-            errors.push_back("heartbeat_interval must be positive");
+            errors.emplace_back("heartbeat_interval must be positive");
         }
 
         // Validate heartbeat interval compatibility with election timeout
         // Heartbeat interval should be significantly smaller than election timeout
         if (_heartbeat_interval > _election_timeout_min / 3) {
-            errors.push_back(
+            errors.emplace_back(
                 "heartbeat_interval should be less than or equal to election_timeout_min/3 to "
                 "prevent false timeouts");
         }
 
         // Validate RPC timeouts
         if (_rpc_timeout <= std::chrono::milliseconds{0}) {
-            errors.push_back("rpc_timeout must be positive");
+            errors.emplace_back("rpc_timeout must be positive");
         }
 
         if (_append_entries_timeout <= std::chrono::milliseconds{0}) {
-            errors.push_back("append_entries_timeout must be positive");
+            errors.emplace_back("append_entries_timeout must be positive");
         }
 
         if (_request_vote_timeout <= std::chrono::milliseconds{0}) {
-            errors.push_back("request_vote_timeout must be positive");
+            errors.emplace_back("request_vote_timeout must be positive");
         }
 
         if (_install_snapshot_timeout <= std::chrono::milliseconds{0}) {
-            errors.push_back("install_snapshot_timeout must be positive");
+            errors.emplace_back("install_snapshot_timeout must be positive");
         }
 
         // Validate retry policies
         if (!_heartbeat_retry_policy.is_valid()) {
-            errors.push_back("heartbeat_retry_policy is invalid");
+            errors.emplace_back("heartbeat_retry_policy is invalid");
         }
 
         if (!_append_entries_retry_policy.is_valid()) {
-            errors.push_back("append_entries_retry_policy is invalid");
+            errors.emplace_back("append_entries_retry_policy is invalid");
         }
 
         if (!_request_vote_retry_policy.is_valid()) {
-            errors.push_back("request_vote_retry_policy is invalid");
+            errors.emplace_back("request_vote_retry_policy is invalid");
         }
 
         if (!_install_snapshot_retry_policy.is_valid()) {
-            errors.push_back("install_snapshot_retry_policy is invalid");
+            errors.emplace_back("install_snapshot_retry_policy is invalid");
         }
 
         // Validate adaptive timeout configuration
         if (!_adaptive_timeout_config.is_valid()) {
-            errors.push_back("adaptive_timeout_config is invalid");
+            errors.emplace_back("adaptive_timeout_config is invalid");
         }
 
         // Validate size parameters
         if (_max_entries_per_append == 0) {
-            errors.push_back("max_entries_per_append must be positive");
+            errors.emplace_back("max_entries_per_append must be positive");
         }
 
         if (_snapshot_threshold_bytes == 0) {
-            errors.push_back("snapshot_threshold_bytes must be positive");
+            errors.emplace_back("snapshot_threshold_bytes must be positive");
         }
 
         if (_snapshot_chunk_size == 0) {
-            errors.push_back("snapshot_chunk_size must be positive");
+            errors.emplace_back("snapshot_chunk_size must be positive");
         }
 
         if (_snapshot_chunk_size > _snapshot_threshold_bytes) {
-            errors.push_back("snapshot_chunk_size should not exceed snapshot_threshold_bytes");
+            errors.emplace_back("snapshot_chunk_size should not exceed snapshot_threshold_bytes");
         }
 
         return errors;

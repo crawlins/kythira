@@ -341,11 +341,21 @@ auto main() -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_psk_authentication_config()) failed_scenarios++;
-    if (!test_certificate_authentication_config()) failed_scenarios++;
-    if (!test_security_error_handling()) failed_scenarios++;
-    if (!test_dtls_connection_establishment()) failed_scenarios++;
-    if (!test_secure_rpc_communication()) failed_scenarios++;
+    if (!test_psk_authentication_config()) {
+        failed_scenarios++;
+    }
+    if (!test_certificate_authentication_config()) {
+        failed_scenarios++;
+    }
+    if (!test_security_error_handling()) {
+        failed_scenarios++;
+    }
+    if (!test_dtls_connection_establishment()) {
+        failed_scenarios++;
+    }
+    if (!test_secure_rpc_communication()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n" << std::string(60, '=') << "\n";

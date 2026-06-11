@@ -39,7 +39,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("Future creation/resolution: "
                            << num_operations << " operations in " << duration.count() << "μs"
@@ -67,7 +68,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("String future operations: "
                            << num_operations << " operations in " << duration.count() << "μs"
@@ -96,7 +98,7 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto duration =
             std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000.0) / duration.count();
+        double ops_per_second = (num_operations * 1000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("Large object future operations: "
                            << num_operations << " operations in " << duration.count() << "ms"
@@ -139,7 +141,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         int expected_operations = num_threads * operations_per_thread;
         BOOST_CHECK_EQUAL(total_operations.load(), expected_operations);
 
-        double ops_per_second = (expected_operations * 1000.0) / duration.count();
+        double ops_per_second =
+            (expected_operations * 1000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("Concurrent future operations: "
                            << expected_operations << " operations across " << num_threads
@@ -174,7 +177,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("Exception handling: "
                            << num_operations << " operations in " << duration.count() << "μs"
@@ -205,7 +209,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
             auto duration =
                 std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-            double ops_per_second = (num_operations * 1000000.0) / duration.count();
+            double ops_per_second =
+                (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
             BOOST_TEST_MESSAGE("Memory allocation (size "
                                << size << "): " << num_operations << " operations in "
@@ -231,7 +236,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         BOOST_TEST_MESSAGE("isReady() calls: "
                            << num_operations << " operations in " << duration.count() << "μs"

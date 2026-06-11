@@ -188,10 +188,9 @@ auto test_heartbeat_collection() -> bool {
         if (total_acknowledgments >= majority_needed) {
             std::cout << "  ✓ Linearizable read can proceed (majority heartbeat success)\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Insufficient heartbeat responses for linearizable read\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Insufficient heartbeat responses for linearizable read\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -252,10 +251,9 @@ auto test_election_vote_collection() -> bool {
         if (votes_granted >= majority_needed) {
             std::cout << "  ✓ Election successful (majority votes received)\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Insufficient votes for election victory\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Insufficient votes for election victory\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -317,10 +315,9 @@ auto test_replication_acknowledgment_tracking() -> bool {
         if (successful_replications >= majority_needed) {
             std::cout << "  ✓ Entry can be committed (majority replication achieved)\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Insufficient replication for commit\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Insufficient replication for commit\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -389,10 +386,9 @@ auto test_future_collection_timeout_handling() -> bool {
         if (successful_operations > 0 && failed_operations > 0) {
             std::cout << "  ✓ Timeout handling working correctly (mixed results)\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Expected mixed success/failure results\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Expected mixed success/failure results\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -439,10 +435,9 @@ auto test_future_collection_cancellation() -> bool {
         if (futures_count_before > 0 && futures_count_after == 0) {
             std::cout << "  ✓ Future collection cancellation successful\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Future collection not properly cancelled\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Future collection not properly cancelled\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -495,10 +490,9 @@ auto test_commit_waiting_mechanism() -> bool {
             std::cout << std::format("  ✓ Commit waiting completed successfully\n");
             std::cout << std::format("  Operation result: {}\n", bytes_to_string(operation_result));
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Operation not completed or completed with error\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Operation not completed or completed with error\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -525,12 +519,24 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_heartbeat_collection()) failed_scenarios++;
-    if (!test_election_vote_collection()) failed_scenarios++;
-    if (!test_replication_acknowledgment_tracking()) failed_scenarios++;
-    if (!test_future_collection_timeout_handling()) failed_scenarios++;
-    if (!test_future_collection_cancellation()) failed_scenarios++;
-    if (!test_commit_waiting_mechanism()) failed_scenarios++;
+    if (!test_heartbeat_collection()) {
+        failed_scenarios++;
+    }
+    if (!test_election_vote_collection()) {
+        failed_scenarios++;
+    }
+    if (!test_replication_acknowledgment_tracking()) {
+        failed_scenarios++;
+    }
+    if (!test_future_collection_timeout_handling()) {
+        failed_scenarios++;
+    }
+    if (!test_future_collection_cancellation()) {
+        failed_scenarios++;
+    }
+    if (!test_commit_waiting_mechanism()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n========================================\n";

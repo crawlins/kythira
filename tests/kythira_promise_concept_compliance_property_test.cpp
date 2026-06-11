@@ -265,7 +265,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(
     struct IncompletePromise {
         void setValue(int value) {}
         void setException(folly::exception_wrapper ex) {}
-        bool isFulfilled() const { return false; }
+        [[nodiscard]] bool isFulfilled() const { return false; }
         // Missing getFuture() and getSemiFuture()
     };
 

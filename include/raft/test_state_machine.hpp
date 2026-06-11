@@ -43,7 +43,7 @@ public:
             throw std::invalid_argument("Invalid command format: missing key length");
         }
 
-        std::uint32_t key_length;
+        std::uint32_t key_length{};
         std::memcpy(&key_length, &command[offset], sizeof(std::uint32_t));
         offset += sizeof(std::uint32_t);
 
@@ -51,7 +51,8 @@ public:
             throw std::invalid_argument("Invalid command format: key length exceeds command size");
         }
 
-        std::string key(reinterpret_cast<const char*>(&command[offset]), key_length);
+        std::string key(reinterpret_cast<const char*>(&command[offset]),
+                        key_length);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         offset += key_length;
 
         // Execute command based on type
@@ -62,7 +63,7 @@ public:
                     throw std::invalid_argument("Invalid PUT command: missing value length");
                 }
 
-                std::uint32_t value_length;
+                std::uint32_t value_length{};
                 std::memcpy(&value_length, &command[offset], sizeof(std::uint32_t));
                 offset += sizeof(std::uint32_t);
 
@@ -71,7 +72,9 @@ public:
                         "Invalid PUT command: value length exceeds command size");
                 }
 
-                std::string value(reinterpret_cast<const char*>(&command[offset]), value_length);
+                std::string value(
+                    reinterpret_cast<const char*>(&command[offset]),
+                    value_length);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                 _store[key] = value;
 
                 return {};  // PUT returns empty
@@ -152,7 +155,7 @@ public:
             throw std::invalid_argument("Invalid snapshot format: missing entry count");
         }
 
-        std::uint64_t num_entries;
+        std::uint64_t num_entries{};
         std::memcpy(&num_entries, snapshot_data.data(), sizeof(std::uint64_t));
         offset += sizeof(std::uint64_t);
 
@@ -163,7 +166,7 @@ public:
                 throw std::invalid_argument("Invalid snapshot format: missing key length");
             }
 
-            std::uint32_t key_length;
+            std::uint32_t key_length{};
             std::memcpy(&key_length, snapshot_data.data() + offset, sizeof(std::uint32_t));
             offset += sizeof(std::uint32_t);
 
@@ -172,7 +175,9 @@ public:
                     "Invalid snapshot format: key length exceeds data size");
             }
 
-            std::string key(reinterpret_cast<const char*>(snapshot_data.data() + offset),
+            std::string key(reinterpret_cast<const char*>(
+                                snapshot_data.data() +
+                                offset),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                             key_length);
             offset += key_length;
 
@@ -181,7 +186,7 @@ public:
                 throw std::invalid_argument("Invalid snapshot format: missing value length");
             }
 
-            std::uint32_t value_length;
+            std::uint32_t value_length{};
             std::memcpy(&value_length, snapshot_data.data() + offset, sizeof(std::uint32_t));
             offset += sizeof(std::uint32_t);
 
@@ -190,7 +195,9 @@ public:
                     "Invalid snapshot format: value length exceeds data size");
             }
 
-            std::string value(reinterpret_cast<const char*>(snapshot_data.data() + offset),
+            std::string value(reinterpret_cast<const char*>(
+                                  snapshot_data.data() +
+                                  offset),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                               value_length);
             offset += value_length;
 

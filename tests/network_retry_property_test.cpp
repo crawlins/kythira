@@ -364,7 +364,7 @@ BOOST_AUTO_TEST_CASE(reliable_networks_succeed_immediately, *boost::unit_test::d
             auto response = std::move(response_future).get();
 
             // Verify response (but don't fail the test if verification fails)
-            if (response.term() == term && response.vote_granted() == true) {
+            if (response.term() == term && response.vote_granted()) {
                 success = true;
             } else {
                 error_msg = "Response validation failed";

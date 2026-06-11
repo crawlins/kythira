@@ -101,14 +101,12 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
                     std::runtime_error(selected_failure));
-            } else {
-                // Success case - snapshot transfer completed
-                bytes_transferred += 10240;  // Final chunk
-                kythira::install_snapshot_response<std::uint64_t> success_response{
-                    3  // term
-                };
-                return kythira::FutureFactory::makeFuture(success_response);
-            }
+            }  // Success case - snapshot transfer completed
+            bytes_transferred += 10240;  // Final chunk
+            kythira::install_snapshot_response<std::uint64_t> success_response{
+                3  // term
+            };
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -221,10 +219,9 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
                     std::runtime_error("Network timeout during large snapshot transfer"));
-            } else {
-                kythira::install_snapshot_response<std::uint64_t> success_response{1};
-                return kythira::FutureFactory::makeFuture(success_response);
             }
+            kythira::install_snapshot_response<std::uint64_t> success_response{1};
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         try {
@@ -278,12 +275,11 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
                     std::runtime_error("Snapshot checksum validation failed"));
-            } else {
-                BOOST_FAIL("Should not retry on corruption detection");
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error("Unexpected retry"));
             }
+            BOOST_FAIL("Should not retry on corruption detection");
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::install_snapshot_response<std::uint64_t>>(
+                std::runtime_error("Unexpected retry"));
         };
 
         try {
@@ -405,10 +401,9 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
                     std::runtime_error("Network timeout during snapshot transfer"));
-            } else {
-                kythira::install_snapshot_response<std::uint64_t> success_response{2};
-                return kythira::FutureFactory::makeFuture(success_response);
             }
+            kythira::install_snapshot_response<std::uint64_t> success_response{2};
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         try {

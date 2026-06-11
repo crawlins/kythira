@@ -167,17 +167,24 @@ int main() {
 
     int failed = 0;
 
-    if (!test_kv_operations()) failed++;
-    if (!test_counter_operations()) failed++;
-    if (!test_snapshot_operations()) failed++;
-    if (!test_error_handling()) failed++;
+    if (!test_kv_operations()) {
+        failed++;
+    }
+    if (!test_counter_operations()) {
+        failed++;
+    }
+    if (!test_snapshot_operations()) {
+        failed++;
+    }
+    if (!test_error_handling()) {
+        failed++;
+    }
 
     std::cout << "\n==================================\n";
     if (failed == 0) {
         std::cout << "All tests passed!\n";
         return 0;
-    } else {
-        std::cout << failed << " test(s) failed\n";
-        return 1;
     }
+    std::cout << failed << " test(s) failed\n";
+    return 1;
 }

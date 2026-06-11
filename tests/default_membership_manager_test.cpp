@@ -90,9 +90,15 @@ auto test_joint_consensus_creation() -> bool {
     const auto& old_nodes = joint_config.old_nodes().value();
     bool has_node_1 = false, has_node_2 = false, has_node_3 = false;
     for (const auto& n : old_nodes) {
-        if (n == node_1) has_node_1 = true;
-        if (n == node_2) has_node_2 = true;
-        if (n == node_3) has_node_3 = true;
+        if (n == node_1) {
+            has_node_1 = true;
+        }
+        if (n == node_2) {
+            has_node_2 = true;
+        }
+        if (n == node_3) {
+            has_node_3 = true;
+        }
     }
     if (!has_node_1 || !has_node_2 || !has_node_3) {
         std::cerr << "  ✗ Failed: joint configuration old nodes not preserved correctly\n";
@@ -106,10 +112,18 @@ auto test_joint_consensus_creation() -> bool {
     has_node_3 = false;
     bool has_node_4 = false;
     for (const auto& n : new_nodes) {
-        if (n == node_1) has_node_1 = true;
-        if (n == node_2) has_node_2 = true;
-        if (n == node_3) has_node_3 = true;
-        if (n == node_4) has_node_4 = true;
+        if (n == node_1) {
+            has_node_1 = true;
+        }
+        if (n == node_2) {
+            has_node_2 = true;
+        }
+        if (n == node_3) {
+            has_node_3 = true;
+        }
+        if (n == node_4) {
+            has_node_4 = true;
+        }
     }
     if (!has_node_1 || !has_node_2 || !has_node_3 || !has_node_4) {
         std::cerr << "  ✗ Failed: joint configuration new nodes not set correctly\n";
@@ -269,11 +283,21 @@ int main() {
 
     int failed_tests = 0;
 
-    if (!test_basic_validation()) failed_tests++;
-    if (!test_joint_consensus_creation()) failed_tests++;
-    if (!test_node_in_configuration()) failed_tests++;
-    if (!test_membership_change_notification()) failed_tests++;
-    if (!test_string_node_ids()) failed_tests++;
+    if (!test_basic_validation()) {
+        failed_tests++;
+    }
+    if (!test_joint_consensus_creation()) {
+        failed_tests++;
+    }
+    if (!test_node_in_configuration()) {
+        failed_tests++;
+    }
+    if (!test_membership_change_notification()) {
+        failed_tests++;
+    }
+    if (!test_string_node_ids()) {
+        failed_tests++;
+    }
 
     std::cout << "\n" << std::string(60, '=') << "\n";
     if (failed_tests > 0) {

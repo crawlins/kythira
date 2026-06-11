@@ -13,10 +13,10 @@ constexpr const char* test_name = "timeout_operation_support_property_test";
 // Mock future type that supports timeout operations
 template<typename T> struct TimeoutCapableFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
 
     // Wait with timeout - this is the key timeout operation
-    bool wait(std::chrono::milliseconds timeout) const {
+    [[nodiscard]] bool wait(std::chrono::milliseconds timeout) const {
         return true;  // Simulate successful wait within timeout
     }
 
@@ -52,8 +52,8 @@ template<typename T> struct TimeoutCapableFuture {
 // Void specialization
 template<> struct TimeoutCapableFuture<void> {
     void get() {}
-    bool isReady() const { return true; }
-    bool wait(std::chrono::milliseconds timeout) const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
+    [[nodiscard]] bool wait(std::chrono::milliseconds timeout) const { return true; }
 
     template<typename F> auto thenValue(F&& func) -> TimeoutCapableFuture<void> {
         return TimeoutCapableFuture<void>{};
@@ -83,7 +83,7 @@ template<> struct TimeoutCapableFuture<void> {
 // Mock future type that does NOT support timeout operations properly
 template<typename T> struct NoTimeoutFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
 
     // Missing wait method with timeout - should fail future concept
 

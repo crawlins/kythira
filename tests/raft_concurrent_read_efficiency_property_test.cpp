@@ -55,7 +55,9 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
 
         // Generate random cluster size (odd numbers for clear majority)
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number
+        }
 
         const std::size_t majority_count = (cluster_size / 2) + 1;
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader

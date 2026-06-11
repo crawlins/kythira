@@ -22,7 +22,7 @@ BOOST_AUTO_TEST_CASE(register_and_fulfill) {
 
     cw.register_operation(
         1, [&](std::vector<std::byte> r) { received = std::move(r); },
-        [&](std::exception_ptr e) { rejected = e; });
+        [&](const std::exception_ptr& e) { rejected = e; });
 
     BOOST_CHECK(cw.has_pending_operations());
     BOOST_CHECK_EQUAL(cw.get_pending_count(), 1u);
@@ -43,7 +43,8 @@ BOOST_AUTO_TEST_CASE(fulfill_with_result_function) {
     std::vector<std::byte> received;
 
     cw.register_operation(
-        5, [&](std::vector<std::byte> r) { received = std::move(r); }, [&](std::exception_ptr) {});
+        5, [&](std::vector<std::byte> r) { received = std::move(r); },
+        [&](const std::exception_ptr&) {});
 
     std::vector<std::byte> expected_result = {std::byte{0x41}, std::byte{0x42}};
     cw.notify_committed_and_applied(5, [&](std::uint64_t idx) -> std::vector<std::byte> {
@@ -60,7 +61,8 @@ BOOST_AUTO_TEST_CASE(fulfill_with_result_function_throws) {
     std::exception_ptr rejected;
 
     cw.register_operation(
-        3, [](std::vector<std::byte>) {}, [&](std::exception_ptr e) { rejected = e; });
+        3, [](const std::vector<std::byte>&) {},
+        [&](const std::exception_ptr& e) { rejected = e; });
 
     cw.notify_committed_and_applied(3, [](std::uint64_t) -> std::vector<std::byte> {
         throw std::runtime_error("state machine error");
@@ -76,7 +78,8 @@ BOOST_AUTO_TEST_CASE(multiple_ops_same_index) {
     int fulfilled = 0;
     for (int i = 0; i < 3; ++i) {
         cw.register_operation(
-            10, [&](std::vector<std::byte>) { ++fulfilled; }, [](std::exception_ptr) {});
+            10, [&](const std::vector<std::byte>&) { ++fulfilled; },
+            [](const std::exception_ptr&) {});
     }
 
     BOOST_CHECK_EQUAL(cw.get_pending_count(), 3u);
@@ -127,7 +130,7 @@ BOOST_AUTO_TEST_CASE(cancel_all_leadership_lost) {
     kythira::commit_waiter<std::uint64_t> cw;
 
     std::exception_ptr captured;
-    cw.register_operation(5, [](auto) {}, [&](std::exception_ptr e) { captured = e; });
+    cw.register_operation(5, [](auto) {}, [&](const std::exception_ptr& e) { captured = e; });
 
     cw.cancel_all_operations_leadership_lost<std::uint64_t>(3, 4);
 
@@ -137,7 +140,7 @@ BOOST_AUTO_TEST_CASE(cancel_all_leadership_lost) {
         std::rethrow_exception(captured);
     } catch (const kythira::leadership_lost_exception<std::uint64_t>&) {
         is_leadership_lost = true;
-    } catch (...) {
+    } catch (...) {  // NOLINT(bugprone-empty-catch)
     }
     BOOST_CHECK(is_leadership_lost);
 }

@@ -27,7 +27,7 @@ struct IPv4Address {
 
     auto operator!=(const IPv4Address& other) const -> bool { return !(*this == other); }
 
-    auto get() const -> const in_addr& { return _addr; }
+    [[nodiscard]] auto get() const -> const in_addr& { return _addr; }
 };
 
 // Wrapper for in6_addr to satisfy address concept
@@ -43,7 +43,7 @@ struct IPv6Address {
 
     auto operator!=(const IPv6Address& other) const -> bool { return !(*this == other); }
 
-    auto get() const -> const in6_addr& { return _addr; }
+    [[nodiscard]] auto get() const -> const in6_addr& { return _addr; }
 };
 
 // Simple Future implementation for when kythira is not available
@@ -51,7 +51,7 @@ template<typename T> class SimpleFuture {
 public:
     SimpleFuture() = default;
     explicit SimpleFuture(T value) : _value(std::move(value)), _ready(true) {}
-    explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
+    explicit SimpleFuture(std::exception_ptr ex) : _exception(std::move(ex)), _ready(true) {}
 
     auto get() -> T {
         if (_exception) {
@@ -75,19 +75,16 @@ public:
         if (_exception) {
             try {
                 func(_exception);
-            } catch (...) {
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Ignore errors in error handler
             }
         }
         return *this;
     }
 
-    auto isReady() const -> bool { return _ready; }
+    [[nodiscard]] auto isReady() const -> bool { return _ready; }
 
-    auto wait(std::chrono::milliseconds timeout) -> bool {
-        // Simple implementation - always ready for now
-        return _ready;
-    }
+    [[nodiscard]] auto wait(std::chrono::milliseconds /*timeout*/) const -> bool { return _ready; }
 
 private:
     T _value{};
@@ -99,7 +96,7 @@ private:
 template<> class SimpleFuture<void> {
 public:
     SimpleFuture() : _ready(true) {}
-    explicit SimpleFuture(std::exception_ptr ex) : _exception(ex), _ready(true) {}
+    explicit SimpleFuture(std::exception_ptr ex) : _exception(std::move(ex)), _ready(true) {}
 
     auto get() -> void {
         if (_exception) {
@@ -127,19 +124,16 @@ public:
         if (_exception) {
             try {
                 func(_exception);
-            } catch (...) {
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Ignore errors in error handler
             }
         }
         return *this;
     }
 
-    auto isReady() const -> bool { return _ready; }
+    [[nodiscard]] auto isReady() const -> bool { return _ready; }
 
-    auto wait(std::chrono::milliseconds timeout) -> bool {
-        // Simple implementation - always ready for now
-        return _ready;
-    }
+    [[nodiscard]] auto wait(std::chrono::milliseconds /*timeout*/) const -> bool { return _ready; }
 
 private:
     std::exception_ptr _exception;
@@ -174,11 +168,11 @@ public:
           _destination_port(std::move(dst_port)),
           _payload(std::move(payload)) {}
 
-    auto source_address() const -> address_type { return _source_address; }
-    auto source_port() const -> port_type { return _source_port; }
-    auto destination_address() const -> address_type { return _destination_address; }
-    auto destination_port() const -> port_type { return _destination_port; }
-    auto payload() const -> std::vector<std::byte> { return _payload; }
+    [[nodiscard]] auto source_address() const -> address_type { return _source_address; }
+    [[nodiscard]] auto source_port() const -> port_type { return _source_port; }
+    [[nodiscard]] auto destination_address() const -> address_type { return _destination_address; }
+    [[nodiscard]] auto destination_port() const -> port_type { return _destination_port; }
+    [[nodiscard]] auto payload() const -> std::vector<std::byte> { return _payload; }
 
 private:
     address_type _source_address;
@@ -197,8 +191,8 @@ struct NetworkEdge {
 
     NetworkEdge(std::chrono::milliseconds lat, double rel) : _latency(lat), _reliability(rel) {}
 
-    auto latency() const -> std::chrono::milliseconds { return _latency; }
-    auto reliability() const -> double { return _reliability; }
+    [[nodiscard]] auto latency() const -> std::chrono::milliseconds { return _latency; }
+    [[nodiscard]] auto reliability() const -> double { return _reliability; }
 };
 
 // Endpoint
@@ -273,9 +267,9 @@ template<> struct std::hash<network_simulator::IPv6Address> {
     auto operator()(const network_simulator::IPv6Address& addr) const -> std::size_t {
         std::size_t hash = 0;
         for (std::size_t i = 0; i < sizeof(in6_addr); ++i) {
-            hash ^=
-                std::hash<unsigned char>{}(reinterpret_cast<const unsigned char*>(&addr._addr)[i])
-                << (i % 8);
+            hash ^= std::hash<unsigned char>{}(reinterpret_cast<const unsigned char*>(
+                        &addr._addr)[i])  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                    << (i % 8);
         }
         return hash;
     }

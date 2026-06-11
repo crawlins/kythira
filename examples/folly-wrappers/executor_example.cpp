@@ -35,11 +35,21 @@ public:
 
         std::cout << "=== Folly Concept Wrapper Executor Examples ===\n\n";
 
-        if (!test_executor_work_submission()) failed_scenarios++;
-        if (!test_executor_inline_execution()) failed_scenarios++;
-        if (!test_keep_alive_creation()) failed_scenarios++;
-        if (!test_keep_alive_reference_counting()) failed_scenarios++;
-        if (!test_executor_lifetime_management()) failed_scenarios++;
+        if (!test_executor_work_submission()) {
+            failed_scenarios++;
+        }
+        if (!test_executor_inline_execution()) {
+            failed_scenarios++;
+        }
+        if (!test_keep_alive_creation()) {
+            failed_scenarios++;
+        }
+        if (!test_keep_alive_reference_counting()) {
+            failed_scenarios++;
+        }
+        if (!test_executor_lifetime_management()) {
+            failed_scenarios++;
+        }
 
         std::cout << "\n=== Summary ===\n";
         if (failed_scenarios > 0) {

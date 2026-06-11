@@ -157,13 +157,14 @@ private:
         endpoint_type destination;
         std::chrono::steady_clock::time_point start_time;
         std::chrono::milliseconds timeout;
-        bool is_expired() const { return std::chrono::steady_clock::now() - start_time > timeout; }
+        [[nodiscard]] bool is_expired() const {
+            return std::chrono::steady_clock::now() - start_time > timeout;
+        }
     };
 
     auto process_connection_timeouts() -> void;
     auto cancel_expired_connections() -> void;
 
-private:
     // Scheduled message delivery structure
     struct ScheduledMessage {
         std::chrono::steady_clock::time_point delivery_time;

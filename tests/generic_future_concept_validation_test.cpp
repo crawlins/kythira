@@ -172,7 +172,7 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, *boost::unit_test::ti
 
     for (std::size_t i = 0; i < 50; ++i) {
         // Test that concept constraints work with various value types
-        int random_int = rng() % 1000;
+        int random_int = static_cast<int>(rng() % 1000);
         double random_double = static_cast<double>(random_int) / 100.0;
         std::string random_string = "test_" + std::to_string(i);
 

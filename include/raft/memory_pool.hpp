@@ -236,7 +236,8 @@ public:
             std::size_t total_blocks = _pool_size / _block_size;
             if (total_blocks > 0) {
                 metrics.fragmentation_ratio = static_cast<std::size_t>(
-                    (1.0 - static_cast<double>(used_blocks) / total_blocks) * 100);
+                    (1.0 - static_cast<double>(used_blocks) / static_cast<double>(total_blocks)) *
+                    100);
             }
         }
 
@@ -308,7 +309,8 @@ public:
         if (_pool_size == 0) {
             return 0.0;
         }
-        return (static_cast<double>(_metrics.allocated_size) / _pool_size) * 100.0;
+        return (static_cast<double>(_metrics.allocated_size) / static_cast<double>(_pool_size)) *
+               100.0;
     }
 
     // Check if pool is exhausted
@@ -440,7 +442,7 @@ public:
     memory_pool_guard(memory_pool& pool, void* ptr) : _pool(pool), _ptr(ptr) {}
 
     ~memory_pool_guard() {
-        if (_ptr) {
+        if (_ptr != nullptr) {
             _pool.deallocate(_ptr);
         }
     }
@@ -456,7 +458,7 @@ public:
 
     memory_pool_guard& operator=(memory_pool_guard&& other) noexcept {
         if (this != &other) {
-            if (_ptr) {
+            if (_ptr != nullptr) {
                 _pool.deallocate(_ptr);
             }
             _ptr = other._ptr;
@@ -465,7 +467,7 @@ public:
         return *this;
     }
 
-    auto get() const -> void* { return _ptr; }
+    [[nodiscard]] auto get() const -> void* { return _ptr; }
     auto release() -> void* {
         void* ptr = _ptr;
         _ptr = nullptr;
@@ -481,7 +483,7 @@ private:
 inline auto memory_pool::allocate_guarded(std::size_t size, const std::string& context)
     -> memory_pool_guard {
     void* ptr = allocate(size, context);
-    return memory_pool_guard(*this, ptr);
+    return {*this, ptr};
 }
 
 }  // namespace kythira

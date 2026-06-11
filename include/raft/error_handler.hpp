@@ -18,7 +18,7 @@ namespace kythira {
 /**
  * @brief Error type classification for different handling strategies
  */
-enum class error_type {
+enum class error_type : std::uint8_t {
     network_timeout,      // Network operation timed out
     network_unreachable,  // Target node unreachable
     connection_refused,   // Connection actively refused
@@ -32,7 +32,7 @@ enum class error_type {
 /**
  * @brief Timeout type classification for fine-grained retry strategies
  */
-enum class timeout_type {
+enum class timeout_type : std::uint8_t {
     network_delay,          // Slow response but connection alive
     network_timeout,        // No response within timeout period
     connection_failure,     // Connection dropped or refused
@@ -118,7 +118,7 @@ public:
         std::size_t max_attempts{5};
 
         // Validation
-        auto is_valid() const -> bool {
+        [[nodiscard]] auto is_valid() const -> bool {
             return initial_delay > std::chrono::milliseconds{0} && max_delay >= initial_delay &&
                    backoff_multiplier > 1.0 && jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
                    max_attempts > 0;
@@ -597,8 +597,8 @@ private:
                 // Apply async delay and retry - no thread blocking!
                 return kythira::FutureFactory::makeFuture(folly::Unit{})
                     .delay(delay)
-                    .thenTry([this, operation_name, op = std::move(op), policy,
-                              attempt](kythira::Try<void>) mutable -> kythira::Future<Result> {
+                    .thenTry([this, operation_name, op = std::move(op), policy, attempt](
+                                 const kythira::Try<void>&) mutable -> kythira::Future<Result> {
                         // Retry by calling execute_with_retry_impl recursively
                         // This returns a Future, which will be automatically flattened
                         return execute_with_retry_impl(operation_name, std::move(op), policy,

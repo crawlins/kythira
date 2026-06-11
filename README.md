@@ -455,6 +455,55 @@ To skip the format check on a WIP commit:
 SKIP_FORMAT_CHECK=1 git commit -m "wip: ..."
 ```
 
+## Static Analysis
+
+All C++ sources are checked with [clang-tidy](https://clang.llvm.org/extra/clang-tidy/)
+using the `.clang-tidy` config at the repo root. All enabled checks run with
+`WarningsAsErrors: "*"`.
+
+### Run analysis across the whole project
+
+```bash
+cmake --build build --target static-analysis
+```
+
+Uses `run-clang-tidy` for parallel execution (falls back to sequential `clang-tidy`
+if `run-clang-tidy` is not installed).
+
+### Apply auto-fixes
+
+```bash
+cmake --build build --target static-analysis-fix
+```
+
+Runs `clang-tidy --fix --fix-errors` sequentially (parallel apply is unsafe due
+to race conditions on shared headers).
+
+### Pre-commit enforcement (opt-in)
+
+The pre-commit hook includes an opt-in clang-tidy step that checks staged `.cpp`
+files only. It is **disabled by default** and must be explicitly enabled:
+
+```bash
+TIDY_CHECK=1 git commit -m "feat: ..."
+```
+
+If any staged file has findings the commit is blocked with the finding and a fix
+instruction. To skip on a WIP commit:
+
+```bash
+SKIP_TIDY_CHECK=1 git commit -m "wip: ..."
+```
+
+### Suppressing individual findings
+
+When a check fires on code that is intentionally written that way (e.g.
+`reinterpret_cast` required for C interop), suppress it with a line comment:
+
+```cpp
+auto* ptr = reinterpret_cast<const std::byte*>(data);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+```
+
 ---
 
 ## Code Coverage

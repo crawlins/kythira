@@ -190,7 +190,7 @@ BOOST_AUTO_TEST_CASE(raft_commit_timeout_logging_property_test, *boost::unit_tes
                 std::set<std::string> found_keys;
 
                 for (const auto& [key, value] : entry.key_value_pairs) {
-                    if (required_keys.count(key)) {
+                    if (static_cast<unsigned int>(required_keys.contains(key)) != 0u) {
                         found_keys.insert(key);
                     }
                 }

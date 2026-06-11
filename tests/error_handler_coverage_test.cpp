@@ -31,7 +31,9 @@ BOOST_AUTO_TEST_CASE(timeout_network_delay) {
     BOOST_CHECK(r.type == kythira::error_type::network_timeout);
     BOOST_CHECK(r.should_retry);
     BOOST_REQUIRE(r.timeout_classification.has_value());
-    BOOST_CHECK(r.timeout_classification.value() == kythira::timeout_type::network_delay);
+    BOOST_CHECK(
+        r.timeout_classification.value() ==
+        kythira::timeout_type::network_delay);  // NOLINT(bugprone-unchecked-optional-access)
 }
 
 BOOST_AUTO_TEST_CASE(timeout_connection_failure) {
@@ -39,7 +41,9 @@ BOOST_AUTO_TEST_CASE(timeout_connection_failure) {
     auto r = h.classify_error(std::runtime_error("timed out connection dropped"));
     BOOST_CHECK(r.type == kythira::error_type::network_timeout);
     BOOST_REQUIRE(r.timeout_classification.has_value());
-    BOOST_CHECK(r.timeout_classification.value() == kythira::timeout_type::connection_failure);
+    BOOST_CHECK(
+        r.timeout_classification.value() ==
+        kythira::timeout_type::connection_failure);  // NOLINT(bugprone-unchecked-optional-access)
 }
 
 BOOST_AUTO_TEST_CASE(timeout_serialization) {
@@ -47,7 +51,9 @@ BOOST_AUTO_TEST_CASE(timeout_serialization) {
     auto r = h.classify_error(std::runtime_error("timed out deserialization"));
     BOOST_CHECK(r.type == kythira::error_type::network_timeout);
     BOOST_REQUIRE(r.timeout_classification.has_value());
-    BOOST_CHECK(r.timeout_classification.value() == kythira::timeout_type::serialization_timeout);
+    BOOST_CHECK(r.timeout_classification.value() ==
+                kythira::timeout_type::
+                    serialization_timeout);  // NOLINT(bugprone-unchecked-optional-access)
 }
 
 BOOST_AUTO_TEST_CASE(timeout_no_response) {
@@ -55,7 +61,9 @@ BOOST_AUTO_TEST_CASE(timeout_no_response) {
     auto r = h.classify_error(std::runtime_error("rpc timeout no response"));
     BOOST_CHECK(r.type == kythira::error_type::network_timeout);
     BOOST_REQUIRE(r.timeout_classification.has_value());
-    BOOST_CHECK(r.timeout_classification.value() == kythira::timeout_type::network_timeout);
+    BOOST_CHECK(
+        r.timeout_classification.value() ==
+        kythira::timeout_type::network_timeout);  // NOLINT(bugprone-unchecked-optional-access)
 }
 
 BOOST_AUTO_TEST_CASE(timeout_timed_out_keyword) {

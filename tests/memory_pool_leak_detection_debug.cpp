@@ -45,7 +45,7 @@ BOOST_AUTO_TEST_CASE(debug_leak_detection, *boost::unit_test::timeout(test_timeo
     std::cout << "Leaks after threshold: " << leaks_after.size() << "\n";
     std::cout << "Leak threshold setting: " << pool.get_leak_threshold().count() << " seconds\n";
 
-    if (leaks_after.size() > 0) {
+    if (!leaks_after.empty()) {
         for (const auto& leak : leaks_after) {
             std::cout << "Leak detected:\n";
             std::cout << "  Address: " << leak.address << "\n";

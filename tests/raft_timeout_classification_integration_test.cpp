@@ -337,7 +337,7 @@ BOOST_AUTO_TEST_CASE(timeout_classification_consistency, *boost::unit_test::time
 
     // Classify the same error multiple times
     constexpr std::size_t iterations = 100;
-    kythira::timeout_type first_classification;
+    kythira::timeout_type first_classification{};
 
     for (std::size_t i = 0; i < iterations; ++i) {
         auto classification = handler.classify_error(error);

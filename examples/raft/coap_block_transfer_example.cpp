@@ -239,7 +239,9 @@ auto test_payload_splitting() -> bool {
                 std::size_t expected_size = (i == num_blocks - 1)
                                                 ? (medium_payload.size() % medium_block_size)
                                                 : medium_block_size;
-                if (expected_size == 0) expected_size = medium_block_size;
+                if (expected_size == 0) {
+                    expected_size = medium_block_size;
+                }
 
                 if (block_size != expected_size) {
                     std::cerr << "  ✗ Block " << i << " has incorrect size: " << block_size
@@ -303,8 +305,9 @@ auto test_block_reassembly() -> bool {
             std::size_t block_end =
                 std::min(block_start + medium_block_size, original_payload.size());
 
-            std::vector<std::byte> block_data(original_payload.begin() + block_start,
-                                              original_payload.begin() + block_end);
+            std::vector<std::byte> block_data(
+                original_payload.begin() + static_cast<std::ptrdiff_t>(block_start),
+                original_payload.begin() + static_cast<std::ptrdiff_t>(block_end));
 
             // Append block data to reassembled payload
             reassembled_payload.insert(reassembled_payload.end(), block_data.begin(),
@@ -434,11 +437,21 @@ auto main() -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_block_transfer_configuration()) failed_scenarios++;
-    if (!test_block_option_parsing()) failed_scenarios++;
-    if (!test_payload_splitting()) failed_scenarios++;
-    if (!test_block_reassembly()) failed_scenarios++;
-    if (!test_large_snapshot_transfer()) failed_scenarios++;
+    if (!test_block_transfer_configuration()) {
+        failed_scenarios++;
+    }
+    if (!test_block_option_parsing()) {
+        failed_scenarios++;
+    }
+    if (!test_payload_splitting()) {
+        failed_scenarios++;
+    }
+    if (!test_block_reassembly()) {
+        failed_scenarios++;
+    }
+    if (!test_large_snapshot_transfer()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n" << std::string(60, '=') << "\n";

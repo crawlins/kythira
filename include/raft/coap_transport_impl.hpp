@@ -83,7 +83,7 @@ coap_client<Types>::coap_client(
         });
 #else
     // Stub implementation when libcoap is not available
-    _coap_context = nullptr;
+    _coap_context = nullptr;  // NOLINT(cppcoreguidelines-prefer-member-initializer)
     _logger.warning("libcoap not available, using stub implementation");
 #endif
 
@@ -271,7 +271,7 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
         });
 #else
     // Stub implementation when libcoap is not available
-    _coap_context = nullptr;
+    _coap_context = nullptr;  // NOLINT(cppcoreguidelines-prefer-member-initializer)
     _logger.warning("libcoap not available, using stub implementation");
 #endif
 
@@ -1285,7 +1285,8 @@ auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void
     std::lock_guard<std::mutex> lock(_mutex);
 
     // Find the pending message with this message ID
-    for (auto it = _pending_requests.begin(); it != _pending_requests.end(); ++it) {
+    for (auto it = _pending_requests.begin(); it != _pending_requests.end();
+         ++it) {  // NOLINT(modernize-loop-convert)
         if (it->second->message_id == message_id && it->second->is_confirmable) {
             // Message was acknowledged, no need to retransmit
             // The actual response will come separately
@@ -1735,7 +1736,7 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
     }
 
     // Additional validation for obviously invalid certificates
-    std::string cert_body = peer_cert_data;
+    const auto& cert_body = peer_cert_data;
 
     // Remove BEGIN and END markers to check the body
     auto begin_pos = cert_body.find("-----BEGIN CERTIFICATE-----");
@@ -1758,7 +1759,8 @@ auto coap_client<Types>::validate_peer_certificate(const std::string& peer_cert_
 
         // Check for obviously invalid base64 characters
         for (char c : body) {
-            if (!std::isalnum(c) && c != '+' && c != '/' && c != '=') {
+            if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '+' && c != '/' &&
+                c != '=') {
                 throw coap_security_error("Certificate contains invalid base64 characters");
             }
         }
@@ -1821,13 +1823,13 @@ auto coap_client<Types>::calculate_retransmission_timeout(std::size_t attempt) c
 
     // Check for potential overflow
     constexpr auto max_timeout = std::chrono::milliseconds::max().count() / 2;
-    if (backoff_multiplier > static_cast<double>(max_timeout) / base_timeout) {
+    if (backoff_multiplier > static_cast<double>(max_timeout) / static_cast<double>(base_timeout)) {
         // Return maximum safe timeout to prevent overflow
         return std::chrono::milliseconds{max_timeout};
     }
 
-    auto timeout_ms =
-        static_cast<std::chrono::milliseconds::rep>(base_timeout * backoff_multiplier);
+    auto timeout_ms = static_cast<std::chrono::milliseconds::rep>(
+        static_cast<double>(base_timeout) * backoff_multiplier);
 
     return std::chrono::milliseconds{timeout_ms};
 }
@@ -2927,7 +2929,7 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
     }
 
     // Additional validation for obviously invalid certificates
-    std::string cert_body = client_cert_data;
+    const auto& cert_body = client_cert_data;
 
     // Remove BEGIN and END markers to check the body
     auto begin_pos = cert_body.find("-----BEGIN CERTIFICATE-----");
@@ -2950,7 +2952,8 @@ auto coap_server<Types>::validate_client_certificate(const std::string& client_c
 
         // Check for obviously invalid base64 characters
         for (char c : body) {
-            if (!std::isalnum(c) && c != '+' && c != '/' && c != '=') {
+            if (std::isalnum(static_cast<unsigned char>(c)) == 0 && c != '+' && c != '/' &&
+                c != '=') {
                 throw coap_security_error("Client certificate contains invalid base64 characters");
             }
         }
@@ -3299,7 +3302,8 @@ auto coap_client<Types>::split_payload_into_blocks(const std::vector<std::byte>&
 
         std::vector<std::byte> block;
         block.reserve(current_block_size);
-        block.assign(payload.begin() + offset, payload.begin() + offset + current_block_size);
+        block.assign(payload.begin() + static_cast<std::ptrdiff_t>(offset),
+                     payload.begin() + static_cast<std::ptrdiff_t>(offset + current_block_size));
 
         blocks.push_back(std::move(block));
 
@@ -3336,7 +3340,7 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
 
     // Check for available sessions in pool
     while (!pool.empty()) {
-        auto session = pool.back();
+        auto* session = pool.back();
         pool.pop_back();
 
 #ifdef LIBCOAP_AVAILABLE
@@ -3450,7 +3454,8 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
 #else
     // Stub implementation - create a fake session pointer
     static std::atomic<std::uintptr_t> session_counter{1};
-    auto session = reinterpret_cast<coap_session_t*>(session_counter.fetch_add(1));
+    auto* session = reinterpret_cast<coap_session_t*>(session_counter.fetch_add(
+        1));  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 
     _logger.debug("Created new session for pool (stub)",
                   {{"endpoint", endpoint}, {"total_sessions", std::to_string(total_sessions + 1)}});
@@ -3467,7 +3472,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::return_session_to_pool(const std::string& endpoint,
                                                 coap_session_t* session) -> void {
-    if (!_config.enable_session_reuse || !_config.enable_connection_pooling || !session) {
+    if (!_config.enable_session_reuse || !_config.enable_connection_pooling || session == nullptr) {
         return;
     }
 
@@ -3542,7 +3547,7 @@ auto coap_client<Types>::cleanup_expired_sessions() -> void {
         pool.erase(std::remove_if(
                        pool.begin(), pool.end(),
                        [&](coap_session_t* session) {
-                           if (!session) {
+                           if (session == nullptr) {
                                return true;  // Remove null sessions
                            }
 
@@ -3588,7 +3593,7 @@ auto coap_client<Types>::cleanup_expired_sessions() -> void {
 
         // If pool is still too large, remove oldest sessions
         while (pool.size() > _config.connection_pool_size) {
-            auto session = pool.front();
+            auto* session = pool.front();
             pool.erase(pool.begin());
 
 #ifdef LIBCOAP_AVAILABLE
@@ -3640,7 +3645,7 @@ auto coap_client<Types>::handle_resource_exhaustion() -> void {
         // Limit pool size aggressively during resource exhaustion
         std::size_t max_pool_size = _config.connection_pool_size / 2;
         while (pool.size() > max_pool_size) {
-            auto session = pool.back();
+            auto* session = pool.back();
             pool.pop_back();
 
 #ifdef LIBCOAP_AVAILABLE
@@ -3679,7 +3684,8 @@ auto coap_client<Types>::handle_resource_exhaustion() -> void {
     while (_pending_requests.size() > max_pending_requests) {
         // Find oldest request
         auto oldest_it = _pending_requests.begin();
-        for (auto it = _pending_requests.begin(); it != _pending_requests.end(); ++it) {
+        for (auto it = _pending_requests.begin(); it != _pending_requests.end();
+             ++it) {  // NOLINT(modernize-loop-convert)
             if (it->second->send_time < oldest_it->second->send_time) {
                 oldest_it = it;
             }
@@ -4076,7 +4082,7 @@ auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
 
     // Try to allocate from pool (memory_pool handles its own locking)
     void* ptr = _memory_pool->allocate(size);
-    if (ptr) {
+    if (ptr != nullptr) {
         auto metrics = _memory_pool->get_metrics();
         _logger.debug("Allocated from memory pool",
                       {{"size", std::to_string(size)},
@@ -4106,7 +4112,7 @@ auto coap_client<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::deallocate_to_pool(void* ptr) -> void {
-    if (!_config.enable_memory_optimization || !_memory_pool || !ptr) {
+    if (!_config.enable_memory_optimization || !_memory_pool || ptr == nullptr) {
         return;
     }
 
@@ -4172,7 +4178,9 @@ auto coap_client<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> 
         for (const auto& leak : leaks) {
             _logger.warning(
                 "Memory leak details",
-                {{"address", std::to_string(reinterpret_cast<std::uintptr_t>(leak.address))},
+                {{"address",
+                  std::to_string(reinterpret_cast<std::uintptr_t>(
+                      leak.address))},  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                  {"size", std::to_string(leak.size)},
                  {"context", leak.allocation_context}});
         }
@@ -4620,7 +4628,8 @@ auto coap_server<Types>::split_payload_into_blocks(const std::vector<std::byte>&
 
         std::vector<std::byte> block;
         block.reserve(current_block_size);
-        block.assign(payload.begin() + offset, payload.begin() + offset + current_block_size);
+        block.assign(payload.begin() + static_cast<std::ptrdiff_t>(offset),
+                     payload.begin() + static_cast<std::ptrdiff_t>(offset + current_block_size));
 
         blocks.push_back(std::move(block));
 
@@ -5461,7 +5470,7 @@ auto coap_server<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
 
     // Try to allocate from pool (memory_pool handles its own locking)
     void* ptr = _memory_pool->allocate(size);
-    if (ptr) {
+    if (ptr != nullptr) {
         auto metrics = _memory_pool->get_metrics();
         _logger.debug("Server allocated from memory pool",
                       {{"size", std::to_string(size)},
@@ -5491,7 +5500,7 @@ auto coap_server<Types>::allocate_from_pool(std::size_t size) -> std::byte* {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::deallocate_to_pool(void* ptr) -> void {
-    if (!_config.enable_memory_optimization || !_memory_pool || !ptr) {
+    if (!_config.enable_memory_optimization || !_memory_pool || ptr == nullptr) {
         return;
     }
 
@@ -5558,7 +5567,9 @@ auto coap_server<Types>::detect_memory_leaks() -> std::vector<memory_leak_info> 
         for (const auto& leak : leaks) {
             _logger.warning(
                 "Server memory leak details",
-                {{"address", std::to_string(reinterpret_cast<std::uintptr_t>(leak.address))},
+                {{"address",
+                  std::to_string(reinterpret_cast<std::uintptr_t>(
+                      leak.address))},  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
                  {"size", std::to_string(leak.size)},
                  {"context", leak.allocation_context}});
         }
@@ -5623,7 +5634,7 @@ auto coap_server<Types>::cache_serialization(std::size_t hash, const std::vector
         _serialization_cache.erase(oldest_it);
     }
 
-    _serialization_cache[hash] = {data, std::chrono::steady_clock::now(), 0};
+    _serialization_cache.insert_or_assign(hash, cache_entry{data, hash});
 }
 
 template<typename Types>
@@ -5748,31 +5759,31 @@ auto coap_client<Types>::discover_raft_nodes(const std::string& multicast_addres
 
     // Transform the multicast response future to extract node IDs
     return multicast_future
-        .thenValue(
-            [this](std::vector<std::vector<std::byte>> responses) -> std::vector<std::string> {
-                std::vector<std::string> discovered_nodes;
+        .thenValue([this](const std::vector<std::vector<std::byte>>& responses)
+                       -> std::vector<std::string> {
+            std::vector<std::string> discovered_nodes;
 
-                for (const auto& response_data : responses) {
-                    auto node_id = parse_discovery_response(response_data);
-                    if (node_id) {
-                        discovered_nodes.push_back(*node_id);
+            for (const auto& response_data : responses) {
+                auto node_id = parse_discovery_response(response_data);
+                if (node_id) {
+                    discovered_nodes.push_back(*node_id);
 
-                        _logger.debug("Discovered Raft node", {{"node_id", *node_id}});
-                    }
+                    _logger.debug("Discovered Raft node", {{"node_id", *node_id}});
                 }
+            }
 
-                _logger.info("Raft node discovery completed",
-                             {{"discovered_nodes", std::to_string(discovered_nodes.size())},
-                              {"total_responses", std::to_string(responses.size())}});
+            _logger.info("Raft node discovery completed",
+                         {{"discovered_nodes", std::to_string(discovered_nodes.size())},
+                          {"total_responses", std::to_string(responses.size())}});
 
-                // Record discovery metrics
-                _metrics.add_dimension("discovery_type", "raft_nodes");
-                _metrics.add_dimension("nodes_discovered", std::to_string(discovered_nodes.size()));
-                _metrics.add_one();
-                _metrics.emit();
+            // Record discovery metrics
+            _metrics.add_dimension("discovery_type", "raft_nodes");
+            _metrics.add_dimension("nodes_discovered", std::to_string(discovered_nodes.size()));
+            _metrics.add_one();
+            _metrics.emit();
 
-                return discovered_nodes;
-            })
+            return discovered_nodes;
+        })
         .thenError([this](const std::exception& e) -> std::vector<std::string> {
             _logger.error("Raft node discovery failed", {{"error", e.what()}});
 
@@ -5809,8 +5820,8 @@ auto coap_client<Types>::send_multicast_heartbeat(const std::string& multicast_a
 
     // Transform the multicast response future to extract responding node IDs
     return multicast_future
-        .thenValue([this, node_id](
-                       std::vector<std::vector<std::byte>> responses) -> std::vector<std::string> {
+        .thenValue([this, node_id](const std::vector<std::vector<std::byte>>& responses)
+                       -> std::vector<std::string> {
             std::vector<std::string> responding_nodes;
 
             for (const auto& response_data : responses) {
@@ -6704,7 +6715,8 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
     return create_new_session(dst_addr, uri);
 #else
     // Stub implementation
-    return reinterpret_cast<coap_session_t*>(0x1);
+    return reinterpret_cast<coap_session_t*>(
+        0x1);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 #endif
 }
 
@@ -6755,7 +6767,8 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
     return session;
 #else
     // Stub implementation
-    return reinterpret_cast<coap_session_t*>(0x1);
+    return reinterpret_cast<coap_session_t*>(
+        0x1);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 #endif
 }
 
@@ -6797,10 +6810,9 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
                 result.push_back(static_cast<std::uint8_t>(b));
             }
             return result;
-        } else {
-            // Cache entry expired, remove it
-            _serialization_cache.erase(cache_it);
         }
+        // Cache entry expired, remove it
+        _serialization_cache.erase(cache_it);
     }
 
     // Cache miss - serialize and cache
@@ -6841,18 +6853,13 @@ auto coap_client<Types>::cache_serialization_result(std::size_t hash,
         _serialization_cache.erase(oldest_it);
     }
 
-    // Add new cache entry
-    cache_entry entry;
-    // Convert std::uint8_t to std::byte for storage
-    entry.serialized_data.reserve(data.size());
+    // Add new cache entry, converting std::uint8_t to std::byte for storage
+    std::vector<std::byte> serialized_bytes;
+    serialized_bytes.reserve(data.size());
     for (const auto& b : data) {
-        entry.serialized_data.push_back(static_cast<std::byte>(b));
+        serialized_bytes.push_back(static_cast<std::byte>(b));
     }
-    entry.created = std::chrono::steady_clock::now();
-    entry.last_accessed = entry.created;
-    entry.access_count = 1;
-
-    _serialization_cache[hash] = std::move(entry);
+    _serialization_cache.insert_or_assign(hash, cache_entry{std::move(serialized_bytes), hash});
 
     _logger.debug("Cached serialization result",
                   {{"request_hash", std::to_string(hash)},
@@ -6865,9 +6872,13 @@ auto coap_client<Types>::cache_serialization_result(std::size_t hash,
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::validate_response_pdu(coap_pdu_t* response) -> bool {
-    if (!response) {
+#ifndef LIBCOAP_AVAILABLE
+    return response != nullptr;
+#else
+    if (response == nullptr) {
         return false;
     }
+#endif
 
 #ifdef LIBCOAP_AVAILABLE
     // Validate PDU structure

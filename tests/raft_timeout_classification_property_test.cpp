@@ -199,11 +199,10 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, *boost::unit_tes
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::runtime_error(timeout_errors[error_dist(rng)]));
-            } else {
-                kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                    1, true, std::nullopt, std::nullopt};
-                return kythira::FutureFactory::makeFuture(success_response);
             }
+            kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
+                1, true, std::nullopt, std::nullopt};
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         try {

@@ -94,13 +94,16 @@ BOOST_AUTO_TEST_CASE(property_no_remaining_std_future_usage, *boost::unit_test::
                     // Get the line containing the match
                     auto match_pos = iter->position();
                     auto line_start = content.rfind('\n', match_pos);
-                    if (line_start == std::string::npos)
+                    if (line_start == std::string::npos) {
                         line_start = 0;
-                    else
+                    } else {
                         line_start++;
+                    }
 
                     auto line_end = content.find('\n', match_pos);
-                    if (line_end == std::string::npos) line_end = content.length();
+                    if (line_end == std::string::npos) {
+                        line_end = content.length();
+                    }
 
                     std::string line = content.substr(line_start, line_end - line_start);
 
@@ -114,7 +117,9 @@ BOOST_AUTO_TEST_CASE(property_no_remaining_std_future_usage, *boost::unit_test::
                         continue;
                     }
 
-                    violations.push_back(file_path + ": contains std::future usage: " + line);
+                    std::string entry = file_path + ": contains std::future usage: ";
+                    entry += line;
+                    violations.push_back(std::move(entry));
                     break;  // Only report first occurrence per file
                 }
             }
@@ -180,13 +185,16 @@ BOOST_AUTO_TEST_CASE(property_no_remaining_folly_future_in_public_interfaces,
                     // Get the line containing the match
                     auto match_pos = iter->position();
                     auto line_start = content.rfind('\n', match_pos);
-                    if (line_start == std::string::npos)
+                    if (line_start == std::string::npos) {
                         line_start = 0;
-                    else
+                    } else {
                         line_start++;
+                    }
 
                     auto line_end = content.find('\n', match_pos);
-                    if (line_end == std::string::npos) line_end = content.length();
+                    if (line_end == std::string::npos) {
+                        line_end = content.length();
+                    }
 
                     std::string line = content.substr(line_start, line_end - line_start);
 
@@ -200,8 +208,10 @@ BOOST_AUTO_TEST_CASE(property_no_remaining_folly_future_in_public_interfaces,
                         continue;
                     }
 
-                    violations.push_back(file_path +
-                                         ": contains folly::Future in public interface: " + line);
+                    std::string entry =
+                        file_path + ": contains folly::Future in public interface: ";
+                    entry += line;
+                    violations.push_back(std::move(entry));
                     break;  // Only report first occurrence per file
                 }
             }

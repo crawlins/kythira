@@ -88,16 +88,14 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::runtime_error(failure_messages[msg_dist(rng)]));
-            } else {
-                // Success case
-                kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                    1,             // term
-                    true,          // success
-                    std::nullopt,  // conflict_term
-                    std::nullopt   // conflict_index
-                };
-                return kythira::FutureFactory::makeFuture(success_response);
-            }
+            }  // Success case
+            kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
+                1,             // term
+                true,          // success
+                std::nullopt,  // conflict_term
+                std::nullopt   // conflict_index
+            };
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -129,15 +127,15 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                     auto expected_base_delay = base_delay;
                     for (std::size_t j = 1; j < i; ++j) {
                         expected_base_delay = std::chrono::milliseconds{static_cast<long long>(
-                            expected_base_delay.count() * backoff_multiplier)};
+                            static_cast<double>(expected_base_delay.count()) * backoff_multiplier)};
                     }
                     expected_base_delay = std::min(expected_base_delay, max_delay);
 
                     // Allow for jitter (±20%) and timing overhead
-                    auto min_expected = std::chrono::milliseconds{
-                        static_cast<long long>(expected_base_delay.count() * 0.7)};
-                    auto max_expected = std::chrono::milliseconds{
-                        static_cast<long long>(expected_base_delay.count() * 1.5)};
+                    auto min_expected = std::chrono::milliseconds{static_cast<long long>(
+                        static_cast<double>(expected_base_delay.count()) * 0.7)};
+                    auto max_expected = std::chrono::milliseconds{static_cast<long long>(
+                        static_cast<double>(expected_base_delay.count()) * 1.5)};
 
                     BOOST_TEST_MESSAGE("Retry " << i << ": delay=" << delay.count()
                                                 << "ms, expected range=[" << min_expected.count()
@@ -285,11 +283,10 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                     return kythira::FutureFactory::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                         std::runtime_error("Network timeout occurred"));
-                } else {
-                    kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
-                        1, true, std::nullopt, std::nullopt};
-                    return kythira::FutureFactory::makeFuture(response);
                 }
+                kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
+                    1, true, std::nullopt, std::nullopt};
+                return kythira::FutureFactory::makeFuture(response);
             };
 
             auto start_time = std::chrono::steady_clock::now();

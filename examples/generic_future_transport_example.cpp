@@ -126,10 +126,9 @@ auto demonstrate_future_chaining() -> bool {
                 if (response.vote_granted()) {
                     std::cout << "  ✓ Vote was granted, proceeding with leadership\n";
                     return std::string("leadership_established");
-                } else {
-                    std::cout << "  ✗ Vote was denied, remaining follower\n";
-                    return std::string("remain_follower");
                 }
+                std::cout << "  ✗ Vote was denied, remaining follower\n";
+                return std::string("remain_follower");
             });
 
         auto final_result = chained_result.get();
@@ -306,13 +305,27 @@ int main() {
     int failed_scenarios = 0;
 
     // Run all demonstration scenarios
-    if (!demonstrate_generic_future_concepts()) failed_scenarios++;
-    if (!demonstrate_transport_api_structure()) failed_scenarios++;
-    if (!demonstrate_future_chaining()) failed_scenarios++;
-    if (!demonstrate_error_handling()) failed_scenarios++;
-    if (!demonstrate_collective_operations()) failed_scenarios++;
-    if (!demonstrate_wait_for_any()) failed_scenarios++;
-    if (!demonstrate_concept_benefits()) failed_scenarios++;
+    if (!demonstrate_generic_future_concepts()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_transport_api_structure()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_future_chaining()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_error_handling()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_collective_operations()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_wait_for_any()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_concept_benefits()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n=== Summary ===\n";

@@ -20,7 +20,7 @@ constexpr const char* test_server_url = "http://localhost:8080";
 // Mock future type for testing
 template<typename T> struct MockFuture {
     T get() { return T{}; }
-    bool isReady() const { return true; }
+    [[nodiscard]] bool isReady() const { return true; }
     bool wait(std::chrono::milliseconds) { return true; }
     void then(std::function<void(T)>) {}
     void onError(std::function<T(std::exception_ptr)>) {}

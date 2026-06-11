@@ -136,7 +136,7 @@ inline auto is_valid_coap_token(const std::vector<std::byte>& token) -> bool {
 }
 
 // CoAP option handling utilities
-enum class coap_content_format : std::uint16_t {
+enum class coap_content_format : std::uint16_t {  // NOLINT(performance-enum-size)
     text_plain = 0,
     application_link_format = 40,
     application_xml = 41,

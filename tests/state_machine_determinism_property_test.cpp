@@ -40,6 +40,9 @@ BOOST_AUTO_TEST_CASE(property_counter_determinism, *boost::unit_test::timeout(30
                 case 2:
                     cmd = "RESET";
                     break;
+
+                default:
+                    break;
             }
             commands.push_back({reinterpret_cast<const std::byte*>(cmd.data()),
                                 reinterpret_cast<const std::byte*>(cmd.data() + cmd.size())});

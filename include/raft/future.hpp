@@ -38,11 +38,11 @@ inline auto to_std_exception_ptr(const folly::exception_wrapper& ew) -> std::exc
 }
 
 // Convert std::exception_ptr to folly::exception_wrapper
-inline auto to_folly_exception_wrapper(std::exception_ptr ep) -> folly::exception_wrapper {
+inline auto to_folly_exception_wrapper(const std::exception_ptr& ep) -> folly::exception_wrapper {
     if (ep) {
         return folly::exception_wrapper(ep);
     }
-    return folly::exception_wrapper();
+    return {};
 }
 
 // Void/Unit type mapping for template specializations
@@ -184,30 +184,33 @@ public:
     // Construct from value
     template<typename U = T>
     explicit Try(U&& value)
-    requires(!std::is_void_v<T>)
+    requires(!std::is_void_v<T> && !std::is_same_v<std::remove_cvref_t<U>, std::exception_ptr> &&
+             !std::is_same_v<std::remove_cvref_t<U>, folly::exception_wrapper>)
         : _folly_try(std::forward<U>(value)) {}
 
     // Construct from exception
-    explicit Try(folly::exception_wrapper ex) : _folly_try(std::move(ex)) {}
-    explicit Try(std::exception_ptr ex) : _folly_try(detail::to_folly_exception_wrapper(ex)) {}
+    explicit Try(folly::exception_wrapper ex)
+        : _folly_try(std::move(ex)) {}  // NOLINT(performance-unnecessary-value-param)
+    explicit Try(const std::exception_ptr& ex)
+        : _folly_try(detail::to_folly_exception_wrapper(ex)) {}
 
     // Access value (throws if contains exception)
     template<typename U = T>
-    auto value() -> T&
+    [[nodiscard]] auto value() -> T&
     requires(!std::is_void_v<U>)
     {
         return _folly_try.value();
     }
 
     template<typename U = T>
-    auto value() const -> const T&
+    [[nodiscard]] auto value() const -> const T&
     requires(!std::is_void_v<U>)
     {
         return _folly_try.value();
     }
 
     // Access exception - convert folly::exception_wrapper to std::exception_ptr
-    auto exception() const -> std::exception_ptr {
+    [[nodiscard]] auto exception() const -> std::exception_ptr {
         if (_folly_try.hasException()) {
             return detail::to_std_exception_ptr(_folly_try.exception());
         }
@@ -215,17 +218,17 @@ public:
     }
 
     // Check if contains value (folly naming for concept compliance)
-    auto hasValue() const -> bool { return _folly_try.hasValue(); }
+    [[nodiscard]] auto hasValue() const -> bool { return _folly_try.hasValue(); }
 
     // Check if contains exception (folly naming for concept compliance)
-    auto hasException() const -> bool { return _folly_try.hasException(); }
+    [[nodiscard]] auto hasException() const -> bool { return _folly_try.hasException(); }
 
     // Legacy methods for backward compatibility
-    auto has_value() const -> bool { return hasValue(); }
-    auto has_exception() const -> bool { return hasException(); }
+    [[nodiscard]] auto has_value() const -> bool { return hasValue(); }
+    [[nodiscard]] auto has_exception() const -> bool { return hasException(); }
 
     // Get underlying folly::Try
-    auto get_folly_try() const -> const folly_type& { return _folly_try; }
+    [[nodiscard]] auto get_folly_try() const -> const folly_type& { return _folly_try; }
 
     auto get_folly_try() -> folly_type& { return _folly_try; }
 
@@ -247,8 +250,10 @@ public:
     explicit Try(folly::Unit) : _folly_try(folly::Unit{}) {}
 
     // Construct from exception
-    explicit Try(folly::exception_wrapper ex) : _folly_try(std::move(ex)) {}
-    explicit Try(std::exception_ptr ex) : _folly_try(detail::to_folly_exception_wrapper(ex)) {}
+    explicit Try(folly::exception_wrapper ex)
+        : _folly_try(std::move(ex)) {}  // NOLINT(performance-unnecessary-value-param)
+    explicit Try(const std::exception_ptr& ex)
+        : _folly_try(detail::to_folly_exception_wrapper(ex)) {}
 
     // Value access for void (throws if contains exception)
     auto value() const -> void {
@@ -256,7 +261,7 @@ public:
     }
 
     // Access exception
-    auto exception() const -> std::exception_ptr {
+    [[nodiscard]] auto exception() const -> std::exception_ptr {
         if (_folly_try.hasException()) {
             return detail::to_std_exception_ptr(_folly_try.exception());
         }
@@ -264,17 +269,17 @@ public:
     }
 
     // Check if contains value (folly naming for concept compliance)
-    auto hasValue() const -> bool { return _folly_try.hasValue(); }
+    [[nodiscard]] auto hasValue() const -> bool { return _folly_try.hasValue(); }
 
     // Check if contains exception (folly naming for concept compliance)
-    auto hasException() const -> bool { return _folly_try.hasException(); }
+    [[nodiscard]] auto hasException() const -> bool { return _folly_try.hasException(); }
 
     // Legacy methods for backward compatibility
-    auto has_value() const -> bool { return hasValue(); }
-    auto has_exception() const -> bool { return hasException(); }
+    [[nodiscard]] auto has_value() const -> bool { return hasValue(); }
+    [[nodiscard]] auto has_exception() const -> bool { return hasException(); }
 
     // Get underlying folly::Try
-    auto get_folly_try() const -> const folly_type& { return _folly_try; }
+    [[nodiscard]] auto get_folly_try() const -> const folly_type& { return _folly_try; }
 
     auto get_folly_try() -> folly_type& { return _folly_try; }
 
@@ -328,7 +333,7 @@ public:
     }
 
     // Set exception using std::exception_ptr (convenience method)
-    auto setException(std::exception_ptr ex) -> void {
+    auto setException(const std::exception_ptr& ex) -> void {
         if (!ex) {
             throw std::invalid_argument("Exception pointer cannot be null");
         }
@@ -336,12 +341,12 @@ public:
     }
 
     // Check if fulfilled (for concept compliance)
-    auto isFulfilled() const -> bool { return _folly_promise.isFulfilled(); }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _folly_promise.isFulfilled(); }
 
     // Get underlying folly::Promise
     auto get_folly_promise() -> folly_type& { return _folly_promise; }
 
-    auto get_folly_promise() const -> const folly_type& { return _folly_promise; }
+    [[nodiscard]] auto get_folly_promise() const -> const folly_type& { return _folly_promise; }
 
 protected:
     folly_type _folly_promise;
@@ -380,7 +385,7 @@ public:
     }
 
     // Set exception using std::exception_ptr (convenience method)
-    auto setException(std::exception_ptr ex) -> void {
+    auto setException(const std::exception_ptr& ex) -> void {
         if (!ex) {
             throw std::invalid_argument("Exception pointer cannot be null");
         }
@@ -388,12 +393,12 @@ public:
     }
 
     // Check if fulfilled (for concept compliance)
-    auto isFulfilled() const -> bool { return _folly_promise.isFulfilled(); }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _folly_promise.isFulfilled(); }
 
     // Get underlying folly::Promise
     auto get_folly_promise() -> folly_type& { return _folly_promise; }
 
-    auto get_folly_promise() const -> const folly_type& { return _folly_promise; }
+    [[nodiscard]] auto get_folly_promise() const -> const folly_type& { return _folly_promise; }
 
 protected:
     folly_type _folly_promise;
@@ -468,18 +473,19 @@ public:
     Future() = default;
     explicit Future(folly_type ff) : _folly_future(std::move(ff)) {}
 
-    // Construct from value
+    // Construct from value (excluded for exception types which have dedicated constructors)
     template<typename U = T>
     explicit Future(U&& value)
-    requires(!std::is_void_v<T>)
+    requires(!std::is_void_v<T> && !std::is_same_v<std::decay_t<U>, std::exception_ptr> &&
+             !std::is_same_v<std::decay_t<U>, folly::exception_wrapper>)
         : _folly_future(folly::makeFuture(std::forward<U>(value))) {}
 
     // Construct from exception
-    explicit Future(folly::exception_wrapper ex)
+    explicit Future(folly::exception_wrapper ex)  // NOLINT(performance-unnecessary-value-param)
         : _folly_future(folly::makeFuture<detail::void_to_unit_t<T>>(std::move(ex))) {}
 
     // Construct from std::exception_ptr
-    explicit Future(std::exception_ptr ex)
+    explicit Future(const std::exception_ptr& ex)
         : _folly_future(folly::makeFuture<detail::void_to_unit_t<T>>(
               detail::to_folly_exception_wrapper(ex))) {}
 
@@ -586,27 +592,27 @@ public:
     auto thenError(F&& func)
         -> std::enable_if_t<!detail::returns_future_on_exception_v<F>, Future<T>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
-            return Future<T>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        if constexpr (std::is_void_v<T>) {
-                            func(ex);
-                            return folly::Unit{};
-                        } else {
-                            return func(ex);
-                        }
-                    }));
+            return Future<T>(std::move(_folly_future)
+                                 .thenError([func = std::forward<F>(func)](
+                                                const folly::exception_wrapper& ex) mutable {
+                                     if constexpr (std::is_void_v<T>) {
+                                         func(ex);
+                                         return folly::Unit{};
+                                     } else {
+                                         return func(ex);
+                                     }
+                                 }));
         } else {
-            return Future<T>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        if constexpr (std::is_void_v<T>) {
-                            func(detail::to_std_exception_ptr(ex));
-                            return folly::Unit{};
-                        } else {
-                            return func(detail::to_std_exception_ptr(ex));
-                        }
-                    }));
+            return Future<T>(std::move(_folly_future)
+                                 .thenError([func = std::forward<F>(func)](
+                                                const folly::exception_wrapper& ex) mutable {
+                                     if constexpr (std::is_void_v<T>) {
+                                         func(detail::to_std_exception_ptr(ex));
+                                         return folly::Unit{};
+                                     } else {
+                                         return func(detail::to_std_exception_ptr(ex));
+                                     }
+                                 }));
         }
     }
 
@@ -617,24 +623,24 @@ public:
         -> std::enable_if_t<detail::returns_future_on_exception_v<F>, Future<T>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
             // Use folly's automatic future flattening
-            return Future<T>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        // Call the lambda which returns Future<T>
-                        auto inner_future = func(ex);
-                        // Extract the folly::Future from our wrapper
-                        return std::move(inner_future).get_folly_future();
-                    }));
+            return Future<T>(std::move(_folly_future)
+                                 .thenError([func = std::forward<F>(func)](
+                                                const folly::exception_wrapper& ex) mutable {
+                                     // Call the lambda which returns Future<T>
+                                     auto inner_future = func(ex);
+                                     // Extract the folly::Future from our wrapper
+                                     return std::move(inner_future).get_folly_future();
+                                 }));
         } else {
             // Use folly's automatic future flattening with std::exception_ptr
-            return Future<T>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        // Call the lambda which returns Future<T>
-                        auto inner_future = func(detail::to_std_exception_ptr(ex));
-                        // Extract the folly::Future from our wrapper
-                        return std::move(inner_future).get_folly_future();
-                    }));
+            return Future<T>(std::move(_folly_future)
+                                 .thenError([func = std::forward<F>(func)](
+                                                const folly::exception_wrapper& ex) mutable {
+                                     // Call the lambda which returns Future<T>
+                                     auto inner_future = func(detail::to_std_exception_ptr(ex));
+                                     // Extract the folly::Future from our wrapper
+                                     return std::move(inner_future).get_folly_future();
+                                 }));
         }
     }
 
@@ -668,13 +674,15 @@ public:
     }
 
     // Check if ready (concept compliance)
-    auto isReady() const -> bool { return _folly_future.isReady(); }
+    [[nodiscard]] auto isReady() const -> bool { return _folly_future.isReady(); }
 
     // Check if has value (requires future to be ready)
-    auto hasValue() const -> bool { return _folly_future.isReady() && _folly_future.hasValue(); }
+    [[nodiscard]] auto hasValue() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasValue();
+    }
 
     // Check if has exception (requires future to be ready)
-    auto hasException() const -> bool {
+    [[nodiscard]] auto hasException() const -> bool {
         return _folly_future.isReady() && _folly_future.hasException();
     }
 
@@ -710,10 +718,10 @@ public:
     explicit Future(folly_type ff) : _folly_future(std::move(ff)) {}
 
     // Construct from exception
-    explicit Future(folly::exception_wrapper ex)
+    explicit Future(folly::exception_wrapper ex)  // NOLINT(performance-unnecessary-value-param)
         : _folly_future(folly::makeFuture<folly::Unit>(std::move(ex))) {}
 
-    explicit Future(std::exception_ptr ex)
+    explicit Future(const std::exception_ptr& ex)
         : _folly_future(folly::makeFuture<folly::Unit>(detail::to_folly_exception_wrapper(ex))) {}
 
     // Get value (blocking) - concept compliance
@@ -811,19 +819,19 @@ public:
     auto thenError(F&& func)
         -> std::enable_if_t<!detail::returns_future_on_exception_v<F>, Future<void>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
-            return Future<void>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        func(ex);
-                        return folly::Unit{};
-                    }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenError([func = std::forward<F>(func)](
+                                                   const folly::exception_wrapper& ex) mutable {
+                                        func(ex);
+                                        return folly::Unit{};
+                                    }));
         } else {
-            return Future<void>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        func(detail::to_std_exception_ptr(ex));
-                        return folly::Unit{};
-                    }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenError([func = std::forward<F>(func)](
+                                                   const folly::exception_wrapper& ex) mutable {
+                                        func(detail::to_std_exception_ptr(ex));
+                                        return folly::Unit{};
+                                    }));
         }
     }
 
@@ -835,24 +843,24 @@ public:
         -> std::enable_if_t<detail::returns_future_on_exception_v<F>, Future<void>> {
         if constexpr (std::is_invocable_v<F, folly::exception_wrapper>) {
             // Use folly's automatic future flattening
-            return Future<void>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        // Call the lambda which returns Future<void>
-                        auto inner_future = func(ex);
-                        // Extract the folly::Future from our wrapper
-                        return std::move(inner_future).get_folly_future();
-                    }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenError([func = std::forward<F>(func)](
+                                                   const folly::exception_wrapper& ex) mutable {
+                                        // Call the lambda which returns Future<void>
+                                        auto inner_future = func(ex);
+                                        // Extract the folly::Future from our wrapper
+                                        return std::move(inner_future).get_folly_future();
+                                    }));
         } else {
             // Use folly's automatic future flattening with std::exception_ptr
-            return Future<void>(
-                std::move(_folly_future)
-                    .thenError([func = std::forward<F>(func)](folly::exception_wrapper ex) mutable {
-                        // Call the lambda which returns Future<void>
-                        auto inner_future = func(detail::to_std_exception_ptr(ex));
-                        // Extract the folly::Future from our wrapper
-                        return std::move(inner_future).get_folly_future();
-                    }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenError([func = std::forward<F>(func)](
+                                                   const folly::exception_wrapper& ex) mutable {
+                                        // Call the lambda which returns Future<void>
+                                        auto inner_future = func(detail::to_std_exception_ptr(ex));
+                                        // Extract the folly::Future from our wrapper
+                                        return std::move(inner_future).get_folly_future();
+                                    }));
         }
     }
 
@@ -886,13 +894,15 @@ public:
     }
 
     // Check if ready (concept compliance)
-    auto isReady() const -> bool { return _folly_future.isReady(); }
+    [[nodiscard]] auto isReady() const -> bool { return _folly_future.isReady(); }
 
     // Check if has value (requires future to be ready)
-    auto hasValue() const -> bool { return _folly_future.isReady() && _folly_future.hasValue(); }
+    [[nodiscard]] auto hasValue() const -> bool {
+        return _folly_future.isReady() && _folly_future.hasValue();
+    }
 
     // Check if has exception (requires future to be ready)
-    auto hasException() const -> bool {
+    [[nodiscard]] auto hasException() const -> bool {
         return _folly_future.isReady() && _folly_future.hasException();
     }
 
@@ -956,10 +966,10 @@ public:
     }
 
     // Check if executor is valid
-    auto is_valid() const -> bool { return _executor != nullptr; }
+    [[nodiscard]] auto is_valid() const -> bool { return _executor != nullptr; }
 
     // Get underlying executor
-    auto get() const -> folly::Executor* { return _executor; }
+    [[nodiscard]] auto get() const -> folly::Executor* { return _executor; }
 
     // Get KeepAlive token
     auto getKeepAliveToken() -> KeepAlive;
@@ -998,7 +1008,7 @@ public:
     KeepAlive& operator=(KeepAlive&&) = default;
 
     // Get underlying executor (concept compliance)
-    auto get() const -> folly::Executor* { return _keep_alive.get(); }
+    [[nodiscard]] auto get() const -> folly::Executor* { return _keep_alive.get(); }
 
     // Add work to underlying executor (for convenience)
     template<typename F> auto add(F&& func) -> void {
@@ -1010,10 +1020,10 @@ public:
     }
 
     // Check if valid
-    auto is_valid() const -> bool { return _keep_alive.get() != nullptr; }
+    [[nodiscard]] auto is_valid() const -> bool { return _keep_alive.get() != nullptr; }
 
     // Get underlying KeepAlive
-    auto get_folly_keep_alive() const -> const folly_type& { return _keep_alive; }
+    [[nodiscard]] auto get_folly_keep_alive() const -> const folly_type& { return _keep_alive; }
 
     auto get_folly_keep_alive() -> folly_type& { return _keep_alive; }
 
@@ -1027,7 +1037,7 @@ inline auto Executor::getKeepAliveToken() -> KeepAlive {
 }
 
 inline auto Executor::get_keep_alive() -> KeepAlive {
-    if (!_executor) {
+    if (_executor == nullptr) {
         throw std::runtime_error("Executor is invalid");
     }
     return KeepAlive(_executor);
@@ -1079,7 +1089,8 @@ public:
 
     // Make exceptional future (concept compliance)
     template<typename T>
-    static auto makeExceptionalFuture(folly::exception_wrapper ex) -> Future<T> {
+    static auto makeExceptionalFuture(folly::exception_wrapper ex)
+        -> Future<T> {  // NOLINT(performance-unnecessary-value-param)
         if constexpr (std::is_void_v<T>) {
             return Future<void>(folly::makeFuture<folly::Unit>(std::move(ex)));
         } else {
@@ -1088,7 +1099,8 @@ public:
     }
 
     // Make exceptional future from std::exception_ptr
-    template<typename T> static auto makeExceptionalFuture(std::exception_ptr ex) -> Future<T> {
+    template<typename T>
+    static auto makeExceptionalFuture(const std::exception_ptr& ex) -> Future<T> {
         return makeExceptionalFuture<T>(detail::to_folly_exception_wrapper(ex));
     }
 

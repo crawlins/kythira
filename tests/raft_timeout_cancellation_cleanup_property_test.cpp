@@ -96,6 +96,9 @@ BOOST_AUTO_TEST_CASE(raft_timeout_cancellation_cleanup_property_test,
                     case 2:
                         timeout_duration = long_timeout;
                         break;
+
+                    default:
+                        break;
                 }
 
                 operation_timeouts.emplace_back(index, timeout_duration);
@@ -184,6 +187,9 @@ BOOST_AUTO_TEST_CASE(raft_timeout_cancellation_cleanup_property_test,
                         break;
                     case 2:
                         timeout_duration = long_timeout;
+                        break;
+
+                    default:
                         break;
                 }
 

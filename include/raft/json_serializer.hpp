@@ -18,7 +18,8 @@ public:
     // Serialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t>
-    auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
+    [[nodiscard]] auto serialize(const request_vote_request<NodeId, TermId, LogIndex>& req) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "request_vote_request";
         obj["term"] = req.term();
@@ -31,7 +32,7 @@ public:
 
     // Serialize RequestVote Response
     template<typename TermId = std::uint64_t>
-    auto serialize(const request_vote_response<TermId>& resp) const -> Data {
+    [[nodiscard]] auto serialize(const request_vote_response<TermId>& resp) const -> Data {
         boost::json::object obj;
         obj["type"] = "request_vote_response";
         obj["term"] = resp.term();
@@ -43,8 +44,8 @@ public:
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
-    auto serialize(const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const
-        -> Data {
+    [[nodiscard]] auto serialize(
+        const append_entries_request<NodeId, TermId, LogIndex, LogEntry>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "append_entries_request";
         obj["term"] = req.term();
@@ -69,18 +70,21 @@ public:
 
     // Serialize AppendEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    auto serialize(const append_entries_response<TermId, LogIndex>& resp) const -> Data {
+    [[nodiscard]] auto serialize(const append_entries_response<TermId, LogIndex>& resp) const
+        -> Data {
         boost::json::object obj;
         obj["type"] = "append_entries_response";
         obj["term"] = resp.term();
         obj["success"] = resp.success();
 
         if (resp.conflict_index().has_value()) {
-            obj["conflict_index"] = resp.conflict_index().value();
+            obj["conflict_index"] =
+                *resp.conflict_index();  // NOLINT(bugprone-unchecked-optional-access)
         }
 
         if (resp.conflict_term().has_value()) {
-            obj["conflict_term"] = resp.conflict_term().value();
+            obj["conflict_term"] =
+                *resp.conflict_term();  // NOLINT(bugprone-unchecked-optional-access)
         }
 
         return json_to_bytes(boost::json::serialize(obj));
@@ -89,7 +93,8 @@ public:
     // Serialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t>
-    auto serialize(const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
+    [[nodiscard]] auto serialize(
+        const install_snapshot_request<NodeId, TermId, LogIndex>& req) const -> Data {
         boost::json::object obj;
         obj["type"] = "install_snapshot_request";
         obj["term"] = req.term();
@@ -105,7 +110,7 @@ public:
 
     // Serialize InstallSnapshot Response
     template<typename TermId = std::uint64_t>
-    auto serialize(const install_snapshot_response<TermId>& resp) const -> Data {
+    [[nodiscard]] auto serialize(const install_snapshot_response<TermId>& resp) const -> Data {
         boost::json::object obj;
         obj["type"] = "install_snapshot_response";
         obj["term"] = resp.term();
@@ -116,7 +121,7 @@ public:
     // Deserialize RequestVote Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t>
-    auto deserialize_request_vote_request(const Data& data) const
+    [[nodiscard]] auto deserialize_request_vote_request(const Data& data) const
         -> request_vote_request<NodeId, TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -141,7 +146,7 @@ public:
 
     // Deserialize RequestVote Response
     template<typename TermId = std::uint64_t>
-    auto deserialize_request_vote_response(const Data& data) const
+    [[nodiscard]] auto deserialize_request_vote_response(const Data& data) const
         -> request_vote_response<TermId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -160,7 +165,7 @@ public:
     // Deserialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
-    auto deserialize_append_entries_request(const Data& data) const
+    [[nodiscard]] auto deserialize_append_entries_request(const Data& data) const
         -> append_entries_request<NodeId, TermId, LogIndex, LogEntry> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -197,7 +202,7 @@ public:
 
     // Deserialize AppendEntries Response
     template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
-    auto deserialize_append_entries_response(const Data& data) const
+    [[nodiscard]] auto deserialize_append_entries_response(const Data& data) const
         -> append_entries_response<TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -224,7 +229,7 @@ public:
     // Deserialize InstallSnapshot Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t>
-    auto deserialize_install_snapshot_request(const Data& data) const
+    [[nodiscard]] auto deserialize_install_snapshot_request(const Data& data) const
         -> install_snapshot_request<NodeId, TermId, LogIndex> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -252,7 +257,7 @@ public:
 
     // Deserialize InstallSnapshot Response
     template<typename TermId = std::uint64_t>
-    auto deserialize_install_snapshot_response(const Data& data) const
+    [[nodiscard]] auto deserialize_install_snapshot_response(const Data& data) const
         -> install_snapshot_response<TermId> {
         auto json_str = bytes_to_string(data);
         auto obj = boost::json::parse(json_str).as_object();
@@ -268,7 +273,7 @@ public:
     }
 
     // Generic deserialize method that dispatches to specific deserialize methods
-    template<typename T> auto deserialize(const Data& data) const -> T {
+    template<typename T> [[nodiscard]] auto deserialize(const Data& data) const -> T {
         if constexpr (std::same_as<T, request_vote_request<>>) {
             return deserialize_request_vote_request(data);
         } else if constexpr (std::same_as<T, request_vote_response<>>) {
@@ -287,11 +292,11 @@ public:
     }
 
     // Provide name method for content format detection
-    auto name() const -> std::string { return "json"; }
+    [[nodiscard]] auto name() const -> std::string { return "json"; }
 
 private:
     // Helper to convert JSON string to bytes
-    auto json_to_bytes(const std::string& json_str) const -> Data {
+    [[nodiscard]] auto json_to_bytes(const std::string& json_str) const -> Data {
         Data result;
         if constexpr (requires { result.resize(0); }) {
             result.resize(json_str.size());
@@ -302,7 +307,7 @@ private:
     }
 
     // Helper to convert bytes to string
-    auto bytes_to_string(const Data& data) const -> std::string {
+    [[nodiscard]] auto bytes_to_string(const Data& data) const -> std::string {
         std::string result;
         result.reserve(std::ranges::size(data));
         for (auto b : data) {
@@ -312,7 +317,7 @@ private:
     }
 
     // Helper to convert bytes to base64
-    auto bytes_to_base64(const std::vector<std::byte>& data) const -> std::string {
+    [[nodiscard]] auto bytes_to_base64(const std::vector<std::byte>& data) const -> std::string {
         static const char* base64_chars =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             "abcdefghijklmnopqrstuvwxyz"
@@ -335,7 +340,7 @@ private:
             result.push_back(base64_chars[((val << 8) >> (valb + 8)) & 0x3F]);
         }
 
-        while (result.size() % 4) {
+        while (result.size() % 4 != 0) {
             result.push_back('=');
         }
 
@@ -343,7 +348,7 @@ private:
     }
 
     // Helper to convert base64 to bytes
-    auto base64_to_bytes(const std::string& base64) const -> std::vector<std::byte> {
+    [[nodiscard]] auto base64_to_bytes(const std::string& base64) const -> std::vector<std::byte> {
         static const unsigned char base64_table[256] = {
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
             64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62,
@@ -363,7 +368,9 @@ private:
         int valb = -8;
 
         for (unsigned char c : base64) {
-            if (base64_table[c] == 64) break;
+            if (base64_table[c] == 64) {
+                break;
+            }
             val = (val << 6) + base64_table[c];
             valb += 6;
             if (valb >= 0) {

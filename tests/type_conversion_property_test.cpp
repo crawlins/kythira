@@ -40,6 +40,9 @@ BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, *boost::unit_test::
                     throw std::logic_error("Test logic error " + std::to_string(i));
                 case 3:
                     throw std::out_of_range("Test out of range " + std::to_string(i));
+
+                default:
+                    break;
             }
         } catch (...) {
             auto original_ep = std::current_exception();
@@ -80,6 +83,9 @@ BOOST_AUTO_TEST_CASE(property_exception_conversion_fidelity, *boost::unit_test::
             case 2:
                 original_ew = folly::make_exception_wrapper<std::logic_error>("Folly logic error " +
                                                                               std::to_string(i));
+                break;
+
+            default:
                 break;
         }
 

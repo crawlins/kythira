@@ -59,8 +59,15 @@ const std::vector<std::string> invalid_certificates = {
     "-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----",         // Empty certificate body
     "-----BEGIN CERTIFICATE-----\nMIIDXTCCAkWgAwIBAgIJAKoK/heBjcOu",  // Missing END marker
     "MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOu\n-----END CERTIFICATE-----",    // Missing BEGIN marker
-    "-----BEGIN PRIVATE KEY-----\nMIIDXTCCAkWgAwIBAgIJAKoK/heBjcOu\n-----END PRIVATE "
-    "KEY-----",  // Wrong type
+    "-----BEGIN PRIVATE KEY-----\nMIIDXTCCAkWgAwIBAgIJAKoK/heBjcOu\n-----END PRIVATE "  // NOLINT(bugprone-suspicious-missing-comma)
+                                                                                        // -
+                                                                                        // intentional
+                                                                                        // string
+                                                                                        // literal
+                                                                                        // concatenation;
+                                                                                        // Wrong
+                                                                                        // type
+    "KEY-----",
     "-----BEGIN CERTIFICATE-----\n" + std::string(2000, 'A') +
         "\n-----END CERTIFICATE-----",                                   // Oversized
     "-----BEGIN CERTIFICATE-----\n\n\n-----END CERTIFICATE-----",        // Only whitespace
@@ -249,7 +256,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                         std::move(no_verify_endpoints), no_verify_config, no_verify_metrics);
 
                     // When verification is disabled, even invalid certificates should be accepted
-                    std::string invalid_cert = invalid_certificates[cert_index_dist(rng)];
+                    const std::string& invalid_cert = invalid_certificates[cert_index_dist(rng)];
 
                     bool validation_result = false;
                     try {
@@ -293,7 +300,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                                                                    no_dtls_config, no_dtls_metrics);
 
                     // When DTLS is disabled, certificate validation should always succeed
-                    std::string any_cert = invalid_certificates[cert_index_dist(rng)];
+                    const std::string& any_cert = invalid_certificates[cert_index_dist(rng)];
 
                     bool validation_result = no_dtls_client.validate_peer_certificate(any_cert);
 

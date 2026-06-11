@@ -53,7 +53,8 @@ public:
         return write(std::move(data), std::chrono::milliseconds{5000});
     }
 
-    auto write(std::vector<std::byte> data, std::chrono::milliseconds timeout) -> future_bool_type {
+    auto write(const std::vector<std::byte>& data, std::chrono::milliseconds timeout)
+        -> future_bool_type {
         if (!_open) {
             return FutureType(std::make_exception_ptr(network_exception("Connection is closed")));
         }
@@ -66,7 +67,7 @@ public:
     auto close() -> void { _open = false; }
 
     // Check if connection is open
-    auto is_open() const -> bool { return _open; }
+    [[nodiscard]] auto is_open() const -> bool { return _open; }
 
     // Get local endpoint
     auto local_endpoint() const -> endpoint { return _local; }

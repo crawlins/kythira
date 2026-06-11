@@ -339,7 +339,7 @@ BOOST_AUTO_TEST_CASE(test_parse_endpoint_invalid_scheme) {
 }
 
 BOOST_AUTO_TEST_CASE(test_parse_endpoint_empty) {
-    const std::string endpoint = "";
+    const std::string endpoint;
 
     BOOST_CHECK_THROW(parse_coap_endpoint(endpoint), coap_network_error);
 }

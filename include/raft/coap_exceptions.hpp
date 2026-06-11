@@ -18,7 +18,7 @@ public:
     coap_client_error(std::uint8_t response_code, const std::string& message)
         : coap_transport_error(message), _response_code(response_code) {}
 
-    auto response_code() const -> std::uint8_t { return _response_code; }
+    [[nodiscard]] auto response_code() const -> std::uint8_t { return _response_code; }
 
 private:
     std::uint8_t _response_code;
@@ -30,7 +30,7 @@ public:
     coap_server_error(std::uint8_t response_code, const std::string& message)
         : coap_transport_error(message), _response_code(response_code) {}
 
-    auto response_code() const -> std::uint8_t { return _response_code; }
+    [[nodiscard]] auto response_code() const -> std::uint8_t { return _response_code; }
 
 private:
     std::uint8_t _response_code;

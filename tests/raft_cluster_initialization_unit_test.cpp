@@ -145,8 +145,8 @@ BOOST_AUTO_TEST_CASE(test_election_timeout_randomization, *boost::unit_test::tim
 
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(config.election_timeout_min().count(),
-                                        config.election_timeout_max().count());
+    std::uniform_int_distribution<> dis(static_cast<int>(config.election_timeout_min().count()),
+                                        static_cast<int>(config.election_timeout_max().count()));
 
     for (std::size_t i = 0; i < randomization_sample_size; ++i) {
         auto random_timeout = std::chrono::milliseconds{dis(gen)};

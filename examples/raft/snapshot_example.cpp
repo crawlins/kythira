@@ -158,9 +158,15 @@ auto main(int argc, char* argv[]) -> int {
 
     int failed_scenarios = 0;
 
-    if (!test_snapshot_creation()) failed_scenarios++;
-    if (!test_snapshot_persistence()) failed_scenarios++;
-    if (!test_log_compaction_concept()) failed_scenarios++;
+    if (!test_snapshot_creation()) {
+        failed_scenarios++;
+    }
+    if (!test_snapshot_persistence()) {
+        failed_scenarios++;
+    }
+    if (!test_log_compaction_concept()) {
+        failed_scenarios++;
+    }
 
     std::cout << "\n========================================\n";
     if (failed_scenarios > 0) {

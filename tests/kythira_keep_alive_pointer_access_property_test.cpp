@@ -120,7 +120,7 @@ BOOST_AUTO_TEST_CASE(kythira_keep_alive_pointer_access_property_test,
         BOOST_CHECK(moved_keep_alive.is_valid());
 
         // Create another copy from moved object
-        KeepAlive copy_from_moved(moved_keep_alive);
+        const KeepAlive& copy_from_moved(moved_keep_alive);
         BOOST_CHECK(copy_from_moved.get() == original_ptr);
         BOOST_CHECK(copy_from_moved.is_valid());
 
@@ -486,7 +486,7 @@ BOOST_AUTO_TEST_CASE(keep_alive_pointer_access_edge_cases, *boost::unit_test::ti
 
             // Create and immediately destroy copies
             {
-                KeepAlive copy1(keep_alive);
+                const KeepAlive& copy1(keep_alive);
                 KeepAlive copy2(copy1);
                 KeepAlive moved(std::move(copy2));
 

@@ -236,7 +236,8 @@ BOOST_AUTO_TEST_CASE(property_performance_equivalence, *boost::unit_test::timeou
             auto duration =
                 std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-            double ops_per_second = (num_operations * 1000000.0) / duration.count();
+            double ops_per_second =
+                (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
             BOOST_TEST_MESSAGE("Throughput: " << static_cast<int>(ops_per_second) << " ops/sec ("
                                               << num_operations << " operations in "
@@ -305,7 +306,8 @@ BOOST_AUTO_TEST_CASE(property_performance_equivalence, *boost::unit_test::timeou
                     std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
                 // Memory operations should scale reasonably with object size
-                double ops_per_ms = static_cast<double>(num_operations) / duration.count();
+                double ops_per_ms =
+                    static_cast<double>(num_operations) / static_cast<double>(duration.count());
 
                 BOOST_TEST_MESSAGE("Memory efficiency (size "
                                    << size << "): " << static_cast<int>(ops_per_ms) << " ops/ms");

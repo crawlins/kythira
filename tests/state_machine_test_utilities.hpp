@@ -30,7 +30,7 @@ public:
 
         // Add key length and key
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
-        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        const auto* key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
         command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
@@ -41,7 +41,7 @@ public:
             std::string value = "value_" + std::to_string(val_dist(rng));
 
             std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
-            auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
+            const auto* val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
             command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
             command.insert(command.end(), reinterpret_cast<const std::byte*>(value.data()),
                            reinterpret_cast<const std::byte*>(value.data() + value.size()));
@@ -56,7 +56,7 @@ public:
         command.push_back(static_cast<std::byte>(command_type::get));
 
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
-        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        const auto* key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
         command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
@@ -71,13 +71,13 @@ public:
         command.push_back(static_cast<std::byte>(command_type::set));
 
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
-        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        const auto* key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
         command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
                        reinterpret_cast<const std::byte*>(key.data() + key.size()));
 
         std::uint32_t val_len = static_cast<std::uint32_t>(value.size());
-        auto val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
+        const auto* val_len_bytes = reinterpret_cast<const std::byte*>(&val_len);
         command.insert(command.end(), val_len_bytes, val_len_bytes + sizeof(val_len));
         command.insert(command.end(), reinterpret_cast<const std::byte*>(value.data()),
                        reinterpret_cast<const std::byte*>(value.data() + value.size()));
@@ -91,7 +91,7 @@ public:
         command.push_back(static_cast<std::byte>(command_type::del));
 
         std::uint32_t key_len = static_cast<std::uint32_t>(key.size());
-        auto key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
+        const auto* key_len_bytes = reinterpret_cast<const std::byte*>(&key_len);
         command.insert(command.end(), key_len_bytes, key_len_bytes + sizeof(key_len));
         command.insert(command.end(), reinterpret_cast<const std::byte*>(key.data()),
                        reinterpret_cast<const std::byte*>(key.data() + key.size()));

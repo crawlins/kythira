@@ -418,7 +418,7 @@ BOOST_AUTO_TEST_CASE(test_leak_detection_performance,
     BOOST_CHECK(duration_with_leak.count() > 0);
 
     // Log the overhead for informational purposes
-    double overhead_ratio =
-        static_cast<double>(duration_with_leak.count()) / duration_no_leak.count();
+    double overhead_ratio = static_cast<double>(duration_with_leak.count()) /
+                            static_cast<double>(duration_no_leak.count());
     std::cout << "Leak detection overhead ratio: " << overhead_ratio << "x\n";
 }

@@ -359,7 +359,7 @@ private:
 
         // Create fully connected mesh
         for (const auto& [from_id, _] : _nodes) {
-            for (const auto& [to_id, __] : _nodes) {
+            for (const auto& [to_id, _] : _nodes) {
                 if (from_id != to_id) {
                     _simulator->add_edge(from_id, to_id, edge);
                 }

@@ -56,8 +56,8 @@ private:
 
 public:
     auto allocate(std::size_t size) -> void* {
-        auto ptr = std::malloc(size);
-        if (ptr) {
+        auto* ptr = std::malloc(size);  // NOLINT(cppcoreguidelines-no-malloc)
+        if (ptr != nullptr) {
             _allocated_count.fetch_add(1);
             _total_allocated_bytes.fetch_add(size);
 
@@ -68,14 +68,14 @@ public:
     }
 
     auto deallocate(void* ptr, std::size_t size) -> void {
-        if (ptr) {
+        if (ptr != nullptr) {
             _deallocated_count.fetch_add(1);
             _total_deallocated_bytes.fetch_add(size);
 
             std::lock_guard<std::mutex> lock(_active_resources_mutex);
             _active_resources.erase(ptr);
 
-            std::free(ptr);
+            std::free(ptr);  // NOLINT(cppcoreguidelines-no-malloc)
         }
     }
 
@@ -115,13 +115,13 @@ private:
 public:
     TestResource(std::size_t size, ResourceTracker* tracker) : _size(size), _tracker(tracker) {
         _data = _tracker->allocate(size);
-        if (_data) {
+        if (_data != nullptr) {
             std::memset(_data, 0x42, size);  // Fill with test pattern
         }
     }
 
     ~TestResource() {
-        if (_data && _tracker) {
+        if ((_data != nullptr) && (_tracker != nullptr)) {
             _tracker->deallocate(_data, _size);
         }
     }
@@ -139,7 +139,7 @@ public:
 
     TestResource& operator=(TestResource&& other) noexcept {
         if (this != &other) {
-            if (_data && _tracker) {
+            if ((_data != nullptr) && (_tracker != nullptr)) {
                 _tracker->deallocate(_data, _size);
             }
 
@@ -154,9 +154,9 @@ public:
         return *this;
     }
 
-    auto is_valid() const -> bool { return _data != nullptr; }
+    [[nodiscard]] auto is_valid() const -> bool { return _data != nullptr; }
 
-    auto size() const -> std::size_t { return _size; }
+    [[nodiscard]] auto size() const -> std::size_t { return _size; }
 };
 
 /**

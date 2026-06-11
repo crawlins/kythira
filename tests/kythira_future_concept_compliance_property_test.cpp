@@ -160,9 +160,8 @@ BOOST_AUTO_TEST_CASE(test_kythira_future_continuation_behavior, *boost::unit_tes
         auto continued_future = std::move(future).thenTry([](kythira::Try<int> t) {
             if (t.hasValue()) {
                 return t.value() * 3;
-            } else {
-                return -1;
             }
+            return -1;
         });
 
         // Get the result from the continued future

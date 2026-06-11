@@ -27,7 +27,9 @@ auto get_source_directory() -> std::filesystem::path {
             return p;
         }
         auto parent = p.parent_path();
-        if (parent == p) break;
+        if (parent == p) {
+            break;
+        }
         p = parent;
     }
     return current_path;
@@ -86,7 +88,7 @@ auto read_file_content(const std::filesystem::path& file_path) -> std::string {
         throw std::runtime_error("Failed to open file: " + file_path.string());
     }
 
-    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
 auto find_network_concept_usages(const std::string& content) -> std::vector<std::string> {

@@ -48,7 +48,7 @@ public:
         if (it == _acknowledgments.end()) {
             return false;
         }
-        return it->second.count(follower_id) > 0;
+        return it->second.contains(follower_id);
     }
 
     // Get the number of acknowledgments for a log entry
@@ -63,6 +63,7 @@ public:
     // Get all log indices that have acknowledgments
     std::vector<LogIndex> get_acknowledged_entries() const {
         std::vector<LogIndex> entries;
+        entries.reserve(_acknowledgments.size());
         for (const auto& [log_index, _] : _acknowledgments) {
             entries.push_back(log_index);
         }
@@ -92,7 +93,9 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) {
+            cluster_size++;
+        }  // Ensure odd number for clear majority
 
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t entry_count = entry_count_dist(gen);
@@ -147,7 +150,7 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
             BOOST_CHECK_EQUAL(actual_acks.size(), expected_acks.size());
 
             for (const auto& follower_id : expected_acks) {
-                BOOST_CHECK(actual_acks.count(follower_id) > 0);
+                BOOST_CHECK(actual_acks.contains(follower_id));
                 BOOST_CHECK(tracker.has_acknowledgment(log_index, follower_id));
             }
 
@@ -160,7 +163,7 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
             std::size_t follower_ack_count = 0;
 
             for (LogIndex log_index = 1; log_index <= entry_count; ++log_index) {
-                if (expected_acknowledgments[log_index].count(follower_id) > 0) {
+                if (expected_acknowledgments[log_index].contains(follower_id)) {
                     follower_ack_count++;
                     BOOST_CHECK(tracker.has_acknowledgment(log_index, follower_id));
                 } else {
@@ -183,7 +186,7 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
         for (const auto& [log_index, acks] : expected_acknowledgments) {
             total_expected_acks += acks.size();
 
-            if (acks.size() > 0 && acks.size() < follower_count) {
+            if (!acks.empty() && acks.size() < follower_count) {
                 entries_with_partial_acks++;
             }
         }
@@ -226,8 +229,8 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
 
         // Property: System should track each follower's acknowledgments independently
         for (LogIndex entry = 1; entry <= 5; ++entry) {
-            bool follower1_should_ack = follower1_acks.count(entry) > 0;
-            bool follower2_should_ack = follower2_acks.count(entry) > 0;
+            bool follower1_should_ack = follower1_acks.contains(entry);
+            bool follower2_should_ack = follower2_acks.contains(entry);
 
             BOOST_CHECK_EQUAL(tracker.has_acknowledgment(entry, follower1_id),
                               follower1_should_ack);
@@ -324,7 +327,7 @@ BOOST_AUTO_TEST_CASE(raft_follower_acknowledgment_tracking_property_test,
             BOOST_CHECK_EQUAL(actual_acks.size(), expected_acks.size());
 
             for (const auto& follower_id : expected_acks) {
-                BOOST_CHECK(actual_acks.count(follower_id) > 0);
+                BOOST_CHECK(actual_acks.contains(follower_id));
             }
 
             BOOST_TEST_MESSAGE("Entry " << entry << " has "

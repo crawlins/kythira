@@ -13,7 +13,8 @@ class counter_state_machine {
 public:
     // Commands: INC, DEC, RESET, GET
     auto apply(const std::vector<std::byte>& command, std::uint64_t) -> std::vector<std::byte> {
-        std::string cmd(reinterpret_cast<const char*>(command.data()), command.size());
+        std::string cmd(reinterpret_cast<const char*>(command.data()),
+                        command.size());  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
 
         if (cmd == "INC") {
             ++_value;
@@ -28,13 +29,18 @@ public:
         }
 
         std::string result = std::to_string(_value);
-        return {reinterpret_cast<const std::byte*>(result.data()),
-                reinterpret_cast<const std::byte*>(result.data() + result.size())};
+        return {reinterpret_cast<const std::byte*>(
+                    result.data()),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                reinterpret_cast<const std::byte*>(
+                    result.data() +
+                    result.size())};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     }
 
-    auto get_state() const -> std::vector<std::byte> {
-        return {reinterpret_cast<const std::byte*>(&_value),
-                reinterpret_cast<const std::byte*>(&_value) + sizeof(_value)};
+    [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
+        return {reinterpret_cast<const std::byte*>(
+                    &_value),  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+                reinterpret_cast<const std::byte*>(&_value) +
+                    sizeof(_value)};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
     }
 
     auto restore_from_snapshot(const std::vector<std::byte>& state, std::uint64_t) -> void {
@@ -43,7 +49,7 @@ public:
         }
     }
 
-    auto get_value() const -> std::int64_t { return _value; }
+    [[nodiscard]] auto get_value() const -> std::int64_t { return _value; }
 
 private:
     std::int64_t _value = 0;

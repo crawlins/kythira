@@ -304,10 +304,10 @@ auto test_connection_timeout() -> bool {
                 if (!write_success) {
                     std::cout << "  ✓ Connection established but write failed as expected\n";
                     return true;
-                } else {
-                    std::cerr << "  ✗ Connection and write both succeeded unexpectedly\n";
-                    return false;
                 }
+                std::cerr << "  ✗ Connection and write both succeeded unexpectedly\n";
+                return false;
+
             } catch (const std::exception& e) {
                 std::cout << "  ✓ Connection established but write failed as expected: " << e.what()
                           << "\n";
@@ -516,25 +516,39 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_basic_connection_establishment()) failed_scenarios++;
+    if (!test_basic_connection_establishment()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_bidirectional_data_transfer()) failed_scenarios++;
+    if (!test_bidirectional_data_transfer()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_specified_source_port()) failed_scenarios++;
+    if (!test_specified_source_port()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_connection_timeout()) failed_scenarios++;
+    if (!test_connection_timeout()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_accept_timeout()) failed_scenarios++;
+    if (!test_accept_timeout()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_read_write_timeout()) failed_scenarios++;
+    if (!test_read_write_timeout()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_connection_lifecycle()) failed_scenarios++;
+    if (!test_connection_lifecycle()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
     // Report final results
@@ -543,9 +557,8 @@ auto main(int argc, char* argv[]) -> int {
         std::cout << "All scenarios passed! ✓\n";
         std::cout << "Exit code: 0\n";
         return 0;
-    } else {
-        std::cout << failed_scenarios << " scenario(s) failed ✗\n";
-        std::cout << "Exit code: 1\n";
-        return 1;
     }
+    std::cout << failed_scenarios << " scenario(s) failed ✗\n";
+    std::cout << "Exit code: 1\n";
+    return 1;
 }

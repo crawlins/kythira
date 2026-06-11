@@ -33,7 +33,7 @@ public:
               created(std::chrono::steady_clock::now()),
               is_healthy(true) {}
 
-        auto is_stale(std::chrono::milliseconds max_age) const -> bool {
+        [[nodiscard]] auto is_stale(std::chrono::milliseconds max_age) const -> bool {
             return std::chrono::steady_clock::now() - last_used > max_age;
         }
     };

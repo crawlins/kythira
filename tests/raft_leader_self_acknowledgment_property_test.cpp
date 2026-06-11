@@ -108,7 +108,9 @@ BOOST_AUTO_TEST_CASE(raft_leader_self_acknowledgment_property_test,
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number for clear majority
+        }
 
         const NodeId leader_id = 1;
         const std::size_t follower_count = cluster_size - 1;

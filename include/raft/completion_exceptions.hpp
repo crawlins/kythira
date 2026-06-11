@@ -25,8 +25,8 @@ public:
           _entry_index(index),
           _timeout(timeout) {}
 
-    auto get_entry_index() const -> LogIndex { return _entry_index; }
-    auto get_timeout() const -> std::chrono::milliseconds { return _timeout; }
+    [[nodiscard]] auto get_entry_index() const -> LogIndex { return _entry_index; }
+    [[nodiscard]] auto get_timeout() const -> std::chrono::milliseconds { return _timeout; }
 
 private:
     LogIndex _entry_index;
@@ -43,8 +43,8 @@ public:
           _old_term(old_term),
           _new_term(new_term) {}
 
-    auto get_old_term() const -> TermId { return _old_term; }
-    auto get_new_term() const -> TermId { return _new_term; }
+    [[nodiscard]] auto get_old_term() const -> TermId { return _old_term; }
+    [[nodiscard]] auto get_new_term() const -> TermId { return _new_term; }
 
 private:
     TermId _old_term;
@@ -60,8 +60,8 @@ public:
           _operation(operation),
           _failed_count(failed_count) {}
 
-    auto get_operation() const -> const std::string& { return _operation; }
-    auto get_failed_count() const -> std::size_t { return _failed_count; }
+    [[nodiscard]] auto get_operation() const -> const std::string& { return _operation; }
+    [[nodiscard]] auto get_failed_count() const -> std::size_t { return _failed_count; }
 
 private:
     std::string _operation;
@@ -77,8 +77,8 @@ public:
           _phase(phase),
           _reason(reason) {}
 
-    auto get_phase() const -> const std::string& { return _phase; }
-    auto get_reason() const -> const std::string& { return _reason; }
+    [[nodiscard]] auto get_phase() const -> const std::string& { return _phase; }
+    [[nodiscard]] auto get_reason() const -> const std::string& { return _reason; }
 
 private:
     std::string _phase;

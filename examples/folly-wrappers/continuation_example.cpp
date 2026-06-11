@@ -38,11 +38,21 @@ public:
 
         std::cout << "=== Folly Concept Wrapper Continuation Examples ===\n\n";
 
-        if (!test_via_executor_scheduling()) failed_scenarios++;
-        if (!test_delay_time_based()) failed_scenarios++;
-        if (!test_within_timeout_success()) failed_scenarios++;
-        if (!test_within_timeout_failure()) failed_scenarios++;
-        if (!test_chained_continuations()) failed_scenarios++;
+        if (!test_via_executor_scheduling()) {
+            failed_scenarios++;
+        }
+        if (!test_delay_time_based()) {
+            failed_scenarios++;
+        }
+        if (!test_within_timeout_success()) {
+            failed_scenarios++;
+        }
+        if (!test_within_timeout_failure()) {
+            failed_scenarios++;
+        }
+        if (!test_chained_continuations()) {
+            failed_scenarios++;
+        }
 
         std::cout << "\n=== Summary ===\n";
         if (failed_scenarios > 0) {

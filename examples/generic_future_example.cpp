@@ -173,10 +173,18 @@ int main() {
     int failed_scenarios = 0;
 
     // Run all demonstration scenarios
-    if (!demonstrate_basic_future_usage()) failed_scenarios++;
-    if (!demonstrate_future_chaining()) failed_scenarios++;
-    if (!demonstrate_collective_operations()) failed_scenarios++;
-    if (!demonstrate_concept_compliance()) failed_scenarios++;
+    if (!demonstrate_basic_future_usage()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_future_chaining()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_collective_operations()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_concept_compliance()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n=== Summary ===\n";

@@ -110,16 +110,14 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
                     return kythira::FutureFactory::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                         std::runtime_error(error_msg));
-                } else {
-                    // Reachable nodes respond normally
-                    kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                        1,             // term
-                        true,          // success
-                        std::nullopt,  // conflict_term
-                        std::nullopt   // conflict_index
-                    };
-                    return kythira::FutureFactory::makeFuture(success_response);
-                }
+                }  // Reachable nodes respond normally
+                kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
+                    1,             // term
+                    true,          // success
+                    std::nullopt,  // conflict_term
+                    std::nullopt   // conflict_index
+                };
+                return kythira::FutureFactory::makeFuture(success_response);
             };
 
             try {
@@ -199,7 +197,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
         // Simulate cross-partition communication failures
         for (std::uint64_t node_a : partition_a) {
             for (std::uint64_t node_b : partition_b) {
-                auto error_msg = "Network is unreachable";
+                const auto* error_msg = "Network is unreachable";
                 auto classification = handler.classify_error(std::runtime_error(error_msg));
                 split_errors.push_back(classification);
             }

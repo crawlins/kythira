@@ -226,10 +226,18 @@ auto main() -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_coap_transport_basic_usage()) failed_scenarios++;
-    if (!test_rpc_communication()) failed_scenarios++;
-    if (!test_error_handling()) failed_scenarios++;
-    if (!test_configuration_options()) failed_scenarios++;
+    if (!test_coap_transport_basic_usage()) {
+        failed_scenarios++;
+    }
+    if (!test_rpc_communication()) {
+        failed_scenarios++;
+    }
+    if (!test_error_handling()) {
+        failed_scenarios++;
+    }
+    if (!test_configuration_options()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n" << std::string(60, '=') << "\n";

@@ -174,8 +174,8 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, *boost::unit_test::timeou
         std::this_thread::sleep_for(election_timeout_max + std::chrono::milliseconds{200});
 
         // Trigger election timeouts
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->check_election_timeout();
+        for (const auto& node : nodes) {
+            node->check_election_timeout();
         }
 
         // Wait for election to complete
@@ -183,17 +183,17 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, *boost::unit_test::timeou
 
         // Find the leader
         node_type* leader = nullptr;
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (nodes[i]->is_leader()) {
-                leader = nodes[i].get();
+        for (const auto& node : nodes) {
+            if (node->is_leader()) {
+                leader = node.get();
                 break;
             }
         }
 
         // If no leader elected, skip this iteration
         if (leader == nullptr) {
-            for (std::size_t i = 0; i < nodes.size(); ++i) {
-                nodes[i]->stop();
+            for (const auto& node : nodes) {
+                node->stop();
             }
             continue;
         }
@@ -274,8 +274,8 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, *boost::unit_test::timeou
         // Additional verification: Submit one more command to ensure the system
         // is still responsive after batch application
         try {
-            std::vector<std::byte> verification_command{std::byte{0xDD},  // Verification marker
-                                                        std::byte{iteration & 0xFF}};
+            std::vector<std::byte> verification_command{std::byte{0xDD},
+                                                        static_cast<std::byte>(iteration & 0xFF)};
             auto verification_future = leader->submit_command(verification_command, commit_timeout);
 
             // Send heartbeats to commit the verification command
@@ -294,8 +294,8 @@ BOOST_AUTO_TEST_CASE(property_batch_entry_application, *boost::unit_test::timeou
         }
 
         // Clean up
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
-            nodes[i]->stop();
+        for (const auto& node : nodes) {
+            node->stop();
         }
 
         // Verify we had some successful submissions

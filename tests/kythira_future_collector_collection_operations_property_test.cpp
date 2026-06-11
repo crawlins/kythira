@@ -212,7 +212,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         std::vector<bool> should_succeed;
 
         for (std::size_t i = 0; i < collection_size; ++i) {
-            bool success = (static_cast<double>(gen()) / gen.max()) < success_rate;
+            bool success = (static_cast<double>(gen()) / std::mt19937::max()) < success_rate;
             should_succeed.push_back(success);
 
             if (success) {
@@ -405,9 +405,9 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         auto exact_results = exact_n_result.get();
 
         BOOST_CHECK_EQUAL(exact_results.size(), 4);
-        for (std::size_t i = 0; i < exact_results.size(); ++i) {
-            std::size_t index = std::get<0>(exact_results[i]);
-            Try<int> try_value = std::get<1>(exact_results[i]);
+        for (auto& exact_result : exact_results) {
+            std::size_t index = std::get<0>(exact_result);
+            Try<int> try_value = std::get<1>(exact_result);
 
             BOOST_CHECK(index < 4);
             BOOST_CHECK(try_value.hasValue());

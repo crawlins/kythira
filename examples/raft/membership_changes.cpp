@@ -203,9 +203,15 @@ auto main(int argc, char* argv[]) -> int {
 
     int failed_scenarios = 0;
 
-    if (!test_cluster_initialization()) failed_scenarios++;
-    if (!test_membership_manager()) failed_scenarios++;
-    if (!test_cluster_configuration()) failed_scenarios++;
+    if (!test_cluster_initialization()) {
+        failed_scenarios++;
+    }
+    if (!test_membership_manager()) {
+        failed_scenarios++;
+    }
+    if (!test_cluster_configuration()) {
+        failed_scenarios++;
+    }
 
     std::cout << "\n========================================\n";
     if (failed_scenarios > 0) {

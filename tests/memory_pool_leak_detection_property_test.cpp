@@ -69,7 +69,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy,
 
         // Ensure pool size is multiple of block size
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         // Create pool with leak detection enabled
         memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
@@ -86,7 +88,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_accuracy,
             std::string context = "property_test_" + std::to_string(i);
             void* ptr = pool.allocate(alloc_size, context);
 
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
                 contexts.push_back(context);
             }
@@ -146,7 +148,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
                          medium_leak_threshold);
@@ -157,7 +161,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification,
         std::vector<void*> long_lived;
         for (std::size_t i = 0; i < alloc_count / 2; ++i) {
             void* ptr = pool.allocate(block_size / 2, "long_lived");
-            if (ptr) {
+            if (ptr != nullptr) {
                 long_lived.push_back(ptr);
             }
         }
@@ -169,7 +173,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_selective_identification,
         std::vector<void*> short_lived;
         for (std::size_t i = 0; i < alloc_count / 2; ++i) {
             void* ptr = pool.allocate(block_size / 2, "short_lived");
-            if (ptr) {
+            if (ptr != nullptr) {
                 short_lived.push_back(ptr);
             }
         }
@@ -228,7 +232,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_multithreaded_accuracy,
                 std::string context = "thread_" + std::to_string(t);
                 for (int i = 0; i < 5; ++i) {
                     void* ptr = pool.allocate(block_size / 2, context);
-                    if (ptr) {
+                    if (ptr != nullptr) {
                         thread_allocations[t].push_back(ptr);
                         total_allocations++;
                     }
@@ -290,7 +294,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
                          short_leak_threshold);
@@ -301,7 +307,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2, "test_allocation");
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -349,7 +355,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_deallocation_tracking,
 
         // Clean up remaining allocations
         for (std::size_t i = dealloc_count; i < allocations.size(); ++i) {
-            if (allocations[i]) {
+            if (allocations[i] != nullptr) {
                 pool.deallocate(allocations[i]);
             }
         }
@@ -376,7 +382,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_configuration,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         // Generate random threshold between 1 and 3 seconds
         std::uniform_int_distribution<int> threshold_dist(1, 3);
@@ -390,7 +398,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_threshold_configuration,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2, "threshold_test");
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -440,7 +448,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         std::size_t max_blocks = pool_size / block_size;
         std::size_t alloc_count = random_allocation_count(max_blocks);
@@ -452,7 +462,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence,
 
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool_enabled.allocate(block_size / 2, "enabled_test");
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocs_enabled.push_back(ptr);
             }
         }
@@ -464,7 +474,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_mode_independence,
 
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool_disabled.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocs_disabled.push_back(ptr);
             }
         }
@@ -545,7 +555,7 @@ BOOST_AUTO_TEST_CASE(property_leak_prevention_through_detection,
             std::size_t alloc_count = std::min(max_blocks / 4, std::size_t{10});
             for (std::size_t i = 0; i < alloc_count; ++i) {
                 void* ptr = pool.allocate(block_size / 2, "cycle_" + std::to_string(cycle));
-                if (ptr) {
+                if (ptr != nullptr) {
                     allocations.push_back(ptr);
                 }
             }
@@ -585,7 +595,7 @@ BOOST_AUTO_TEST_CASE(property_leak_prevention_through_detection,
 
         // Clean up any remaining allocations
         for (void* ptr : allocations) {
-            if (ptr) {
+            if (ptr != nullptr) {
                 pool.deallocate(ptr);
             }
         }
@@ -608,7 +618,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
                          short_leak_threshold);
@@ -622,7 +634,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_size_accuracy,
             std::size_t requested_size = random_allocation_size(block_size);
             void* ptr = pool.allocate(requested_size, "size_test");
 
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back({ptr, requested_size});
             }
         }
@@ -680,7 +692,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_thread_safety,
         std::vector<void*> allocations;
         for (int i = 0; i < 20; ++i) {
             void* ptr = pool.allocate(block_size / 2, "concurrent_test");
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -762,7 +774,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact,
         auto start_disabled = std::chrono::steady_clock::now();
         for (int i = 0; i < operations; ++i) {
             void* ptr = pool_disabled.allocate(block_size / 2);
-            if (ptr) {
+            if (ptr != nullptr) {
                 pool_disabled.deallocate(ptr);
             }
         }
@@ -777,7 +789,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact,
         auto start_enabled = std::chrono::steady_clock::now();
         for (int i = 0; i < operations; ++i) {
             void* ptr = pool_enabled.allocate(block_size / 2, "perf_test");
-            if (ptr) {
+            if (ptr != nullptr) {
                 pool_enabled.deallocate(ptr);
             }
         }
@@ -790,15 +802,15 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_performance_impact,
         BOOST_CHECK_GT(duration_enabled.count(), 0);
 
         // Property: Overhead should be reasonable (less than 10x)
-        double overhead_ratio =
-            static_cast<double>(duration_enabled.count()) / duration_disabled.count();
+        double overhead_ratio = static_cast<double>(duration_enabled.count()) /
+                                static_cast<double>(duration_disabled.count());
         BOOST_CHECK_LT(overhead_ratio, 10.0);
 
         // Property: Leak detection should still work correctly after performance test
         std::vector<void*> test_allocs;
         for (int i = 0; i < 5; ++i) {
             void* ptr = pool_enabled.allocate(block_size / 2, "final_test");
-            if (ptr) {
+            if (ptr != nullptr) {
                 test_allocs.push_back(ptr);
             }
         }
@@ -832,7 +844,9 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset,
         std::size_t block_size = random_block_size();
 
         pool_size = (pool_size / block_size) * block_size;
-        if (pool_size == 0) continue;
+        if (pool_size == 0) {
+            continue;
+        }
 
         memory_pool pool(pool_size, block_size, std::chrono::seconds{0}, true,
                          short_leak_threshold);
@@ -843,7 +857,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset,
         std::vector<void*> allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2, "pre_reset");
-            if (ptr) {
+            if (ptr != nullptr) {
                 allocations.push_back(ptr);
             }
         }
@@ -866,7 +880,7 @@ BOOST_AUTO_TEST_CASE(property_leak_detection_after_reset,
         std::vector<void*> new_allocations;
         for (std::size_t i = 0; i < alloc_count; ++i) {
             void* ptr = pool.allocate(block_size / 2, "post_reset");
-            if (ptr) {
+            if (ptr != nullptr) {
                 new_allocations.push_back(ptr);
             }
         }

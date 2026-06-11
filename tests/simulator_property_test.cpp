@@ -573,8 +573,8 @@ BOOST_AUTO_TEST_CASE(property_send_does_not_guarantee_delivery) {
     constexpr std::size_t message_count = 200;  // Send many messages
 
     // Generate addresses
-    auto addr1 = "sender";
-    auto addr2 = "receiver";
+    const auto* addr1 = "sender";
+    const auto* addr2 = "receiver";
 
     // Create simulator with low reliability edge
     TestNetworkSimulator sim;

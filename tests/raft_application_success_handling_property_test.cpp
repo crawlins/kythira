@@ -182,9 +182,9 @@ BOOST_AUTO_TEST_CASE(property_application_success_handling, *boost::unit_test::t
 
         // Additional verification: applied index should match log index for each entry
         auto applications = tracker.get_applications();
-        for (std::size_t i = 0; i < applications.size(); ++i) {
+        for (auto& application : applications) {
             BOOST_CHECK_MESSAGE(
-                applications[i].applied_index_after == applications[i].log_index,
+                application.applied_index_after == application.log_index,
                 "Applied index should be updated to match the log index of the applied entry");
         }
 

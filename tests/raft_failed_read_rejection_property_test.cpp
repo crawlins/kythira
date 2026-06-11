@@ -51,7 +51,9 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
 
         // Generate random cluster size (odd numbers for clear majority)
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number
+        }
 
         const std::size_t majority_count = (cluster_size / 2) + 1;
         const std::size_t follower_count = cluster_size - 1;                   // Exclude leader
@@ -62,7 +64,7 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
                            << ", required successful followers: " << required_successful_followers);
 
         // Create scenarios that should cause read rejection
-        const int scenario = gen() % 3;
+        const int scenario = static_cast<int>(gen() % 3);
 
         if (scenario == 0) {
             // Scenario 1: Insufficient successful responses (network failures)
@@ -201,7 +203,7 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
 
             for (std::size_t i = 0; i < follower_count; ++i) {
                 const int delay_ms = delay_dist(gen);
-                const int response_type = gen() % 3;
+                const int response_type = static_cast<int>(gen() % 3);
 
                 if (response_type == 0 && successful_responses < max_successes) {
                     // Successful response (limited)

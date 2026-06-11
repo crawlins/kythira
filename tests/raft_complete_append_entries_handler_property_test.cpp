@@ -180,7 +180,9 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, *boost::unit_te
     // Test conflict scenarios (different terms)
     for (std::size_t i = 0; i < conflict_iterations; ++i) {
         auto entry_index = generate_random_log_index(rng);
-        if (entry_index == 0) entry_index = 1;  // Ensure valid index
+        if (entry_index == 0) {
+            entry_index = 1;  // Ensure valid index
+        }
 
         auto existing_term = generate_random_term(rng);
         // Ensure different term for conflict
@@ -213,7 +215,9 @@ BOOST_AUTO_TEST_CASE(property_conflict_detection_and_resolution, *boost::unit_te
     // Test no-conflict scenarios (same terms)
     for (std::size_t i = 0; i < no_conflict_iterations; ++i) {
         auto entry_index = generate_random_log_index(rng);
-        if (entry_index == 0) entry_index = 1;  // Ensure valid index
+        if (entry_index == 0) {
+            entry_index = 1;  // Ensure valid index
+        }
 
         auto existing_term = generate_random_term(rng);
         auto new_term = existing_term;  // Same term - no conflict

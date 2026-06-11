@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Pre-commit hook: check code formatting and enforce the coverage ratchet.
+# Pre-commit hook: format check, static analysis, and coverage ratchet.
 #
-# Step 1 — clang-format (fast, staged files only):
-#   Rejects the commit if any staged .cpp/.hpp file differs from its formatted form.
+# Step 1 — clang-format (fast, staged *.cpp/*.hpp):
+#   Rejects the commit if any staged file differs from its formatted form.
 #   Fix: clang-format -i <file>  or  cmake --build build --target format
 #
-# Step 2 — coverage ratchet (slow, full instrumented build + test run):
+# Step 2 — clang-tidy (slow, opt-in, staged *.cpp only):
+#   Runs static analysis on staged translation units.
+#   Enable: TIDY_CHECK=1 git commit -m "..."
+#   Fix:    cmake --build build --target static-analysis-fix
+#
+# Step 3 — coverage ratchet (slow, full instrumented build + test run):
 #   Builds the instrumented tree, runs a label-filtered test subset, measures
 #   line coverage, and rejects the commit if coverage would fall below the value
 #   stored in coverage_floor.txt.
 #
 # Escape hatches for WIP commits:
-#   SKIP_FORMAT_CHECK=1 git commit -m "..."    (skip format check only)
+#   SKIP_FORMAT_CHECK=1   git commit -m "..."  (skip format check only)
+#   SKIP_TIDY_CHECK=1     git commit -m "..."  (hard-skip tidy even if TIDY_CHECK=1)
 #   SKIP_COVERAGE_CHECK=1 git commit -m "..."  (skip coverage check only)
-#   SKIP_FORMAT_CHECK=1 SKIP_COVERAGE_CHECK=1 git commit -m "..."  (skip both)
 #
 # To run the full test suite for coverage (slow):
 #   COVERAGE_FULL_SUITE=1 git commit -m "..."
@@ -60,6 +65,49 @@ else
                 exit 1
             fi
             echo "  [format] ${N} file(s) OK"
+        fi
+    fi
+fi
+
+# ── Static analysis / clang-tidy (staged .cpp files, opt-in) ─────────────────
+if [[ "${SKIP_TIDY_CHECK:-0}" == "1" ]]; then
+    echo "  [tidy] Skipped (SKIP_TIDY_CHECK=1)"
+elif [[ "${TIDY_CHECK:-0}" != "1" ]]; then
+    echo "  [tidy] Skipped (set TIDY_CHECK=1 to enable)"
+else
+    CLANG_TIDY=$(command -v clang-tidy 2>/dev/null \
+        || command -v "${HOME}/.local/bin/clang-tidy" 2>/dev/null \
+        || true)
+
+    if [[ -z "$CLANG_TIDY" ]]; then
+        echo "  [tidy] WARNING: clang-tidy not found — skipping."
+        echo "         Install with: apt install clang-tidy"
+    elif [[ ! -f "${REPO}/build/compile_commands.json" ]]; then
+        echo "  [tidy] WARNING: build/compile_commands.json not found — skipping."
+        echo "         Run: cmake -S . -B build <prefix-path-flags>"
+    else
+        STAGED_CPP=$(git diff --cached --name-only --diff-filter=ACMR \
+                     | grep -E '\.cpp$' || true)
+
+        if [[ -n "$STAGED_CPP" ]]; then
+            TIDY_FAILED=0
+            for f in $STAGED_CPP; do
+                if ! "$CLANG_TIDY" -p "${REPO}/build" "$f" 2>/dev/null; then
+                    TIDY_FAILED=1
+                fi
+            done
+
+            N=$(echo "$STAGED_CPP" | wc -w)
+            if [[ "$TIDY_FAILED" == "1" ]]; then
+                echo ""
+                echo "  [tidy] FAILED — fix findings above, or suppress with:"
+                echo "    // NOLINT(check-name)  at the end of the offending line"
+                echo "  Run full analysis: cmake --build build --target static-analysis"
+                echo "  Apply auto-fixes:  cmake --build build --target static-analysis-fix"
+                echo "  (To skip: SKIP_TIDY_CHECK=1 git commit)"
+                exit 1
+            fi
+            echo "  [tidy] ${N} file(s) OK"
         fi
     fi
 fi

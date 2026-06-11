@@ -48,7 +48,9 @@ public:
         : _config(config), _current_timeout(config.min_timeout) {}
 
     auto record_response_time(std::chrono::milliseconds response_time) -> void {
-        if (!_config.enabled) return;
+        if (!_config.enabled) {
+            return;
+        }
 
         _response_times.push_back(response_time);
 
@@ -63,9 +65,11 @@ public:
         }
     }
 
-    auto get_current_timeout() const -> std::chrono::milliseconds { return _current_timeout; }
+    [[nodiscard]] auto get_current_timeout() const -> std::chrono::milliseconds {
+        return _current_timeout;
+    }
 
-    auto get_average_response_time() const -> std::chrono::milliseconds {
+    [[nodiscard]] auto get_average_response_time() const -> std::chrono::milliseconds {
         if (_response_times.empty()) {
             return std::chrono::milliseconds{0};
         }
@@ -83,8 +87,8 @@ public:
 private:
     auto adapt_timeout() -> void {
         auto avg_response_time = get_average_response_time();
-        auto new_timeout = std::chrono::milliseconds{
-            static_cast<long long>(avg_response_time.count() * _config.adaptation_factor)};
+        auto new_timeout = std::chrono::milliseconds{static_cast<long long>(
+            static_cast<double>(avg_response_time.count()) * _config.adaptation_factor)};
 
         // Clamp to configured bounds
         new_timeout = std::max(new_timeout, _config.min_timeout);
@@ -144,8 +148,9 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test,
         BOOST_CHECK_EQUAL(manager.get_current_timeout(), min_timeout_val);
 
         // Simulate network conditions and verify adaptation
-        std::uniform_int_distribution<int> response_time_dist(min_timeout_val.count() / 2,
-                                                              max_timeout_val.count() / 2);
+        std::uniform_int_distribution<int> response_time_dist(
+            static_cast<int>(min_timeout_val.count() / 2),
+            static_cast<int>(max_timeout_val.count() / 2));
 
         // Record enough response times to trigger adaptation
         for (std::size_t i = 0; i < sample_window_size; ++i) {
@@ -162,8 +167,8 @@ BOOST_AUTO_TEST_CASE(raft_adaptive_timeout_behavior_property_test,
         BOOST_CHECK_LE(adapted_timeout, max_timeout_val);
 
         // Property: Adapted timeout should be related to average response time by adaptation factor
-        auto expected_timeout = std::chrono::milliseconds{
-            static_cast<long long>(avg_response_time.count() * adaptation_factor)};
+        auto expected_timeout = std::chrono::milliseconds{static_cast<long long>(
+            static_cast<double>(avg_response_time.count()) * adaptation_factor)};
         expected_timeout = std::max(expected_timeout, min_timeout_val);
         expected_timeout = std::min(expected_timeout, max_timeout_val);
 

@@ -310,10 +310,18 @@ auto main() -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_concept_satisfaction()) failed_scenarios++;
-    if (!test_network_simulator_with_custom_types()) failed_scenarios++;
-    if (!test_node_operations_with_custom_types()) failed_scenarios++;
-    if (!test_comparison_with_default_types()) failed_scenarios++;
+    if (!test_concept_satisfaction()) {
+        failed_scenarios++;
+    }
+    if (!test_network_simulator_with_custom_types()) {
+        failed_scenarios++;
+    }
+    if (!test_node_operations_with_custom_types()) {
+        failed_scenarios++;
+    }
+    if (!test_comparison_with_default_types()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n" << std::string(60, '=') << "\n";
@@ -321,9 +329,8 @@ auto main() -> int {
         std::cout << "  ✓ All scenarios passed! Custom types work correctly.\n";
         std::cout << std::string(60, '=') << "\n";
         return 0;
-    } else {
-        std::cout << "  ✗ " << failed_scenarios << " scenario(s) failed\n";
-        std::cout << std::string(60, '=') << "\n";
-        return 1;
     }
+    std::cout << "  ✗ " << failed_scenarios << " scenario(s) failed\n";
+    std::cout << std::string(60, '=') << "\n";
+    return 1;
 }

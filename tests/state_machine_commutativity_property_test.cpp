@@ -14,13 +14,15 @@ constexpr std::size_t num_commands = 50;
 class test_kv_state_machine {
 public:
     auto apply(const std::vector<std::byte>& command, std::uint64_t) -> std::vector<std::byte> {
-        if (command.empty()) return {};
+        if (command.empty()) {
+            return {};
+        }
 
         auto cmd_type = static_cast<std::uint8_t>(command[0]);
         std::size_t offset = 1;
 
         // Extract key
-        std::uint32_t key_len;
+        std::uint32_t key_len = 0;
         std::memcpy(&key_len, command.data() + offset, sizeof(key_len));
         offset += sizeof(key_len);
 
@@ -30,20 +32,21 @@ public:
         if (cmd_type == 0) {  // GET
             auto it = _store.find(key);
             if (it != _store.end()) {
-                return std::vector<std::byte>(
-                    reinterpret_cast<const std::byte*>(it->second.data()),
-                    reinterpret_cast<const std::byte*>(it->second.data() + it->second.size()));
+                return {reinterpret_cast<const std::byte*>(it->second.data()),
+                        reinterpret_cast<const std::byte*>(it->second.data() + it->second.size())};
             }
             return {};
-        } else if (cmd_type == 1) {  // SET
-            std::uint32_t val_len;
+        }
+        if (cmd_type == 1) {  // SET
+            std::uint32_t val_len = 0;
             std::memcpy(&val_len, command.data() + offset, sizeof(val_len));
             offset += sizeof(val_len);
 
             std::string value(reinterpret_cast<const char*>(command.data() + offset), val_len);
             _store[key] = value;
             return {};
-        } else if (cmd_type == 2) {  // DELETE
+        }
+        if (cmd_type == 2) {  // DELETE
             _store.erase(key);
             return {};
         }
@@ -51,7 +54,7 @@ public:
         return {};
     }
 
-    auto get_state() const -> std::vector<std::byte> {
+    [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
         std::vector<std::byte> state;
         for (const auto& [key, value] : _store) {
             state.insert(state.end(), reinterpret_cast<const std::byte*>(key.data()),

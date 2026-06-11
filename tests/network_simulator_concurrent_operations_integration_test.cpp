@@ -77,15 +77,21 @@ BOOST_AUTO_TEST_CASE(concurrent_connectionless_operations, *boost::unit_test::ti
             std::string sender_id = node_ids[sender_idx];
 
             for (std::size_t target_idx = 0; target_idx < num_nodes; ++target_idx) {
-                if (sender_idx == target_idx) continue;  // Don't send to self
+                if (sender_idx == target_idx) {
+                    continue;  // Don't send to self
+                }
 
                 std::string target_id = node_ids[target_idx];
 
                 for (std::size_t msg_num = 0; msg_num < messages_per_node; ++msg_num) {
                     try {
                         // Create unique message
-                        std::string message_content = test_message_prefix + sender_id + " to " +
-                                                      target_id + " #" + std::to_string(msg_num);
+                        std::string message_content = test_message_prefix;
+                        message_content += sender_id;
+                        message_content += " to ";
+                        message_content += target_id;
+                        message_content += " #";
+                        message_content += std::to_string(msg_num);
 
                         std::vector<std::byte> payload;
                         for (char c : message_content) {
@@ -294,10 +300,10 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
                                    if (connection != nullptr && connection->is_open()) {
                                        successful_connections.fetch_add(1);
                                        return connection;
-                                   } else {
-                                       failed_connections.fetch_add(1);
-                                       return nullptr;
                                    }
+                                   failed_connections.fetch_add(1);
+                                   return nullptr;
+
                                } catch (const std::exception&) {
                                    failed_connections.fetch_add(1);
                                    return nullptr;
@@ -313,21 +319,20 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
     std::vector<std::future<std::shared_ptr<DefaultNetworkTypes::connection_type>>> accept_futures;
 
     // Each server accepts connections concurrently
-    for (std::size_t server_idx = 0; server_idx < listeners.size(); ++server_idx) {
+    for (auto& listener : listeners) {
         // Each server expects connections from all clients
         for (std::size_t client_idx = 0; client_idx < client_nodes.size(); ++client_idx) {
             auto accept_task = std::async(
-                std::launch::async,
-                [&, server_idx]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
+                std::launch::async, [&]() -> std::shared_ptr<DefaultNetworkTypes::connection_type> {
                     try {
-                        auto accept_future = listeners[server_idx]->accept(test_timeout);
+                        auto accept_future = listener->accept(test_timeout);
                         auto connection = std::move(accept_future).get();
 
                         if (connection != nullptr && connection->is_open()) {
                             return connection;
-                        } else {
-                            return nullptr;
                         }
+                        return nullptr;
+
                     } catch (const std::exception&) {
                         return nullptr;
                     }
@@ -389,10 +394,10 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
     }
 
     // Concurrent reads from servers
-    for (std::size_t i = 0; i < server_connections.size(); ++i) {
-        auto read_task = std::async(std::launch::async, [&, i]() {
+    for (auto& server_connection : server_connections) {
+        auto read_task = std::async(std::launch::async, [&]() {
             try {
-                auto read_future = server_connections[i]->read(test_timeout);
+                auto read_future = server_connection->read(test_timeout);
                 auto data = std::move(read_future).get();
 
                 if (!data.empty()) {

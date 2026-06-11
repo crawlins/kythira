@@ -28,7 +28,7 @@ using LogIndex = std::uint64_t;
 using Term = std::uint64_t;
 
 // Enum to represent follower availability states
-enum class FollowerAvailability {
+enum class FollowerAvailability : std::uint8_t {
     available,
     unavailable
 };
@@ -160,7 +160,7 @@ public:
 
     // Check if a follower is marked as unavailable
     bool is_follower_unavailable(NodeId follower_id) const {
-        return _unavailable_followers.count(follower_id) > 0;
+        return _unavailable_followers.contains(follower_id);
     }
 
     // Simulate leader proposing an entry (for testing purposes)
@@ -241,7 +241,9 @@ BOOST_AUTO_TEST_CASE(raft_unresponsive_follower_handling_property_test,
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number for clear majority
+        }
 
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t entry_count = entry_count_dist(gen);

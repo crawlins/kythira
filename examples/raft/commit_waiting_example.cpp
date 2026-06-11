@@ -154,21 +154,19 @@ auto test_basic_commit_waiting() -> bool {
             if (result_str == test_result_1) {
                 std::cout << "  ✓ Basic commit waiting completed successfully\n";
                 return true;
-            } else {
-                std::cerr << std::format("  ✗ Failed: Unexpected result '{}'\n", result_str);
-                return false;
             }
-        } else {
-            std::cerr << "  ✗ Failed: Operation not completed or completed with error\n";
-            if (operation_error) {
-                try {
-                    std::rethrow_exception(operation_error);
-                } catch (const std::exception& e) {
-                    std::cerr << std::format("    Error: {}\n", e.what());
-                }
-            }
+            std::cerr << std::format("  ✗ Failed: Unexpected result '{}'\n", result_str);
             return false;
         }
+        std::cerr << "  ✗ Failed: Operation not completed or completed with error\n";
+        if (operation_error) {
+            try {
+                std::rethrow_exception(operation_error);
+            } catch (const std::exception& e) {
+                std::cerr << std::format("    Error: {}\n", e.what());
+            }
+        }
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -233,10 +231,9 @@ auto test_application_before_fulfillment() -> bool {
             std::cout << std::format("    Future fulfilled after {}ms\n", total_elapsed.count());
             std::cout << "  ✓ State machine application occurred before future fulfillment\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Operation not completed or state machine not applied\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Operation not completed or state machine not applied\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -297,10 +294,10 @@ auto test_timeout_handling() -> bool {
                 if (e.get_entry_index() == log_index && e.get_timeout() == short_timeout) {
                     std::cout << "  ✓ Timeout handling working correctly\n";
                     return true;
-                } else {
-                    std::cerr << "  ✗ Failed: Incorrect timeout exception details\n";
-                    return false;
                 }
+                std::cerr << "  ✗ Failed: Incorrect timeout exception details\n";
+                return false;
+
             } catch (const std::exception& e) {
                 std::cerr << std::format("  ✗ Failed: Unexpected exception type: {}\n", e.what());
                 return false;
@@ -378,10 +375,10 @@ auto test_leadership_loss_rejection() -> bool {
                 if (e.get_old_term() == leader_term && e.get_new_term() == new_term) {
                     std::cout << "  ✓ Leadership loss rejection working correctly\n";
                     return true;
-                } else {
-                    std::cerr << "  ✗ Failed: Incorrect leadership loss exception details\n";
-                    return false;
                 }
+                std::cerr << "  ✗ Failed: Incorrect leadership loss exception details\n";
+                return false;
+
             } catch (const std::exception& e) {
                 std::cerr << std::format("  ✗ Failed: Unexpected exception type: {}\n", e.what());
                 return false;
@@ -479,25 +476,27 @@ auto test_concurrent_operations_ordering() -> bool {
                     std::cout << "    Completion order: ";
                     for (std::size_t i = 0; i < completion_order.size(); ++i) {
                         std::cout << completion_order[i];
-                        if (i < completion_order.size() - 1) std::cout << ", ";
+                        if (i < completion_order.size() - 1) {
+                            std::cout << ", ";
+                        }
                     }
                     std::cout << "\n";
                     return true;
-                } else {
-                    std::cerr << "  ✗ Failed: Operations not completed in log order\n";
-                    std::cout << "    Completion order: ";
-                    for (std::size_t i = 0; i < completion_order.size(); ++i) {
-                        std::cout << completion_order[i];
-                        if (i < completion_order.size() - 1) std::cout << ", ";
-                    }
-                    std::cout << "\n";
-                    return false;
                 }
-            } else {
-                std::cerr << std::format("  ✗ Failed: Expected {} completions, got {}\n",
-                                         concurrent_operations_count, completion_order.size());
+                std::cerr << "  ✗ Failed: Operations not completed in log order\n";
+                std::cout << "    Completion order: ";
+                for (std::size_t i = 0; i < completion_order.size(); ++i) {
+                    std::cout << completion_order[i];
+                    if (i < completion_order.size() - 1) {
+                        std::cout << ", ";
+                    }
+                }
+                std::cout << "\n";
                 return false;
             }
+            std::cerr << std::format("  ✗ Failed: Expected {} completions, got {}\n",
+                                     concurrent_operations_count, completion_order.size());
+            return false;
         }
 
     } catch (const std::exception& e) {
@@ -553,10 +552,10 @@ auto test_state_machine_failure_handling() -> bool {
                 if (std::string(e.what()) == "State machine application failed") {
                     std::cout << "  ✓ State machine failure error propagation working correctly\n";
                     return true;
-                } else {
-                    std::cerr << "  ✗ Failed: Unexpected error message\n";
-                    return false;
                 }
+                std::cerr << "  ✗ Failed: Unexpected error message\n";
+                return false;
+
             } catch (const std::exception& e) {
                 std::cerr << std::format("  ✗ Failed: Unexpected exception type: {}\n", e.what());
                 return false;
@@ -591,12 +590,24 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_basic_commit_waiting()) failed_scenarios++;
-    if (!test_application_before_fulfillment()) failed_scenarios++;
-    if (!test_timeout_handling()) failed_scenarios++;
-    if (!test_leadership_loss_rejection()) failed_scenarios++;
-    if (!test_concurrent_operations_ordering()) failed_scenarios++;
-    if (!test_state_machine_failure_handling()) failed_scenarios++;
+    if (!test_basic_commit_waiting()) {
+        failed_scenarios++;
+    }
+    if (!test_application_before_fulfillment()) {
+        failed_scenarios++;
+    }
+    if (!test_timeout_handling()) {
+        failed_scenarios++;
+    }
+    if (!test_leadership_loss_rejection()) {
+        failed_scenarios++;
+    }
+    if (!test_concurrent_operations_ordering()) {
+        failed_scenarios++;
+    }
+    if (!test_state_machine_failure_handling()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n========================================\n";

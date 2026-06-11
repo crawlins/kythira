@@ -47,10 +47,9 @@ template<kythira::try_type<int> TryType>
 auto extract_value_safely(const TryType& try_obj, int default_value) -> int {
     if (try_obj.hasValue()) {
         return try_obj.value();
-    } else {
-        std::cerr << "Try contains exception, using default value\n";
-        return default_value;
     }
+    std::cerr << "Try contains exception, using default value\n";
+    return default_value;
 }
 
 auto demonstrate_try_concept() -> void {
@@ -81,15 +80,14 @@ template<kythira::future<int> FutureType> auto process_async_result(FutureType f
     if (future.isReady()) {
         std::cout << "Future is ready, getting result immediately\n";
         return std::move(future).get();
-    } else {
-        std::cout << "Future not ready, adding continuation\n";
-        return std::move(future)
-            .thenValue([](int value) {
-                std::cout << "Continuation executed with value: " << value << "\n";
-                return value * example_multiplier;
-            })
-            .get();
     }
+    std::cout << "Future not ready, adding continuation\n";
+    return std::move(future)
+        .thenValue([](int value) {
+            std::cout << "Continuation executed with value: " << value << "\n";
+            return value * example_multiplier;
+        })
+        .get();
 }
 
 auto demonstrate_future_concept() -> void {

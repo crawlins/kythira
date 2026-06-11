@@ -36,7 +36,7 @@ class default_membership_manager {
 public:
     // Validate a new node for joining the cluster
     // Basic implementation accepts all nodes
-    auto validate_new_node(const NodeId& node) -> bool {
+    [[nodiscard]] auto validate_new_node(const NodeId& node) -> bool {
         // In a production implementation, this could check:
         // - Node ID format and validity
         // - Whether the node is already in the cluster
@@ -47,7 +47,7 @@ public:
 
     // Authenticate a node
     // Basic implementation accepts all nodes
-    auto authenticate_node(const NodeId& node) -> bool {
+    [[nodiscard]] auto authenticate_node(const NodeId& node) -> bool {
         // In a production implementation, this could check:
         // - Cryptographic credentials
         // - Access control lists

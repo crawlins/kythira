@@ -186,7 +186,9 @@ BOOST_AUTO_TEST_CASE(test_raii_guard_move, *boost::unit_test::timeout(test_timeo
     // Move construct
     memory_pool_guard guard2(std::move(guard1));
     BOOST_CHECK(guard2.get() == ptr1);
-    BOOST_CHECK(guard1.get() == nullptr);  // Original should be null
+    BOOST_CHECK(guard1.get() ==
+                nullptr);  // NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+                           // - intentional move-semantics test
 
     auto metrics = pool.get_metrics();
     BOOST_CHECK_EQUAL(metrics.allocation_count, 1);
@@ -347,7 +349,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_reset_and_allocation,
     threads.emplace_back([&pool, &stop]() {
         while (!stop) {
             void* ptr = pool.allocate(test_allocation_size);
-            if (ptr) {
+            if (ptr != nullptr) {
                 pool.deallocate(ptr);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));

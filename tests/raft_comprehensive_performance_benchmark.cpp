@@ -67,20 +67,20 @@ auto calculate_statistics(std::vector<double> values) -> statistics {
     std::sort(values.begin(), values.end());
 
     double sum = std::accumulate(values.begin(), values.end(), 0.0);
-    double mean = sum / values.size();
+    double mean = sum / static_cast<double>(values.size());
 
     double median = values[values.size() / 2];
     double p50 = median;
-    double p95 = values[static_cast<std::size_t>(values.size() * 0.95)];
-    double p99 = values[static_cast<std::size_t>(values.size() * 0.99)];
-    double p999 = values[static_cast<std::size_t>(values.size() * 0.999)];
+    double p95 = values[static_cast<std::size_t>(static_cast<double>(values.size()) * 0.95)];
+    double p99 = values[static_cast<std::size_t>(static_cast<double>(values.size()) * 0.99)];
+    double p999 = values[static_cast<std::size_t>(static_cast<double>(values.size()) * 0.999)];
     double min = values.front();
     double max = values.back();
 
     double sq_sum = std::accumulate(
         values.begin(), values.end(), 0.0,
         [mean](double acc, double val) { return acc + (val - mean) * (val - mean); });
-    double stddev = std::sqrt(sq_sum / values.size());
+    double stddev = std::sqrt(sq_sum / static_cast<double>(values.size()));
 
     return {mean, median, p50, p95, p99, p999, min, max, stddev, values.size()};
 }
@@ -126,20 +126,24 @@ public:
         }
     }
 
-    auto get_peak_memory() const -> std::size_t {
-        if (snapshots_.empty()) return 0;
+    [[nodiscard]] auto get_peak_memory() const -> std::size_t {
+        if (snapshots_.empty()) {
+            return 0;
+        }
         return std::max_element(
                    snapshots_.begin(), snapshots_.end(),
                    [](const auto& a, const auto& b) { return a.memory_bytes < b.memory_bytes; })
             ->memory_bytes;
     }
 
-    auto get_average_cpu() const -> double {
-        if (snapshots_.empty()) return 0.0;
+    [[nodiscard]] auto get_average_cpu() const -> double {
+        if (snapshots_.empty()) {
+            return 0.0;
+        }
         double sum =
             std::accumulate(snapshots_.begin(), snapshots_.end(), 0.0,
                             [](double acc, const auto& snap) { return acc + snap.cpu_percent; });
-        return sum / snapshots_.size();
+        return sum / static_cast<double>(snapshots_.size());
     }
 
 private:
@@ -191,7 +195,8 @@ BOOST_AUTO_TEST_CASE(benchmark_throughput_single_threaded, *boost::unit_test::ti
     auto end = clock_type::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    double ops_per_second = (operations * 1000.0) / duration.count();
+    double ops_per_second =
+        (static_cast<double>(operations) * 1000.0) / static_cast<double>(duration.count());
 
     BOOST_TEST_MESSAGE("Single-Threaded Throughput:");
     BOOST_TEST_MESSAGE("  Operations: " << operations);
@@ -246,7 +251,8 @@ BOOST_AUTO_TEST_CASE(benchmark_throughput_multi_threaded, *boost::unit_test::tim
     auto end = clock_type::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    double ops_per_second = (total_operations * 1000.0) / duration.count();
+    double ops_per_second =
+        (static_cast<double>(total_operations) * 1000.0) / static_cast<double>(duration.count());
 
     BOOST_TEST_MESSAGE("Multi-Threaded Throughput (" << num_threads << " threads):");
     BOOST_TEST_MESSAGE("  Operations: " << total_operations);
@@ -292,8 +298,10 @@ BOOST_AUTO_TEST_CASE(benchmark_throughput_batched, *boost::unit_test::timeout(12
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
     std::size_t total_operations = batches * batch_size;
-    double ops_per_second = (total_operations * 1000.0) / duration.count();
-    double batches_per_second = (batches * 1000.0) / duration.count();
+    double ops_per_second =
+        (static_cast<double>(total_operations) * 1000.0) / static_cast<double>(duration.count());
+    double batches_per_second =
+        (static_cast<double>(batches) * 1000.0) / static_cast<double>(duration.count());
 
     BOOST_TEST_MESSAGE("Batched Throughput (batch size: " << batch_size << "):");
     BOOST_TEST_MESSAGE("  Batches: " << batches);
@@ -538,8 +546,9 @@ BOOST_AUTO_TEST_CASE(benchmark_scalability_concurrent_clients, *boost::unit_test
         auto end = clock_type::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-        double ops_per_second = (total_operations * 1000.0) / duration.count();
-        double ops_per_client = ops_per_second / num_clients;
+        double ops_per_second = (static_cast<double>(total_operations) * 1000.0) /
+                                static_cast<double>(duration.count());
+        double ops_per_client = ops_per_second / static_cast<double>(num_clients);
 
         BOOST_TEST_MESSAGE("\nConcurrent clients: " << num_clients);
         BOOST_TEST_MESSAGE("  Total operations: " << total_operations);
@@ -647,7 +656,8 @@ BOOST_AUTO_TEST_CASE(benchmark_resource_memory_footprint, *boost::unit_test::tim
         // Get snapshot size as proxy for memory usage
         auto snapshot = state_machine.get_state();
         std::size_t snapshot_bytes = snapshot.size();
-        double bytes_per_operation = static_cast<double>(snapshot_bytes) / size;
+        double bytes_per_operation =
+            static_cast<double>(snapshot_bytes) / static_cast<double>(size);
 
         BOOST_TEST_MESSAGE("\nState size: " << size << " operations");
         BOOST_TEST_MESSAGE("  Snapshot size: " << snapshot_bytes << " bytes");
@@ -732,7 +742,8 @@ BOOST_AUTO_TEST_CASE(benchmark_resource_operation_overhead, *boost::unit_test::t
         std::size_t bytes_after = snapshot_after.size();
 
         std::size_t memory_delta = bytes_after - bytes_before;
-        double overhead_ratio = static_cast<double>(memory_delta) / payload_size;
+        double overhead_ratio =
+            static_cast<double>(memory_delta) / static_cast<double>(payload_size);
 
         BOOST_TEST_MESSAGE("\nPayload size: " << payload_size << " bytes");
         BOOST_TEST_MESSAGE("  Memory delta: " << memory_delta << " bytes");
@@ -777,7 +788,8 @@ BOOST_AUTO_TEST_CASE(benchmark_regression_throughput_baseline, *boost::unit_test
     auto end = clock_type::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-    double ops_per_second = (operations * 1000.0) / duration.count();
+    double ops_per_second =
+        (static_cast<double>(operations) * 1000.0) / static_cast<double>(duration.count());
 
     // Define baseline thresholds
     constexpr double min_throughput = 10000.0;      // ops/sec
@@ -942,7 +954,8 @@ BOOST_AUTO_TEST_CASE(benchmark_regression_stability, *boost::unit_test::timeout(
 
         auto end = clock_type::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        double throughput = (operations * 1000.0) / duration.count();
+        double throughput =
+            (static_cast<double>(operations) * 1000.0) / static_cast<double>(duration.count());
         round_throughputs.push_back(throughput);
 
         // Measure average latency for this round
@@ -956,8 +969,8 @@ BOOST_AUTO_TEST_CASE(benchmark_regression_stability, *boost::unit_test::timeout(
             latencies.push_back(static_cast<double>(lat_duration.count()));
         }
 
-        double avg_latency =
-            std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
+        double avg_latency = std::accumulate(latencies.begin(), latencies.end(), 0.0) /
+                             static_cast<double>(latencies.size());
         round_latencies.push_back(avg_latency);
 
         BOOST_TEST_MESSAGE("Round " << (round + 1) << ":");

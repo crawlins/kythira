@@ -441,7 +441,8 @@ BOOST_AUTO_TEST_CASE(wrapper_performance_impact, *boost::unit_test::timeout(60))
     BOOST_TEST_MESSAGE("Wrapper time: " << wrapper_time.count() << " microseconds");
 
     if (folly_time.count() > 0) {
-        double overhead_ratio = static_cast<double>(wrapper_time.count()) / folly_time.count();
+        double overhead_ratio =
+            static_cast<double>(wrapper_time.count()) / static_cast<double>(folly_time.count());
         BOOST_TEST_MESSAGE("Overhead ratio: " << overhead_ratio);
         BOOST_CHECK_LE(overhead_ratio, 2.0);  // Allow up to 100% overhead
     }

@@ -94,16 +94,14 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::runtime_error(selected_failure));
-            } else {
-                // Success case - AppendEntries succeeded
-                kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                    2,             // term
-                    true,          // success
-                    std::nullopt,  // conflict_term
-                    std::nullopt   // conflict_index
-                };
-                return kythira::FutureFactory::makeFuture(success_response);
-            }
+            }  // Success case - AppendEntries succeeded
+            kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
+                2,             // term
+                true,          // success
+                std::nullopt,  // conflict_term
+                std::nullopt   // conflict_index
+            };
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -198,13 +196,11 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                     std::make_optional<std::uint64_t>(5)   // conflict_index
                 };
                 return kythira::FutureFactory::makeFuture(conflict_response);
-            } else {
-                // Subsequent attempts should not happen for log conflicts
-                BOOST_FAIL("Should not retry on log conflict");
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error("Unexpected retry"));
-            }
+            }  // Subsequent attempts should not happen for log conflicts
+            BOOST_FAIL("Should not retry on log conflict");
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                std::runtime_error("Unexpected retry"));
         };
 
         try {
@@ -242,12 +238,11 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                     std::nullopt   // conflict_index
                 };
                 return kythira::FutureFactory::makeFuture(higher_term_response);
-            } else {
-                BOOST_FAIL("Should not retry on term mismatch");
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error("Unexpected retry"));
             }
+            BOOST_FAIL("Should not retry on term mismatch");
+            return kythira::FutureFactory::makeExceptionalFuture<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
+                std::runtime_error("Unexpected retry"));
         };
 
         try {
@@ -343,11 +338,10 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                 return kythira::FutureFactory::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::runtime_error("Network timeout occurred"));
-            } else {
-                kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
-                    1, true, std::nullopt, std::nullopt};
-                return kythira::FutureFactory::makeFuture(success_response);
             }
+            kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
+                1, true, std::nullopt, std::nullopt};
+            return kythira::FutureFactory::makeFuture(success_response);
         };
 
         try {

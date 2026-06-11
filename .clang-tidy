@@ -1,0 +1,124 @@
+# clang-tidy version: 18.1.3
+#
+# Disabled check rationale (in-line # comments are not valid inside a YAML block scalar):
+#   bugprone-empty-catch                     intentional in many error paths; use NOLINT selectively
+#   bugprone-unchecked-optional-access       we trust .value() where it is checked in context
+#   bugprone-unused-local-non-trivial-variable  RAII lock guards appear "unused" to the analyser
+#   modernize-use-emplace                    push_back is preferred for clarity
+#   performance-inefficient-vector-operation reserve() is an optimisation hint, not a requirement
+#   performance-unnecessary-value-param      by-value params are legitimate in test/example code
+#   readability-make-member-function-const   interface stability; virtual overrides must match base
+#   readability-redundant-member-init        explicit zero-init is a clarity choice, not redundant
+#   cppcoreguidelines-pro-type-reinterpret-cast  required for C-interop (CoAP, memory ops, hashing)
+#   clang-analyzer-deadcode.DeadStores       too noisy in test code; computed variables for assertions
+---
+Checks: >
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-empty-catch,
+  -bugprone-exception-escape,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-unchecked-optional-access,
+  -bugprone-unused-local-non-trivial-variable,
+  modernize-avoid-bind,
+  modernize-deprecated-headers,
+  modernize-loop-convert,
+  modernize-make-shared,
+  modernize-make-unique,
+  modernize-pass-by-value,
+  modernize-redundant-void-arg,
+  modernize-replace-auto-ptr,
+  modernize-return-braced-init-list,
+  modernize-shrink-to-fit,
+  modernize-unary-static-assert,
+  modernize-use-bool-literals,
+  -modernize-use-emplace,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-use-nodiscard,
+  modernize-use-noexcept,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  -modernize-use-trailing-return-type,
+  -modernize-use-default-member-init,
+  performance-*,
+  -performance-avoid-endl,
+  -performance-inefficient-vector-operation,
+  -performance-unnecessary-value-param,
+  readability-braces-around-statements,
+  readability-const-return-type,
+  readability-container-contains,
+  readability-container-size-empty,
+  readability-delete-null-pointer,
+  readability-else-after-return,
+  readability-implicit-bool-conversion,
+  readability-inconsistent-declaration-parameter-name,
+  -readability-make-member-function-const,
+  readability-misplaced-array-index,
+  readability-non-const-parameter,
+  readability-qualified-auto,
+  readability-redundant-access-specifiers,
+  readability-redundant-control-flow,
+  readability-redundant-declaration,
+  -readability-redundant-member-init,
+  readability-redundant-preprocessor,
+  readability-redundant-smartptr-get,
+  readability-redundant-string-cstr,
+  readability-redundant-string-init,
+  readability-simplify-boolean-expr,
+  readability-static-accessed-through-instance,
+  readability-static-definition-in-anonymous-namespace,
+  readability-string-compare,
+  readability-uniqueptr-delete-release,
+  -readability-function-cognitive-complexity,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-named-parameter,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-no-malloc,
+  cppcoreguidelines-prefer-member-initializer,
+  -cppcoreguidelines-pro-type-const-cast,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-static-downcast,
+  cppcoreguidelines-pro-type-union-access,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-interfaces-global-init,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-member-init,
+  -cppcoreguidelines-pro-type-vararg,
+  -cppcoreguidelines-special-member-functions,
+  clang-analyzer-*,
+  -clang-analyzer-cplusplus.InnerPointer,
+  -clang-analyzer-core.uninitialized.Assign,
+  -clang-analyzer-deadcode.DeadStores,
+  -clang-analyzer-optin.cplusplus.VirtualCall,
+  -clang-analyzer-optin.performance.Padding,
+  -clang-analyzer-optin.core.EnumCastOutOfRange,
+  -clang-analyzer-core.uninitialized.UndefReturn
+
+# Only report findings in project-owned headers; suppress third-party noise.
+HeaderFilterRegex: "^.*(include/raft|include/network_simulator|include/concepts|tests|src)/.*\\.hpp$"
+
+# Exit non-zero on any finding.
+WarningsAsErrors: "*"
+
+# Suppress clang diagnostics from third-party library APIs (Boost.Test, folly).
+# These cannot be disabled via the Checks field.
+ExtraArgs: [-Wno-deprecated-declarations, -Wno-unused-local-typedef, -Wno-unused-const-variable, -Wno-unused-result]
+
+CheckOptions:
+  # Don't warn on trivially-copyable moves (common with small value types).
+  - key:   performance-move-const-arg.CheckTriviallyCopyableMove
+    value: "false"
+  # modernize-use-nodiscard: don't annotate void or bool returns.
+  - key:   modernize-use-nodiscard.AllowedReturnTypes
+    value: "void;bool"
+...

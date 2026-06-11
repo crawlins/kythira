@@ -42,7 +42,7 @@ constexpr std::size_t max_retry_attempts = 5;
 }
 
 // Simple error classification for demonstration
-enum class error_type {
+enum class error_type : std::uint8_t {
     network_timeout,
     network_unreachable,
     connection_refused,
@@ -110,14 +110,14 @@ auto execute_with_retry(Operation&& op, std::size_t max_attempts = 3) -> decltyp
 // Mock network client for simulating various error conditions
 class mock_error_network_client {
 public:
-    enum class failure_mode {
+    enum class failure_mode : std::uint8_t {
         none,
         network_timeout,
         network_unreachable,
         connection_refused,
         temporary_failure,
         random_failures,
-        deterministic_failures  // New mode for guaranteed failures
+        deterministic_failures
     };
 
     struct network_condition {
@@ -244,7 +244,7 @@ private:
                                                               "temporary failure, try again"};
                     std::uniform_int_distribution<std::size_t> error_dist(0,
                                                                           random_errors.size() - 1);
-                    std::size_t error_index;
+                    std::size_t error_index = 0;
                     {
                         std::lock_guard<std::mutex> lock(_mutex);
                         error_index = error_dist(_rng);
@@ -322,10 +322,9 @@ auto test_rpc_retry_behavior() -> bool {
         if (final_attempt_count > 1) {
             std::cout << "  ✓ RPC retry behavior working correctly\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Expected multiple retry attempts\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Expected multiple retry attempts\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -381,10 +380,9 @@ auto test_error_classification() -> bool {
         if (all_classifications_correct) {
             std::cout << "  ✓ Error classification working correctly\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Some error classifications were incorrect\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Some error classifications were incorrect\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -492,10 +490,9 @@ auto test_partition_detection_recovery() -> bool {
         if (partition_detected && recovery_successes > 0) {
             std::cout << "  ✓ Partition detection and recovery working correctly\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Partition detection or recovery not working\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Partition detection or recovery not working\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -519,9 +516,15 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_rpc_retry_behavior()) failed_scenarios++;
-    if (!test_error_classification()) failed_scenarios++;
-    if (!test_partition_detection_recovery()) failed_scenarios++;
+    if (!test_rpc_retry_behavior()) {
+        failed_scenarios++;
+    }
+    if (!test_error_classification()) {
+        failed_scenarios++;
+    }
+    if (!test_partition_detection_recovery()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n========================================\n";

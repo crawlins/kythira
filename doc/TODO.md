@@ -11,8 +11,23 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - All specifications complete across all 6 feature areas
 - Build clean with no errors or warnings
 
+### What Changed (June 11, 2026)
+
+- **clang-tidy zero findings confirmed**: all 291 compilation units clean after
+  fixing narrowing conversions, enum sizes, branch-clone, else-after-return,
+  use-after-move suppressions, and compiler diagnostic errors in `future.hpp`
+  and `coap_transport_impl.hpp`.
+- **Chaos testing spec created**: libfiu-based fault injection design at
+  `.kiro/specs/chaos-testing/`; macro approach (`fiu_do_on` in production
+  sources, compiles to no-op without `FIU_ENABLE`); 21 tasks across 5 phases.
+
 ### What Changed (June 10, 2026)
 
+- **clang-tidy integration**: `.clang-tidy` config with `WarningsAsErrors: "*"`;
+  CMake `static-analysis` and `static-analysis-fix` targets (parallel via
+  `run-clang-tidy`, sequential fallback); pre-commit hook step (opt-in with
+  `TIDY_CHECK=1`, skip with `SKIP_TIDY_CHECK=1`); zero findings across all 291
+  compilation units; spec at `.kiro/specs/clang-tidy/`.
 - **clang-format integration**: `.clang-format` config (Google base, 4-space
   indent, 100-column limit); CMake `format` and `format-check` targets;
   pre-commit hook now checks staged files before the coverage ratchet;
@@ -54,8 +69,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - [x] **clang-format integration** — `.clang-format` config (Google base, 4-space
   indent, 100-col); CMake `format`/`format-check` targets; pre-commit hook
   checks staged files first; `SKIP_FORMAT_CHECK=1` escape hatch
-- [ ] **clang-tidy integration** — add `.clang-tidy` config and CMake
-  `static-analysis` target; configure checks and suppressions
+- [x] **clang-tidy integration** — `.clang-tidy` config with `WarningsAsErrors: "*"`;
+  CMake `static-analysis`/`static-analysis-fix` targets; pre-commit opt-in hook
+  step; zero findings across 291 source files
 - [x] **Code coverage** — CMake `ENABLE_COVERAGE` option with gcovr targets,
   HTML reports, and pre-commit ratchet hook (`coverage_floor.txt` = 84.8%)
 - [ ] **Remove unused includes** — `#include <future>` in
@@ -75,7 +91,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - [ ] **State machine examples** — counter, register, replicated log, and
   distributed lock examples for documentation/demonstration purposes
   (counter and register already exist as test targets)
-- [ ] **Stress testing** — high-load scenarios and chaos testing framework
+- [ ] **Chaos testing** — libfiu fault injection; spec at
+  `.kiro/specs/chaos-testing/`; 21 tasks (build integration, `fiu_do_on` fault
+  points in persistence/network/state machine, 8 safety/liveness property tests)
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

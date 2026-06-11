@@ -32,7 +32,9 @@ public:
     auto getKeepAliveToken() -> std::shared_ptr<MockExecutor> { return shared_from_this(); }
 
     // Helper methods for testing
-    auto getTaskCount() const -> std::size_t { return _task_count.load(std::memory_order_relaxed); }
+    [[nodiscard]] auto getTaskCount() const -> std::size_t {
+        return _task_count.load(std::memory_order_relaxed);
+    }
 
     auto executeTasks() -> void {
         for (auto& task : _tasks) {
@@ -43,7 +45,9 @@ public:
         _tasks.clear();
     }
 
-    auto getTasks() const -> const std::vector<std::function<void()>>& { return _tasks; }
+    [[nodiscard]] auto getTasks() const -> const std::vector<std::function<void()>>& {
+        return _tasks;
+    }
 
 private:
     std::atomic<std::size_t> _task_count{0};
@@ -63,7 +67,7 @@ public:
         : _executor(std::move(executor)) {}
 
     // Copy constructor
-    MockKeepAlive(const MockKeepAlive& other) : _executor(other._executor) {}
+    MockKeepAlive(const MockKeepAlive& other) = default;
 
     // Move constructor
     MockKeepAlive(MockKeepAlive&& other) noexcept : _executor(std::move(other._executor)) {}
@@ -79,7 +83,7 @@ public:
     auto get() -> MockExecutor* { return _executor.get(); }
 
     // Get underlying executor (const version)
-    auto get() const -> void* { return const_cast<MockExecutor*>(_executor.get()); }
+    [[nodiscard]] auto get() const -> void* { return const_cast<MockExecutor*>(_executor.get()); }
 
 private:
     std::shared_ptr<MockExecutor> _executor;
@@ -207,7 +211,7 @@ BOOST_AUTO_TEST_CASE(executor_concept_rejection_test, *boost::unit_test::timeout
     // Test executor without add method
     struct NoAddExecutor {
         auto getKeepAliveToken() -> std::shared_ptr<NoAddExecutor> {
-            return std::shared_ptr<NoAddExecutor>(this, [](NoAddExecutor*) {});
+            return {this, [](NoAddExecutor*) {}};
         }
         // Missing add method
     };
@@ -247,8 +251,8 @@ BOOST_AUTO_TEST_CASE(executor_lifetime_management_test, *boost::unit_test::timeo
     // Test that executor can manage work properly
     std::vector<bool> task_results(10, false);
 
-    for (std::size_t i = 0; i < task_results.size(); ++i) {
-        exec.add([&task_results, i]() { task_results[i] = true; });
+    for (auto&& task_result : task_results) {
+        exec.add([&task_results, &task_result]() { task_result = true; });
     }
 
     BOOST_CHECK_EQUAL(exec.getTaskCount(), task_results.size());
@@ -290,7 +294,7 @@ BOOST_AUTO_TEST_CASE(executor_optional_priority_test, *boost::unit_test::timeout
         void add(std::function<void()> func) { _tasks.push_back(std::move(func)); }
 
         auto getKeepAliveToken() -> std::shared_ptr<NoPriorityExecutor> {
-            return std::shared_ptr<NoPriorityExecutor>(this, [](NoPriorityExecutor*) {});
+            return {this, [](NoPriorityExecutor*) {}};
         }
 
         // No getNumPriorities() method - should still satisfy concept

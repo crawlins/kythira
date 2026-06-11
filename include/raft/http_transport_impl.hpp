@@ -610,11 +610,21 @@ auto validate_tls_version_string(const std::string& version) -> void {
 }
 
 auto get_tls_version_number(const std::string& version) -> int {
-    if (version.empty()) return 0;
-    if (version == "TLSv1.0") return 10;
-    if (version == "TLSv1.1") return 11;
-    if (version == "TLSv1.2") return 12;
-    if (version == "TLSv1.3") return 13;
+    if (version.empty()) {
+        return 0;
+    }
+    if (version == "TLSv1.0") {
+        return 10;
+    }
+    if (version == "TLSv1.1") {
+        return 11;
+    }
+    if (version == "TLSv1.2") {
+        return 12;
+    }
+    if (version == "TLSv1.3") {
+        return 13;
+    }
     throw kythira::ssl_configuration_error(std::format("Invalid TLS version: {}", version));
 }
 
@@ -989,7 +999,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         metric.emit();
 
         // Send POST request
-        auto result = client->Post(endpoint.c_str(), headers, body, content_type_json);
+        auto result = client->Post(endpoint, headers, body, content_type_json);
 
         // Record latency
         auto end_time = std::chrono::steady_clock::now();
@@ -1022,11 +1032,11 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             if (error_type == "timeout") {
                 return make_future_with_exception<Types, Response>(kythira::http_timeout_error(
                     std::format("HTTP request timed out after {}ms", timeout.count())));
-            } else {
-                return make_future_with_exception<Types, Response>(std::runtime_error(
-                    std::format("HTTP request failed: {}", httplib::to_string(result.error()))));
             }
-        } else if (result->status == 200) {
+            return make_future_with_exception<Types, Response>(std::runtime_error(
+                std::format("HTTP request failed: {}", httplib::to_string(result.error()))));
+        }
+        if (result->status == 200) {
             // Success - deserialize response
             try {
                 std::vector<std::byte> response_data;
@@ -1544,7 +1554,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         std::string error_message = std::format("Bad Request: {}", e.what());
 
         // Check if it's a handler exception
-        if (http_req.body.empty() == false) {
+        if (!http_req.body.empty()) {
             try {
                 // Try to deserialize to see if it's a deserialization error
                 std::vector<std::byte> test_data;
@@ -1662,7 +1672,7 @@ auto cpp_httplib_server<Types>::start() -> void {
     // Start the server in a separate thread
     _server_thread = std::thread([this]() {
         try {
-            if (!_http_server->listen(_bind_address.c_str(), _bind_port)) {
+            if (!_http_server->listen(_bind_address, _bind_port)) {
                 _running.store(false);
             }
         } catch (const std::exception& e) {

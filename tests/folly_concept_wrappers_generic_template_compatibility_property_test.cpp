@@ -97,9 +97,8 @@ auto extract_value_or_default_void(const T& try_obj) -> bool {
     if (try_obj.hasValue()) {
         try_obj.value();  // void return, but we return success indicator
         return true;
-    } else {
-        return false;
     }
+    return false;
 }
 
 // Generic function that works with future factory
@@ -182,7 +181,7 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test,
         auto future_str = promise_str.getFuture();
         std::string test_str = "generic test";
         fulfill_promise_generic<Promise<std::string>, std::string>(std::move(promise_str),
-                                                                   std::move(test_str));
+                                                                   test_str);
         BOOST_CHECK_EQUAL(future_str.get(), "generic test");
 
         // Test with void promise
@@ -364,7 +363,7 @@ BOOST_AUTO_TEST_CASE(generic_template_compatibility_property_test,
             Promise<std::string> promise_str;
             auto future_str = promise_str.getFuture();
             fulfill_promise_generic<Promise<std::string>, std::string>(std::move(promise_str),
-                                                                       std::move(test_str));
+                                                                       test_str);
             BOOST_CHECK_EQUAL(future_str.get(), "generic_test_" + std::to_string(i));
         }
 

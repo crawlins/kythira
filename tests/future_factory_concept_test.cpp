@@ -24,7 +24,7 @@ public:
         return std::move(value_);
     }
 
-    auto isReady() const -> bool { return true; }
+    [[nodiscard]] auto isReady() const -> bool { return true; }
     auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
 
     template<typename F> auto thenValue(F&& func) -> MockFuture<int> {
@@ -49,7 +49,7 @@ public:
         return folly::Unit{};
     }
 
-    auto isReady() const -> bool { return true; }
+    [[nodiscard]] auto isReady() const -> bool { return true; }
     auto wait(std::chrono::milliseconds timeout) -> bool { return true; }
 
     template<typename F> auto thenValue(F&& func) -> MockFuture<int> {
@@ -72,9 +72,7 @@ struct ValidFactory {
         return kythira::MockFuture<T>(std::move(ex));
     }
 
-    static auto makeReadyFuture() -> kythira::MockFuture<folly::Unit> {
-        return kythira::MockFuture<folly::Unit>();
-    }
+    static auto makeReadyFuture() -> kythira::MockFuture<folly::Unit> { return {}; }
 };
 
 // Test factory implementation that does NOT satisfy the concept (missing methods)

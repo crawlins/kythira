@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 
 namespace kythira {
 
@@ -88,17 +89,13 @@ public:
                     }
                     if (completed_count >= majority_count) {
                         return std::vector<T>{};  // Empty vector indicates success for void
-                    } else {
-                        throw kythira::future_collection_exception("collect_majority",
-                                                                   failed_count);
                     }
+                    throw kythira::future_collection_exception("collect_majority", failed_count);
                 } else {
                     if (completed_results.size() >= majority_count) {
                         return completed_results;
-                    } else {
-                        throw kythira::future_collection_exception("collect_majority",
-                                                                   failed_count);
                     }
+                    throw kythira::future_collection_exception("collect_majority", failed_count);
                 }
             });
     }
@@ -191,7 +188,7 @@ public:
      * @param count Specific count for 'count' strategy (ignored for other strategies)
      * @return Future containing results based on the strategy
      */
-    enum class collection_strategy {
+    enum class collection_strategy : std::uint8_t {
         all,       // Wait for all futures
         majority,  // Wait for majority of futures
         any,       // Wait for any single future

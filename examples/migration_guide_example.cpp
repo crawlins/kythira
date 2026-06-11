@@ -347,14 +347,30 @@ int main() {
     int failed_scenarios = 0;
 
     // Run all migration demonstrations
-    if (!demonstrate_basic_migration()) failed_scenarios++;
-    if (!demonstrate_chaining_migration()) failed_scenarios++;
-    if (!demonstrate_error_handling_migration()) failed_scenarios++;
-    if (!demonstrate_promise_future_migration()) failed_scenarios++;
-    if (!demonstrate_collective_operations_migration()) failed_scenarios++;
-    if (!demonstrate_timeout_migration()) failed_scenarios++;
-    if (!demonstrate_concept_compliance()) failed_scenarios++;
-    if (!demonstrate_migration_benefits()) failed_scenarios++;
+    if (!demonstrate_basic_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_chaining_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_error_handling_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_promise_future_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_collective_operations_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_timeout_migration()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_concept_compliance()) {
+        failed_scenarios++;
+    }
+    if (!demonstrate_migration_benefits()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n=== Summary ===\n";

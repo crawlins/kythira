@@ -221,7 +221,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, *boost::unit_t
                     std::set<std::string> found_keys;
 
                     for (const auto& [key, value] : entry.key_value_pairs) {
-                        if (required_keys.count(key)) {
+                        if (static_cast<unsigned int>(required_keys.contains(key)) != 0u) {
                             found_keys.insert(key);
                         }
                     }
@@ -238,7 +238,8 @@ BOOST_AUTO_TEST_CASE(raft_collection_error_logging_property_test, *boost::unit_t
                     std::set<std::string> found_individual_keys;
 
                     for (const auto& [key, value] : entry.key_value_pairs) {
-                        if (required_individual_keys.count(key)) {
+                        if (static_cast<unsigned int>(required_individual_keys.contains(key)) !=
+                            0u) {
                             found_individual_keys.insert(key);
                         }
                     }

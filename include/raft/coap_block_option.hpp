@@ -43,7 +43,7 @@ struct block_option {
     }
 
     // Encode Block1/Block2 option value according to RFC 7959
-    auto encode() const -> std::uint32_t {
+    [[nodiscard]] auto encode() const -> std::uint32_t {
         // Convert block size to SZX (Size Exponent)
         // SZX = log2(block_size) - 4
         std::uint32_t szx = 0;

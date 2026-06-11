@@ -38,11 +38,21 @@ public:
 
         std::cout << "=== Folly Concept Wrapper Collector Examples ===\n\n";
 
-        if (!test_collect_all_success()) failed_scenarios++;
-        if (!test_collect_any_first_completed()) failed_scenarios++;
-        if (!test_collect_any_without_exception()) failed_scenarios++;
-        if (!test_collect_n_futures()) failed_scenarios++;
-        if (!test_collect_all_with_exception()) failed_scenarios++;
+        if (!test_collect_all_success()) {
+            failed_scenarios++;
+        }
+        if (!test_collect_any_first_completed()) {
+            failed_scenarios++;
+        }
+        if (!test_collect_any_without_exception()) {
+            failed_scenarios++;
+        }
+        if (!test_collect_n_futures()) {
+            failed_scenarios++;
+        }
+        if (!test_collect_all_with_exception()) {
+            failed_scenarios++;
+        }
 
         std::cout << "\n=== Summary ===\n";
         if (failed_scenarios > 0) {

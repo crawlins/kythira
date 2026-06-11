@@ -115,14 +115,20 @@ std::vector<std::byte> make_put_cmd(std::string_view key, std::string_view value
     auto append_u32 = [&](std::uint32_t n) {
         std::byte buf[4];
         std::memcpy(buf, &n, 4);
-        for (auto b : buf) cmd.push_back(b);
+        for (auto b : buf) {
+            cmd.push_back(b);
+        }
     };
 
     append_u32(static_cast<std::uint32_t>(key.size()));
-    for (char c : key) cmd.push_back(static_cast<std::byte>(c));
+    for (char c : key) {
+        cmd.push_back(static_cast<std::byte>(c));
+    }
 
     append_u32(static_cast<std::uint32_t>(value.size()));
-    for (char c : value) cmd.push_back(static_cast<std::byte>(c));
+    for (char c : value) {
+        cmd.push_back(static_cast<std::byte>(c));
+    }
 
     return cmd;
 }
@@ -132,7 +138,9 @@ template<typename Pred>
 bool wait_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{2000}) {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > deadline) return false;
+        if (std::chrono::steady_clock::now() - start > deadline) {
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
     return true;
@@ -355,7 +363,7 @@ BOOST_AUTO_TEST_CASE(single_node_multiple_commands, *boost::unit_test::timeout(1
     BOOST_REQUIRE(node.is_leader());
 
     std::size_t committed = 0;
-    for (auto [k, v] :
+    for (const auto& [k, v] :
          std::vector<std::pair<std::string, std::string>>{{"a", "1"}, {"b", "2"}, {"c", "3"}}) {
         auto f = node.submit_command(make_put_cmd(k, v), std::chrono::milliseconds{2000});
         std::move(f).get();

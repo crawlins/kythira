@@ -232,11 +232,10 @@ auto test_reliability_drops() -> bool {
             std::cout << "  ✓ Reliability simulation working (" << successful_sends << "/"
                       << message_count << " messages sent)\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Unexpected reliability behavior (" << successful_sends << "/"
-                      << message_count << " messages sent)\n";
-            return false;
         }
+        std::cerr << "  ✗ Unexpected reliability behavior (" << successful_sends << "/"
+                  << message_count << " messages sent)\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Exception: " << e.what() << "\n";
@@ -286,15 +285,13 @@ auto test_multi_hop_routing() -> bool {
             if (received_payload == test_payload) {
                 std::cout << "  ✓ Message successfully routed through intermediate node\n";
                 return true;
-            } else {
-                std::cerr << "  ✗ Message payload incorrect after multi-hop routing\n";
-                return false;
             }
-        } else {
-            // If multi-hop routing is not supported, that's also acceptable
-            std::cout << "  ✓ Multi-hop routing not supported (direct routing only)\n";
-            return true;
-        }
+            std::cerr << "  ✗ Message payload incorrect after multi-hop routing\n";
+            return false;
+
+        }  // If multi-hop routing is not supported, that's also acceptable
+        std::cout << "  ✓ Multi-hop routing not supported (direct routing only)\n";
+        return true;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Exception: " << e.what() << "\n";
@@ -310,19 +307,29 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_basic_send_receive()) failed_scenarios++;
+    if (!test_basic_send_receive()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_send_timeout()) failed_scenarios++;
+    if (!test_send_timeout()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_receive_timeout()) failed_scenarios++;
+    if (!test_receive_timeout()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_reliability_drops()) failed_scenarios++;
+    if (!test_reliability_drops()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
-    if (!test_multi_hop_routing()) failed_scenarios++;
+    if (!test_multi_hop_routing()) {
+        failed_scenarios++;
+    }
     std::cout << "\n";
 
     // Report final results
@@ -331,9 +338,8 @@ auto main(int argc, char* argv[]) -> int {
         std::cout << "All scenarios passed! ✓\n";
         std::cout << "Exit code: 0\n";
         return 0;
-    } else {
-        std::cout << failed_scenarios << " scenario(s) failed ✗\n";
-        std::cout << "Exit code: 1\n";
-        return 1;
     }
+    std::cout << failed_scenarios << " scenario(s) failed ✗\n";
+    std::cout << "Exit code: 1\n";
+    return 1;
 }

@@ -52,13 +52,8 @@ struct coap_client_config {
 };
 
 struct CoAPIntegrationFixture {
-    CoAPIntegrationFixture() {
-        // Initialize any test fixtures if needed
-    }
-
-    ~CoAPIntegrationFixture() {
-        // Cleanup any test fixtures if needed
-    }
+    CoAPIntegrationFixture() = default;
+    ~CoAPIntegrationFixture() = default;
 };
 
 BOOST_FIXTURE_TEST_SUITE(coap_integration_tests, CoAPIntegrationFixture)
@@ -210,7 +205,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, *boost::unit_test
 
     // Test security error handling
     struct security_error {
-        enum class type {
+        enum class type : std::uint8_t {
             certificate_invalid,
             psk_mismatch,
             handshake_timeout
@@ -285,7 +280,9 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, *boost::unit_test::time
 
         // Last block may be smaller
         std::size_t expected_last_size = large_data.size() % 1024;
-        if (expected_last_size == 0) expected_last_size = 1024;
+        if (expected_last_size == 0) {
+            expected_last_size = 1024;
+        }
 
         std::size_t last_block_start = (num_blocks - 1) * 1024;
         std::size_t actual_last_size = large_data.size() - last_block_start;
@@ -301,8 +298,9 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, *boost::unit_test::time
         std::size_t block_start = i * 1024;
         std::size_t block_end = std::min(block_start + 1024, large_data.size());
 
-        std::vector<std::byte> block_data(large_data.begin() + block_start,
-                                          large_data.begin() + block_end);
+        std::vector<std::byte> block_data(
+            large_data.begin() + static_cast<std::ptrdiff_t>(block_start),
+            large_data.begin() + static_cast<std::ptrdiff_t>(block_end));
         reassembled.insert(reassembled.end(), block_data.begin(), block_data.end());
     }
 

@@ -347,11 +347,10 @@ private:
                 // Wait for message
                 auto msg = std::move(msg_future).get();
                 handle_message(std::move(msg));
-            } catch (const std::exception& ex) {
-                // Timeout or error - continue loop
-                // This is expected when no messages are available
-            } catch (...) {
-                // Unknown error - continue loop
+            } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch)
+                // Timeout or error - expected when no messages are available
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Unknown error - continue
             }
         }
     }
@@ -381,7 +380,7 @@ private:
                     send_response(msg.source_address(), response);
                 }
                 return;
-            } catch (...) {
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not a RequestVote request
             }
 
@@ -396,7 +395,7 @@ private:
                     send_response(msg.source_address(), response);
                 }
                 return;
-            } catch (...) {
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not an AppendEntries request
             }
 
@@ -411,12 +410,12 @@ private:
                     send_response(msg.source_address(), response);
                 }
                 return;
-            } catch (...) {
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not an InstallSnapshot request
             }
 
             // Unknown message type - ignore
-        } catch (...) {
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
             // Error handling message - ignore
         }
     }
@@ -438,7 +437,7 @@ private:
 
             // Send response (fire and forget)
             _node->send(std::move(msg));
-        } catch (...) {
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
             // Error sending response - ignore
         }
     }

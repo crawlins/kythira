@@ -11,7 +11,7 @@ auto make_command(const std::string& cmd) -> std::vector<std::byte> {
 }
 
 auto parse_result(const std::vector<std::byte>& result) -> std::string {
-    return std::string(reinterpret_cast<const char*>(result.data()), result.size());
+    return {reinterpret_cast<const char*>(result.data()), result.size()};
 }
 }
 

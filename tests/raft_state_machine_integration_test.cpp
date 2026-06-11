@@ -39,7 +39,7 @@ auto parse_counter_result(const std::vector<std::byte>& result) -> std::int64_t 
 }
 
 auto parse_register_result(const std::vector<std::byte>& result) -> std::string {
-    return std::string(reinterpret_cast<const char*>(result.data()), result.size());
+    return {reinterpret_cast<const char*>(result.data()), result.size()};
 }
 }
 
@@ -111,11 +111,11 @@ BOOST_AUTO_TEST_CASE(test_sequential_application_order, *boost::unit_test::timeo
     std::int64_t expected_total = 0;
 
     auto inc_cmd = make_command("INC");
-    for (std::size_t i = 0; i < increments.size(); ++i) {
-        for (std::int64_t j = 0; j < increments[i]; ++j) {
+    for (long increment : increments) {
+        for (std::int64_t j = 0; j < increment; ++j) {
             state_machine.apply(inc_cmd, expected_total + j + 1);
         }
-        expected_total += increments[i];
+        expected_total += increment;
         BOOST_CHECK_EQUAL(state_machine.get_value(), expected_total);
     }
 

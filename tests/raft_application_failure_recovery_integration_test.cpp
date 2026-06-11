@@ -68,7 +68,7 @@ constexpr std::size_t batch_size = 5;
  */
 class MockStateMachine {
 public:
-    enum class failure_policy {
+    enum class failure_policy : std::uint8_t {
         none,
         fail_once,
         fail_at_index,

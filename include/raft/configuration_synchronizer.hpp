@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <mutex>
@@ -36,7 +37,7 @@ public:
     using log_index_t = LogIndex;
 
 private:
-    enum class config_change_phase {
+    enum class config_change_phase : std::uint8_t {
         none,                // No configuration change in progress
         joint_consensus,     // Waiting for joint consensus to be committed
         final_configuration  // Waiting for final configuration to be committed

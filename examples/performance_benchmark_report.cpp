@@ -69,7 +69,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Basic Operations", num_operations, duration, ops_per_second,
                             "Future creation and immediate resolution"});
@@ -98,7 +99,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"String Operations", num_operations, duration, ops_per_second,
                             "Future operations with string objects"});
@@ -128,7 +130,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Large Objects", num_operations, duration, ops_per_second,
                             "Future operations with 10K element vectors"});
@@ -175,7 +178,8 @@ private:
             throw std::runtime_error("Concurrent operations count mismatch");
         }
 
-        double ops_per_second = (expected_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (expected_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Concurrent Operations", expected_operations, duration, ops_per_second,
                             "4 threads, 10K operations each"});
@@ -212,7 +216,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Exception Handling", num_operations, duration, ops_per_second,
                             "Future operations with exception propagation"});
@@ -243,7 +248,8 @@ private:
             auto duration =
                 std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-            double ops_per_second = (num_operations * 1000000.0) / duration.count();
+            double ops_per_second =
+                (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
             results_.push_back({"Memory Allocation (size " + std::to_string(size) + ")",
                                 num_operations, duration, ops_per_second,
@@ -275,7 +281,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Concept Methods (isReady)", num_operations, duration, ops_per_second,
                             "Future concept method performance"});
@@ -303,7 +310,8 @@ private:
         auto duration =
             std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
 
-        double ops_per_second = (num_operations * 1000000.0) / duration.count();
+        double ops_per_second =
+            (num_operations * 1000000.0) / static_cast<double>(duration.count());
 
         results_.push_back({"Throughput Test", num_operations, duration, ops_per_second,
                             "Maximum sustained throughput measurement"});
@@ -343,14 +351,18 @@ private:
 
         for (const auto& latency : latencies) {
             total_latency += latency;
-            if (latency < min_latency) min_latency = latency;
-            if (latency > max_latency) max_latency = latency;
+            if (latency < min_latency) {
+                min_latency = latency;
+            }
+            if (latency > max_latency) {
+                max_latency = latency;
+            }
         }
 
         auto avg_latency = total_latency / num_samples;
 
         results_.push_back({"Latency Test", num_samples, avg_latency,
-                            1000000.0 / avg_latency.count(),
+                            1000000.0 / static_cast<double>(avg_latency.count()),
                             "Min: " + std::to_string(min_latency.count()) +
                                 "μs, Max: " + std::to_string(max_latency.count()) + "μs"});
 
@@ -386,7 +398,8 @@ private:
             }
         }
 
-        double overall_throughput = (total_ops * 1000000.0) / total_time.count();
+        double overall_throughput =
+            (total_ops * 1000000.0) / static_cast<double>(total_time.count());
 
         std::cout << std::endl << "=== Summary ===" << std::endl;
         std::cout << "Total operations: " << static_cast<int>(total_ops) << std::endl;
@@ -464,7 +477,7 @@ private:
             if (result.name == "Basic Operations") {
                 meets_requirement = result.ops_per_second > 10000;
                 requirement_note = "Should exceed 10,000 ops/sec";
-            } else if (result.name == "String Operations") {
+            } else if (result.name == "String Operations" || result.name == "Exception Handling") {
                 meets_requirement = result.ops_per_second > 1000;
                 requirement_note = "Should exceed 1,000 ops/sec";
             } else if (result.name == "Large Objects") {
@@ -473,9 +486,6 @@ private:
             } else if (result.name == "Concurrent Operations") {
                 meets_requirement = result.ops_per_second > 5000;
                 requirement_note = "Should exceed 5,000 ops/sec";
-            } else if (result.name == "Exception Handling") {
-                meets_requirement = result.ops_per_second > 1000;
-                requirement_note = "Should exceed 1,000 ops/sec";
             } else if (result.name.find("Concept Methods") != std::string::npos) {
                 meets_requirement = result.ops_per_second > 100000;
                 requirement_note = "Should exceed 100,000 ops/sec";

@@ -54,22 +54,23 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool { return _fulfilled; }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasValue() const -> bool { return _has_value; }
+    [[nodiscard]] auto hasValue() const -> bool { return _has_value; }
 
-    auto hasException() const -> bool { return _has_exception; }
+    [[nodiscard]] auto hasException() const -> bool { return _has_exception; }
 
     template<typename U = T>
-    auto getValue() const -> std::enable_if_t<!std::is_void_v<U>, const U&> {
+    [[nodiscard]] [[nodiscard]] auto getValue() const
+        -> std::enable_if_t<!std::is_void_v<U>, const U&> {
         if (!_has_value) {
             throw std::logic_error("No value available");
         }
         return _value;
     }
 
-    auto getException() const -> folly::exception_wrapper { return _exception; }
+    [[nodiscard]] auto getException() const -> folly::exception_wrapper { return _exception; }
 
 private:
     bool _fulfilled = false;
@@ -103,12 +104,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool { return _fulfilled; }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasException() const -> bool { return _has_exception; }
+    [[nodiscard]] auto hasException() const -> bool { return _has_exception; }
 
-    auto getException() const -> folly::exception_wrapper { return _exception; }
+    [[nodiscard]] auto getException() const -> folly::exception_wrapper { return _exception; }
 
 private:
     bool _fulfilled = false;
@@ -258,7 +259,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, *boost::unit_test::tim
     struct WrongSignaturePromise {
         int setValue(int value) { return 0; }  // Wrong return type
         void setException(folly::exception_wrapper ex) {}
-        bool isFulfilled() const { return false; }
+        [[nodiscard]] bool isFulfilled() const { return false; }
     };
 
     static_assert(!semi_promise<WrongSignaturePromise, int>,

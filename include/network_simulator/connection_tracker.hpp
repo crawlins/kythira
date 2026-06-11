@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <optional>
 #include <functional>
@@ -12,7 +13,7 @@
 
 namespace network_simulator {
 
-enum class ConnectionState {
+enum class ConnectionState : std::uint8_t {
     CONNECTING,  // Connection establishment in progress
     CONNECTED,   // Connection established and ready
     CLOSING,     // Connection close initiated
@@ -52,7 +53,9 @@ public:
         std::function<void(ConnectionState, ConnectionState)> state_change_callback;
 
         ConnectionInfo(endpoint_type local, endpoint_type remote)
-            : local_endpoint(local), remote_endpoint(remote), state(ConnectionState::CONNECTING) {}
+            : local_endpoint(std::move(local)),
+              remote_endpoint(std::move(remote)),
+              state(ConnectionState::CONNECTING) {}
     };
 
     ConnectionTracker();

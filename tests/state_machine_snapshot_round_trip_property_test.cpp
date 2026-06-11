@@ -45,6 +45,9 @@ BOOST_AUTO_TEST_CASE(property_counter_snapshot_round_trip, *boost::unit_test::ti
                 case 2:
                     cmd = "RESET";
                     break;
+
+                default:
+                    break;
             }
             std::vector<std::byte> cmd_bytes(
                 reinterpret_cast<const std::byte*>(cmd.data()),

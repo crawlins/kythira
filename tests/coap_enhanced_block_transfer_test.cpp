@@ -47,15 +47,18 @@ struct enhanced_block_transfer_state {
           last_activity(std::chrono::steady_clock::now()) {}
 
     // Calculate transfer progress as percentage
-    auto progress_percentage() const -> double {
-        if (expected_total_size == 0) return 0.0;
+    [[nodiscard]] auto progress_percentage() const -> double {
+        if (expected_total_size == 0) {
+            return 0.0;
+        }
         // Cap progress at 100% to handle cases where received_size exceeds initial estimate
-        double progress = (static_cast<double>(received_size) / expected_total_size) * 100.0;
+        double progress =
+            (static_cast<double>(received_size) / static_cast<double>(expected_total_size)) * 100.0;
         return std::min(progress, 100.0);
     }
 
     // Check if transfer has timed out
-    auto is_timed_out(std::chrono::milliseconds timeout) const -> bool {
+    [[nodiscard]] auto is_timed_out(std::chrono::milliseconds timeout) const -> bool {
         auto now = std::chrono::steady_clock::now();
         return (now - last_activity) > timeout;
     }
@@ -104,7 +107,9 @@ public:
     // Enhanced should_use_block_transfer with better logic
     auto should_use_block_transfer(const std::vector<std::byte>& payload,
                                    std::uint32_t max_block_size) const -> bool {
-        if (payload.empty()) return false;
+        if (payload.empty()) {
+            return false;
+        }
 
         // Account for CoAP header overhead and options
         constexpr std::size_t coap_overhead = 64;  // Conservative estimate
@@ -151,8 +156,9 @@ public:
             // Create block data
             std::vector<std::byte> block_data;
             block_data.reserve(current_block_size);
-            block_data.assign(payload.begin() + offset,
-                              payload.begin() + offset + current_block_size);
+            block_data.assign(
+                payload.begin() + static_cast<std::ptrdiff_t>(offset),
+                payload.begin() + static_cast<std::ptrdiff_t>(offset + current_block_size));
 
             // Create block option
             kythira::block_option block_opt;
@@ -249,7 +255,8 @@ public:
         if (!block_opt.more_blocks && state->expected_total_size < state->received_size) {
             state->expected_total_size = state->received_size;
         } else if (block_opt.more_blocks &&
-                   state->received_size > state->expected_total_size * 0.8) {
+                   static_cast<double>(state->received_size) >
+                       static_cast<double>(state->expected_total_size) * 0.8) {
             // If we're approaching our estimate and there are still more blocks, increase the
             // estimate
             state->expected_total_size = state->received_size * 2;  // Double the estimate

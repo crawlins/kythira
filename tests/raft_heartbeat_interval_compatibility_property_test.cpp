@@ -75,8 +75,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
         auto validation_errors = config.get_validation_errors();
 
         // Calculate the ratio
-        double ratio =
-            static_cast<double>(election_timeout_min.count()) / heartbeat_interval.count();
+        double ratio = static_cast<double>(election_timeout_min.count()) /
+                       static_cast<double>(heartbeat_interval.count());
 
         if (ratio < recommended_ratio) {
             // Property: When heartbeat interval is too large relative to election timeout,
@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
 
         // Property: Default configuration should follow recommended ratio
         double default_ratio = static_cast<double>(default_config.election_timeout_min().count()) /
-                               default_config.heartbeat_interval().count();
+                               static_cast<double>(default_config.heartbeat_interval().count());
         BOOST_CHECK_GE(default_ratio, recommended_ratio);
 
         BOOST_TEST_MESSAGE("✓ Default configuration ratio: " << default_ratio);
@@ -151,7 +151,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
                 });
             BOOST_CHECK(has_compatibility_error);
 
-            double ratio = static_cast<double>(election_min.count()) / heartbeat.count();
+            double ratio =
+                static_cast<double>(election_min.count()) / static_cast<double>(heartbeat.count());
             BOOST_TEST_MESSAGE("✓ Incompatible pair rejected - Heartbeat: "
                                << heartbeat.count() << "ms, Election: " << election_min.count()
                                << "ms, Ratio: " << ratio);
@@ -186,7 +187,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
                 });
             BOOST_CHECK(!has_compatibility_error);
 
-            double ratio = static_cast<double>(election_min.count()) / heartbeat.count();
+            double ratio =
+                static_cast<double>(election_min.count()) / static_cast<double>(heartbeat.count());
             BOOST_TEST_MESSAGE("✓ Compatible pair accepted - Heartbeat: "
                                << heartbeat.count() << "ms, Election: " << election_min.count()
                                << "ms, Ratio: " << ratio);
@@ -353,7 +355,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
                            error.find("election_timeout") != std::string::npos;
                 });
 
-            double ratio = static_cast<double>(election_min.count()) / heartbeat.count();
+            double ratio =
+                static_cast<double>(election_min.count()) / static_cast<double>(heartbeat.count());
 
             if (ratio >= recommended_ratio) {
                 // Property: Adequate ratios should pass validation
@@ -377,8 +380,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_interval_compatibility_property_test,
         for (int i = 0; i < 30; ++i) {
             auto heartbeat = std::chrono::milliseconds{heartbeat_dist(gen)};
             auto ratio = ratio_dist(gen);
-            auto election_min =
-                std::chrono::milliseconds{static_cast<int>(heartbeat.count() * ratio)};
+            auto election_min = std::chrono::milliseconds{
+                static_cast<int>(static_cast<double>(heartbeat.count()) * ratio)};
             auto election_max = election_min + std::chrono::milliseconds{100};
 
             raft_configuration config;

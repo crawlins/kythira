@@ -63,7 +63,6 @@ public:
         std::size_t failed_operations = 0;
     };
 
-public:
     PerformanceValidator() {
         std::cout << "Initializing CoAP performance validator...\n";
         std::cout << "✓ CoAP performance validator initialized\n";
@@ -138,14 +137,17 @@ private:
         auto end_time = steady_clock::now();
         auto duration = std::chrono::duration_cast<microseconds>(end_time - start_time);
 
-        double config_ops_per_second = (benchmark_iterations * 2 * 1000000.0) / duration.count();
+        double config_ops_per_second =
+            (benchmark_iterations * 2 * 1000000.0) / static_cast<double>(duration.count());
 
         std::cout << "  ✓ Completed " << (benchmark_iterations * 2)
                   << " configuration operations\n";
         std::cout << "  ✓ Configuration performance: " << std::fixed << std::setprecision(0)
                   << config_ops_per_second << " ops/second\n";
         std::cout << "  ✓ Average configuration time: "
-                  << (duration.count() / static_cast<double>(benchmark_iterations * 2)) << " μs\n";
+                  << (static_cast<double>(duration.count()) /
+                      static_cast<double>(benchmark_iterations * 2))
+                  << " μs\n";
 
         bool passed = config_ops_per_second >= 100000.0;  // 100K ops/second threshold
         if (passed) {
@@ -185,7 +187,8 @@ private:
             auto end_time = steady_clock::now();
             auto duration = std::chrono::duration_cast<microseconds>(end_time - start_time);
 
-            double ops_per_second = (serialization_iterations * 1000000.0) / duration.count();
+            double ops_per_second =
+                (serialization_iterations * 1000000.0) / static_cast<double>(duration.count());
             auto avg_time = duration / serialization_iterations;
 
             std::cout << "  ✓ Message size " << size << " bytes:\n";
@@ -234,7 +237,8 @@ private:
         auto memory_growth = end_memory - start_memory;
 
         std::cout << "  ✓ Memory growth for 1000 requests: " << memory_growth << " KB\n";
-        std::cout << "  ✓ Average memory per request: " << (memory_growth / 1000.0) << " KB\n";
+        std::cout << "  ✓ Average memory per request: "
+                  << (static_cast<double>(memory_growth) / 1000.0) << " KB\n";
 
         bool passed = memory_growth < 1000;  // Less than 1MB for 1000 requests
         if (passed) {
@@ -353,7 +357,8 @@ private:
         auto duration = std::chrono::duration_cast<microseconds>(end_time - start_time);
 
         double cache_ops_per_second =
-            (config.serialization_cache_size * 2 * 1000000.0) / duration.count();
+            (static_cast<double>(config.serialization_cache_size) * 2 * 1000000.0) /
+            static_cast<double>(duration.count());
 
         std::cout << "  ✓ Cache operations performance: " << std::fixed << std::setprecision(0)
                   << cache_ops_per_second << " ops/second\n";
@@ -437,11 +442,11 @@ auto main() -> int {
             std::cout << "Summary: All performance validation tests passed!\n";
             std::cout << "Exit code: 0\n";
             return 0;
-        } else {
-            std::cout << "Summary: Some performance validation tests failed!\n";
-            std::cout << "Exit code: 1\n";
-            return 1;
         }
+        std::cout << "Summary: Some performance validation tests failed!\n";
+        std::cout << "Exit code: 1\n";
+        return 1;
+
     } catch (const std::exception& e) {
         std::cerr << "Performance validation failed with exception: " << e.what() << "\n";
         return 2;

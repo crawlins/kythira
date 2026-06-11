@@ -94,13 +94,17 @@ public:
             std::cout << "      Joint consensus configuration: [";
             for (std::size_t i = 0; i < config.nodes().size(); ++i) {
                 std::cout << config.nodes()[i];
-                if (i < config.nodes().size() - 1) std::cout << ", ";
+                if (i < config.nodes().size() - 1) {
+                    std::cout << ", ";
+                }
             }
             std::cout << "] + [";
             if (config.old_nodes()) {
                 for (std::size_t i = 0; i < config.old_nodes()->size(); ++i) {
                     std::cout << (*config.old_nodes())[i];
-                    if (i < config.old_nodes()->size() - 1) std::cout << ", ";
+                    if (i < config.old_nodes()->size() - 1) {
+                        std::cout << ", ";
+                    }
                 }
             }
             std::cout << "]\n";
@@ -108,7 +112,9 @@ public:
             std::cout << "      Final configuration: [";
             for (std::size_t i = 0; i < config.nodes().size(); ++i) {
                 std::cout << config.nodes()[i];
-                if (i < config.nodes().size() - 1) std::cout << ", ";
+                if (i < config.nodes().size() - 1) {
+                    std::cout << ", ";
+                }
             }
             std::cout << "]\n";
         }
@@ -141,7 +147,8 @@ public:
     auto set_failure_simulation(bool enable) -> void { _simulate_failures = enable; }
 
     // Get current configuration
-    auto get_current_configuration() const -> const kythira::cluster_configuration<std::uint64_t>& {
+    [[nodiscard]] auto get_current_configuration() const
+        -> const kythira::cluster_configuration<std::uint64_t>& {
         return _current_configuration;
     }
 
@@ -151,9 +158,9 @@ public:
         std::cout << "    Updated current configuration\n";
     }
 
-    auto is_leader() const -> bool { return _is_leader; }
-    auto get_node_id() const -> std::uint64_t { return _node_id; }
-    auto get_current_log_index() const -> std::uint64_t { return _current_log_index; }
+    [[nodiscard]] auto is_leader() const -> bool { return _is_leader; }
+    [[nodiscard]] auto get_node_id() const -> std::uint64_t { return _node_id; }
+    [[nodiscard]] auto get_current_log_index() const -> std::uint64_t { return _current_log_index; }
 };
 
 // Test scenario 1: Server addition with proper synchronization
@@ -222,10 +229,9 @@ auto test_server_addition_synchronization() -> bool {
             std::cout << "  ✓ Server addition completed successfully\n";
             std::cout << "  Final configuration: [1, 2, 3, 4]\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Configuration change did not complete successfully\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Configuration change did not complete successfully\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -297,10 +303,9 @@ auto test_server_removal_synchronization() -> bool {
             std::cout << "  ✓ Server removal completed successfully\n";
             std::cout << "  Final configuration: [1, 2, 3]\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Configuration change did not complete successfully\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Configuration change did not complete successfully\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -458,11 +463,9 @@ auto test_error_handling_and_rollback() -> bool {
         if (!config_sync.is_configuration_change_in_progress()) {
             std::cout << "  ✓ Configuration synchronizer state reset after cancellation\n";
             return true;
-        } else {
-            std::cerr
-                << "  ✗ Failed: Configuration synchronizer state not reset after cancellation\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Configuration synchronizer state not reset after cancellation\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -630,10 +633,9 @@ auto test_joint_consensus_phase_failure() -> bool {
         if (rollback_handled && !config_sync.is_configuration_change_in_progress()) {
             std::cout << "  ✓ Rollback during joint consensus phase handled correctly\n";
             return true;
-        } else {
-            std::cerr << "  ✗ Failed: Rollback not handled correctly\n";
-            return false;
         }
+        std::cerr << "  ✗ Failed: Rollback not handled correctly\n";
+        return false;
 
     } catch (const std::exception& e) {
         std::cerr << "  ✗ Scenario failed: " << e.what() << "\n";
@@ -660,12 +662,24 @@ auto main(int argc, char* argv[]) -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_server_addition_synchronization()) failed_scenarios++;
-    if (!test_server_removal_synchronization()) failed_scenarios++;
-    if (!test_configuration_change_serialization()) failed_scenarios++;
-    if (!test_error_handling_and_rollback()) failed_scenarios++;
-    if (!test_leadership_change_during_configuration()) failed_scenarios++;
-    if (!test_joint_consensus_phase_failure()) failed_scenarios++;
+    if (!test_server_addition_synchronization()) {
+        failed_scenarios++;
+    }
+    if (!test_server_removal_synchronization()) {
+        failed_scenarios++;
+    }
+    if (!test_configuration_change_serialization()) {
+        failed_scenarios++;
+    }
+    if (!test_error_handling_and_rollback()) {
+        failed_scenarios++;
+    }
+    if (!test_leadership_change_during_configuration()) {
+        failed_scenarios++;
+    }
+    if (!test_joint_consensus_phase_failure()) {
+        failed_scenarios++;
+    }
 
     // Print summary
     std::cout << "\n========================================\n";

@@ -382,11 +382,21 @@ auto main() -> int {
     int failed_scenarios = 0;
 
     // Run all test scenarios
-    if (!test_multicast_configuration()) failed_scenarios++;
-    if (!test_multiple_multicast_receivers()) failed_scenarios++;
-    if (!test_multicast_message_delivery()) failed_scenarios++;
-    if (!test_multicast_response_aggregation()) failed_scenarios++;
-    if (!test_multicast_error_handling()) failed_scenarios++;
+    if (!test_multicast_configuration()) {
+        failed_scenarios++;
+    }
+    if (!test_multiple_multicast_receivers()) {
+        failed_scenarios++;
+    }
+    if (!test_multicast_message_delivery()) {
+        failed_scenarios++;
+    }
+    if (!test_multicast_response_aggregation()) {
+        failed_scenarios++;
+    }
+    if (!test_multicast_error_handling()) {
+        failed_scenarios++;
+    }
 
     // Report results
     std::cout << "\n" << std::string(60, '=') << "\n";

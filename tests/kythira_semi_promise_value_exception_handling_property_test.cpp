@@ -7,6 +7,7 @@
 #include <string>
 #include <type_traits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 #include <memory>
 #include <folly/Unit.h>
@@ -309,8 +310,8 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::
     // Test 3: Custom exception types
     class CustomException : public std::exception {
     public:
-        explicit CustomException(const std::string& msg) : _message(msg) {}
-        const char* what() const noexcept override { return _message.c_str(); }
+        explicit CustomException(std::string msg) : _message(std::move(msg)) {}
+        [[nodiscard]] const char* what() const noexcept override { return _message.c_str(); }
 
     private:
         std::string _message;

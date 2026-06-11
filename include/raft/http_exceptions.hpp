@@ -17,7 +17,7 @@ public:
     http_client_error(int status_code, const std::string& message)
         : http_transport_error(message), _status_code(status_code) {}
 
-    auto status_code() const -> int { return _status_code; }
+    [[nodiscard]] auto status_code() const -> int { return _status_code; }
 
 private:
     int _status_code;
@@ -29,7 +29,7 @@ public:
     http_server_error(int status_code, const std::string& message)
         : http_transport_error(message), _status_code(status_code) {}
 
-    auto status_code() const -> int { return _status_code; }
+    [[nodiscard]] auto status_code() const -> int { return _status_code; }
 
 private:
     int _status_code;

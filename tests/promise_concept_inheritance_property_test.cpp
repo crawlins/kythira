@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <stdexcept>
 #include <memory>
+#include <utility>
 #include <folly/Unit.h>
 #include <folly/ExceptionWrapper.h>
 
@@ -24,7 +25,8 @@ template<typename T> class MockFuture {
 public:
     MockFuture() = default;
     explicit MockFuture(T value) : _value(std::move(value)), _has_value(true) {}
-    explicit MockFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
+    explicit MockFuture(folly::exception_wrapper ex)
+        : _exception(std::move(ex)), _has_exception(true) {}
 
     auto get() -> T {
         if (_has_exception) {
@@ -36,7 +38,7 @@ public:
         return _value;
     }
 
-    auto isReady() const -> bool { return _has_value || _has_exception; }
+    [[nodiscard]] auto isReady() const -> bool { return _has_value || _has_exception; }
 
     auto wait(std::chrono::milliseconds timeout) -> bool {
         // Mock implementation - always ready
@@ -57,11 +59,7 @@ public:
     template<typename F> auto onError(F&& func) -> void {
         // Mock implementation
         if (_has_exception) {
-            if constexpr (std::is_void_v<T>) {
-                func(_exception);
-            } else {
-                func(_exception);
-            }
+            func(_exception);
         }
     }
 
@@ -76,7 +74,8 @@ private:
 template<> class MockFuture<void> {
 public:
     MockFuture() = default;
-    explicit MockFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
+    explicit MockFuture(folly::exception_wrapper ex)
+        : _exception(std::move(ex)), _has_exception(true) {}
 
     auto get() -> void {
         if (_has_exception) {
@@ -87,7 +86,7 @@ public:
         }
     }
 
-    auto isReady() const -> bool { return _ready || _has_exception; }
+    [[nodiscard]] auto isReady() const -> bool { return _ready || _has_exception; }
 
     auto wait(std::chrono::milliseconds timeout) -> bool { return isReady(); }
 
@@ -116,7 +115,8 @@ template<typename T> class MockSemiFuture {
 public:
     MockSemiFuture() = default;
     explicit MockSemiFuture(T value) : _value(std::move(value)), _has_value(true) {}
-    explicit MockSemiFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
+    explicit MockSemiFuture(folly::exception_wrapper ex)
+        : _exception(std::move(ex)), _has_exception(true) {}
 
     auto get() -> T {
         if (_has_exception) {
@@ -128,7 +128,7 @@ public:
         return _value;
     }
 
-    auto isReady() const -> bool { return _has_value || _has_exception; }
+    [[nodiscard]] auto isReady() const -> bool { return _has_value || _has_exception; }
 
 private:
     T _value{};
@@ -141,7 +141,8 @@ private:
 template<> class MockSemiFuture<void> {
 public:
     MockSemiFuture() = default;
-    explicit MockSemiFuture(folly::exception_wrapper ex) : _exception(ex), _has_exception(true) {}
+    explicit MockSemiFuture(folly::exception_wrapper ex)
+        : _exception(std::move(ex)), _has_exception(true) {}
 
     auto get() -> void {
         if (_has_exception) {
@@ -152,7 +153,7 @@ public:
         }
     }
 
-    auto isReady() const -> bool { return _ready || _has_exception; }
+    [[nodiscard]] auto isReady() const -> bool { return _ready || _has_exception; }
 
     void setReady() { _ready = true; }
 
@@ -198,22 +199,23 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool { return _fulfilled; }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasValue() const -> bool { return _has_value; }
+    [[nodiscard]] auto hasValue() const -> bool { return _has_value; }
 
-    auto hasException() const -> bool { return _has_exception; }
+    [[nodiscard]] auto hasException() const -> bool { return _has_exception; }
 
     template<typename U = T>
-    auto getValue() const -> std::enable_if_t<!std::is_void_v<U>, const U&> {
+    [[nodiscard]] [[nodiscard]] auto getValue() const
+        -> std::enable_if_t<!std::is_void_v<U>, const U&> {
         if (!_has_value) {
             throw std::logic_error("No value available");
         }
         return _value;
     }
 
-    auto getException() const -> folly::exception_wrapper { return _exception; }
+    [[nodiscard]] auto getException() const -> folly::exception_wrapper { return _exception; }
 
 protected:
     bool _fulfilled = false;
@@ -247,12 +249,12 @@ public:
     }
 
     // isFulfilled method
-    auto isFulfilled() const -> bool { return _fulfilled; }
+    [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }
 
     // Helper methods for testing
-    auto hasException() const -> bool { return _has_exception; }
+    [[nodiscard]] auto hasException() const -> bool { return _has_exception; }
 
-    auto getException() const -> folly::exception_wrapper { return _exception; }
+    [[nodiscard]] auto getException() const -> folly::exception_wrapper { return _exception; }
 
 protected:
     bool _fulfilled = false;
@@ -326,13 +328,12 @@ public:
 
         if (this->_has_exception) {
             return MockFuture<void>(this->_exception);
-        } else {
-            MockFuture<void> future;
-            if (this->_fulfilled) {
-                future.setReady();
-            }
-            return future;
         }
+        MockFuture<void> future;
+        if (this->_fulfilled) {
+            future.setReady();
+        }
+        return future;
     }
 
     // getSemiFuture method - returns associated semi-future
@@ -344,13 +345,12 @@ public:
 
         if (this->_has_exception) {
             return MockSemiFuture<void>(this->_exception);
-        } else {
-            MockSemiFuture<void> semi_future;
-            if (this->_fulfilled) {
-                semi_future.setReady();
-            }
-            return semi_future;
         }
+        MockSemiFuture<void> semi_future;
+        if (this->_fulfilled) {
+            semi_future.setReady();
+        }
+        return semi_future;
     }
 
 private:
@@ -544,8 +544,8 @@ BOOST_AUTO_TEST_CASE(promise_concept_extension_test, *boost::unit_test::timeout(
 
     // Test that types missing semi_promise methods don't satisfy promise concept
     struct IncompletePromise {
-        auto getFuture() -> MockFuture<int> { return MockFuture<int>(); }
-        auto getSemiFuture() -> MockSemiFuture<int> { return MockSemiFuture<int>(); }
+        auto getFuture() -> MockFuture<int> { return {}; }
+        auto getSemiFuture() -> MockSemiFuture<int> { return {}; }
         // Missing setValue(), setException(), isFulfilled()
     };
 
@@ -567,7 +567,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(
 
     // Test that types missing getFuture don't satisfy promise concept
     struct NoGetFuturePromise : public MockSemiPromise<int> {
-        auto getSemiFuture() -> MockSemiFuture<int> { return MockSemiFuture<int>(); }
+        auto getSemiFuture() -> MockSemiFuture<int> { return {}; }
         // Missing getFuture()
     };
 
@@ -578,7 +578,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(
 
     // Test that types missing getSemiFuture don't satisfy promise concept
     struct NoGetSemiFuturePromise : public MockSemiPromise<int> {
-        auto getFuture() -> MockFuture<int> { return MockFuture<int>(); }
+        auto getFuture() -> MockFuture<int> { return {}; }
         // Missing getSemiFuture()
     };
 

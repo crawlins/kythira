@@ -73,9 +73,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_automatic_flattening, *boost::unit_test::
                               // This callback returns Future<int>, not int
                               if (t.hasValue()) {
                                   return FutureFactory::makeFuture(t.value() * 2);
-                              } else {
-                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
                               }
+                              return FutureFactory::makeExceptionalFuture<int>(t.exception());
                           })
                           .via(&executor)
                           .get();
@@ -114,10 +113,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_success_and_error, *boost::unit_t
                               if (t.hasValue()) {
                                   // Success case - return doubled value
                                   return FutureFactory::makeFuture(t.value() * 2);
-                              } else {
-                                  // Error case - return default value
-                                  return FutureFactory::makeFuture(test_value);
-                              }
+                              }  // Error case - return default value
+                              return FutureFactory::makeFuture(test_value);
                           })
                           .via(&executor)
                           .get();
@@ -156,9 +153,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_async_operations, *boost::unit_t
                                   return FutureFactory::makeFuture(folly::Unit{})
                                       .delay(short_delay)
                                       .thenValue([value = t.value()]() { return value * 2; });
-                              } else {
-                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
                               }
+                              return FutureFactory::makeExceptionalFuture<int>(t.exception());
                           })
                           .via(&executor)
                           .get();
@@ -194,9 +190,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_void_futures, *boost::unit_test::
                 if (t.hasValue()) {
                     counter++;
                     return FutureFactory::makeFuture();
-                } else {
-                    return FutureFactory::makeExceptionalFuture<void>(t.exception());
                 }
+                return FutureFactory::makeExceptionalFuture<void>(t.exception());
             })
             .via(&executor)
             .get();
@@ -226,23 +221,20 @@ BOOST_AUTO_TEST_CASE(property_then_try_supports_chaining, *boost::unit_test::tim
                           .thenTry([](Try<int> t) -> Future<int> {
                               if (t.hasValue()) {
                                   return FutureFactory::makeFuture(t.value() + 1);
-                              } else {
-                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
                               }
+                              return FutureFactory::makeExceptionalFuture<int>(t.exception());
                           })
                           .thenTry([](Try<int> t) -> Future<int> {
                               if (t.hasValue()) {
                                   return FutureFactory::makeFuture(t.value() * 2);
-                              } else {
-                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
                               }
+                              return FutureFactory::makeExceptionalFuture<int>(t.exception());
                           })
                           .thenTry([](Try<int> t) -> Future<int> {
                               if (t.hasValue()) {
                                   return FutureFactory::makeFuture(t.value() - 1);
-                              } else {
-                                  return FutureFactory::makeExceptionalFuture<int>(t.exception());
                               }
+                              return FutureFactory::makeExceptionalFuture<int>(t.exception());
                           })
                           .via(&executor)
                           .get();
@@ -277,9 +269,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_propagates_errors, *boost::unit_test::tim
                         // Return exceptional future
                         return FutureFactory::makeExceptionalFuture<int>(
                             folly::exception_wrapper(std::runtime_error(error_message)));
-                    } else {
-                        return FutureFactory::makeExceptionalFuture<int>(t.exception());
                     }
+                    return FutureFactory::makeExceptionalFuture<int>(t.exception());
                 })
                 .via(&executor)
                 .get();
@@ -312,9 +303,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_handles_type_conversions, *boost::unit_te
                 .thenTry([](Try<int> t) -> Future<std::string> {
                     if (t.hasValue()) {
                         return FutureFactory::makeFuture(std::to_string(t.value()));
-                    } else {
-                        return FutureFactory::makeExceptionalFuture<std::string>(t.exception());
                     }
+                    return FutureFactory::makeExceptionalFuture<std::string>(t.exception());
                 })
                 .via(&executor)
                 .get();
@@ -356,10 +346,8 @@ BOOST_AUTO_TEST_CASE(property_then_try_enables_async_retry, *boost::unit_test::t
                                 // Recursive retry
                                 return FutureFactory::makeFuture(attempt_count.load());
                             });
-                    } else {
-                        // Success after retries
-                        return FutureFactory::makeFuture(attempt_count.load());
-                    }
+                    }  // Success after retries
+                    return FutureFactory::makeFuture(attempt_count.load());
                 })
                 .via(&executor)
                 .get();

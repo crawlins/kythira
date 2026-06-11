@@ -81,13 +81,13 @@ BOOST_AUTO_TEST_CASE(test_const_correctness_compilation, *boost::unit_test::time
             static int val = 42;
             return val;
         }
-        const int& value() const {
+        [[nodiscard]] const int& value() const {
             static int val = 42;
             return val;
         }
-        std::exception_ptr exception() const { return std::exception_ptr{}; }
-        bool has_value() const { return true; }
-        bool has_exception() const { return false; }
+        [[nodiscard]] std::exception_ptr exception() const { return std::exception_ptr{}; }
+        [[nodiscard]] bool has_value() const { return true; }
+        [[nodiscard]] bool has_exception() const { return false; }
     };
 
     // Test that const and non-const access methods are properly handled
@@ -117,16 +117,16 @@ BOOST_AUTO_TEST_CASE(test_template_constraint_syntax, *boost::unit_test::timeout
     // Test with void specialization (common source of template issues)
     struct mock_void_future {
         void get() {}
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+        [[nodiscard]] bool isReady() const { return true; }
+        [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
         void then(std::function<void()>) {}
         void onError(std::function<void(std::exception_ptr)>) {}
     };
 
     struct mock_int_future {
         int get() { return 42; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+        [[nodiscard]] bool isReady() const { return true; }
+        [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
         void then(std::function<void(int)>) {}
         int onError(std::function<int(std::exception_ptr)>) { return 0; }
     };
@@ -167,13 +167,13 @@ BOOST_AUTO_TEST_CASE(test_void_specialization_handling, *boost::unit_test::timeo
     struct mock_void_semi_promise {
         void setValue() {}
         void setException(std::exception_ptr) {}
-        bool isFulfilled() const { return true; }
+        [[nodiscard]] bool isFulfilled() const { return true; }
     };
 
     struct mock_int_semi_promise {
         void setValue(int) {}
         void setException(std::exception_ptr) {}
-        bool isFulfilled() const { return true; }
+        [[nodiscard]] bool isFulfilled() const { return true; }
     };
 
     // Test that void and non-void specializations can coexist
@@ -275,19 +275,21 @@ BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, *boost::unit_test::
             static int val = 42;
             return val;
         }
-        const int& value() const {
+        [[nodiscard]] const int& value() const {
             static int val = 42;
             return val;
         }
-        bool hasValue() const { return true; }
-        bool hasException() const { return false; }
-        folly::exception_wrapper exception() const { return folly::exception_wrapper{}; }
+        [[nodiscard]] bool hasValue() const { return true; }
+        [[nodiscard]] bool hasException() const { return false; }
+        [[nodiscard]] folly::exception_wrapper exception() const {
+            return folly::exception_wrapper{};
+        }
     };
 
     struct valid_future_type {
         int get() && { return 42; }
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+        [[nodiscard]] bool isReady() const { return true; }
+        [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
         void thenValue(std::function<void(int)>) && {}
     };
 
@@ -329,16 +331,18 @@ BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, *boost::unit_test::
 
     // Test 3: Edge cases - void specializations
     struct valid_void_try_type {
-        bool hasValue() const { return true; }
-        bool hasException() const { return false; }
-        folly::exception_wrapper exception() const { return folly::exception_wrapper{}; }
+        [[nodiscard]] bool hasValue() const { return true; }
+        [[nodiscard]] bool hasException() const { return false; }
+        [[nodiscard]] folly::exception_wrapper exception() const {
+            return folly::exception_wrapper{};
+        }
         // No value() method for void case
     };
 
     struct valid_void_future_type {
         void get() && {}
-        bool isReady() const { return true; }
-        bool wait(std::chrono::milliseconds) const { return true; }
+        [[nodiscard]] bool isReady() const { return true; }
+        [[nodiscard]] bool wait(std::chrono::milliseconds) const { return true; }
         void thenValue(std::function<void()>) && {}
     };
 

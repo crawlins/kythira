@@ -334,7 +334,7 @@ BOOST_AUTO_TEST_CASE(test_metrics_consistency_concurrent,
         std::vector<void*> local_ptrs;
         while (!stop) {
             void* ptr = pool.allocate(test_allocation_size);
-            if (ptr) {
+            if (ptr != nullptr) {
                 local_ptrs.push_back(ptr);
             }
             if (local_ptrs.size() > 10) {
@@ -480,7 +480,7 @@ BOOST_AUTO_TEST_CASE(test_metrics_capacity_planning,
 
     for (size_t i = 0; i < total_blocks / 2; ++i) {
         void* ptr = pool.allocate(test_allocation_size);
-        if (ptr) {
+        if (ptr != nullptr) {
             ptrs.push_back(ptr);
             max_concurrent = std::max(max_concurrent, ptrs.size());
         }

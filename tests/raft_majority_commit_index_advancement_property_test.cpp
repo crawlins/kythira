@@ -117,7 +117,9 @@ BOOST_AUTO_TEST_CASE(raft_majority_commit_index_advancement_property_test,
 
         // Generate random cluster configuration
         std::size_t cluster_size = cluster_size_dist(gen);
-        if (cluster_size % 2 == 0) cluster_size++;  // Ensure odd number for clear majority
+        if (cluster_size % 2 == 0) {
+            cluster_size++;  // Ensure odd number for clear majority
+        }
 
         const std::size_t follower_count = cluster_size - 1;  // Exclude leader
         const std::size_t majority_needed = (cluster_size / 2) + 1;

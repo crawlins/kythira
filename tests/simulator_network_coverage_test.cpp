@@ -48,7 +48,9 @@ template<typename Pred>
 bool wait_for(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{2000}) {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > deadline) return false;
+        if (std::chrono::steady_clock::now() - start > deadline) {
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
     return true;
@@ -144,7 +146,7 @@ void add_edge_both(network_simulator::NetworkSimulator<net_types>& sim, const st
 }
 
 // Helper: send a raw serialized message from node_src to node_dst address.
-void send_raw(std::shared_ptr<network_simulator::NetworkNode<net_types>> src,
+void send_raw(const std::shared_ptr<network_simulator::NetworkNode<net_types>>& src,
               const std::string& dst_addr, const std::vector<std::byte>& payload) {
     net_types::message_type msg(src->address(), 0, dst_addr, 5000, payload);
     src->send(std::move(msg));  // fire-and-forget; delivers synchronously to dst queue

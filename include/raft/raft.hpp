@@ -264,7 +264,7 @@ private:
     // Structure to track client session state
     struct client_session {
         serial_number_t last_serial_number{0};
-        std::vector<std::byte> last_response{};
+        std::vector<std::byte> last_response;
     };
 
     // Map from client_id to session state
@@ -285,20 +285,20 @@ private:
     // ========================================================================
 
     // RPC handlers
-    auto handle_request_vote(const request_vote_request_type& request)
+    [[nodiscard]] auto handle_request_vote(const request_vote_request_type& request)
         -> request_vote_response_type;
-    auto handle_append_entries(const append_entries_request_type& request)
+    [[nodiscard]] auto handle_append_entries(const append_entries_request_type& request)
         -> append_entries_response_type;
-    auto handle_install_snapshot(const install_snapshot_request_type& request)
+    [[nodiscard]] auto handle_install_snapshot(const install_snapshot_request_type& request)
         -> install_snapshot_response_type;
 
     // Election and timing
     auto randomize_election_timeout() -> void;
     auto reset_election_timer() -> void;
-    auto election_timeout_elapsed() const -> bool;
+    [[nodiscard]] auto election_timeout_elapsed() const -> bool;
 
     // Heartbeat timing
-    auto heartbeat_timeout_elapsed() const -> bool;
+    [[nodiscard]] auto heartbeat_timeout_elapsed() const -> bool;
     auto send_heartbeats() -> void;
 
     // State transitions
@@ -309,9 +309,9 @@ private:
 
     // Log operations
     auto append_log_entry(const log_entry_type& entry) -> void;
-    auto get_last_log_index() const -> log_index_type;
-    auto get_last_log_term() const -> term_id_type;
-    auto get_log_entry(log_index_type index) const -> std::optional<log_entry_type>;
+    [[nodiscard]] auto get_last_log_index() const -> log_index_type;
+    [[nodiscard]] auto get_last_log_term() const -> term_id_type;
+    [[nodiscard]] auto get_log_entry(log_index_type index) const -> std::optional<log_entry_type>;
 
     // Replication helpers
     auto send_append_entries_to(node_id_type target) -> void;
@@ -714,7 +714,8 @@ auto node<Types>::submit_command_with_session(client_id_t client_id, serial_numb
             auto future = promise.getFuture();
             promise.setValue(session.last_response);
             return future;
-        } else if (serial_number > session.last_serial_number + 1) {
+        }
+        if (serial_number > session.last_serial_number + 1) {
             // Skipped serial numbers - reject
             _logger.warning(
                 "Rejected command: skipped serial numbers",
@@ -1038,31 +1039,31 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                     throw;
                 }
             })
-        .thenError(
-            [this, node_id, start_time](folly::exception_wrapper ew) -> std::vector<std::byte> {
-                std::lock_guard<std::mutex> lock(_mutex);
+        .thenError([this, node_id,
+                    start_time](const folly::exception_wrapper& ew) -> std::vector<std::byte> {
+            std::lock_guard<std::mutex> lock(_mutex);
 
-                auto end_time = std::chrono::steady_clock::now();
-                auto duration =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            auto end_time = std::chrono::steady_clock::now();
+            auto duration =
+                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-                _logger.error("Read request failed",
-                              {{"node_id", node_id_to_string(node_id)},
-                               {"error", ew.what().toStdString()},
-                               {"duration_ms", std::to_string(duration.count())}});
+            _logger.error("Read request failed",
+                          {{"node_id", node_id_to_string(node_id)},
+                           {"error", ew.what().toStdString()},
+                           {"duration_ms", std::to_string(duration.count())}});
 
-                _metrics.set_metric_name("raft_read_request_failed");
-                _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                _metrics.add_dimension("reason", "heartbeat_collection_failed");
-                _metrics.add_one();
-                _metrics.emit();
+            _metrics.set_metric_name("raft_read_request_failed");
+            _metrics.add_dimension("node_id", node_id_to_string(node_id));
+            _metrics.add_dimension("reason", "heartbeat_collection_failed");
+            _metrics.add_one();
+            _metrics.emit();
 
-                // Re-throw the exception
-                ew.throw_exception();
+            // Re-throw the exception
+            ew.throw_exception();
 
-                // This line is unreachable but needed for compilation
-                return std::vector<std::byte>{};
-            });
+            // This line is unreachable but needed for compilation
+            return std::vector<std::byte>{};
+        });
 }
 
 template<raft_types Types>
@@ -2461,7 +2462,7 @@ auto node<Types>::start_election() -> void {
                 metrics.emit();
             }
         })
-        .thenError([this, current_term, node_id, &logger, &metrics](std::exception_ptr ex) {
+        .thenError([this, current_term, node_id, &logger, &metrics](const std::exception_ptr& ex) {
             std::lock_guard<std::mutex> lock(_mutex);
 
             try {
@@ -3252,8 +3253,8 @@ auto node<Types>::apply_committed_entries() -> void {
 
                 // Stop applying further entries
                 break;
-
-            } else if (policy == application_failure_policy::retry) {
+            }
+            if (policy == application_failure_policy::retry) {
                 // Retry: Attempt to retry application with exponential backoff
                 _logger.warning(
                     "Retrying entry application due to failure (policy: retry)",

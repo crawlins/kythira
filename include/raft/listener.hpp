@@ -43,7 +43,7 @@ public:
     auto close() -> void { _listening = false; }
 
     // Check if listener is active
-    auto is_listening() const -> bool { return _listening; }
+    [[nodiscard]] auto is_listening() const -> bool { return _listening; }
 
     // Get local endpoint
     auto local_endpoint() const -> endpoint { return _local; }

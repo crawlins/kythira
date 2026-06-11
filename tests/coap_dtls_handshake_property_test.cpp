@@ -75,6 +75,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
                 client_config.ca_file = test_ca_file;
                 client_config.enable_session_resumption = false;
                 break;
+
+            default:
+                break;
         }
 
         // Create test types and client
@@ -280,6 +283,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::time
             case 6:  // DTLS disabled (should not throw)
                 client_config.enable_dtls = false;
                 should_throw = false;
+                break;
+
+            default:
                 break;
         }
 

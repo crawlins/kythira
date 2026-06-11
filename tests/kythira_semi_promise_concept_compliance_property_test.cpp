@@ -193,7 +193,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, *boost::unit_test::tim
     struct WrongSignaturePromise {
         int setValue(int value) { return 0; }  // Wrong return type
         void setException(folly::exception_wrapper ex) {}
-        bool isFulfilled() const { return false; }
+        [[nodiscard]] bool isFulfilled() const { return false; }
     };
 
     static_assert(!semi_promise<WrongSignaturePromise, int>,
