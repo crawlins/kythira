@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: June 10, 2026
+**Last Updated**: June 11, 2026
 
 ## Current Status
 
@@ -17,9 +17,16 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   fixing narrowing conversions, enum sizes, branch-clone, else-after-return,
   use-after-move suppressions, and compiler diagnostic errors in `future.hpp`
   and `coap_transport_impl.hpp`.
-- **Chaos testing spec created**: libfiu-based fault injection design at
-  `.kiro/specs/chaos-testing/`; macro approach (`fiu_do_on` in production
+- **libfiu integration spec created**: fault injection chaos testing design at
+  `.kiro/specs/libfiu-integration/`; macro approach (`fiu_do_on` in production
   sources, compiles to no-op without `FIU_ENABLE`); 21 tasks across 5 phases.
+- **Membership change spec created**: joint consensus (Raft §6) implementation
+  design at `.kiro/specs/membership-change/`; 20 tasks across 7 phases covering
+  log entry type discriminant, leader log append, joint quorum, apply path,
+  follower update, property tests, and node recovery on restart.
+- **Node bootstrap spec created**: `peer_finder` concept + `ClusterJoin` RPC for
+  fresh-node cluster join at `.kiro/specs/node-bootstrap/`; 15 tasks across 7
+  phases; `no_op_peer_finder` default preserves all existing behaviour.
 
 ### What Changed (June 10, 2026)
 
@@ -86,14 +93,26 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - [ ] **Proxygen HTTP transport** — Facebook's framework, HTTP/3/QUIC,
   connection multiplexing, native Folly integration
 
+### Protocol Completeness
+
+- [ ] **Membership change (add/remove server)** — joint consensus (Raft §6)
+  implementation; `add_server()`/`remove_server()` API exists but log append,
+  joint quorum, config-entry apply path, and node recovery are all missing;
+  spec at `.kiro/specs/membership-change/`; 20 tasks across 7 phases
+- [ ] **Node bootstrap** — `peer_finder` concept + `ClusterJoin` RPC so a fresh
+  node can locate an existing cluster and request membership without out-of-band
+  `set_cluster_configuration()` calls; spec at `.kiro/specs/node-bootstrap/`;
+  15 tasks across 7 phases; backwards-compatible (`no_op_peer_finder` default)
+
 ### Minor Enhancements
 
 - [ ] **State machine examples** — counter, register, replicated log, and
   distributed lock examples for documentation/demonstration purposes
   (counter and register already exist as test targets)
-- [ ] **Chaos testing** — libfiu fault injection; spec at
-  `.kiro/specs/chaos-testing/`; 21 tasks (build integration, `fiu_do_on` fault
-  points in persistence/network/state machine, 8 safety/liveness property tests)
+- [ ] **libfiu integration** — fault injection chaos testing; spec at
+  `.kiro/specs/libfiu-integration/`; 21 tasks (build integration, `fiu_do_on`
+  fault points in persistence/network/state machine, 8 safety/liveness property
+  tests)
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

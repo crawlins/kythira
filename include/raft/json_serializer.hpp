@@ -77,14 +77,12 @@ public:
         obj["term"] = resp.term();
         obj["success"] = resp.success();
 
-        if (resp.conflict_index().has_value()) {
-            obj["conflict_index"] =
-                *resp.conflict_index();  // NOLINT(bugprone-unchecked-optional-access)
+        if (const auto& ci = resp.conflict_index()) {
+            obj["conflict_index"] = *ci;
         }
 
-        if (resp.conflict_term().has_value()) {
-            obj["conflict_term"] =
-                *resp.conflict_term();  // NOLINT(bugprone-unchecked-optional-access)
+        if (const auto& ct = resp.conflict_term()) {
+            obj["conflict_term"] = *ct;
         }
 
         return json_to_bytes(boost::json::serialize(obj));

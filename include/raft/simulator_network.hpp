@@ -7,6 +7,7 @@
 
 #include <network_simulator/network_simulator.hpp>
 
+#include <iostream>
 #include <memory>
 #include <shared_mutex>
 #include <chrono>
@@ -348,9 +349,11 @@ private:
                 auto msg = std::move(msg_future).get();
                 handle_message(std::move(msg));
             } catch (const std::exception&) {  // NOLINT(bugprone-empty-catch)
-                // Timeout or error - expected when no messages are available
-            } catch (...) {  // NOLINT(bugprone-empty-catch)
-                // Unknown error - continue
+                // Timeout or network error during receive — expected when no
+                // messages arrive within the poll window; continue looping.
+            } catch (...) {
+                std::cerr << "[simulator_network_server] unexpected exception in "
+                             "process_messages\n";
             }
         }
     }
@@ -415,8 +418,10 @@ private:
             }
 
             // Unknown message type - ignore
-        } catch (...) {  // NOLINT(bugprone-empty-catch)
-            // Error handling message - ignore
+        } catch (const std::exception& e) {
+            std::cerr << "[simulator_network_server] error handling message: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[simulator_network_server] unknown error handling message\n";
         }
     }
 
@@ -437,8 +442,10 @@ private:
 
             // Send response (fire and forget)
             _node->send(std::move(msg));
-        } catch (...) {  // NOLINT(bugprone-empty-catch)
-            // Error sending response - ignore
+        } catch (const std::exception& e) {
+            std::cerr << "[simulator_network_server] error sending response: " << e.what() << "\n";
+        } catch (...) {
+            std::cerr << "[simulator_network_server] unknown error sending response\n";
         }
     }
 };
