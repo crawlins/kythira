@@ -12,9 +12,9 @@ join an existing cluster without an out-of-band call to `set_cluster_configurati
 which bypasses the Raft protocol and is only safe before the cluster starts. A
 new node intended to join a running cluster has no way to do so at all.
 
-The design introduces a `peer_finder` concept as an abstract peer discovery
+The design introduces a `peer_discovery` concept as an abstract peer discovery
 interface, a new `ClusterJoin` RPC pair, and a bootstrap flow integrated into
-`node::start()`. All are optional — a node with no `peer_finder` configured
+`node::start()`. All are optional — a node with no `peer_discovery` configured
 (the default) behaves exactly as today.
 
 ## Glossary
@@ -24,21 +24,21 @@ interface, a new `ClusterJoin` RPC pair, and a bootstrap flow integrated into
   crashed-and-restarted node, which will have non-trivial persisted state.
 - **Seed peer**: A cluster node whose network address is known ahead of time and
   used to bootstrap initial contact. Seed peers do not need to be the leader.
-- **`peer_finder`**: An abstraction that, given a timeout, returns a list of
+- **`peer_discovery`**: An abstraction that, given a timeout, returns a list of
   `peer_info` records (node ID + contact address) for seed peers.
-- **`peer_info`**: A `(node_id, address)` pair returned by a `peer_finder`.
+- **`peer_info`**: A `(node_id, address)` pair returned by a `peer_discovery`.
 - **Cluster join**: The full sequence by which a fresh node contacts a seed peer,
   locates the leader, and the leader executes `add_server()` on its behalf.
-- **Cluster founding**: The degenerate case where a fresh node's `peer_finder`
-  returns no peers (or there is no `peer_finder`). The node bootstraps as a
+- **Cluster founding**: The degenerate case where a fresh node's `peer_discovery`
+  returns no peers (or there is no `peer_discovery`). The node bootstraps as a
   single-node cluster and elects itself leader.
-- **`no_op_peer_finder`**: The default `peer_finder` implementation that always
+- **`no_op_peer_discovery`**: The default `peer_discovery` implementation that always
   returns an empty list, triggering cluster founding. Preserves existing
   single-node and test behaviour.
 
 ## Requirements
 
-### Requirement 1: `peer_finder` Concept
+### Requirement 1: `peer_discovery` Concept
 
 **User Story:** As a library user, I want a clean abstract interface for peer
 discovery so I can plug in different discovery mechanisms (static config, DNS,
@@ -46,40 +46,48 @@ multicast, service registry) without changing the Raft node code.
 
 #### Acceptance Criteria
 
-1. A `peer_finder<P, NodeId, Address>` concept SHALL require that `P` provides:
+1. A `peer_discovery<P, NodeId, Address>` concept SHALL require that `P` provides:
    - `typename P::node_id_type` equal to `NodeId`
    - `typename P::address_type` equal to `Address`
    - `find_peers(std::chrono::milliseconds timeout) -> kythira::Future<std::vector<peer_info<NodeId, Address>>>`
 2. `peer_info<NodeId, Address>` SHALL be a struct with a `node_id` field and an
    `address` field, constructible from `(node_id, address)`.
-3. The `peer_finder` concept SHALL be defined in `include/raft/peer_finder.hpp`
-   alongside `peer_info` and `no_op_peer_finder`.
+3. The `peer_discovery` concept SHALL be defined in `include/raft/peer_discovery.hpp`
+   alongside `peer_info` and `no_op_peer_discovery`.
 4. `find_peers()` SHALL return a future that resolves with whatever peers have
    been discovered within `timeout`. Implementations that have no asynchronous
-   work (e.g. `static_peer_finder`) MAY resolve the future immediately.
+   work (e.g. `static_peer_discovery`) MAY resolve the future immediately.
    Implementations such as CoAP multicast that wait for responses over the
    network SHOULD resolve the future once the timeout elapses or all expected
    responses have arrived, whichever comes first.
 5. Calling `find_peers()` multiple times SHALL be safe and MAY return different
    results on each call (discovery is stateless with respect to the caller).
+6. The `peer_discovery<P, NodeId, Address>` concept SHALL require that `P`
+   provides a method
+   `register_node(NodeId self_id, Address self_address) -> kythira::Future<void>`
+   that registers the owning node's identity with the discovery back-end.
+   `register_node` MAY be called before the first `find_peers()` call and SHALL
+   be idempotent (calling it again with the same arguments re-registers without
+   error). Implementations that do not need this information MAY return an
+   immediately-resolved future and otherwise ignore the arguments.
 
-### Requirement 2: `no_op_peer_finder` Default
+### Requirement 2: `no_op_peer_discovery` Default
 
 **User Story:** As a developer using kythira today, I want the introduction of
-`peer_finder` to be entirely backwards-compatible so that existing code and tests
+`peer_discovery` to be entirely backwards-compatible so that existing code and tests
 require no changes.
 
 #### Acceptance Criteria
 
-1. `no_op_peer_finder<NodeId, Address>` SHALL satisfy `peer_finder` and SHALL
+1. `no_op_peer_discovery<NodeId, Address>` SHALL satisfy `peer_discovery` and SHALL
    always return an empty vector from `find_peers()`.
-2. `raft_types` SHALL gain a `peer_finder_type` member that defaults to
-   `no_op_peer_finder<node_id_type, std::string>`.
-3. WHEN `peer_finder_type` is `no_op_peer_finder` THEN bootstrap SHALL NOT
+2. `raft_types` SHALL gain a `peer_discovery_type` member that defaults to
+   `no_op_peer_discovery<node_id_type, std::string>`.
+3. WHEN `peer_discovery_type` is `no_op_peer_discovery` THEN bootstrap SHALL NOT
    attempt any network contact and the node SHALL found a single-node cluster
    exactly as it does today.
 4. All 279 existing tests SHALL pass without modification after adding
-   `peer_finder_type` to `raft_types`.
+   `peer_discovery_type` to `raft_types`.
 
 ### Requirement 3: Fresh Node Detection
 
@@ -130,13 +138,13 @@ coordination.
 
 ### Requirement 5: Bootstrap Protocol
 
-**User Story:** As a fresh node with a configured `peer_finder`, I need an
+**User Story:** As a fresh node with a configured `peer_discovery`, I need an
 automatic startup sequence that contacts seed peers, locates the leader, and
 joins the cluster so that I begin participating without manual intervention.
 
 #### Acceptance Criteria
 
-1. WHEN a fresh node starts AND `peer_finder.find_peers()` returns a non-empty
+1. WHEN a fresh node starts AND `peer_discovery.find_peers()` returns a non-empty
    list THEN the node SHALL attempt to join the cluster before entering its normal
    election-timer loop.
 2. The join attempt SHALL:
@@ -164,38 +172,68 @@ ready to accept `add_server()` calls from subsequently joining nodes.
 
 #### Acceptance Criteria
 
-1. WHEN a fresh node starts AND `peer_finder.find_peers()` returns an empty list
+1. WHEN a fresh node starts AND `peer_discovery.find_peers()` returns an empty list
    THEN the node SHALL proceed as if `set_cluster_configuration({self})` had been
    called — i.e., it starts with its single-node configuration and participates
    in normal election logic (which will elect it leader immediately).
-2. WHEN a fresh node starts with `no_op_peer_finder` (the default) THEN it SHALL
+2. WHEN a fresh node starts with `no_op_peer_discovery` (the default) THEN it SHALL
    behave identically to the current behaviour (single-node cluster founding).
 3. A founding node SHALL NOT require any new configuration beyond the existing
    constructor parameters.
 
-### Requirement 7: `peer_finder` Implementations
+### Requirement 7: `peer_discovery` Implementations
 
-**User Story:** As a developer, I want at least two concrete `peer_finder`
+**User Story:** As a developer, I want at least two concrete `peer_discovery`
 implementations so I can use bootstrap in both test and real-network contexts.
 
 #### Acceptance Criteria
 
-1. `static_peer_finder<NodeId, Address>` SHALL be provided in
-   `include/raft/peer_finder.hpp`. It is constructed with a fixed
+1. `static_peer_discovery<NodeId, Address>` SHALL be provided in
+   `include/raft/peer_discovery.hpp`. It is constructed with a fixed
    `std::vector<peer_info<NodeId, Address>>` and always returns that list from
-   `find_peers()`.
-2. `coap_multicast_peer_finder` SHALL be provided in `include/raft/coap_transport.hpp`
+   `find_peers()`. WHEN `register_node(self_id, self_address)` is called, it
+   SHALL verify that a `peer_info` with `node_id == self_id` exists in the fixed
+   list; if no such entry is found it SHALL throw `std::invalid_argument`.
+2. `coap_multicast_peer_discovery` SHALL be provided in `include/raft/coap_transport.hpp`
    (alongside the existing CoAP client). It SHALL wrap the existing
    `coap_client::discover_raft_nodes()` multicast call and return the discovered
    nodes as `peer_info` records. The existing discovery implementation is reused
    unchanged; this class is a thin adaptor.
-3. Both implementations SHALL satisfy the `peer_finder` concept (verified by
-   `static_assert`).
+3. `rfc1035_peer_discovery` SHALL be provided in
+   `include/raft/rfc1035_peer_discovery.hpp`. It partially implements the
+   `peer_discovery` concept — it provides the `find_peers` method but not
+   `register_node`, and therefore does NOT itself satisfy the full concept:
+   a. WHEN `find_peers()` is called, the instance SHALL use RFC 1035 and the RFCs
+      that update it to query for both A and AAAA records for the shared DNS name
+      that represents the cluster. Each record in the response represents one
+      cluster node; the IP addresses returned SHALL be provided as the full list
+      of `peer_info` entries to the caller without any self-filtering.
+4. `rfc2136_ldns_discovery` SHALL be provided in `include/raft/rfc2136_ldns_discovery.hpp`
+   and SHALL use RFC 2136 DNS Dynamic Update (via libldns) to register nodes and
+   delegate peer discovery to `rfc1035_peer_discovery`:
+   a. WHEN `register_node(self_id, self_address)` is called it SHALL initiate a
+      sequence that registers the provided node with the DNS server it is
+      configured to use via the RFC 2136 protocol, by sending a DNS UPDATE adding
+      an A record (IPv4 `self_address`) or AAAA record (IPv6 `self_address`) for
+      the configured shared DNS name. The returned future SHALL resolve once the
+      server acknowledges the update with RCODE NOERROR.
+   b. WHEN `find_peers()` is called, the instance SHALL delegate to its embedded
+      `rfc1035_peer_discovery` instance and then filter out the entry whose
+      address matches `self_address` before returning the result to the caller.
+   c. The destructor SHALL send an RFC 2136 UPDATE deleting the node's own A or
+      AAAA record (best-effort; exceptions are swallowed).
+   d. Optional TSIG authentication (RFC 2845) SHALL be supported via a key name,
+      algorithm, and base64-encoded key secret carried in a configuration struct.
+   e. The short-TTL design (default 30 s) ensures that records from nodes that
+      crash without calling the destructor expire automatically.
+5. All full implementations SHALL satisfy the `peer_discovery` concept (verified
+   by `static_assert`). `rfc1035_peer_discovery` is explicitly excluded as it
+   only partially implements the concept.
 
-### Requirement 9: Reconnection via `peer_finder` for Isolated Restarting Nodes
+### Requirement 9: Reconnection via `peer_discovery` for Isolated Restarting Nodes
 
 **User Story:** As a restarting node with valid persisted state that cannot reach
-any of its previously known peers, I want to use the `peer_finder` to discover
+any of its previously known peers, I want to use the `peer_discovery` to discover
 current peer addresses and re-establish contact with the cluster so that I resume
 normal participation without operator intervention.
 
@@ -208,11 +246,11 @@ the cluster so normal Raft replication can resume.
 
 #### Acceptance Criteria
 
-1. WHEN a restarting node starts AND a `peer_finder` is configured AND the node
+1. WHEN a restarting node starts AND a `peer_discovery` is configured AND the node
    has not received any `AppendEntries` or `RequestVote` message within a
-   configurable isolation timeout (`peer_finder_isolation_timeout`, default
+   configurable isolation timeout (`peer_discovery_isolation_timeout`, default
    equal to `election_timeout * 2`) THEN the node SHALL call
-   `peer_finder.find_peers()` to discover current peer addresses.
+   `peer_discovery.find_peers()` to discover current peer addresses.
 2. WHEN `find_peers()` returns one or more `peer_info` records THEN the node
    SHALL update its internal peer address table so that subsequent RPCs route
    to the discovered addresses.
@@ -230,8 +268,28 @@ the cluster so normal Raft replication can resume.
 6. WHEN the node receives any valid `AppendEntries` or `RequestVote` from a
    known peer (before or after reconnection) THEN the reconnection loop SHALL
    stop immediately.
-7. WHEN `peer_finder_type` is `no_op_peer_finder` THEN reconnection SHALL NOT
+7. WHEN `peer_discovery_type` is `no_op_peer_discovery` THEN reconnection SHALL NOT
    be attempted (consistent with the backwards-compatibility requirement).
+
+### Requirement 10: Node Registration at Startup
+
+**User Story:** As a node starting up, I want my identity automatically registered
+with the peer discovery back-end so that other nodes can discover me without any
+additional call from application code.
+
+#### Acceptance Criteria
+
+1. A node SHALL call `peer_discovery.register_node(self_id, self_address)` inside
+   `start()`, after `initialize_from_storage()` and before any call to
+   `find_peers()` or the bootstrap / reconnection loops.
+2. The `register_node` call applies to ALL nodes — both fresh nodes entering the
+   bootstrap flow and restarting nodes entering the reconnection flow. It is not
+   conditional on `is_fresh_node()`.
+3. The future returned by `register_node` SHALL be awaited before proceeding;
+   if it is rejected the node SHALL propagate the exception and abort startup.
+4. WHEN `peer_discovery_type` is `no_op_peer_discovery` THEN `register_node`
+   SHALL return an immediately-resolved future and impose no observable overhead,
+   preserving the backwards-compatibility guarantee of Requirement 2.
 
 ### Requirement 8: Tests
 
@@ -240,9 +298,9 @@ that regressions are caught before they reach production.
 
 #### Acceptance Criteria
 
-1. A unit test SHALL verify that a fresh node with `no_op_peer_finder` founds a
+1. A unit test SHALL verify that a fresh node with `no_op_peer_discovery` founds a
    single-node cluster (existing behaviour, confirmed to be unchanged).
-2. A unit test SHALL verify that a fresh node with a `static_peer_finder` pointing
+2. A unit test SHALL verify that a fresh node with a `static_peer_discovery` pointing
    at a running single-node cluster joins successfully and reaches the same
    `last_applied` as the existing leader after a few commands.
 3. A property test SHALL verify that when a fresh node's seed peers are all
@@ -252,11 +310,14 @@ that regressions are caught before they reach production.
 5. A unit test SHALL verify that `stop()` called during the bootstrap retry loop
    terminates cleanly without hanging.
 6. A property test SHALL verify that a restarting node that cannot reach its
-   configured peers uses `peer_finder` to discover updated addresses and
+   configured peers uses `peer_discovery` to discover updated addresses and
    resumes normal operation once contact is restored.
 7. A property test SHALL verify that a restarting node that discovers updated
-   peer addresses via `peer_finder` does NOT send a `ClusterJoinRequest` and
+   peer addresses via `peer_discovery` does NOT send a `ClusterJoinRequest` and
    does NOT cause a second `add_server()` call on the leader.
 8. A unit test SHALL verify that the reconnection loop stops immediately when
    a valid `AppendEntries` is received from any peer.
-9. All 279 existing tests SHALL pass without modification.
+9. A unit test SHALL verify that `register_node` is called exactly once during
+   `start()` for both a fresh node and a restarting node, and that startup is
+   aborted if `register_node` returns a rejected future.
+10. All 279 existing tests SHALL pass without modification.

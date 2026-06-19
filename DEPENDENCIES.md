@@ -49,6 +49,22 @@ This document lists the dependencies required to build and use the network simul
 
 ## Optional Dependencies
 
+### libfiu (Fault Injection Userspace) — test-only
+- **Status**: Optional, test-only — chaos test targets only compiled when detected
+- **Purpose**: Provides `fiu_do_on()` / `fiu_fail()` fault injection API used by chaos tests
+- **Minimum Version**: 0.6
+- **Installation**:
+  ```bash
+  # Ubuntu/Debian
+  sudo apt install libfiu-dev
+
+  # Verify
+  pkg-config --modversion libfiu
+  ls /usr/include/fiu.h /usr/include/fiu-local.h /usr/include/fiu-control.h
+  ```
+- **Notes**: When libfiu is absent, the build is fully clean; chaos test targets are simply
+  not compiled. The production library and all other tests are never affected.
+
 ### Property-Based Testing Library
 - **RapidCheck** or similar C++ property-based testing framework
 - Required for property-based tests (tasks 4.5+)

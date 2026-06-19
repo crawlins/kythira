@@ -174,6 +174,10 @@ add_raft_completion_test(raft_types_test raft_types_test.cpp)
 add_raft_completion_test(raft_state_machine_concept_test raft_state_machine_concept_test.cpp)
 add_raft_completion_test(persistence_concept_test persistence_concept_test.cpp)
 add_raft_completion_test(persistence_round_trip_property_test persistence_round_trip_property_test.cpp)
+
+# New component unit tests (file_persistence_engine + tcp_rpc)
+add_raft_completion_test(file_persistence_unit_test file_persistence_unit_test.cpp)
+add_raft_completion_test(tcp_rpc_unit_test tcp_rpc_unit_test.cpp)
 add_raft_completion_test(raft_follower_acknowledgment_tracking_property_test raft_follower_acknowledgment_tracking_property_test.cpp)
 add_raft_completion_test(raft_majority_commit_index_advancement_property_test raft_majority_commit_index_advancement_property_test.cpp)
 add_raft_completion_test(raft_non_blocking_slow_followers_property_test raft_non_blocking_slow_followers_property_test.cpp)
@@ -878,6 +882,50 @@ set_tests_properties(raft_node_unit_test PROPERTIES
     LABELS "unit;raft"
 )
 
+# Bootstrap property tests
+add_executable(bootstrap_property_test bootstrap_property_test.cpp)
+target_link_libraries(bootstrap_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(bootstrap_property_test PRIVATE Folly::folly)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    target_link_libraries(bootstrap_property_test PRIVATE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+elseif(TARGET Boost::context)
+    target_link_libraries(bootstrap_property_test PRIVATE Boost::context)
+endif()
+target_compile_features(bootstrap_property_test PRIVATE cxx_std_23)
+add_test(NAME bootstrap_property_test COMMAND bootstrap_property_test)
+set_tests_properties(bootstrap_property_test PROPERTIES
+    TIMEOUT 120
+    LABELS "property;raft;bootstrap"
+)
+
+# Bootstrap unit tests
+add_executable(bootstrap_unit_test bootstrap_unit_test.cpp)
+target_link_libraries(bootstrap_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(bootstrap_unit_test PRIVATE Folly::folly)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    target_link_libraries(bootstrap_unit_test PRIVATE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+elseif(TARGET Boost::context)
+    target_link_libraries(bootstrap_unit_test PRIVATE Boost::context)
+endif()
+target_compile_features(bootstrap_unit_test PRIVATE cxx_std_23)
+add_test(NAME bootstrap_unit_test COMMAND bootstrap_unit_test)
+set_tests_properties(bootstrap_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;bootstrap"
+)
+
 # Leader append-only property test
 add_executable(raft_leader_append_only_property_test raft_leader_append_only_property_test.cpp)
 target_link_libraries(raft_leader_append_only_property_test PRIVATE
@@ -1496,3 +1544,37 @@ set_tests_properties(raft_rpc_handler_coverage_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;coverage;raft"
 )
+
+# DNS peer discovery unit tests — require libldns; tests are no-ops if not available.
+if(LIBLDNS_FOUND)
+    add_executable(dns_peer_discovery_unit_test dns_peer_discovery_unit_test.cpp)
+    target_link_libraries(dns_peer_discovery_unit_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        ${LIBLDNS_LIBRARIES}
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(dns_peer_discovery_unit_test PRIVATE Folly::folly)
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+        target_link_libraries(dns_peer_discovery_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(dns_peer_discovery_unit_test PRIVATE Boost::json)
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+        target_link_libraries(dns_peer_discovery_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(dns_peer_discovery_unit_test PRIVATE Boost::context)
+    endif()
+    target_include_directories(dns_peer_discovery_unit_test PRIVATE ${LIBLDNS_INCLUDE_DIRS})
+    target_compile_features(dns_peer_discovery_unit_test PRIVATE cxx_std_23)
+    add_test(NAME dns_peer_discovery_unit_test COMMAND dns_peer_discovery_unit_test)
+    set_tests_properties(dns_peer_discovery_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;dns;peer_discovery"
+    )
+else()
+    message(STATUS "libldns not found — dns_peer_discovery_unit_test will not be built")
+endif()

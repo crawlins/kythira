@@ -506,6 +506,175 @@ auto* ptr = reinterpret_cast<const std::byte*>(data);  // NOLINT(cppcoreguidelin
 
 ---
 
+## Chaos Testing
+
+Chaos tests verify that Raft's safety and liveness properties hold under
+realistic fault conditions (network packet loss, intermittent disk failures,
+state machine errors) using [libfiu](http://blitiri.com.ar/p/libfiu/) fault
+injection.
+
+### Install libfiu (optional dependency)
+
+```bash
+sudo apt install libfiu-dev     # Ubuntu/Debian
+pkg-config --modversion libfiu  # verify: should print 1.2 or higher
+```
+
+Chaos test targets are compiled only when libfiu is detected at configure time.
+The production library and all other tests are unaffected if libfiu is absent.
+
+### Build and run chaos tests
+
+```bash
+# Build all chaos test executables
+cmake --build build --target chaos-tests
+
+# Run the chaos suite (excluded from the default ctest run)
+ctest --test-dir build --label-regex chaos --output-on-failure
+```
+
+### Fault_Point naming convention
+
+All fault points follow the pattern `"raft/<layer>/<operation>"`:
+
+| Fault_Point                              | What it simulates                        |
+|------------------------------------------|------------------------------------------|
+| `raft/network/send_append_entries`       | AppendEntries RPC lost or rejected       |
+| `raft/network/send_install_snapshot`     | InstallSnapshot RPC lost or rejected     |
+| `raft/network/send_request_vote`         | RequestVote RPC lost or rejected         |
+| `raft/persistence/append_log_entry`      | Disk write failure during log append     |
+| `raft/persistence/save_current_term`     | Disk write failure when persisting term  |
+| `raft/persistence/save_snapshot`         | Disk write failure during snapshot       |
+| `raft/persistence/save_voted_for`        | Disk write failure for vote persistence  |
+| `raft/persistence/truncate_log`          | Disk write failure during log truncation |
+| `raft/state_machine/apply`               | Application-layer command rejection      |
+
+The full catalogue and design rationale are in
+[`.kiro/specs/libfiu-integration/design.md`](.kiro/specs/libfiu-integration/design.md).
+
+---
+
+## Docker Chaos Testing
+
+Docker chaos tests run a real 3-node `chaos_node` cluster in containers and
+inject failures from a C++ test harness running on the host.  This validates
+safety and liveness under OS-level faults (network partitions, process kills,
+disk errors) that the in-process libfiu tests cannot reproduce.
+
+The harness (`tests/docker_chaos/`) is pure C++ with no Python or pytest
+dependency.  `ChaosCluster` and `ChaosNode` use injectable executor and HTTP
+stubs so the harness logic is unit-tested without Docker via two CTest-
+registered executables (`docker_chaos_harness_unit_tests` and
+`docker_chaos_fault_control_unit_tests`).
+
+### Prerequisites
+
+```bash
+# Docker with Compose v2
+docker --version          # 20.10+
+docker compose version    # 2.0+
+```
+
+The image requires `KYTHIRA_FAULT_INJECTION=ON` (the default when libfiu is
+detected at configure time):
+
+```bash
+cmake -S . -B build \
+      -DCMAKE_PREFIX_PATH="$(pwd)/vcpkg_installed/x64-linux"
+cmake --build build --target docker-chaos-image
+```
+
+### Running the tests
+
+**Harness unit tests** (no Docker required — included in the standard `ctest` run):
+
+```bash
+ctest --test-dir build --label-regex docker_chaos_unit --output-on-failure
+```
+
+**Scenario tests** (require the Docker image):
+
+```bash
+# Build image + run all scenario tests against a live 3-node cluster
+cmake --build build --target docker-chaos-tests
+
+# Or drive the cluster manually for development
+docker compose -f docker/docker-compose.yml up -d
+./build/docker_chaos_scenario_tests --log_level=message
+docker compose -f docker/docker-compose.yml down
+```
+
+### Environment variables (`chaos_node`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NODE_ID` | required | Integer node ID |
+| `RPC_PORT` | `7000` | Raft RPC listen port |
+| `HTTP_PORT` | `8080` | HTTP control plane port |
+| `FIU_PORT` | `9000` | fiu_rc_tcp listen port |
+| `DATA_DIR` | `/var/lib/chaos_node` | Persistence directory |
+| `PEERS` | required | `id:host:port,...` peer list |
+| `ELECTION_TIMEOUT_MIN_MS` | `150` | Min election timeout (ms) |
+| `ELECTION_TIMEOUT_MAX_MS` | `300` | Max election timeout (ms) |
+| `HEARTBEAT_INTERVAL_MS` | `50` | Heartbeat interval (ms) |
+
+### Port layout
+
+| Node | RPC (TCP) | HTTP control | fiu remote |
+|------|-----------|--------------|------------|
+| n1   | 7001      | 8081         | 9001       |
+| n2   | 7002      | 8082         | 9002       |
+| n3   | 7003      | 8083         | 9003       |
+
+All three ports are published to the host so the orchestrator can reach each
+node's control plane and fiu_rc_tcp listener from outside the Docker network.
+
+### Test scenarios
+
+| File | Fault class | Key assertion |
+|------|-------------|---------------|
+| `chaos_smoke_test.cpp` | None | Cluster starts, elects leader, commits command |
+| `election_recovery_test.cpp` | iptables partition + fiu network isolation | Leader elected within 2× timeout after heal |
+| `crash_recovery_test.cpp` | `docker kill` + `docker start` | Killed node catches up; no split brain |
+| `network_degradation_test.cpp` | `tc netem` loss/latency | Cluster remains available |
+| `az_partition_test.cpp` | Majority/minority and symmetric partition | Majority retains leader; minority makes no progress |
+| `persistence_faults_test.cpp` | `fiu-ctrl` on `append_log_entry`, `save_current_term` | Safety holds under disk fault injection |
+| `safety_assertions_test.cpp` | Partition + kill + restart combined | No log divergence across all nodes |
+
+### How fault injection works
+
+Each `chaos_node` container exposes a `fiu_rc_tcp` port (9001–9003 on the host).
+The C++ harness sends libfiu line-protocol commands over a plain TCP socket —
+the `docker_chaos::fiu::send_fiu_cmd` helper in `fault_control.hpp` speaks the
+protocol directly, with no dependency on the `fiu-ctrl` binary.
+
+To drive fault injection manually against a running cluster:
+
+```bash
+# Enable 30% random append_log_entry failures on node 1
+fiu-ctrl -c "enable_random name=raft/persistence/append_log_entry failnum=-1 failinfo=0 probability=0.300000" \
+         localhost:9001
+
+# Re-enable all fault points (disable_all)
+fiu-ctrl -c "disable_all" localhost:9001
+```
+
+OS-layer failures are applied via `docker exec` from the `ChaosNode` methods:
+
+```cpp
+auto& n3 = cluster.node(3);
+n3.partition_from({n1.container_ip(), n2.container_ip()}); // iptables DROP
+n3.apply_tc_netem("30%", "50ms");                          // tc netem
+n3.kill();                                                  // docker kill (SIGKILL)
+n3.restart();                                               // docker start + /health poll
+n3.unpartition();                                           // flush iptables
+```
+
+The full design is in
+[`.kiro/specs/docker-chaos/design.md`](.kiro/specs/docker-chaos/design.md).
+
+---
+
 ## Code Coverage
 
 ### Quick start

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <raft/fault_injection.hpp>
 #include <raft/types.hpp>
 #include <unordered_map>
 #include <string>
@@ -27,6 +28,8 @@ public:
     // Command format: [command_type (1 byte)][key_length (4 bytes)][key][value_length (4
     // bytes)][value] Returns: For GET commands, returns the value; for PUT/DEL, returns empty
     auto apply(const std::vector<std::byte>& command, LogIndex index) -> std::vector<std::byte> {
+        fiu_do_on("raft/state_machine/apply",
+                  throw std::runtime_error("chaos: state_machine/apply"););
         if (command.empty()) {
             throw std::invalid_argument("Empty command");
         }

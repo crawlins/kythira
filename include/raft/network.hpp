@@ -51,4 +51,30 @@ concept network_server = requires(
     { server.is_running() } -> std::convertible_to<bool>;
 };
 
+// ============================================================================
+// Optional bootstrap extensions (NOT required by the base network concepts so
+// that existing mock / test implementations remain unaffected)
+// ============================================================================
+
+// Satisfied by a network_client that additionally supports ClusterJoin RPCs.
+// The RPC is routed by address_type (std::string) because the joining node
+// does not yet know the target's node_id.
+template<typename C>
+concept network_client_with_cluster_join =
+    requires(C client, const std::string& addr, const kythira::cluster_join_request<>& req,
+             std::chrono::milliseconds timeout) {
+        {
+            client.send_cluster_join_request(addr, req, timeout)
+        } -> std::same_as<kythira::Future<kythira::cluster_join_response<>>>;
+    };
+
+// Satisfied by a network_server that can register a ClusterJoin handler.
+template<typename S>
+concept network_server_with_cluster_join =
+    requires(S server,
+             std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
+                 handler) {
+        { server.register_cluster_join_handler(handler) } -> std::same_as<void>;
+    };
+
 }  // namespace kythira

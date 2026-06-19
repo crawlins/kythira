@@ -25,6 +25,7 @@
 #include <mutex>
 #include <atomic>
 #include <format>
+#include <span>
 
 namespace kythira {
 
@@ -62,15 +63,25 @@ public:
     using install_snapshot_request_type = typename Types::install_snapshot_request_type;
     using install_snapshot_response_type = typename Types::install_snapshot_response_type;
 
+    // Bootstrap type aliases (with fallbacks for Types that predate them)
+    using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
+    using address_type = typename _bth::address_type;
+    using peer_discovery_type = typename _bth::peer_discovery_type;
+    using cluster_join_request_type = typename _bth::cluster_join_request_type;
+    using cluster_join_response_type = typename _bth::cluster_join_response_type;
+
     // Client session tracking types
     using client_id_t = std::uint64_t;
     using serial_number_t = std::uint64_t;
 
-    // Constructor with unified types
+    // Constructor with unified types (self_address and peer_discovery are optional;
+    // defaults produce backwards-compatible single-node-founding behaviour)
     node(node_id_type node_id, network_client_type network_client,
          network_server_type network_server, persistence_engine_type persistence,
          logger_type logger, metrics_type metrics, membership_manager_type membership,
-         configuration_type config = configuration_type{});
+         configuration_type config = configuration_type{},
+         address_type self_address = address_type{},
+         peer_discovery_type peer_discovery = peer_discovery_type{});
 
     // Client operations - return template future types
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
@@ -94,6 +105,17 @@ public:
     [[nodiscard]] auto get_state() const -> kythira::server_state;
     [[nodiscard]] auto is_leader() const -> bool;
 
+    // Read-only snapshot of internal state for assertion helpers in chaos tests.
+    // Valid only while the node is running and not being mutated concurrently.
+    struct debug_snapshot {
+        term_id_type current_term;
+        log_index_type commit_index;
+        log_index_type last_applied;
+        bool is_leader;
+        std::span<const log_entry_type> log;
+    };
+    [[nodiscard]] auto debug_state() const noexcept -> debug_snapshot;
+
     // Cluster operations - return template future types
     auto add_server(node_id_type new_node) -> future_type;
     auto remove_server(node_id_type old_node) -> future_type;
@@ -110,6 +132,7 @@ public:
 
     // Cluster configuration management - for testing and bootstrap
     auto set_cluster_configuration(const std::vector<node_id_type>& node_ids) -> void;
+    [[nodiscard]] auto get_cluster_size() const -> std::size_t;
 
 private:
     // ========================================================================
@@ -131,6 +154,35 @@ private:
 
     // Register RPC handlers with the network server
     auto register_rpc_handlers() -> void;
+
+    // ========================================================================
+    // Bootstrap helpers
+    // ========================================================================
+
+    // Returns true iff this is a fresh node (no persisted state at all)
+    [[nodiscard]] auto is_fresh_node() -> bool;
+
+    // Handle an incoming ClusterJoin RPC (leader accepts, follower redirects)
+    [[nodiscard]] auto handle_cluster_join(const cluster_join_request_type& req)
+        -> cluster_join_response_type;
+
+    // Bootstrap entry point: runs synchronously inside start() before _running=true.
+    // With no_op_peer_discovery (empty peers list) this is a no-op that immediately
+    // returns, preserving existing single-node-founding behaviour.
+    auto run_bootstrap() -> void;
+
+    // Reconnection loop for restarting nodes: runs as a background thread.
+    // Exits immediately when the first AppendEntries/RequestVote arrives, or on stop().
+    auto run_reconnect() -> void;
+
+    // Update the network-client routing table from a list of newly discovered peers.
+    auto update_peer_addresses(const std::vector<peer_info<node_id_type, address_type>>& peers)
+        -> void;
+
+    // Bootstrap configuration accessors (fall back to hard-coded defaults when
+    // raft_configuration doesn't expose these fields, preserving backwards compat)
+    [[nodiscard]] auto bootstrap_retry_interval() const -> std::chrono::milliseconds;
+    [[nodiscard]] auto bootstrap_peer_find_timeout() const -> std::chrono::milliseconds;
 
     // ========================================================================
     // Persistent state (stored before responding to RPCs)
@@ -271,6 +323,30 @@ private:
     std::unordered_map<client_id_t, client_session> _client_sessions;
 
     // ========================================================================
+    // Bootstrap / peer-discovery members
+    // ========================================================================
+
+    // This node's contact address (advertised in ClusterJoinRequest and registered
+    // with the peer_discovery back-end)
+    address_type _self_address{};
+
+    // Peer discovery implementation (default: no_op — founds a single-node cluster)
+    peer_discovery_type _peer_discovery{};
+
+    // Last known leader (populated from incoming AppendEntries)
+    std::optional<node_id_type> _known_leader;
+
+    // Whether stop() was requested before start() completed (cancels bootstrap loop)
+    std::atomic<bool> _stop_requested{false};
+
+    // Background thread for reconnection logic (restarting nodes only)
+    std::thread _reconnect_thread;
+
+    // Condition variable to wake the reconnect thread early (on peer contact or stop)
+    std::condition_variable _reconnect_cv;
+    std::mutex _reconnect_cv_mutex;
+
+    // ========================================================================
     // Synchronization
     // ========================================================================
 
@@ -368,7 +444,8 @@ template<raft_types Types>
 node<Types>::node(node_id_type node_id, network_client_type network_client,
                   network_server_type network_server, persistence_engine_type persistence,
                   logger_type logger, metrics_type metrics, membership_manager_type membership,
-                  configuration_type config)
+                  configuration_type config, address_type self_address,
+                  peer_discovery_type peer_discovery)
     : _current_term{0},
       _voted_for{std::nullopt},
       _log{},
@@ -390,7 +467,9 @@ node<Types>::node(node_id_type node_id, network_client_type network_client,
       _election_timeout{config.election_timeout_min()},
       _heartbeat_interval{config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
-      _rng{std::random_device{}()} {
+      _rng{std::random_device{}()},
+      _self_address{std::move(self_address)},
+      _peer_discovery{std::move(peer_discovery)} {
     // Initialize configuration with just this node
     _configuration._nodes = {_node_id};
     _configuration._is_joint_consensus = false;
@@ -415,6 +494,11 @@ auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& nod
 
     _logger.info("Cluster configuration updated", {{"node_id", node_id_to_string(_node_id)},
                                                    {"num_nodes", std::to_string(node_ids.size())}});
+}
+
+template<raft_types Types> auto node<Types>::get_cluster_size() const -> std::size_t {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _configuration._nodes.size();
 }
 
 template<raft_types Types>
@@ -446,6 +530,19 @@ auto node<Types>::is_leader() const -> bool {
 
 template<raft_types Types>
 
+auto node<Types>::debug_state() const noexcept -> debug_snapshot {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return debug_snapshot{
+        .current_term = _current_term,
+        .commit_index = _commit_index,
+        .last_applied = _last_applied,
+        .is_leader = (_state == kythira::server_state::leader),
+        .log = std::span<const log_entry_type>(_log),
+    };
+}
+
+template<raft_types Types>
+
 auto node<Types>::is_running() const noexcept -> bool {
     return _running.load(std::memory_order_acquire);
 }
@@ -463,7 +560,7 @@ auto node<Types>::randomize_election_timeout() -> void {
 template<raft_types Types>
 auto node<Types>::submit_command(const std::vector<std::byte>& command,
                                  std::chrono::milliseconds timeout) -> future_type {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::unique_lock<std::mutex> lock(_mutex);
 
     // Only leaders can accept client commands
     if (_state != kythira::server_state::leader) {
@@ -629,7 +726,8 @@ auto node<Types>::submit_command(const std::vector<std::byte>& command,
                    {"timeout_ms", std::to_string(timeout.count())}});
 
     // Step 3: Trigger replication to followers
-    // Call replicate_to_followers() for immediate replication
+    // Release lock first — replicate_to_followers() acquires _mutex itself for each I/O phase
+    lock.unlock();
     replicate_to_followers();
 
     // Emit replication trigger metric
@@ -1076,10 +1174,34 @@ auto node<Types>::start() -> void {
         return;
     }
 
+    // Clear any stop signal left over from a previous stop() so that restart works.
+    // Safe because stop() is synchronous — all threads using _stop_requested have
+    // already exited by the time the caller invokes start() again.
+    _stop_requested.store(false, std::memory_order_release);
+
     _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)
     initialize_from_storage();
+
+    // Register this node with the peer-discovery back-end. With the default
+    // no_op_peer_discovery this is a no-op that resolves immediately.
+    _peer_discovery.register_node(_node_id, _self_address).get();
+
+    if (is_fresh_node()) {
+        // Fresh node: either join an existing cluster or found a new one.
+        run_bootstrap();
+    } else {
+        // Restarting node: launch reconnect loop in the background so that if
+        // configured peers are unreachable the node can re-discover them.
+        // With no_op_peer_discovery the loop exits immediately on first RPC.
+        _reconnect_thread = std::thread([this]() { run_reconnect(); });
+    }
+
+    // stop() may have been called while bootstrap was in progress
+    if (_stop_requested.load(std::memory_order_acquire)) {
+        return;
+    }
 
     // Register RPC handlers with network server
     register_rpc_handlers();
@@ -1105,7 +1227,21 @@ auto node<Types>::start() -> void {
 template<raft_types Types>
 
 auto node<Types>::stop() -> void {
-    // Check if already stopped
+    // Signal bootstrap / reconnect loops first — this is safe even if start() is
+    // still in progress (run_bootstrap / run_reconnect check _stop_requested).
+    _stop_requested.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(_reconnect_cv_mutex);
+        _reconnect_cv.notify_all();
+    }
+
+    // Always join the reconnect thread here so that stop() is fully synchronous
+    // even in the not-running early-return path below. Without this, a stop/start/stop
+    // sequence leaves the thread joinable and the destructor calls std::terminate().
+    if (_reconnect_thread.joinable()) {
+        _reconnect_thread.join();
+    }
+
     if (!_running.load(std::memory_order_acquire)) {
         _logger.warning("Attempted to stop node that is not running",
                         {{"node_id", node_id_to_string(_node_id)}});
@@ -1385,8 +1521,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 template<raft_types Types>
 
 auto node<Types>::check_election_timeout() -> void {
-    // Placeholder implementation
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::unique_lock<std::mutex> lock(_mutex);
 
     // Only followers and candidates check for election timeout
     if (_state == kythira::server_state::leader) {
@@ -1404,46 +1539,61 @@ auto node<Types>::check_election_timeout() -> void {
              {"state", _state == kythira::server_state::follower ? "follower" : "candidate"},
              {"term", std::to_string(_current_term)}});
 
-        // Start a new election (placeholder)
         become_candidate();
+
+        // Release the lock before start_election(): send_request_vote blocks on the
+        // simulator CV, so the future callbacks resolve inline on this same thread.
+        // The callbacks re-acquire _mutex, which would deadlock if we still held it.
+        lock.unlock();
+        start_election();
     }
 }
 
 template<raft_types Types>
 
 auto node<Types>::check_heartbeat_timeout() -> void {
-    // Placeholder implementation
-    std::lock_guard<std::mutex> lock(_mutex);
+    bool should_heartbeat = false;
 
-    // Check for timed-out operations (do this for all states)
-    auto cancelled_count = _commit_waiter.cancel_timed_out_operations();
-    if (cancelled_count > 0) {
-        _logger.debug("Cancelled timed-out operations",
-                      {{"node_id", node_id_to_string(_node_id)},
-                       {"cancelled_count", std::to_string(cancelled_count)}});
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
 
-        // Emit timeout cancellation metric
-        _metrics.set_metric_name("operations_timed_out");
-        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_count(cancelled_count);
-        _metrics.emit();
-    }
+        // Check for timed-out operations (do this for all states)
+        auto cancelled_count = _commit_waiter.cancel_timed_out_operations();
+        if (cancelled_count > 0) {
+            _logger.debug("Cancelled timed-out operations",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"cancelled_count", std::to_string(cancelled_count)}});
 
-    // Only leaders send heartbeats
-    if (_state != kythira::server_state::leader) {
-        return;
-    }
+            // Emit timeout cancellation metric
+            _metrics.set_metric_name("operations_timed_out");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_count(cancelled_count);
+            _metrics.emit();
+        }
 
-    auto now = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_heartbeat);
+        // Only leaders send heartbeats
+        if (_state != kythira::server_state::leader) {
+            return;
+        }
 
-    if (elapsed >= _heartbeat_interval) {
-        _logger.debug(
-            "Heartbeat timeout elapsed, sending heartbeats",
-            {{"node_id", node_id_to_string(_node_id)}, {"term", std::to_string(_current_term)}});
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_heartbeat);
 
+        if (elapsed >= _heartbeat_interval) {
+            _logger.debug("Heartbeat timeout elapsed, sending heartbeats",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"term", std::to_string(_current_term)}});
+
+            _last_heartbeat = now;
+            should_heartbeat = true;
+        }
+    }  // _mutex released before any blocking I/O
+
+    // send_heartbeats() does blocking network I/O whose Folly callbacks re-acquire
+    // _mutex inline.  Must not hold the lock here (same pattern as check_election_timeout
+    // releasing before start_election()).
+    if (should_heartbeat) {
         send_heartbeats();
-        _last_heartbeat = now;
     }
 }
 
@@ -1485,6 +1635,14 @@ auto node<Types>::register_rpc_handlers() -> void {
         [this](const install_snapshot_request_type& request) -> install_snapshot_response_type {
             return this->handle_install_snapshot(request);
         });
+
+    // Register ClusterJoin handler if the network server supports it
+    if constexpr (network_server_with_cluster_join<network_server_type>) {
+        _network_server.register_cluster_join_handler(
+            [this](const cluster_join_request_type& req) -> cluster_join_response_type {
+                return this->handle_cluster_join(req);
+            });
+    }
 
     _logger.debug("RPC handlers registered", {{"node_id", node_id_to_string(_node_id)}});
 }
@@ -1597,6 +1755,12 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     // Reset election timer when granting vote (§5.2)
     reset_election_timer();
 
+    // Notify reconnect thread: we have peer contact
+    {
+        std::lock_guard<std::mutex> lk(_reconnect_cv_mutex);
+        _reconnect_cv.notify_all();
+    }
+
     _logger.info("Granting vote", {{"node_id", node_id_to_string(_node_id)},
                                    {"candidate", node_id_to_string(request.candidate_id())},
                                    {"term", std::to_string(_current_term)}});
@@ -1668,6 +1832,14 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
 
     // Reset election timer on valid AppendEntries (§5.2)
     reset_election_timer();
+
+    // Track the current leader for ClusterJoin redirect responses and notify
+    // the reconnect thread that peer contact has been established.
+    _known_leader = request.leader_id();
+    {
+        std::lock_guard<std::mutex> lk(_reconnect_cv_mutex);
+        _reconnect_cv.notify_all();
+    }
 
     // Rule 3: Reply false if log doesn't contain an entry at prevLogIndex whose term matches
     // prevLogTerm (§5.3)
@@ -2042,23 +2214,20 @@ auto node<Types>::heartbeat_timeout_elapsed() const -> bool {
 template<raft_types Types>
 
 auto node<Types>::send_heartbeats() -> void {
-    // Only leaders send heartbeats
-    if (_state != kythira::server_state::leader) {
-        return;
+    // Called without _mutex held (check_heartbeat_timeout released it).
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state != kythira::server_state::leader) {
+            return;
+        }
+        _logger.debug("Sending heartbeats/replication to followers",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"term", std::to_string(_current_term)},
+                       {"commit_index", std::to_string(_commit_index)}});
     }
 
-    _logger.debug("Sending heartbeats/replication to followers",
-                  {{"node_id", node_id_to_string(_node_id)},
-                   {"term", std::to_string(_current_term)},
-                   {"commit_index", std::to_string(_commit_index)}});
-
-    // In Raft, heartbeats are actually AppendEntries RPCs that may contain log entries
-    // So we use replicate_to_followers() which will send AppendEntries with any pending entries
-    // or empty AppendEntries (heartbeats) if there are no pending entries
+    // replicate_to_followers() manages its own locking around blocking I/O.
     replicate_to_followers();
-
-    // Update last heartbeat timestamp
-    _last_heartbeat = std::chrono::steady_clock::now();
 
     _metrics.set_metric_name("raft_heartbeat_sent");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2255,20 +2424,43 @@ auto node<Types>::become_candidate() -> void {
     reset_election_timer();
     randomize_election_timeout();
 
-    // Send RequestVote RPCs to all other nodes
-    start_election();
+    // start_election() is invoked by the caller after releasing _mutex.
 }
 
 template<raft_types Types>
 
 auto node<Types>::start_election() -> void {
+    // Called without _mutex held. Snapshot the shared state needed to build
+    // vote requests before doing any network I/O.
+    term_id_type snapshot_term;
+    log_index_type snapshot_last_log_index;
+    term_id_type snapshot_last_log_term;
+    std::chrono::milliseconds snapshot_election_timeout;
+    std::vector<node_id_type> peer_ids;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state != kythira::server_state::candidate) {
+            return;  // State changed (e.g. higher-term message) before election started
+        }
+        snapshot_term = _current_term;
+        snapshot_last_log_index = get_last_log_index();
+        snapshot_last_log_term = get_last_log_term();
+        snapshot_election_timeout = _election_timeout;
+        for (const auto& peer_id : _configuration.nodes()) {
+            if (peer_id != _node_id) {
+                peer_ids.push_back(peer_id);
+            }
+        }
+    }
+
     _logger.info("Starting election", {{"node_id", node_id_to_string(_node_id)},
-                                       {"term", std::to_string(_current_term)}});
+                                       {"term", std::to_string(snapshot_term)}});
 
     // Emit election started metric
     _metrics.set_metric_name("election_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_dimension("term", std::to_string(_current_term));
+    _metrics.add_dimension("term", std::to_string(snapshot_term));
     _metrics.add_one();
     _metrics.emit();
 
@@ -2286,18 +2478,14 @@ auto node<Types>::start_election() -> void {
 
     // Send RequestVote RPCs to all peers with retry logic
     std::vector<kythira::Future<request_vote_response_type>> vote_futures;
-    vote_futures.reserve(_configuration.nodes().size() - 1);
+    vote_futures.reserve(peer_ids.size());
 
-    for (const auto& peer_id : _configuration.nodes()) {
-        if (peer_id == _node_id) {
-            continue;  // Skip self (already voted for self)
-        }
-
+    for (const auto& peer_id : peer_ids) {
         // Create RequestVote request
-        request_vote_request_type vote_request{._term = _current_term,
+        request_vote_request_type vote_request{._term = snapshot_term,
                                                ._candidate_id = _node_id,
-                                               ._last_log_index = get_last_log_index(),
-                                               ._last_log_term = get_last_log_term()};
+                                               ._last_log_index = snapshot_last_log_index,
+                                               ._last_log_term = snapshot_last_log_term};
 
         // Wrap RequestVote RPC call with retry logic
         auto vote_future =
@@ -2372,18 +2560,21 @@ auto node<Types>::start_election() -> void {
     if (vote_futures.empty()) {
         _logger.info("Single-node cluster, becoming leader immediately",
                      {{"node_id", node_id_to_string(_node_id)}});
-        become_leader();
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state == kythira::server_state::candidate && _current_term == snapshot_term) {
+            become_leader();
+        }
         return;
     }
 
     // Collect majority of vote responses
-    auto current_term = _current_term;
+    auto current_term = snapshot_term;
     auto node_id = _node_id;
     auto& logger = _logger;
     auto& metrics = _metrics;
     auto& state = _state;
 
-    election_collector_t::collect_majority(std::move(vote_futures), _election_timeout)
+    election_collector_t::collect_majority(std::move(vote_futures), snapshot_election_timeout)
         .thenValue([this, current_term, node_id, &logger, &metrics,
                     &state](std::vector<request_vote_response_type> responses) {
             std::lock_guard<std::mutex> lock(_mutex);
@@ -2585,59 +2776,64 @@ auto node<Types>::get_log_entry(log_index_type index) const -> std::optional<log
 template<raft_types Types>
 
 auto node<Types>::replicate_to_followers() -> void {
-    // Only leaders replicate to followers
-    if (_state != kythira::server_state::leader) {
-        return;
-    }
+    // Snapshot the follower list and decide send vs. snapshot while holding _mutex.
+    // The actual I/O must happen WITHOUT _mutex because the Folly callbacks (inline
+    // executor) re-acquire it, which would deadlock.
+    struct follower_action {
+        node_id_type id;
+        bool needs_snapshot;
+    };
+    std::vector<follower_action> actions;
 
-    _logger.debug("Replicating to followers",
-                  {{"node_id", node_id_to_string(_node_id)},
-                   {"term", std::to_string(_current_term)},
-                   {"last_log_index", std::to_string(get_last_log_index())},
-                   {"commit_index", std::to_string(_commit_index)}});
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state != kythira::server_state::leader) {
+            return;
+        }
 
-    // Get all nodes in the cluster except ourselves
-    std::vector<node_id_type> followers;
-    for (const auto& peer_id : _configuration.nodes()) {
-        if (peer_id != _node_id) {
-            followers.push_back(peer_id);
+        _logger.debug("Replicating to followers",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"term", std::to_string(_current_term)},
+                       {"last_log_index", std::to_string(get_last_log_index())},
+                       {"commit_index", std::to_string(_commit_index)}});
+
+        for (const auto& peer_id : _configuration.nodes()) {
+            if (peer_id == _node_id) {
+                continue;
+            }
+            auto next_idx = _next_index[peer_id];
+            auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
+            actions.push_back({peer_id, next_idx < first_log_index});
         }
     }
+    // _mutex released — safe to do blocking I/O now.
 
-    if (followers.empty()) {
+    if (actions.empty()) {
         _logger.debug("No followers to replicate to", {{"node_id", node_id_to_string(_node_id)}});
-        // For single-node clusters, still need to advance commit index
+        std::lock_guard<std::mutex> lock(_mutex);
         advance_commit_index();
         return;
     }
 
-    // Send AppendEntries or InstallSnapshot to each follower in parallel
-    for (const auto& follower_id : followers) {
-        // Check if follower needs snapshot (next_index is too far behind)
-        auto next_idx = _next_index[follower_id];
-        auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
-
-        if (next_idx < first_log_index) {
-            // Follower is too far behind - send snapshot
-            _logger.debug("Follower needs snapshot",
-                          {{"node_id", node_id_to_string(_node_id)},
-                           {"follower", node_id_to_string(follower_id)},
-                           {"next_index", std::to_string(next_idx)},
-                           {"first_log_index", std::to_string(first_log_index)}});
-
-            send_install_snapshot_to(follower_id);
+    for (const auto& action : actions) {
+        if (action.needs_snapshot) {
+            _logger.debug("Follower needs snapshot", {{"node_id", node_id_to_string(_node_id)},
+                                                      {"follower", node_id_to_string(action.id)}});
+            send_install_snapshot_to(action.id);
         } else {
-            // Send AppendEntries
-            send_append_entries_to(follower_id);
+            send_append_entries_to(action.id);
         }
     }
 
-    // After sending to all followers, check if we can advance commit index
-    advance_commit_index();
+    // Re-acquire to advance commit index after sending to all followers.
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        advance_commit_index();
+    }
 
     _metrics.set_metric_name("raft_replication_round");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_dimension("num_followers", std::to_string(followers.size()));
+    _metrics.add_dimension("num_followers", std::to_string(actions.size()));
     _metrics.add_one();
     _metrics.emit();
 }
@@ -2645,67 +2841,81 @@ auto node<Types>::replicate_to_followers() -> void {
 template<raft_types Types>
 
 auto node<Types>::send_append_entries_to(node_id_type target) -> void {
-    // Only leaders send AppendEntries
-    if (_state != kythira::server_state::leader) {
+    // --- Read phase: snapshot all needed state under _mutex ---
+    // (May be called with _mutex already released by replicate_to_followers or with
+    //  it held by the recursive retry path in the callback — the callback releases
+    //  before calling us, so we always arrive here WITHOUT _mutex held.)
+    log_index_type next_idx;
+    log_index_type prev_log_index;
+    term_id_type prev_log_term;
+    std::vector<log_entry_type> entries_to_send;
+    append_entries_request_type request;
+    std::chrono::milliseconds timeout;
+    bool need_snapshot = false;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        if (_state != kythira::server_state::leader) {
+            return;
+        }
+
+        next_idx = _next_index[target];
+        auto last_log_idx = get_last_log_index();
+
+        prev_log_index = next_idx - 1;
+        prev_log_term = term_id_type{0};
+
+        if (prev_log_index > 0) {
+            auto prev_entry = get_log_entry(prev_log_index);
+            if (prev_entry.has_value()) {
+                prev_log_term = prev_entry->term();
+            } else {
+                _logger.debug("Previous entry not in log, switching to snapshot",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"target", node_id_to_string(target)},
+                               {"prev_log_index", std::to_string(prev_log_index)}});
+                need_snapshot = true;
+            }
+        }
+
+        if (!need_snapshot) {
+            auto max_entries = _config.max_entries_per_append();
+            for (log_index_type idx = next_idx;
+                 idx <= last_log_idx && entries_to_send.size() < max_entries; ++idx) {
+                auto entry = get_log_entry(idx);
+                if (entry.has_value()) {
+                    entries_to_send.push_back(entry.value());
+                } else {
+                    _logger.error(
+                        "Log entry not found during replication",
+                        {{"node_id", node_id_to_string(_node_id)}, {"index", std::to_string(idx)}});
+                    break;
+                }
+            }
+
+            request = append_entries_request_type{_current_term, _node_id,        prev_log_index,
+                                                  prev_log_term, entries_to_send, _commit_index};
+
+            _logger.debug("Sending AppendEntries",
+                          {{"node_id", node_id_to_string(_node_id)},
+                           {"target", node_id_to_string(target)},
+                           {"term", std::to_string(_current_term)},
+                           {"prev_log_index", std::to_string(prev_log_index)},
+                           {"prev_log_term", std::to_string(prev_log_term)},
+                           {"num_entries", std::to_string(entries_to_send.size())},
+                           {"leader_commit", std::to_string(_commit_index)}});
+
+            timeout = _config.append_entries_timeout();
+        }
+    }
+    // _mutex released — safe to do blocking I/O now.
+
+    if (need_snapshot) {
+        send_install_snapshot_to(target);
         return;
     }
 
-    // Get next index for this follower
-    auto next_idx = _next_index[target];
-    auto last_log_idx = get_last_log_index();
-
-    // Calculate prevLogIndex and prevLogTerm
-    log_index_type prev_log_index = next_idx - 1;
-    term_id_type prev_log_term = term_id_type{0};
-
-    if (prev_log_index > 0) {
-        auto prev_entry = get_log_entry(prev_log_index);
-        if (prev_entry.has_value()) {
-            prev_log_term = prev_entry->term();
-        } else {
-            // Previous entry not in log (compacted) - need to send snapshot instead
-            _logger.debug("Previous entry not in log, switching to snapshot",
-                          {{"node_id", node_id_to_string(_node_id)},
-                           {"target", node_id_to_string(target)},
-                           {"prev_log_index", std::to_string(prev_log_index)}});
-            send_install_snapshot_to(target);
-            return;
-        }
-    }
-
-    // Collect entries to send (from next_idx to end of log, up to max batch size)
-    std::vector<log_entry_type> entries_to_send;
-    auto max_entries = _config.max_entries_per_append();
-
-    for (log_index_type idx = next_idx; idx <= last_log_idx && entries_to_send.size() < max_entries;
-         ++idx) {
-        auto entry = get_log_entry(idx);
-        if (entry.has_value()) {
-            entries_to_send.push_back(entry.value());
-        } else {
-            // Entry not found - should not happen
-            _logger.error(
-                "Log entry not found during replication",
-                {{"node_id", node_id_to_string(_node_id)}, {"index", std::to_string(idx)}});
-            break;
-        }
-    }
-
-    // Create AppendEntries request
-    append_entries_request_type request{_current_term, _node_id,        prev_log_index,
-                                        prev_log_term, entries_to_send, _commit_index};
-
-    _logger.debug("Sending AppendEntries", {{"node_id", node_id_to_string(_node_id)},
-                                            {"target", node_id_to_string(target)},
-                                            {"term", std::to_string(_current_term)},
-                                            {"prev_log_index", std::to_string(prev_log_index)},
-                                            {"prev_log_term", std::to_string(prev_log_term)},
-                                            {"num_entries", std::to_string(entries_to_send.size())},
-                                            {"leader_commit", std::to_string(_commit_index)}});
-
-    // Send RPC with timeout and error handling using ErrorHandler for retry with exponential
-    // backoff
-    auto timeout = _config.append_entries_timeout();
     auto start_time = std::chrono::steady_clock::now();
 
     try {
@@ -2722,7 +2932,7 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
         // Handle response asynchronously using thenTry to get folly::Try<response>
         std::move(response_future)
             .thenTry([this, target, next_idx, entries_to_send, start_time](auto try_response) {
-                std::lock_guard<std::mutex> lock(_mutex);
+                std::unique_lock<std::mutex> lock(_mutex);
 
                 // Calculate RPC latency (including retry delays)
                 auto end_time = std::chrono::steady_clock::now();
@@ -2824,7 +3034,9 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                                    {"target", node_id_to_string(target)},
                                    {"new_next_index", std::to_string(_next_index[target])}});
 
-                    // Retry immediately
+                    // Retry immediately — release lock first (send_append_entries_to acquires its
+                    // own)
+                    lock.unlock();
                     send_append_entries_to(target);
                 }
             });
@@ -3686,6 +3898,214 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Re-throw the exception to propagate the error
         throw;
+    }
+}
+
+// ============================================================================
+// Bootstrap helpers
+// ============================================================================
+
+template<raft_types Types> auto node<Types>::is_fresh_node() -> bool {
+    return _current_term == 0 && !_voted_for.has_value() &&
+           _persistence.get_last_log_index() == 0 && !_persistence.load_snapshot().has_value();
+}
+
+template<raft_types Types>
+auto node<Types>::bootstrap_retry_interval() const -> std::chrono::milliseconds {
+    if constexpr (requires(const configuration_type& c) {
+                      { c.bootstrap_retry_interval() } -> std::same_as<std::chrono::milliseconds>;
+                  }) {
+        return _config.bootstrap_retry_interval();
+    } else {
+        return std::chrono::milliseconds{5000};
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::bootstrap_peer_find_timeout() const -> std::chrono::milliseconds {
+    if constexpr (requires(const configuration_type& c) {
+                      {
+                          c.bootstrap_peer_find_timeout()
+                      } -> std::same_as<std::chrono::milliseconds>;
+                  }) {
+        return _config.bootstrap_peer_find_timeout();
+    } else {
+        return std::chrono::milliseconds{2000};
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
+    -> cluster_join_response_type {
+    bool is_leader_now = false;
+    std::optional<peer_info<node_id_type, address_type>> redirect;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        is_leader_now = (_state == kythira::server_state::leader);
+        if (!is_leader_now && _known_leader.has_value()) {
+            redirect = peer_info<node_id_type, address_type>{
+                *_known_leader, address_type{node_id_to_string(*_known_leader)}};
+        }
+    }
+
+    if (is_leader_now) {
+        // Fire-and-forget: add_server() acquires its own lock, so call it after
+        // releasing ours.  The joining node is notified via the accepted=true response
+        // and then waits for the AppendEntries that carries C_new.
+        // We discard the future — the log-append side-effect already occurred.
+        auto fut = add_server(req.joining_node_id());
+        (void)fut;
+        return cluster_join_response_type{true, std::nullopt};
+    }
+
+    return cluster_join_response_type{false, redirect};
+}
+
+template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
+    while (!_stop_requested.load(std::memory_order_acquire)) {
+        auto peers = _peer_discovery.find_peers(bootstrap_peer_find_timeout()).get();
+
+        if (peers.empty()) {
+            // No peers → found a single-node cluster (existing behaviour)
+            _logger.info("Bootstrap: no peers found, founding single-node cluster",
+                         {{"node_id", node_id_to_string(_node_id)}});
+            return;
+        }
+
+        _logger.info("Bootstrap: attempting to join cluster",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"peer_count", std::to_string(peers.size())}});
+
+        if constexpr (network_client_with_cluster_join<network_client_type>) {
+            bool joined = false;
+            auto timeout = bootstrap_peer_find_timeout();
+
+            for (const auto& peer : peers) {
+                if (_stop_requested.load(std::memory_order_acquire)) {
+                    return;
+                }
+
+                auto try_join = [&](const address_type& addr) -> bool {
+                    try {
+                        cluster_join_request_type req;
+                        req.node_id = _node_id;
+                        req.contact_address = _self_address;
+
+                        auto resp =
+                            _network_client.send_cluster_join_request(addr, req, timeout).get();
+
+                        if (resp.is_accepted()) {
+                            _logger.info("Bootstrap: join accepted",
+                                         {{"node_id", node_id_to_string(_node_id)},
+                                          {"via", std::string(addr)}});
+                            return true;
+                        }
+
+                        // Redirect: try the leader directly, once
+                        if (resp.redirect_peer().has_value()) {
+                            const auto& redir = *resp.redirect_peer();
+                            _logger.debug("Bootstrap: redirected to leader",
+                                          {{"node_id", node_id_to_string(_node_id)},
+                                           {"leader", std::string(redir.address)}});
+                            try {
+                                auto resp2 =
+                                    _network_client
+                                        .send_cluster_join_request(redir.address, req, timeout)
+                                        .get();
+                                if (resp2.is_accepted()) {
+                                    _logger.info("Bootstrap: join accepted via redirect",
+                                                 {{"node_id", node_id_to_string(_node_id)}});
+                                    return true;
+                                }
+                            } catch (...) {
+                                // redirect target unreachable
+                            }
+                        }
+                    } catch (...) {
+                        // peer unreachable
+                    }
+                    return false;
+                };
+
+                joined = try_join(peer.address);
+                if (joined) {
+                    return;
+                }
+            }
+        }
+
+        // All peers exhausted — wait and retry
+        _logger.debug("Bootstrap: all peers exhausted, waiting before retry",
+                      {{"node_id", node_id_to_string(_node_id)}});
+
+        auto deadline = std::chrono::steady_clock::now() + bootstrap_retry_interval();
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (_stop_requested.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::update_peer_addresses(
+    const std::vector<peer_info<node_id_type, address_type>>& peers) -> void {
+    if constexpr (requires(network_client_type& c, node_id_type id, address_type a) {
+                      { c.update_peer_address(id, a) } -> std::same_as<void>;
+                  }) {
+        for (const auto& p : peers) {
+            _network_client.update_peer_address(p.node_id, p.address);
+        }
+    }
+}
+
+template<raft_types Types> auto node<Types>::run_reconnect() -> void {
+    // Restarting-node reconnection loop.  Waits for the first peer contact; if
+    // no contact arrives within isolation_timeout, calls find_peers() and updates
+    // the routing table, then sleeps and repeats.  Exits on peer contact or stop().
+
+    auto isolation_timeout = std::chrono::milliseconds{_config.election_timeout_max().count() * 2};
+
+    while (!_stop_requested.load(std::memory_order_acquire)) {
+        // Wait for peer contact or timeout
+        {
+            std::unique_lock<std::mutex> lk(_reconnect_cv_mutex);
+            if (_reconnect_cv.wait_for(lk, isolation_timeout, [this] {
+                    return _known_leader.has_value() ||
+                           _stop_requested.load(std::memory_order_acquire);
+                })) {
+                // Woken by peer contact or stop
+                return;
+            }
+        }
+
+        if (_stop_requested.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        // Timeout elapsed without peer contact — try peer discovery
+        try {
+            auto peers = _peer_discovery.find_peers(bootstrap_peer_find_timeout()).get();
+            if (!peers.empty()) {
+                _logger.info("Reconnect: updating peer addresses from discovery",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"peer_count", std::to_string(peers.size())}});
+                update_peer_addresses(peers);
+            }
+        } catch (...) {
+            // ignore discovery errors; retry on next cycle
+        }
+
+        // Sleep before next check (honour stop signal promptly)
+        auto deadline = std::chrono::steady_clock::now() + bootstrap_retry_interval();
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (_stop_requested.load(std::memory_order_acquire)) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
     }
 }
 

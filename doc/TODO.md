@@ -1,15 +1,54 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: June 11, 2026
+**Last Updated**: June 18, 2026
 
 ## Current Status
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **279/279 tests passing** (100%)
+- **All tests passing** (100%)
 - **0 tests failing, 0 tests disabled, 0 flaky tests**
-- All specifications complete across all 6 feature areas
+- All specifications complete across all 7 feature areas (node bootstrap now complete)
 - Build clean with no errors or warnings
+
+### What Changed (June 18, 2026)
+
+- **DNS peer discovery tests complete**: comprehensive unit tests (14 cases,
+  `tests/dns_peer_discovery_unit_test.cpp`) and chaos tests (12 cases,
+  `tests/chaos/dns_peer_discovery_chaos_test.cpp`) for `rfc1035_peer_discovery`
+  and `rfc2136_ldns_discovery`; both test targets are guarded by `LIBLDNS_FOUND`
+  and registered in CTest with appropriate labels (`unit;dns;peer_discovery`,
+  `chaos;dns;peer_discovery`).
+- **Fault injection points added** to `rfc1035_peer_discovery.hpp`
+  (`"raft/dns/rfc1035/find_peers/fail"`, `.../inject_ipv4`, `.../inject_mixed`)
+  and `rfc2136_ldns_discovery.hpp` (`"raft/dns/rfc2136/send_update"`,
+  `.../noop`) — all compile to no-ops without `FIU_ENABLE`.
+- **`register_node` bug fixed** in `rfc2136_ldns_discovery`: `_self_address` is
+  now set *after* a successful `send_update()` call, not before — previously a
+  failed registration left `_self_address` set, causing the destructor to attempt
+  deregistration of an address that was never successfully registered.
+- **Node bootstrap spec fully complete**: all 20 tasks done including CoAP
+  multicast adaptor (`coap_multicast_peer_discovery`), RFC 1035 query class,
+  RFC 2136 dynamic-DNS class, 6 property tests, and DNS unit/chaos tests.
+
+### What Changed (June 12, 2026)
+
+- **Docker chaos testing complete**: real multi-node cluster in Docker containers with
+  OS-level fault injection; `chaos_node` binary (`cmd/chaos_node/`) with TCP RPC
+  (`tcp_rpc.hpp`), file persistence (`file_persistence.hpp`), HTTP control plane, and
+  libfiu TCP remote-control server (`fiu_remote.hpp`); multi-stage `Dockerfile` +
+  `docker-compose.yml` (3 nodes, `NET_ADMIN` for iptables); Python harness
+  (`tests/docker_chaos/`) with `ChaosCluster`, `ChaosNode`, network partition helpers,
+  raw-socket `fault_control.py`, and 3 test files (AZ partition, persistence faults,
+  combined safety assertions); `docker-chaos-image` and `docker-chaos-tests` CMake
+  targets; spec at `.kiro/specs/docker-chaos/`.
+
+- **libfiu integration complete**: fault injection chaos testing implemented across 5 phases
+  (21 tasks); `include/raft/fault_injection.hpp` guard header; `fiu_do_on()` calls in
+  `persistence.hpp`, `simulator_network.hpp`, `test_state_machine.hpp`; `debug_state()`
+  accessor on `kythira::node`; RAII `fault_profiles.hpp`; `safety_assertions.hpp` helpers;
+  `tests/chaos/` with smoke, profile-verification, and 8 safety/liveness property tests;
+  `chaos-tests` CMake target; `README.md` "Chaos Testing" section; `DEPENDENCIES.md` updated.
 
 ### What Changed (June 11, 2026)
 
@@ -99,20 +138,33 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   implementation; `add_server()`/`remove_server()` API exists but log append,
   joint quorum, config-entry apply path, and node recovery are all missing;
   spec at `.kiro/specs/membership-change/`; 20 tasks across 7 phases
-- [ ] **Node bootstrap** — `peer_finder` concept + `ClusterJoin` RPC so a fresh
+- [x] **Node bootstrap** — `peer_discovery` concept + `ClusterJoin` RPC so a fresh
   node can locate an existing cluster and request membership without out-of-band
   `set_cluster_configuration()` calls; spec at `.kiro/specs/node-bootstrap/`;
-  15 tasks across 7 phases; backwards-compatible (`no_op_peer_finder` default)
+  20 tasks across 7 phases complete; `no_op_peer_discovery` default preserves all
+  existing behaviour; includes `rfc1035_peer_discovery`, `rfc2136_ldns_discovery`,
+  `coap_multicast_peer_discovery` adaptors; 6 property tests + 14 unit tests +
+  12 chaos tests; `register_node` ordering bug fixed (set `_self_address` after
+  successful `send_update`)
 
 ### Minor Enhancements
 
 - [ ] **State machine examples** — counter, register, replicated log, and
   distributed lock examples for documentation/demonstration purposes
   (counter and register already exist as test targets)
-- [ ] **libfiu integration** — fault injection chaos testing; spec at
-  `.kiro/specs/libfiu-integration/`; 21 tasks (build integration, `fiu_do_on`
-  fault points in persistence/network/state machine, 8 safety/liveness property
-  tests)
+- [x] **libfiu integration** — fault injection chaos testing; spec at
+  `.kiro/specs/libfiu-integration/`; 21 tasks complete: CMake detection,
+  `fiu_do_on` fault points in persistence/network/state machine, RAII fault
+  profiles, safety assertion helpers, smoke + profile + 8 safety/liveness tests
+- [x] **Docker chaos testing** — real multi-node `chaos_node` cluster; TCP RPC +
+  file persistence + HTTP control plane + libfiu TCP remote; Docker packaging;
+  C++ harness (`harness.hpp`, `os_faults.hpp`, `fault_control.hpp`) with
+  injectable `CmdExecutor`/`HttpGet`/`HttpPost` stubs for unit testing;
+  32 harness unit tests (`docker_chaos_harness_unit_tests`,
+  `docker_chaos_fault_control_unit_tests`) registered in CTest; 7 scenario
+  test files (election recovery, crash recovery, network degradation, AZ
+  partition, persistence faults, safety assertions, leadership stability);
+  25 tasks complete; spec at `.kiro/specs/docker-chaos/`
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

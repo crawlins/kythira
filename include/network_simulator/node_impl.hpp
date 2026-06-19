@@ -132,6 +132,20 @@ auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_me
     return _simulator->retrieve_message(_address, timeout);
 }
 
+template<typename Types>
+auto NetworkNode<Types>::receive(port_type port, std::chrono::milliseconds timeout)
+    -> future_message_type {
+    if (!_simulator) {
+#ifdef FOLLY_FUTURES_AVAILABLE
+        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
+#else
+        return future_message_type(std::make_exception_ptr(TimeoutException()));
+#endif
+    }
+
+    return _simulator->retrieve_message(_address, port, timeout);
+}
+
 // Connection-oriented client operations
 template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port)

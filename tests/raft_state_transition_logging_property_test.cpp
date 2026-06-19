@@ -291,7 +291,7 @@ BOOST_AUTO_TEST_CASE(leader_to_follower_transition_logged) {
         auto data = serializer.serialize(ae_request);
 
         auto msg = network_simulator::Message<test_raft_types::raft_network_types>{
-            std::to_string(node2_id), 1, std::to_string(node1_id), 1,
+            std::to_string(node2_id), 0, std::to_string(node1_id), 5000,
             std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();
@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(candidate_to_follower_transition_logged) {
         auto data = serializer.serialize(ae_request);
 
         auto msg = network_simulator::Message<test_raft_types::raft_network_types>{
-            std::to_string(node2_id), 1, std::to_string(node1_id), 1,
+            std::to_string(node2_id), 0, std::to_string(node1_id), 5000,
             std::vector<std::byte>(data.begin(), data.end())};
 
         auto send_result = sim_node2->send(std::move(msg)).get();

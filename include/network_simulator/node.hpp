@@ -41,6 +41,8 @@ public:
     auto send(message_type msg, std::chrono::milliseconds timeout) -> future_bool_type;
     auto receive() -> future_message_type;
     auto receive(std::chrono::milliseconds timeout) -> future_message_type;
+    // Port-filtered: only returns messages whose destination_port == port.
+    auto receive(port_type port, std::chrono::milliseconds timeout) -> future_message_type;
 
     // Connection-oriented client operations
     auto connect(address_type dst_addr, port_type dst_port) -> future_connection_type;

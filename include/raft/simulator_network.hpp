@@ -1,5 +1,7 @@
 #pragma once
 
+#include <raft/fault_injection.hpp>
+#include <raft/future.hpp>
 #include <raft/network.hpp>
 #include <raft/types.hpp>
 #include <raft/exceptions.hpp>
@@ -64,6 +66,10 @@ public:
     auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& req,
                            std::chrono::milliseconds timeout)
         -> kythira::Future<kythira::request_vote_response<>> {
+        fiu_do_on(
+            "raft/network/send_request_vote",
+            return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<>>(
+                std::make_exception_ptr(kythira::network_exception("chaos: send_request_vote"))););
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -112,6 +118,10 @@ public:
     auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
         -> kythira::Future<kythira::append_entries_response<>> {
+        fiu_do_on("raft/network/send_append_entries",
+                  return kythira::FutureFactory::makeExceptionalFuture<
+                      kythira::append_entries_response<>>(std::make_exception_ptr(
+                      kythira::network_exception("chaos: send_append_entries"))););
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -159,6 +169,10 @@ public:
     auto send_install_snapshot(std::uint64_t target, const kythira::install_snapshot_request<>& req,
                                std::chrono::milliseconds timeout)
         -> kythira::Future<kythira::install_snapshot_response<>> {
+        fiu_do_on("raft/network/send_install_snapshot",
+                  return kythira::FutureFactory::makeExceptionalFuture<
+                      kythira::install_snapshot_response<>>(std::make_exception_ptr(
+                      kythira::network_exception("chaos: send_install_snapshot"))););
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -202,6 +216,36 @@ public:
             });
     }
 
+    // Send ClusterJoin RPC — routed by address_type directly (not node_id)
+    auto send_cluster_join_request(const address_type& target,
+                                   const kythira::cluster_join_request<>& req,
+                                   std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::cluster_join_response<>> {
+        auto data = _serializer.serialize(req);
+        std::vector<std::byte> payload(data.begin(), data.end());
+
+        typename NetworkTypes::message_type msg(_node->address(), 0, target, _rpc_port,
+                                                std::move(payload));
+
+        return _node->send(std::move(msg), timeout)
+            .thenValue([this, timeout](bool success) {
+                if (!success) {
+                    throw kythira::network_exception("Failed to send ClusterJoin RPC");
+                }
+                return _node->receive(timeout);
+            })
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::cluster_join_response<> {
+                auto payload = response_msg.payload();
+                Data response_data;
+                if constexpr (requires { response_data.resize(0); }) {
+                    response_data.resize(payload.size());
+                    std::copy(payload.begin(), payload.end(), response_data.begin());
+                }
+                return _serializer.template deserialize_cluster_join_response<>(response_data);
+            });
+    }
+
 private:
     node_type _node;
     Serializer _serializer;
@@ -235,7 +279,8 @@ public:
           _server_thread(std::move(other._server_thread)),
           _request_vote_handler(std::move(other._request_vote_handler)),
           _append_entries_handler(std::move(other._append_entries_handler)),
-          _install_snapshot_handler(std::move(other._install_snapshot_handler)) {}
+          _install_snapshot_handler(std::move(other._install_snapshot_handler)),
+          _cluster_join_handler(std::move(other._cluster_join_handler)) {}
 
     // Move assignment
     simulator_network_server& operator=(simulator_network_server&& other) noexcept {
@@ -251,6 +296,7 @@ public:
             _request_vote_handler = std::move(other._request_vote_handler);
             _append_entries_handler = std::move(other._append_entries_handler);
             _install_snapshot_handler = std::move(other._install_snapshot_handler);
+            _cluster_join_handler = std::move(other._cluster_join_handler);
         }
         return *this;
     }
@@ -284,6 +330,14 @@ public:
                                                handler) -> void {
         std::unique_lock lock(_mutex);
         _install_snapshot_handler = std::move(handler);
+    }
+
+    // Register ClusterJoin handler
+    auto register_cluster_join_handler(
+        std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
+            handler) -> void {
+        std::unique_lock lock(_mutex);
+        _cluster_join_handler = std::move(handler);
     }
 
     // Start the server
@@ -335,6 +389,8 @@ private:
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         _install_snapshot_handler;
+    std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
+        _cluster_join_handler;
 
     mutable std::shared_mutex _mutex;
 
@@ -342,8 +398,10 @@ private:
     auto process_messages() -> void {
         while (_running) {
             try {
-                // Receive message with timeout
-                auto msg_future = _node->receive(std::chrono::milliseconds{100});
+                // Filter for RPC port messages (requests) so that response messages
+                // arriving at port 0 (the source port clients use) are not stolen
+                // before the client's receive() call can consume them.
+                auto msg_future = _node->receive(_rpc_port, std::chrono::milliseconds{100});
 
                 // Wait for message
                 auto msg = std::move(msg_future).get();
@@ -417,6 +475,21 @@ private:
                 // Not an InstallSnapshot request
             }
 
+            // Try ClusterJoin
+            try {
+                auto request =
+                    _serializer.template deserialize_cluster_join_request<>(request_data);
+
+                std::shared_lock lock(_mutex);
+                if (_cluster_join_handler) {
+                    auto response = _cluster_join_handler(request);
+                    send_response(msg.source_address(), response);
+                }
+                return;
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a ClusterJoin request
+            }
+
             // Unknown message type - ignore
         } catch (const std::exception& e) {
             std::cerr << "[simulator_network_server] error handling message: " << e.what() << "\n";
@@ -462,5 +535,15 @@ static_assert(kythira::network_server<simulator_network_server<
                   TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
                   std::vector<std::byte>>>,
               "simulator_network_server must satisfy the network_server concept");
+
+// Verify the optional bootstrap-extension concepts
+static_assert(kythira::network_client_with_cluster_join<simulator_network_client<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_client must satisfy network_client_with_cluster_join");
+static_assert(kythira::network_server_with_cluster_join<simulator_network_server<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_server must satisfy network_server_with_cluster_join");
 
 }  // namespace kythira

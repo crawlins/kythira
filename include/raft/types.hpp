@@ -2,6 +2,7 @@
 
 #include <concepts/future.hpp>
 #include <raft/metrics.hpp>
+#include <raft/peer_discovery.hpp>
 #include <concepts>
 #include <cstdint>
 #include <string>
@@ -453,12 +454,23 @@ struct raft_configuration {
         .adaptation_factor = 1.2,
         .sample_window_size = 10};
 
+    // Bootstrap timing
+    std::chrono::milliseconds _bootstrap_retry_interval{5000};
+    std::chrono::milliseconds _bootstrap_peer_find_timeout{2000};
+
     // Application failure handling configuration
     application_failure_policy _application_failure_policy{application_failure_policy::halt};
     std::size_t _application_retry_max_attempts{3};
     std::chrono::milliseconds _application_retry_initial_delay{100};
     std::chrono::milliseconds _application_retry_max_delay{5000};
     double _application_retry_backoff_multiplier{2.0};
+
+    [[nodiscard]] auto bootstrap_retry_interval() const -> std::chrono::milliseconds {
+        return _bootstrap_retry_interval;
+    }
+    [[nodiscard]] auto bootstrap_peer_find_timeout() const -> std::chrono::milliseconds {
+        return _bootstrap_peer_find_timeout;
+    }
 
     // Accessor methods
     [[nodiscard]] auto election_timeout_min() const -> std::chrono::milliseconds {
@@ -606,6 +618,57 @@ struct raft_configuration {
 };
 
 // ============================================================================
+// Bootstrap Message Types
+// ============================================================================
+
+// ClusterJoin RPC — sent from a fresh node to an existing cluster node
+template<typename NodeId = std::uint64_t, typename Address = std::string>
+struct cluster_join_request {
+    NodeId node_id;
+    Address contact_address;
+
+    [[nodiscard]] auto joining_node_id() const -> NodeId { return node_id; }
+    [[nodiscard]] auto joining_address() const -> const Address& { return contact_address; }
+};
+
+template<typename NodeId = std::uint64_t, typename Address = std::string>
+struct cluster_join_response {
+    bool accepted{false};
+    std::optional<peer_info<NodeId, Address>> redirect;
+
+    [[nodiscard]] auto is_accepted() const -> bool { return accepted; }
+    [[nodiscard]] auto redirect_peer() const -> const std::optional<peer_info<NodeId, Address>>& {
+        return redirect;
+    }
+};
+
+// ============================================================================
+// Bootstrap type-detection helpers (preserves backwards compat with old test
+// types that lack address_type / peer_discovery_type members)
+// ============================================================================
+
+template<typename T, typename NodeId>
+concept _has_bootstrap_types = requires {
+    typename T::address_type;
+    typename T::peer_discovery_type;
+};
+
+template<typename T, typename NodeId, bool = _has_bootstrap_types<T, NodeId>>
+struct _bootstrap_type_traits {
+    using address_type = std::string;
+    using peer_discovery_type = no_op_peer_discovery<NodeId, std::string>;
+    using cluster_join_request_type = cluster_join_request<NodeId, std::string>;
+    using cluster_join_response_type = cluster_join_response<NodeId, std::string>;
+};
+
+template<typename T, typename NodeId> struct _bootstrap_type_traits<T, NodeId, true> {
+    using address_type = typename T::address_type;
+    using peer_discovery_type = typename T::peer_discovery_type;
+    using cluster_join_request_type = cluster_join_request<NodeId, typename T::address_type>;
+    using cluster_join_response_type = cluster_join_response<NodeId, typename T::address_type>;
+};
+
+// ============================================================================
 // Transport Types Concept System
 // ============================================================================
 
@@ -743,6 +806,12 @@ struct default_raft_types {
     using log_entry_type = log_entry<term_id_type, log_index_type>;
     using cluster_configuration_type = cluster_configuration<node_id_type>;
     using snapshot_type = snapshot<node_id_type, term_id_type, log_index_type>;
+
+    // Bootstrap types
+    using address_type = std::string;
+    using peer_discovery_type = no_op_peer_discovery<node_id_type, address_type>;
+    using cluster_join_request_type = cluster_join_request<node_id_type, address_type>;
+    using cluster_join_response_type = cluster_join_response<node_id_type, address_type>;
 
     // RPC message types
     using request_vote_request_type =

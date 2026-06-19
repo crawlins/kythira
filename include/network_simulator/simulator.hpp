@@ -112,6 +112,10 @@ public:
     auto retrieve_message(address_type address) -> future_message_type;
     auto retrieve_message(address_type address, std::chrono::milliseconds timeout)
         -> future_message_type;
+    // Port-filtered variant: only returns a message whose destination_port == port.
+    // Use this to prevent server threads from stealing client response messages.
+    auto retrieve_message(address_type address, port_type port, std::chrono::milliseconds timeout)
+        -> future_message_type;
 
     // Connection establishment
     auto establish_connection(address_type src_addr, port_type src_port, address_type dst_addr,
@@ -206,8 +210,9 @@ private:
     // Active nodes
     std::unordered_map<address_type, std::shared_ptr<node_type>> _nodes;
 
-    // Message queues per node
-    std::unordered_map<address_type, std::queue<message_type>> _message_queues;
+    // Message queues per node, keyed by destination address.
+    // Using deque instead of queue to allow port-filtered linear scan.
+    std::unordered_map<address_type, std::deque<message_type>> _message_queues;
 
     // Connection state - use ConnectionId as key
     std::unordered_map<connection_id_type, std::shared_ptr<connection_type>> _connections;
@@ -241,6 +246,10 @@ private:
 
     // Mutex for thread safety
     mutable std::shared_mutex _mutex;
+
+    // Signalled by deliver_message whenever a new message is enqueued.
+    // Allows retrieve_message(address, timeout) to block instead of busy-poll.
+    std::condition_variable_any _msg_available;
 };
 
 }  // namespace network_simulator

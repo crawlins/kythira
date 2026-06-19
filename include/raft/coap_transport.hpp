@@ -640,4 +640,48 @@ private:
     auto get_supported_cipher_suites() const -> std::vector<std::string>;
 };
 
+// ── CoAP multicast peer discovery adaptor ─────────────────────────────────
+
+// Wraps coap_client::discover_raft_nodes() as a peer_discovery implementation.
+// NodeId and Address are both std::string; the discovered address is used as
+// the node ID (convention: each CoAP Raft node uses its address as its ID).
+// Types must satisfy kythira::transport_types.
+template<typename Types>
+requires kythira::transport_types<Types>
+class coap_multicast_peer_discovery {
+public:
+    using node_id_type = std::string;
+    using address_type = std::string;
+
+    explicit coap_multicast_peer_discovery(coap_client<Types>& client,
+                                           std::string multicast_address = "224.0.1.187",
+                                           uint16_t multicast_port = 5683)
+        : _client{client},
+          _multicast_address{std::move(multicast_address)},
+          _multicast_port{multicast_port} {}
+
+    auto register_node(node_id_type, address_type) -> kythira::Future<void> {
+        // CoAP multicast discovery is passive — nodes announce via multicast
+        // heartbeats rather than writing to a registry.
+        return kythira::FutureFactory::makeFuture();
+    }
+
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds timeout) const
+        -> kythira::Future<std::vector<kythira::peer_info<node_id_type, address_type>>> {
+        auto addresses =
+            _client.discover_raft_nodes(_multicast_address, _multicast_port, timeout).get();
+        std::vector<kythira::peer_info<node_id_type, address_type>> peers;
+        peers.reserve(addresses.size());
+        for (auto& addr : addresses) {
+            peers.push_back({addr, addr});
+        }
+        return kythira::FutureFactory::makeFuture(std::move(peers));
+    }
+
+private:
+    coap_client<Types>& _client;
+    std::string _multicast_address;
+    uint16_t _multicast_port;
+};
+
 }  // namespace kythira

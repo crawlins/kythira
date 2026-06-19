@@ -5,10 +5,12 @@
 #include "connection.hpp"
 #include "listener.hpp"
 #include <algorithm>
+#include <chrono>
 #include <future>
 #include <random>
 #include <sstream>
 #include <queue>
+#include <thread>
 #include <unordered_set>
 #include <unordered_map>
 #include <arpa/inet.h>
@@ -64,7 +66,7 @@ template<typename Types> auto NetworkSimulator<Types>::add_node(address_type add
 
     // Initialize message queue for this node
     if (_message_queues.find(address) == _message_queues.end()) {
-        _message_queues[address] = std::queue<message_type>{};
+        _message_queues[address] = std::deque<message_type>{};
     }
 }
 
@@ -152,7 +154,7 @@ auto NetworkSimulator<Types>::create_node(address_type address) -> std::shared_p
 
     // Initialize message queue for this node
     if (_message_queues.find(address) == _message_queues.end()) {
-        _message_queues[address] = std::queue<message_type>{};
+        _message_queues[address] = std::deque<message_type>{};
     }
 
     auto node = std::make_shared<node_type>(address, this);
@@ -462,11 +464,8 @@ template<typename Types> auto NetworkSimulator<Types>::deliver_message(message_t
     // Queue message at destination node
     auto queue_it = _message_queues.find(dst_addr);
     if (queue_it != _message_queues.end()) {
-        queue_it->second.push(std::move(msg));
-
-        // Notify any threads waiting for messages at this address
-        // Note: In a full implementation, we would have per-node condition variables
-        // For now, we rely on the polling mechanism in retrieve_message
+        queue_it->second.push_back(std::move(msg));
+        _msg_available.notify_all();
     }
 }
 
@@ -482,7 +481,7 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address) -> future_m
     }
 
     auto msg = queue_it->second.front();
-    queue_it->second.pop();
+    queue_it->second.pop_front();
     return future_message_type(std::move(msg));
 }
 
@@ -492,9 +491,12 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address,
     -> future_message_type {
     std::unique_lock lock(_mutex);
 
-    auto queue_it = _message_queues.find(address);
-    if (queue_it == _message_queues.end() || queue_it->second.empty()) {
-        // No messages available - throw TimeoutException for timeout version
+    bool got = _msg_available.wait_for(lock, timeout, [&] {
+        auto it = _message_queues.find(address);
+        return it != _message_queues.end() && !it->second.empty();
+    });
+
+    if (!got) {
 #ifdef FOLLY_FUTURES_AVAILABLE
         return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
 #else
@@ -502,9 +504,49 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address,
 #endif
     }
 
-    auto msg = queue_it->second.front();
-    queue_it->second.pop();
+    auto& dq = _message_queues[address];
+    auto msg = std::move(dq.front());
+    dq.pop_front();
     return future_message_type(std::move(msg));
+}
+
+template<typename Types>
+auto NetworkSimulator<Types>::retrieve_message(address_type address, port_type port,
+                                               std::chrono::milliseconds timeout)
+    -> future_message_type {
+    std::unique_lock lock(_mutex);
+
+    auto try_dequeue = [&]() -> bool {
+        auto it = _message_queues.find(address);
+        return it != _message_queues.end() &&
+               std::any_of(it->second.begin(), it->second.end(),
+                           [port](const auto& m) { return m.destination_port() == port; });
+    };
+
+    bool got = _msg_available.wait_for(lock, timeout, try_dequeue);
+
+    if (!got) {
+#ifdef FOLLY_FUTURES_AVAILABLE
+        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
+#else
+        return future_message_type(std::make_exception_ptr(TimeoutException()));
+#endif
+    }
+
+    auto& dq = _message_queues[address];
+    for (auto it = dq.begin(); it != dq.end(); ++it) {
+        if (it->destination_port() == port) {
+            auto msg = std::move(*it);
+            dq.erase(it);
+            return future_message_type(std::move(msg));
+        }
+    }
+    // Unreachable after a successful wait, but satisfies the compiler.
+#ifdef FOLLY_FUTURES_AVAILABLE
+    return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
+#else
+    return future_message_type(std::make_exception_ptr(TimeoutException()));
+#endif
 }
 
 // Connection and Listener Management (stubs for now)

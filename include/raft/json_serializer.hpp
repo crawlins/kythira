@@ -270,6 +270,84 @@ public:
         return resp;
     }
 
+    // Serialize ClusterJoin Request
+    template<typename NodeId = std::uint64_t, typename Address = std::string>
+    [[nodiscard]] auto serialize(const cluster_join_request<NodeId, Address>& req) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "cluster_join_request";
+        if constexpr (std::same_as<NodeId, std::string>) {
+            obj["node_id"] = req.node_id;
+        } else {
+            obj["node_id"] = req.node_id;
+        }
+        obj["contact_address"] = req.contact_address;
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Serialize ClusterJoin Response
+    template<typename NodeId = std::uint64_t, typename Address = std::string>
+    [[nodiscard]] auto serialize(const cluster_join_response<NodeId, Address>& resp) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "cluster_join_response";
+        obj["accepted"] = resp.accepted;
+        if (resp.redirect.has_value()) {
+            if constexpr (std::same_as<NodeId, std::string>) {
+                obj["redirect_node_id"] = resp.redirect->node_id;
+            } else {
+                obj["redirect_node_id"] = resp.redirect->node_id;
+            }
+            obj["redirect_address"] = resp.redirect->address;
+        }
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Deserialize ClusterJoin Request
+    template<typename NodeId = std::uint64_t, typename Address = std::string>
+    [[nodiscard]] auto deserialize_cluster_join_request(const Data& data) const
+        -> cluster_join_request<NodeId, Address> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "cluster_join_request") {
+            throw serialization_exception("Invalid message type for cluster_join_request");
+        }
+
+        cluster_join_request<NodeId, Address> req;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            req.node_id = std::string(obj["node_id"].as_string());
+        } else {
+            req.node_id = static_cast<NodeId>(obj["node_id"].as_int64());
+        }
+        req.contact_address = std::string(obj["contact_address"].as_string());
+        return req;
+    }
+
+    // Deserialize ClusterJoin Response
+    template<typename NodeId = std::uint64_t, typename Address = std::string>
+    [[nodiscard]] auto deserialize_cluster_join_response(const Data& data) const
+        -> cluster_join_response<NodeId, Address> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "cluster_join_response") {
+            throw serialization_exception("Invalid message type for cluster_join_response");
+        }
+
+        cluster_join_response<NodeId, Address> resp;
+        resp.accepted = obj["accepted"].as_bool();
+        if (obj.contains("redirect_node_id")) {
+            peer_info<NodeId, Address> pi;
+            if constexpr (std::same_as<NodeId, std::string>) {
+                pi.node_id = std::string(obj["redirect_node_id"].as_string());
+            } else {
+                pi.node_id = static_cast<NodeId>(obj["redirect_node_id"].as_int64());
+            }
+            pi.address = std::string(obj["redirect_address"].as_string());
+            resp.redirect = pi;
+        }
+        return resp;
+    }
+
     // Generic deserialize method that dispatches to specific deserialize methods
     template<typename T> [[nodiscard]] auto deserialize(const Data& data) const -> T {
         if constexpr (std::same_as<T, request_vote_request<>>) {
@@ -284,6 +362,10 @@ public:
             return deserialize_install_snapshot_request(data);
         } else if constexpr (std::same_as<T, install_snapshot_response<>>) {
             return deserialize_install_snapshot_response(data);
+        } else if constexpr (std::same_as<T, cluster_join_request<>>) {
+            return deserialize_cluster_join_request(data);
+        } else if constexpr (std::same_as<T, cluster_join_response<>>) {
+            return deserialize_cluster_join_response(data);
         } else {
             static_assert(std::is_same_v<T, void>, "Unsupported type for deserialization");
         }

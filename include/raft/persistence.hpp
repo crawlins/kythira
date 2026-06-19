@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fault_injection.hpp"
 #include "types.hpp"
 #include <optional>
 #include <vector>
@@ -55,17 +56,29 @@ public:
     using snapshot_t = snapshot<NodeId, TermId, LogIndex>;
 
     // Persistent state operations - currentTerm
-    auto save_current_term(TermId term) -> void { _current_term = term; }
+    auto save_current_term(TermId term) -> void {
+        fiu_do_on("raft/persistence/save_current_term",
+                  throw std::runtime_error("chaos: save_current_term"););
+        _current_term = term;
+    }
 
     auto load_current_term() -> TermId { return _current_term; }
 
     // Persistent state operations - votedFor
-    auto save_voted_for(NodeId node) -> void { _voted_for = node; }
+    auto save_voted_for(NodeId node) -> void {
+        fiu_do_on("raft/persistence/save_voted_for",
+                  throw std::runtime_error("chaos: save_voted_for"););
+        _voted_for = node;
+    }
 
     auto load_voted_for() -> std::optional<NodeId> { return _voted_for; }
 
     // Log operations - append and retrieve
-    auto append_log_entry(const log_entry_t& entry) -> void { _log[entry.index()] = entry; }
+    auto append_log_entry(const log_entry_t& entry) -> void {
+        fiu_do_on("raft/persistence/append_log_entry",
+                  throw std::runtime_error("chaos: append_log_entry"););
+        _log[entry.index()] = entry;
+    }
 
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         auto it = _log.find(index);
@@ -101,6 +114,8 @@ public:
 
     // Log operations - truncation
     auto truncate_log(LogIndex index) -> void {
+        fiu_do_on("raft/persistence/truncate_log",
+                  throw std::runtime_error("chaos: truncate_log"););
         auto it = _log.begin();
         while (it != _log.end()) {
             if (it->first >= index) {
@@ -112,7 +127,11 @@ public:
     }
 
     // Snapshot operations
-    auto save_snapshot(const snapshot_t& snap) -> void { _snapshot = snap; }
+    auto save_snapshot(const snapshot_t& snap) -> void {
+        fiu_do_on("raft/persistence/save_snapshot",
+                  throw std::runtime_error("chaos: save_snapshot"););
+        _snapshot = snap;
+    }
 
     auto load_snapshot() -> std::optional<snapshot_t> { return _snapshot; }
 
