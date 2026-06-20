@@ -169,12 +169,29 @@ target_compile_features(network_simulator INTERFACE cxx_std_23)
 # endif()
 # target_compile_features(test_single_case PRIVATE cxx_std_23)
 
+# Find libfiu for fault injection / chaos tests
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(FIU QUIET libfiu)
+endif()
+
+if(FIU_FOUND)
+    set(CHAOS_TESTS_ENABLED TRUE)
+    message(STATUS "libfiu found (${FIU_VERSION}) — chaos tests and fault injection enabled")
+else()
+    set(CHAOS_TESTS_ENABLED FALSE)
+    message(STATUS "libfiu not found — chaos tests disabled (sudo apt install libfiu-dev)")
+endif()
+
 # Enable testing
 enable_testing()
 
 # Add subdirectories
 if(Boost_FOUND)
     add_subdirectory(tests)
+endif()
+if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+    add_subdirectory(cmd/chaos_node)
 endif()
 add_subdirectory(examples)
 

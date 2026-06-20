@@ -1,0 +1,73 @@
+services:
+  node1:
+    image: kythira-chaos-node:dev
+    container_name: chaos_node_1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: "2:node2:7000,3:node3:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "7001:7000"   # RPC
+      - "8081:8080"   # HTTP control plane
+      - "9001:9000"   # fiu_rc_tcp
+    cap_add:
+      - NET_ADMIN     # required for tc and iptables inside the container
+    networks:
+      - raft_net
+
+  node2:
+    image: kythira-chaos-node:dev
+    container_name: chaos_node_2
+    hostname: node2
+    environment:
+      NODE_ID: "2"
+      PEERS: "1:node1:7000,3:node3:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "7002:7000"
+      - "8082:8080"
+      - "9002:9000"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft_net
+
+  node3:
+    image: kythira-chaos-node:dev
+    container_name: chaos_node_3
+    hostname: node3
+    environment:
+      NODE_ID: "3"
+      PEERS: "1:node1:7000,2:node2:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+    ports:
+      - "7003:7000"
+      - "8083:8080"
+      - "9003:9000"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raft_net
+
+networks:
+  raft_net:
+    driver: bridge

@@ -1578,3 +1578,9 @@ if(LIBLDNS_FOUND)
 else()
     message(STATUS "libldns not found — dns_peer_discovery_unit_test will not be built")
 endif()
+
+# ── Chaos tests (libfiu required) ─────────────────────────────────────────────
+add_subdirectory(chaos)
+
+# ── Docker chaos tests (Boost + httplib required) ─────────────────────────────
+add_subdirectory(docker_chaos)
