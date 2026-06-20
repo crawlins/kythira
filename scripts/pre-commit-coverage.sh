@@ -171,7 +171,7 @@ fi
 
 # ── Measure coverage ──────────────────────────────────────────────────────────
 echo "  [coverage] Measuring ..."
-GCOVR_OUT=$("$GCOVR" \
+GCOVR_OUT=$(cd "${COVERAGE_BUILD}" && "$GCOVR" \
     --root "${REPO}" \
     --object-directory "${COVERAGE_BUILD}" \
     --exclude ".*build-coverage.*" \
