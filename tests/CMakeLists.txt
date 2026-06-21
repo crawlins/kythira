@@ -1579,6 +1579,42 @@ else()
     message(STATUS "libldns not found — dns_peer_discovery_unit_test will not be built")
 endif()
 
+# Poco DNSSD peer discovery unit tests — require Poco ≥ 1.9 with DNSSD support.
+if(POCO_DNSSD_FOUND)
+    add_executable(poco_peer_discovery_unit_test poco_peer_discovery_unit_test.cpp)
+    target_link_libraries(poco_peer_discovery_unit_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        ${POCO_DNSSD_LIBRARIES}
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(poco_peer_discovery_unit_test PRIVATE Folly::folly)
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+        target_link_libraries(poco_peer_discovery_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(poco_peer_discovery_unit_test PRIVATE Boost::json)
+    endif()
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+        target_link_libraries(poco_peer_discovery_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(poco_peer_discovery_unit_test PRIVATE Boost::context)
+    endif()
+    if(POCO_DNSSD_INCLUDE_DIRS)
+        target_include_directories(poco_peer_discovery_unit_test PRIVATE ${POCO_DNSSD_INCLUDE_DIRS})
+    endif()
+    target_compile_features(poco_peer_discovery_unit_test PRIVATE cxx_std_23)
+    add_test(NAME poco_peer_discovery_unit_test COMMAND poco_peer_discovery_unit_test)
+    set_tests_properties(poco_peer_discovery_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;poco;peer_discovery"
+    )
+else()
+    message(STATUS "Poco DNSSD not found — poco_peer_discovery_unit_test will not be built")
+endif()
+
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
 add_subdirectory(chaos)
 

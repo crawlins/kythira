@@ -136,6 +136,34 @@ else()
     message(STATUS "libldns not found — rfc1035/rfc2136 peer discovery disabled")
 endif()
 
+# Find Poco DNSSD (≥ 1.9) for poco_peer_discovery.
+# Try CMake config first (preferred), fall back to pkg-config.
+find_package(Poco QUIET COMPONENTS DNSSD Foundation)
+if(Poco_FOUND AND TARGET Poco::DNSSD)
+    set(POCO_DNSSD_FOUND TRUE)
+    set(POCO_DNSSD_LIBRARIES Poco::DNSSD Poco::Foundation)
+    set(POCO_DNSSD_INCLUDE_DIRS "")  # targets carry their own include dirs
+    message(STATUS "Poco DNSSD found via CMake config")
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(POCO_DNSSD QUIET PocoDNSSD)
+    endif()
+    if(POCO_DNSSD_FOUND)
+        message(STATUS "Poco DNSSD found via pkg-config: ${POCO_DNSSD_VERSION}")
+    endif()
+endif()
+
+if(POCO_DNSSD_FOUND)
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_POCO_DNSSD)
+    if(POCO_DNSSD_INCLUDE_DIRS)
+        target_include_directories(network_simulator INTERFACE ${POCO_DNSSD_INCLUDE_DIRS})
+    endif()
+    target_link_libraries(network_simulator INTERFACE ${POCO_DNSSD_LIBRARIES})
+else()
+    message(STATUS "Poco DNSSD not found — poco_peer_discovery disabled")
+endif()
+
 target_compile_features(network_simulator INTERFACE cxx_std_23)
 
 # Debug executable - commented out due to missing source files

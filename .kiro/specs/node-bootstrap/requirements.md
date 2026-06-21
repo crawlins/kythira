@@ -183,8 +183,8 @@ ready to accept `add_server()` calls from subsequently joining nodes.
 
 ### Requirement 7: `peer_discovery` Implementations
 
-**User Story:** As a developer, I want at least two concrete `peer_discovery`
-implementations so I can use bootstrap in both test and real-network contexts.
+**User Story:** As a developer, I want concrete `peer_discovery` implementations
+so I can use bootstrap in both test and real-network contexts.
 
 #### Acceptance Criteria
 
@@ -199,36 +199,11 @@ implementations so I can use bootstrap in both test and real-network contexts.
    `coap_client::discover_raft_nodes()` multicast call and return the discovered
    nodes as `peer_info` records. The existing discovery implementation is reused
    unchanged; this class is a thin adaptor.
-3. `rfc1035_peer_discovery` SHALL be provided in
-   `include/raft/rfc1035_peer_discovery.hpp`. It partially implements the
-   `peer_discovery` concept — it provides the `find_peers` method but not
-   `register_node`, and therefore does NOT itself satisfy the full concept:
-   a. WHEN `find_peers()` is called, the instance SHALL use RFC 1035 and the RFCs
-      that update it to query for both A and AAAA records for the shared DNS name
-      that represents the cluster. Each record in the response represents one
-      cluster node; the IP addresses returned SHALL be provided as the full list
-      of `peer_info` entries to the caller without any self-filtering.
-4. `rfc2136_ldns_discovery` SHALL be provided in `include/raft/rfc2136_ldns_discovery.hpp`
-   and SHALL use RFC 2136 DNS Dynamic Update (via libldns) to register nodes and
-   delegate peer discovery to `rfc1035_peer_discovery`:
-   a. WHEN `register_node(self_id, self_address)` is called it SHALL initiate a
-      sequence that registers the provided node with the DNS server it is
-      configured to use via the RFC 2136 protocol, by sending a DNS UPDATE adding
-      an A record (IPv4 `self_address`) or AAAA record (IPv6 `self_address`) for
-      the configured shared DNS name. The returned future SHALL resolve once the
-      server acknowledges the update with RCODE NOERROR.
-   b. WHEN `find_peers()` is called, the instance SHALL delegate to its embedded
-      `rfc1035_peer_discovery` instance and then filter out the entry whose
-      address matches `self_address` before returning the result to the caller.
-   c. The destructor SHALL send an RFC 2136 UPDATE deleting the node's own A or
-      AAAA record (best-effort; exceptions are swallowed).
-   d. Optional TSIG authentication (RFC 2845) SHALL be supported via a key name,
-      algorithm, and base64-encoded key secret carried in a configuration struct.
-   e. The short-TTL design (default 30 s) ensures that records from nodes that
-      crash without calling the destructor expire automatically.
-5. All full implementations SHALL satisfy the `peer_discovery` concept (verified
-   by `static_assert`). `rfc1035_peer_discovery` is explicitly excluded as it
-   only partially implements the concept.
+3. Both implementations SHALL satisfy the `peer_discovery` concept, verified by
+   `static_assert`s in their respective headers.
+
+> DNS-based implementations (`rfc1035_peer_discovery` and `rfc2136_ldns_discovery`)
+> are specified in the [dns-peer-discovery spec](../dns-peer-discovery/requirements.md).
 
 ### Requirement 9: Reconnection via `peer_discovery` for Isolated Restarting Nodes
 

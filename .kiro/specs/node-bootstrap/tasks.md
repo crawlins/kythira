@@ -39,13 +39,8 @@ regression.
     },
     {
       "wave": 5,
-      "tasks": [11, 20],
-      "description": "Discovery adaptors: CoAP multicast and rfc1035_peer_discovery query class (independent)"
-    },
-    {
-      "wave": "5b",
-      "tasks": [19],
-      "description": "rfc2136_ldns_discovery — depends on task 20 (rfc1035_peer_discovery)"
+      "tasks": [11],
+      "description": "Discovery adaptors: CoAP multicast (DNS adaptors tracked in dns-peer-discovery spec)"
     },
     {
       "wave": 6,
@@ -250,52 +245,11 @@ regression.
 
 ---
 
-## Phase 5b: DNS Peer Discovery (Tasks 20, 19)
+## Phase 5b: DNS Peer Discovery
 
-### RFC 1035 DNS query class (no registration)
-
-- [x] 20. Implement `rfc1035_peer_discovery` in `include/raft/rfc1035_peer_discovery.hpp`
-  - Add `libldns` (≥ 1.7) detection to `CMakeLists.txt` if not already present;
-    guard with `#ifdef KYTHIRA_HAS_LDNS`
-  - Define `rfc1035_peer_discovery::config` struct with fields: `server`, `port`
-    (53), `shared_name`
-  - Ctor `rfc1035_peer_discovery(config)`: stores config only; no network I/O
-  - `find_peers(timeout)`: creates `ldns_resolver` pointing at `config.server`;
-    issues separate A (`LDNS_RR_TYPE_A`) and AAAA (`LDNS_RR_TYPE_AAAA`) queries
-    for `shared_name` per RFC 1035 and its updates (including RFC 3596); merges
-    answer sections; converts each IP rdata string to `peer_info{ip, ip}`; returns
-    all results without self-filtering as an immediately-resolved future
-  - Does NOT implement `register_node`; does NOT satisfy the `peer_discovery`
-    concept; no `static_assert` for concept satisfaction
-  - Verify: `cmake --build build` succeeds with and without libldns present
-  - _Requirements: 7.3_
-
-### RFC 2136 dynamic-DNS registration (delegates find_peers to task 20)
-
-- [x] 19. Implement `rfc2136_ldns_discovery` in `include/raft/rfc2136_ldns_discovery.hpp`
-  - Depends on task 20 (`rfc1035_peer_discovery`)
-  - Define `rfc2136_ldns_discovery::config` struct embedding
-    `rfc1035_peer_discovery::config query` plus fields: `zone`, `ttl` (30),
-    `tsig_key_name`, `tsig_algorithm` (`"hmac-sha256."`), `tsig_key_base64`
-  - Ctor `rfc2136_ldns_discovery(config)`: constructs embedded
-    `rfc1035_peer_discovery _rfc1035{cfg.query}`; no network I/O
-  - `register_node(self_id, self_address) -> Future<void>`: stores self identity,
-    initiates the RFC 2136 registration sequence — detects IPv4 vs IPv6 from
-    `self_address`, sends a DNS UPDATE adding an A record (IPv4) or AAAA record
-    (IPv6) for `self_address` at `shared_name` with configured TTL; future
-    resolves on RCODE NOERROR, rejects otherwise
-  - Dtor: calls `deregister_self()` (swallows all exceptions) to send RFC 2136
-    UPDATE deleting the node's own A or AAAA record
-  - `find_peers(timeout)`: delegates to `_rfc1035.find_peers(timeout)`, then
-    filters out the entry whose address matches `_self_address`
-  - `maybe_sign(ldns_pkt*)`: if `tsig_key_name` non-empty, calls
-    `ldns_pkt_tsig_sign_next()` with configured algorithm and key
-  - UPDATE packets sent via `ldns_tcp_send()` (TCP preferred per RFC 2136 §6.1)
-  - Add `static_assert(peer_discovery<rfc2136_ldns_discovery, std::string, std::string>)`
-  - Add `DEPENDENCIES.md` entry: `libldns ≥ 1.7`
-  - Verify: `cmake --build build` succeeds with and without libldns present
-    (feature-flag guards must not break the default build)
-  - _Requirements: 7.4, 7.5_
+DNS-based `peer_discovery` implementations (`rfc1035_peer_discovery` and
+`rfc2136_ldns_discovery`) are tracked in the
+[dns-peer-discovery spec](../dns-peer-discovery/tasks.md).
 
 ---
 
