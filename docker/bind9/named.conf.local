@@ -1,0 +1,9 @@
+// Allow RFC 2136 dynamic updates from any private (RFC 1918) address.
+// Docker bridge networks use 172.16.0.0/12 by default; user-defined
+// subnets may fall anywhere in the private ranges below.
+
+zone "example.local" {
+    type master;
+    file "/var/lib/bind/db.example.local";
+    allow-update { 10.0.0.0/8; 172.16.0.0/12; 192.168.0.0/16; };
+};

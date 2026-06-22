@@ -6,6 +6,7 @@
 
 #include <raft/peer_discovery.hpp>
 #include <raft/rfc1035_peer_discovery.hpp>
+#include <raft/rfc2136_dns_sd_discovery.hpp>
 #include <raft/rfc2136_ldns_discovery.hpp>
 
 #include <folly/init/Init.h>
@@ -14,6 +15,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 // Fault point names — must match the fiu_do_on() strings in the headers.
 static constexpr const char* k_rfc1035_fail = "raft/dns/rfc1035/find_peers/fail";
@@ -21,9 +23,12 @@ static constexpr const char* k_rfc1035_ipv4 = "raft/dns/rfc1035/find_peers/injec
 static constexpr const char* k_rfc1035_mixed = "raft/dns/rfc1035/find_peers/inject_mixed";
 static constexpr const char* k_rfc2136_update = "raft/dns/rfc2136/send_update";
 static constexpr const char* k_rfc2136_update_noop = "raft/dns/rfc2136/send_update/noop";
+static constexpr const char* k_dns_sd_update = "raft/dns/rfc2136_dns_sd/send_update_rr";
+static constexpr const char* k_dns_sd_update_noop = "raft/dns/rfc2136_dns_sd/send_update_rr/noop";
 
 static constexpr const char* k_all_dns_faults[] = {
-    k_rfc1035_fail, k_rfc1035_ipv4, k_rfc1035_mixed, k_rfc2136_update, k_rfc2136_update_noop,
+    k_rfc1035_fail,        k_rfc1035_ipv4,  k_rfc1035_mixed,      k_rfc2136_update,
+    k_rfc2136_update_noop, k_dns_sd_update, k_dns_sd_update_noop,
 };
 
 struct DnsChaosFixture {
@@ -64,6 +69,18 @@ kythira::rfc1035_peer_discovery::config make_rfc1035_cfg() {
 
 kythira::rfc2136_ldns_discovery::config make_rfc2136_cfg() {
     return {make_rfc1035_cfg(), k_zone, 30, "", "hmac-sha256.", ""};
+}
+
+kythira::rfc2136_dns_sd_discovery::config make_dns_sd_cfg() {
+    kythira::rfc2136_dns_sd_discovery::config cfg;
+    cfg.server = k_server;
+    cfg.port = k_port;
+    cfg.zone = k_zone;
+    cfg.service_domain = "cluster.test.local.";
+    cfg.service_type = "_kythira-test._tcp";
+    cfg.ttl = 30;
+    cfg.freshness_interval = std::chrono::seconds{2};  // short for fresher tests
+    return cfg;
 }
 
 }  // namespace
@@ -260,6 +277,68 @@ BOOST_AUTO_TEST_CASE(fault_disable_mid_run_restores_normal, *boost::unit_test::t
 
     auto after = disc.find_peers(std::chrono::milliseconds{200}).get();
     BOOST_TEST(after.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc2136_dns_sd chaos ─────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(rfc2136_dns_sd_chaos_suite)
+
+// "noop" fault: register_node (PTR + SRV + TXT-del + TXT-add) succeeds without network I/O.
+BOOST_AUTO_TEST_CASE(register_node_noop_succeeds, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    fiu_enable(k_dns_sd_update_noop, 1, nullptr, 0);
+    {
+        kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+        BOOST_CHECK_NO_THROW(disc.register_node("n1", "host:7000").get());
+    }
+    fiu_disable(k_dns_sd_update_noop);
+    BOOST_TEST(true);
+}
+
+// "throw" fault: register_node propagates the exception from send_update_rr.
+// The fault must remain active through the dtor so send_deregister throws and
+// is swallowed by the dtor's catch(...)  rather than hitting the network.
+BOOST_AUTO_TEST_CASE(register_node_throws_when_faulted, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    {
+        kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+        fiu_enable(k_dns_sd_update, 1, nullptr, 0);
+        BOOST_CHECK_THROW(disc.register_node("n1", "host:7000").get(), std::runtime_error);
+    }  // dtor: send_deregister throws (fault active) → caught → fast
+    fiu_disable(k_dns_sd_update);
+}
+
+// After noop register, dtor absorbs the exception from deregister when the fault is active.
+BOOST_AUTO_TEST_CASE(dtor_silent_when_deregister_faulted, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    {
+        kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+        fiu_enable(k_dns_sd_update_noop, 1, nullptr, 0);
+        BOOST_CHECK_NO_THROW(disc.register_node("n1", "host:7000").get());
+        fiu_disable(k_dns_sd_update_noop);
+        fiu_enable(k_dns_sd_update, 1, nullptr, 0);
+        // dtor: stop_fresher (fast) + send_deregister → throw → caught by catch(...).
+    }
+    fiu_disable(k_dns_sd_update);
+    BOOST_TEST(true);
+}
+
+// With a short freshness_interval and noop fault, the fresher thread fires at least
+// once before destruction; stop_fresher must join the thread cleanly.
+BOOST_AUTO_TEST_CASE(fresher_fires_and_stop_joins, *boost::unit_test::timeout(10)) {
+    clear_faults();
+    fiu_enable(k_dns_sd_update_noop, 1, nullptr, 0);
+    {
+        // freshness_interval=2s → fresher wakes every 1 s
+        kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+        BOOST_CHECK_NO_THROW(disc.register_node("n1", "host:7000").get());
+        std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+        // dtor: stop_fresher joins the running fresher thread, then send_deregister noops.
+    }
+    fiu_disable(k_dns_sd_update_noop);
+    BOOST_TEST(true);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

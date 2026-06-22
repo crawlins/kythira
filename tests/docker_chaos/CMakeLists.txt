@@ -90,15 +90,28 @@ add_docker_chaos_scenario_test(docker_chaos_safety_assertions_test
 add_docker_chaos_scenario_test(docker_poco_discovery_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/poco_discovery_test.cpp")
 
+# ── DNS / DNS-SD Docker scenario tests ───────────────────────────────────────
+
+add_docker_chaos_scenario_test(docker_dns_discovery_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/dns_discovery_test.cpp")
+
+add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/dns_sd_discovery_test.cpp")
+
 # ── Docker image and scenario-runner custom targets ───────────────────────────
 
 find_program(DOCKER_EXECUTABLE docker)
 
 if(DOCKER_EXECUTABLE)
-    set(_CHAOS_COMPOSE_FILE           "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
-    set(_CHAOS_DOCKERFILE             "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
-    set(_POCO_DISCOVERY_COMPOSE_FILE  "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
-    set(_POCO_DISCOVERY_DOCKERFILE    "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/Dockerfile")
+    set(_CHAOS_COMPOSE_FILE              "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
+    set(_CHAOS_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
+    set(_POCO_DISCOVERY_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
+    set(_POCO_DISCOVERY_DOCKERFILE       "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/Dockerfile")
+    set(_BIND9_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/bind9/Dockerfile")
+    set(_DNS_DISCOVERY_COMPOSE_FILE      "${CMAKE_SOURCE_DIR}/docker/dns-discovery-compose.yml")
+    set(_DNS_DISCOVERY_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/dns_discovery_node/Dockerfile")
+    set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
+    set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
 
     add_custom_target(docker-chaos-image
         COMMAND ${DOCKER_EXECUTABLE} build
@@ -162,14 +175,71 @@ if(DOCKER_EXECUTABLE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
-    message(STATUS "docker-chaos-image, docker-chaos-tests, docker-poco-discovery-image, docker-poco-discovery-tests targets available")
+    add_custom_target(docker-bind9-image
+        COMMAND ${DOCKER_EXECUTABLE} build
+                --file "${_BIND9_DOCKERFILE}"
+                --tag kythira-bind9:dev
+                "${CMAKE_SOURCE_DIR}/docker/bind9"
+        COMMENT "Building kythira-bind9:dev Docker image"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-dns-discovery-image
+        COMMAND ${DOCKER_EXECUTABLE} build
+                --file "${_DNS_DISCOVERY_DOCKERFILE}"
+                --tag kythira-dns-discovery:dev
+                "${CMAKE_SOURCE_DIR}"
+        COMMENT "Building kythira-dns-discovery:dev Docker image"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-dns-sd-discovery-image
+        COMMAND ${DOCKER_EXECUTABLE} build
+                --file "${_DNS_SD_DISCOVERY_DOCKERFILE}"
+                --tag kythira-dns-sd-discovery:dev
+                "${CMAKE_SOURCE_DIR}"
+        COMMENT "Building kythira-dns-sd-discovery:dev Docker image"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-dns-discovery-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                KYTHIRA_DNS_DISCOVERY_COMPOSE_FILE=${_DNS_DISCOVERY_COMPOSE_FILE}
+                $<TARGET_FILE:docker_dns_discovery_test>
+                --log_level=message
+        DEPENDS docker-bind9-image docker-dns-discovery-image docker_dns_discovery_test
+        COMMENT "Running DNS (RFC 2136) discovery Docker scenario tests"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-dns-sd-discovery-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                KYTHIRA_DNS_SD_DISCOVERY_COMPOSE_FILE=${_DNS_SD_DISCOVERY_COMPOSE_FILE}
+                $<TARGET_FILE:docker_dns_sd_discovery_test>
+                --log_level=message
+        DEPENDS docker-bind9-image docker-dns-sd-discovery-image docker_dns_sd_discovery_test
+        COMMENT "Running DNS-SD (RFC 2136 + PTR/SRV/TXT) discovery Docker scenario tests"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    message(STATUS
+        "docker-chaos-image, docker-chaos-tests, "
+        "docker-poco-discovery-image, docker-poco-discovery-tests, "
+        "docker-bind9-image, "
+        "docker-dns-discovery-image, docker-dns-discovery-tests, "
+        "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests targets available")
 else()
-    foreach(_t docker-chaos-image docker-chaos-tests docker-poco-discovery-image docker-poco-discovery-tests)
+    foreach(_t
+        docker-chaos-image docker-chaos-tests
+        docker-poco-discovery-image docker-poco-discovery-tests
+        docker-bind9-image
+        docker-dns-discovery-image docker-dns-discovery-tests
+        docker-dns-sd-discovery-image docker-dns-sd-discovery-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires 'docker' on PATH"
             COMMAND ${CMAKE_COMMAND} -E false
         )
     endforeach()
-    message(STATUS "docker not found — docker-chaos and docker-poco-discovery targets disabled")
+    message(STATUS "docker not found — all docker-* targets disabled")
 endif()

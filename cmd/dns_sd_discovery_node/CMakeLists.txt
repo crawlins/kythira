@@ -1,0 +1,11 @@
+if(NOT LIBLDNS_FOUND OR NOT folly_FOUND OR NOT httplib_FOUND)
+    message(STATUS "dns_sd_discovery_node: skipped (requires libldns + folly + httplib)")
+    return()
+endif()
+
+add_executable(dns_sd_discovery_node main.cpp)
+target_include_directories(dns_sd_discovery_node PRIVATE "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(dns_sd_discovery_node PRIVATE network_simulator httplib::httplib)
+target_compile_features(dns_sd_discovery_node PRIVATE cxx_std_23)
+set_target_properties(dns_sd_discovery_node PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+message(STATUS "dns_sd_discovery_node target: enabled")

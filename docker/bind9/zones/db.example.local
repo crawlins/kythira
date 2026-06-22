@@ -1,0 +1,10 @@
+$TTL 60
+@   IN  SOA  ns1.example.local. hostmaster.example.local. (
+        2024010101  ; serial
+        60          ; refresh
+        30          ; retry
+        600         ; expire
+        60          ; negative TTL
+        )
+@   IN  NS   ns1.example.local.
+ns1 IN  A    127.0.0.1

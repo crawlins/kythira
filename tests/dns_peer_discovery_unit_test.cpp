@@ -3,6 +3,7 @@
 
 #include <raft/peer_discovery.hpp>
 #include <raft/rfc1035_peer_discovery.hpp>
+#include <raft/rfc2136_dns_sd_discovery.hpp>
 #include <raft/rfc2136_ldns_discovery.hpp>
 
 #include <folly/init/Init.h>
@@ -151,6 +152,70 @@ BOOST_AUTO_TEST_CASE(find_peers_returns_empty_on_unreachable_server,
                      *boost::unit_test::timeout(10)) {
     kythira::rfc2136_ldns_discovery disc{make_rfc2136_cfg()};
     BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{200}).get());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc2136_dns_sd_discovery ─────────────────────────────────────────────────
+
+namespace {
+
+kythira::rfc2136_dns_sd_discovery::config make_dns_sd_cfg() {
+    kythira::rfc2136_dns_sd_discovery::config cfg;
+    cfg.server = k_server;  // "127.0.0.1"
+    cfg.port = k_port;      // 5399 (unreachable)
+    cfg.zone = k_zone;      // "test.local."
+    cfg.service_domain = "cluster.test.local.";
+    cfg.service_type = "_kythira-test._tcp";
+    cfg.ttl = 30;
+    cfg.freshness_interval = std::chrono::seconds{60};
+    return cfg;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(rfc2136_dns_sd_suite)
+
+BOOST_AUTO_TEST_CASE(concept_satisfied) {
+    static_assert(
+        kythira::peer_discovery<kythira::rfc2136_dns_sd_discovery, std::string, std::string>);
+    BOOST_TEST(true);
+}
+
+BOOST_AUTO_TEST_CASE(construct_with_config) {
+    BOOST_CHECK_NO_THROW((kythira::rfc2136_dns_sd_discovery{make_dns_sd_cfg()}));
+}
+
+// No register_node call → _self_node_id empty → send_deregister is a no-op → dtor silent.
+BOOST_AUTO_TEST_CASE(dtor_silent_when_no_registration, *boost::unit_test::timeout(5)) {
+    {
+        kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+    }
+    BOOST_TEST(true);
+}
+
+// Empty zone → ldns_dname_new_frm_str("") returns nullptr in send_update_rr → throws.
+BOOST_AUTO_TEST_CASE(register_node_empty_zone_throws, *boost::unit_test::timeout(5)) {
+    auto cfg = make_dns_sd_cfg();
+    cfg.zone = "";
+    kythira::rfc2136_dns_sd_discovery disc{std::move(cfg)};
+    BOOST_CHECK_THROW(disc.register_node("n1", "host:7000"), std::runtime_error);
+}
+
+// Empty server → ldns_resolver has no nameservers → ldns_resolver_send_pkt returns
+// LDNS_STATUS_ERR immediately (no I/O) → exercises the full send_update_rr network path.
+BOOST_AUTO_TEST_CASE(register_node_no_nameserver_throws, *boost::unit_test::timeout(5)) {
+    auto cfg = make_dns_sd_cfg();
+    cfg.server = "";
+    kythira::rfc2136_dns_sd_discovery disc{std::move(cfg)};
+    BOOST_CHECK_THROW(disc.register_node("n1", "host:7000"), std::runtime_error);
+}
+
+// find_peers on unreachable server respects the timeout and returns empty.
+BOOST_AUTO_TEST_CASE(find_peers_unreachable_returns_empty, *boost::unit_test::timeout(10)) {
+    kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
+    auto peers = disc.find_peers(std::chrono::milliseconds{200}).get();
+    BOOST_TEST(peers.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

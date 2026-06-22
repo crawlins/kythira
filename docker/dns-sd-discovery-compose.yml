@@ -1,0 +1,82 @@
+networks:
+  dns-sd-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.27.0.0/24
+
+services:
+  dns-sd-test-bind9:
+    image: kythira-bind9:dev
+    container_name: dns-sd-test-bind9
+    networks:
+      dns-sd-test-net:
+        ipv4_address: 172.27.0.10
+    healthcheck:
+      test: ["CMD", "dig", "@127.0.0.1", "example.local", "SOA", "+short"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  dns-sd-discovery-node1:
+    image: kythira-dns-sd-discovery:dev
+    container_name: dns-sd-discovery-node1
+    hostname: dns-sd-discovery-node1
+    networks:
+      dns-sd-test-net:
+    environment:
+      NODE_ID: node1
+      HTTP_PORT: "9031"
+      RPC_PORT: "7031"
+      DNS_SERVER: "172.27.0.10"
+      DNS_ZONE: "example.local."
+      SERVICE_DOMAIN: "cluster.example.local."
+      SERVICE_TYPE: "_kythira-test._tcp"
+      FRESHNESS_INTERVAL: "20"
+    ports:
+      - "9031:9031"
+    depends_on:
+      dns-sd-test-bind9:
+        condition: service_healthy
+
+  dns-sd-discovery-node2:
+    image: kythira-dns-sd-discovery:dev
+    container_name: dns-sd-discovery-node2
+    hostname: dns-sd-discovery-node2
+    networks:
+      dns-sd-test-net:
+    environment:
+      NODE_ID: node2
+      HTTP_PORT: "9032"
+      RPC_PORT: "7032"
+      DNS_SERVER: "172.27.0.10"
+      DNS_ZONE: "example.local."
+      SERVICE_DOMAIN: "cluster.example.local."
+      SERVICE_TYPE: "_kythira-test._tcp"
+      FRESHNESS_INTERVAL: "20"
+    ports:
+      - "9032:9032"
+    depends_on:
+      dns-sd-test-bind9:
+        condition: service_healthy
+
+  dns-sd-discovery-node3:
+    image: kythira-dns-sd-discovery:dev
+    container_name: dns-sd-discovery-node3
+    hostname: dns-sd-discovery-node3
+    networks:
+      dns-sd-test-net:
+    environment:
+      NODE_ID: node3
+      HTTP_PORT: "9033"
+      RPC_PORT: "7033"
+      DNS_SERVER: "172.27.0.10"
+      DNS_ZONE: "example.local."
+      SERVICE_DOMAIN: "cluster.example.local."
+      SERVICE_TYPE: "_kythira-test._tcp"
+      FRESHNESS_INTERVAL: "20"
+    ports:
+      - "9033:9033"
+    depends_on:
+      dns-sd-test-bind9:
+        condition: service_healthy

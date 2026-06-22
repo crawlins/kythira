@@ -1,0 +1,76 @@
+networks:
+  dns-test-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.26.0.0/24
+
+services:
+  dns-test-bind9:
+    image: kythira-bind9:dev
+    container_name: dns-test-bind9
+    networks:
+      dns-test-net:
+        ipv4_address: 172.26.0.10
+    healthcheck:
+      test: ["CMD", "dig", "@127.0.0.1", "example.local", "SOA", "+short"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  dns-discovery-node1:
+    image: kythira-dns-discovery:dev
+    container_name: dns-discovery-node1
+    hostname: dns-discovery-node1
+    networks:
+      dns-test-net:
+    environment:
+      NODE_ID: node1
+      HTTP_PORT: "9021"
+      RPC_PORT: "7021"
+      DNS_SERVER: "172.26.0.10"
+      DNS_ZONE: "example.local."
+      DNS_SHARED_NAME: "cluster.example.local."
+    ports:
+      - "9021:9021"
+    depends_on:
+      dns-test-bind9:
+        condition: service_healthy
+
+  dns-discovery-node2:
+    image: kythira-dns-discovery:dev
+    container_name: dns-discovery-node2
+    hostname: dns-discovery-node2
+    networks:
+      dns-test-net:
+    environment:
+      NODE_ID: node2
+      HTTP_PORT: "9022"
+      RPC_PORT: "7022"
+      DNS_SERVER: "172.26.0.10"
+      DNS_ZONE: "example.local."
+      DNS_SHARED_NAME: "cluster.example.local."
+    ports:
+      - "9022:9022"
+    depends_on:
+      dns-test-bind9:
+        condition: service_healthy
+
+  dns-discovery-node3:
+    image: kythira-dns-discovery:dev
+    container_name: dns-discovery-node3
+    hostname: dns-discovery-node3
+    networks:
+      dns-test-net:
+    environment:
+      NODE_ID: node3
+      HTTP_PORT: "9023"
+      RPC_PORT: "7023"
+      DNS_SERVER: "172.26.0.10"
+      DNS_ZONE: "example.local."
+      DNS_SHARED_NAME: "cluster.example.local."
+    ports:
+      - "9023:9023"
+    depends_on:
+      dns-test-bind9:
+        condition: service_healthy

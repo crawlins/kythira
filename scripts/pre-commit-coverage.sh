@@ -178,6 +178,7 @@ GCOVR_OUT=$(cd "${COVERAGE_BUILD}" && "$GCOVR" \
     --exclude ".*vcpkg_installed.*" \
     --exclude ".*/usr/.*" \
     --exclude ".*cmd/.*" \
+    --exclude ".*tests/docker_chaos/.*" \
     --gcov-ignore-parse-errors=negative_hits.warn \
     --print-summary 2>&1)
 

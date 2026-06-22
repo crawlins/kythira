@@ -1,0 +1,15 @@
+options {
+    directory "/var/cache/bind";
+
+    // Accept queries from any source; this is an internal test server.
+    allow-query { any; };
+
+    // No recursive resolution — authoritative only.
+    recursion no;
+
+    // Disable DNSSEC validation for the test zone.
+    dnssec-validation no;
+
+    listen-on     { any; };
+    listen-on-v6  { any; };
+};
