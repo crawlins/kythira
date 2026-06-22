@@ -1,8 +1,8 @@
 # Implementation Plan — DNS Peer Discovery
 
-## Status: In Progress
+## Status: In Progress (tasks 3 and 4 remain; task 6 added and complete)
 
-**Last Updated**: June 20, 2026
+**Last Updated**: June 22, 2026
 
 ## Overview
 
@@ -131,7 +131,7 @@ The `peer_discovery` concept and `peer_info` type are defined in
   - Verify: `cmake --build build` succeeds with and without libldns present
   - _Requirements: 5.1–5.10, 6.2, 6.3_
 
-- [ ] 5. Implement `poco_peer_discovery` in `include/raft/poco_peer_discovery.hpp`
+- [x] 5. Implement `poco_peer_discovery` in `include/raft/poco_peer_discovery.hpp`
   - Add Poco DNSSD (≥ 1.9) detection to `CMakeLists.txt`; guard with
     `#ifdef KYTHIRA_HAS_POCO_DNSSD` (independent of `KYTHIRA_HAS_LDNS`)
   - Define `poco_peer_discovery::config` struct with fields: `service_type`
@@ -165,6 +165,34 @@ The `peer_discovery` concept and `peer_info` type are defined in
     `Poco ≥ 1.9 (PocoFoundation + PocoDNSSD) — DNS-SD service registration and browsing via platform daemon`
   - Verify: `cmake --build build` succeeds with and without Poco DNSSD present
   - _Requirements: 7.1–7.7, 6.3, 6.6_
+
+- [x] 6. Implement `rfc2136_dns_sd_discovery` in `include/raft/rfc2136_dns_sd_discovery.hpp`
+  - DNS-SD peer discovery over unicast DNS using RFC 2136 dynamic update; a
+    different design from `rfc6763_ldns_peer_discovery` (task 4) — registers
+    PTR + SRV + TXT records with a `fresh_until=<epoch>` TXT field instead of
+    relying solely on DNS TTL for staleness detection.
+  - Define `rfc2136_dns_sd_discovery::config` with: `server`, `port` (53),
+    `zone`, `service_domain`, `service_type` (`"_kythira._tcp"`), `ttl` (30),
+    `freshness_interval` (60 s), and optional TSIG fields.
+  - `register_node(self_id, self_address) -> Future<void>`: sends RFC 2136 UPDATE
+    adding PTR (`<service_type>.<service_domain>. IN PTR <self_id>...`), SRV, and
+    TXT (`fresh_until=<epoch>`) records; starts a background fresher thread that
+    renews the TXT record every `freshness_interval / 2`.
+  - `find_peers(timeout)`: queries PTR records to enumerate instances; for each
+    instance queries TXT to obtain `fresh_until`; filters out instances whose
+    `fresh_until` has passed; queries SRV records for host:port; returns
+    `peer_info{node_id, "host:port"}` excluding self.
+  - Dtor: stops the fresher thread; sends RFC 2136 DELETE UPDATE best-effort.
+  - Fault injection: `raft/dns/rfc2136/dns_sd/update` (throws),
+    `raft/dns/rfc2136/dns_sd/update/noop` (silent pass-through).
+  - `static_assert(peer_discovery<rfc2136_dns_sd_discovery, std::string, std::string>)`
+  - Tests: 6 unit cases (`rfc2136_dns_sd_suite` in `dns_peer_discovery_unit_test.cpp`)
+    and 4 chaos cases (`rfc2136_dns_sd_chaos_suite` in `dns_peer_discovery_chaos_test.cpp`).
+  - Docker scenario test (`docker-dns-sd-discovery-tests`): 3 cases covering
+    healthy nodes, peer discovery, and dead-node absence after freshness expiry
+    (BIND9 + 3 `dns_sd_discovery_node` containers, 20 s freshness interval).
+  - _Outside original requirements scope; addresses freshness-based staleness
+    detection not covered by TTL-only approach in tasks 3–4_
 
 ## Notes
 

@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: June 18, 2026
+**Last Updated**: June 22, 2026
 
 ## Current Status
 
@@ -10,6 +10,77 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - **0 tests failing, 0 tests disabled, 0 flaky tests**
 - All specifications complete across all 7 feature areas (node bootstrap now complete)
 - Build clean with no errors or warnings
+
+### What Changed (June 19–22, 2026)
+
+- **`rfc2136_dns_sd_discovery` implemented** (`include/raft/rfc2136_dns_sd_discovery.hpp`,
+  500 lines): DNS-SD peer discovery over unicast DNS via RFC 2136 dynamic update. Registers
+  PTR, SRV, and TXT records per node under a configured service domain. A background fresher
+  thread renews the TXT record's `fresh_until=<epoch>` field every
+  `freshness_interval / 2` so that peers from crashed nodes (whose destructor never
+  runs) are automatically filtered out by `find_peers`. `register_node` returns a
+  `folly::Future<void>` that resolves once the UPDATE is acknowledged. Destructor sends
+  a DELETE UPDATE best-effort. Fault injection points: `raft/dns/rfc2136/dns_sd/update`
+  (throws) and `.../update/noop` (silent pass-through).
+
+- **Unit and chaos tests for `rfc2136_dns_sd_discovery`** added to
+  `tests/dns_peer_discovery_unit_test.cpp` (now 21 total cases across 3 suites) and
+  `tests/chaos/dns_peer_discovery_chaos_test.cpp` (now 17 total cases across 3 suites).
+  The `rfc2136_dns_sd_suite` covers: register resolves future, find_peers returns peers,
+  deregister on dtor, freshness filtering. The `rfc2136_dns_sd_chaos_suite` covers:
+  register throws on fault, dtor silent when deregister faulted, find_peers returns
+  empty on fault, noop fault lets register succeed.
+
+- **BIND9 Docker image** (`docker/bind9/Dockerfile`): multi-stage Ubuntu 24.04 build
+  of BIND9 with RFC 2136 Dynamic Update enabled on a private `example.local.` zone;
+  includes `dig` for healthchecks.
+
+- **DNS discovery Docker scenario test** (`tests/docker_chaos/dns_discovery_test.cpp`,
+  3 cases): `all_nodes_healthy`, `all_nodes_discover_peers`,
+  `stopped_node_absent_after_deregister`. Runs via `docker-dns-discovery-tests` CMake
+  target using `docker/dns-discovery-compose.yml` (BIND9 + 3 `dns_discovery_node`
+  containers).
+
+- **DNS-SD discovery Docker scenario test** (`tests/docker_chaos/dns_sd_discovery_test.cpp`,
+  3 cases): `all_nodes_healthy`, `all_nodes_discover_peers`,
+  `dead_node_absent_after_freshness_expiry`. Runs via `docker-dns-sd-discovery-tests`
+  CMake target using `docker/dns-sd-discovery-compose.yml` (BIND9 + 3
+  `dns_sd_discovery_node` containers). The `dead_node_absent_after_freshness_expiry`
+  case kills node1 with SIGKILL and waits 25 s for the 20 s freshness interval to
+  expire, then verifies the dead node is no longer reported by the surviving nodes.
+
+- **`poco_peer_discovery` Docker scenario test** (`tests/docker_chaos/poco_discovery_test.cpp`,
+  3 cases) added via `docker-poco-discovery-tests` CMake target; runs against a
+  `docker/poco-discovery-compose.yml` cluster.
+
+- **Podman support in Docker test harness**: `tests/docker_chaos/os_faults.hpp` now
+  provides `container_runtime()` (reads `$KYTHIRA_CONTAINER_RUNTIME`, default
+  `"docker"`) and `compose_prefix()` (reads `$KYTHIRA_COMPOSE_COMMAND`, defaults to
+  `[runtime, "compose"]`); all command-vector builders use these instead of the
+  hardcoded `"docker"` string. `tests/docker_chaos/CMakeLists.txt` auto-detects
+  `docker` then `podman` via `find_program`, exposes `CONTAINER_RUNTIME` and
+  `COMPOSE_COMMAND` CMake cache variables, and forwards both as env vars into every
+  scenario-test invocation.
+
+- **Rootless Podman compatibility**: `docker/dns-discovery-compose.yml` and
+  `docker/dns-sd-discovery-compose.yml` no longer assign static IPs to BIND9
+  (`ipv4_address` was silently ignored by rootless Podman). `DNS_SERVER` is now the
+  compose service name (`"dns-test-bind9"`, `"dns-sd-test-bind9"`). Both node
+  binaries (`cmd/dns_discovery_node`, `cmd/dns_sd_discovery_node`) resolve the
+  service name to an IP via `getaddrinfo(AF_INET)` before handing it to ldns, which
+  only accepts IP literals.
+
+- **Coverage build fixes**: `cmd/` subdirectories excluded from CMake build when
+  `ENABLE_COVERAGE=ON` to prevent `GcovrMergeAssertionError` (header-only classes
+  compiled in both test TUs with `FIU_ENABLE` and node binaries without it produced
+  conflicting gcov line-number metadata). `tests/docker_chaos/` excluded from gcovr
+  (binaries compiled but never run by ctest). Coverage floor raised: 79.9% → 80.3%.
+
+- **CLAUDE.md** created at repo root with steering directives: Conventional Commits
+  format required for all commit messages; commit bodies must be detailed summaries
+  (motivation, trade-offs, root cause, sub-changes); all container-based tests must
+  work with both Docker and rootless Podman (no static IPs, no hardcoded `"docker"`,
+  no root-only networking).
 
 ### What Changed (June 18, 2026)
 
@@ -146,6 +217,20 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   `coap_multicast_peer_discovery` adaptors; 6 property tests + 14 unit tests +
   12 chaos tests; `register_node` ordering bug fixed (set `_self_address` after
   successful `send_update`)
+- [x] **`poco_peer_discovery`** — registers and discovers nodes via the platform
+  DNS-SD daemon (Avahi on Linux) using Poco DNSSD; TXT-record freshness with
+  background renewal thread; Docker scenario test (`docker-poco-discovery-tests`);
+  spec at `.kiro/specs/dns-peer-discovery/`
+- [x] **`rfc2136_dns_sd_discovery`** — DNS-SD over unicast DNS via RFC 2136; publishes
+  PTR + SRV + TXT records per node; background fresher thread renews `fresh_until`
+  TXT field so stale entries from crashed nodes expire; 6 unit tests + 4 chaos tests;
+  Docker scenario test (`docker-dns-sd-discovery-tests`) with BIND9; spec at
+  `.kiro/specs/dns-peer-discovery/`
+- [ ] **`rfc6763_peer_discovery`** (partial) — SRV-query-only peer discovery; building
+  block for `rfc6763_ldns_peer_discovery`; spec at `.kiro/specs/dns-peer-discovery/`
+- [ ] **`rfc6763_ldns_peer_discovery`** (full) — registers PTR + instance SRV +
+  cluster-level SRV + domain-level SRV via RFC 2136; spec at
+  `.kiro/specs/dns-peer-discovery/`
 
 ### Minor Enhancements
 
@@ -161,10 +246,13 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   C++ harness (`harness.hpp`, `os_faults.hpp`, `fault_control.hpp`) with
   injectable `CmdExecutor`/`HttpGet`/`HttpPost` stubs for unit testing;
   32 harness unit tests (`docker_chaos_harness_unit_tests`,
-  `docker_chaos_fault_control_unit_tests`) registered in CTest; 7 scenario
-  test files (election recovery, crash recovery, network degradation, AZ
-  partition, persistence faults, safety assertions, leadership stability);
-  25 tasks complete; spec at `.kiro/specs/docker-chaos/`
+  `docker_chaos_fault_control_unit_tests`) registered in CTest; 7 chaos scenario
+  tests (election recovery, crash recovery, network degradation, AZ partition,
+  persistence faults, safety assertions, leadership stability) + 3 DNS discovery
+  scenario tests + 3 DNS-SD discovery scenario tests + 3 poco_peer_discovery
+  scenario tests; Podman runtime support and rootless Podman compatibility;
+  25 original tasks + 5 expansion tasks complete;
+  spec at `.kiro/specs/docker-chaos/`
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

@@ -2,7 +2,7 @@
 
 ## Status: Complete
 
-**Last Updated**: June 13, 2026
+**Last Updated**: June 22, 2026
 
 ## Overview
 
@@ -320,6 +320,62 @@ construction, HTTP response parsing, and ChaosNode/ChaosCluster lifecycle
 
 ---
 
+---
+
+## Phase 7: Expansion — Discovery Scenario Tests and Podman Support (Tasks 26–30)
+
+- [x] 26. Add `poco_peer_discovery` Docker scenario test
+  - `tests/docker_chaos/poco_discovery_test.cpp` (3 cases): `all_nodes_healthy`,
+    `all_nodes_discover_peers`, `node_deregisters_on_stop`.
+  - Compose: `docker/poco-discovery-compose.yml` — 3 `poco_discovery_node`
+    containers sharing an Avahi socket from the host.
+  - Node binary: `cmd/poco_discovery_node/` — registers via `poco_peer_discovery`,
+    serves `/health` and `/peers` HTTP endpoints.
+  - CMake target: `docker-poco-discovery-tests`; image target:
+    `docker-poco-discovery-image`.
+
+- [x] 27. Add DNS discovery Docker scenario test (A-record / RFC 2136)
+  - `tests/docker_chaos/dns_discovery_test.cpp` (3 cases): `all_nodes_healthy`,
+    `all_nodes_discover_peers`, `stopped_node_absent_after_deregister`.
+  - Compose: `docker/dns-discovery-compose.yml` — BIND9 + 3 `dns_discovery_node`
+    containers. SIGTERM on a node triggers clean deregistration; surviving nodes
+    stop reporting the stopped node within 3 s.
+  - BIND9 image: `docker/bind9/Dockerfile` — multi-stage Ubuntu 24.04 build with
+    RFC 2136 enabled on a private `example.local.` zone.
+  - CMake targets: `docker-bind9-image`, `docker-dns-discovery-image`,
+    `docker-dns-discovery-tests`.
+
+- [x] 28. Add DNS-SD discovery Docker scenario test (PTR/SRV/TXT / RFC 2136)
+  - `tests/docker_chaos/dns_sd_discovery_test.cpp` (3 cases): `all_nodes_healthy`,
+    `all_nodes_discover_peers`, `dead_node_absent_after_freshness_expiry`.
+  - Compose: `docker/dns-sd-discovery-compose.yml` — BIND9 + 3
+    `dns_sd_discovery_node` containers. The freshness expiry test kills node1
+    with SIGKILL and waits 25 s (freshness interval = 20 s) to verify the dead
+    node is no longer reported by the surviving nodes.
+  - CMake targets: `docker-dns-sd-discovery-image`, `docker-dns-sd-discovery-tests`.
+
+- [x] 29. Podman support in test harness
+  - `tests/docker_chaos/os_faults.hpp`: added `container_runtime()` (reads
+    `$KYTHIRA_CONTAINER_RUNTIME`, default `"docker"`) and `compose_prefix()`
+    (reads `$KYTHIRA_COMPOSE_COMMAND`, defaults to `[runtime, "compose"]`). All
+    command-vector builders use these instead of the hardcoded `"docker"` string.
+  - `tests/docker_chaos/CMakeLists.txt`: replaced `find_program(DOCKER_EXECUTABLE
+    docker)` with auto-detection of `docker` then `podman`; exposes
+    `CONTAINER_RUNTIME` and `COMPOSE_COMMAND` as CMake cache variables; forwards
+    both as `KYTHIRA_CONTAINER_RUNTIME` / `KYTHIRA_COMPOSE_COMMAND` env vars into
+    every scenario-test invocation.
+
+- [x] 30. Rootless Podman compatibility for DNS compose files
+  - `docker/dns-discovery-compose.yml`: removed fixed-subnet IPAM and
+    `ipv4_address` from BIND9 service (rootless Podman ignores `ipv4_address`);
+    `DNS_SERVER` changed from `"172.26.0.10"` to `"dns-test-bind9"`.
+  - `docker/dns-sd-discovery-compose.yml`: same change — `DNS_SERVER` is now
+    `"dns-sd-test-bind9"`.
+  - `cmd/dns_discovery_node/main.cpp` and `cmd/dns_sd_discovery_node/main.cpp`:
+    added `resolve_to_ip()` (`getaddrinfo(AF_INET)` wrapper) that resolves the
+    service name to an IP inside the container network before handing it to ldns,
+    which only accepts IP literals.
+
 ## Summary
 
 | Phase | Tasks | Status |
@@ -331,8 +387,9 @@ construction, HTTP response parsing, and ChaosNode/ChaosCluster lifecycle
 | 4 | 12–15, 25 (C++ harness + unit tests) | Complete |
 | 5 | 16–21 (scenario tests) | Complete |
 | 6 | 22–24 (CMake + docs) | Complete |
+| 7 | 26–30 (discovery scenario tests + Podman) | Complete |
 
-**Total**: 25 tasks (all complete)
+**Total**: 30 tasks (all complete)
 
 ## Notes
 
