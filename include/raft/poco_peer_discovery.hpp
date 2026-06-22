@@ -13,14 +13,28 @@
 
 #ifdef KYTHIRA_HAS_POCO_DNSSD
 
+#include <Poco/DNSSD/Avahi/Avahi.h>
 #include <Poco/DNSSD/DNSSDBrowser.h>
 #include <Poco/DNSSD/DNSSDResponder.h>
-#include <Poco/DNSSD/ServiceInfo.h>
+#include <Poco/DNSSD/Service.h>
 #include <Poco/Delegate.h>
 
 namespace kythira {
+namespace detail {
 
-class poco_peer_discovery {
+// Base class whose constructor calls initializeDNSSD() exactly once before any
+// DNSSDResponder is constructed.  Base classes are initialised before member objects,
+// guaranteeing the factory is registered by the time _responder is created.
+struct PocoDnssdInit {
+    PocoDnssdInit() {
+        static std::once_flag s_once;
+        std::call_once(s_once, [] { Poco::DNSSD::initializeDNSSD(); });
+    }
+};
+
+}  // namespace detail
+
+class poco_peer_discovery : private detail::PocoDnssdInit {
 public:
     using node_id_type = std::string;
     using address_type = std::string;
@@ -56,6 +70,7 @@ public:
                 "poco_peer_discovery: self_address must be 'host:port', got: " + self_address);
         }
 
+        const std::string host = self_address.substr(0, colon);
         const std::string port_str = self_address.substr(colon + 1);
         int port_int = 0;
         {
@@ -82,11 +97,14 @@ public:
         _self_id = std::move(self_id);
         _self_address = std::move(self_address);
 
-        Poco::DNSSD::ServiceInfo info;
-        info.setName(_self_id);
-        info.setType(_cfg.service_type);
-        info.setDomain(_cfg.domain);
-        info.setPort(static_cast<Poco::UInt16>(port_int));
+        // networkInterface=0 → all interfaces; fullName="" → computed by Avahi.
+        Poco::DNSSD::Service service{0,
+                                     _self_id,
+                                     "",
+                                     _cfg.service_type,
+                                     _cfg.domain,
+                                     host,
+                                     static_cast<Poco::UInt16>(port_int)};
 
         std::unique_lock<std::mutex> lock{_reg_mutex};
         _reg_done = false;
@@ -97,7 +115,7 @@ public:
         _responder.serviceRegistrationFailed +=
             Poco::delegate(this, &poco_peer_discovery::on_service_registration_failed);
 
-        _responder.registerService(info, _service_handle);
+        _service_handle = _responder.registerService(service, 0);
 
         const bool signalled =
             _reg_cv.wait_for(lock, std::chrono::seconds{10}, [this] { return _reg_done; });
@@ -126,11 +144,10 @@ public:
             ensure_started();
 
             std::mutex results_mutex;
-            Poco::DNSSD::DNSSDBrowser browser{_responder};
+            Poco::DNSSD::DNSSDBrowser& browser = _responder.browser();
 
             _browse_results = &results;
             _browse_results_mutex = &results_mutex;
-            _browse_browser = &browser;
 
             browser.serviceFound += Poco::delegate(this, &poco_peer_discovery::on_service_found);
             browser.serviceResolved +=
@@ -138,7 +155,7 @@ public:
 
             auto browse_handle = browser.browse(_cfg.service_type, _cfg.domain);
             std::this_thread::sleep_for(timeout);
-            browser.stopBrowse(browse_handle);
+            browser.cancel(browse_handle);
 
             browser.serviceFound -= Poco::delegate(this, &poco_peer_discovery::on_service_found);
             browser.serviceResolved -=
@@ -146,7 +163,6 @@ public:
 
             _browse_results = nullptr;
             _browse_results_mutex = nullptr;
-            _browse_browser = nullptr;
         } catch (...) {
             // Daemon unavailable or browse failed: return whatever was collected.
         }
@@ -157,9 +173,8 @@ public:
     }
 
 private:
-    // Poco DNSSD event arg types — verify names against installed Poco headers.
     using RegistrationArgs = Poco::DNSSD::DNSSDResponder::ServiceEventArgs;
-    using RegistrationFailedArgs = Poco::DNSSD::DNSSDResponder::ServiceRegistrationFailedEventArgs;
+    using RegistrationFailedArgs = Poco::DNSSD::DNSSDResponder::ErrorEventArgs;
     using BrowserArgs = Poco::DNSSD::DNSSDBrowser::ServiceEventArgs;
 
     void ensure_started() {
@@ -169,38 +184,36 @@ private:
         }
     }
 
-    void on_service_registered(const void*, RegistrationArgs&) {
+    void on_service_registered(const void*, const RegistrationArgs&) {
         std::lock_guard<std::mutex> lock{_reg_mutex};
         _reg_done = true;
         _reg_cv.notify_one();
     }
 
-    void on_service_registration_failed(const void*, RegistrationFailedArgs& args) {
+    void on_service_registration_failed(const void*, const RegistrationFailedArgs& args) {
         std::lock_guard<std::mutex> lock{_reg_mutex};
         _reg_done = true;
-        _reg_error = args.error;  // verify field name against installed Poco headers
+        _reg_error = args.error.message();
         _reg_cv.notify_one();
     }
 
-    void on_service_found(const void*, BrowserArgs& args) {
-        if (_browse_browser) {
-            _browse_browser->resolve(args.service);
-        }
+    void on_service_found(const void*, const BrowserArgs& args) {
+        _responder.browser().resolve(args.service);
     }
 
-    void on_service_resolved(const void*, BrowserArgs& args) {
+    void on_service_resolved(const void*, const BrowserArgs& args) {
         if (!_browse_results || !_browse_results_mutex) {
             return;
         }
-        const auto& info = args.service;
-        std::string addr = info.host() + ":" + std::to_string(info.port());
+        const auto& svc = args.service;
+        std::string addr = svc.host() + ":" + std::to_string(svc.port());
         std::lock_guard<std::mutex> lock{*_browse_results_mutex};
-        _browse_results->push_back({info.name(), std::move(addr)});
+        _browse_results->push_back({svc.name(), std::move(addr)});
     }
 
     config _cfg;
     Poco::DNSSD::DNSSDResponder _responder;
-    Poco::DNSSD::DNSSDResponder::ServiceHandle _service_handle{};
+    Poco::DNSSD::ServiceHandle _service_handle{};
     std::string _self_id;
     std::string _self_address;
     bool _started{false};
@@ -214,7 +227,6 @@ private:
     // Browse state — only valid during an active find_peers call.
     std::vector<peer_info<std::string, std::string>>* _browse_results{nullptr};
     std::mutex* _browse_results_mutex{nullptr};
-    Poco::DNSSD::DNSSDBrowser* _browse_browser{nullptr};
 };
 
 static_assert(peer_discovery<poco_peer_discovery, std::string, std::string>);

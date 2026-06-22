@@ -136,29 +136,69 @@ else()
     message(STATUS "libldns not found — rfc1035/rfc2136 peer discovery disabled")
 endif()
 
-# Find Poco DNSSD (≥ 1.9) for poco_peer_discovery.
-# Try CMake config first (preferred), fall back to pkg-config.
-find_package(Poco QUIET COMPONENTS DNSSD Foundation)
-if(Poco_FOUND AND TARGET Poco::DNSSD)
-    set(POCO_DNSSD_FOUND TRUE)
-    set(POCO_DNSSD_LIBRARIES Poco::DNSSD Poco::Foundation)
-    set(POCO_DNSSD_INCLUDE_DIRS "")  # targets carry their own include dirs
-    message(STATUS "Poco DNSSD found via CMake config")
-else()
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(POCO_DNSSD QUIET PocoDNSSD)
+# ── Poco DNSSD (poco_peer_discovery) ──────────────────────────────────────────
+# DNSSD is not a vcpkg feature; the static libs are built manually and placed
+# in the vcpkg_installed tree alongside the standard poco[net] artifacts.
+set(POCO_DNSSD_FOUND FALSE)
+set(_poco_dnssd_lib     "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoDNSSD.a")
+set(_poco_dnssd_avahi   "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoDNSSDAvahi.a")
+set(_poco_dnssd_inc     "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/include")
+if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
+    # avahi-client / avahi-common are runtime-installed but their dev headers and
+    # unversioned .so symlinks are absent without the -dev package.  We look first
+    # in the extracted deb tree (symlinks or static archives created without sudo).
+    find_library(AVAHI_CLIENT_LIB
+        NAMES avahi-client
+        PATHS /tmp/avahi-dev/usr/lib/x86_64-linux-gnu
+              /usr/lib/x86_64-linux-gnu
+              /usr/lib
+        NO_DEFAULT_PATH
+    )
+    find_library(AVAHI_COMMON_LIB
+        NAMES avahi-common
+        PATHS /tmp/avahi-dev/usr/lib/x86_64-linux-gnu
+              /usr/lib/x86_64-linux-gnu
+              /usr/lib
+        NO_DEFAULT_PATH
+    )
+    if(AVAHI_CLIENT_LIB AND AVAHI_COMMON_LIB)
+        set(POCO_DNSSD_FOUND TRUE)
+        set(POCO_DNSSD_LIBRARIES
+            "${_poco_dnssd_avahi}"
+            "${_poco_dnssd_lib}"
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoNet.a"
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoFoundation.a"
+            "${AVAHI_CLIENT_LIB}"
+            "${AVAHI_COMMON_LIB}"
+        )
+        set(POCO_DNSSD_INCLUDE_DIRS "${_poco_dnssd_inc}")
+        message(STATUS "Poco DNSSD found in vcpkg tree (manually built)")
+    else()
+        message(STATUS "Poco DNSSD: avahi libs not found — poco_peer_discovery disabled")
     endif()
-    if(POCO_DNSSD_FOUND)
-        message(STATUS "Poco DNSSD found via pkg-config: ${POCO_DNSSD_VERSION}")
+else()
+    # Fall back to CMake config (system install) or pkg-config.
+    find_package(Poco QUIET COMPONENTS DNSSD Foundation)
+    if(Poco_FOUND AND TARGET Poco::DNSSD)
+        set(POCO_DNSSD_FOUND TRUE)
+        set(POCO_DNSSD_LIBRARIES Poco::DNSSD Poco::Foundation)
+        set(POCO_DNSSD_INCLUDE_DIRS "")
+        message(STATUS "Poco DNSSD found via CMake config")
+    else()
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(POCO_DNSSD QUIET PocoDNSSD)
+        endif()
+        if(POCO_DNSSD_FOUND)
+            message(STATUS "Poco DNSSD found via pkg-config: ${POCO_DNSSD_VERSION}")
+        endif()
     endif()
 endif()
 
 if(POCO_DNSSD_FOUND)
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_POCO_DNSSD)
-    if(POCO_DNSSD_INCLUDE_DIRS)
-        target_include_directories(network_simulator INTERFACE ${POCO_DNSSD_INCLUDE_DIRS})
-    endif()
+    # vcpkg toolchain already adds vcpkg_installed/.../include to the compiler
+    # search path, so no explicit target_include_directories is needed.
     target_link_libraries(network_simulator INTERFACE ${POCO_DNSSD_LIBRARIES})
 else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery disabled")

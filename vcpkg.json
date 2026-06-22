@@ -5,6 +5,7 @@
   "description": "Kythira - A C++ Raft consensus implementation with pluggable components",
   "homepage": "https://github.com/yourusername/kythira",
   "license": "MIT",
+  "builtin-baseline": "9a7f7340a6c5f11f24c3d59f85e07143feb84e06",
   "dependencies": [
     {
       "name": "boost-algorithm",
@@ -23,30 +24,35 @@
       "version>=": "1.89.0"
     },
     {
-      "name": "boost-thread",
-      "version>=": "1.89.0"
-    },
-    {
       "name": "boost-test",
       "version>=": "1.89.0"
     },
     {
-      "name": "folly",
-      "version>=": "2025.05.19.00"
+      "name": "boost-thread",
+      "version>=": "1.89.0"
     },
     {
       "name": "cpp-httplib",
       "version>=": "0.18.3"
     },
     {
+      "name": "folly",
+      "version>=": "2025.05.19.00"
+    },
+    {
+      "name": "libcoap",
+      "features": [
+        "dtls"
+      ],
+      "version>=": "4.3.5"
+    },
+    {
       "name": "openssl",
       "version>=": "3.0.8"
     },
     {
-      "name": "libcoap",
-      "version>=": "4.3.5",
-      "features": ["dtls"]
+      "name": "poco",
+      "features": ["net"]
     }
-  ],
-  "builtin-baseline": "9a7f7340a6c5f11f24c3d59f85e07143feb84e06"
+  ]
 }
