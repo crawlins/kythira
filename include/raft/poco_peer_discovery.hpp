@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 #ifdef KYTHIRA_HAS_POCO_DNSSD
@@ -40,12 +39,8 @@ struct PocoDnssdInit {
 //
 // Each registered node embeds "fresh_until=<epoch_seconds>" in its TXT record.
 // A background thread wakes every freshness_interval/2 to re-register the local
-// node (renewing the timestamp) and to browse for stale foreign entries.
-// Stale entries are excluded from find_peers() results.
-//
-// Limitation: Poco DNSSD does not allow one node to remove another node's
-// registration.  Stale entries are pruned locally; they linger in DNS until
-// the mDNS TTL expires or the original publisher re-registers / goes away.
+// node, renewing the timestamp so the entry never goes stale.
+// find_peers() filters out any resolved peer whose fresh_until has elapsed.
 class poco_peer_discovery : private detail::PocoDnssdInit {
 public:
     using node_id_type = std::string;
@@ -108,7 +103,6 @@ public:
         std::vector<peer_info<std::string, std::string>> results;
         try {
             ensure_started();
-            std::lock_guard<std::mutex> browse_lk{_browse_mutex};
             do_browse(timeout, results);
         } catch (...) {
         }
@@ -257,23 +251,6 @@ private:
             } catch (...) {
                 // Daemon unavailable; will retry next cycle.
             }
-
-            // Browse to find and record stale peers.  Stale entries are excluded
-            // from results by on_service_resolved; also collect them in the
-            // eviction set so find_peers() double-filters even between browses.
-            try {
-                std::vector<peer_info<std::string, std::string>> found;
-                {
-                    std::lock_guard<std::mutex> browse_lk{_browse_mutex};
-                    do_browse(std::chrono::seconds{2}, found);
-                }
-                // Any peer not returned by do_browse (due to stale TXT) but
-                // visible on the network goes into the eviction set.  We detect
-                // this by comparing a raw browse against do_browse's filtered
-                // output — omitted here for simplicity; the TXT-based filter in
-                // on_service_resolved is the authoritative freshness gate.
-            } catch (...) {
-            }
         }
     }
 
@@ -309,28 +286,15 @@ private:
             try {
                 const int64_t fresh_until = std::stoll(it->second);
                 if (fresh_until < _browse_now) {
-                    // Stale: exclude and record in the eviction set.
-                    std::lock_guard<std::mutex> lk{_stale_mutex};
-                    _stale_addresses.insert(svc.host() + ":" + std::to_string(svc.port()));
-                    return;
+                    return;  // stale
                 }
             } catch (...) {
-                // Malformed fresh_until — treat as stale.
-                return;
+                return;  // malformed fresh_until — treat as stale
             }
         }
         // No fresh_until key: include (tolerates peers without the feature).
 
         std::string addr = svc.host() + ":" + std::to_string(svc.port());
-
-        // Belt-and-suspenders: also exclude addresses in the eviction set.
-        {
-            std::lock_guard<std::mutex> lk{_stale_mutex};
-            if (_stale_addresses.count(addr)) {
-                return;
-            }
-        }
-
         std::lock_guard<std::mutex> lk{_browse_write_mutex};
         _browse_out->push_back({svc.name(), std::move(addr)});
     }
@@ -353,17 +317,11 @@ private:
     bool _reg_done{false};
     std::string _reg_error;
 
-    // Browse state — _browse_mutex serialises concurrent browse callers;
-    // _browse_write_mutex protects _browse_out writes from Avahi callbacks.
-    std::mutex _browse_mutex;
+    // Browse state — _browse_write_mutex protects _browse_out writes from
+    // concurrent Avahi callbacks (which fire on Avahi's internal threads).
     std::mutex _browse_write_mutex;
     std::vector<peer_info<std::string, std::string>>* _browse_out{nullptr};
     int64_t _browse_now{0};
-
-    // Stale-peer eviction set (populated by fresher browse, consulted by
-    // on_service_resolved).  Protected by _stale_mutex.
-    std::mutex _stale_mutex;
-    std::unordered_set<std::string> _stale_addresses;
 
     // Freshness background thread.
     std::thread _fresher;
