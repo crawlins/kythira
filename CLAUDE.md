@@ -13,6 +13,14 @@ Rules:
 - Body (if present) wraps at 72 characters.
 - Breaking changes go in the footer as `BREAKING CHANGE: <description>`, or by appending `!` after the type/scope.
 
+The body MUST be a detailed summary of the changes. Specifically:
+- Explain **why** the change was made, not just what files were touched.
+- Call out every non-obvious decision or trade-off.
+- List each logical sub-change when a commit covers more than one concern.
+- Include the root cause for bug fixes and the symptom that exposed it.
+- A one-line body is only acceptable when the subject line is genuinely
+  self-contained (e.g. a pure rename with no behavioural effect).
+
 ## Container runtime compatibility
 
 Any test, compose file, or harness code that runs containers MUST work with both:
