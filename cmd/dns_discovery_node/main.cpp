@@ -51,25 +51,32 @@ const char* env_or(const char* key, const char* fallback) {
     return (v && *v) ? v : fallback;
 }
 
+// Resolves a hostname or IP literal to a dotted-decimal IPv4 string.
+// Returns the input unchanged when already an IP literal or resolution fails.
+std::string resolve_to_ip(const std::string& host) {
+    struct addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || res == nullptr) {
+        return host;
+    }
+    char buf[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, buf, sizeof(buf));
+    freeaddrinfo(res);
+    return buf;
+}
+
 // Resolve our own hostname to an IPv4 address string.
 std::string self_ipv4() {
     char host_buf[256] = {};
     gethostname(host_buf, sizeof(host_buf) - 1);
-
-    struct addrinfo hints{};
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    struct addrinfo* res = nullptr;
-    if (getaddrinfo(host_buf, nullptr, &hints, &res) != 0 || !res) {
+    std::string ip = resolve_to_ip(host_buf);
+    if (ip == host_buf) {
         throw std::runtime_error(std::string("dns_discovery_node: cannot resolve own hostname: ") +
                                  host_buf);
     }
-
-    char ip_buf[INET_ADDRSTRLEN] = {};
-    inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, ip_buf,
-              sizeof(ip_buf));
-    freeaddrinfo(res);
-    return ip_buf;
+    return ip;
 }
 
 }  // namespace
@@ -93,7 +100,7 @@ int main(int argc, char** argv) {
               << " shared=" << shared_name << "\n";
 
     kythira::rfc2136_ldns_discovery::config cfg;
-    cfg.query.server = dns_server;
+    cfg.query.server = resolve_to_ip(dns_server);
     cfg.query.port = 53;
     cfg.query.shared_name = shared_name;
     cfg.zone = dns_zone;

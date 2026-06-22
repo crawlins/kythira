@@ -32,6 +32,10 @@
 #include <string>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <sys/socket.h>
+
 #ifndef KYTHIRA_HAS_LDNS
 #error "dns_sd_discovery_node requires KYTHIRA_HAS_LDNS — build with libldns installed"
 #endif
@@ -42,6 +46,22 @@ httplib::Server* g_srv = nullptr;
 
 void on_signal(int) {
     if (g_srv) g_srv->stop();
+}
+
+// Resolves a hostname or IP literal to a dotted-decimal IPv4 string.
+// Returns the input unchanged when already an IP literal or resolution fails.
+std::string resolve_to_ip(const std::string& host) {
+    struct addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_DGRAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || res == nullptr) {
+        return host;
+    }
+    char buf[INET_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET, &reinterpret_cast<sockaddr_in*>(res->ai_addr)->sin_addr, buf, sizeof(buf));
+    freeaddrinfo(res);
+    return buf;
 }
 
 const char* env_or(const char* key, const char* fallback) {
@@ -77,7 +97,7 @@ int main(int argc, char** argv) {
               << "s\n";
 
     kythira::rfc2136_dns_sd_discovery::config cfg;
-    cfg.server = dns_server;
+    cfg.server = resolve_to_ip(dns_server);
     cfg.port = 53;
     cfg.zone = dns_zone;
     cfg.service_domain = svc_domain;

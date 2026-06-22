@@ -1,17 +1,13 @@
 networks:
   dns-test-net:
     driver: bridge
-    ipam:
-      config:
-        - subnet: 172.26.0.0/24
 
 services:
   dns-test-bind9:
     image: kythira-bind9:dev
     container_name: dns-test-bind9
     networks:
-      dns-test-net:
-        ipv4_address: 172.26.0.10
+      - dns-test-net
     healthcheck:
       test: ["CMD", "dig", "@127.0.0.1", "example.local", "SOA", "+short"]
       interval: 2s
@@ -28,7 +24,7 @@ services:
       NODE_ID: node1
       HTTP_PORT: "9021"
       RPC_PORT: "7021"
-      DNS_SERVER: "172.26.0.10"
+      DNS_SERVER: "dns-test-bind9"
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
@@ -47,7 +43,7 @@ services:
       NODE_ID: node2
       HTTP_PORT: "9022"
       RPC_PORT: "7022"
-      DNS_SERVER: "172.26.0.10"
+      DNS_SERVER: "dns-test-bind9"
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
@@ -66,7 +62,7 @@ services:
       NODE_ID: node3
       HTTP_PORT: "9023"
       RPC_PORT: "7023"
-      DNS_SERVER: "172.26.0.10"
+      DNS_SERVER: "dns-test-bind9"
       DNS_ZONE: "example.local."
       DNS_SHARED_NAME: "cluster.example.local."
     ports:
