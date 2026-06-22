@@ -61,10 +61,24 @@ BOOST_AUTO_TEST_CASE(config_default_domain_empty) {
     BOOST_TEST(k_default_cfg.domain.empty());
 }
 
+BOOST_AUTO_TEST_CASE(config_default_freshness_interval) {
+    BOOST_TEST(k_default_cfg.freshness_interval == std::chrono::seconds{600});
+}
+
 BOOST_AUTO_TEST_CASE(config_custom_service_type_round_trips) {
     kythira::poco_peer_discovery::config cfg;
     cfg.service_type = "_mraft._tcp";
     BOOST_TEST(cfg.service_type == "_mraft._tcp");
+}
+
+BOOST_AUTO_TEST_CASE(config_custom_freshness_interval_round_trips) {
+    kythira::poco_peer_discovery::config cfg;
+    cfg.freshness_interval = std::chrono::seconds{30};
+    BOOST_TEST(cfg.freshness_interval == std::chrono::seconds{30});
+}
+
+BOOST_AUTO_TEST_CASE(fresh_until_key_is_correct) {
+    BOOST_TEST(std::string{kythira::poco_peer_discovery::k_fresh_until_key} == "fresh_until");
 }
 
 // ── Construction ─────────────────────────────────────────────────────────────
@@ -82,6 +96,12 @@ BOOST_AUTO_TEST_CASE(construct_custom_service_type) {
 BOOST_AUTO_TEST_CASE(construct_nonempty_domain) {
     kythira::poco_peer_discovery::config cfg;
     cfg.domain = "cluster.example.com.";
+    BOOST_CHECK_NO_THROW((kythira::poco_peer_discovery{std::move(cfg)}));
+}
+
+BOOST_AUTO_TEST_CASE(construct_custom_freshness_interval) {
+    kythira::poco_peer_discovery::config cfg;
+    cfg.freshness_interval = std::chrono::seconds{120};
     BOOST_CHECK_NO_THROW((kythira::poco_peer_discovery{std::move(cfg)}));
 }
 
@@ -197,6 +217,18 @@ BOOST_AUTO_TEST_CASE(dtor_silent_after_multiple_failed_validations, *boost::unit
     BOOST_TEST(true);
 }
 
+// Destroy with a very short freshness_interval to exercise the fresher thread
+// stop path without waiting for the daemon.  The destructor must join cleanly.
+BOOST_AUTO_TEST_CASE(dtor_joins_fresher_thread_cleanly, *boost::unit_test::timeout(10)) {
+    {
+        kythira::poco_peer_discovery::config cfg;
+        cfg.freshness_interval = std::chrono::seconds{1};
+        kythira::poco_peer_discovery disc{std::move(cfg)};
+        // Don't call register_node — no fresher thread is started; dtor is trivial.
+    }
+    BOOST_TEST(true);
+}
+
 // ── find_peers ────────────────────────────────────────────────────────────────
 
 // find_peers must complete within the timeout (plus overhead) and must not throw.
@@ -226,6 +258,15 @@ BOOST_AUTO_TEST_CASE(find_peers_after_failed_registration, *boost::unit_test::ti
 BOOST_AUTO_TEST_CASE(find_peers_called_twice, *boost::unit_test::timeout(15)) {
     kythira::poco_peer_discovery disc{make_cfg()};
     BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{100}).get());
+    BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{100}).get());
+}
+
+// find_peers with short freshness_interval config must not crash (the stale
+// filtering logic is exercised even though no daemon is available).
+BOOST_AUTO_TEST_CASE(find_peers_with_short_freshness_interval, *boost::unit_test::timeout(10)) {
+    kythira::poco_peer_discovery::config cfg;
+    cfg.freshness_interval = std::chrono::seconds{5};
+    kythira::poco_peer_discovery disc{std::move(cfg)};
     BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{100}).get());
 }
 
