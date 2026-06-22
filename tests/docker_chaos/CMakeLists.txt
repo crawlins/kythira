@@ -85,13 +85,20 @@ add_docker_chaos_scenario_test(docker_chaos_persistence_faults_test
 add_docker_chaos_scenario_test(docker_chaos_safety_assertions_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/safety_assertions_test.cpp")
 
+# ── poco_peer_discovery Docker scenario test ──────────────────────────────────
+
+add_docker_chaos_scenario_test(docker_poco_discovery_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/poco_discovery_test.cpp")
+
 # ── Docker image and scenario-runner custom targets ───────────────────────────
 
 find_program(DOCKER_EXECUTABLE docker)
 
 if(DOCKER_EXECUTABLE)
-    set(_CHAOS_COMPOSE_FILE "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
-    set(_CHAOS_DOCKERFILE   "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
+    set(_CHAOS_COMPOSE_FILE           "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
+    set(_CHAOS_DOCKERFILE             "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
+    set(_POCO_DISCOVERY_COMPOSE_FILE  "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
+    set(_POCO_DISCOVERY_DOCKERFILE    "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/Dockerfile")
 
     add_custom_target(docker-chaos-image
         COMMAND ${DOCKER_EXECUTABLE} build
@@ -99,6 +106,15 @@ if(DOCKER_EXECUTABLE)
                 --tag kythira-chaos-node:dev
                 "${CMAKE_SOURCE_DIR}"
         COMMENT "Building kythira-chaos-node:dev Docker image"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    add_custom_target(docker-poco-discovery-image
+        COMMAND ${DOCKER_EXECUTABLE} build
+                --file "${_POCO_DISCOVERY_DOCKERFILE}"
+                --tag kythira-poco-discovery:dev
+                "${CMAKE_SOURCE_DIR}"
+        COMMENT "Building kythira-poco-discovery:dev Docker image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
@@ -136,14 +152,24 @@ if(DOCKER_EXECUTABLE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
-    message(STATUS "docker-chaos-image and docker-chaos-tests targets available")
+    add_custom_target(docker-poco-discovery-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                KYTHIRA_POCO_DISCOVERY_COMPOSE_FILE=${_POCO_DISCOVERY_COMPOSE_FILE}
+                $<TARGET_FILE:docker_poco_discovery_test>
+                --log_level=message
+        DEPENDS docker-poco-discovery-image docker_poco_discovery_test
+        COMMENT "Running poco_peer_discovery Docker scenario tests"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
+    message(STATUS "docker-chaos-image, docker-chaos-tests, docker-poco-discovery-image, docker-poco-discovery-tests targets available")
 else()
-    foreach(_t docker-chaos-image docker-chaos-tests)
+    foreach(_t docker-chaos-image docker-chaos-tests docker-poco-discovery-image docker-poco-discovery-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires 'docker' on PATH"
             COMMAND ${CMAKE_COMMAND} -E false
         )
     endforeach()
-    message(STATUS "docker not found — docker-chaos targets disabled")
+    message(STATUS "docker not found — docker-chaos and docker-poco-discovery targets disabled")
 endif()

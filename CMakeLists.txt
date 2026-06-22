@@ -260,6 +260,7 @@ if(Boost_FOUND)
 endif()
 if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
     add_subdirectory(cmd/chaos_node)
+    add_subdirectory(cmd/poco_discovery_node)
 endif()
 add_subdirectory(examples)
 

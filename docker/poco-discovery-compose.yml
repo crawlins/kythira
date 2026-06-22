@@ -1,0 +1,58 @@
+# Integration-test cluster for poco_peer_discovery.
+#
+# Each node connects to the host's Avahi daemon via the D-Bus system socket,
+# so mDNS-SD registration and browsing happen through the host's Avahi process.
+# Killing a container causes an immediate D-Bus disconnect; Avahi removes the
+# dead node's service registration, and the freshness mechanism provides an
+# additional safety net for stale entries.
+#
+# Build the image first:
+#   cmake --build build --target docker-poco-discovery-image
+# Then run the test:
+#   cmake --build build --target docker-poco-discovery-tests
+
+services:
+  node1:
+    image: kythira-poco-discovery:dev
+    hostname: poco-discovery-node1
+    container_name: poco-discovery-node1
+    environment:
+      NODE_ID: node1
+      HTTP_PORT: "9011"
+      RPC_PORT: "7011"
+      FRESHNESS_INTERVAL: "20"
+      SERVICE_TYPE: "_kythira-test._tcp"
+    ports:
+      - "9011:9011"
+    volumes:
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+
+  node2:
+    image: kythira-poco-discovery:dev
+    hostname: poco-discovery-node2
+    container_name: poco-discovery-node2
+    environment:
+      NODE_ID: node2
+      HTTP_PORT: "9012"
+      RPC_PORT: "7012"
+      FRESHNESS_INTERVAL: "20"
+      SERVICE_TYPE: "_kythira-test._tcp"
+    ports:
+      - "9012:9012"
+    volumes:
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+
+  node3:
+    image: kythira-poco-discovery:dev
+    hostname: poco-discovery-node3
+    container_name: poco-discovery-node3
+    environment:
+      NODE_ID: node3
+      HTTP_PORT: "9013"
+      RPC_PORT: "7013"
+      FRESHNESS_INTERVAL: "20"
+      SERVICE_TYPE: "_kythira-test._tcp"
+    ports:
+      - "9013:9013"
+    volumes:
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
