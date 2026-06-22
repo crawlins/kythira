@@ -1,5 +1,18 @@
 # Kythira — steering directives for Claude Code
 
+## Commit messages
+
+All commit messages MUST follow the [Conventional Commits](https://www.conventionalcommits.org/) standard.
+
+Format: `<type>(<optional scope>): <description>`
+
+Permitted types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+
+Rules:
+- Description is lowercase, imperative mood, no trailing period.
+- Body (if present) wraps at 72 characters.
+- Breaking changes go in the footer as `BREAKING CHANGE: <description>`, or by appending `!` after the type/scope.
+
 ## Container runtime compatibility
 
 Any test, compose file, or harness code that runs containers MUST work with both:
