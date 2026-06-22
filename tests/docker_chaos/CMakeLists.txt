@@ -98,11 +98,34 @@ add_docker_chaos_scenario_test(docker_dns_discovery_test
 add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/dns_sd_discovery_test.cpp")
 
-# ── Docker image and scenario-runner custom targets ───────────────────────────
+# ── Container runtime detection ───────────────────────────────────────────────
+#
+# CONTAINER_RUNTIME  — CMake cache variable; empty = auto-detect (docker then podman).
+#                      Set to "podman" to force Podman.
+# COMPOSE_COMMAND    — CMake cache variable; empty = "<runtime> compose" subcommand.
+#                      Set to "podman-compose" when using the standalone Python tool.
+#
+# Both values are forwarded to scenario-test invocations via environment variables
+# (KYTHIRA_CONTAINER_RUNTIME / KYTHIRA_COMPOSE_COMMAND) so the test harness can
+# call the right binary at runtime without recompiling.
 
-find_program(DOCKER_EXECUTABLE docker)
+set(CONTAINER_RUNTIME "" CACHE STRING
+    "Container runtime to use (docker or podman). Empty = auto-detect.")
+set(COMPOSE_COMMAND "" CACHE STRING
+    "Compose command override (e.g. podman-compose). Empty = <CONTAINER_RUNTIME> compose.")
 
-if(DOCKER_EXECUTABLE)
+if(CONTAINER_RUNTIME)
+    find_program(_RUNTIME_EXE NAMES "${CONTAINER_RUNTIME}")
+else()
+    find_program(_RUNTIME_EXE NAMES docker podman)
+    if(_RUNTIME_EXE)
+        get_filename_component(CONTAINER_RUNTIME "${_RUNTIME_EXE}" NAME)
+    endif()
+endif()
+
+# ── Image and scenario-runner custom targets ──────────────────────────────────
+
+if(_RUNTIME_EXE)
     set(_CHAOS_COMPOSE_FILE              "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
     set(_CHAOS_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
     set(_POCO_DISCOVERY_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
@@ -113,116 +136,133 @@ if(DOCKER_EXECUTABLE)
     set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
 
+    # Env-var prefix injected into every scenario-test invocation.
+    set(_RT_ENV
+        KYTHIRA_CONTAINER_RUNTIME=${CONTAINER_RUNTIME}
+        KYTHIRA_COMPOSE_COMMAND=${COMPOSE_COMMAND}
+    )
+
     add_custom_target(docker-chaos-image
-        COMMAND ${DOCKER_EXECUTABLE} build
+        COMMAND ${_RUNTIME_EXE} build
                 --file "${_CHAOS_DOCKERFILE}"
                 --tag kythira-chaos-node:dev
                 "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-chaos-node:dev Docker image"
+        COMMENT "Building kythira-chaos-node:dev image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-poco-discovery-image
-        COMMAND ${DOCKER_EXECUTABLE} build
+        COMMAND ${_RUNTIME_EXE} build
                 --file "${_POCO_DISCOVERY_DOCKERFILE}"
                 --tag kythira-poco-discovery:dev
                 "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-poco-discovery:dev Docker image"
+        COMMENT "Building kythira-poco-discovery:dev image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-chaos-tests
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_smoke_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_election_recovery_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_crash_recovery_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_network_degradation_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_az_partition_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_persistence_faults_test>
                 --log_level=message
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_COMPOSE_FILE=${_CHAOS_COMPOSE_FILE}
                 $<TARGET_FILE:docker_chaos_safety_assertions_test>
                 --log_level=message
         DEPENDS docker-chaos-image ${_scenario_tests}
-        COMMENT "Running Docker chaos scenario tests"
+        COMMENT "Running chaos scenario tests (runtime: ${CONTAINER_RUNTIME})"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-poco-discovery-tests
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_POCO_DISCOVERY_COMPOSE_FILE=${_POCO_DISCOVERY_COMPOSE_FILE}
                 $<TARGET_FILE:docker_poco_discovery_test>
                 --log_level=message
         DEPENDS docker-poco-discovery-image docker_poco_discovery_test
-        COMMENT "Running poco_peer_discovery Docker scenario tests"
+        COMMENT "Running poco_peer_discovery scenario tests (runtime: ${CONTAINER_RUNTIME})"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-bind9-image
-        COMMAND ${DOCKER_EXECUTABLE} build
+        COMMAND ${_RUNTIME_EXE} build
                 --file "${_BIND9_DOCKERFILE}"
                 --tag kythira-bind9:dev
                 "${CMAKE_SOURCE_DIR}/docker/bind9"
-        COMMENT "Building kythira-bind9:dev Docker image"
+        COMMENT "Building kythira-bind9:dev image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-dns-discovery-image
-        COMMAND ${DOCKER_EXECUTABLE} build
+        COMMAND ${_RUNTIME_EXE} build
                 --file "${_DNS_DISCOVERY_DOCKERFILE}"
                 --tag kythira-dns-discovery:dev
                 "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-dns-discovery:dev Docker image"
+        COMMENT "Building kythira-dns-discovery:dev image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-dns-sd-discovery-image
-        COMMAND ${DOCKER_EXECUTABLE} build
+        COMMAND ${_RUNTIME_EXE} build
                 --file "${_DNS_SD_DISCOVERY_DOCKERFILE}"
                 --tag kythira-dns-sd-discovery:dev
                 "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-dns-sd-discovery:dev Docker image"
+        COMMENT "Building kythira-dns-sd-discovery:dev image"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-dns-discovery-tests
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_DNS_DISCOVERY_COMPOSE_FILE=${_DNS_DISCOVERY_COMPOSE_FILE}
                 $<TARGET_FILE:docker_dns_discovery_test>
                 --log_level=message
         DEPENDS docker-bind9-image docker-dns-discovery-image docker_dns_discovery_test
-        COMMENT "Running DNS (RFC 2136) discovery Docker scenario tests"
+        COMMENT "Running DNS (RFC 2136) discovery scenario tests (runtime: ${CONTAINER_RUNTIME})"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     add_custom_target(docker-dns-sd-discovery-tests
         COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
                 KYTHIRA_DNS_SD_DISCOVERY_COMPOSE_FILE=${_DNS_SD_DISCOVERY_COMPOSE_FILE}
                 $<TARGET_FILE:docker_dns_sd_discovery_test>
                 --log_level=message
         DEPENDS docker-bind9-image docker-dns-sd-discovery-image docker_dns_sd_discovery_test
-        COMMENT "Running DNS-SD (RFC 2136 + PTR/SRV/TXT) discovery Docker scenario tests"
+        COMMENT "Running DNS-SD discovery scenario tests (runtime: ${CONTAINER_RUNTIME})"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
     message(STATUS
+        "Container runtime: ${_RUNTIME_EXE} — "
         "docker-chaos-image, docker-chaos-tests, "
         "docker-poco-discovery-image, docker-poco-discovery-tests, "
         "docker-bind9-image, "
@@ -237,9 +277,9 @@ else()
         docker-dns-sd-discovery-image docker-dns-sd-discovery-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
-                    "'${_t}' requires 'docker' on PATH"
+                    "'${_t}' requires docker or podman on PATH"
             COMMAND ${CMAKE_COMMAND} -E false
         )
     endforeach()
-    message(STATUS "docker not found — all docker-* targets disabled")
+    message(STATUS "No container runtime found — all docker-* targets disabled")
 endif()

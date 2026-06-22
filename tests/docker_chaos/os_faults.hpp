@@ -68,65 +68,111 @@ inline void try_exec(const CmdExecutor& exec, const std::vector<std::string>& ar
     exec(argv);
 }
 
+// ── Container runtime (env-var controlled) ────────────────────────────────────
+
+// Returns the container runtime CLI name from $KYTHIRA_CONTAINER_RUNTIME,
+// defaulting to "docker".  Set the variable to "podman" to use Podman.
+inline const std::string& container_runtime() {
+    static const std::string rt = [] {
+        const char* e = std::getenv("KYTHIRA_CONTAINER_RUNTIME");
+        return std::string{(e != nullptr && *e != '\0') ? e : "docker"};
+    }();
+    return rt;
+}
+
+// Returns the argv prefix for compose commands.
+// $KYTHIRA_COMPOSE_COMMAND set (e.g. "podman-compose") → [that token]
+// unset or empty                                        → [runtime, "compose"]
+inline std::vector<std::string> compose_prefix() {
+    const char* e = std::getenv("KYTHIRA_COMPOSE_COMMAND");
+    if (e != nullptr && *e != '\0') {
+        return {std::string{e}};
+    }
+    return {container_runtime(), "compose"};
+}
+
 // ── Command-vector builders (pure — testable without Docker) ──────────────────
 
 inline std::vector<std::string> tc_netem_cmd(const std::string& container, const std::string& loss,
                                              const std::string& delay, const std::string& corrupt) {
-    return {"docker", "exec",  container, "tc", "qdisc", "replace", "dev",     "eth0",
-            "root",   "netem", "loss",    loss, "delay", delay,     "corrupt", corrupt};
+    const auto& rt = container_runtime();
+    return {rt,     "exec",  container, "tc", "qdisc", "replace", "dev",     "eth0",
+            "root", "netem", "loss",    loss, "delay", delay,     "corrupt", corrupt};
 }
 
 inline std::vector<std::string> tc_clear_cmd(const std::string& container) {
-    return {"docker", "exec", container, "tc", "qdisc", "del", "dev", "eth0", "root"};
+    return {container_runtime(), "exec", container, "tc", "qdisc", "del", "dev", "eth0", "root"};
 }
 
 inline std::vector<std::string> iptables_drop_src_cmd(const std::string& container,
                                                       const std::string& src_ip) {
-    return {"docker", "exec", container, "iptables", "-A", "CHAOS", "-s", src_ip, "-j", "DROP"};
+    return {container_runtime(),
+            "exec",
+            container,
+            "iptables",
+            "-A",
+            "CHAOS",
+            "-s",
+            src_ip,
+            "-j",
+            "DROP"};
 }
 
 inline std::vector<std::string> iptables_drop_dst_cmd(const std::string& container,
                                                       const std::string& dst_ip) {
-    return {"docker", "exec", container, "iptables", "-A", "OUTPUT", "-d", dst_ip, "-j", "DROP"};
+    return {container_runtime(),
+            "exec",
+            container,
+            "iptables",
+            "-A",
+            "OUTPUT",
+            "-d",
+            dst_ip,
+            "-j",
+            "DROP"};
 }
 
 inline std::vector<std::string> iptables_flush_chaos_cmd(const std::string& container) {
-    return {"docker", "exec", container, "iptables", "-F", "CHAOS"};
+    return {container_runtime(), "exec", container, "iptables", "-F", "CHAOS"};
 }
 
 inline std::vector<std::string> iptables_flush_output_cmd(const std::string& container) {
-    return {"docker", "exec", container, "iptables", "-F", "OUTPUT"};
+    return {container_runtime(), "exec", container, "iptables", "-F", "OUTPUT"};
 }
 
 inline std::vector<std::string> docker_kill_cmd(const std::string& container) {
-    return {"docker", "kill", container};
+    return {container_runtime(), "kill", container};
 }
 
 inline std::vector<std::string> docker_stop_cmd(const std::string& container,
                                                 int timeout_sec = 10) {
-    return {"docker", "stop", "-t", std::to_string(timeout_sec), container};
+    return {container_runtime(), "stop", "-t", std::to_string(timeout_sec), container};
 }
 
 inline std::vector<std::string> docker_start_cmd(const std::string& container) {
-    return {"docker", "start", container};
+    return {container_runtime(), "start", container};
 }
 
 inline std::vector<std::string> docker_logs_cmd(const std::string& container,
                                                 int tail_lines = 200) {
-    return {"docker", "logs", "--tail", std::to_string(tail_lines), container};
+    return {container_runtime(), "logs", "--tail", std::to_string(tail_lines), container};
 }
 
 inline std::vector<std::string> container_ip_cmd(const std::string& container) {
-    return {"docker", "inspect", "--format",
+    return {container_runtime(), "inspect", "--format",
             "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container};
 }
 
 inline std::vector<std::string> compose_up_cmd(const std::string& compose_file) {
-    return {"docker", "compose", "-f", compose_file, "up", "-d"};
+    auto cmd = compose_prefix();
+    cmd.insert(cmd.end(), {"-f", compose_file, "up", "-d"});
+    return cmd;
 }
 
 inline std::vector<std::string> compose_down_cmd(const std::string& compose_file) {
-    return {"docker", "compose", "-f", compose_file, "down", "--remove-orphans"};
+    auto cmd = compose_prefix();
+    cmd.insert(cmd.end(), {"-f", compose_file, "down", "--remove-orphans"});
+    return cmd;
 }
 
 }  // namespace docker_chaos::os
