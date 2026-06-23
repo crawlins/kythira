@@ -338,6 +338,8 @@ if(ENABLE_COVERAGE)
                     --root ${CMAKE_SOURCE_DIR}
                     --object-directory ${CMAKE_BINARY_DIR}
                     ${GCOVR_EXCLUDES}
+                    --relative-only
+                    --cobertura ${CMAKE_BINARY_DIR}/coverage.xml
                     --print-summary
             WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
             COMMENT "Running full test suite and collecting coverage"
