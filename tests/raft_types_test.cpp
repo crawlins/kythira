@@ -2,7 +2,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/raft.hpp>
-#include <raft/exceptions.hpp>
 #include <string>
 #include <cstdint>
 

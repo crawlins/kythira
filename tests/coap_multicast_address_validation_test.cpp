@@ -3,8 +3,6 @@
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
-#include <raft/types.hpp>
-#include <raft/metrics.hpp>
 
 // Use the correct transport types for testing
 using test_transport_types =

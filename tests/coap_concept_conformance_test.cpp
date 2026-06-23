@@ -5,9 +5,7 @@
 #define BOOST_TEST_TIMEOUT 30
 
 #include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
 #include <raft/network.hpp>
-#include <raft/types.hpp>
 
 // Only include CoAP transport if libcoap is available
 #ifdef LIBCOAP_AVAILABLE

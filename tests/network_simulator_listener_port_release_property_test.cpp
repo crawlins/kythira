@@ -2,7 +2,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include <network_simulator/network_simulator.hpp>
-#include <raft/future.hpp>
 
 #include <chrono>
 #include <random>

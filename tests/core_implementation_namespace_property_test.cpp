@@ -1,17 +1,11 @@
 #define BOOST_TEST_MODULE core_implementation_namespace_property_test
 #include <boost/test/unit_test.hpp>
 
-#include <raft/network.hpp>
 #include <raft/http_transport.hpp>
 #include <raft/coap_transport.hpp>
 #include <raft/connection.hpp>
 #include <raft/listener.hpp>
-#include <network_simulator/connection.hpp>
-#include <network_simulator/listener.hpp>
 #include <raft/simulator_network.hpp>
-#include <raft/future.hpp>
-#include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
 #include <raft/logger.hpp>
 
 /**

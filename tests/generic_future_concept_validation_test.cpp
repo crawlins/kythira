@@ -2,15 +2,12 @@
 #include <boost/test/unit_test.hpp>
 
 #include <concepts/future.hpp>
-#include <raft/future.hpp>
 #include <raft/network.hpp>
 #include <raft/http_transport.hpp>
 #include <raft/coap_transport.hpp>
 #include <network_simulator/connection.hpp>
 #include <network_simulator/listener.hpp>
-#include <raft/types.hpp>
 #include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
 #include <raft/console_logger.hpp>
 
 #include <random>

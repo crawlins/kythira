@@ -1,18 +1,8 @@
 #define BOOST_TEST_MODULE membership_change_add_server_property_test
 #include <boost/test/unit_test.hpp>
 
-#include <raft/peer_discovery.hpp>
-#include <raft/types.hpp>
 #include <raft/raft.hpp>
-#include <raft/simulator_network.hpp>
-#include <raft/json_serializer.hpp>
-#include <raft/persistence.hpp>
-#include <raft/console_logger.hpp>
-#include <raft/metrics.hpp>
-#include <raft/membership.hpp>
 #include <raft/test_state_machine.hpp>
-#include <network_simulator/network_simulator.hpp>
-#include <network_simulator/types.hpp>
 
 #include <folly/init/Init.h>
 

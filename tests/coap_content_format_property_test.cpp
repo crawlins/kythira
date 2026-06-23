@@ -4,8 +4,6 @@
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
-#include <raft/types.hpp>
 #include <raft/console_logger.hpp>
 
 #include <random>

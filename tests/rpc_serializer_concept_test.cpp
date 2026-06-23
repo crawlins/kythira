@@ -1,4 +1,3 @@
-#include <raft/types.hpp>
 #include <raft/json_serializer.hpp>
 
 #define BOOST_TEST_MODULE rpc_serializer_concept_test

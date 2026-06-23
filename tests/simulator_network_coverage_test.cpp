@@ -12,11 +12,6 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/simulator_network.hpp>
-#include <raft/types.hpp>
-#include <raft/json_serializer.hpp>
-
-#include <network_simulator/network_simulator.hpp>
-#include <network_simulator/types.hpp>
 
 #include <folly/init/Init.h>
 

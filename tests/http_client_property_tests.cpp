@@ -4,8 +4,6 @@
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
-#include <raft/future.hpp>
 #include <httplib.h>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 

@@ -1,12 +1,6 @@
 #define BOOST_TEST_MODULE raft_membership_management_unit_test
 #include <boost/test/unit_test.hpp>
 #include <raft/raft.hpp>
-#include <raft/simulator_network.hpp>
-#include <raft/json_serializer.hpp>
-#include <raft/console_logger.hpp>
-#include <raft/metrics.hpp>
-#include <raft/membership.hpp>
-#include <raft/persistence.hpp>
 #include <raft/examples/counter_state_machine.hpp>
 #include "raft_multi_node_test_fixture.hpp"
 #include <chrono>

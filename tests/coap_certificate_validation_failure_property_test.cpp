@@ -8,7 +8,6 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/json_serializer.hpp>
-#include <raft/metrics.hpp>
 
 #include <random>
 #include <vector>

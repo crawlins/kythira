@@ -2,15 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "raft/raft.hpp"
-#include "raft/simulator_network.hpp"
-#include "raft/persistence.hpp"
-#include "raft/console_logger.hpp"
-#include "raft/metrics.hpp"
-#include "raft/membership.hpp"
-#include "raft/types.hpp"
 #include "raft/test_state_machine.hpp"
-
-#include "network_simulator/network_simulator.hpp"
 
 #include <folly/init/Init.h>
 

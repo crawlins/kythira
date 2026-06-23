@@ -1,7 +1,6 @@
 #define BOOST_TEST_MODULE BuildSuccessPropertyTest
 #include <boost/test/unit_test.hpp>
 
-#include <raft/future.hpp>
 #include <concepts/future.hpp>
 #include <raft/network.hpp>
 #include <raft/http_transport.hpp>

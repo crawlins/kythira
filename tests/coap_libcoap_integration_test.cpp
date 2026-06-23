@@ -5,7 +5,6 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
-#include <raft/metrics.hpp>
 
 #include <chrono>
 #include <thread>

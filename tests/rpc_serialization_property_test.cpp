@@ -1,7 +1,6 @@
 #define BOOST_TEST_MODULE RpcSerializationPropertyTest
 #include <boost/test/unit_test.hpp>
 
-#include <raft/types.hpp>
 #include <raft/json_serializer.hpp>
 
 #include <random>
