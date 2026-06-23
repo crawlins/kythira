@@ -48,6 +48,7 @@ jobs:
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg fetch --depth 1 origin 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage
         env:
