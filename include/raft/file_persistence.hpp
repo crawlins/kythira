@@ -241,14 +241,11 @@ private:
     // ── Serialisation ────────────────────────────────────────────────────────
 
     static auto entry_to_json(const log_entry_t& e) -> std::string {
-        // Reuse the json_rpc_serializer's base64 helper by serializing a
-        // minimal append_entries_request containing this one entry.
-        // Simpler: build the JSON manually using boost::json.
         boost::json::object obj;
         obj["term"] = e.term();
         obj["index"] = e.index();
-        // base64-encode command bytes
         obj["command"] = bytes_to_base64(e.command());
+        obj["type"] = static_cast<int>(e.type());
         return boost::json::serialize(obj);
     }
 
@@ -258,6 +255,8 @@ private:
         e._term = static_cast<TermId>(obj["term"].as_int64());
         e._index = static_cast<LogIndex>(obj["index"].as_int64());
         e._command = base64_to_bytes(std::string(obj["command"].as_string()));
+        e._type = obj.contains("type") ? static_cast<entry_type>(obj["type"].as_int64())
+                                       : entry_type::normal;
         return e;
     }
 
@@ -266,7 +265,7 @@ private:
         obj["last_included_index"] = snap.last_included_index();
         obj["last_included_term"] = snap.last_included_term();
         obj["state"] = bytes_to_base64(snap.state_machine_state());
-        // configuration nodes
+        // primary (new) configuration nodes
         boost::json::array nodes;
         for (auto n : snap.configuration().nodes()) {
             if constexpr (std::is_same_v<NodeId, std::string>)
@@ -275,6 +274,17 @@ private:
                 nodes.push_back(static_cast<std::uint64_t>(n));
         }
         obj["nodes"] = nodes;
+        obj["is_joint_consensus"] = snap.configuration().is_joint_consensus();
+        if (snap.configuration().is_joint_consensus() && snap.configuration().old_nodes()) {
+            boost::json::array old_nodes;
+            for (auto n : *snap.configuration().old_nodes()) {
+                if constexpr (std::is_same_v<NodeId, std::string>)
+                    old_nodes.push_back(boost::json::string(n));
+                else
+                    old_nodes.push_back(static_cast<std::uint64_t>(n));
+            }
+            obj["old_nodes"] = old_nodes;
+        }
         return boost::json::serialize(obj);
     }
 
@@ -290,7 +300,18 @@ private:
             else
                 snap._configuration._nodes.push_back(static_cast<NodeId>(n.as_int64()));
         }
-        snap._configuration._is_joint_consensus = false;
+        snap._configuration._is_joint_consensus =
+            obj.contains("is_joint_consensus") ? obj["is_joint_consensus"].as_bool() : false;
+        if (snap._configuration._is_joint_consensus && obj.contains("old_nodes")) {
+            std::vector<NodeId> old_nodes;
+            for (const auto& n : obj["old_nodes"].as_array()) {
+                if constexpr (std::is_same_v<NodeId, std::string>)
+                    old_nodes.emplace_back(n.as_string());
+                else
+                    old_nodes.push_back(static_cast<NodeId>(n.as_int64()));
+            }
+            snap._configuration._old_nodes = std::move(old_nodes);
+        }
         return snap;
     }
 

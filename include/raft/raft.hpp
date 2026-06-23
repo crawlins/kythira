@@ -16,6 +16,7 @@
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
 #include <raft/error_handler.hpp>
+#include <raft/config_entry.hpp>
 
 #include <vector>
 #include <optional>
@@ -297,6 +298,10 @@ private:
     // Current cluster configuration
     cluster_configuration_type _configuration;
 
+    // Bootstrap configuration: the initial configuration set at node construction, used as the
+    // fallback when log truncation removes all configuration entries from the in-memory log.
+    cluster_configuration_type _boot_configuration;
+
     // Election timeout (randomized between min and max)
     std::chrono::milliseconds _election_timeout;
 
@@ -491,6 +496,7 @@ auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& nod
     _configuration._nodes = node_ids;
     _configuration._is_joint_consensus = false;
     _configuration._old_nodes = std::nullopt;
+    _boot_configuration = _configuration;
 
     _logger.info("Cluster configuration updated", {{"node_id", node_id_to_string(_node_id)},
                                                    {"num_nodes", std::to_string(node_ids.size())}});
@@ -888,144 +894,152 @@ template<raft_types Types>
 auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     auto start_time = std::chrono::steady_clock::now();
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    // Heartbeat parameters gathered under the lock; network I/O happens outside it.
+    // Keeping network I/O inside the lock would self-deadlock when the Folly chain
+    // resolves synchronously and the thenValue callback below tries to re-acquire _mutex.
+    struct heartbeat_params {
+        node_id_type follower_id;
+        append_entries_request_type request;
+    };
+    std::vector<heartbeat_params> pending_heartbeats;
+    term_id_type current_term{};
+    node_id_type node_id{};
 
-    _logger.debug(
-        "Received read_state request",
-        {{"node_id", node_id_to_string(_node_id)},
-         {"state", _state == kythira::server_state::leader
-                       ? "leader"
-                       : (_state == kythira::server_state::follower ? "follower" : "candidate")},
-         {"timeout_ms", std::to_string(timeout.count())}});
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    // Emit metrics for read request received
-    _metrics.set_metric_name("raft_read_request_received");
-    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_one();
-    _metrics.emit();
+        _logger.debug("Received read_state request",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"state", _state == kythira::server_state::leader
+                                     ? "leader"
+                                     : (_state == kythira::server_state::follower ? "follower"
+                                                                                  : "candidate")},
+                       {"timeout_ms", std::to_string(timeout.count())}});
 
-    // Only leaders can serve linearizable reads
-    if (_state != kythira::server_state::leader) {
-        _logger.debug(
-            "Rejected read request: not leader",
-            {{"node_id", node_id_to_string(_node_id)},
-             {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}});
-
-        _metrics.set_metric_name("raft_read_request_rejected");
+        // Emit metrics for read request received
+        _metrics.set_metric_name("raft_read_request_received");
         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-        _metrics.add_dimension("reason", "not_leader");
         _metrics.add_one();
         _metrics.emit();
 
-        // Return a failed future with leadership error
-        promise_type promise;
-        auto future = promise.getFuture();
-        promise.setException(kythira::leadership_lost_exception(_current_term, _current_term));
-        return future;
-    }
+        // Only leaders can serve linearizable reads
+        if (_state != kythira::server_state::leader) {
+            _logger.debug(
+                "Rejected read request: not leader",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"state", _state == kythira::server_state::follower ? "follower" : "candidate"}});
 
-    // For single-node cluster, return immediately (no need for heartbeat confirmation)
-    if (_configuration.nodes().size() == 1) {
-        _logger.debug("Single-node cluster, returning state immediately",
-                      {{"node_id", node_id_to_string(_node_id)},
-                       {"commit_index", std::to_string(_commit_index)},
-                       {"last_applied", std::to_string(_last_applied)}});
+            _metrics.set_metric_name("raft_read_request_rejected");
+            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+            _metrics.add_dimension("reason", "not_leader");
+            _metrics.add_one();
+            _metrics.emit();
 
-        // Get current state from state machine
-        try {
-            auto state = _state_machine.get_state();
+            promise_type promise;
+            auto future = promise.getFuture();
+            promise.setException(kythira::leadership_lost_exception(_current_term, _current_term));
+            return future;
+        }
 
-            auto end_time = std::chrono::steady_clock::now();
-            auto duration =
-                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-
-            _logger.debug("Read request completed (single-node)",
+        // For single-node cluster, return immediately (no need for heartbeat confirmation)
+        if (_configuration.nodes().size() == 1) {
+            _logger.debug("Single-node cluster, returning state immediately",
                           {{"node_id", node_id_to_string(_node_id)},
-                           {"state_size", std::to_string(state.size())},
-                           {"duration_ms", std::to_string(duration.count())}});
+                           {"commit_index", std::to_string(_commit_index)},
+                           {"last_applied", std::to_string(_last_applied)}});
 
-            _metrics.set_metric_name("raft_read_request_success");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("cluster_type", "single_node");
-            _metrics.add_one();
-            _metrics.emit();
+            try {
+                auto state = _state_machine.get_state();
 
-            _metrics.set_metric_name("raft_read_latency");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
-            _metrics.emit();
+                auto end_time = std::chrono::steady_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            promise_type promise;
-            auto future = promise.getFuture();
-            promise.setValue(std::move(state));
-            return future;
+                _logger.debug("Read request completed (single-node)",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"state_size", std::to_string(state.size())},
+                               {"duration_ms", std::to_string(duration.count())}});
 
-        } catch (const std::exception& e) {
-            _logger.error("Failed to get state from state machine",
-                          {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
+                _metrics.set_metric_name("raft_read_request_success");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_dimension("cluster_type", "single_node");
+                _metrics.add_one();
+                _metrics.emit();
 
-            _metrics.set_metric_name("raft_read_request_failed");
-            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-            _metrics.add_dimension("reason", "state_machine_error");
-            _metrics.add_one();
-            _metrics.emit();
+                _metrics.set_metric_name("raft_read_latency");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_duration(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+                _metrics.emit();
 
-            promise_type promise;
-            auto future = promise.getFuture();
-            promise.setException(std::current_exception());
-            return future;
-        }
-    }
+                promise_type promise;
+                auto future = promise.getFuture();
+                promise.setValue(std::move(state));
+                return future;
 
-    // For multi-node clusters, verify leadership by collecting majority heartbeat responses
-    _logger.debug("Multi-node cluster, sending heartbeats to verify leadership",
-                  {{"node_id", node_id_to_string(_node_id)},
-                   {"follower_count", std::to_string(_configuration.nodes().size() - 1)},
-                   {"timeout_ms", std::to_string(timeout.count())}});
+            } catch (const std::exception& e) {
+                _logger.error("Failed to get state from state machine",
+                              {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
 
-    // Send heartbeats to all followers and collect responses
-    std::vector<kythira::Future<append_entries_response_type>> heartbeat_futures;
-    heartbeat_futures.reserve(_configuration.nodes().size() - 1);
+                _metrics.set_metric_name("raft_read_request_failed");
+                _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                _metrics.add_dimension("reason", "state_machine_error");
+                _metrics.add_one();
+                _metrics.emit();
 
-    for (const auto& follower_id : _configuration.nodes()) {
-        if (follower_id == _node_id) {
-            continue;  // Skip self
-        }
-
-        // Send empty AppendEntries (heartbeat) to each follower
-        auto next_idx = _next_index[follower_id];
-        log_index_type prev_log_index = next_idx - 1;
-        term_id_type prev_log_term = term_id_type{0};
-
-        if (prev_log_index > 0) {
-            auto prev_entry = get_log_entry(prev_log_index);
-            if (prev_entry.has_value()) {
-                prev_log_term = prev_entry->term();
+                promise_type promise;
+                auto future = promise.getFuture();
+                promise.setException(std::current_exception());
+                return future;
             }
         }
 
-        append_entries_request_type request{
-            _current_term,
-            _node_id,
-            prev_log_index,
-            prev_log_term,
-            std::vector<log_entry_type>{},  // Empty entries for heartbeat
-            _commit_index};
-
-        _logger.debug("Sending heartbeat for read verification",
+        // Multi-node: build heartbeat request parameters under the lock so that
+        // _next_index, _commit_index, _current_term are read consistently.
+        _logger.debug("Multi-node cluster, sending heartbeats to verify leadership",
                       {{"node_id", node_id_to_string(_node_id)},
+                       {"follower_count", std::to_string(_configuration.nodes().size() - 1)},
+                       {"timeout_ms", std::to_string(timeout.count())}});
+
+        pending_heartbeats.reserve(_configuration.nodes().size() - 1);
+        for (const auto& follower_id : _configuration.nodes()) {
+            if (follower_id == _node_id) continue;
+
+            auto next_idx = _next_index[follower_id];
+            log_index_type prev_log_index = next_idx - 1;
+            term_id_type prev_log_term = term_id_type{0};
+
+            if (prev_log_index > 0) {
+                auto prev_entry = get_log_entry(prev_log_index);
+                if (prev_entry.has_value()) {
+                    prev_log_term = prev_entry->term();
+                }
+            }
+
+            pending_heartbeats.push_back(
+                {follower_id,
+                 append_entries_request_type{_current_term, _node_id, prev_log_index, prev_log_term,
+                                             std::vector<log_entry_type>{},  // heartbeat
+                                             _commit_index}});
+        }
+
+        current_term = _current_term;
+        node_id = _node_id;
+    }  // _mutex released — network I/O and the async callback below run without it
+
+    // Send heartbeats to all followers and collect responses
+    std::vector<kythira::Future<append_entries_response_type>> heartbeat_futures;
+    heartbeat_futures.reserve(pending_heartbeats.size());
+
+    for (auto& [follower_id, request] : pending_heartbeats) {
+        _logger.debug("Sending heartbeat for read verification",
+                      {{"node_id", node_id_to_string(node_id)},
                        {"target", node_id_to_string(follower_id)},
-                       {"term", std::to_string(_current_term)}});
+                       {"term", std::to_string(current_term)}});
 
-        // Send heartbeat with timeout
-        auto heartbeat_future = _network_client.send_append_entries(follower_id, request, timeout);
-
-        heartbeat_futures.push_back(std::move(heartbeat_future));
+        heartbeat_futures.push_back(
+            _network_client.send_append_entries(follower_id, request, timeout));
     }
-
-    // Collect majority of heartbeat responses
-    auto current_term = _current_term;
-    auto node_id = _node_id;
 
     return kythira::raft_future_collector<append_entries_response_type>::collect_majority(
                std::move(heartbeat_futures), timeout)
@@ -1330,17 +1344,29 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     std::vector<node_id_type> new_nodes = _configuration.nodes();
     new_nodes.push_back(new_node);
 
-    cluster_configuration_type new_config{new_nodes,
-                                          false,  // Not joint consensus yet
-                                          std::nullopt};
+    // C_new (final target): non-joint, used by config synchronizer to know when we are done
+    cluster_configuration_type new_config{new_nodes, false, std::nullopt};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
     auto config_future = _config_synchronizer.start_configuration_change(new_config, timeout);
 
-    // Initialize next_index and match_index for new server
-    _next_index[new_node] = get_last_log_index() + 1;
+    // Build C_old+new joint configuration and append it as a configuration log entry.
+    // Setting _configuration = joint_config immediately causes the leader to replicate to
+    // all nodes in C_old ∪ C_new on the next heartbeat, before the entry commits.
+    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes()};
+    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
+    const auto joint_idx = get_last_log_index() + 1;
+    log_entry_type joint_entry{._term = _current_term,
+                               ._index = joint_idx,
+                               ._command = std::move(joint_bytes),
+                               ._type = entry_type::configuration};
+    // Initialize tracking for the new server before appending so it starts receiving entries
+    _next_index[new_node] = joint_idx;
     _match_index[new_node] = 0;
+    append_log_entry(joint_entry);
+    _persistence.append_log_entry(joint_entry);
+    _configuration = joint_config;
 
     _metrics.set_metric_name("raft_add_server_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -1451,23 +1477,33 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Create new configuration without the removed node
     std::vector<node_id_type> new_nodes;
-    for (const auto& node : _configuration.nodes()) {
-        if (node != old_node) {
-            new_nodes.push_back(node);
+    for (const auto& n : _configuration.nodes()) {
+        if (n != old_node) {
+            new_nodes.push_back(n);
         }
     }
 
-    cluster_configuration_type new_config{new_nodes,
-                                          false,  // Not joint consensus yet
-                                          std::nullopt};
+    // C_new (final target): non-joint, used by config synchronizer to know when we are done
+    cluster_configuration_type new_config{new_nodes, false, std::nullopt};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
     auto config_future = _config_synchronizer.start_configuration_change(new_config, timeout);
 
-    // Clean up state for removed server
-    _next_index.erase(old_node);
-    _match_index.erase(old_node);
+    // Build C_old+new joint configuration and append it as a configuration log entry.
+    // Do NOT erase old_node from _next_index/_match_index yet: it must continue receiving
+    // AppendEntries during the joint phase for quorum and catchup. Cleanup happens when C_new
+    // commits in apply_committed_entries().
+    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes()};
+    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
+    const auto joint_idx = get_last_log_index() + 1;
+    log_entry_type joint_entry{._term = _current_term,
+                               ._index = joint_idx,
+                               ._command = std::move(joint_bytes),
+                               ._type = entry_type::configuration};
+    append_log_entry(joint_entry);
+    _persistence.append_log_entry(joint_entry);
+    _configuration = joint_config;
     _unresponsive_followers.erase(old_node);
 
     _metrics.set_metric_name("raft_remove_server_started");
@@ -1610,9 +1646,56 @@ auto node<Types>::initialize_from_storage() -> void {
     // Load voted_for
     _voted_for = _persistence.load_voted_for();
 
-    _logger.info("Node initialized from storage",
-                 {{"node_id", node_id_to_string(_node_id)},
-                  {"current_term", std::to_string(_current_term)}});
+    // Restore from snapshot (if any): state machine, configuration, commit/applied indices
+    auto snap_opt = _persistence.load_snapshot();
+    if (snap_opt.has_value()) {
+        const auto& snap = *snap_opt;
+        try {
+            _state_machine.restore_from_snapshot(snap.state_machine_state(),
+                                                 snap.last_included_index());
+        } catch (...) {
+            _logger.warning("Failed to restore state machine from snapshot during init",
+                            {{"node_id", node_id_to_string(_node_id)}});
+        }
+        _last_applied = snap.last_included_index();
+        _commit_index = snap.last_included_index();
+        _configuration = snap.configuration();
+
+        _logger.info("Restored from snapshot",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"last_included_index", std::to_string(snap.last_included_index())}});
+    }
+
+    // Reload log entries from persistence (entries after the snapshot point)
+    log_index_type first_needed = (_last_applied > 0) ? _last_applied + 1 : log_index_type{1};
+    log_index_type last_persisted = _persistence.get_last_log_index();
+    if (last_persisted >= first_needed) {
+        auto entries = _persistence.get_log_entries(first_needed, last_persisted);
+        for (auto& entry : entries) {
+            _log.push_back(std::move(entry));
+        }
+        _logger.info("Reloaded log entries from persistence",
+                     {{"node_id", node_id_to_string(_node_id)},
+                      {"first_index", std::to_string(first_needed)},
+                      {"last_index", std::to_string(last_persisted)},
+                      {"count", std::to_string(_log.size())}});
+    }
+
+    // Scan log backward for the most recent configuration entry and restore it
+    for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
+        if (it->type() == entry_type::configuration) {
+            _configuration = deserialize_configuration<node_id_type>(it->command());
+            _logger.info("Restored configuration from log entry",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"log_index", std::to_string(it->index())}});
+            break;
+        }
+    }
+
+    _logger.info("Node initialized from storage", {{"node_id", node_id_to_string(_node_id)},
+                                                   {"current_term", std::to_string(_current_term)},
+                                                   {"last_applied", std::to_string(_last_applied)},
+                                                   {"log_size", std::to_string(_log.size())}});
 }
 
 template<raft_types Types>
@@ -1948,6 +2031,20 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
                                                      {"index", std::to_string(entry_index)},
                                                      {"term", std::to_string(new_entry.term())}});
         }
+    }
+
+    // After any log modification (truncation or append), rescan backward for the most recent
+    // configuration entry and update _configuration.  This handles both the "follower receives
+    // a config entry" path and the "log is truncated past a config entry" path in one place.
+    if (log_modified) {
+        cluster_configuration_type reverted = _boot_configuration;
+        for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
+            if (it->type() == entry_type::configuration) {
+                reverted = deserialize_configuration<node_id_type>(it->command());
+                break;
+            }
+        }
+        _configuration = reverted;
     }
 
     // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
@@ -2452,6 +2549,15 @@ auto node<Types>::start_election() -> void {
                 peer_ids.push_back(peer_id);
             }
         }
+        // During joint consensus, also request votes from C_old-only nodes
+        if (_configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            for (const auto& peer_id : *_configuration.old_nodes()) {
+                if (peer_id != _node_id &&
+                    std::find(peer_ids.begin(), peer_ids.end(), peer_id) == peer_ids.end()) {
+                    peer_ids.push_back(peer_id);
+                }
+            }
+        }
     }
 
     _logger.info("Starting election", {{"node_id", node_id_to_string(_node_id)},
@@ -2476,8 +2582,11 @@ auto node<Types>::start_election() -> void {
     error_handler<request_vote_response_type> vote_error_handler;
     vote_error_handler.set_retry_policy("request_vote", vote_retry_policy);
 
-    // Send RequestVote RPCs to all peers with retry logic
-    std::vector<kythira::Future<request_vote_response_type>> vote_futures;
+    // Send RequestVote RPCs to all peers with retry logic.
+    // Each future is tagged with the peer_id so the callback can count per-configuration for
+    // joint-consensus quorum (Raft §6).
+    using tagged_vote_t = std::pair<node_id_type, request_vote_response_type>;
+    std::vector<kythira::Future<tagged_vote_t>> vote_futures;
     vote_futures.reserve(peer_ids.size());
 
     for (const auto& peer_id : peer_ids) {
@@ -2487,13 +2596,13 @@ auto node<Types>::start_election() -> void {
                                                ._last_log_index = snapshot_last_log_index,
                                                ._last_log_term = snapshot_last_log_term};
 
-        // Wrap RequestVote RPC call with retry logic
-        auto vote_future =
+        // Build a tagged future: pair<peer_id, response> so the callback can count
+        // votes per configuration for joint-consensus quorum.
+        auto tagged_future =
             vote_error_handler
                 .execute_with_retry(
                     "request_vote",
                     [this, peer_id, vote_request]() -> kythira::Future<request_vote_response_type> {
-                        // Log vote request attempt
                         _logger.debug(
                             "Sending RequestVote RPC",
                             {{"node_id", node_id_to_string(_node_id)},
@@ -2502,7 +2611,6 @@ auto node<Types>::start_election() -> void {
                              {"last_log_index", std::to_string(vote_request._last_log_index)},
                              {"last_log_term", std::to_string(vote_request._last_log_term)}});
 
-                        // Emit vote request metric
                         _metrics.set_metric_name("vote_request_sent");
                         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                         _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
@@ -2513,27 +2621,22 @@ auto node<Types>::start_election() -> void {
                                                                  _config.rpc_timeout());
                     },
                     vote_retry_policy)
-                .thenTry([this, peer_id](kythira::Try<request_vote_response_type> result)
-                             -> request_vote_response_type {
+                .thenTry([this, peer_id](
+                             kythira::Try<request_vote_response_type> result) -> tagged_vote_t {
                     if (result.hasException()) {
-                        // Log vote request failure
                         _logger.warning("RequestVote RPC failed after retries",
                                         {{"node_id", node_id_to_string(_node_id)},
-                                         {"peer_id", node_id_to_string(peer_id)},
-                                         {"error", "Exception occurred"}});
+                                         {"peer_id", node_id_to_string(peer_id)}});
 
-                        // Emit vote request failure metric
                         _metrics.set_metric_name("vote_request_failed");
                         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                         _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
                         _metrics.add_one();
                         _metrics.emit();
 
-                        // Rethrow the exception
                         std::rethrow_exception(result.exception());
                     }
 
-                    // Log successful vote response
                     auto response = result.value();
                     _logger.debug("Received RequestVote response",
                                   {{"node_id", node_id_to_string(_node_id)},
@@ -2541,7 +2644,6 @@ auto node<Types>::start_election() -> void {
                                    {"vote_granted", response.vote_granted() ? "true" : "false"},
                                    {"response_term", std::to_string(response.term())}});
 
-                    // Emit vote response metric
                     _metrics.set_metric_name("vote_response_received");
                     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                     _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
@@ -2550,10 +2652,10 @@ auto node<Types>::start_election() -> void {
                     _metrics.add_one();
                     _metrics.emit();
 
-                    return response;
+                    return {peer_id, response};
                 });
 
-        vote_futures.push_back(std::move(vote_future));
+        vote_futures.push_back(std::move(tagged_future));
     }
 
     // If there are no peers (single-node cluster), become leader immediately
@@ -2567,71 +2669,83 @@ auto node<Types>::start_election() -> void {
         return;
     }
 
-    // Collect majority of vote responses
+    // Capture configuration snapshot for joint quorum evaluation in the callback
+    std::vector<node_id_type> snap_c_new;
+    std::optional<std::vector<node_id_type>> snap_c_old;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        snap_c_new = _configuration.nodes();
+        snap_c_old = _configuration.old_nodes();
+    }
+
     auto current_term = snapshot_term;
     auto node_id = _node_id;
     auto& logger = _logger;
     auto& metrics = _metrics;
-    auto& state = _state;
 
-    election_collector_t::collect_majority(std::move(vote_futures), snapshot_election_timeout)
-        .thenValue([this, current_term, node_id, &logger, &metrics,
-                    &state](std::vector<request_vote_response_type> responses) {
+    raft_future_collector<tagged_vote_t>::collect_all_with_timeout(std::move(vote_futures),
+                                                                   snapshot_election_timeout)
+        .thenValue([this, current_term, node_id, snap_c_new = std::move(snap_c_new),
+                    snap_c_old = std::move(snap_c_old), &logger,
+                    &metrics](std::vector<kythira::Try<tagged_vote_t>> results) {
             std::lock_guard<std::mutex> lock(_mutex);
 
-            // Check if we're still a candidate in the same term
             if (_state != kythira::server_state::candidate || _current_term != current_term) {
                 logger.debug("Election outcome irrelevant, state changed",
                              {{"node_id", node_id_to_string(node_id)},
-                              {"current_state",
-                               _state == kythira::server_state::follower ? "follower" : "leader"},
                               {"current_term", std::to_string(_current_term)},
                               {"election_term", std::to_string(current_term)}});
                 return;
             }
 
-            // Count votes (including self-vote)
-            std::size_t votes_granted = 1;  // Self-vote
-
-            for (const auto& response : responses) {
-                // Check for higher term
-                if (response.term() > _current_term) {
+            // Check for higher terms from any response; step down if found
+            for (const auto& r : results) {
+                if (r.hasValue() && r.value().second.term() > _current_term) {
                     logger.info("Discovered higher term during election, stepping down",
                                 {{"node_id", node_id_to_string(node_id)},
                                  {"current_term", std::to_string(_current_term)},
-                                 {"discovered_term", std::to_string(response.term())}});
-
-                    become_follower(response.term());
-
-                    // Emit election lost metric
+                                 {"discovered_term", std::to_string(r.value().second.term())}});
+                    become_follower(r.value().second.term());
                     metrics.set_metric_name("election_lost");
                     metrics.add_dimension("node_id", node_id_to_string(node_id));
                     metrics.add_dimension("reason", "higher_term_discovered");
                     metrics.add_one();
                     metrics.emit();
-
                     return;
-                }
-
-                if (response.vote_granted()) {
-                    votes_granted++;
                 }
             }
 
-            // Calculate majority
-            const std::size_t total_nodes = _configuration.nodes().size();
-            const std::size_t majority = (total_nodes / 2) + 1;
+            // Joint-consensus-aware quorum check.
+            // Self counts as a vote in every configuration it belongs to.
+            auto has_vote_from = [&](const node_id_type& n) -> bool {
+                if (n == _node_id) return true;
+                for (const auto& r : results) {
+                    if (r.hasValue() && r.value().first == n && r.value().second.vote_granted()) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            auto has_quorum = [&](const std::vector<node_id_type>& cfg) -> bool {
+                std::size_t cnt = 0;
+                for (const auto& n : cfg) {
+                    if (has_vote_from(n)) cnt++;
+                }
+                return cnt * 2 > cfg.size();
+            };
 
-            if (votes_granted >= majority) {
+            bool won;
+            if (snap_c_old.has_value()) {
+                won = has_quorum(snap_c_new) && has_quorum(*snap_c_old);
+            } else {
+                won = has_quorum(snap_c_new);
+            }
+
+            if (won) {
                 logger.info("Election won, transitioning to leader",
                             {{"node_id", node_id_to_string(node_id)},
-                             {"term", std::to_string(_current_term)},
-                             {"votes_received", std::to_string(votes_granted)},
-                             {"total_nodes", std::to_string(total_nodes)}});
-
+                             {"term", std::to_string(_current_term)}});
                 become_leader();
-
-                // Emit election won metric
                 metrics.set_metric_name("election_won");
                 metrics.add_dimension("node_id", node_id_to_string(node_id));
                 metrics.add_dimension("term", std::to_string(_current_term));
@@ -2640,12 +2754,7 @@ auto node<Types>::start_election() -> void {
             } else {
                 logger.info("Election failed, insufficient votes",
                             {{"node_id", node_id_to_string(node_id)},
-                             {"term", std::to_string(_current_term)},
-                             {"votes_received", std::to_string(votes_granted)},
-                             {"votes_needed", std::to_string(majority)}});
-
-                // Remain as candidate, will retry on next election timeout
-                // Emit election lost metric
+                             {"term", std::to_string(_current_term)}});
                 metrics.set_metric_name("election_lost");
                 metrics.add_dimension("node_id", node_id_to_string(node_id));
                 metrics.add_dimension("reason", "insufficient_votes");
@@ -2659,19 +2768,15 @@ auto node<Types>::start_election() -> void {
             try {
                 std::rethrow_exception(ex);
             } catch (const kythira::future_collection_exception& e) {
-                logger.warning("Failed to collect vote majority",
+                logger.warning("Failed to collect vote responses",
                                {{"node_id", node_id_to_string(node_id)},
                                 {"operation", e.get_operation()},
                                 {"failed_count", std::to_string(e.get_failed_count())}});
-
-                // Emit election lost metric
                 metrics.set_metric_name("election_lost");
                 metrics.add_dimension("node_id", node_id_to_string(node_id));
                 metrics.add_dimension("reason", "collection_failure");
                 metrics.add_one();
                 metrics.emit();
-
-                // Remain as candidate, will retry on next election timeout
             } catch (...) {
                 logger.error("Unexpected error during election",
                              {{"node_id", node_id_to_string(node_id)}});
@@ -2691,10 +2796,22 @@ auto node<Types>::become_leader() -> void {
 
     // Initialize leader-specific state
     auto last_log_idx = get_last_log_index();
-    for (const auto& peer_id : _configuration.nodes()) {
+    auto init_peer = [&](const node_id_type& peer_id) {
         if (peer_id != _node_id) {
             _next_index[peer_id] = last_log_idx + 1;
             _match_index[peer_id] = 0;
+        }
+    };
+    for (const auto& peer_id : _configuration.nodes()) {
+        init_peer(peer_id);
+    }
+    // During joint consensus, also initialize tracking for C_old-only peers so they receive
+    // AppendEntries and participate in quorum.
+    if (_configuration.is_joint_consensus() && _configuration.old_nodes()) {
+        for (const auto& peer_id : *_configuration.old_nodes()) {
+            if (_next_index.find(peer_id) == _next_index.end()) {
+                init_peer(peer_id);
+            }
         }
     }
 
@@ -2797,11 +2914,12 @@ auto node<Types>::replicate_to_followers() -> void {
                        {"last_log_index", std::to_string(get_last_log_index())},
                        {"commit_index", std::to_string(_commit_index)}});
 
-        for (const auto& peer_id : _configuration.nodes()) {
+        // Iterate _next_index rather than _configuration.nodes() so that nodes in C_old
+        // that are being removed continue to receive AppendEntries during joint consensus.
+        for (const auto& [peer_id, next_idx] : _next_index) {
             if (peer_id == _node_id) {
                 continue;
             }
-            auto next_idx = _next_index[peer_id];
             auto first_log_index = _log.empty() ? log_index_type{1} : _log.front().index();
             actions.push_back({peer_id, next_idx < first_log_index});
         }
@@ -3245,23 +3363,33 @@ auto node<Types>::advance_commit_index() -> void {
     // Start from current commit index and work forward
     auto last_log_idx = get_last_log_index();
 
-    for (log_index_type n = _commit_index + 1; n <= last_log_idx; ++n) {
-        // Count how many servers have replicated this entry
-        // Start with 1 for the leader itself (leader self-acknowledgment)
-        std::size_t replication_count = 1;
-
-        for (const auto& [peer_id, match_idx] : _match_index) {
-            if (match_idx >= n) {
-                replication_count++;
+    // Joint-consensus-aware quorum check.
+    // During joint consensus, an entry must achieve majority in BOTH C_old and C_new.
+    auto has_commit_quorum = [&](log_index_type n) -> bool {
+        auto count_acks = [&](const std::vector<node_id_type>& node_set) -> std::size_t {
+            std::size_t cnt = 0;
+            for (const auto& nid : node_set) {
+                if (nid == _node_id) {
+                    cnt++;  // leader self-ack
+                    continue;
+                }
+                if (auto it = _match_index.find(nid); it != _match_index.end() && it->second >= n) {
+                    cnt++;
+                }
             }
+            return cnt;
+        };
+        if (_configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            const auto& c_old = *_configuration.old_nodes();
+            const auto& c_new = _configuration.nodes();
+            return count_acks(c_old) * 2 > c_old.size() && count_acks(c_new) * 2 > c_new.size();
         }
+        const auto& s = _configuration.nodes();
+        return count_acks(s) * 2 > s.size();
+    };
 
-        // Calculate majority
-        const std::size_t total_nodes = _configuration.nodes().size();
-        const std::size_t majority = (total_nodes / 2) + 1;
-
-        // Check if this entry has been replicated to a majority
-        if (replication_count >= majority) {
+    for (log_index_type n = _commit_index + 1; n <= last_log_idx; ++n) {
+        if (has_commit_quorum(n)) {
             // Raft safety requirement: only commit entries from current term directly
             // Entries from previous terms are committed indirectly
             auto entry_opt = get_log_entry(n);
@@ -3273,9 +3401,7 @@ auto node<Types>::advance_commit_index() -> void {
                 _logger.info("Advanced commit index",
                              {{"node_id", node_id_to_string(_node_id)},
                               {"old_commit_index", std::to_string(old_commit_index)},
-                              {"new_commit_index", std::to_string(_commit_index)},
-                              {"replication_count", std::to_string(replication_count)},
-                              {"majority_required", std::to_string(majority)}});
+                              {"new_commit_index", std::to_string(_commit_index)}});
 
                 // Emit commit metric
                 _metrics.set_metric_name("entries_committed");
@@ -3286,11 +3412,9 @@ auto node<Types>::advance_commit_index() -> void {
                 // Trigger state machine application
                 // This will also notify the commit waiter for each applied entry
                 apply_committed_entries();
-            } else {
-                // Entry is from a previous term, cannot commit directly
-                // Will be committed indirectly when an entry from current term is committed
-                break;
             }
+            // else: entry from a previous term — keep scanning; a current-term entry
+            // at a higher index may still satisfy quorum and pull this one along.
         } else {
             // This entry hasn't been replicated to majority yet
             // No point checking higher indices
@@ -3383,6 +3507,59 @@ auto node<Types>::apply_committed_entries() -> void {
         }
 
         auto& entry = entry_opt.value();
+
+        // Configuration entries are NOT applied to the state machine; they advance the
+        // configuration change protocol instead.
+        if (entry.type() == entry_type::configuration) {
+            auto new_config = deserialize_configuration<node_id_type>(entry.command());
+            _configuration = new_config;
+            _config_synchronizer.notify_configuration_committed(new_config, entry.index());
+            _last_applied = next_index;
+            entries_applied_in_batch++;
+
+            _logger.info("Applied configuration entry",
+                         {{"node_id", node_id_to_string(_node_id)},
+                          {"entry_index", std::to_string(entry.index())},
+                          {"is_joint", new_config.is_joint_consensus() ? "true" : "false"}});
+
+            if (new_config.is_joint_consensus() && _state == kythira::server_state::leader) {
+                // Leader immediately appends C_new to start the second phase.
+                cluster_configuration_type c_new{new_config.nodes(), false, std::nullopt};
+                auto c_new_bytes = serialize_configuration<node_id_type>(c_new);
+                log_entry_type c_new_entry{._term = _current_term,
+                                           ._index = get_last_log_index() + 1,
+                                           ._command = std::move(c_new_bytes),
+                                           ._type = entry_type::configuration};
+                append_log_entry(c_new_entry);
+                _persistence.append_log_entry(c_new_entry);
+                _logger.info("Appended C_new entry after joint commit",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"c_new_index", std::to_string(c_new_entry.index())}});
+            }
+
+            if (!new_config.is_joint_consensus()) {
+                // C_new committed: remove peers that are no longer in the configuration.
+                for (auto it = _next_index.begin(); it != _next_index.end();) {
+                    bool in_new = std::find(new_config.nodes().begin(), new_config.nodes().end(),
+                                            it->first) != new_config.nodes().end();
+                    if (!in_new && it->first != _node_id) {
+                        _match_index.erase(it->first);
+                        it = _next_index.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                // Leader self-removal: step down after C_new commits.
+                bool self_in_new = std::find(new_config.nodes().begin(), new_config.nodes().end(),
+                                             _node_id) != new_config.nodes().end();
+                if (!self_in_new && _state == kythira::server_state::leader) {
+                    _logger.info("Leader removed from C_new, stepping down",
+                                 {{"node_id", node_id_to_string(_node_id)}});
+                    become_follower(_current_term);
+                }
+            }
+            continue;
+        }
 
         _logger.debug("Applying log entry to state machine",
                       {{"node_id", node_id_to_string(_node_id)},
@@ -3832,6 +4009,9 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
         // Restore state machine from snapshot
         _state_machine.restore_from_snapshot(snap.state_machine_state(),
                                              snap.last_included_index());
+
+        // Restore cluster configuration from the snapshot
+        _configuration = snap.configuration();
 
         // Update last_applied to snapshot's last_included_index
         _last_applied = snap.last_included_index();

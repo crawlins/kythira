@@ -60,6 +60,12 @@ inline auto operator<<(std::ostream& os, server_state state) -> std::ostream& {
     }
 }
 
+// Log entry type discriminant: normal state-machine entries vs. configuration change entries
+enum class entry_type : std::uint8_t {
+    normal = 0,
+    configuration = 1
+};
+
 // Log entry concept
 template<typename T, typename TermId, typename LogIndex>
 concept log_entry_type = requires(const T& entry) {
@@ -68,6 +74,7 @@ concept log_entry_type = requires(const T& entry) {
     { entry.term() } -> std::same_as<TermId>;
     { entry.index() } -> std::same_as<LogIndex>;
     { entry.command() } -> std::same_as<const std::vector<std::byte>&>;
+    { entry.type() } -> std::same_as<entry_type>;
 };
 
 // Default log entry implementation (defined before use in append_entries_request)
@@ -77,10 +84,12 @@ struct log_entry {
     TermId _term;
     LogIndex _index;
     std::vector<std::byte> _command;
+    entry_type _type = entry_type::normal;
 
     [[nodiscard]] auto term() const -> TermId { return _term; }
     [[nodiscard]] auto index() const -> LogIndex { return _index; }
     [[nodiscard]] auto command() const -> const std::vector<std::byte>& { return _command; }
+    [[nodiscard]] auto type() const -> entry_type { return _type; }
 };
 
 // Cluster configuration concept

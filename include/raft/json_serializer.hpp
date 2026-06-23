@@ -61,6 +61,7 @@ public:
             entry_obj["term"] = entry.term();
             entry_obj["index"] = entry.index();
             entry_obj["command"] = bytes_to_base64(entry.command());
+            entry_obj["entry_type"] = static_cast<int>(entry.type());
             entries_array.push_back(entry_obj);
         }
         obj["entries"] = entries_array;
@@ -192,6 +193,9 @@ public:
             entry._term = static_cast<TermId>(entry_obj.at("term").as_int64());
             entry._index = static_cast<LogIndex>(entry_obj.at("index").as_int64());
             entry._command = base64_to_bytes(std::string(entry_obj.at("command").as_string()));
+            entry._type = entry_obj.contains("entry_type")
+                              ? static_cast<entry_type>(entry_obj.at("entry_type").as_int64())
+                              : entry_type::normal;
             req._entries.push_back(entry);
         }
 
