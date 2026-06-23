@@ -2,7 +2,7 @@
 #include "fiu_remote.hpp"
 
 #define BOOST_TEST_MODULE fiu_remote_unit_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

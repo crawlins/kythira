@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE RaftTypesTest
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/exceptions.hpp>

@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE FutureConceptRequirementsPropertyTest
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <concepts/future.hpp>
 #include <raft/future.hpp>

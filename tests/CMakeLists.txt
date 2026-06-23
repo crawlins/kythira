@@ -1,54 +1,66 @@
 # Test configuration
 find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 
+# ── Shared precompiled header ──────────────────────────────────────────────────
+# One PCH compilation is shared across all test executables via REUSE_FROM.
+# pch_stub.cpp is an empty TU that gives CMake somewhere to attach the PCH.
+add_library(kythira_test_pch STATIC pch_stub.cpp)
+target_link_libraries(kythira_test_pch PUBLIC
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(kythira_test_pch PUBLIC Folly::folly)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+    target_link_libraries(kythira_test_pch PUBLIC
+        "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+elseif(TARGET Boost::json)
+    target_link_libraries(kythira_test_pch PUBLIC Boost::json)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    target_link_libraries(kythira_test_pch PUBLIC
+        "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+elseif(TARGET Boost::context)
+    target_link_libraries(kythira_test_pch PUBLIC Boost::context)
+endif()
+target_compile_features(kythira_test_pch PUBLIC cxx_std_23)
+target_precompile_headers(kythira_test_pch PUBLIC
+    <algorithm>
+    <atomic>
+    <chrono>
+    <cstdint>
+    <functional>
+    <memory>
+    <optional>
+    <random>
+    <stdexcept>
+    <string>
+    <thread>
+    <utility>
+    <vector>
+)
+# <boost/test/unit_test.hpp> is NOT in the PCH: it requires BOOST_TEST_MODULE to
+# be defined before inclusion (to emit init_unit_test_suite), and that macro
+# differs per test. Each TU keeps its own #define + #include as before.
+if(TARGET Folly::folly)
+    target_precompile_headers(kythira_test_pch PUBLIC <folly/init/Init.h>)
+endif()
+# ──────────────────────────────────────────────────────────────────────────────
+
 # Helper function for creating test executables
 function(add_network_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE
-        network_simulator
-        Boost::unit_test_framework
-    )
-    if(TARGET Folly::folly)
-        target_link_libraries(${test_name} PRIVATE Folly::folly)
-    endif()
-    # Explicitly link vcpkg Boost::context (static) to match Folly's build
-    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
-        target_link_libraries(${test_name} PRIVATE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
-    elseif(TARGET Boost::context)
-        target_link_libraries(${test_name} PRIVATE Boost::context)
-    endif()
-    target_compile_features(${test_name} PRIVATE cxx_std_23)
-
-    # Add test to CTest
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch)
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
 # Helper function for creating Raft completion test executables with additional dependencies
 function(add_raft_completion_test test_name source_file)
     add_executable(${test_name} ${source_file})
-    target_link_libraries(${test_name} PRIVATE
-        network_simulator
-        Boost::unit_test_framework
-    )
-    # Link Folly first
-    if(TARGET Folly::folly)
-        target_link_libraries(${test_name} PRIVATE Folly::folly)
-    endif()
-    # Explicitly link vcpkg Boost libraries (static) to match Folly's build
-    # These must come after Folly to resolve Folly's dependencies
-    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
-        target_link_libraries(${test_name} PRIVATE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
-    elseif(TARGET Boost::json)
-        target_link_libraries(${test_name} PRIVATE Boost::json)
-    endif()
-    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
-        target_link_libraries(${test_name} PRIVATE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
-    elseif(TARGET Boost::context)
-        target_link_libraries(${test_name} PRIVATE Boost::context)
-    endif()
-    target_compile_features(${test_name} PRIVATE cxx_std_23)
-
-    # Add test to CTest
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch)
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 

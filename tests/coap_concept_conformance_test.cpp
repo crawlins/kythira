@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE coap_concept_conformance_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 // Set test timeout to prevent hanging tests
 #define BOOST_TEST_TIMEOUT 30

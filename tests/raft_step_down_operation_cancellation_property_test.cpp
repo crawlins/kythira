@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE RaftStepDownOperationCancellationPropertyTest
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/error_handler.hpp>

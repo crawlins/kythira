@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE ConceptTest
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <network_simulator/network_simulator.hpp>
 #include <string>

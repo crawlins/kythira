@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE KythiraSemiPromiseConceptCompliancePropertyTest
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>

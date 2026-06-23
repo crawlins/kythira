@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE file_persistence_unit_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <raft/file_persistence.hpp>
 #include <raft/persistence.hpp>

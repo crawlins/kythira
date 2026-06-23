@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE membership_change_unit_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include <raft/config_entry.hpp>
 #include <raft/types.hpp>

@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE raft_timeout_handling_future_collections_property_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include "../include/raft/future_collector.hpp"
 #include <chrono>
 

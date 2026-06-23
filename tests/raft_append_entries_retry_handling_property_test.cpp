@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE RaftAppendEntriesRetryHandlingPropertyTest
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>

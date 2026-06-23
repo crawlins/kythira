@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE raft_heartbeat_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 #include "raft/raft.hpp"
 #include "raft/simulator_network.hpp"

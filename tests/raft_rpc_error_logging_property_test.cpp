@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE RaftRpcErrorLoggingPropertyTest
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/logger.hpp>
 #include <folly/init/Init.h>

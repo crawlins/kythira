@@ -2,7 +2,7 @@
 #include <raft/json_serializer.hpp>
 
 #define BOOST_TEST_MODULE rpc_serializer_concept_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 
 namespace {
 constexpr const char* test_name = "rpc_serializer_concept_test";

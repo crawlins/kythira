@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE RaftSuccessfulReadStateReturnPropertyTest
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>

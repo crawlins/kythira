@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE RaftConfigurationValidationPropertyTest
 
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include <raft/types.hpp>
 #include <folly/init/Init.h>
 #include <vector>

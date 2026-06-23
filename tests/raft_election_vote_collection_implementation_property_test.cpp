@@ -1,5 +1,5 @@
 #define BOOST_TEST_MODULE raft_election_vote_collection_implementation_property_test
-#include <boost/test/included/unit_test.hpp>
+#include <boost/test/unit_test.hpp>
 #include "../include/raft/raft.hpp"
 #include "../include/raft/simulator_network.hpp"
 #include "../include/raft/json_serializer.hpp"
