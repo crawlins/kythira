@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: write    # required by dorny/test-reporter to post inline results
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── System dependencies ─────────────────────────────────────────────────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            g++-13 \
+            cmake \
+            ninja-build \
+            libfiu-dev
+
+      - name: Install Python tools
+        run: |
+          pip3 install --user \
+            "clang-format==22.1.5" \
+            "gcovr>=8.0"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # ── vcpkg (Boost, Folly, Poco, libcoap, …) ─────────────────────────────
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      # ── Format check ────────────────────────────────────────────────────────
+      # Uses the CMake format-check target so the file list exactly matches
+      # what `cmake --build --target format` reformats locally.
+      - name: Configure (format-check only)
+        run: |
+          cmake -B build-fmt -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Check formatting
+        run: cmake --build build-fmt --target format-check
+
+      # ── Release build + tests ───────────────────────────────────────────────
+      - name: Configure (Release)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        id: test
+        run: |
+          ctest --test-dir build \
+            -j$(nproc) \
+            --output-on-failure \
+            --output-junit ${{ github.workspace }}/test-results.xml \
+            -LE 'slow|performance|verbose|benchmark|docker'
+        continue-on-error: true
+
+      - name: Publish test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Unit Tests
+          path: test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results.xml
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
+
+      # ── Coverage build + tests ──────────────────────────────────────────────
+      - name: Configure (Coverage)
+        run: |
+          cmake -B build-coverage -G Ninja \
+            -DENABLE_COVERAGE=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Build (Coverage)
+        run: cmake --build build-coverage -j$(nproc)
+
+      - name: Test (Coverage)
+        id: test-coverage
+        run: |
+          find build-coverage -name '*.gcda' -delete
+          ctest --test-dir build-coverage \
+            -j$(nproc) \
+            --output-on-failure \
+            --output-junit ${{ github.workspace }}/coverage-test-results.xml \
+            --repeat until-pass:3 \
+            -LE 'slow|performance|verbose|benchmark|docker'
+        continue-on-error: true
+
+      - name: Publish coverage test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: Coverage Tests
+          path: coverage-test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Upload coverage test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-test-results
+          path: coverage-test-results.xml
+
+      - name: Fail if coverage tests failed
+        if: steps.test-coverage.outcome == 'failure'
+        run: exit 1
+
+      # ── Measure coverage and enforce floor ──────────────────────────────────
+      - name: Measure coverage
+        run: |
+          cd build-coverage
+          gcovr \
+            --root ${{ github.workspace }} \
+            --object-directory . \
+            --exclude '.*build-coverage.*' \
+            --exclude '.*vcpkg_installed.*' \
+            --exclude '.*/usr/.*' \
+            --exclude '.*cmd/.*' \
+            --exclude '.*tests/docker_chaos/.*' \
+            --gcov-ignore-parse-errors=negative_hits.warn \
+            --relative-only \
+            --cobertura ${{ github.workspace }}/coverage.xml \
+            --print-summary | tee coverage-summary.txt
+
+          NEW_PCT=$(awk '/^lines:/ { match($2, /^[0-9]+\.[0-9]+/, m); \
+            if (m[0] != "") { print m[0]; exit } }' coverage-summary.txt)
+          OLD_FLOOR=$(cat ${{ github.workspace }}/coverage_floor.txt)
+
+          echo "Coverage: ${NEW_PCT}%  Floor: ${OLD_FLOOR}%"
+          echo "coverage_pct=${NEW_PCT}" >> "$GITHUB_OUTPUT"
+
+          awk -v new="${NEW_PCT}" -v old="${OLD_FLOOR}" \
+            'BEGIN { if (new+0 < old+0) {
+              printf "FAILED: %.1f%% is below floor %.1f%%\n", new, old; exit 1 } }'
+        id: coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.xml
