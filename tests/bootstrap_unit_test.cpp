@@ -1139,6 +1139,8 @@ BOOST_AUTO_TEST_CASE(three_node_cluster_two_followers, *boost::unit_test::timeou
 
     BOOST_CHECK_NO_THROW(std::move(node1.read_state(std::chrono::milliseconds{5000})).get());
 
+    BOOST_CHECK_NO_THROW(node2.leave_cluster(std::chrono::milliseconds{5000}));
+
     node3.stop();
     node2.stop();
     node1.stop();

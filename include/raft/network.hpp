@@ -77,4 +77,23 @@ concept network_server_with_cluster_join =
         { server.register_cluster_join_handler(handler) } -> std::same_as<void>;
     };
 
+// Satisfied by a network_client that can send ClusterLeave RPCs.
+template<typename C>
+concept network_client_with_cluster_leave =
+    requires(C client, const std::string& addr, const kythira::cluster_leave_request<>& req,
+             std::chrono::milliseconds timeout) {
+        {
+            client.send_cluster_leave_request(addr, req, timeout)
+        } -> std::same_as<kythira::Future<kythira::cluster_leave_response<>>>;
+    };
+
+// Satisfied by a network_server that can register a ClusterLeave handler.
+template<typename S>
+concept network_server_with_cluster_leave = requires(
+    S server,
+    std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
+        handler) {
+    { server.register_cluster_leave_handler(handler) } -> std::same_as<void>;
+};
+
 }  // namespace kythira

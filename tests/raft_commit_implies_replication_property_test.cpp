@@ -175,7 +175,21 @@ BOOST_AUTO_TEST_CASE(committed_entries_replicated_to_majority) {
             nodes.push_back(std::move(node));
         }
 
-        // Nodes are automatically connected in the simulator
+        // Connect all nodes in the simulator so RPCs can be routed between them
+        network_simulator::NetworkEdge edge(std::chrono::milliseconds{0}, 1.0);
+        for (std::size_t i = 0; i < node_ids.size(); ++i) {
+            for (std::size_t j = 0; j < node_ids.size(); ++j) {
+                if (i != j) {
+                    simulator.add_edge(std::to_string(node_ids[i]), std::to_string(node_ids[j]),
+                                       edge);
+                }
+            }
+        }
+
+        // Set cluster configuration so nodes participate in multi-node consensus
+        for (auto& n : nodes) {
+            n->set_cluster_configuration(node_ids);
+        }
 
         // Wait for leader election
         std::this_thread::sleep_for(election_timeout_max + std::chrono::milliseconds{200});
@@ -246,6 +260,14 @@ BOOST_AUTO_TEST_CASE(committed_entries_replicated_to_majority) {
         // Verify all nodes are still running
         for (auto& node : nodes) {
             BOOST_CHECK(node->is_running());
+        }
+
+        // Exercise leave_cluster on a follower to cover the ClusterLeave RPC code path
+        for (auto& n : nodes) {
+            if (!n->is_leader() && n->is_running()) {
+                BOOST_CHECK_NO_THROW(n->leave_cluster(std::chrono::milliseconds{3000}));
+                break;
+            }
         }
 
         // Clean up

@@ -70,6 +70,8 @@ public:
     using peer_discovery_type = typename _bth::peer_discovery_type;
     using cluster_join_request_type = typename _bth::cluster_join_request_type;
     using cluster_join_response_type = typename _bth::cluster_join_response_type;
+    using cluster_leave_request_type = typename _bth::cluster_leave_request_type;
+    using cluster_leave_response_type = typename _bth::cluster_leave_response_type;
 
     // Client session tracking types
     using client_id_t = std::uint64_t;
@@ -121,6 +123,10 @@ public:
     auto add_server(node_id_type new_node) -> future_type;
     auto remove_server(node_id_type old_node) -> future_type;
 
+    // Sends a ClusterLeave RPC to the current leader, asking it to remove this node.
+    // No-op when the network client does not satisfy network_client_with_cluster_leave.
+    auto leave_cluster(std::chrono::milliseconds timeout) -> void;
+
     // Election timeout check - should be called periodically
     auto check_election_timeout() -> void;
 
@@ -166,6 +172,10 @@ private:
     // Handle an incoming ClusterJoin RPC (leader accepts, follower redirects)
     [[nodiscard]] auto handle_cluster_join(const cluster_join_request_type& req)
         -> cluster_join_response_type;
+
+    // Handle an incoming ClusterLeave RPC (leader accepts, follower redirects)
+    [[nodiscard]] auto handle_cluster_leave(const cluster_leave_request_type& req)
+        -> cluster_leave_response_type;
 
     // Bootstrap entry point: runs synchronously inside start() before _running=true.
     // With no_op_peer_discovery (empty peers list) this is a no-op that immediately
@@ -1724,6 +1734,14 @@ auto node<Types>::register_rpc_handlers() -> void {
         _network_server.register_cluster_join_handler(
             [this](const cluster_join_request_type& req) -> cluster_join_response_type {
                 return this->handle_cluster_join(req);
+            });
+    }
+
+    // Register ClusterLeave handler if the network server supports it
+    if constexpr (network_server_with_cluster_leave<network_server_type>) {
+        _network_server.register_cluster_leave_handler(
+            [this](const cluster_leave_request_type& req) -> cluster_leave_response_type {
+                return this->handle_cluster_leave(req);
             });
     }
 
@@ -4142,6 +4160,31 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
     return cluster_join_response_type{false, redirect};
 }
 
+template<raft_types Types>
+auto node<Types>::handle_cluster_leave(const cluster_leave_request_type& req)
+    -> cluster_leave_response_type {
+    bool is_leader_now = false;
+    std::optional<peer_info<node_id_type, address_type>> redirect;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        is_leader_now = (_state == kythira::server_state::leader);
+        if (!is_leader_now && _known_leader.has_value()) {
+            redirect = peer_info<node_id_type, address_type>{
+                *_known_leader, address_type{node_id_to_string(*_known_leader)}};
+        }
+    }
+
+    if (is_leader_now) {
+        // Fire-and-forget: remove_server() acquires its own lock.
+        auto fut = remove_server(req.leaving_node_id());
+        (void)fut;
+        return cluster_leave_response_type{true, std::nullopt};
+    }
+
+    return cluster_leave_response_type{false, redirect};
+}
+
 template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
     while (!_stop_requested.load(std::memory_order_acquire)) {
         auto peers = _peer_discovery.find_peers(bootstrap_peer_find_timeout()).get();
@@ -4225,6 +4268,58 @@ template<raft_types Types> auto node<Types>::run_bootstrap() -> void {
                 return;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        }
+    }
+}
+
+template<raft_types Types>
+auto node<Types>::leave_cluster(std::chrono::milliseconds timeout) -> void {
+    if constexpr (!network_client_with_cluster_leave<network_client_type>) {
+        return;
+    } else {
+        std::optional<address_type> leader_addr;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            if (_known_leader.has_value()) {
+                leader_addr = address_type{node_id_to_string(*_known_leader)};
+            }
+        }
+
+        if (!leader_addr.has_value()) {
+            _logger.warning("leave_cluster: no known leader, cannot send ClusterLeave",
+                            {{"node_id", node_id_to_string(_node_id)}});
+            return;
+        }
+
+        cluster_leave_request_type req;
+        req.node_id = _node_id;
+
+        try {
+            auto resp =
+                _network_client.send_cluster_leave_request(*leader_addr, req, timeout).get();
+
+            if (resp.is_accepted()) {
+                _logger.info("leave_cluster: accepted by leader",
+                             {{"node_id", node_id_to_string(_node_id)}});
+                return;
+            }
+
+            // Leader redirected us — try again with the real leader
+            if (resp.redirect_peer().has_value()) {
+                const auto& redir = *resp.redirect_peer();
+                _logger.debug("leave_cluster: redirected to leader",
+                              {{"node_id", node_id_to_string(_node_id)},
+                               {"leader", std::string(redir.address)}});
+                auto resp2 =
+                    _network_client.send_cluster_leave_request(redir.address, req, timeout).get();
+                if (resp2.is_accepted()) {
+                    _logger.info("leave_cluster: accepted via redirect",
+                                 {{"node_id", node_id_to_string(_node_id)}});
+                }
+            }
+        } catch (const std::exception& e) {
+            _logger.warning("leave_cluster: RPC failed",
+                            {{"node_id", node_id_to_string(_node_id)}, {"error", e.what()}});
         }
     }
 }

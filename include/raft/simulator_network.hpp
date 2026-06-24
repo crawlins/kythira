@@ -246,6 +246,36 @@ public:
             });
     }
 
+    // Send ClusterLeave RPC — routed by address_type directly (not node_id)
+    auto send_cluster_leave_request(const address_type& target,
+                                    const kythira::cluster_leave_request<>& req,
+                                    std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::cluster_leave_response<>> {
+        auto data = _serializer.serialize(req);
+        std::vector<std::byte> payload(data.begin(), data.end());
+
+        typename NetworkTypes::message_type msg(_node->address(), 0, target, _rpc_port,
+                                                std::move(payload));
+
+        return _node->send(std::move(msg), timeout)
+            .thenValue([this, timeout](bool success) {
+                if (!success) {
+                    throw kythira::network_exception("Failed to send ClusterLeave RPC");
+                }
+                return _node->receive(timeout);
+            })
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::cluster_leave_response<> {
+                auto payload = response_msg.payload();
+                Data response_data;
+                if constexpr (requires { response_data.resize(0); }) {
+                    response_data.resize(payload.size());
+                    std::copy(payload.begin(), payload.end(), response_data.begin());
+                }
+                return _serializer.template deserialize_cluster_leave_response<>(response_data);
+            });
+    }
+
 private:
     node_type _node;
     Serializer _serializer;
@@ -340,6 +370,14 @@ public:
         _cluster_join_handler = std::move(handler);
     }
 
+    // Register ClusterLeave handler
+    auto register_cluster_leave_handler(
+        std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
+            handler) -> void {
+        std::unique_lock lock(_mutex);
+        _cluster_leave_handler = std::move(handler);
+    }
+
     // Start the server
     auto start() -> void {
         std::unique_lock lock(_mutex);
@@ -391,6 +429,8 @@ private:
         _install_snapshot_handler;
     std::function<kythira::cluster_join_response<>(const kythira::cluster_join_request<>&)>
         _cluster_join_handler;
+    std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
+        _cluster_leave_handler;
 
     mutable std::shared_mutex _mutex;
 
@@ -488,6 +528,21 @@ private:
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not a ClusterJoin request
+            }
+
+            // Try ClusterLeave
+            try {
+                auto request =
+                    _serializer.template deserialize_cluster_leave_request<>(request_data);
+
+                std::shared_lock lock(_mutex);
+                if (_cluster_leave_handler) {
+                    auto response = _cluster_leave_handler(request);
+                    send_response(msg.source_address(), response);
+                }
+                return;
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a ClusterLeave request
             }
 
             // Unknown message type - ignore

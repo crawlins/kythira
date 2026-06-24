@@ -651,6 +651,25 @@ struct cluster_join_response {
     }
 };
 
+// ClusterLeave RPC — sent from a departing node (or an admin) to the leader
+template<typename NodeId = std::uint64_t, typename Address = std::string>
+struct cluster_leave_request {
+    NodeId node_id;
+
+    [[nodiscard]] auto leaving_node_id() const -> NodeId { return node_id; }
+};
+
+template<typename NodeId = std::uint64_t, typename Address = std::string>
+struct cluster_leave_response {
+    bool accepted{false};
+    std::optional<peer_info<NodeId, Address>> redirect;
+
+    [[nodiscard]] auto is_accepted() const -> bool { return accepted; }
+    [[nodiscard]] auto redirect_peer() const -> const std::optional<peer_info<NodeId, Address>>& {
+        return redirect;
+    }
+};
+
 // ============================================================================
 // Bootstrap type-detection helpers (preserves backwards compat with old test
 // types that lack address_type / peer_discovery_type members)
@@ -668,6 +687,8 @@ struct _bootstrap_type_traits {
     using peer_discovery_type = no_op_peer_discovery<NodeId, std::string>;
     using cluster_join_request_type = cluster_join_request<NodeId, std::string>;
     using cluster_join_response_type = cluster_join_response<NodeId, std::string>;
+    using cluster_leave_request_type = cluster_leave_request<NodeId, std::string>;
+    using cluster_leave_response_type = cluster_leave_response<NodeId, std::string>;
 };
 
 template<typename T, typename NodeId> struct _bootstrap_type_traits<T, NodeId, true> {
@@ -675,6 +696,8 @@ template<typename T, typename NodeId> struct _bootstrap_type_traits<T, NodeId, t
     using peer_discovery_type = typename T::peer_discovery_type;
     using cluster_join_request_type = cluster_join_request<NodeId, typename T::address_type>;
     using cluster_join_response_type = cluster_join_response<NodeId, typename T::address_type>;
+    using cluster_leave_request_type = cluster_leave_request<NodeId, typename T::address_type>;
+    using cluster_leave_response_type = cluster_leave_response<NodeId, typename T::address_type>;
 };
 
 // ============================================================================
@@ -821,6 +844,8 @@ struct default_raft_types {
     using peer_discovery_type = no_op_peer_discovery<node_id_type, address_type>;
     using cluster_join_request_type = cluster_join_request<node_id_type, address_type>;
     using cluster_join_response_type = cluster_join_response<node_id_type, address_type>;
+    using cluster_leave_request_type = cluster_leave_request<node_id_type, address_type>;
+    using cluster_leave_response_type = cluster_leave_response<node_id_type, address_type>;
 
     // RPC message types
     using request_vote_request_type =
