@@ -8,7 +8,8 @@ on:
 
 permissions:
   contents: read
-  checks: write    # required by dorny/test-reporter to post inline results
+  checks: write         # required by dorny/test-reporter to post inline results
+  pull-requests: write  # required to post coverage comment on PRs
 
 jobs:
   ci:
@@ -158,7 +159,9 @@ jobs:
 
       # ── Measure coverage and enforce floor ──────────────────────────────────
       - name: Measure coverage
+        id: coverage
         run: |
+          mkdir -p ${{ github.workspace }}/coverage-html
           cd build-coverage
           gcovr \
             --root ${{ github.workspace }} \
@@ -170,6 +173,7 @@ jobs:
             --exclude '.*tests/docker_chaos/.*' \
             --gcov-ignore-parse-errors=negative_hits.warn \
             --cobertura ${{ github.workspace }}/coverage.xml \
+            --html-details ${{ github.workspace }}/coverage-html/index.html \
             --print-summary | tee coverage-summary.txt
 
           NEW_PCT=$(awk '/^lines:/ { match($2, /^[0-9]+\.[0-9]+/, m); \
@@ -182,11 +186,68 @@ jobs:
           awk -v new="${NEW_PCT}" -v old="${OLD_FLOOR}" \
             'BEGIN { if (new+0 < old+0) {
               printf "FAILED: %.1f%% is below floor %.1f%%\n", new, old; exit 1 } }'
-        id: coverage
+
+      - name: Write coverage job summary
+        if: always() && steps.coverage.outputs.coverage_pct != ''
+        run: |
+          PCT="${{ steps.coverage.outputs.coverage_pct }}"
+          FLOOR=$(cat ${{ github.workspace }}/coverage_floor.txt)
+          # Choose a colour emoji based on coverage level
+          if awk "BEGIN { exit !($PCT >= 85) }"; then
+            ICON="🟢"
+          elif awk "BEGIN { exit !($PCT >= 70) }"; then
+            ICON="🟡"
+          else
+            ICON="🔴"
+          fi
+          {
+            echo "## ${ICON} Coverage Report"
+            echo ""
+            echo "| | Value |"
+            echo "|---|---|"
+            echo "| **Line coverage** | **${PCT}%** |"
+            echo "| Floor | ${FLOOR}% |"
+            echo ""
+            echo "<details><summary>Full gcovr summary</summary>"
+            echo ""
+            echo '```'
+            cat build-coverage/coverage-summary.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post coverage PR comment
+        if: github.event_name == 'pull_request' && steps.coverage.outputs.coverage_pct != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pct  = '${{ steps.coverage.outputs.coverage_pct }}';
+            const floor = require('fs').readFileSync('${{ github.workspace }}/coverage_floor.txt', 'utf8').trim();
+            const icon  = parseFloat(pct) >= 85 ? '🟢' : parseFloat(pct) >= 70 ? '🟡' : '🔴';
+            const body  = `## ${icon} Coverage Report\n\n| | Value |\n|---|---|\n| **Line coverage** | **${pct}%** |\n| Floor | ${floor}% |`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.includes('Coverage Report'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-report
-          path: coverage.xml
+          path: |
+            coverage.xml
+            coverage-html/
