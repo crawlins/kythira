@@ -12,6 +12,7 @@ Rules:
 - Description is lowercase, imperative mood, no trailing period.
 - Body (if present) wraps at 72 characters.
 - Breaking changes go in the footer as `BREAKING CHANGE: <description>`, or by appending `!` after the type/scope.
+- **NEVER add a `Co-Authored-By:` trailer** to any commit message. No exceptions.
 
 The body MUST be a detailed summary of the changes. Specifically:
 - Explain **why** the change was made, not just what files were touched.
