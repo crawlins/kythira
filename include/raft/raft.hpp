@@ -2698,37 +2698,35 @@ auto node<Types>::start_election() -> void {
 
     auto current_term = snapshot_term;
     auto node_id = _node_id;
-    auto& logger = _logger;
-    auto& metrics = _metrics;
 
     raft_future_collector<tagged_vote_t>::collect_all_with_timeout(std::move(vote_futures),
                                                                    snapshot_election_timeout)
         .thenValue([this, current_term, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old = std::move(snap_c_old), &logger,
-                    &metrics](std::vector<kythira::Try<tagged_vote_t>> results) {
+                    snap_c_old =
+                        std::move(snap_c_old)](std::vector<kythira::Try<tagged_vote_t>> results) {
             std::lock_guard<std::mutex> lock(_mutex);
 
             if (_state != kythira::server_state::candidate || _current_term != current_term) {
-                logger.debug("Election outcome irrelevant, state changed",
-                             {{"node_id", node_id_to_string(node_id)},
-                              {"current_term", std::to_string(_current_term)},
-                              {"election_term", std::to_string(current_term)}});
+                _logger.debug("Election outcome irrelevant, state changed",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"current_term", std::to_string(_current_term)},
+                               {"election_term", std::to_string(current_term)}});
                 return;
             }
 
             // Check for higher terms from any response; step down if found
             for (const auto& r : results) {
                 if (r.hasValue() && r.value().second.term() > _current_term) {
-                    logger.info("Discovered higher term during election, stepping down",
-                                {{"node_id", node_id_to_string(node_id)},
-                                 {"current_term", std::to_string(_current_term)},
-                                 {"discovered_term", std::to_string(r.value().second.term())}});
+                    _logger.info("Discovered higher term during election, stepping down",
+                                 {{"node_id", node_id_to_string(node_id)},
+                                  {"current_term", std::to_string(_current_term)},
+                                  {"discovered_term", std::to_string(r.value().second.term())}});
                     become_follower(r.value().second.term());
-                    metrics.set_metric_name("election_lost");
-                    metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    metrics.add_dimension("reason", "higher_term_discovered");
-                    metrics.add_one();
-                    metrics.emit();
+                    _metrics.set_metric_name("election_lost");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("reason", "higher_term_discovered");
+                    _metrics.add_one();
+                    _metrics.emit();
                     return;
                 }
             }
@@ -2760,44 +2758,44 @@ auto node<Types>::start_election() -> void {
             }
 
             if (won) {
-                logger.info("Election won, transitioning to leader",
-                            {{"node_id", node_id_to_string(node_id)},
-                             {"term", std::to_string(_current_term)}});
+                _logger.info("Election won, transitioning to leader",
+                             {{"node_id", node_id_to_string(node_id)},
+                              {"term", std::to_string(_current_term)}});
                 become_leader();
-                metrics.set_metric_name("election_won");
-                metrics.add_dimension("node_id", node_id_to_string(node_id));
-                metrics.add_dimension("term", std::to_string(_current_term));
-                metrics.add_one();
-                metrics.emit();
+                _metrics.set_metric_name("election_won");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("term", std::to_string(_current_term));
+                _metrics.add_one();
+                _metrics.emit();
             } else {
-                logger.info("Election failed, insufficient votes",
-                            {{"node_id", node_id_to_string(node_id)},
-                             {"term", std::to_string(_current_term)}});
-                metrics.set_metric_name("election_lost");
-                metrics.add_dimension("node_id", node_id_to_string(node_id));
-                metrics.add_dimension("reason", "insufficient_votes");
-                metrics.add_one();
-                metrics.emit();
+                _logger.info("Election failed, insufficient votes",
+                             {{"node_id", node_id_to_string(node_id)},
+                              {"term", std::to_string(_current_term)}});
+                _metrics.set_metric_name("election_lost");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("reason", "insufficient_votes");
+                _metrics.add_one();
+                _metrics.emit();
             }
         })
-        .thenError([this, current_term, node_id, &logger, &metrics](const std::exception_ptr& ex) {
+        .thenError([this, current_term, node_id](const std::exception_ptr& ex) {
             std::lock_guard<std::mutex> lock(_mutex);
 
             try {
                 std::rethrow_exception(ex);
             } catch (const kythira::future_collection_exception& e) {
-                logger.warning("Failed to collect vote responses",
-                               {{"node_id", node_id_to_string(node_id)},
-                                {"operation", e.get_operation()},
-                                {"failed_count", std::to_string(e.get_failed_count())}});
-                metrics.set_metric_name("election_lost");
-                metrics.add_dimension("node_id", node_id_to_string(node_id));
-                metrics.add_dimension("reason", "collection_failure");
-                metrics.add_one();
-                metrics.emit();
+                _logger.warning("Failed to collect vote responses",
+                                {{"node_id", node_id_to_string(node_id)},
+                                 {"operation", e.get_operation()},
+                                 {"failed_count", std::to_string(e.get_failed_count())}});
+                _metrics.set_metric_name("election_lost");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("reason", "collection_failure");
+                _metrics.add_one();
+                _metrics.emit();
             } catch (...) {
-                logger.error("Unexpected error during election",
-                             {{"node_id", node_id_to_string(node_id)}});
+                _logger.error("Unexpected error during election",
+                              {{"node_id", node_id_to_string(node_id)}});
             }
         });
 }
