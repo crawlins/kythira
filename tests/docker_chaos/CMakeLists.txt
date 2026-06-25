@@ -85,6 +85,11 @@ add_docker_chaos_scenario_test(docker_chaos_persistence_faults_test
 add_docker_chaos_scenario_test(docker_chaos_safety_assertions_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/safety_assertions_test.cpp")
 
+# ── Quorum healing Docker scenario tests (Req 19) ────────────────────────────
+
+add_docker_chaos_scenario_test(quorum_healing_tests
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/quorum_healing_test.cpp")
+
 # ── poco_peer_discovery Docker scenario test ──────────────────────────────────
 
 add_docker_chaos_scenario_test(docker_poco_discovery_test
@@ -128,6 +133,7 @@ endif()
 if(_RUNTIME_EXE)
     set(_CHAOS_COMPOSE_FILE              "${CMAKE_SOURCE_DIR}/docker/docker-compose.yml")
     set(_CHAOS_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/chaos_node/Dockerfile")
+    set(_QUORUM_COMPOSE_FILE             "${CMAKE_SOURCE_DIR}/docker/docker-compose.quorum.yml")
     set(_POCO_DISCOVERY_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/poco-discovery-compose.yml")
     set(_POCO_DISCOVERY_DOCKERFILE       "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/Dockerfile")
     set(_BIND9_DOCKERFILE                "${CMAKE_SOURCE_DIR}/docker/bind9/Dockerfile")
@@ -201,6 +207,18 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    add_custom_target(quorum-healing-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_DOCKER_INTEGRATION_TESTS=1
+                KYTHIRA_QUORUM_COMPOSE_FILE=${_QUORUM_COMPOSE_FILE}
+                $<TARGET_FILE:quorum_healing_tests>
+                --log_level=message
+        DEPENDS docker-chaos-image quorum_healing_tests
+        COMMENT "Running quorum healing scenario tests (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
     add_custom_target(docker-poco-discovery-tests
         COMMAND ${CMAKE_COMMAND} -E env
                 ${_RT_ENV}
@@ -271,6 +289,7 @@ if(_RUNTIME_EXE)
 else()
     foreach(_t
         docker-chaos-image docker-chaos-tests
+        quorum-healing-tests
         docker-poco-discovery-image docker-poco-discovery-tests
         docker-bind9-image
         docker-dns-discovery-image docker-dns-discovery-tests

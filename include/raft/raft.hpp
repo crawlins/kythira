@@ -17,10 +17,12 @@
 #include <raft/configuration_synchronizer.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/config_entry.hpp>
+#include <raft/quorum_management.hpp>
 
 #include <vector>
 #include <optional>
 #include <unordered_map>
+#include <map>
 #include <chrono>
 #include <random>
 #include <mutex>
@@ -29,6 +31,66 @@
 #include <span>
 
 namespace kythira {
+
+// ============================================================================
+// Quorum-manager type-detection helpers (Req 11.1-2)
+// Mirrors the _bootstrap_type_traits pattern: types that don't define
+// quorum_manager_type fall back to no_op_quorum_manager transparently.
+// Cannot live in types.hpp because quorum_management.hpp includes types.hpp.
+// ============================================================================
+
+template<typename T>
+concept _has_quorum_manager_type = requires { typename T::quorum_manager_type; };
+
+// Primary: no quorum_manager_type declared → fall back to no_op
+template<typename T, typename NodeId, typename Address, bool = _has_quorum_manager_type<T>>
+struct _quorum_manager_type_traits {
+    using quorum_manager_type = no_op_quorum_manager<NodeId, Address, std::string>;
+};
+
+// Specialisation: quorum_manager_type is present → use it
+template<typename T, typename NodeId, typename Address>
+struct _quorum_manager_type_traits<T, NodeId, Address, true> {
+    using quorum_manager_type = typename T::quorum_manager_type;
+};
+
+// ============================================================================
+// node_config<Types> — named-parameter aggregate for node construction (Req 17)
+//
+// Required fields have no in-struct default; omitting them in a designated
+// initializer is a compile error.
+//
+// Optional fields carry defaults and may be omitted from the initializer.
+// Adding a new optional field here never requires changes to existing
+// initializer call sites, satisfying Req 17 AC 5.
+// ============================================================================
+
+template<raft_types Types> struct node_config {
+    // ── type resolution (mirrors node<Types> internal aliases) ───────────────
+    using _bth_ = _bootstrap_type_traits<Types, typename Types::node_id_type>;
+    using address_type = typename _bth_::address_type;
+    using peer_discovery_type = typename _bth_::peer_discovery_type;
+    using _qmth_ = _quorum_manager_type_traits<Types, typename Types::node_id_type, address_type>;
+    using quorum_manager_type = typename _qmth_::quorum_manager_type;
+    using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
+
+    // ── required members (no in-struct default) ───────────────────────────────
+    typename Types::node_id_type node_id;
+    typename Types::network_client_type network_client;
+    typename Types::network_server_type network_server;
+    typename Types::persistence_engine_type persistence;
+    typename Types::logger_type logger;
+    typename Types::metrics_type metrics;
+    typename Types::membership_manager_type membership;
+
+    // ── optional members ───────────────────────────────────────────────────────
+    typename Types::state_machine_type state_machine{};
+    typename Types::configuration_type config{};
+    address_type self_address{};
+    peer_discovery_type peer_discovery{};
+    quorum_manager_type quorum_manager{};
+    std::unordered_map<typename Types::node_id_type, placement_group_id_type> initial_placement{};
+};
 
 // Raft node class template with unified types parameter
 // Implements the Raft consensus algorithm with pluggable components
@@ -73,12 +135,20 @@ public:
     using cluster_leave_request_type = typename _bth::cluster_leave_request_type;
     using cluster_leave_response_type = typename _bth::cluster_leave_response_type;
 
+    // Quorum manager type alias (with fallback to no_op for Types that predate it)
+    using _qmth = kythira::_quorum_manager_type_traits<Types, node_id_type, address_type>;
+    using quorum_manager_type = typename _qmth::quorum_manager_type;
+    using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
+
     // Client session tracking types
     using client_id_t = std::uint64_t;
     using serial_number_t = std::uint64_t;
 
-    // Constructor with unified types (self_address and peer_discovery are optional;
-    // defaults produce backwards-compatible single-node-founding behaviour)
+    // Preferred constructor: all parameters supplied via node_config<Types> (Req 17)
+    explicit node(node_config<Types> cfg);
+
+    // Legacy positional constructor retained for migration compatibility (Req 17 AC 3).
+    // Prefer node(node_config<Types>) for new code.
     node(node_id_type node_id, network_client_type network_client,
          network_server_type network_server, persistence_engine_type persistence,
          logger_type logger, metrics_type metrics, membership_manager_type membership,
@@ -140,6 +210,12 @@ public:
     // Cluster configuration management - for testing and bootstrap
     auto set_cluster_configuration(const std::vector<node_id_type>& node_ids) -> void;
     [[nodiscard]] auto get_cluster_size() const -> std::size_t;
+
+    // Quorum management — placement group assignment (Req 12 AC 2)
+    // Registers or updates the placement group for a node.  May be called any
+    // time before or after start().  Entries are automatically maintained as
+    // nodes join and leave the Raft cluster through the provisioning path.
+    auto set_placement(node_id_type id, placement_group_id_type group) -> void;
 
 private:
     // ========================================================================
@@ -362,6 +438,45 @@ private:
     std::mutex _reconnect_cv_mutex;
 
     // ========================================================================
+    // Quorum management members (Req 12-15)
+    // ========================================================================
+
+    // Quorum manager implementation (default: no_op)
+    quorum_manager_type _quorum_manager{};
+
+    // Per-node placement group assignment.  Keys are node IDs in the current
+    // cluster configuration.  Absent entries fall back to placement_group_id_type{}.
+    // std::map is used because placement_group_id_type is only totally_ordered,
+    // not necessarily hashable.
+    std::map<node_id_type, placement_group_id_type> _placement_map{};
+
+    // Per-peer consecutive heartbeat failure counter.  Reset to 0 on any
+    // successful heartbeat ACK.  Triggers an immediate assess_quorum call when
+    // it reaches _config.quorum_heartbeat_failure_threshold().
+    std::unordered_map<node_id_type, std::size_t> _heartbeat_failure_counts{};
+
+    // Number of in-flight or pending provision_node calls per placement group.
+    // Prevents over-provisioning across consecutive assessment cycles.
+    std::map<placement_group_id_type, std::size_t> _pending_provisions{};
+
+    // Tracks which unreachable node ID each pending provision is replacing.
+    // Used to call remove_server + decommission_node after the replacement joins.
+    std::map<placement_group_id_type, std::optional<node_id_type>> _pending_replacing{};
+
+    // When the quorum assessment loop was last run.
+    // Reset to epoch by become_leader() to schedule an immediate first assessment.
+    // The assessment loop fires from check_heartbeat_timeout() (Req 13).
+    std::chrono::steady_clock::time_point _last_quorum_check{};
+
+    // Set to true by become_leader(), false by become_follower/candidate.
+    // Guards the quorum assessment branch inside check_heartbeat_timeout().
+    bool _quorum_check_active{false};
+
+    // Set to true when a peer has crossed the heartbeat failure threshold, asking
+    // for an immediate out-of-cycle assess_quorum in the next heartbeat tick.
+    bool _quorum_immediate_check{false};
+
+    // ========================================================================
     // Synchronization
     // ========================================================================
 
@@ -416,6 +531,26 @@ private:
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
+
+    // ── Quorum management helpers (Req 12-15) ────────────────────────────────
+
+    // Build the cluster vector passed to assess_quorum from the current
+    // configuration, annotating each node with its known placement group.
+    // Must be called with _mutex held.
+    [[nodiscard]] auto build_quorum_cluster_vector() const
+        -> std::vector<node_placement<node_id_type, placement_group_id_type>>;
+
+    // Run a single assess_quorum cycle and act on the result.
+    // Called from check_heartbeat_timeout() when the quorum check is due
+    // or when an immediate check was requested.
+    // Must NOT be called with _mutex held (calls .get() on futures).
+    auto run_quorum_assessment() -> void;
+
+    // Called by become_leader() — initialises quorum loop state.
+    auto start_quorum_loop() -> void;
+
+    // Called by become_follower/candidate — disables the quorum check.
+    auto stop_quorum_loop() -> void;
 };
 
 // Raft node concept - defines the interface for a Raft node using unified types
@@ -454,13 +589,9 @@ concept raft_node = requires(N node, const std::vector<std::byte>& command,
 // Implementation using unified types
 // ============================================================================
 
+// node_config constructor — the primary constructor (Req 17 AC 2)
 template<raft_types Types>
-
-node<Types>::node(node_id_type node_id, network_client_type network_client,
-                  network_server_type network_server, persistence_engine_type persistence,
-                  logger_type logger, metrics_type metrics, membership_manager_type membership,
-                  configuration_type config, address_type self_address,
-                  peer_discovery_type peer_discovery)
+node<Types>::node(node_config<Types> cfg)
     : _current_term{0},
       _voted_for{std::nullopt},
       _log{},
@@ -469,34 +600,53 @@ node<Types>::node(node_id_type node_id, network_client_type network_client,
       _state{kythira::server_state::follower},
       _next_index{},
       _match_index{},
-      _network_client{std::move(network_client)},
-      _network_server{std::move(network_server)},
-      _persistence{std::move(persistence)},
-      _logger{std::move(logger)},
-      _metrics{std::move(metrics)},
-      _membership{std::move(membership)},
-      _state_machine{},
-      _config{config},
-      _node_id{node_id},
+      _network_client{std::move(cfg.network_client)},
+      _network_server{std::move(cfg.network_server)},
+      _persistence{std::move(cfg.persistence)},
+      _logger{std::move(cfg.logger)},
+      _metrics{std::move(cfg.metrics)},
+      _membership{std::move(cfg.membership)},
+      _state_machine{std::move(cfg.state_machine)},
+      _config{cfg.config},
+      _node_id{cfg.node_id},
       _configuration{},
-      _election_timeout{config.election_timeout_min()},
-      _heartbeat_interval{config.heartbeat_interval()},
+      _election_timeout{cfg.config.election_timeout_min()},
+      _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
       _rng{std::random_device{}()},
-      _self_address{std::move(self_address)},
-      _peer_discovery{std::move(peer_discovery)} {
-    // Initialize configuration with just this node
+      _self_address{std::move(cfg.self_address)},
+      _peer_discovery{std::move(cfg.peer_discovery)},
+      _quorum_manager{std::move(cfg.quorum_manager)} {
+    _placement_map.insert(cfg.initial_placement.begin(), cfg.initial_placement.end());
     _configuration._nodes = {_node_id};
     _configuration._is_joint_consensus = false;
     _configuration._old_nodes = std::nullopt;
 
-    // Randomize the initial election timeout
     randomize_election_timeout();
 
-    // Log node creation
     _logger.info("Raft node created",
                  {{"node_id", node_id_to_string(_node_id)}, {"state", "follower"}});
 }
+
+// Legacy positional constructor — delegates to node_config constructor (Req 17 AC 3)
+template<raft_types Types>
+node<Types>::node(node_id_type node_id, network_client_type network_client,
+                  network_server_type network_server, persistence_engine_type persistence,
+                  logger_type logger, metrics_type metrics, membership_manager_type membership,
+                  configuration_type config, address_type self_address,
+                  peer_discovery_type peer_discovery)
+    : node(node_config<Types>{
+          .node_id = std::move(node_id),
+          .network_client = std::move(network_client),
+          .network_server = std::move(network_server),
+          .persistence = std::move(persistence),
+          .logger = std::move(logger),
+          .metrics = std::move(metrics),
+          .membership = std::move(membership),
+          .config = std::move(config),
+          .self_address = std::move(self_address),
+          .peer_discovery = std::move(peer_discovery),
+      }) {}
 
 template<raft_types Types>
 
@@ -515,6 +665,146 @@ auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& nod
 template<raft_types Types> auto node<Types>::get_cluster_size() const -> std::size_t {
     std::lock_guard<std::mutex> lock(_mutex);
     return _configuration._nodes.size();
+}
+
+template<raft_types Types>
+auto node<Types>::set_placement(node_id_type id, placement_group_id_type group) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _placement_map[std::move(id)] = std::move(group);
+}
+
+// ── Quorum management (Req 12-15) ────────────────────────────────────────────
+
+template<raft_types Types>
+auto node<Types>::build_quorum_cluster_vector() const
+    -> std::vector<node_placement<node_id_type, placement_group_id_type>> {
+    std::vector<node_placement<node_id_type, placement_group_id_type>> cluster;
+    for (const auto& nid : _configuration.nodes()) {
+        placement_group_id_type grp{};
+        auto it = _placement_map.find(nid);
+        if (it != _placement_map.end()) {
+            grp = it->second;
+        }
+        cluster.push_back({.node_id = nid, .group_id = grp});
+    }
+    return cluster;
+}
+
+template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
+    // Build cluster vector under lock, then release for async call
+    std::vector<node_placement<node_id_type, placement_group_id_type>> cluster;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state != kythira::server_state::leader) return;
+        cluster = build_quorum_cluster_vector();
+    }
+
+    quorum_health<node_id_type, placement_group_id_type> health;
+    try {
+        health = _quorum_manager.assess_quorum(cluster).get();
+    } catch (const std::exception& ex) {
+        _logger.error("assess_quorum failed", {{"error", ex.what()}});
+        return;
+    }
+
+    // Update last-check timestamp
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _last_quorum_check = std::chrono::steady_clock::now();
+        if (_state != kythira::server_state::leader) return;
+    }
+
+    // Req 14.2 — never provision on quorum loss
+    if (health.status == quorum_status::lost) {
+        _logger.warning("Quorum lost — no autonomous provisioning attempted", {});
+        return;
+    }
+
+    // Req 14.1 — provision replacements for groups below target
+    if (health.status == quorum_status::degraded || health.status == quorum_status::critical) {
+        auto desired = _quorum_manager.topology();
+
+        for (const auto& grp_health : health.groups) {
+            // How many slots are missing in this group?
+            std::size_t target = 0;
+            for (const auto& gt : desired.groups) {
+                if (gt.group_id == grp_health.group_id) {
+                    target = gt.target_count;
+                    break;
+                }
+            }
+            std::size_t live = grp_health.live_count;
+            if (live >= target) continue;
+
+            std::size_t deficit = target - live;
+
+            // Subtract already-in-flight provisions (Req 14.3)
+            std::size_t pending = 0;
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                auto pit = _pending_provisions.find(grp_health.group_id);
+                if (pit != _pending_provisions.end()) {
+                    pending = pit->second;
+                }
+            }
+            if (pending >= deficit) continue;
+            std::size_t to_provision = deficit - pending;
+
+            // Pick a node to replace from the group's unreachable list
+            std::size_t replacing_idx = 0;
+            for (std::size_t slot = 0; slot < to_provision; ++slot) {
+                std::optional<node_id_type> replacing = std::nullopt;
+                if (replacing_idx < grp_health.unreachable_nodes.size()) {
+                    replacing = grp_health.unreachable_nodes[replacing_idx++];
+                }
+
+                // Mark slot as in-flight
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    _pending_provisions[grp_health.group_id]++;
+                    _pending_replacing[grp_health.group_id] = replacing;
+                }
+
+                auto provision_fut = _quorum_manager.provision_node(grp_health.group_id, replacing);
+                try {
+                    auto info = std::move(provision_fut).get();
+                    _logger.info("Provisioned replacement node",
+                                 {
+                                     {"new_node_id", node_id_to_string(info.node_id)},
+                                     {"group", grp_health.group_id},
+                                 });
+                    // The provisioned node joins via ClusterJoin → add_server.
+                    // On add_server completion we update placement + clear pending.
+                    // (Req 14.4 — nothing further to do here)
+                } catch (const std::exception& ex) {
+                    _logger.error("provision_node failed", {
+                                                               {"group", grp_health.group_id},
+                                                               {"error", ex.what()},
+                                                           });
+                    // Req 14.6 — clear the pending slot on failure
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    auto& cnt = _pending_provisions[grp_health.group_id];
+                    if (cnt > 0) --cnt;
+                }
+            }
+        }
+    }
+}
+
+// start_quorum_loop — called from become_leader() while _mutex is held.
+// Initialises quorum loop state so that check_heartbeat_timeout() begins
+// scheduling periodic assessments.
+template<raft_types Types> auto node<Types>::start_quorum_loop() -> void {
+    _quorum_check_active = true;
+    _quorum_immediate_check = false;
+    // Set to epoch so the first check_heartbeat_timeout() fires immediately
+    _last_quorum_check = std::chrono::steady_clock::time_point{};
+}
+
+// stop_quorum_loop — called from become_follower/candidate while _mutex is held.
+template<raft_types Types> auto node<Types>::stop_quorum_loop() -> void {
+    _quorum_check_active = false;
+    _quorum_immediate_check = false;
 }
 
 template<raft_types Types>
@@ -1641,6 +1931,25 @@ auto node<Types>::check_heartbeat_timeout() -> void {
     if (should_heartbeat) {
         send_heartbeats();
     }
+
+    // Quorum assessment (Req 13) — piggybacks on the heartbeat tick so the
+    // event loop does not need a separate quorum timer.  run_quorum_assessment()
+    // must be called without _mutex held (it calls future.get() which may block).
+    bool should_assess = false;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_quorum_check_active) {
+            auto now = std::chrono::steady_clock::now();
+            bool interval_elapsed = (now - _last_quorum_check) >= _config.quorum_check_interval();
+            should_assess = _quorum_immediate_check || interval_elapsed;
+            if (should_assess) {
+                _quorum_immediate_check = false;
+            }
+        }
+    }
+    if (should_assess) {
+        run_quorum_assessment();
+    }
 }
 
 // Placeholder implementations for private methods
@@ -2431,6 +2740,15 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
                 _metrics.add_one();
                 _metrics.emit();
 
+                // Req 13.3 — track consecutive heartbeat failures for quorum assessment
+                if (_quorum_check_active) {
+                    auto& count = _heartbeat_failure_counts[target];
+                    ++count;
+                    if (count >= _config.quorum_heartbeat_failure_threshold()) {
+                        _quorum_immediate_check = true;
+                    }
+                }
+
                 return;
             }
 
@@ -2453,8 +2771,9 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
             }
 
             if (response.success()) {
-                // Heartbeat succeeded - remove from unresponsive set
+                // Heartbeat succeeded - remove from unresponsive set and reset failure counter
                 _unresponsive_followers.erase(target);
+                _heartbeat_failure_counts.erase(target);
 
                 _logger.debug("Heartbeat succeeded",
                               {{"node_id", node_id_to_string(_node_id)},
@@ -2509,6 +2828,11 @@ auto node<Types>::become_follower(term_id_type new_term) -> void {
     _state = kythira::server_state::follower;
     _voted_for = std::nullopt;
 
+    // Stop quorum assessment loop if we were leader (Req 13.2)
+    if (old_state == kythira::server_state::leader) {
+        stop_quorum_loop();
+    }
+
     // Reset election timer
     reset_election_timer();
     randomize_election_timeout();
@@ -2534,6 +2858,11 @@ auto node<Types>::become_candidate() -> void {
     // Persist state before sending RequestVote RPCs
     _persistence.save_current_term(_current_term);
     _persistence.save_voted_for(_node_id);
+
+    // Stop quorum assessment loop if we were leader (Req 13.2)
+    if (old_state == kythira::server_state::leader) {
+        stop_quorum_loop();
+    }
 
     // Reset election timer with new randomized timeout
     reset_election_timer();
@@ -2833,6 +3162,9 @@ auto node<Types>::become_leader() -> void {
 
     // Reset heartbeat timer
     _last_heartbeat = std::chrono::steady_clock::now();
+
+    // Start quorum assessment loop (Req 13.1)
+    start_quorum_loop();
 }
 
 template<raft_types Types>
