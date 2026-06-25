@@ -1,0 +1,106 @@
+# docker-compose.quorum.yml — 3-node kythira cluster with docker_quorum_manager enabled.
+#
+# Each node mounts the Docker socket so that the Raft leader can provision
+# replacement containers directly through the Docker daemon.  No static IPs
+# are used; containers address each other by service/hostname (CLAUDE.md rule).
+#
+# Set KYTHIRA_CONTAINER_RUNTIME / KYTHIRA_COMPOSE_COMMAND before invoking if
+# running under rootless Podman (see CLAUDE.md).
+#
+# Per-test cluster isolation: override QUORUM_CLUSTER via:
+#   QUORUM_CLUSTER=mytest docker compose -f docker-compose.quorum.yml up -d
+
+services:
+  qnode1:
+    image: kythira-chaos-node:dev
+    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-1
+    hostname: qnode1
+    environment:
+      NODE_ID: "1"
+      PEERS: "2:qnode2:7000,3:qnode3:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+    ports:
+      - "7101:7000"
+      - "8181:8080"
+      - "9101:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode2:
+    image: kythira-chaos-node:dev
+    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-2
+    hostname: qnode2
+    environment:
+      NODE_ID: "2"
+      PEERS: "1:qnode1:7000,3:qnode3:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+    ports:
+      - "7102:7000"
+      - "8182:8080"
+      - "9102:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+  qnode3:
+    image: kythira-chaos-node:dev
+    container_name: ${QUORUM_CLUSTER:-kythira-quorum-test}-chaos-3
+    hostname: qnode3
+    environment:
+      NODE_ID: "3"
+      PEERS: "1:qnode1:7000,2:qnode2:7000"
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      QUORUM_MANAGER: "docker"
+      QUORUM_IMAGE: "kythira-chaos-node:dev"
+      QUORUM_CLUSTER: "${QUORUM_CLUSTER:-kythira-quorum-test}"
+      QUORUM_NETWORK: "${QUORUM_NETWORK:-kythira-quorum-net}"
+      QUORUM_TARGET: "${QUORUM_TARGET:-3}"
+    ports:
+      - "7103:7000"
+      - "8183:8080"
+      - "9103:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - kythira-quorum-net
+
+networks:
+  kythira-quorum-net:
+    driver: bridge

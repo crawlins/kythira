@@ -139,6 +139,18 @@ public:
         _container = it->second.container_name;
     }
 
+    // Direct ctor — bypasses k_node_map; used when port layout and container
+    // names differ from the defaults (e.g. the quorum healing harness).
+    ChaosNode(int node_id, int http_port, std::uint16_t fiu_port, std::string container,
+              os::CmdExecutor exec, HttpGet http_get, HttpPost http_post)
+        : _node_id(node_id),
+          _exec(std::move(exec)),
+          _http_get(std::move(http_get)),
+          _http_post(std::move(http_post)),
+          _http_port(http_port),
+          _fiu_port(fiu_port),
+          _container(std::move(container)) {}
+
     int id() const { return _node_id; }
     const std::string& container() const { return _container; }
 

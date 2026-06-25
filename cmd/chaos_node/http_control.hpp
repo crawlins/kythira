@@ -13,21 +13,21 @@
 
 namespace chaos_node {
 
-// HTTP control plane for a running kythira::node<tcp_raft_types>.
+// HTTP control plane for a running kythira::node<Types>.
 // Endpoints:
 //   GET  /health           → 200 {"status":"running"} or 503
 //   GET  /status           → 200 {node_id,role,term,leader_id,commit_index,last_applied}
 //   POST /command          → body {"key":"k","value":"v"} → 200/503
 //   GET  /log/:index       → 200 {index,term,command_b64} or 404
 
-class http_control {
+template<typename NodeType> class http_control_tmpl {
 public:
-    using node_t = kythira::node<kythira::tcp_raft_types>;
+    using node_t = NodeType;
 
-    http_control(node_t& n, std::uint64_t node_id, std::uint16_t port)
+    http_control_tmpl(node_t& n, std::uint64_t node_id, std::uint16_t port)
         : _node(n), _node_id(node_id), _port(port) {}
 
-    ~http_control() { stop(); }
+    ~http_control_tmpl() { stop(); }
 
     void start() {
         _server.Get("/health", [this](const httplib::Request&, httplib::Response& res) {
@@ -66,7 +66,6 @@ public:
                 res.set_content(R"({"error":"not_leader"})", "application/json");
                 return;
             }
-            // Parse {"key":"k","value":"v"} manually; use boost::json in full impl
             auto kpos = req.body.find("\"key\"");
             auto vpos = req.body.find("\"value\"");
             if (kpos == std::string::npos || vpos == std::string::npos) {
@@ -83,11 +82,11 @@ public:
             std::string key = extract_val(kpos);
             std::string value = extract_val(vpos);
 
-            // Encode as: "PUT key value\n"
             std::string cmd_str = "PUT " + key + " " + value + "\n";
             std::vector<std::byte> cmd(cmd_str.size());
-            for (std::size_t i = 0; i < cmd_str.size(); ++i)
+            for (std::size_t i = 0; i < cmd_str.size(); ++i) {
                 cmd[i] = static_cast<std::byte>(cmd_str[i]);
+            }
 
             try {
                 auto fut = _node.submit_command(cmd, std::chrono::seconds{5});
@@ -106,8 +105,6 @@ public:
 
         _server.Get(R"(/log/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
             auto idx = static_cast<std::uint64_t>(std::stoull(req.matches[1]));
-            auto entry = _node.debug_state();  // need full state for log access
-            // Access via persistence (simpler than exposing log from debug_state)
             res.status = 404;
             res.set_content(R"({"error":"not_implemented"})", "application/json");
             (void)idx;
@@ -118,7 +115,9 @@ public:
 
     void stop() {
         _server.stop();
-        if (_thread.joinable()) _thread.join();
+        if (_thread.joinable()) {
+            _thread.join();
+        }
     }
 
 private:
@@ -128,5 +127,8 @@ private:
     httplib::Server _server;
     std::thread _thread;
 };
+
+// Backward-compatible alias for the existing tcp_raft_types node type
+using http_control = http_control_tmpl<kythira::node<kythira::tcp_raft_types>>;
 
 }  // namespace chaos_node

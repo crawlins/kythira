@@ -902,6 +902,55 @@ set_tests_properties(raft_node_unit_test PROPERTIES
     LABELS "unit;raft"
 )
 
+# Quorum management unit tests (Req 10)
+add_executable(quorum_management_test quorum_management_test.cpp)
+target_link_libraries(quorum_management_test PRIVATE
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(quorum_management_test PRIVATE Folly::folly)
+endif()
+target_compile_features(quorum_management_test PRIVATE cxx_std_23)
+add_test(NAME quorum_management_test COMMAND quorum_management_test)
+set_tests_properties(quorum_management_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;quorum"
+)
+
+# Quorum leader integration tests (Req 16)
+add_executable(quorum_leader_integration_test quorum_leader_integration_test.cpp)
+target_link_libraries(quorum_leader_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(quorum_leader_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(quorum_leader_integration_test PRIVATE cxx_std_23)
+add_test(NAME quorum_leader_integration_test COMMAND quorum_leader_integration_test)
+set_tests_properties(quorum_leader_integration_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;quorum"
+)
+
+# docker_quorum_manager unit tests (Req 18 — embedded mock Docker API server)
+add_executable(docker_quorum_manager_test docker_quorum_manager_test.cpp)
+target_link_libraries(docker_quorum_manager_test PRIVATE
+    Boost::unit_test_framework
+    httplib::httplib
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(docker_quorum_manager_test PRIVATE Folly::folly)
+endif()
+target_compile_features(docker_quorum_manager_test PRIVATE cxx_std_23)
+add_test(NAME docker_quorum_manager_test COMMAND docker_quorum_manager_test)
+set_tests_properties(docker_quorum_manager_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;quorum"
+)
+
 # Bootstrap property tests
 add_executable(bootstrap_property_test bootstrap_property_test.cpp)
 target_link_libraries(bootstrap_property_test PRIVATE

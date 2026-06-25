@@ -134,6 +134,10 @@ BOOST_AUTO_TEST_CASE(test_custom_raft_configuration, *boost::unit_test::timeout(
             -> const kythira::adaptive_timeout_config& {
             return _adaptive_timeout_config;
         }
+        [[nodiscard]] auto quorum_check_interval() const -> std::chrono::milliseconds {
+            return std::chrono::milliseconds{30000};
+        }
+        [[nodiscard]] auto quorum_heartbeat_failure_threshold() const -> std::size_t { return 3; }
 
         [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
 

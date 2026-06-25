@@ -401,6 +401,9 @@ concept raft_configuration_type = requires(const T& config) {
     { config.get_adaptive_timeout_config() } -> std::same_as<const adaptive_timeout_config&>;
     { config.validate() } -> std::same_as<bool>;
     { config.get_validation_errors() } -> std::same_as<std::vector<std::string>>;
+    // Quorum management (Req 11.4)
+    { config.quorum_check_interval() } -> std::same_as<std::chrono::milliseconds>;
+    { config.quorum_heartbeat_failure_threshold() } -> std::same_as<std::size_t>;
 };
 
 // Application failure handling policy
@@ -467,6 +470,13 @@ struct raft_configuration {
     std::chrono::milliseconds _bootstrap_retry_interval{5000};
     std::chrono::milliseconds _bootstrap_peer_find_timeout{2000};
 
+    // Quorum management timing (Req 11.4)
+    // How often the leader proactively calls assess_quorum.
+    std::chrono::milliseconds _quorum_check_interval{30000};
+    // Consecutive heartbeat failures to a single peer that triggers an immediate
+    // out-of-cycle assess_quorum call.
+    std::size_t _quorum_heartbeat_failure_threshold{3};
+
     // Application failure handling configuration
     application_failure_policy _application_failure_policy{application_failure_policy::halt};
     std::size_t _application_retry_max_attempts{3};
@@ -479,6 +489,12 @@ struct raft_configuration {
     }
     [[nodiscard]] auto bootstrap_peer_find_timeout() const -> std::chrono::milliseconds {
         return _bootstrap_peer_find_timeout;
+    }
+    [[nodiscard]] auto quorum_check_interval() const -> std::chrono::milliseconds {
+        return _quorum_check_interval;
+    }
+    [[nodiscard]] auto quorum_heartbeat_failure_threshold() const -> std::size_t {
+        return _quorum_heartbeat_failure_threshold;
     }
 
     // Accessor methods
@@ -620,6 +636,15 @@ struct raft_configuration {
 
         if (_snapshot_chunk_size > _snapshot_threshold_bytes) {
             errors.emplace_back("snapshot_chunk_size should not exceed snapshot_threshold_bytes");
+        }
+
+        // Quorum management validation (Req 11.5)
+        if (_quorum_check_interval <= std::chrono::milliseconds{0}) {
+            errors.emplace_back("quorum_check_interval must be positive");
+        }
+
+        if (_quorum_heartbeat_failure_threshold < 1) {
+            errors.emplace_back("quorum_heartbeat_failure_threshold must be >= 1");
         }
 
         return errors;
