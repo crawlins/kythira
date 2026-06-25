@@ -13,18 +13,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
 
 if(ENABLE_COVERAGE)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        message(WARNING "Coverage instrumentation is only supported with GCC or Clang "
-                        "(current: ${CMAKE_CXX_COMPILER_ID})")
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "ENABLE_COVERAGE requires Clang for source-based coverage "
+            "(current compiler: ${CMAKE_CXX_COMPILER_ID}). "
+            "Reconfigure with -DCMAKE_CXX_COMPILER=clang++")
     endif()
     if(NOT CMAKE_BUILD_TYPE)
         set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
         message(STATUS "ENABLE_COVERAGE: forcing CMAKE_BUILD_TYPE=Debug")
     endif()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-arcs -ftest-coverage")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --coverage")
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} --coverage")
-    message(STATUS "Coverage instrumentation enabled")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fprofile-instr-generate -fcoverage-mapping")
+    # -latomic: clang with GCC's libstdc++ doesn't provide __atomic_is_lock_free
+    # as a compiler builtin the way GCC does; libatomic supplies it at link time.
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fprofile-instr-generate -latomic")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fprofile-instr-generate")
+    message(STATUS "Source-based coverage enabled "
+                   "(${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
 # Find dependencies
@@ -299,65 +304,79 @@ if(ENABLE_COVERAGE)
         set(PROCESSOR_COUNT 4)
     endif()
 
-    find_program(GCOVR_EXECUTABLE gcovr
-        HINTS "$ENV{HOME}/.local/bin" /usr/local/bin /usr/bin
+    find_program(LLVM_PROFDATA NAMES llvm-profdata-18 llvm-profdata
+        HINTS /usr/bin /usr/local/bin
+    )
+    find_program(LLVM_COV NAMES llvm-cov-18 llvm-cov
+        HINTS /usr/bin /usr/local/bin
     )
 
-    if(NOT GCOVR_EXECUTABLE)
-        message(WARNING "gcovr not found — coverage targets unavailable. "
-                        "Install with: pip3 install gcovr")
+    if(NOT LLVM_PROFDATA OR NOT LLVM_COV)
+        message(WARNING "llvm-profdata/llvm-cov not found — coverage targets unavailable. "
+                        "Install with: apt-get install llvm")
         foreach(_t coverage coverage-html coverage-reset)
             add_custom_target(${_t}
                 COMMAND ${CMAKE_COMMAND} -E echo
-                    "ERROR: gcovr not found. Install with: pip3 install gcovr"
+                    "ERROR: llvm-profdata/llvm-cov not found"
                 COMMAND ${CMAKE_COMMAND} -E false
             )
         endforeach()
     else()
-        set(COVERAGE_REPORT "${CMAKE_BINARY_DIR}/coverage-report")
+        set(COVERAGE_REPORT   "${CMAKE_BINARY_DIR}/coverage-report")
+        set(COVERAGE_PROFDATA "${CMAKE_BINARY_DIR}/merged.profdata")
+        set(LLVM_COVERAGE_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/llvm_coverage.cmake")
 
-        # gcovr exclusion patterns (Python regex applied to source paths)
-        set(GCOVR_EXCLUDES
-            --exclude ".*build-coverage.*"
-            --exclude ".*vcpkg_installed.*"
-            --exclude ".*/usr/.*"
-            --gcov-ignore-parse-errors=negative_hits.warn
+        # Semicolon-separated ignore list passed to cmake/llvm_coverage.cmake.
+        set(_IGNORE_LIST
+            ".*/build-coverage/.*"
+            ".*/vcpkg_installed/.*"
+            ".*/usr/.*"
+            ".*/cmd/.*"
+            ".*/tests/docker_chaos/.*"
+            ".*/examples/.*"
         )
+        string(JOIN ";" _IGNORE_JOINED ${_IGNORE_LIST})
 
         add_custom_target(coverage-reset
             COMMAND ${CMAKE_COMMAND} -E echo "Resetting coverage counters..."
-            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
-            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMAND find "${CMAKE_BINARY_DIR}" -name "*.profraw" -delete
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
             COMMENT "Resetting coverage counters"
         )
 
         add_custom_target(coverage
-            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
-            COMMAND ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
-            COMMAND ${GCOVR_EXECUTABLE}
-                    --root ${CMAKE_SOURCE_DIR}
-                    --object-directory ${CMAKE_BINARY_DIR}
-                    ${GCOVR_EXCLUDES}
-                    --cobertura ${CMAKE_BINARY_DIR}/coverage.xml
-                    --print-summary
-            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-            COMMENT "Running full test suite and collecting coverage"
+            COMMAND find "${CMAKE_BINARY_DIR}" -name "*.profraw" -delete
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/%p-%m.profraw"
+                    ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
+            COMMAND ${CMAKE_COMMAND}
+                    -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                    -DLLVM_PROFDATA=${LLVM_PROFDATA}
+                    -DLLVM_COV=${LLVM_COV}
+                    -DPROFDATA=${COVERAGE_PROFDATA}
+                    -DMODE=report
+                    "-DIGNORE_LIST=${_IGNORE_JOINED}"
+                    -P "${LLVM_COVERAGE_SCRIPT}"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            COMMENT "Source-based coverage report"
         )
 
         add_custom_target(coverage-html
-            COMMAND find ${CMAKE_BINARY_DIR} -name "*.gcda" -delete
-            COMMAND ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
-            COMMAND ${CMAKE_COMMAND} -E make_directory ${COVERAGE_REPORT}
-            COMMAND ${GCOVR_EXECUTABLE}
-                    --root ${CMAKE_SOURCE_DIR}
-                    --object-directory ${CMAKE_BINARY_DIR}
-                    ${GCOVR_EXCLUDES}
-                    --print-summary
-                    --html-details ${COVERAGE_REPORT}/index.html
-            COMMAND ${CMAKE_COMMAND} -E echo
-                    "HTML report: ${COVERAGE_REPORT}/index.html"
-            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-            COMMENT "Running full test suite and generating HTML coverage report"
+            COMMAND find "${CMAKE_BINARY_DIR}" -name "*.profraw" -delete
+            COMMAND ${CMAKE_COMMAND} -E env
+                    "LLVM_PROFILE_FILE=${CMAKE_BINARY_DIR}/%p-%m.profraw"
+                    ${CMAKE_CTEST_COMMAND} -j${PROCESSOR_COUNT} --output-on-failure
+            COMMAND ${CMAKE_COMMAND}
+                    -DBUILD_DIR=${CMAKE_BINARY_DIR}
+                    -DLLVM_PROFDATA=${LLVM_PROFDATA}
+                    -DLLVM_COV=${LLVM_COV}
+                    -DPROFDATA=${COVERAGE_PROFDATA}
+                    -DMODE=html
+                    -DHTML_DIR=${COVERAGE_REPORT}
+                    "-DIGNORE_LIST=${_IGNORE_JOINED}"
+                    -P "${LLVM_COVERAGE_SCRIPT}"
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+            COMMENT "Source-based HTML coverage report"
         )
     endif()
 endif()
