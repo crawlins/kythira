@@ -122,21 +122,55 @@ if [[ "${SKIP_COVERAGE_CHECK:-0}" == "1" ]]; then
     exit 0
 fi
 
-# ── Require gcovr ─────────────────────────────────────────────────────────────
-GCOVR=$(command -v gcovr 2>/dev/null \
-    || command -v "${HOME}/.local/bin/gcovr" 2>/dev/null \
+# ── Require LLVM coverage tools ───────────────────────────────────────────────
+LLVM_PROFDATA=$(command -v llvm-profdata-18 2>/dev/null \
+    || command -v llvm-profdata 2>/dev/null \
     || true)
-if [[ -z "$GCOVR" ]]; then
-    echo "  [coverage] WARNING: gcovr not found — skipping coverage check."
-    echo "             Install with: pip3 install gcovr"
+LLVM_COV=$(command -v llvm-cov-18 2>/dev/null \
+    || command -v llvm-cov 2>/dev/null \
+    || true)
+CLANGXX=$(command -v clang++-18 2>/dev/null \
+    || command -v clang++ 2>/dev/null \
+    || true)
+if [[ -z "$LLVM_PROFDATA" || -z "$LLVM_COV" || -z "$CLANGXX" ]]; then
+    echo "  [coverage] WARNING: llvm-profdata/llvm-cov/clang++ not found — skipping check."
+    echo "             Install with: apt-get install clang llvm"
     exit 0
 fi
+# Derive C compiler from C++ compiler: clang++-18 -> clang-18
+CLANGC="${CLANGXX/++/}"
 
 # ── Configure coverage build if needed ────────────────────────────────────────
+# Force reconfigure if the existing cache was built with a different compiler.
+_NEEDS_CONFIGURE=0
 if [[ ! -f "${COVERAGE_BUILD}/CMakeCache.txt" ]]; then
+    _NEEDS_CONFIGURE=1
+else
+    _CACHED_CXX=$(grep "^CMAKE_CXX_COMPILER:FILEPATH=" \
+                  "${COVERAGE_BUILD}/CMakeCache.txt" 2>/dev/null | cut -d= -f2 || true)
+    if [[ ! "${_CACHED_CXX}" =~ clang ]]; then
+        echo "  [coverage] Reconfiguring build-coverage/ for clang source-based coverage ..."
+        rm -rf "${COVERAGE_BUILD}"
+        _NEEDS_CONFIGURE=1
+    fi
+fi
+
+if [[ "$_NEEDS_CONFIGURE" == "1" ]]; then
     echo "  [coverage] Configuring build-coverage/ ..."
+    # Inherit the vcpkg prefix path from the main build cache if present.
+    _VCPKG_PREFIX=$(grep "^CMAKE_PREFIX_PATH:" \
+                    "${REPO}/build/CMakeCache.txt" 2>/dev/null \
+                    | cut -d= -f2 || true)
+    _PREFIX_ARG=()
+    if [[ -n "$_VCPKG_PREFIX" ]]; then
+        _PREFIX_ARG=(-DCMAKE_PREFIX_PATH="${_VCPKG_PREFIX}")
+    fi
     cmake -S "${REPO}" -B "${COVERAGE_BUILD}" \
-          -DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug \
+          -DENABLE_COVERAGE=ON \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_COMPILER="${CLANGXX}" \
+          -DCMAKE_C_COMPILER="${CLANGC}" \
+          "${_PREFIX_ARG[@]}" \
           -DCMAKE_EXPORT_COMPILE_COMMANDS=OFF \
           > /dev/null 2>&1
 fi
@@ -146,7 +180,7 @@ echo "  [coverage] Building ..."
 cmake --build "${COVERAGE_BUILD}" -j"$(nproc)" > /dev/null 2>&1
 
 # ── Reset stale counters ──────────────────────────────────────────────────────
-find "${COVERAGE_BUILD}" -name "*.gcda" -delete 2>/dev/null || true
+find "${COVERAGE_BUILD}" -name "*.profraw" -delete 2>/dev/null || true
 
 # ── Run test subset (exclude slow/performance/verbose labels) ─────────────────
 echo "  [coverage] Running tests ..."
@@ -156,8 +190,10 @@ else
     CTEST_LABEL_ARGS="-LE slow|performance|verbose|benchmark"
 fi
 
+# Each test process writes its own profraw file keyed by PID + module hash.
 # shellcheck disable=SC2086
-if ! ctest --test-dir "${COVERAGE_BUILD}" \
+if ! LLVM_PROFILE_FILE="${COVERAGE_BUILD}/%p-%m.profraw" \
+     ctest --test-dir "${COVERAGE_BUILD}" \
            -j"$(nproc)" \
            ${CTEST_LABEL_ARGS} \
            --repeat until-pass:3 \
@@ -169,27 +205,50 @@ if ! ctest --test-dir "${COVERAGE_BUILD}" \
     exit 1
 fi
 
-# ── Measure coverage ──────────────────────────────────────────────────────────
+# ── Merge per-process profiles ────────────────────────────────────────────────
 echo "  [coverage] Measuring ..."
-GCOVR_OUT=$(cd "${COVERAGE_BUILD}" && "$GCOVR" \
-    --root "${REPO}" \
-    --object-directory "${COVERAGE_BUILD}" \
-    --exclude ".*build-coverage.*" \
-    --exclude ".*vcpkg_installed.*" \
-    --exclude ".*/usr/.*" \
-    --exclude ".*cmd/.*" \
-    --exclude ".*tests/docker_chaos/.*" \
-    --gcov-ignore-parse-errors=negative_hits.warn \
-    --print-summary 2>&1)
+COVERAGE_PROFDATA="${COVERAGE_BUILD}/merged.profdata"
+mapfile -t _PROFRAW < <(find "${COVERAGE_BUILD}" -name "*.profraw" 2>/dev/null)
+if [[ ${#_PROFRAW[@]} -eq 0 ]]; then
+    echo "  [coverage] WARNING: no .profraw files generated — skipping ratchet."
+    exit 0
+fi
+"$LLVM_PROFDATA" merge -sparse "${_PROFRAW[@]}" -o "${COVERAGE_PROFDATA}" 2>/dev/null
 
-# Extract line coverage percentage (e.g. "lines:  82.5% (1234 out of 1495)")
-NEW_PCT=$(echo "$GCOVR_OUT" \
-    | awk '/^lines:/ { match($2, /^[0-9]+\.[0-9]+/, m); if (m[0] != "") { print m[0]; exit } }' \
-    | head -1)
+# ── Collect test binaries for llvm-cov ────────────────────────────────────────
+mapfile -t _TEST_BINS < <(find "${COVERAGE_BUILD}/tests" -maxdepth 1 \
+                               -executable -type f 2>/dev/null | sort)
+if [[ ${#_TEST_BINS[@]} -eq 0 ]]; then
+    echo "  [coverage] WARNING: no test binaries found — skipping ratchet."
+    exit 0
+fi
+_MAIN_BIN="${_TEST_BINS[0]}"
+_EXTRA_BINS=()
+for _b in "${_TEST_BINS[@]:1}"; do
+    _EXTRA_BINS+=(-object "$_b")
+done
+
+# ── Report line coverage ───────────────────────────────────────────────────────
+# llvm-cov report columns: Filename Regions Missed Cover% Lines Missed LineCover% …
+# $7 on the TOTAL row is the line coverage percentage.
+LLVM_COV_OUT=$("$LLVM_COV" report \
+    --instr-profile="${COVERAGE_PROFDATA}" \
+    "${_MAIN_BIN}" \
+    "${_EXTRA_BINS[@]}" \
+    --ignore-filename-regex='.*/build-coverage/.*' \
+    --ignore-filename-regex='.*/vcpkg_installed/.*' \
+    --ignore-filename-regex='.*/usr/.*' \
+    --ignore-filename-regex='.*/cmd/.*' \
+    --ignore-filename-regex='.*/tests/docker_chaos/.*' \
+    --ignore-filename-regex='.*/examples/.*' \
+    2>&1)
+
+NEW_PCT=$(printf '%s\n' "$LLVM_COV_OUT" \
+    | awk '/^TOTAL/ { gsub(/%/, "", $7); print $7; exit }')
 
 if [[ -z "$NEW_PCT" ]]; then
     echo "  [coverage] WARNING: could not parse coverage percentage — skipping ratchet."
-    echo "$GCOVR_OUT"
+    printf '%s\n' "$LLVM_COV_OUT"
     exit 0
 fi
 
