@@ -176,6 +176,10 @@ concept quorum_manager =
         { mgr.decommission_node(node_id) } -> std::same_as<kythira::Future<void>>;
 
         { mgr.topology() } -> std::same_as<desired_topology<GroupId>>;
+
+        {
+            mgr.maintain_quorum(cluster)
+        } -> std::same_as<kythira::Future<quorum_health<NodeId, GroupId>>>;
     };
 
 // ============================================================================
@@ -250,6 +254,11 @@ public:
     }
 
     [[nodiscard]] auto topology() const -> kythira::desired_topology<GroupId> { return _topology; }
+
+    auto maintain_quorum(const std::vector<node_placement<NodeId, GroupId>>& cluster)
+        -> kythira::Future<quorum_health<NodeId, GroupId>> {
+        return assess_quorum(cluster);
+    }
 
 private:
     kythira::desired_topology<GroupId> _topology;

@@ -53,6 +53,19 @@
     {
       "name": "poco",
       "features": ["net"]
+    },
+    {
+      "name": "aws-sdk-cpp",
+      "features": [
+        "autoscaling",
+        "ec2",
+        "iam",
+        "s3",
+        "sts"
+      ]
+    },
+    {
+      "name": "libssh2"
     }
   ]
 }

@@ -20,8 +20,9 @@
 
 #include <chrono>
 #include <cstdint>
+#include <iostream>
+#include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -265,6 +266,64 @@ public:
         return desired_topology<std::string>{
             .groups = {{.group_id = _cfg.group_id, .target_count = _cfg.target_count}},
         };
+    }
+
+    // ── maintain_quorum (Req 19.1) ────────────────────────────────────────────
+
+    auto maintain_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
+        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        quorum_health<NodeId, std::string> health;
+        try {
+            health = assess_quorum(cluster).get();
+        } catch (...) {
+            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
+                std::current_exception());
+        }
+
+        std::map<std::string, NodeId> last_replaced;
+        for (const auto& nid : health.unreachable_nodes) {
+            std::string grp = _cfg.group_id;
+            for (const auto& np : cluster) {
+                if (np.node_id == nid) {
+                    grp = np.group_id;
+                    break;
+                }
+            }
+            try {
+                decommission_node(nid).get();
+                last_replaced[grp] = nid;
+            } catch (const std::exception& ex) {
+                std::cerr << "[docker_quorum_manager::maintain_quorum] decommission failed: "
+                          << ex.what() << "\n";
+            }
+        }
+
+        auto topo = topology();
+        for (const auto& gt : topo.groups) {
+            std::size_t live = 0;
+            for (const auto& gh : health.groups) {
+                if (gh.group_id == gt.group_id) {
+                    live = gh.live_count;
+                    break;
+                }
+            }
+            auto deficit =
+                static_cast<std::ptrdiff_t>(gt.target_count) - static_cast<std::ptrdiff_t>(live);
+            for (std::ptrdiff_t i = 0; i < deficit; ++i) {
+                std::optional<NodeId> hint;
+                if (auto it = last_replaced.find(gt.group_id); it != last_replaced.end()) {
+                    hint = it->second;
+                }
+                try {
+                    provision_node(gt.group_id, hint).get();
+                } catch (const std::exception& ex) {
+                    std::cerr << "[docker_quorum_manager::maintain_quorum] provision failed: "
+                              << ex.what() << "\n";
+                }
+            }
+        }
+
+        return FutureFactory::makeFuture(std::move(health));
     }
 
 private:

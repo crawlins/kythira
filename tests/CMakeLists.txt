@@ -1684,6 +1684,78 @@ else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery_unit_test will not be built")
 endif()
 
+# ── AWS quorum manager tests (AWS SDK required) ───────────────────────────────
+
+if(AWSSDK_FOUND)
+
+# Unit tests — no live AWS required; fault-injection tests gated by FIU_ENABLE.
+add_executable(aws_quorum_manager_unit_test aws_quorum_manager_unit_test.cpp)
+target_link_libraries(aws_quorum_manager_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_quorum_manager_unit_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(aws_quorum_manager_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(aws_quorum_manager_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(aws_quorum_manager_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(aws_quorum_manager_unit_test PRIVATE cxx_std_23)
+add_test(NAME aws_quorum_manager_unit_test COMMAND aws_quorum_manager_unit_test)
+set_tests_properties(aws_quorum_manager_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;quorum;aws"
+)
+
+# LocalStack integration tests — requires LocalStack running on localhost:4566.
+add_executable(aws_quorum_manager_localstack_test aws_quorum_manager_localstack_test.cpp)
+target_compile_definitions(aws_quorum_manager_localstack_test PRIVATE
+    KYTHIRA_AWS_LOCALSTACK_TESTS
+)
+target_link_libraries(aws_quorum_manager_localstack_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_quorum_manager_localstack_test PRIVATE Folly::folly)
+endif()
+target_compile_features(aws_quorum_manager_localstack_test PRIVATE cxx_std_23)
+add_test(NAME aws_quorum_manager_localstack_test COMMAND aws_quorum_manager_localstack_test)
+set_tests_properties(aws_quorum_manager_localstack_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;quorum;aws;localstack;slow"
+)
+
+# Real-EC2 integration tests — requires AWS credentials + env vars.
+if(LIBSSH2_FOUND)
+add_executable(aws_quorum_manager_real_ec2_test aws_quorum_manager_real_ec2_test.cpp)
+target_compile_definitions(aws_quorum_manager_real_ec2_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+    LIBSSH2_FOUND
+)
+target_link_libraries(aws_quorum_manager_real_ec2_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    ${LIBSSH2_LIBRARIES}
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_quorum_manager_real_ec2_test PRIVATE Folly::folly)
+endif()
+target_include_directories(aws_quorum_manager_real_ec2_test PRIVATE
+    ${LIBSSH2_INCLUDE_DIRS}
+)
+target_compile_features(aws_quorum_manager_real_ec2_test PRIVATE cxx_std_23)
+add_test(NAME aws_quorum_manager_real_ec2_test COMMAND aws_quorum_manager_real_ec2_test)
+set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
+    TIMEOUT 600
+    LABELS "integration;raft;quorum;aws;real-ec2;slow"
+)
+endif()  # LIBSSH2_FOUND
+
+endif()  # AWSSDK_FOUND
+
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
 add_subdirectory(chaos)
 

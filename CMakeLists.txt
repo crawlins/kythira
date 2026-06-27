@@ -209,6 +209,36 @@ else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery disabled")
 endif()
 
+# ── AWS SDK (aws_ec2_quorum_manager, aws_asg_quorum_manager) ──────────────────
+find_package(AWSSDK QUIET COMPONENTS core ec2 autoscaling iam s3 sts)
+if(AWSSDK_FOUND)
+    message(STATUS "AWS SDK found: ${AWSSDK_VERSION}")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AWS_SDK)
+    target_link_libraries(network_simulator INTERFACE ${AWSSDK_LINK_LIBRARIES})
+else()
+    message(STATUS "AWS SDK not found — aws_ec2_quorum_manager and aws_asg_quorum_manager disabled")
+endif()
+
+# ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────
+# Prefer the CMake config package (vcpkg, conan) over pkg-config so that we get
+# a proper imported target rather than a bare -lssh2 that the linker can't resolve.
+find_package(libssh2 QUIET)
+if(libssh2_FOUND)
+    set(LIBSSH2_FOUND TRUE)
+    set(LIBSSH2_LIBRARIES libssh2::libssh2)
+    set(LIBSSH2_INCLUDE_DIRS "")
+else()
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBSSH2 QUIET libssh2)
+    endif()
+endif()
+if(LIBSSH2_FOUND)
+    message(STATUS "libssh2 found — real-EC2 SSH tests enabled")
+else()
+    message(STATUS "libssh2 not found — real-EC2 SSH tests disabled")
+endif()
+
 target_compile_features(network_simulator INTERFACE cxx_std_23)
 
 # Debug executable - commented out due to missing source files
