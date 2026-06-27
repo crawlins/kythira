@@ -251,3 +251,45 @@ jobs:
           path: |
             coverage.xml
             coverage-html/
+
+  # ── API documentation → GitHub Pages ───────────────────────────────────────
+  # Runs only on pushes to main (not on pull-request builds).
+  # Requires GitHub Pages to be enabled in the repository settings with the
+  # source set to "GitHub Actions".
+  docs:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+      pages: write       # upload Pages artifact
+      id-token: write    # request OIDC token for deployment
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends doxygen
+
+      - name: Generate documentation
+        run: doxygen Doxyfile
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: doxygen-output/html
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

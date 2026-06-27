@@ -1,5 +1,8 @@
 #pragma once
 
+/// @file persistence.hpp
+/// @brief Persistence-engine concept and an in-memory implementation for testing.
+
 #include "fault_injection.hpp"
 #include "types.hpp"
 #include <optional>
@@ -8,45 +11,67 @@
 
 namespace kythira {
 
-// Persistence engine concept
-// Defines the interface for durable storage of Raft state
+/// @brief Concept for a durable Raft-state store.
+///
+/// The persistence engine is the only component allowed to survive a process
+/// restart.  Implementations must flush `save_current_term` and `save_voted_for`
+/// to stable storage synchronously before returning, as required by the Raft paper.
+///
+/// @tparam P        Concrete persistence engine type.
+/// @tparam NodeId   Must satisfy `node_id`.
+/// @tparam TermId   Must satisfy `term_id`.
+/// @tparam LogIndex Must satisfy `log_index`.
+/// @tparam LogEntry Must satisfy `log_entry_type<TermId, LogIndex>`.
+/// @tparam Snapshot Must satisfy `snapshot_type<NodeId, TermId, LogIndex>`.
 template<typename P, typename NodeId, typename TermId, typename LogIndex, typename LogEntry,
          typename Snapshot>
 concept persistence_engine =
     requires(P engine, const TermId& term, const NodeId& node, const LogEntry& entry,
              const LogIndex& index, const Snapshot& snap) {
-        // Type requirements
         requires node_id<NodeId>;
         requires term_id<TermId>;
         requires log_index<LogIndex>;
         requires log_entry_type<LogEntry, TermId, LogIndex>;
         requires snapshot_type<Snapshot, NodeId, TermId, LogIndex>;
 
-        // Persistent state operations - currentTerm
+        /// Durably record the current term.
         { engine.save_current_term(term) } -> std::same_as<void>;
+        /// Restore the current term after a restart.
         { engine.load_current_term() } -> std::same_as<TermId>;
 
-        // Persistent state operations - votedFor
+        /// Durably record the node voted for in this term.
         { engine.save_voted_for(node) } -> std::same_as<void>;
+        /// Restore the voted-for record after a restart.
         { engine.load_voted_for() } -> std::same_as<std::optional<NodeId>>;
 
-        // Log operations - append and retrieve
+        /// Append a single log entry.
         { engine.append_log_entry(entry) } -> std::same_as<void>;
+        /// Retrieve the entry at `index`, or `nullopt` if not present.
         { engine.get_log_entry(index) } -> std::same_as<std::optional<LogEntry>>;
+        /// Retrieve all entries in the inclusive range `[start, end]`.
         { engine.get_log_entries(index, index) } -> std::same_as<std::vector<LogEntry>>;
+        /// Return the index of the last stored entry (0 if the log is empty).
         { engine.get_last_log_index() } -> std::same_as<LogIndex>;
 
-        // Log operations - truncation
+        /// Remove all entries with index ≥ `index` (used on leader conflict resolution).
         { engine.truncate_log(index) } -> std::same_as<void>;
 
-        // Snapshot operations
+        /// Save a snapshot, replacing any previously stored snapshot.
         { engine.save_snapshot(snap) } -> std::same_as<void>;
+        /// Return the most recently saved snapshot, or `nullopt` if none exists.
         { engine.load_snapshot() } -> std::same_as<std::optional<Snapshot>>;
+        /// Discard all log entries with index < `index` (log compaction after snapshotting).
         { engine.delete_log_entries_before(index) } -> std::same_as<void>;
     };
 
-// In-memory persistence engine for testing and development
-// Stores all Raft state in memory without durability guarantees
+/// @brief In-memory persistence engine for testing and single-process development.
+///
+/// All state is lost when the process terminates.  Fault-injection hooks
+/// (`fiu_do_on`) allow chaos tests to simulate individual storage failures.
+///
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
          typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
@@ -55,7 +80,6 @@ public:
     using log_entry_t = log_entry<TermId, LogIndex>;
     using snapshot_t = snapshot<NodeId, TermId, LogIndex>;
 
-    // Persistent state operations - currentTerm
     auto save_current_term(TermId term) -> void {
         fiu_do_on("raft/persistence/save_current_term",
                   throw std::runtime_error("chaos: save_current_term"););
@@ -64,7 +88,6 @@ public:
 
     auto load_current_term() -> TermId { return _current_term; }
 
-    // Persistent state operations - votedFor
     auto save_voted_for(NodeId node) -> void {
         fiu_do_on("raft/persistence/save_voted_for",
                   throw std::runtime_error("chaos: save_voted_for"););
@@ -73,7 +96,6 @@ public:
 
     auto load_voted_for() -> std::optional<NodeId> { return _voted_for; }
 
-    // Log operations - append and retrieve
     auto append_log_entry(const log_entry_t& entry) -> void {
         fiu_do_on("raft/persistence/append_log_entry",
                   throw std::runtime_error("chaos: append_log_entry"););
@@ -112,7 +134,6 @@ public:
         return max_index;
     }
 
-    // Log operations - truncation
     auto truncate_log(LogIndex index) -> void {
         fiu_do_on("raft/persistence/truncate_log",
                   throw std::runtime_error("chaos: truncate_log"););
@@ -126,7 +147,6 @@ public:
         }
     }
 
-    // Snapshot operations
     auto save_snapshot(const snapshot_t& snap) -> void {
         fiu_do_on("raft/persistence/save_snapshot",
                   throw std::runtime_error("chaos: save_snapshot"););

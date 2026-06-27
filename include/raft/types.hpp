@@ -1,5 +1,8 @@
 #pragma once
 
+/// @file types.hpp
+/// @brief Core types, concepts, and default implementations for the Kythira Raft library.
+
 #include <concepts/future.hpp>
 #include <raft/metrics.hpp>
 #include <raft/peer_discovery.hpp>
@@ -22,15 +25,15 @@ template<typename T> class Try;
 
 namespace kythira {
 
-// Node identifier concept - can be any unsigned integer or string
+/// @brief Concept for a node identifier: any unsigned integer or `std::string`.
 template<typename T>
 concept node_id = std::unsigned_integral<T> || std::same_as<T, std::string>;
 
-// Term number concept (monotonically increasing unsigned integer)
+/// @brief Concept for a term number: a monotonically increasing unsigned integer.
 template<typename T>
 concept term_id = std::unsigned_integral<T>;
 
-// Log index concept (1-based, monotonically increasing unsigned integer)
+/// @brief Concept for a log index: a 1-based, monotonically increasing unsigned integer.
 template<typename T>
 concept log_index = std::unsigned_integral<T>;
 
@@ -39,14 +42,14 @@ template<typename LogIndex>
 requires log_index<LogIndex>
 class test_key_value_state_machine;
 
-// Server states
+/// @brief Consensus role of a Raft server.
 enum class server_state : std::uint8_t {
-    follower,
-    candidate,
-    leader
+    follower,   ///< Passive replication target; converts to candidate on election timeout.
+    candidate,  ///< Soliciting votes to become leader.
+    leader,     ///< Drives replication; sends periodic heartbeats.
 };
 
-// Output operator for server_state (for testing and logging)
+/// @brief Stream insertion operator for `server_state`.
 inline auto operator<<(std::ostream& os, server_state state) -> std::ostream& {
     switch (state) {
         case server_state::follower:
@@ -60,13 +63,16 @@ inline auto operator<<(std::ostream& os, server_state state) -> std::ostream& {
     }
 }
 
-// Log entry type discriminant: normal state-machine entries vs. configuration change entries
+/// @brief Discriminant distinguishing normal state-machine entries from configuration entries.
 enum class entry_type : std::uint8_t {
-    normal = 0,
-    configuration = 1
+    normal = 0,        ///< Application command to be applied to the state machine.
+    configuration = 1  ///< Joint-consensus or final cluster-configuration record.
 };
 
-// Log entry concept
+/// @brief Concept for a log entry: carries term, index, command bytes, and entry type.
+/// @tparam T        Concrete log-entry type.
+/// @tparam TermId   Must satisfy `term_id`.
+/// @tparam LogIndex Must satisfy `log_index`.
 template<typename T, typename TermId, typename LogIndex>
 concept log_entry_type = requires(const T& entry) {
     requires term_id<TermId>;
@@ -77,7 +83,9 @@ concept log_entry_type = requires(const T& entry) {
     { entry.type() } -> std::same_as<entry_type>;
 };
 
-// Default log entry implementation (defined before use in append_entries_request)
+/// @brief Default log-entry implementation.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
 requires term_id<TermId> && log_index<LogIndex>
 struct log_entry {
@@ -92,7 +100,9 @@ struct log_entry {
     [[nodiscard]] auto type() const -> entry_type { return _type; }
 };
 
-// Cluster configuration concept
+/// @brief Concept for a cluster configuration: a set of node IDs optionally in joint consensus.
+/// @tparam T      Concrete configuration type.
+/// @tparam NodeId Must satisfy `node_id`.
 template<typename T, typename NodeId>
 concept cluster_configuration_type = requires(const T& config) {
     requires node_id<NodeId>;
@@ -101,7 +111,13 @@ concept cluster_configuration_type = requires(const T& config) {
     { config.old_nodes() } -> std::same_as<const std::optional<std::vector<NodeId>>&>;
 };
 
-// Default cluster configuration implementation
+/// @brief Default cluster-configuration implementation.
+///
+/// During a membership change, `_is_joint_consensus` is `true` and `_old_nodes`
+/// holds the previous node set so that a majority of both old and new configurations
+/// is required for a quorum.
+///
+/// @tparam NodeId Node identifier type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t>
 requires node_id<NodeId>
 struct cluster_configuration {
@@ -116,7 +132,11 @@ struct cluster_configuration {
     }
 };
 
-// Snapshot concept
+/// @brief Concept for a Raft snapshot: captures state-machine state and the log prefix it replaces.
+/// @tparam T        Concrete snapshot type.
+/// @tparam NodeId   Must satisfy `node_id`.
+/// @tparam TermId   Must satisfy `term_id`.
+/// @tparam LogIndex Must satisfy `log_index`.
 template<typename T, typename NodeId, typename TermId, typename LogIndex>
 concept snapshot_type = requires(const T& snap) {
     requires node_id<NodeId>;
@@ -128,33 +148,32 @@ concept snapshot_type = requires(const T& snap) {
     { snap.state_machine_state() } -> std::same_as<const std::vector<std::byte>&>;
 };
 
-// State machine concept
-// Defines the interface for application-specific state machines that execute committed log entries
-// Requirements: 1.1, 7.4, 10.1-10.4, 15.2, 19.1-19.5, 31.1-31.2
+/// @brief Concept for an application state machine.
+///
+/// Implementations must be deterministic: given the same sequence of commands
+/// starting from the same snapshot, every node must produce identical state.
+///
+/// @tparam SM       Concrete state machine type.
+/// @tparam LogIndex Must satisfy `log_index`.
 template<typename SM, typename LogIndex>
 concept state_machine = requires(SM& sm, const SM& const_sm, const std::vector<std::byte>& command,
                                  const std::vector<std::byte>& snapshot_data, LogIndex index) {
     requires log_index<LogIndex>;
 
-    // Apply a committed log entry to the state machine
-    // Returns the result of applying the command (may be empty for some commands)
-    // May throw exceptions if the command cannot be applied
-    // Requirements: 7.4, 15.2, 19.1-19.5
+    /// Apply a committed log entry. Returns the result bytes (may be empty).
     { sm.apply(command, index) } -> std::same_as<std::vector<std::byte>>;
 
-    // Get the current state of the state machine for snapshot creation
-    // Returns a serialized representation of the entire state machine state
-    // Requirements: 10.1-10.4, 31.1-31.2
+    /// Serialize the full state machine state for snapshotting.
     { const_sm.get_state() } -> std::same_as<std::vector<std::byte>>;
 
-    // Restore the state machine from a snapshot
-    // Replaces the entire state machine state with the provided snapshot data
-    // May throw exceptions if the snapshot data is invalid or corrupted
-    // Requirements: 10.1-10.4, 31.1-31.2
+    /// Replace the current state with a previously serialized snapshot.
     { sm.restore_from_snapshot(snapshot_data, index) } -> std::same_as<void>;
 };
 
-// Default snapshot implementation
+/// @brief Default snapshot implementation.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
          typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
@@ -174,7 +193,7 @@ struct snapshot {
     }
 };
 
-// RequestVote RPC Request concept
+/// @brief Concept for a RequestVote RPC request message.
 template<typename T, typename NodeId, typename TermId, typename LogIndex>
 concept request_vote_request_type = requires(const T& req) {
     requires node_id<NodeId>;
@@ -186,7 +205,7 @@ concept request_vote_request_type = requires(const T& req) {
     { req.last_log_term() } -> std::same_as<TermId>;
 };
 
-// RequestVote RPC Response concept
+/// @brief Concept for a RequestVote RPC response message.
 template<typename T, typename TermId>
 concept request_vote_response_type = requires(const T& resp) {
     requires term_id<TermId>;
@@ -194,7 +213,7 @@ concept request_vote_response_type = requires(const T& resp) {
     { resp.vote_granted() } -> std::convertible_to<bool>;
 };
 
-// AppendEntries RPC Request concept
+/// @brief Concept for an AppendEntries RPC request message.
 template<typename T, typename NodeId, typename TermId, typename LogIndex, typename LogEntry>
 concept append_entries_request_type = requires(const T& req) {
     requires node_id<NodeId>;
@@ -209,7 +228,7 @@ concept append_entries_request_type = requires(const T& req) {
     { req.leader_commit() } -> std::same_as<LogIndex>;
 };
 
-// AppendEntries RPC Response concept
+/// @brief Concept for an AppendEntries RPC response message.
 template<typename T, typename TermId, typename LogIndex>
 concept append_entries_response_type = requires(const T& resp) {
     requires term_id<TermId>;
@@ -220,7 +239,7 @@ concept append_entries_response_type = requires(const T& resp) {
     { resp.conflict_term() } -> std::same_as<std::optional<TermId>>;
 };
 
-// InstallSnapshot RPC Request concept
+/// @brief Concept for an InstallSnapshot RPC request message.
 template<typename T, typename NodeId, typename TermId, typename LogIndex>
 concept install_snapshot_request_type = requires(const T& req) {
     requires node_id<NodeId>;
@@ -235,14 +254,17 @@ concept install_snapshot_request_type = requires(const T& req) {
     { req.done() } -> std::convertible_to<bool>;
 };
 
-// InstallSnapshot RPC Response concept
+/// @brief Concept for an InstallSnapshot RPC response message.
 template<typename T, typename TermId>
 concept install_snapshot_response_type = requires(const T& resp) {
     requires term_id<TermId>;
     { resp.term() } -> std::same_as<TermId>;
 };
 
-// Default RequestVote RPC Request implementation
+/// @brief Default RequestVote request.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
          typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
@@ -258,7 +280,8 @@ struct request_vote_request {
     [[nodiscard]] auto last_log_term() const -> TermId { return _last_log_term; }
 };
 
-// Default RequestVote RPC Response implementation
+/// @brief Default RequestVote response.
+/// @tparam TermId Term number type; defaults to `uint64_t`.
 template<typename TermId = std::uint64_t>
 requires term_id<TermId>
 struct request_vote_response {
@@ -269,7 +292,11 @@ struct request_vote_response {
     [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
 };
 
-// Default AppendEntries RPC Request implementation
+/// @brief Default AppendEntries request.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
+/// @tparam LogEntry Log-entry type; defaults to `log_entry<TermId, LogIndex>`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
          typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex> &&
@@ -290,7 +317,9 @@ struct append_entries_request {
     [[nodiscard]] auto leader_commit() const -> LogIndex { return _leader_commit; }
 };
 
-// Default AppendEntries RPC Response implementation
+/// @brief Default AppendEntries response.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t>
 requires term_id<TermId> && log_index<LogIndex>
 struct append_entries_response {
@@ -305,7 +334,10 @@ struct append_entries_response {
     [[nodiscard]] auto conflict_term() const -> std::optional<TermId> { return _conflict_term; }
 };
 
-// Default InstallSnapshot RPC Request implementation
+/// @brief Default InstallSnapshot request.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
          typename LogIndex = std::uint64_t>
 requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
@@ -327,7 +359,8 @@ struct install_snapshot_request {
     [[nodiscard]] auto done() const -> bool { return _done; }
 };
 
-// Default InstallSnapshot RPC Response implementation
+/// @brief Default InstallSnapshot response.
+/// @tparam TermId Term number type; defaults to `uint64_t`.
 template<typename TermId = std::uint64_t>
 requires term_id<TermId>
 struct install_snapshot_response {
@@ -336,30 +369,29 @@ struct install_snapshot_response {
     [[nodiscard]] auto term() const -> TermId { return _term; }
 };
 
-// Serialized data concept - must be a range of std::byte
+/// @brief Concept constraining the serialized-data container to a `std::byte` range.
 template<typename T>
 concept serialized_data =
     std::ranges::range<T> && std::same_as<std::ranges::range_value_t<T>, std::byte>;
 
-// RPC serializer concept - simplified to avoid circular dependency issues
+/// @brief Concept for an RPC serializer.
+/// @tparam S    Serializer type.
+/// @tparam Data Must satisfy `serialized_data`.
 template<typename S, typename Data>
 concept rpc_serializer = requires {
-    // Data must satisfy serialized_data concept
     requires serialized_data<Data>;
-
-    // The serializer must be a valid type
     typename S;
 };
 
-// Retry policy configuration for different RPC operations
+/// @brief Per-operation retry policy with exponential back-off and jitter.
 struct retry_policy_config {
-    std::chrono::milliseconds initial_delay{100};
-    std::chrono::milliseconds max_delay{5000};
-    double backoff_multiplier{2.0};
-    double jitter_factor{0.1};
-    std::size_t max_attempts{5};
+    std::chrono::milliseconds initial_delay{100};  ///< Delay before the first retry.
+    std::chrono::milliseconds max_delay{5000};     ///< Maximum delay between retries.
+    double backoff_multiplier{2.0};                ///< Multiplier applied after each attempt.
+    double jitter_factor{0.1};    ///< Fraction of the delay added as random jitter.
+    std::size_t max_attempts{5};  ///< Total number of attempts (including the first).
 
-    // Validation method
+    /// @brief Returns `true` when all fields are in valid ranges.
     [[nodiscard]] auto is_valid() const -> bool {
         return initial_delay > std::chrono::milliseconds{0} && max_delay >= initial_delay &&
                backoff_multiplier > 1.0 && jitter_factor >= 0.0 && jitter_factor <= 1.0 &&
@@ -367,21 +399,25 @@ struct retry_policy_config {
     }
 };
 
-// Adaptive timeout configuration
+/// @brief Configuration for the adaptive RPC timeout mechanism.
 struct adaptive_timeout_config {
-    bool enabled{false};
-    std::chrono::milliseconds min_timeout{50};
-    std::chrono::milliseconds max_timeout{10000};
-    double adaptation_factor{1.2};
-    std::size_t sample_window_size{10};
+    bool enabled{false};                           ///< Enable adaptive timeout adjustment.
+    std::chrono::milliseconds min_timeout{50};     ///< Floor for the adaptive timeout.
+    std::chrono::milliseconds max_timeout{10000};  ///< Ceiling for the adaptive timeout.
+    double adaptation_factor{1.2};                 ///< Growth factor when timeout is exceeded.
+    std::size_t sample_window_size{10};            ///< Number of samples used for adaptation.
 
+    /// @brief Returns `true` when all fields are in valid ranges.
     [[nodiscard]] auto is_valid() const -> bool {
         return min_timeout > std::chrono::milliseconds{0} && max_timeout >= min_timeout &&
                adaptation_factor > 1.0 && sample_window_size > 0;
     }
 };
 
-// Raft configuration concept
+/// @brief Concept for a Raft node configuration object.
+///
+/// Provides all timing, retry, snapshot, and quorum-management parameters
+/// consumed by `node<Types>`.
 template<typename T>
 concept raft_configuration_type = requires(const T& config) {
     { config.election_timeout_min() } -> std::same_as<std::chrono::milliseconds>;
@@ -401,37 +437,36 @@ concept raft_configuration_type = requires(const T& config) {
     { config.get_adaptive_timeout_config() } -> std::same_as<const adaptive_timeout_config&>;
     { config.validate() } -> std::same_as<bool>;
     { config.get_validation_errors() } -> std::same_as<std::vector<std::string>>;
-    // Quorum management (Req 11.4)
     { config.quorum_check_interval() } -> std::same_as<std::chrono::milliseconds>;
     { config.quorum_heartbeat_failure_threshold() } -> std::same_as<std::size_t>;
 };
 
-// Application failure handling policy
+/// @brief Policy applied when the state machine's `apply()` call throws.
 enum class application_failure_policy : std::uint8_t {
-    halt,   // Stop applying further entries on failure (safe default)
-    retry,  // Retry application with exponential backoff
-    skip    // Skip failed entry and continue (dangerous - can lead to inconsistency)
+    halt,   ///< Stop applying further entries (safe default).
+    retry,  ///< Retry application with exponential back-off.
+    skip    ///< Skip the failed entry and continue — risks inconsistency.
 };
 
-// Default raft configuration implementation
+/// @brief Default Raft node configuration with conservative production-ready defaults.
 struct raft_configuration {
-    // Basic timing configuration
-    std::chrono::milliseconds _election_timeout_min{150};
-    std::chrono::milliseconds _election_timeout_max{300};
-    std::chrono::milliseconds _heartbeat_interval{50};
-    std::chrono::milliseconds _rpc_timeout{100};
+    // ── Timing ────────────────────────────────────────────────────────────────
+    std::chrono::milliseconds _election_timeout_min{150};  ///< Minimum randomised election timeout.
+    std::chrono::milliseconds _election_timeout_max{300};  ///< Maximum randomised election timeout.
+    std::chrono::milliseconds _heartbeat_interval{50};     ///< Leader heartbeat cadence.
+    std::chrono::milliseconds _rpc_timeout{100};           ///< Default RPC deadline.
 
-    // RPC-specific timeouts
-    std::chrono::milliseconds _append_entries_timeout{5000};
-    std::chrono::milliseconds _request_vote_timeout{2000};
-    std::chrono::milliseconds _install_snapshot_timeout{30000};
+    // ── Per-RPC timeouts ──────────────────────────────────────────────────────
+    std::chrono::milliseconds _append_entries_timeout{5000};     ///< AppendEntries RPC deadline.
+    std::chrono::milliseconds _request_vote_timeout{2000};       ///< RequestVote RPC deadline.
+    std::chrono::milliseconds _install_snapshot_timeout{30000};  ///< InstallSnapshot RPC deadline.
 
-    // Log and snapshot configuration
-    std::size_t _max_entries_per_append{100};
-    std::size_t _snapshot_threshold_bytes{10'000'000};
-    std::size_t _snapshot_chunk_size{1'000'000};
+    // ── Log and snapshot ──────────────────────────────────────────────────────
+    std::size_t _max_entries_per_append{100};  ///< Maximum entries in one AppendEntries RPC.
+    std::size_t _snapshot_threshold_bytes{10'000'000};  ///< Log size that triggers snapshotting.
+    std::size_t _snapshot_chunk_size{1'000'000};  ///< Chunk size for InstallSnapshot transfers.
 
-    // Retry policies for different RPC operations
+    // ── Retry policies ────────────────────────────────────────────────────────
     retry_policy_config _heartbeat_retry_policy{.initial_delay = std::chrono::milliseconds{50},
                                                 .max_delay = std::chrono::milliseconds{1000},
                                                 .backoff_multiplier = 1.5,
@@ -458,7 +493,6 @@ struct raft_configuration {
         .jitter_factor = 0.1,
         .max_attempts = 10};
 
-    // Adaptive timeout configuration
     adaptive_timeout_config _adaptive_timeout_config{
         .enabled = false,
         .min_timeout = std::chrono::milliseconds{50},
@@ -466,18 +500,19 @@ struct raft_configuration {
         .adaptation_factor = 1.2,
         .sample_window_size = 10};
 
-    // Bootstrap timing
-    std::chrono::milliseconds _bootstrap_retry_interval{5000};
-    std::chrono::milliseconds _bootstrap_peer_find_timeout{2000};
+    // ── Bootstrap timing ──────────────────────────────────────────────────────
+    std::chrono::milliseconds _bootstrap_retry_interval{5000};  ///< Peer-find retry cadence.
+    std::chrono::milliseconds _bootstrap_peer_find_timeout{
+        2000};  ///< Per-attempt peer-find deadline.
 
-    // Quorum management timing (Req 11.4)
-    // How often the leader proactively calls assess_quorum.
+    // ── Quorum management ─────────────────────────────────────────────────────
+    /// How often the leader proactively calls `assess_quorum`.
     std::chrono::milliseconds _quorum_check_interval{30000};
-    // Consecutive heartbeat failures to a single peer that triggers an immediate
-    // out-of-cycle assess_quorum call.
+    /// Consecutive heartbeat failures to a single peer that triggers an immediate
+    /// out-of-cycle `assess_quorum` call.
     std::size_t _quorum_heartbeat_failure_threshold{3};
 
-    // Application failure handling configuration
+    // ── Application-failure policy ────────────────────────────────────────────
     application_failure_policy _application_failure_policy{application_failure_policy::halt};
     std::size_t _application_retry_max_attempts{3};
     std::chrono::milliseconds _application_retry_initial_delay{100};
@@ -497,7 +532,6 @@ struct raft_configuration {
         return _quorum_heartbeat_failure_threshold;
     }
 
-    // Accessor methods
     [[nodiscard]] auto election_timeout_min() const -> std::chrono::milliseconds {
         return _election_timeout_min;
     }
@@ -555,13 +589,13 @@ struct raft_configuration {
         return _application_retry_backoff_multiplier;
     }
 
-    // Configuration validation
+    /// @brief Returns `true` iff `get_validation_errors()` is empty.
     [[nodiscard]] auto validate() const -> bool { return get_validation_errors().empty(); }
 
+    /// @brief Returns a list of human-readable configuration constraint violations.
     [[nodiscard]] auto get_validation_errors() const -> std::vector<std::string> {
         std::vector<std::string> errors;
 
-        // Validate basic timing constraints
         if (_election_timeout_min <= std::chrono::milliseconds{0}) {
             errors.emplace_back("election_timeout_min must be positive");
         }
@@ -574,15 +608,12 @@ struct raft_configuration {
             errors.emplace_back("heartbeat_interval must be positive");
         }
 
-        // Validate heartbeat interval compatibility with election timeout
-        // Heartbeat interval should be significantly smaller than election timeout
         if (_heartbeat_interval > _election_timeout_min / 3) {
             errors.emplace_back(
                 "heartbeat_interval should be less than or equal to election_timeout_min/3 to "
                 "prevent false timeouts");
         }
 
-        // Validate RPC timeouts
         if (_rpc_timeout <= std::chrono::milliseconds{0}) {
             errors.emplace_back("rpc_timeout must be positive");
         }
@@ -599,7 +630,6 @@ struct raft_configuration {
             errors.emplace_back("install_snapshot_timeout must be positive");
         }
 
-        // Validate retry policies
         if (!_heartbeat_retry_policy.is_valid()) {
             errors.emplace_back("heartbeat_retry_policy is invalid");
         }
@@ -616,12 +646,10 @@ struct raft_configuration {
             errors.emplace_back("install_snapshot_retry_policy is invalid");
         }
 
-        // Validate adaptive timeout configuration
         if (!_adaptive_timeout_config.is_valid()) {
             errors.emplace_back("adaptive_timeout_config is invalid");
         }
 
-        // Validate size parameters
         if (_max_entries_per_append == 0) {
             errors.emplace_back("max_entries_per_append must be positive");
         }
@@ -638,7 +666,6 @@ struct raft_configuration {
             errors.emplace_back("snapshot_chunk_size should not exceed snapshot_threshold_bytes");
         }
 
-        // Quorum management validation (Req 11.5)
         if (_quorum_check_interval <= std::chrono::milliseconds{0}) {
             errors.emplace_back("quorum_check_interval must be positive");
         }
@@ -652,23 +679,29 @@ struct raft_configuration {
 };
 
 // ============================================================================
-// Bootstrap Message Types
+// Bootstrap message types
 // ============================================================================
 
-// ClusterJoin RPC — sent from a fresh node to an existing cluster node
+/// @brief Sent by a new node to an existing cluster member to request admission.
+/// @tparam NodeId  Joining node's identifier type; defaults to `uint64_t`.
+/// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 struct cluster_join_request {
-    NodeId node_id;
-    Address contact_address;
+    NodeId node_id;           ///< Identifier the joining node will use.
+    Address contact_address;  ///< Address at which the joining node is reachable.
 
     [[nodiscard]] auto joining_node_id() const -> NodeId { return node_id; }
     [[nodiscard]] auto joining_address() const -> const Address& { return contact_address; }
 };
 
+/// @brief Response to a `cluster_join_request`.
+/// @tparam NodeId  Node identifier type; defaults to `uint64_t`.
+/// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 struct cluster_join_response {
-    bool accepted{false};
-    std::optional<peer_info<NodeId, Address>> redirect;
+    bool accepted{false};  ///< `true` if the leader accepted the join.
+    std::optional<peer_info<NodeId, Address>>
+        redirect;  ///< Redirect hint when the recipient is not the leader.
 
     [[nodiscard]] auto is_accepted() const -> bool { return accepted; }
     [[nodiscard]] auto redirect_peer() const -> const std::optional<peer_info<NodeId, Address>>& {
@@ -676,18 +709,24 @@ struct cluster_join_response {
     }
 };
 
-// ClusterLeave RPC — sent from a departing node (or an admin) to the leader
+/// @brief Sent by a departing node (or an admin) to the leader to initiate removal.
+/// @tparam NodeId  Leaving node's identifier type; defaults to `uint64_t`.
+/// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 struct cluster_leave_request {
-    NodeId node_id;
+    NodeId node_id;  ///< Identifier of the node that wants to leave.
 
     [[nodiscard]] auto leaving_node_id() const -> NodeId { return node_id; }
 };
 
+/// @brief Response to a `cluster_leave_request`.
+/// @tparam NodeId  Node identifier type; defaults to `uint64_t`.
+/// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 struct cluster_leave_response {
-    bool accepted{false};
-    std::optional<peer_info<NodeId, Address>> redirect;
+    bool accepted{false};  ///< `true` if the leader accepted the leave.
+    std::optional<peer_info<NodeId, Address>>
+        redirect;  ///< Redirect hint when the recipient is not the leader.
 
     [[nodiscard]] auto is_accepted() const -> bool { return accepted; }
     [[nodiscard]] auto redirect_peer() const -> const std::optional<peer_info<NodeId, Address>>& {
@@ -726,28 +765,18 @@ template<typename T, typename NodeId> struct _bootstrap_type_traits<T, NodeId, t
 };
 
 // ============================================================================
-// Transport Types Concept System
+// Transport types concept
 // ============================================================================
 
-// Transport types concept - defines the interface for a unified types parameter
-// Used by HTTP and CoAP transport implementations
+/// @brief Concept for a unified transport-types bundle used by HTTP and CoAP transports.
 template<typename T>
 concept transport_types =
     requires {
-        // RPC serializer type
         typename T::serializer_type;
-
-        // Metrics type
         typename T::metrics_type;
-
-        // Executor type (optional for some transports)
         typename T::executor_type;
-    } &&
-    // Validate that the types satisfy their respective concepts
-    kythira::rpc_serializer<typename T::serializer_type, std::vector<std::byte>> &&
+    } && kythira::rpc_serializer<typename T::serializer_type, std::vector<std::byte>> &&
     kythira::metrics<typename T::metrics_type> &&
-    // Future template constraints - validate that future_template can be instantiated with Raft
-    // response types
     requires {
         typename T::template future_template<kythira::request_vote_response<>>;
         typename T::template future_template<kythira::append_entries_response<>>;
@@ -761,7 +790,7 @@ concept transport_types =
            kythira::install_snapshot_response<>>;
 
 // ============================================================================
-// Unified Types Template Parameter System
+// Unified types template parameter system
 // ============================================================================
 
 // Forward declarations for default implementations
@@ -788,15 +817,17 @@ template<typename NodeId>
 requires node_id<NodeId>
 class default_membership_manager;
 
-// Raft types concept that encapsulates all required type information
+/// @brief Concept that validates a complete set of Raft type parameters.
+///
+/// A type bundle `T` satisfies `raft_types` when it exposes every required nested
+/// type alias and each alias satisfies the corresponding concept.  Pass a bundle
+/// as the `Types` parameter of `node<Types>` to customise the Raft implementation.
 template<typename T>
 concept raft_types = requires {
-    // Future types
     typename T::future_type;
     typename T::promise_type;
     typename T::try_type;
 
-    // Component types
     typename T::network_client_type;
     typename T::network_server_type;
     typename T::persistence_engine_type;
@@ -805,19 +836,15 @@ concept raft_types = requires {
     typename T::membership_manager_type;
     typename T::state_machine_type;
 
-    // Data types
     typename T::node_id_type;
     typename T::term_id_type;
     typename T::log_index_type;
 
-    // Serializer and data types
     typename T::serializer_type;
     typename T::serialized_data_type;
 
-    // Configuration type
     typename T::configuration_type;
 
-    // Concept validation - ensure all types satisfy their respective concepts
     requires node_id<typename T::node_id_type>;
     requires term_id<typename T::term_id_type>;
     requires log_index<typename T::log_index_type>;
@@ -827,28 +854,26 @@ concept raft_types = requires {
     requires state_machine<typename T::state_machine_type, typename T::log_index_type>;
 };
 
-// Default types implementation with sensible defaults
+/// @brief Ready-to-use type bundle suitable for simulator-based testing.
+///
+/// Uses `kythira::Future` / `kythira::Promise` backed by Folly, an in-memory
+/// persistence engine, `console_logger`, `noop_metrics`, and the default
+/// simulator network stack.
 struct default_raft_types {
-    // Future types - using kythira::Future as default concrete implementation
     using future_type = kythira::Future<std::vector<std::byte>>;
     using promise_type = kythira::Promise<std::vector<std::byte>>;
     using try_type = kythira::Try<std::vector<std::byte>>;
 
-    // Basic data types
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
     using log_index_type = std::uint64_t;
 
-    // Serializer and data types
     using serialized_data_type = std::vector<std::byte>;
     using serializer_type = json_rpc_serializer<serialized_data_type>;
 
-    // Network types are forward declared - actual types defined in simulator_network.hpp
-    // Users should use the network types from raft_simulator_network_types directly
     class network_client_type;
     class network_server_type;
 
-    // Other component types
     using persistence_engine_type =
         memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
     using logger_type = console_logger;
@@ -856,15 +881,12 @@ struct default_raft_types {
     using membership_manager_type = default_membership_manager<node_id_type>;
     using state_machine_type = test_key_value_state_machine<log_index_type>;
 
-    // Configuration type
     using configuration_type = raft_configuration;
 
-    // Type aliases for commonly used compound types
     using log_entry_type = log_entry<term_id_type, log_index_type>;
     using cluster_configuration_type = cluster_configuration<node_id_type>;
     using snapshot_type = snapshot<node_id_type, term_id_type, log_index_type>;
 
-    // Bootstrap types
     using address_type = std::string;
     using peer_discovery_type = no_op_peer_discovery<node_id_type, address_type>;
     using cluster_join_request_type = cluster_join_request<node_id_type, address_type>;
@@ -872,7 +894,6 @@ struct default_raft_types {
     using cluster_leave_request_type = cluster_leave_request<node_id_type, address_type>;
     using cluster_leave_response_type = cluster_leave_response<node_id_type, address_type>;
 
-    // RPC message types
     using request_vote_request_type =
         request_vote_request<node_id_type, term_id_type, log_index_type>;
     using request_vote_response_type = request_vote_response<term_id_type>;
@@ -883,12 +904,5 @@ struct default_raft_types {
         install_snapshot_request<node_id_type, term_id_type, log_index_type>;
     using install_snapshot_response_type = install_snapshot_response<term_id_type>;
 };
-
-// Validation that default_raft_types satisfies the raft_types concept
-// Note: This static_assert is commented out because test_key_value_state_machine
-// is only forward-declared at this point. The concept will be validated when
-// the node class is instantiated.
-// static_assert(raft_types<default_raft_types>, "default_raft_types must satisfy raft_types
-// concept");
 
 }  // namespace kythira

@@ -36,6 +36,7 @@ test_results/
 # Documentation build
 doc/html/
 doc/latex/
+doxygen-output/
 
 # OS files
 .DS_Store

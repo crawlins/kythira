@@ -1,5 +1,8 @@
 #pragma once
 
+/// @file aws_asg_quorum_manager.hpp
+/// @brief Quorum manager that provisions and monitors Raft nodes through AWS Auto Scaling Groups.
+
 #include <raft/aws_client_config.hpp>
 #include <raft/aws_ec2_quorum_manager.hpp>
 #include <raft/fault_injection.hpp>
@@ -38,13 +41,21 @@ namespace kythira {
 // aws_asg_quorum_manager_config
 // ============================================================================
 
+/// @brief Configuration for `aws_asg_quorum_manager`.
 struct aws_asg_quorum_manager_config {
+    /// Logical cluster name; used as a tag on provisioned instances.
     std::string cluster_name;
+    /// Maps each topology `group_id` to the ASG name responsible for that group.
     std::map<std::string, std::string> asg_by_group;
+    /// TCP port on which each Raft node listens; written into the returned address.
     std::uint16_t node_port{7000};
+    /// Target node counts per placement group.
     desired_topology<std::string> topology;
+    /// Maximum time to wait for a newly launched instance to become `InService`.
     std::chrono::seconds provision_timeout{120};
+    /// Sleep interval between ASG poll iterations during provisioning.
     std::chrono::seconds poll_interval{5};
+    /// AWS client settings (region, endpoint override, credentials, timeout).
     aws_client_config aws;
 };
 
@@ -52,6 +63,18 @@ struct aws_asg_quorum_manager_config {
 // aws_asg_quorum_manager
 // ============================================================================
 
+/// @brief `quorum_manager` implementation that provisions and monitors Raft nodes through AWS ASGs.
+///
+/// Liveness is determined via EC2 `DescribeInstanceStatus` (instance state == `running`),
+/// consistent with how the ASG's own EC2 health-check type works.  The constructor validates
+/// that every configured ASG uses EC2 health checks; it throws if any ASG uses ELB checks.
+///
+/// Node identity is derived from the EC2 instance ID using `aws_ec2_quorum_manager`'s
+/// `ec2_id_to_node_id` / `node_id_to_ec2_id` helpers, making the node-to-EC2 mapping
+/// a pure computation without tag scans.
+///
+/// @tparam NodeId  Node identifier type; defaults to `uint64_t`.
+/// @tparam Address Network address type; defaults to `std::string`.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class aws_asg_quorum_manager {
@@ -62,6 +85,13 @@ public:
     using address_type = Address;
     using placement_group_id_type = std::string;
 
+    /// @brief Constructs the manager and validates the configuration.
+    ///
+    /// Verifies that `cluster_name` is non-empty, every topology group has a
+    /// corresponding ASG entry, and every configured ASG uses EC2 health checks.
+    ///
+    /// @throws std::invalid_argument if any validation fails.
+    /// @throws std::runtime_error if `DescribeAutoScalingGroups` fails.
     explicit aws_asg_quorum_manager(aws_asg_quorum_manager_config cfg) : _cfg(std::move(cfg)) {
         if (_cfg.cluster_name.empty()) {
             throw std::invalid_argument("aws_asg_quorum_manager: cluster_name must be non-empty");
@@ -125,11 +155,13 @@ public:
         }
     }
 
-    // ── assess_quorum ─────────────────────────────────────────────────────────
-    // Liveness is determined via DescribeInstanceStatus, not DescribeInstances.
-    // The node_id encodes the EC2 instance ID directly (ec2_id_to_node_id /
-    // node_id_to_ec2_id from aws_ec2_quorum_manager), so no tag scan is needed.
-
+    /// @brief Assesses cluster health via EC2 `DescribeInstanceStatus`.
+    ///
+    /// A node is live iff its instance state is `running`.
+    /// `SetIncludeAllInstances(true)` ensures transitioning instances are visible.
+    ///
+    /// @param cluster Full cluster membership with placement-group annotations.
+    /// @return Future containing the health report, or an exceptional Future on API error.
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         try {
@@ -168,8 +200,14 @@ public:
         }
     }
 
-    // ── maintain_quorum ───────────────────────────────────────────────────────
-
+    /// @brief Assesses quorum, decommissions unreachable nodes via the ASG, and
+    ///        provisions replacements to meet the desired topology.
+    ///
+    /// Decommission and provision errors are logged to stderr but do not abort the
+    /// operation.  The returned health reflects the pre-maintenance cluster state.
+    ///
+    /// @param cluster Full cluster membership with placement-group annotations.
+    /// @return Future containing the pre-maintenance health report.
     auto maintain_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         try {
@@ -233,11 +271,18 @@ public:
         return FutureFactory::makeFuture(std::move(pre_health));
     }
 
-    // ── provision_node ────────────────────────────────────────────────────────
-    // The NodeId is derived from the new EC2 instance ID returned by the ASG.
-    // DescribeInstances is used here only for provisioning (getting private IP),
-    // not for liveness determination.
-
+    /// @brief Provisions a new Raft node by incrementing the ASG desired capacity.
+    ///
+    /// Waits up to `provision_timeout` for the new instance to reach `InService`
+    /// state and obtain a private IP address.  On timeout, the ASG capacity is
+    /// restored to its original value before returning an exceptional Future.
+    ///
+    /// The `replacing` hint is accepted but unused; the new instance always gets a
+    /// fresh EC2 ID and therefore a new `NodeId`.
+    ///
+    /// @param target_group Placement-group key in `asg_by_group`.
+    /// @param replacing    Ignored; present for interface compatibility.
+    /// @return Future with the new node's identity and address on success.
     auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
         -> kythira::Future<peer_info<NodeId, Address>> {
         try {
@@ -351,10 +396,14 @@ public:
         }
     }
 
-    // ── decommission_node ─────────────────────────────────────────────────────
-    // The EC2 instance ID is derived directly from node_id — no DescribeInstances
-    // lookup is required.
-
+    /// @brief Terminates a Raft node via `TerminateInstanceInAutoScalingGroup`.
+    ///
+    /// Sets `ShouldDecrementDesiredCapacity = true` so the ASG does not launch a
+    /// replacement automatically.  Treats "not found" and `ValidationError` responses
+    /// as idempotent success.  Polls until the EC2 state leaves `running` (up to 30 s).
+    ///
+    /// @param node_id Identifier of the node to terminate.
+    /// @return void Future on success, exceptional Future on API error.
     auto decommission_node(const NodeId& node_id) -> kythira::Future<void> {
         try {
             fiu_do_on("raft/aws/asg/terminate_instance",
@@ -405,8 +454,7 @@ public:
         }
     }
 
-    // ── topology ─────────────────────────────────────────────────────────────
-
+    /// @brief Returns the desired topology from the configuration.
     [[nodiscard]] auto topology() const -> desired_topology<std::string> { return _cfg.topology; }
 
 private:
