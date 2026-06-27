@@ -93,6 +93,12 @@ struct mock_quorum_manager {
         return kythira::FutureFactory::makeFuture();
     }
 
+    auto maintain_quorum(
+        const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
+        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        return assess_quorum(cluster);
+    }
+
     [[nodiscard]] auto topology() const -> kythira::desired_topology<placement_group_id_type> {
         return topo;
     }
