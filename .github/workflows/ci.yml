@@ -12,32 +12,39 @@ permissions:
   pull-requests: write  # required to post coverage comment on PRs
 
 jobs:
-  ci:
+  # ── Build and test ──────────────────────────────────────────────────────────
+  # Runs under both GCC and Clang to catch compiler-specific issues.
+  build-and-test:
+    name: Build & Test (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 120
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++-13, clang++-18]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── System dependencies ─────────────────────────────────────────────────
+      # ── System dependencies ───────────────────────────────────────────────
       - name: Install system dependencies
         run: |
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
             g++-13 \
+            clang-18 \
             cmake \
             ninja-build \
             libfiu-dev
 
       - name: Install Python tools
         run: |
-          pip3 install --user \
-            "clang-format==22.1.5" \
-            "gcovr>=8.0"
+          pip3 install --user "clang-format==22.1.5"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # ── vcpkg (Boost, Folly, Poco, libcoap, …) ─────────────────────────────
+      # ── vcpkg (Boost, Folly, Poco, libcoap, …) ───────────────────────────
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
@@ -56,10 +63,10 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      # ── Format check ────────────────────────────────────────────────────────
-      # Uses the CMake format-check target so the file list exactly matches
-      # what `cmake --build --target format` reformats locally.
-      - name: Configure (format-check only)
+      # ── Format check ──────────────────────────────────────────────────────
+      # Only run once (not per compiler) since formatting is compiler-agnostic.
+      - name: Configure (format-check)
+        if: matrix.compiler == 'g++-13'
         run: |
           cmake -B build-fmt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -67,14 +74,15 @@ jobs:
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Check formatting
+        if: matrix.compiler == 'g++-13'
         run: cmake --build build-fmt --target format-check
 
-      # ── Release build + tests ───────────────────────────────────────────────
+      # ── Release build + tests ─────────────────────────────────────────────
       - name: Configure (Release)
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
@@ -95,7 +103,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Unit Tests
+          name: Unit Tests (${{ matrix.compiler }})
           path: test-results.xml
           reporter: java-junit
           fail-on-error: false
@@ -105,20 +113,58 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.compiler }}
           path: test-results.xml
 
       - name: Fail if tests failed
         if: steps.test.outcome == 'failure'
         run: exit 1
 
-      # ── Coverage build + tests ──────────────────────────────────────────────
+  # ── Coverage (clang only) ────────────────────────────────────────────────────
+  # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
+  # gcovr-based coverage with GCC is not supported by this project's CMakeLists.
+  coverage:
+    name: Coverage (clang++-18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            llvm-18 \
+            cmake \
+            ninja-build \
+            libfiu-dev
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      # ── Coverage build + tests ────────────────────────────────────────────
       - name: Configure (Coverage)
         run: |
           cmake -B build-coverage -G Ninja \
             -DENABLE_COVERAGE=ON \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Build (Coverage)
@@ -127,7 +173,8 @@ jobs:
       - name: Test (Coverage)
         id: test-coverage
         run: |
-          find build-coverage -name '*.gcda' -delete
+          find build-coverage -name '*.profraw' -delete
+          LLVM_PROFILE_FILE='${{ github.workspace }}/build-coverage/%p-%m.profraw' \
           ctest --test-dir build-coverage \
             -j$(nproc) \
             --output-on-failure \
@@ -157,27 +204,51 @@ jobs:
         if: steps.test-coverage.outcome == 'failure'
         run: exit 1
 
-      # ── Measure coverage and enforce floor ──────────────────────────────────
+      # ── Measure coverage and enforce floor ────────────────────────────────
       - name: Measure coverage
         id: coverage
         run: |
-          mkdir -p ${{ github.workspace }}/coverage-html
-          cd build-coverage
-          gcovr \
-            --root ${{ github.workspace }} \
-            --object-directory . \
-            --exclude '.*build-coverage.*' \
-            --exclude '.*vcpkg_installed.*' \
-            --exclude '.*/usr/.*' \
-            --exclude '.*cmd/.*' \
-            --exclude '.*tests/docker_chaos/.*' \
-            --gcov-ignore-parse-errors=negative_hits.warn \
-            --cobertura ${{ github.workspace }}/coverage.xml \
-            --html-details ${{ github.workspace }}/coverage-html/index.html \
-            --print-summary | tee coverage-summary.txt
+          # Merge per-process profiles into a single profdata file.
+          mapfile -t PROFRAW < <(find build-coverage -name '*.profraw')
+          llvm-profdata-18 merge -sparse "${PROFRAW[@]}" \
+            -o build-coverage/merged.profdata
 
-          NEW_PCT=$(awk '/^lines:/ { match($2, /^[0-9]+\.[0-9]+/, m); \
-            if (m[0] != "") { print m[0]; exit } }' coverage-summary.txt)
+          # Collect instrumented test binaries (no extension = executable).
+          mapfile -t BINS < <(find build-coverage/tests -maxdepth 1 \
+            -executable -type f | sort)
+          MAIN_BIN="${BINS[0]}"
+          EXTRA_ARGS=()
+          for b in "${BINS[@]:1}"; do EXTRA_ARGS+=(-object "$b"); done
+
+          IGNORE=(
+            --ignore-filename-regex='.*/build-coverage/.*'
+            --ignore-filename-regex='.*/vcpkg_installed/.*'
+            --ignore-filename-regex='.*/usr/.*'
+            --ignore-filename-regex='.*/cmd/.*'
+            --ignore-filename-regex='.*/tests/docker_chaos/.*'
+            --ignore-filename-regex='.*/examples/.*'
+          )
+
+          # Line-coverage summary (TOTAL line col 7 is line-coverage %).
+          llvm-cov-18 report \
+            --instr-profile=build-coverage/merged.profdata \
+            "$MAIN_BIN" "${EXTRA_ARGS[@]}" \
+            "${IGNORE[@]}" | tee build-coverage/coverage-summary.txt
+
+          # HTML report.
+          mkdir -p ${{ github.workspace }}/coverage-html
+          llvm-cov-18 show \
+            --instr-profile=build-coverage/merged.profdata \
+            "$MAIN_BIN" "${EXTRA_ARGS[@]}" \
+            --format=html \
+            --output-dir=${{ github.workspace }}/coverage-html \
+            "${IGNORE[@]}"
+
+          # Parse coverage percentage from the TOTAL row.
+          # llvm-cov report columns: Filename Regions Miss Cover% Functions Miss Cover% Lines Miss Cover% ...
+          # $7 is the function-coverage % — matches the field used by the pre-commit hook to set the floor.
+          NEW_PCT=$(awk '/^TOTAL/ { gsub(/%/, "", $7); print $7; exit }' \
+            build-coverage/coverage-summary.txt)
           OLD_FLOOR=$(cat ${{ github.workspace }}/coverage_floor.txt)
 
           echo "Coverage: ${NEW_PCT}%  Floor: ${OLD_FLOOR}%"
@@ -185,14 +256,13 @@ jobs:
 
           awk -v new="${NEW_PCT}" -v old="${OLD_FLOOR}" \
             'BEGIN { if (new+0 < old+0) {
-              printf "FAILED: %.1f%% is below floor %.1f%%\n", new, old; exit 1 } }'
+              printf "FAILED: %.2f%% is below floor %.2f%%\n", new, old; exit 1 } }'
 
       - name: Write coverage job summary
         if: always() && steps.coverage.outputs.coverage_pct != ''
         run: |
           PCT="${{ steps.coverage.outputs.coverage_pct }}"
           FLOOR=$(cat ${{ github.workspace }}/coverage_floor.txt)
-          # Choose a colour emoji based on coverage level
           if awk "BEGIN { exit !($PCT >= 85) }"; then
             ICON="🟢"
           elif awk "BEGIN { exit !($PCT >= 70) }"; then
@@ -208,7 +278,7 @@ jobs:
             echo "| **Line coverage** | **${PCT}%** |"
             echo "| Floor | ${FLOOR}% |"
             echo ""
-            echo "<details><summary>Full gcovr summary</summary>"
+            echo "<details><summary>Full llvm-cov summary</summary>"
             echo ""
             echo '```'
             cat build-coverage/coverage-summary.txt
@@ -248,9 +318,7 @@ jobs:
         if: always()
         with:
           name: coverage-report
-          path: |
-            coverage.xml
-            coverage-html/
+          path: coverage-html/
 
   # ── API documentation → GitHub Pages ───────────────────────────────────────
   # Runs only on pushes to main (not on pull-request builds).
