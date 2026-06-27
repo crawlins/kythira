@@ -1,7 +1,11 @@
 #pragma once
 
-// Main header file for the network simulator library
-// Include this file to access all network simulator functionality
+/// @file network_simulator.hpp
+/// @brief Main entry point for the network simulator library.
+///
+/// Include this header to access all network-simulator types and utilities.
+/// The simulator provides an in-process, deterministic network for testing
+/// distributed protocols such as Raft without real sockets.
 
 #include "concepts.hpp"
 #include "types.hpp"
@@ -13,12 +17,14 @@
 
 namespace network_simulator {
 
-// Version information
+/// @brief Library major version number.
 inline constexpr int version_major = 0;
+/// @brief Library minor version number.
 inline constexpr int version_minor = 1;
+/// @brief Library patch version number.
 inline constexpr int version_patch = 0;
 
-// Convenience alias for the default network simulator
+/// @brief Convenience alias for `NetworkSimulator` using `DefaultNetworkTypes`.
 using DefaultNetworkSimulator = NetworkSimulator<DefaultNetworkTypes>;
 
 }  // namespace network_simulator

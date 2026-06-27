@@ -1,5 +1,8 @@
 #pragma once
 
+/// @file raft.hpp
+/// @brief Main Raft consensus node — `node_config<Types>` and `node<Types>`.
+
 #include "types.hpp"
 #include "network.hpp"
 #include "persistence.hpp"
@@ -33,7 +36,7 @@
 namespace kythira {
 
 // ============================================================================
-// Quorum-manager type-detection helpers (Req 11.1-2)
+// Quorum-manager type-detection helpers
 // Mirrors the _bootstrap_type_traits pattern: types that don't define
 // quorum_manager_type fall back to no_op_quorum_manager transparently.
 // Cannot live in types.hpp because quorum_management.hpp includes types.hpp.
@@ -54,19 +57,15 @@ struct _quorum_manager_type_traits<T, NodeId, Address, true> {
     using quorum_manager_type = typename T::quorum_manager_type;
 };
 
-// ============================================================================
-// node_config<Types> — named-parameter aggregate for node construction (Req 17)
-//
-// Required fields have no in-struct default; omitting them in a designated
-// initializer is a compile error.
-//
-// Optional fields carry defaults and may be omitted from the initializer.
-// Adding a new optional field here never requires changes to existing
-// initializer call sites, satisfying Req 17 AC 5.
-// ============================================================================
-
+/// @brief Named-parameter aggregate for constructing a `node<Types>`.
+///
+/// Required fields have no in-struct default; omitting them in a designated
+/// initializer is a compile error.  Optional fields carry defaults and may be
+/// omitted without modifying existing call sites.
+///
+/// @tparam Types A type bundle satisfying the `raft_types` concept.
 template<raft_types Types> struct node_config {
-    // ── type resolution (mirrors node<Types> internal aliases) ───────────────
+    // Type resolution — mirrors node<Types> internal aliases.
     using _bth_ = _bootstrap_type_traits<Types, typename Types::node_id_type>;
     using address_type = typename _bth_::address_type;
     using peer_discovery_type = typename _bth_::peer_discovery_type;
@@ -74,29 +73,48 @@ template<raft_types Types> struct node_config {
     using quorum_manager_type = typename _qmth_::quorum_manager_type;
     using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
 
-    // ── required members (no in-struct default) ───────────────────────────────
-    typename Types::node_id_type node_id;
-    typename Types::network_client_type network_client;
-    typename Types::network_server_type network_server;
-    typename Types::persistence_engine_type persistence;
-    typename Types::logger_type logger;
-    typename Types::metrics_type metrics;
-    typename Types::membership_manager_type membership;
+    // ── Required fields (no in-struct default) ────────────────────────────────
+    typename Types::node_id_type node_id;                 ///< Unique identifier for this node.
+    typename Types::network_client_type network_client;   ///< Client used to send RPCs to peers.
+    typename Types::network_server_type network_server;   ///< Server used to receive incoming RPCs.
+    typename Types::persistence_engine_type persistence;  ///< Durable Raft-state store.
+    typename Types::logger_type logger;                   ///< Structured diagnostic logger.
+    typename Types::metrics_type metrics;                 ///< Metrics back-end.
+    typename Types::membership_manager_type membership;   ///< Membership-change policy.
 
-    // ── optional members ───────────────────────────────────────────────────────
-    typename Types::state_machine_type state_machine{};
-    typename Types::configuration_type config{};
-    address_type self_address{};
-    peer_discovery_type peer_discovery{};
-    quorum_manager_type quorum_manager{};
-    std::unordered_map<typename Types::node_id_type, placement_group_id_type> initial_placement{};
+    // ── Optional fields (have defaults) ──────────────────────────────────────
+    typename Types::state_machine_type state_machine{};  ///< Application state machine.
+    typename Types::configuration_type config{};         ///< Raft timing and policy configuration.
+    address_type self_address{};           ///< This node's advertised network address.
+    peer_discovery_type peer_discovery{};  ///< Peer-discovery back-end.
+    quorum_manager_type quorum_manager{};  ///< Infrastructure quorum manager.
+    std::unordered_map<typename Types::node_id_type, placement_group_id_type>
+        initial_placement{};  ///< Initial node-to-placement-group mapping.
 };
 
-// Raft node class template with unified types parameter
-// Implements the Raft consensus algorithm with pluggable components
+/// @brief Raft consensus node with fully pluggable component types.
+///
+/// Implements the Raft consensus algorithm (leader election, log replication,
+/// snapshotting, and joint-consensus membership changes).  All component
+/// dependencies — network transport, persistence, logger, state machine,
+/// quorum manager, and peer discovery — are injected via `Types` and
+/// `node_config<Types>`.
+///
+/// ### Lifecycle
+/// 1. Construct with `node_config<Types>` (preferred) or the positional constructor.
+/// 2. Call `start()` to begin the election-timeout and heartbeat timers.
+/// 3. Call `submit_command()` / `read_state()` from client threads.
+/// 4. Call `stop()` to terminate background activity before destruction.
+///
+/// ### Thread safety
+/// All public methods except the constructor and destructor are thread-safe.
+///
+/// @tparam Types A type bundle satisfying the `raft_types` concept.
+///              Defaults to `default_raft_types` for simulator-based use.
 template<raft_types Types = default_raft_types> class node {
 public:
-    // Type aliases extracted from unified Types parameter
+    /// @name Type aliases
+    /// @{
     using types = Types;
     using future_type = typename Types::future_type;
     using promise_type = typename Types::promise_type;
@@ -140,82 +158,171 @@ public:
     using quorum_manager_type = typename _qmth::quorum_manager_type;
     using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
 
-    // Client session tracking types
-    using client_id_t = std::uint64_t;
-    using serial_number_t = std::uint64_t;
+    using client_id_t = std::uint64_t;  ///< Opaque client identifier for session tracking.
+    using serial_number_t =
+        std::uint64_t;  ///< Monotonically increasing client request serial number.
+    /// @}
 
-    // Preferred constructor: all parameters supplied via node_config<Types> (Req 17)
+    /// @name Constructors
+    /// @{
+
+    /// @brief Preferred constructor: all components supplied via `node_config<Types>`.
     explicit node(node_config<Types> cfg);
 
-    // Legacy positional constructor retained for migration compatibility (Req 17 AC 3).
-    // Prefer node(node_config<Types>) for new code.
+    /// @brief Legacy positional constructor retained for migration compatibility.
+    ///
+    /// Prefer `node(node_config<Types>)` for new code.
     node(node_id_type node_id, network_client_type network_client,
          network_server_type network_server, persistence_engine_type persistence,
          logger_type logger, metrics_type metrics, membership_manager_type membership,
          configuration_type config = configuration_type{},
          address_type self_address = address_type{},
          peer_discovery_type peer_discovery = peer_discovery_type{});
+    /// @}
 
-    // Client operations - return template future types
+    /// @name Client operations
+    /// @{
+
+    /// @brief Submit a serialised command to the cluster for replication.
+    ///
+    /// The returned Future resolves with the state-machine result bytes once the
+    /// entry is committed and applied.  Rejects with `std::runtime_error` if this
+    /// node is not the leader, the timeout elapses, or the cluster loses quorum.
+    ///
+    /// @param command Serialised application command.
+    /// @param timeout Maximum time to wait for the command to commit.
+    /// @return Future that resolves with the state-machine result.
     auto submit_command(const std::vector<std::byte>& command, std::chrono::milliseconds timeout)
         -> future_type;
 
-    // Client operation with session tracking for duplicate detection
+    /// @brief Submit a command with client-session deduplication.
+    ///
+    /// If the leader has already applied a command from `(client_id, serial_number)`,
+    /// it returns the cached result without re-applying the command.  Prevents
+    /// double-execution on client retry after a leader failover.
+    ///
+    /// @param client_id      Stable identifier assigned to the client session.
+    /// @param serial_number  Monotonically increasing sequence number within the session.
+    /// @param command        Serialised application command.
+    /// @param timeout        Maximum time to wait for the command to commit.
+    /// @return Future that resolves with the state-machine result.
     auto submit_command_with_session(client_id_t client_id, serial_number_t serial_number,
                                      const std::vector<std::byte>& command,
                                      std::chrono::milliseconds timeout) -> future_type;
 
+    /// @brief Execute a linearisable read without appending to the log.
+    ///
+    /// The leader confirms its leadership via a quorum of heartbeat acknowledgements
+    /// before applying the read to the state machine, satisfying linearisability.
+    ///
+    /// @param timeout Maximum time to wait for the read to complete.
+    /// @return Future that resolves with the current state-machine state bytes.
     auto read_state(std::chrono::milliseconds timeout) -> future_type;
+    /// @}
 
-    // Node lifecycle
+    /// @name Lifecycle
+    /// @{
+
+    /// @brief Start the election-timeout loop and register RPC handlers.
+    ///
+    /// Restores persistent state, runs the bootstrap protocol if a peer-discovery
+    /// back-end is configured, and then sets `_running = true`.
     auto start() -> void;
-    auto stop() -> void;
-    [[nodiscard]] auto is_running() const noexcept -> bool;
 
-    // Node state queries
+    /// @brief Gracefully stop the node and join all background threads.
+    auto stop() -> void;
+
+    /// @brief Returns `true` while the node is between `start()` and `stop()`.
+    [[nodiscard]] auto is_running() const noexcept -> bool;
+    /// @}
+
+    /// @name State queries
+    /// @{
+
+    /// @brief Returns this node's unique identifier.
     [[nodiscard]] auto get_node_id() const -> node_id_type;
+
+    /// @brief Returns the current Raft term number.
     [[nodiscard]] auto get_current_term() const -> term_id_type;
+
+    /// @brief Returns the current consensus role (follower / candidate / leader).
     [[nodiscard]] auto get_state() const -> kythira::server_state;
+
+    /// @brief Returns `true` if this node currently believes it is the leader.
     [[nodiscard]] auto is_leader() const -> bool;
 
-    // Read-only snapshot of internal state for assertion helpers in chaos tests.
-    // Valid only while the node is running and not being mutated concurrently.
+    /// @brief Read-only snapshot of internal Raft state for test assertions.
+    ///
+    /// Valid only while the node is running and not being concurrently mutated.
     struct debug_snapshot {
-        term_id_type current_term;
-        log_index_type commit_index;
-        log_index_type last_applied;
-        bool is_leader;
-        std::span<const log_entry_type> log;
+        term_id_type current_term;            ///< Current term number.
+        log_index_type commit_index;          ///< Highest committed log index.
+        log_index_type last_applied;          ///< Highest applied log index.
+        bool is_leader;                       ///< Whether this node is the leader.
+        std::span<const log_entry_type> log;  ///< View of the in-memory log.
     };
-    [[nodiscard]] auto debug_state() const noexcept -> debug_snapshot;
 
-    // Cluster operations - return template future types
+    /// @brief Returns an immutable snapshot of internal state.
+    [[nodiscard]] auto debug_state() const noexcept -> debug_snapshot;
+    /// @}
+
+    /// @name Cluster membership
+    /// @{
+
+    /// @brief Add a new server to the cluster via a joint-consensus configuration change.
+    /// @param new_node Identifier of the server to add.
+    /// @return Future that resolves once the configuration change is committed.
     auto add_server(node_id_type new_node) -> future_type;
+
+    /// @brief Remove an existing server from the cluster.
+    /// @param old_node Identifier of the server to remove.
+    /// @return Future that resolves once the configuration change is committed.
     auto remove_server(node_id_type old_node) -> future_type;
 
-    // Sends a ClusterLeave RPC to the current leader, asking it to remove this node.
-    // No-op when the network client does not satisfy network_client_with_cluster_leave.
+    /// @brief Send a ClusterLeave RPC to the current leader asking it to remove this node.
+    ///
+    /// No-op when the network client does not satisfy the `network_client_with_cluster_leave`
+    /// concept (i.e., peer-discovery-less deployments).
+    ///
+    /// @param timeout Maximum time to wait for the leader to acknowledge the leave.
     auto leave_cluster(std::chrono::milliseconds timeout) -> void;
+    /// @}
 
-    // Election timeout check - should be called periodically
+    /// @name Periodic callbacks
+    /// @{
+
+    /// @brief Drive the election-timeout state machine; call from an external timer loop.
     auto check_election_timeout() -> void;
 
-    // Heartbeat check - should be called periodically for leaders
+    /// @brief Drive the heartbeat loop; call from an external timer loop (leaders only).
     auto check_heartbeat_timeout() -> void;
 
-    // Replication trigger - can be called to immediately replicate to followers
-    // This is useful for testing and for immediate replication after command submission
+    /// @brief Immediately replicate pending log entries to all followers.
+    ///
+    /// Useful in tests and immediately after `submit_command` to bypass the
+    /// normal heartbeat interval.
     auto replicate_to_followers() -> void;
+    /// @}
 
-    // Cluster configuration management - for testing and bootstrap
+    /// @name Configuration helpers
+    /// @{
+
+    /// @brief Overwrite the current cluster configuration (for bootstrap and testing).
+    /// @param node_ids Complete list of node IDs in the new configuration.
     auto set_cluster_configuration(const std::vector<node_id_type>& node_ids) -> void;
+
+    /// @brief Returns the number of nodes in the current cluster configuration.
     [[nodiscard]] auto get_cluster_size() const -> std::size_t;
 
-    // Quorum management — placement group assignment (Req 12 AC 2)
-    // Registers or updates the placement group for a node.  May be called any
-    // time before or after start().  Entries are automatically maintained as
-    // nodes join and leave the Raft cluster through the provisioning path.
+    /// @brief Register or update the placement group for a node.
+    ///
+    /// May be called at any time before or after `start()`.  Entries are
+    /// maintained automatically as nodes join and leave via the provisioning path.
+    ///
+    /// @param id    Node identifier.
+    /// @param group Placement-group identifier (e.g., an availability-zone name).
     auto set_placement(node_id_type id, placement_group_id_type group) -> void;
+    /// @}
 
 private:
     // ========================================================================
