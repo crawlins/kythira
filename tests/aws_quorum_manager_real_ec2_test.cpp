@@ -376,11 +376,19 @@ struct RealEc2Fixture {
         ami_id = env("KYTHIRA_TEST_AMI_ID");
         instance_type = env("KYTHIRA_TEST_INSTANCE_TYPE");
         if (instance_type.empty()) {
+#if defined(__aarch64__) || defined(__arm64__)
+            instance_type = "t4g.micro";
+#else
             instance_type = "t3.micro";
+#endif
         }
         bastion_instance_type = env("KYTHIRA_TEST_BASTION_INSTANCE_TYPE");
         if (bastion_instance_type.empty()) {
+#if defined(__aarch64__) || defined(__arm64__)
+            bastion_instance_type = "t4g.micro";
+#else
             bastion_instance_type = "t3.micro";
+#endif
         }
         allowed_cidr = env("AWS_TEST_ALLOWED_CIDR");
         if (allowed_cidr.empty()) {
@@ -392,7 +400,7 @@ struct RealEc2Fixture {
         }
 
         // AMI fallback: if KYTHIRA_TEST_AMI_ID is unset, query for the latest
-        // Amazon Linux 2023 x86_64 HVM AMI in the current region.
+        // Amazon Linux 2023 HVM AMI matching the build-host architecture.
         if (ami_id.empty()) {
             Aws::Client::ClientConfiguration tmp_cli;
             tmp_cli.region = region;
@@ -402,13 +410,21 @@ struct RealEc2Fixture {
             {
                 Aws::EC2::Model::Filter f;
                 f.SetName("name");
+#if defined(__aarch64__) || defined(__arm64__)
+                f.AddValues("al2023-ami-*arm64*");
+#else
                 f.AddValues("al2023-ami-*x86_64*");
+#endif
                 req.AddFilters(f);
             }
             {
                 Aws::EC2::Model::Filter f;
                 f.SetName("architecture");
+#if defined(__aarch64__) || defined(__arm64__)
+                f.AddValues("arm64");
+#else
                 f.AddValues("x86_64");
+#endif
                 req.AddFilters(f);
             }
             {
@@ -769,13 +785,19 @@ struct RealEc2Fixture {
         Aws::EC2::Model::IamInstanceProfileSpecification iam_spec;
         iam_spec.SetName(iam_profile_name);
         req.SetIamInstanceProfile(iam_spec);
+        Aws::EC2::Model::InstanceMarketOptionsRequest market_opts;
+        market_opts.SetMarketType(Aws::EC2::Model::MarketType::spot);
+        Aws::EC2::Model::SpotMarketOptions spot_opts;
+        spot_opts.SetSpotInstanceType(Aws::EC2::Model::SpotInstanceType::one_time);
+        market_opts.SetSpotOptions(spot_opts);
+        req.SetInstanceMarketOptions(market_opts);
 
         auto out = ec2->RunInstances(req);
         BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
                               "bastion RunInstances: " + std::string(out.GetError().GetMessage()));
         bastion_ec2_id = std::string(out.GetResult().GetInstances()[0].GetInstanceId());
         cost_report.resources.push_back({
-            "1x " + bastion_instance_type + " (bastion)",
+            "1x " + bastion_instance_type + " (bastion, spot)",
             ec2_hourly_rate(bastion_instance_type),
             std::chrono::steady_clock::now(),
             std::nullopt,

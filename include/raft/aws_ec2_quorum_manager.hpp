@@ -41,27 +41,36 @@ namespace kythira {
 // Spot and placement group configuration
 // ============================================================================
 
+/// What EC2 does when a Spot instance is interrupted by AWS.
 enum class ec2_spot_interruption_behavior : std::uint8_t {
-    terminate,
-    stop,
-    hibernate,
+    terminate,  ///< Instance is terminated (default; safest for stateless nodes).
+    stop,       ///< Instance is stopped; EBS root volume is preserved.
+    hibernate,  ///< Instance RAM is written to EBS and the instance is stopped.
 };
 
+/// Spot-instance market options applied to every node provisioned by aws_ec2_quorum_manager.
 struct ec2_spot_options {
+    /// Maximum hourly price in USD (e.g. "0.05"). Empty string = current Spot price.
     std::string max_price;
+    /// Action taken when AWS reclaims the instance. Default: terminate.
     ec2_spot_interruption_behavior interruption_behavior{ec2_spot_interruption_behavior::terminate};
 };
 
+/// EC2 placement-group strategy applied to a per-group batch of nodes.
 enum class ec2_placement_group_strategy : std::uint8_t {
-    none,
-    cluster,
-    spread,
-    partition,
+    none,       ///< No placement group; EC2 chooses placement freely.
+    cluster,    ///< All instances in a single rack; maximum bandwidth, correlated failure risk.
+    spread,     ///< Each instance on distinct hardware; maximises fault isolation.
+    partition,  ///< Instances distributed across named partitions of a rack group.
 };
 
+/// Placement-group settings for a single quorum group.
 struct ec2_placement_group_config {
+    /// Name of an existing EC2 placement group to join. Empty = no placement group.
     std::string name;
+    /// Strategy that was used when creating the placement group.
     ec2_placement_group_strategy strategy{ec2_placement_group_strategy::none};
+    /// Partition index (1-based) within a partition placement group. 0 = let EC2 choose.
     std::uint32_t partition_number{0};
 };
 
@@ -69,21 +78,38 @@ struct ec2_placement_group_config {
 // aws_ec2_quorum_manager_config
 // ============================================================================
 
+/// Configuration for aws_ec2_quorum_manager.
 struct aws_ec2_quorum_manager_config {
+    /// Logical cluster name; used as a tag prefix on every provisioned instance.
     std::string cluster_name;
+    /// AMI ID used for all provisioned nodes (e.g. "ami-0abcdef1234567890").
     std::string image_id;
+    /// EC2 instance type string (e.g. "m6i.large"). Default: "t3.micro".
     std::string instance_type{"t3.micro"};
+    /// TCP port on which each node listens. Written into the node address returned by
+    /// provision_node.
     std::uint16_t node_port{7000};
+    /// Target node counts per placement group; must be non-empty.
     desired_topology<std::string> topology;
+    /// Maps each topology group_id to the VPC subnet ID used when launching nodes in that group.
     std::map<std::string, std::string> subnet_by_group;
+    /// VPC security group IDs applied to every provisioned instance.
     std::vector<std::string> security_group_ids;
+    /// IAM instance-profile name attached to each instance. Empty = no profile.
     std::string iam_instance_profile;
+    /// EC2 user-data template. Supports {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} substitutions.
     std::string user_data_template;
+    /// Additional EC2 tags applied alongside the standard kythira:* tags.
     std::map<std::string, std::string> extra_tags;
+    /// Per-group placement-group settings. Groups absent from this map get no placement group.
     std::map<std::string, ec2_placement_group_config> placement_by_group;
+    /// When set, nodes are launched as Spot instances with these options.
     std::optional<ec2_spot_options> spot_options;
+    /// Maximum time to wait for a newly launched instance to reach "running" state.
     std::chrono::seconds provision_timeout{120};
+    /// Sleep interval between DescribeInstances polls during provisioning.
     std::chrono::seconds poll_interval{5};
+    /// AWS client settings (region, endpoint override, credentials, timeout).
     aws_client_config aws;
 };
 
@@ -91,6 +117,11 @@ struct aws_ec2_quorum_manager_config {
 // aws_ec2_quorum_manager
 // ============================================================================
 
+/// quorum_manager implementation that provisions and monitors Raft nodes as EC2 instances.
+///
+/// Node identity is the numeric value of the EC2 instance ID hex suffix, making the
+/// node-to-EC2 mapping a pure computation (no tag scans). Liveness is determined via
+/// DescribeInstanceStatus (instance state == running), not DescribeInstances or heartbeats.
 template<typename NodeId = std::uint64_t, typename Address = std::string>
 requires node_id<NodeId>
 class aws_ec2_quorum_manager {
@@ -99,6 +130,9 @@ public:
     using address_type = Address;
     using placement_group_id_type = std::string;
 
+    /// Constructs the manager and validates the configuration.
+    /// Throws std::invalid_argument if cluster_name, image_id, or node_port are empty/zero,
+    /// or if topology references a group not present in subnet_by_group.
     explicit aws_ec2_quorum_manager(aws_ec2_quorum_manager_config cfg) : _cfg(std::move(cfg)) {
         if (_cfg.cluster_name.empty()) {
             throw std::invalid_argument("aws_ec2_quorum_manager: cluster_name must be non-empty");
@@ -118,12 +152,9 @@ public:
         _ec2 = make_ec2_client(_cfg.aws);
     }
 
-    // ── assess_quorum ─────────────────────────────────────────────────────────
-    // Liveness is determined via DescribeInstanceStatus, not DescribeInstances.
-    // A node is live when EC2 reports its instance state as "running".
-    // The node_id encodes the EC2 instance ID directly (see ec2_id_to_node_id /
-    // node_id_to_ec2_id), so no tag lookup is required.
-
+    /// Returns the health of the current cluster by calling DescribeInstanceStatus.
+    /// A node is live iff its instance state is "running" (SetIncludeAllInstances=true
+    /// so transitioning instances are visible). Returns an exceptional Future on API error.
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         try {
@@ -162,8 +193,9 @@ public:
         }
     }
 
-    // ── maintain_quorum ───────────────────────────────────────────────────────
-
+    /// Assesses quorum, terminates unreachable nodes, and provisions replacements to meet topology.
+    /// Decommission and provision errors are logged to stderr but do not abort the operation;
+    /// the returned health reflects the pre-maintenance cluster state.
     auto maintain_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         try {
@@ -227,10 +259,10 @@ public:
         return FutureFactory::makeFuture(std::move(pre_health));
     }
 
-    // ── provision_node ────────────────────────────────────────────────────────
-    // The NodeId is derived directly from the EC2 instance ID returned by
-    // RunInstances — no separate ID counter or tag scan is needed.
-
+    /// Launches a new EC2 instance in the subnet mapped to target_group.
+    /// The NodeId is derived from the instance ID returned by RunInstances; replacing is accepted
+    /// by the interface but not used (the new instance gets a new ID regardless).
+    /// Returns an exceptional Future if RunInstances fails or the provision_timeout is exceeded.
     auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
         -> kythira::Future<peer_info<NodeId, Address>> {
         try {
@@ -359,11 +391,9 @@ public:
         }
     }
 
-    // ── decommission_node ─────────────────────────────────────────────────────
-    // The EC2 instance ID is derived directly from node_id — no DescribeInstances
-    // lookup is required. TerminateInstances is idempotent for already-terminated
-    // instances (AWS returns the terminal state without error).
-
+    /// Terminates the EC2 instance identified by node_id and waits up to 30 s for the
+    /// state to leave "running", so a subsequent assess_quorum call sees it as unreachable.
+    /// Returns successfully if the instance was already gone (InvalidInstanceID.NotFound).
     auto decommission_node(const NodeId& node_id) -> kythira::Future<void> {
         try {
             fiu_do_on("raft/aws/ec2/terminate_instances",
@@ -414,15 +444,11 @@ public:
         }
     }
 
-    // ── topology ─────────────────────────────────────────────────────────────
-
+    /// Returns the desired topology from the configuration.
     [[nodiscard]] auto topology() const -> desired_topology<std::string> { return _cfg.topology; }
 
-    // ── ID conversion utilities ───────────────────────────────────────────────
-    // EC2 instance IDs have the format "i-0{16 hex digits}" (post-2016).
-    // The numeric value of the 17-char hex suffix fits in uint64_t when the
-    // leading digit is 0 (always true for modern IDs).
-
+    /// Converts an EC2 instance ID ("i-0{16 hex digits}") to a NodeId.
+    /// The numeric value of the 17-char hex suffix is used; fits in uint64_t for all modern IDs.
     static auto ec2_id_to_node_id(const std::string& ec2_id) -> NodeId {
         std::uint64_t v = std::stoull(ec2_id.substr(2), nullptr, 16);
         if constexpr (std::is_same_v<NodeId, std::string>) {
@@ -432,6 +458,7 @@ public:
         }
     }
 
+    /// Converts a NodeId back to its EC2 instance ID string ("i-0{16 hex digits}").
     static auto node_id_to_ec2_id(const NodeId& nid) -> std::string {
         std::uint64_t v{};
         if constexpr (std::is_same_v<NodeId, std::string>) {
@@ -448,6 +475,7 @@ private:
     aws_ec2_quorum_manager_config _cfg;
     std::shared_ptr<Aws::EC2::EC2Client> _ec2;
 
+    /// Builds an EC2Client from aws_client_config, using credentials_provider when set.
     static auto make_ec2_client(const aws_client_config& aws)
         -> std::shared_ptr<Aws::EC2::EC2Client> {
         Aws::Client::ClientConfiguration client_cfg;
@@ -466,6 +494,7 @@ private:
         return std::make_shared<Aws::EC2::EC2Client>(client_cfg);
     }
 
+    /// Returns NodeId as a string suitable for use as an EC2 tag value or map key.
     static auto node_id_str(const NodeId& id) -> std::string {
         if constexpr (std::is_same_v<NodeId, std::string>) {
             return id;
@@ -474,6 +503,7 @@ private:
         }
     }
 
+    /// Returns the value of the first tag with the given key, or nullopt if absent.
     static auto find_tag(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::string& key)
         -> std::optional<std::string> {
         for (const auto& tag : tags) {
@@ -484,6 +514,7 @@ private:
         return std::nullopt;
     }
 
+    /// Builds a quorum_health from cluster membership and a live/dead map keyed by node_id_str.
     auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
                       const std::map<std::string, bool>& live_map) const
         -> kythira::Future<quorum_health<NodeId, std::string>> {
@@ -532,6 +563,8 @@ private:
         });
     }
 
+    /// Maps live/total counts to quorum_status: lost < majority, critical == majority, degraded <
+    /// total.
     static auto compute_status(std::size_t live, std::size_t total) -> quorum_status {
         if (total == 0) {
             return quorum_status::healthy;
@@ -549,6 +582,7 @@ private:
         return quorum_status::healthy;
     }
 
+    /// Applies standard kythira:* tags plus extra_tags to a newly provisioned instance.
     void apply_tags(const std::string& ec2_id, const NodeId& nid, const std::string& group,
                     const std::string& market) {
         auto make_tag = [](const std::string& k, const std::string& v) {
@@ -590,6 +624,7 @@ private:
         _ec2->CreateTags(req);
     }
 
+    /// Substitutes {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} placeholders in user_data_template.
     auto render_user_data(const NodeId& nid, const std::string& az) const -> std::string {
         std::string result = _cfg.user_data_template;
         auto replace_all = [&](const std::string& from, const std::string& to) {
@@ -606,6 +641,7 @@ private:
         return result;
     }
 
+    /// Converts ec2_spot_interruption_behavior to the AWS SDK enum value.
     static auto to_aws_interruption_behavior(ec2_spot_interruption_behavior b)
         -> Aws::EC2::Model::InstanceInterruptionBehavior {
         switch (b) {

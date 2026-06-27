@@ -809,6 +809,8 @@ Key pair:         use AWS_TEST_KEY_NAME if set, else
 Bastion:          RunInstances(ImageId=AWS_TEST_AMI_ID, InstanceType=t3.nano,
                                SubnetId=bastion_subnet, SG=bastion_sg,
                                KeyName=key_name,
+                               InstanceMarketOptions={MarketType=spot,
+                                 SpotOptions={SpotInstanceType=one-time}},
                                TagSpecifications=[kythira:test-run={uuid},
                                                   kythira:role=bastion]);
                       wait for bastion EC2 state = running

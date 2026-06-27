@@ -647,7 +647,7 @@ AWS/LocalStack resource lifecycles, following these rules:
    | Deny-all Network ACL | *(always created)* | `CreateNetworkAcl(vpc)`; add deny-all inbound rule (rule 1, all traffic, DENY) and deny-all outbound rule (rule 1, all traffic, DENY); used to simulate subnet-level network partition for `az_outage_instances_launch_but_cannot_join` |
    | Bastion security group | *(always created)* | `CreateSecurityGroup(vpc)`; ingress: SSH (22) from `AWS_TEST_ALLOWED_CIDR` (default `0.0.0.0/0`) |
    | SSH key pair | `AWS_TEST_KEY_NAME` | `CreateKeyPair(KeyName=kythira-test-{uuid})`; private key material held in memory for the test run only and NOT written to disk |
-   | Bastion EC2 instance | *(always created)* | `RunInstances(ImageId=AWS_TEST_AMI_ID, InstanceType=t3.nano, SubnetId=bastion_subnet, SG=bastion_sg, KeyName=key)`; tagged `kythira:test-run = {uuid}` |
+   | Bastion EC2 instance | *(always created)* | `RunInstances(ImageId=AWS_TEST_AMI_ID, InstanceType=t3.nano, SubnetId=bastion_subnet, SG=bastion_sg, KeyName=key, MarketType=spot, SpotInstanceType=one-time)`; tagged `kythira:test-run = {uuid}` |
    | IAM instance profile | `AWS_TEST_IAM_PROFILE` | `CreateRole` (EC2 trust) with inline policy: `ec2:DescribeInstances`, `ec2:CreateTags`, `s3:GetObject` on `arn:aws:s3:::{AWS_TEST_S3_BUCKET}/kythira-test/*`; wrap in `CreateInstanceProfile` + `AddRoleToInstanceProfile` |
    | kythira-node S3 object | *(always uploaded)* | Upload `KYTHIRA_NODE_BINARY` to `s3://{AWS_TEST_S3_BUCKET}/kythira-test/{uuid}/kythira-node` |
    | PG — cluster strategy | `AWS_TEST_PG_CLUSTER_NAME` | `CreatePlacementGroup(Strategy=cluster)` |
@@ -811,10 +811,11 @@ AWS/LocalStack resource lifecycles, following these rules:
     | Variable | Required | Purpose |
     |---|---|---|
     | `AWS_REGION` | Yes | AWS region (e.g. `us-east-1`) |
-    | `AWS_TEST_AMI_ID` | No | AMI ID override; when absent the fixture queries `DescribeImages` for the latest Amazon Linux 2023 x86_64 HVM AMI from owner `amazon` |
+    | `AWS_TEST_AMI_ID` | No | AMI ID override; when absent the fixture queries `DescribeImages` for the latest Amazon Linux 2023 HVM AMI matching the build-host architecture (`x86_64` or `arm64`) from owner `amazon` |
     | `AWS_TEST_S3_BUCKET` | Yes | S3 bucket for kythira-node binary upload; bucket must already exist |
     | `KYTHIRA_NODE_BINARY` | Yes | Local path to the kythira-node binary to upload |
-    | `AWS_TEST_INSTANCE_TYPE` | No | Instance type (default `t3.micro`) |
+    | `AWS_TEST_INSTANCE_TYPE` | No | Cluster node instance type (default `t3.micro` on x86_64, `t4g.micro` on aarch64) |
+    | `KYTHIRA_TEST_BASTION_INSTANCE_TYPE` | No | Bastion instance type (default `t3.micro` on x86_64, `t4g.micro` on aarch64) |
     | `AWS_TEST_VPC_ID` | No | Pre-existing VPC; created if absent |
     | `AWS_TEST_SUBNET_ID_AZ1` | No | Pre-existing private subnet AZ1; created if absent |
     | `AWS_TEST_SUBNET_ID_AZ2` | No | Pre-existing private subnet AZ2; created if absent |
@@ -1141,7 +1142,7 @@ test cases complete.
    - **EIP**: from `AllocateAddress` call to `ReleaseAddress` in teardown.
    - **NAT gateway**: from `CreateNatGateway` call to `DeleteNatGateway` in
      teardown.
-   - **Bastion instance** (`bastion_instance_type × 1`): from `RunInstances`
+   - **Bastion instance** (`bastion_instance_type × 1`, spot): from `RunInstances`
      call to `TerminateInstances` in teardown.
 
 5. `RealEc2Fixture` SHALL expose a public method:
