@@ -11,6 +11,8 @@
 #include <aws/ec2/EC2Client.h>
 #include <aws/ec2/model/AllocateAddressRequest.h>
 #include <aws/ec2/model/DescribeImagesRequest.h>
+#include <aws/ec2/model/DescribeInstanceTypesRequest.h>
+#include <aws/ec2/model/DescribeSpotPriceHistoryRequest.h>
 #include <aws/ec2/model/AssociateRouteTableRequest.h>
 #include <aws/ec2/model/AttachInternetGatewayRequest.h>
 #include <aws/ec2/model/AuthorizeSecurityGroupIngressRequest.h>
@@ -245,8 +247,8 @@ struct CostSummaryFixture {
         oss << "  " << std::left << std::setw(52) << "GRAND TOTAL"
             << "  $" << grand << "\n";
         oss << "================================================================\n";
-        oss << " Pricing: on-demand us-east-1 Linux (approximate).\n";
-        oss << " Actual costs vary by region, savings plans, and data transfer.\n";
+        oss << " Pricing: spot Linux/UNIX rates queried via DescribeSpotPriceHistory at test\n";
+        oss << " start.  Actual spot price varies by AZ and fluctuates over time.\n";
         oss << " Use AWS Cost Explorer for authoritative billing data.\n";
         oss << "================================================================\n";
         BOOST_TEST_MESSAGE(oss.str());
@@ -254,6 +256,117 @@ struct CostSummaryFixture {
 };
 
 BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
+
+// ── Spot instance type selection ──────────────────────────────────────────────
+
+struct SpotSelection {
+    std::string instance_type;
+    double spot_price_per_hr{0.0};
+};
+
+// Returns the cheapest Linux/UNIX spot instance type available in the region
+// connected to `ec2_client`.  `arch` must be "x86_64" or "arm64" — bare-metal
+// types are excluded.  Falls back to a hardcoded default if the API calls fail.
+//
+// Algorithm:
+//   1. DescribeInstanceTypes — enumerate non-bare-metal spot-eligible types for
+//      the requested architecture (paginated).
+//   2. DescribeSpotPriceHistory — batch-query current Linux/UNIX spot prices for
+//      those types (50 types per API call).
+//   3. Return the type with the lowest observed price.
+auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& arch)
+    -> SpotSelection {
+    const std::string fallback_type = (arch == "arm64") ? "t4g.micro" : "t3.micro";
+    const double fallback_price = (arch == "arm64") ? 0.0047 : 0.0052;
+
+    // Step 1: enumerate qualifying instance types.
+    std::vector<Aws::EC2::Model::InstanceType> candidates;
+    {
+        std::string next_token;
+        do {
+            Aws::EC2::Model::DescribeInstanceTypesRequest req;
+            req.SetMaxResults(100);
+            {
+                Aws::EC2::Model::Filter f;
+                f.SetName("supported-usage-class");
+                f.AddValues("spot");
+                req.AddFilters(f);
+            }
+            {
+                Aws::EC2::Model::Filter f;
+                f.SetName("bare-metal");
+                f.AddValues("false");
+                req.AddFilters(f);
+            }
+            {
+                Aws::EC2::Model::Filter f;
+                f.SetName("processor-info.supported-architectures");
+                f.AddValues(arch);
+                req.AddFilters(f);
+            }
+            if (!next_token.empty()) {
+                req.SetNextToken(next_token);
+            }
+            auto out = ec2_client.DescribeInstanceTypes(req);
+            if (!out.IsSuccess()) {
+                return {fallback_type, fallback_price};
+            }
+            for (const auto& info : out.GetResult().GetInstanceTypes()) {
+                candidates.push_back(info.GetInstanceType());
+            }
+            next_token = std::string(out.GetResult().GetNextToken());
+        } while (!next_token.empty());
+    }
+
+    if (candidates.empty()) {
+        return {fallback_type, fallback_price};
+    }
+
+    // Step 2: batch-query spot price history (50 types per call).
+    std::map<std::string, double> price_by_type;
+    constexpr std::size_t kBatch = 50;
+
+    for (std::size_t i = 0; i < candidates.size(); i += kBatch) {
+        Aws::EC2::Model::DescribeSpotPriceHistoryRequest req;
+        req.AddProductDescriptions("Linux/UNIX");
+        req.SetMaxResults(static_cast<int>(kBatch * 3));
+        const std::size_t end = std::min(i + kBatch, candidates.size());
+        for (std::size_t j = i; j < end; ++j) {
+            req.AddInstanceTypes(candidates[j]);
+        }
+        auto out = ec2_client.DescribeSpotPriceHistory(req);
+        if (!out.IsSuccess()) {
+            continue;
+        }
+        for (const auto& entry : out.GetResult().GetSpotPriceHistory()) {
+            const auto type_name =
+                std::string(Aws::EC2::Model::InstanceTypeMapper::GetNameForInstanceType(
+                    entry.GetInstanceType()));
+            double price = 0.0;
+            try {
+                price = std::stod(std::string(entry.GetSpotPrice()));
+            } catch (...) {
+                continue;
+            }
+            if (price <= 0.0) {
+                continue;
+            }
+            auto it = price_by_type.find(type_name);
+            if (it == price_by_type.end() || price < it->second) {
+                price_by_type[type_name] = price;
+            }
+        }
+    }
+
+    if (price_by_type.empty()) {
+        return {fallback_type, fallback_price};
+    }
+
+    const auto min_it =
+        std::min_element(price_by_type.begin(), price_by_type.end(),
+                         [](const auto& a, const auto& b) { return a.second < b.second; });
+    return {min_it->first, min_it->second};
+}
 
 // ── Signal-driven cleanup ─────────────────────────────────────────────────────
 //
@@ -355,14 +468,16 @@ struct RealEc2Fixture {
 
     // ── Cost tracking ──────────────────────────────────────────────────────────
     TestCostReport cost_report;
+    double spot_price_cluster{0.0};  // $/hr per node, queried from DescribeSpotPriceHistory
+    double spot_price_bastion{0.0};  // $/hr for bastion, queried from DescribeSpotPriceHistory
 
     // Track the initial cluster instances provisioned by a test case.
     // Call immediately after provisioning; maintain_quorum replacements are
     // not tracked (making this a lower-bound estimate for such tests).
     void track_instances(std::size_t count) {
         cost_report.resources.push_back({
-            std::to_string(count) + "x " + instance_type + " (cluster)",
-            ec2_hourly_rate(instance_type) * static_cast<double>(count),
+            std::to_string(count) + "x " + instance_type + " (cluster, spot)",
+            spot_price_cluster * static_cast<double>(count),
             std::chrono::steady_clock::now(),
             std::nullopt,
         });
@@ -375,21 +490,7 @@ struct RealEc2Fixture {
         }
         ami_id = env("KYTHIRA_TEST_AMI_ID");
         instance_type = env("KYTHIRA_TEST_INSTANCE_TYPE");
-        if (instance_type.empty()) {
-#if defined(__aarch64__) || defined(__arm64__)
-            instance_type = "t4g.micro";
-#else
-            instance_type = "t3.micro";
-#endif
-        }
         bastion_instance_type = env("KYTHIRA_TEST_BASTION_INSTANCE_TYPE");
-        if (bastion_instance_type.empty()) {
-#if defined(__aarch64__) || defined(__arm64__)
-            bastion_instance_type = "t4g.micro";
-#else
-            bastion_instance_type = "t3.micro";
-#endif
-        }
         allowed_cidr = env("AWS_TEST_ALLOWED_CIDR");
         if (allowed_cidr.empty()) {
             allowed_cidr = "0.0.0.0/0";
@@ -463,6 +564,33 @@ struct RealEc2Fixture {
             throw std::runtime_error(
                 "skip: AWS STS GetCallerIdentity failed — credentials not available: " +
                 std::string(id_out.GetError().GetMessage()));
+        }
+
+        // Query EC2 for the cheapest spot instance types unless overridden.
+        // Both cluster nodes and bastion use the same AMI (architecture-matched to
+        // the build host), so both selections are constrained to the same arch.
+#if defined(__aarch64__) || defined(__arm64__)
+        const std::string target_arch = "arm64";
+#else
+        const std::string target_arch = "x86_64";
+#endif
+        if (instance_type.empty()) {
+            auto sel = cheapest_spot_instance(*ec2, target_arch);
+            instance_type = sel.instance_type;
+            spot_price_cluster = sel.spot_price_per_hr;
+            BOOST_TEST_MESSAGE("[spot-select] cluster: " + instance_type + " at $" +
+                               std::to_string(spot_price_cluster) + "/hr");
+        } else {
+            spot_price_cluster = ec2_hourly_rate(instance_type);
+        }
+        if (bastion_instance_type.empty()) {
+            auto sel = cheapest_spot_instance(*ec2, target_arch);
+            bastion_instance_type = sel.instance_type;
+            spot_price_bastion = sel.spot_price_per_hr;
+            BOOST_TEST_MESSAGE("[spot-select] bastion: " + bastion_instance_type + " at $" +
+                               std::to_string(spot_price_bastion) + "/hr");
+        } else {
+            spot_price_bastion = ec2_hourly_rate(bastion_instance_type);
         }
 
         // Deterministic UUID from test case ID.
@@ -798,7 +926,7 @@ struct RealEc2Fixture {
         bastion_ec2_id = std::string(out.GetResult().GetInstances()[0].GetInstanceId());
         cost_report.resources.push_back({
             "1x " + bastion_instance_type + " (bastion, spot)",
-            ec2_hourly_rate(bastion_instance_type),
+            spot_price_bastion,
             std::chrono::steady_clock::now(),
             std::nullopt,
         });
