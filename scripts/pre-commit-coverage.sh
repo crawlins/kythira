@@ -240,6 +240,8 @@ LLVM_COV_OUT=$("$LLVM_COV" report \
     --ignore-filename-regex='.*/usr/.*' \
     --ignore-filename-regex='.*/cmd/.*' \
     --ignore-filename-regex='.*/tests/docker_chaos/.*' \
+    --ignore-filename-regex='.*/tests/aws_quorum_manager_localstack_test.*' \
+    --ignore-filename-regex='.*/tests/aws_quorum_manager_real_ec2_test.*' \
     --ignore-filename-regex='.*/examples/.*' \
     2>&1)
 
