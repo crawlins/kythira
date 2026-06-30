@@ -537,6 +537,13 @@ private:
     // Whether stop() was requested before start() completed (cancels bootstrap loop)
     std::atomic<bool> _stop_requested{false};
 
+    // Shared stop token captured by all async Folly callbacks.  Using shared_ptr means
+    // the flag outlives the node object: when a stopped node goes out of scope and a new
+    // node is created at the same stack address, any still-inflight callbacks from the
+    // old node will lock the OLD shared_ptr (value=true) and exit immediately without
+    // touching `this` — preventing both stack corruption and spurious mutex contention.
+    std::shared_ptr<std::atomic<bool>> _stop_flag{std::make_shared<std::atomic<bool>>(false)};
+
     // Background thread for reconnection logic (restarting nodes only)
     std::thread _reconnect_thread;
 
@@ -1600,6 +1607,11 @@ auto node<Types>::start() -> void {
     // already exited by the time the caller invokes start() again.
     _stop_requested.store(false, std::memory_order_release);
 
+    // Replace the shared stop flag with a fresh one so that async callbacks from the
+    // previous run (which captured the old shared_ptr) continue to see the old flag
+    // as true, while new callbacks from this run see false.
+    _stop_flag = std::make_shared<std::atomic<bool>>(false);
+
     _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)
@@ -1651,6 +1663,7 @@ auto node<Types>::stop() -> void {
     // Signal bootstrap / reconnect loops first — this is safe even if start() is
     // still in progress (run_bootstrap / run_reconnect check _stop_requested).
     _stop_requested.store(true, std::memory_order_release);
+    _stop_flag->store(true, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(_reconnect_cv_mutex);
         _reconnect_cv.notify_all();
@@ -1783,8 +1796,11 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
     // Return the future from configuration synchronizer
     // It will complete when the configuration change is committed
-    return config_future.thenTry([this, new_node, old_config = _configuration,
-                                  new_config](auto try_result) {
+    return config_future.thenTry([this, new_node, old_config = _configuration, new_config,
+                                  stop_flag = _stop_flag](auto try_result) {
+        if (stop_flag->load(std::memory_order_acquire)) {
+            throw std::runtime_error("node stopped");
+        }
         if (try_result.hasException()) {
             _logger.error("Add server failed", {{"node_id", node_id_to_string(_node_id)},
                                                 {"new_node", node_id_to_string(new_node)}});
@@ -1922,7 +1938,10 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Return the future from configuration synchronizer
     return config_future.thenTry([this, old_node, removing_self, old_config = _configuration,
-                                  new_config](auto try_result) {
+                                  new_config, stop_flag = _stop_flag](auto try_result) {
+        if (stop_flag->load(std::memory_order_acquire)) {
+            throw std::runtime_error("node stopped");
+        }
         if (try_result.hasException()) {
             _logger.error("Remove server failed", {{"node_id", node_id_to_string(_node_id)},
                                                    {"old_node", node_id_to_string(old_node)}});
@@ -2769,8 +2788,12 @@ auto node<Types>::send_heartbeats() -> void {
 template<raft_types Types>
 auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
     // Create a lambda that sends the heartbeat (AppendEntries with empty entries)
-    auto send_heartbeat_operation = [this,
-                                     target]() -> kythira::Future<append_entries_response_type> {
+    auto send_heartbeat_operation =
+        [this, target, stop_flag = _stop_flag]() -> kythira::Future<append_entries_response_type> {
+        if (stop_flag->load(std::memory_order_acquire)) {
+            return kythira::FutureFactory::makeExceptionalFuture<append_entries_response_type>(
+                std::runtime_error("node stopped"));
+        }
         // Get next index for this follower
         auto next_idx = _next_index[target];
 
@@ -2817,8 +2840,11 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
         .execute_with_retry("heartbeat", send_heartbeat_operation,
                             std::nullopt  // Use default heartbeat retry policy
                             )
-        .thenTry([this, target,
-                  start_time](kythira::Try<append_entries_response_type> try_response) {
+        .thenTry([this, target, start_time,
+                  stop_flag = _stop_flag](kythira::Try<append_entries_response_type> try_response) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
             std::lock_guard<std::mutex> lock(_mutex);
 
             // Calculate RPC latency
@@ -3058,11 +3084,11 @@ auto node<Types>::start_election() -> void {
             _request_vote_error_handler
                 .execute_with_retry(
                     "request_vote",
-                    [this, peer_id, vote_request]() -> kythira::Future<request_vote_response_type> {
-                        if (_stop_requested.load(std::memory_order_acquire)) {
+                    [this, peer_id, vote_request,
+                     stop_flag = _stop_flag]() -> kythira::Future<request_vote_response_type> {
+                        if (stop_flag->load(std::memory_order_acquire)) {
                             return kythira::FutureFactory::makeExceptionalFuture<
-                                request_vote_response_type>(
-                                std::runtime_error("Node stopped — aborting RequestVote retry"));
+                                request_vote_response_type>(std::runtime_error("node stopped"));
                         }
 
                         _logger.debug(
@@ -3083,8 +3109,11 @@ auto node<Types>::start_election() -> void {
                                                                  _config.rpc_timeout());
                     },
                     vote_retry_policy)
-                .thenTry([this, peer_id](
+                .thenTry([this, peer_id, stop_flag = _stop_flag](
                              kythira::Try<request_vote_response_type> result) -> tagged_vote_t {
+                    if (stop_flag->load(std::memory_order_acquire)) {
+                        throw std::runtime_error("node stopped");
+                    }
                     if (result.hasException()) {
                         _logger.warning("RequestVote RPC failed after retries",
                                         {{"node_id", node_id_to_string(_node_id)},
@@ -3146,8 +3175,11 @@ auto node<Types>::start_election() -> void {
     raft_future_collector<tagged_vote_t>::collect_all_with_timeout(std::move(vote_futures),
                                                                    snapshot_election_timeout)
         .thenValue([this, current_term, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old =
-                        std::move(snap_c_old)](std::vector<kythira::Try<tagged_vote_t>> results) {
+                    snap_c_old = std::move(snap_c_old),
+                    stop_flag = _stop_flag](std::vector<kythira::Try<tagged_vote_t>> results) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
             std::lock_guard<std::mutex> lock(_mutex);
 
             if (_state != kythira::server_state::candidate || _current_term != current_term) {
@@ -3222,26 +3254,30 @@ auto node<Types>::start_election() -> void {
                 _metrics.emit();
             }
         })
-        .thenError([this, current_term, node_id](const std::exception_ptr& ex) {
-            std::lock_guard<std::mutex> lock(_mutex);
+        .thenError(
+            [this, current_term, node_id, stop_flag = _stop_flag](const std::exception_ptr& ex) {
+                if (stop_flag->load(std::memory_order_acquire)) {
+                    return;
+                }
+                std::lock_guard<std::mutex> lock(_mutex);
 
-            try {
-                std::rethrow_exception(ex);
-            } catch (const kythira::future_collection_exception& e) {
-                _logger.warning("Failed to collect vote responses",
-                                {{"node_id", node_id_to_string(node_id)},
-                                 {"operation", e.get_operation()},
-                                 {"failed_count", std::to_string(e.get_failed_count())}});
-                _metrics.set_metric_name("election_lost");
-                _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                _metrics.add_dimension("reason", "collection_failure");
-                _metrics.add_one();
-                _metrics.emit();
-            } catch (...) {
-                _logger.error("Unexpected error during election",
-                              {{"node_id", node_id_to_string(node_id)}});
-            }
-        });
+                try {
+                    std::rethrow_exception(ex);
+                } catch (const kythira::future_collection_exception& e) {
+                    _logger.warning("Failed to collect vote responses",
+                                    {{"node_id", node_id_to_string(node_id)},
+                                     {"operation", e.get_operation()},
+                                     {"failed_count", std::to_string(e.get_failed_count())}});
+                    _metrics.set_metric_name("election_lost");
+                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                    _metrics.add_dimension("reason", "collection_failure");
+                    _metrics.add_one();
+                    _metrics.emit();
+                } catch (...) {
+                    _logger.error("Unexpected error during election",
+                                  {{"node_id", node_id_to_string(node_id)}});
+                }
+            });
 }
 
 template<raft_types Types>
@@ -3501,8 +3537,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
     try {
         // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-        auto rpc_operation = [this, target, request,
-                              timeout]() -> kythira::Future<append_entries_response_type> {
+        auto rpc_operation = [this, target, request, timeout,
+                              stop_flag =
+                                  _stop_flag]() -> kythira::Future<append_entries_response_type> {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return kythira::FutureFactory::makeExceptionalFuture<append_entries_response_type>(
+                    std::runtime_error("node stopped"));
+            }
             return _network_client.send_append_entries(target, request, timeout);
         };
 
@@ -3512,7 +3553,11 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
         // Handle response asynchronously using thenTry to get folly::Try<response>
         std::move(response_future)
-            .thenTry([this, target, next_idx, entries_to_send, start_time](auto try_response) {
+            .thenTry([this, target, next_idx, entries_to_send, start_time,
+                      stop_flag = _stop_flag](auto try_response) {
+                if (stop_flag->load(std::memory_order_acquire)) {
+                    return;
+                }
                 std::unique_lock<std::mutex> lock(_mutex);
 
                 // Calculate RPC latency (including retry delays)
