@@ -3032,13 +3032,15 @@ auto node<Types>::start_election() -> void {
         .jitter_factor = 0.1,
         .max_attempts = 3};
 
-    // Create error handler for RequestVote operations
-    error_handler<request_vote_response_type> vote_error_handler;
-    vote_error_handler.set_retry_policy("request_vote", vote_retry_policy);
-
     // Send RequestVote RPCs to all peers with retry logic.
     // Each future is tagged with the peer_id so the callback can count per-configuration for
     // joint-consensus quorum (Raft §6).
+    //
+    // Use the member _request_vote_error_handler (not a local) so that delayed-retry
+    // lambdas hold a `this` pointer that remains valid for the lifetime of the node.
+    // A local handler would be destroyed when start_election() returns, leaving the
+    // Folly-executor callbacks with a dangling `this` — causing stack corruption
+    // detected by clang's SSP.
     using tagged_vote_t = std::pair<node_id_type, request_vote_response_type>;
     std::vector<kythira::Future<tagged_vote_t>> vote_futures;
     vote_futures.reserve(peer_ids.size());
@@ -3053,10 +3055,16 @@ auto node<Types>::start_election() -> void {
         // Build a tagged future: pair<peer_id, response> so the callback can count
         // votes per configuration for joint-consensus quorum.
         auto tagged_future =
-            vote_error_handler
+            _request_vote_error_handler
                 .execute_with_retry(
                     "request_vote",
                     [this, peer_id, vote_request]() -> kythira::Future<request_vote_response_type> {
+                        if (_stop_requested.load(std::memory_order_acquire)) {
+                            return kythira::FutureFactory::makeExceptionalFuture<
+                                request_vote_response_type>(
+                                std::runtime_error("Node stopped — aborting RequestVote retry"));
+                        }
+
                         _logger.debug(
                             "Sending RequestVote RPC",
                             {{"node_id", node_id_to_string(_node_id)},

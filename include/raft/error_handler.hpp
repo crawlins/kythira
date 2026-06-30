@@ -305,6 +305,14 @@ public:
                     .timeout_classification = std::nullopt};
         }
 
+        // Node shutdown — abort immediately, do not retry
+        if (error_msg.find("node stopped") != std::string::npos) {
+            return {.type = error_type::permanent_failure,
+                    .should_retry = false,
+                    .description = "Node stopped — retry chain aborted",
+                    .timeout_classification = std::nullopt};
+        }
+
         // Temporary failures (generic network issues)
         if (error_msg.find("temporary") != std::string::npos ||
             error_msg.find("try again") != std::string::npos ||
