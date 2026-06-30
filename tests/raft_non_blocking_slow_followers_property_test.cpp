@@ -4,7 +4,6 @@
 #include <vector>
 #include <chrono>
 #include <random>
-#include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -52,6 +51,7 @@ class ReplicationManager {
 private:
     std::size_t _cluster_size;
     LogIndex _commit_index{0};
+    LogIndex _last_proposed_index{0};
     std::unordered_map<LogIndex, std::unordered_set<NodeId>> _acknowledgments;
     std::unordered_map<NodeId, FollowerState> _follower_states;
     std::unordered_set<NodeId> _slow_followers;
@@ -85,6 +85,17 @@ public:
         _follower_states[follower_id] = FollowerState::responsive;
         _slow_followers.erase(follower_id);
         _unresponsive_followers.erase(follower_id);
+    }
+
+    // Record that a log entry has been proposed (leader appended it).
+    // update_commit_index uses _last_proposed_index as the upper bound so that
+    // leader-only majority (when all followers are unresponsive) is detected even
+    // when no record_acknowledgment call ever fires for this entry.
+    void propose_entry(LogIndex log_index) {
+        if (log_index > _last_proposed_index) {
+            _last_proposed_index = log_index;
+        }
+        update_commit_index();
     }
 
     // Record an acknowledgment from a follower for a specific log entry
@@ -146,31 +157,33 @@ public:
     void clear() {
         _acknowledgments.clear();
         _commit_index = 0;
+        _last_proposed_index = 0;
     }
 
 private:
-    // Update commit index based on majority acknowledgments among responsive nodes
+    // Update commit index based on majority acknowledgments among responsive nodes.
+    // Uses _last_proposed_index as the upper bound so that entries acknowledged only
+    // by the leader (when all followers are unresponsive and majority_needed == 1)
+    // are committed even if no record_acknowledgment call ever arrives.
     void update_commit_index() {
-        // Find the highest log index that has majority acknowledgment
-        // and all previous entries also have majority acknowledgment
         LogIndex new_commit_index = _commit_index;
 
-        // Get all acknowledged entries in order
-        std::vector<LogIndex> acknowledged_entries;
+        // Scan from the next uncommitted entry up to the highest known entry,
+        // which is the greater of the last explicitly acknowledged entry and the
+        // last proposed entry.
+        LogIndex upper_bound = _last_proposed_index;
         for (const auto& [log_index, _] : _acknowledgments) {
-            acknowledged_entries.push_back(log_index);
+            if (log_index > upper_bound) {
+                upper_bound = log_index;
+            }
         }
-        std::sort(acknowledged_entries.begin(), acknowledged_entries.end());
 
-        if (!acknowledged_entries.empty()) {
-            for (LogIndex log_index = _commit_index + 1; log_index <= acknowledged_entries.back();
-                 ++log_index) {
-                if (has_majority_acknowledgment(log_index)) {
-                    new_commit_index = log_index;
-                } else {
-                    // Can't advance commit index past an entry without majority
-                    break;
-                }
+        for (LogIndex log_index = _commit_index + 1; log_index <= upper_bound; ++log_index) {
+            if (has_majority_acknowledgment(log_index)) {
+                new_commit_index = log_index;
+            } else {
+                // Can't advance commit index past an entry without majority
+                break;
             }
         }
 
@@ -274,6 +287,10 @@ BOOST_AUTO_TEST_CASE(raft_non_blocking_slow_followers_property_test,
 
         for (LogIndex log_index = 1; log_index <= entry_count; ++log_index) {
             BOOST_TEST_MESSAGE("Processing log entry " << log_index);
+
+            // Register the entry as proposed so the manager can commit it via
+            // leader-only majority when all followers are unresponsive.
+            manager.propose_entry(log_index);
 
             std::size_t ack_count = 1;  // Leader always acknowledges implicitly
             std::vector<NodeId> acknowledging_followers;
