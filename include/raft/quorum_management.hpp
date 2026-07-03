@@ -109,7 +109,15 @@ template<typename GroupId>
 requires placement_group_id<GroupId>
 struct placement_group_target {
     GroupId group_id;          ///< Placement group identifier.
-    std::size_t target_count;  ///< Desired number of nodes in this group.
+    std::size_t target_count;  ///< Desired number of VOTING nodes in this group.
+
+    /// Optional ceiling on the number of learners (non-voting members) in this
+    /// group, independent of `target_count`. When absent (the default), learner
+    /// admission falls back to sharing `target_count` with voting members — see
+    /// `node<Types>::group_has_admission_capacity()`. When set, it lets a
+    /// group's voting size and its learner population be sized independently,
+    /// e.g. a 3-node voting core with room for thousands of learners.
+    std::optional<std::size_t> learner_capacity = std::nullopt;
 };
 
 /// @brief Full target topology: one entry per placement group.
