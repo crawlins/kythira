@@ -85,6 +85,25 @@ private:
     std::string _reason;
 };
 
+// Learner placement-capacity criterion exceptions (see .kiro/specs/non-voting-nodes/).
+// Distinguishable from each other and from ordinary precondition failures so callers
+// can tell "no capacity in this placement group" apart from "not leader" / "not found".
+class learner_capacity_exceeded_exception : public raft_completion_exception {
+public:
+    learner_capacity_exceeded_exception()
+        : raft_completion_exception(
+              "Learner admission rejected: placement group has no capacity remaining "
+              "relative to its desired voting target") {}
+};
+
+class voting_capacity_exceeded_exception : public raft_completion_exception {
+public:
+    voting_capacity_exceeded_exception()
+        : raft_completion_exception(
+              "Promotion rejected: placement group has no voting capacity remaining "
+              "relative to its desired voting target") {}
+};
+
 // Type aliases for common instantiations
 using commit_timeout_exception_t = commit_timeout_exception<std::uint64_t>;
 using leadership_lost_exception_t = leadership_lost_exception<std::uint64_t>;

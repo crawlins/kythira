@@ -109,6 +109,7 @@ concept cluster_configuration_type = requires(const T& config) {
     { config.nodes() } -> std::same_as<const std::vector<NodeId>&>;
     { config.is_joint_consensus() } -> std::convertible_to<bool>;
     { config.old_nodes() } -> std::same_as<const std::optional<std::vector<NodeId>>&>;
+    { config.learners() } -> std::same_as<const std::vector<NodeId>&>;
 };
 
 /// @brief Default cluster-configuration implementation.
@@ -117,6 +118,12 @@ concept cluster_configuration_type = requires(const T& config) {
 /// holds the previous node set so that a majority of both old and new configurations
 /// is required for a quorum.
 ///
+/// `_learners` holds non-voting members ("learners" in Raft literature, per Ongaro's
+/// thesis §4.2.1): nodes that replicate the log and apply committed entries but are
+/// never counted toward quorum or election majority, and never grant or request votes.
+/// Learner membership changes are always plain (non-joint) configuration entries —
+/// they never affect `_is_joint_consensus`, since they don't change the voting set.
+///
 /// @tparam NodeId Node identifier type; defaults to `uint64_t`.
 template<typename NodeId = std::uint64_t>
 requires node_id<NodeId>
@@ -124,12 +131,14 @@ struct cluster_configuration {
     std::vector<NodeId> _nodes;
     bool _is_joint_consensus;
     std::optional<std::vector<NodeId>> _old_nodes;
+    std::vector<NodeId> _learners;
 
     [[nodiscard]] auto nodes() const -> const std::vector<NodeId>& { return _nodes; }
     [[nodiscard]] auto is_joint_consensus() const -> bool { return _is_joint_consensus; }
     [[nodiscard]] auto old_nodes() const -> const std::optional<std::vector<NodeId>>& {
         return _old_nodes;
     }
+    [[nodiscard]] auto learners() const -> const std::vector<NodeId>& { return _learners; }
 };
 
 /// @brief Concept for a Raft snapshot: captures state-machine state and the log prefix it replaces.
