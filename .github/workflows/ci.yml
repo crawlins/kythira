@@ -96,7 +96,7 @@ jobs:
             -j$(nproc) \
             --output-on-failure \
             --output-junit ${{ github.workspace }}/test-results.xml \
-            -LE 'slow|performance|verbose|benchmark|docker'
+            -LE '^(slow|performance|verbose|benchmark|docker)$'
         continue-on-error: true
 
       - name: Publish test results
@@ -180,7 +180,7 @@ jobs:
             --output-on-failure \
             --output-junit ${{ github.workspace }}/coverage-test-results.xml \
             --repeat until-pass:3 \
-            -LE 'slow|performance|verbose|benchmark|docker'
+            -LE '^(slow|performance|verbose|benchmark|docker)$'
         continue-on-error: true
 
       - name: Publish coverage test results
