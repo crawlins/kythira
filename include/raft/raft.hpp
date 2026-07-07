@@ -279,6 +279,49 @@ public:
     /// @return Future that resolves once the configuration change is committed.
     auto remove_server(node_id_type old_node) -> future_type;
 
+    /// @brief Add a node to the cluster as a learner (non-voting member).
+    ///
+    /// A learner replicates the log and applies committed entries exactly like a
+    /// follower, but never votes, never becomes a candidate, and is never counted
+    /// toward quorum or election majority. Unlike `add_server()`, this is a plain
+    /// (non-joint) configuration change — it never affects the voting set, so it
+    /// commits under the current voting quorum with no joint-consensus phase.
+    ///
+    /// Rejected if the candidate's placement group has no remaining capacity
+    /// relative to `_quorum_manager.topology()` (see
+    /// `.kiro/specs/non-voting-nodes/`), with `learner_capacity_exceeded_exception`.
+    ///
+    /// @param new_node Identifier of the node to admit as a learner.
+    /// @return Future that resolves once the configuration change is committed.
+    auto add_learner(node_id_type new_node) -> future_type;
+
+    /// @brief Remove a learner from the cluster.
+    ///
+    /// Symmetric to `add_learner()`: a plain (non-joint) configuration change,
+    /// since removing a learner never affects the voting set or quorum.
+    ///
+    /// @param learner Identifier of the learner to remove.
+    /// @return Future that resolves once the configuration change is committed.
+    auto remove_learner(node_id_type learner) -> future_type;
+
+    /// @brief Promote an existing learner to full voting membership.
+    ///
+    /// Reuses the joint-consensus protocol (C_old -> C_old+new -> C_new), exactly
+    /// as `add_server()` does, since promotion changes the voting set. The
+    /// learner's existing `_next_index`/`_match_index` entries (already populated
+    /// from its time as a learner) are left untouched rather than reinitialized.
+    ///
+    /// Rejected if the learner's placement group has no remaining voting capacity
+    /// relative to `_quorum_manager.topology()`, with
+    /// `voting_capacity_exceeded_exception`. A learner blocked this way is left
+    /// unaffected — it remains an ordinary learner and becomes a promotion
+    /// candidate again the moment its group has room, with no bookkeeping
+    /// required (see `.kiro/specs/non-voting-nodes/`).
+    ///
+    /// @param learner Identifier of the learner to promote.
+    /// @return Future that resolves once the configuration change is committed.
+    auto promote_to_voter(node_id_type learner) -> future_type;
+
     /// @brief Send a ClusterLeave RPC to the current leader asking it to remove this node.
     ///
     /// No-op when the network client does not satisfy the `network_client_with_cluster_leave`
@@ -665,6 +708,46 @@ private:
 
     // Called by become_follower/candidate — disables the quorum check.
     auto stop_quorum_loop() -> void;
+
+    // ── Learner helpers (.kiro/specs/non-voting-nodes/) ──────────────────────
+
+    // Returns true iff _node_id is currently a learner (non-voting member).
+    // A live read of _configuration — never cached — so a node's election
+    // eligibility updates immediately when it is promoted, added, or removed.
+    [[nodiscard]] auto is_learner() const -> bool;
+
+    // Returns this node's own placement group, defaulting to placement_group_id_type{}
+    // when absent from _placement_map (same fallback used by build_quorum_cluster_vector()).
+    [[nodiscard]] auto placement_of(const node_id_type& id) const -> placement_group_id_type;
+
+    // Number of voting nodes (_configuration.nodes()) whose placement is `group`.
+    [[nodiscard]] auto voting_count_in_group(placement_group_id_type group) const -> std::size_t;
+
+    // Number of learners (_configuration.learners()) whose placement is `group`.
+    [[nodiscard]] auto learner_count_in_group(placement_group_id_type group) const -> std::size_t;
+
+    // voting_count_in_group(group) plus learner_count_in_group(group).
+    [[nodiscard]] auto voting_and_learner_count_in_group(placement_group_id_type group) const
+        -> std::size_t;
+
+    // Looks up `group`'s declared target in _quorum_manager.topology(); nullopt
+    // if the group has no declared target at all.
+    [[nodiscard]] auto find_group_target(placement_group_id_type group) const
+        -> std::optional<kythira::placement_group_target<placement_group_id_type>>;
+
+    // Admission capacity check: does `group` have room for one more learner?
+    // Fails closed (false) when the group has no declared target. When the
+    // group's target declares an independent learner_capacity, compares the
+    // learner-only count against it; otherwise falls back to comparing the
+    // combined voting+learner count against target_count (original,
+    // backward-compatible behavior — see .kiro/specs/non-voting-nodes/).
+    [[nodiscard]] auto group_has_admission_capacity(placement_group_id_type group) const -> bool;
+
+    // Promotion capacity check: does `group` have room for one more voter?
+    // Always compares the voting-only count against target_count, regardless
+    // of any learner_capacity the group declares — promotion never affects,
+    // and is never affected by, the separate learner-capacity ceiling.
+    [[nodiscard]] auto group_has_promotion_capacity(placement_group_id_type group) const -> bool;
 };
 
 // Raft node concept - defines the interface for a Raft node using unified types
@@ -804,6 +887,77 @@ auto node<Types>::build_quorum_cluster_vector() const
     return cluster;
 }
 
+// ── Learner placement-capacity helpers (.kiro/specs/non-voting-nodes/) ──────
+
+template<raft_types Types> auto node<Types>::is_learner() const -> bool {
+    const auto& learners = _configuration.learners();
+    return std::find(learners.begin(), learners.end(), _node_id) != learners.end();
+}
+
+template<raft_types Types>
+auto node<Types>::placement_of(const node_id_type& id) const -> placement_group_id_type {
+    auto it = _placement_map.find(id);
+    return it != _placement_map.end() ? it->second : placement_group_id_type{};
+}
+
+template<raft_types Types>
+auto node<Types>::voting_count_in_group(placement_group_id_type group) const -> std::size_t {
+    return static_cast<std::size_t>(
+        std::count_if(_configuration.nodes().begin(), _configuration.nodes().end(),
+                      [&](const node_id_type& id) { return placement_of(id) == group; }));
+}
+
+template<raft_types Types>
+auto node<Types>::learner_count_in_group(placement_group_id_type group) const -> std::size_t {
+    return static_cast<std::size_t>(
+        std::count_if(_configuration.learners().begin(), _configuration.learners().end(),
+                      [&](const node_id_type& id) { return placement_of(id) == group; }));
+}
+
+template<raft_types Types>
+auto node<Types>::voting_and_learner_count_in_group(placement_group_id_type group) const
+    -> std::size_t {
+    return voting_count_in_group(group) + learner_count_in_group(group);
+}
+
+template<raft_types Types>
+auto node<Types>::find_group_target(placement_group_id_type group) const
+    -> std::optional<kythira::placement_group_target<placement_group_id_type>> {
+    auto desired = _quorum_manager.topology();
+    auto it = std::find_if(desired.groups.begin(), desired.groups.end(),
+                           [&](const auto& g) { return g.group_id == group; });
+    if (it == desired.groups.end()) {
+        return std::nullopt;
+    }
+    return *it;
+}
+
+template<raft_types Types>
+auto node<Types>::group_has_admission_capacity(placement_group_id_type group) const -> bool {
+    auto target = find_group_target(group);
+    if (!target) {
+        // Fail closed: no declared target for this group means no capacity.
+        return false;
+    }
+    if (target->learner_capacity) {
+        return learner_count_in_group(group) < *target->learner_capacity;
+    }
+    // No independent learner_capacity declared: learners and voters share
+    // target_count (original, backward-compatible behavior).
+    return voting_and_learner_count_in_group(group) < target->target_count;
+}
+
+template<raft_types Types>
+auto node<Types>::group_has_promotion_capacity(placement_group_id_type group) const -> bool {
+    auto target = find_group_target(group);
+    if (!target) {
+        return false;
+    }
+    // Always target_count, regardless of learner_capacity — promotion never
+    // affects, and is never affected by, the learner-capacity ceiling.
+    return voting_count_in_group(group) < target->target_count;
+}
+
 template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     // Build cluster vector under lock, then release for async call
     std::vector<node_placement<node_id_type, placement_group_id_type>> cluster;
@@ -864,6 +1018,48 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
             if (pending >= deficit) continue;
             std::size_t to_provision = deficit - pending;
 
+            // Learner placement-capacity policy (.kiro/specs/non-voting-nodes/,
+            // Requirement 4): prefer promoting an existing, eligible learner in this
+            // group over provisioning brand-new infrastructure, for as many deficit
+            // slots as have both an eligible learner and remaining voting capacity.
+            // Promotion is fire-and-forget, exactly like add_learner() triggered from
+            // handle_cluster_join() — its log entry commits via the ordinary
+            // heartbeat-driven replication path, not synchronously here. A learner
+            // the capacity criterion currently blocks is left completely untouched
+            // and is reconsidered fresh on the next assessment cycle; no bookkeeping
+            // is needed (Requirement 5).
+            std::size_t remaining_to_provision = to_provision;
+            while (remaining_to_provision > 0) {
+                std::optional<node_id_type> candidate;
+                {
+                    std::lock_guard<std::mutex> lock(_mutex);
+                    if (group_has_promotion_capacity(grp_health.group_id)) {
+                        for (const auto& learner_id : _configuration.learners()) {
+                            if (placement_of(learner_id) == grp_health.group_id) {
+                                candidate = learner_id;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (!candidate) {
+                    break;  // no eligible learner (or no voting capacity) in this group
+                }
+
+                _logger.info("Promoting eligible learner instead of provisioning",
+                             {{"node_id", node_id_to_string(_node_id)},
+                              {"learner", node_id_to_string(*candidate)},
+                              {"group", grp_health.group_id}});
+                auto promote_fut = promote_to_voter(*candidate);
+                (void)promote_fut;
+
+                --remaining_to_provision;
+            }
+            to_provision = remaining_to_provision;
+            if (to_provision == 0) {
+                continue;  // deficit fully covered by promotion(s) this cycle
+            }
+
             // Pick a node to replace from the group's unreachable list
             std::size_t replacing_idx = 0;
             for (std::size_t slot = 0; slot < to_provision; ++slot) {
@@ -887,9 +1083,9 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                                      {"new_node_id", node_id_to_string(info.node_id)},
                                      {"group", grp_health.group_id},
                                  });
-                    // The provisioned node joins via ClusterJoin → add_server.
-                    // On add_server completion we update placement + clear pending.
-                    // (Req 14.4 — nothing further to do here)
+                    // The provisioned node joins via ClusterJoin → add_learner(), then
+                    // becomes a promotion candidate on a future assessment cycle once
+                    // it has caught up. (Req 14.4 — nothing further to do here)
                 } catch (const std::exception& ex) {
                     _logger.error("provision_node failed", {
                                                                {"group", grp_health.group_id},
@@ -1764,8 +1960,10 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     std::vector<node_id_type> new_nodes = _configuration.nodes();
     new_nodes.push_back(new_node);
 
-    // C_new (final target): non-joint, used by config synchronizer to know when we are done
-    cluster_configuration_type new_config{new_nodes, false, std::nullopt};
+    // C_new (final target): non-joint, used by config synchronizer to know when we are done.
+    // Learners are preserved unchanged — add_server() only affects the voting set.
+    cluster_configuration_type new_config{new_nodes, false, std::nullopt,
+                                          _configuration.learners()};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
@@ -1774,7 +1972,8 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     // Build C_old+new joint configuration and append it as a configuration log entry.
     // Setting _configuration = joint_config immediately causes the leader to replicate to
     // all nodes in C_old ∪ C_new on the next heartbeat, before the entry commits.
-    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes()};
+    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes(),
+                                            _configuration.learners()};
     auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
     const auto joint_idx = get_last_log_index() + 1;
     log_entry_type joint_entry{._term = _current_term,
@@ -1906,8 +2105,10 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
         }
     }
 
-    // C_new (final target): non-joint, used by config synchronizer to know when we are done
-    cluster_configuration_type new_config{new_nodes, false, std::nullopt};
+    // C_new (final target): non-joint, used by config synchronizer to know when we are done.
+    // Learners are preserved unchanged — remove_server() only affects the voting set.
+    cluster_configuration_type new_config{new_nodes, false, std::nullopt,
+                                          _configuration.learners()};
 
     // Start configuration change using ConfigurationSynchronizer
     auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
@@ -1917,7 +2118,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     // Do NOT erase old_node from _next_index/_match_index yet: it must continue receiving
     // AppendEntries during the joint phase for quorum and catchup. Cleanup happens when C_new
     // commits in apply_committed_entries().
-    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes()};
+    cluster_configuration_type joint_config{new_nodes, true, _configuration.nodes(),
+                                            _configuration.learners()};
     auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
     const auto joint_idx = get_last_log_index() + 1;
     log_entry_type joint_entry{._term = _current_term,
@@ -1980,6 +2182,311 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     });
 }
 
+// ── Learner admission, removal, and promotion (.kiro/specs/non-voting-nodes/) ──
+
+template<raft_types Types>
+
+auto node<Types>::add_learner(node_id_type new_node) -> future_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _logger.info("Add learner requested", {{"node_id", node_id_to_string(_node_id)},
+                                           {"new_node", node_id_to_string(new_node)}});
+
+    if (_state != kythira::server_state::leader) {
+        _logger.warning(
+            "Cannot add learner: not leader",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Not leader - cannot add learner"));
+        return future;
+    }
+
+    bool already_present =
+        _membership.is_node_in_configuration(new_node, _configuration) ||
+        std::find(_configuration.learners().begin(), _configuration.learners().end(), new_node) !=
+            _configuration.learners().end();
+    if (already_present) {
+        _logger.warning(
+            "Cannot add learner: already in configuration",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Node already in configuration"));
+        return future;
+    }
+
+    // Placement-capacity criterion: only admit a learner when its group has
+    // room — either an independent learner_capacity declared for the group, or
+    // (by default) the group's combined voting+learner count below its
+    // desired-topology target_count (Requirement 2,
+    // .kiro/specs/non-voting-nodes/requirements.md).
+    auto group = placement_of(new_node);
+    if (!group_has_admission_capacity(group)) {
+        _logger.warning(
+            "Cannot add learner: placement group at capacity",
+            {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(learner_capacity_exceeded_exception());
+        return future;
+    }
+
+    // Plain (non-joint) configuration change: only _learners changes, so it commits
+    // under the current voting quorum with no joint-consensus phase.
+    cluster_configuration_type new_config = _configuration;
+    new_config._learners.push_back(new_node);
+
+    auto command = serialize_configuration<node_id_type>(new_config);
+    const auto entry_index = get_last_log_index() + 1;
+    log_entry_type entry{._term = _current_term,
+                         ._index = entry_index,
+                         ._command = std::move(command),
+                         ._type = entry_type::configuration};
+
+    // Initialize tracking before appending so replication starts on the next heartbeat.
+    _next_index[new_node] = entry_index;
+    _match_index[new_node] = 0;
+    append_log_entry(entry);
+    _persistence.append_log_entry(entry);
+    _configuration = new_config;
+
+    _metrics.set_metric_name("raft_add_learner_started");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("new_node", node_id_to_string(new_node));
+    _metrics.add_one();
+    _metrics.emit();
+
+    promise_type promise;
+    auto future = promise.getFuture();
+    auto shared_promise = std::make_shared<promise_type>(std::move(promise));
+    auto node_id = _node_id;
+    auto& logger = _logger;
+
+    _commit_waiter.register_operation(
+        entry_index,
+        [shared_promise, node_id, new_node, &logger](std::vector<std::byte> result) mutable {
+            logger.info("Add learner completed successfully",
+                        {{"node_id", node_id_to_string(node_id)},
+                         {"new_node", node_id_to_string(new_node)}});
+            shared_promise->setValue(std::move(result));
+        },
+        [shared_promise, node_id, new_node, &logger](std::exception_ptr ex) mutable {
+            logger.error("Add learner failed", {{"node_id", node_id_to_string(node_id)},
+                                                {"new_node", node_id_to_string(new_node)}});
+            shared_promise->setException(ex);
+        });
+
+    return future;
+}
+
+template<raft_types Types>
+
+auto node<Types>::remove_learner(node_id_type learner) -> future_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _logger.info("Remove learner requested", {{"node_id", node_id_to_string(_node_id)},
+                                              {"learner", node_id_to_string(learner)}});
+
+    if (_state != kythira::server_state::leader) {
+        _logger.warning(
+            "Cannot remove learner: not leader",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Not leader - cannot remove learner"));
+        return future;
+    }
+
+    const auto& current_learners = _configuration.learners();
+    bool is_present = std::find(current_learners.begin(), current_learners.end(), learner) !=
+                      current_learners.end();
+    if (!is_present) {
+        _logger.warning(
+            "Cannot remove learner: not in configuration",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Node not a learner in configuration"));
+        return future;
+    }
+
+    // Plain (non-joint) configuration change: removing a learner never affects the
+    // voting set or quorum, so no joint-consensus phase is needed.
+    cluster_configuration_type new_config = _configuration;
+    new_config._learners.erase(
+        std::remove(new_config._learners.begin(), new_config._learners.end(), learner),
+        new_config._learners.end());
+
+    auto command = serialize_configuration<node_id_type>(new_config);
+    const auto entry_index = get_last_log_index() + 1;
+    log_entry_type entry{._term = _current_term,
+                         ._index = entry_index,
+                         ._command = std::move(command),
+                         ._type = entry_type::configuration};
+
+    append_log_entry(entry);
+    _persistence.append_log_entry(entry);
+    _configuration = new_config;
+    // _next_index/_match_index for `learner` are cleaned up once this entry commits
+    // and apply_committed_entries() observes it is no longer in nodes() or learners().
+
+    _metrics.set_metric_name("raft_remove_learner_started");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("learner", node_id_to_string(learner));
+    _metrics.add_one();
+    _metrics.emit();
+
+    promise_type promise;
+    auto future = promise.getFuture();
+    auto shared_promise = std::make_shared<promise_type>(std::move(promise));
+    auto node_id = _node_id;
+    auto& logger = _logger;
+
+    _commit_waiter.register_operation(
+        entry_index,
+        [shared_promise, node_id, learner, &logger](std::vector<std::byte> result) mutable {
+            logger.info(
+                "Remove learner completed successfully",
+                {{"node_id", node_id_to_string(node_id)}, {"learner", node_id_to_string(learner)}});
+            shared_promise->setValue(std::move(result));
+        },
+        [shared_promise, node_id, learner, &logger](std::exception_ptr ex) mutable {
+            logger.error("Remove learner failed", {{"node_id", node_id_to_string(node_id)},
+                                                   {"learner", node_id_to_string(learner)}});
+            shared_promise->setException(ex);
+        });
+
+    return future;
+}
+
+template<raft_types Types>
+
+auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _logger.info("Promote to voter requested", {{"node_id", node_id_to_string(_node_id)},
+                                                {"learner", node_id_to_string(learner)}});
+
+    if (_state != kythira::server_state::leader) {
+        _logger.warning(
+            "Cannot promote to voter: not leader",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Not leader - cannot promote to voter"));
+        return future;
+    }
+
+    if (_config_synchronizer.is_configuration_change_in_progress()) {
+        _logger.warning(
+            "Cannot promote to voter: configuration change already in progress",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Configuration change already in progress"));
+        return future;
+    }
+
+    const auto& current_learners = _configuration.learners();
+    bool is_learner_node = std::find(current_learners.begin(), current_learners.end(), learner) !=
+                           current_learners.end();
+    if (!is_learner_node) {
+        _logger.warning(
+            "Cannot promote to voter: not a learner",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(std::runtime_error("Node is not a learner in configuration"));
+        return future;
+    }
+
+    // Placement-capacity criterion: only promote when the learner's group's current
+    // VOTING-only count is below the group's desired-topology target_count —
+    // promoting past the target would over-grow that group's voting membership
+    // (Requirement 3, .kiro/specs/non-voting-nodes/requirements.md). Always uses
+    // target_count, never any independent learner_capacity the group may declare
+    // (Requirement 3.4). A learner blocked here is left completely unaffected: no
+    // state is recorded, so it becomes a promotion candidate again the moment its
+    // own group's live voting count drops (Requirement 5).
+    auto group = placement_of(learner);
+    if (!group_has_promotion_capacity(group)) {
+        _logger.warning(
+            "Cannot promote to voter: placement group at voting capacity",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+        promise_type promise;
+        auto future = promise.getFuture();
+        promise.setException(voting_capacity_exceeded_exception());
+        return future;
+    }
+
+    _logger.info(
+        "Starting learner promotion with joint consensus",
+        {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+
+    std::vector<node_id_type> new_voting = _configuration.nodes();
+    new_voting.push_back(learner);
+
+    std::vector<node_id_type> remaining_learners = _configuration.learners();
+    remaining_learners.erase(
+        std::remove(remaining_learners.begin(), remaining_learners.end(), learner),
+        remaining_learners.end());
+
+    // C_new (final target): non-joint, used by config synchronizer to know when we are done.
+    cluster_configuration_type new_config{new_voting, false, std::nullopt, remaining_learners};
+
+    auto timeout = _config.append_entries_timeout() * 10;  // Longer timeout for config changes
+    auto config_future = _config_synchronizer.start_configuration_change(new_config, timeout);
+
+    // Build C_old+new joint configuration and append it as a configuration log entry.
+    cluster_configuration_type joint_config{new_voting, true, _configuration.nodes(),
+                                            remaining_learners};
+    auto joint_bytes = serialize_configuration<node_id_type>(joint_config);
+    const auto joint_idx = get_last_log_index() + 1;
+    log_entry_type joint_entry{._term = _current_term,
+                               ._index = joint_idx,
+                               ._command = std::move(joint_bytes),
+                               ._type = entry_type::configuration};
+    // Deliberately do NOT touch _next_index[learner]/_match_index[learner] here: they
+    // already exist from the learner's time as a non-voting replica, and resetting them
+    // would force a wasteful resend of already-replicated entries (Requirement 6.6).
+    append_log_entry(joint_entry);
+    _persistence.append_log_entry(joint_entry);
+    _configuration = joint_config;
+
+    _metrics.set_metric_name("raft_promote_to_voter_started");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("learner", node_id_to_string(learner));
+    _metrics.add_one();
+    _metrics.emit();
+
+    return config_future.thenTry([this, learner, old_config = _configuration, new_config,
+                                  stop_flag = _stop_flag](auto try_result) {
+        if (stop_flag->load(std::memory_order_acquire)) {
+            throw std::runtime_error("node stopped");
+        }
+        if (try_result.hasException()) {
+            _logger.error("Promote to voter failed", {{"node_id", node_id_to_string(_node_id)},
+                                                      {"learner", node_id_to_string(learner)}});
+            std::rethrow_exception(try_result.exception());
+        }
+
+        _logger.info(
+            "Promote to voter completed successfully",
+            {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
+
+        _membership.handle_cluster_membership_change(old_config, new_config);
+
+        _metrics.set_metric_name("raft_promote_to_voter_success");
+        _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+        _metrics.add_dimension("learner", node_id_to_string(learner));
+        _metrics.add_one();
+        _metrics.emit();
+
+        return std::vector<std::byte>{};
+    });
+}
+
 template<raft_types Types>
 
 auto node<Types>::check_election_timeout() -> void {
@@ -1987,6 +2494,12 @@ auto node<Types>::check_election_timeout() -> void {
 
     // Only followers and candidates check for election timeout
     if (_state == kythira::server_state::leader) {
+        return;
+    }
+
+    // Learners never start an election, regardless of elapsed time since the last
+    // heartbeat (.kiro/specs/non-voting-nodes/requirements.md, Requirement 2.1).
+    if (is_learner()) {
         return;
     }
 
@@ -2188,6 +2701,14 @@ template<raft_types Types>
 auto node<Types>::handle_request_vote(const request_vote_request_type& request)
     -> request_vote_response_type {
     std::lock_guard<std::mutex> lock(_mutex);
+
+    // A learner never grants a vote, unconditionally — before inspecting the
+    // candidate's term or log. Defense-in-depth: start_election() already only
+    // requests votes from the voting set, so a learner should never legitimately
+    // receive a RequestVote (.kiro/specs/non-voting-nodes/requirements.md, Req 2.2).
+    if (is_learner()) {
+        return request_vote_response_type{_current_term, false};
+    }
 
     _logger.debug("Received RequestVote RPC",
                   {{"node_id", node_id_to_string(_node_id)},
@@ -3310,6 +3831,12 @@ auto node<Types>::become_leader() -> void {
             }
         }
     }
+    // Learners also receive AppendEntries/InstallSnapshot (replicate_to_followers()
+    // iterates _next_index, not _configuration.nodes()), even though they never vote
+    // or count toward quorum (.kiro/specs/non-voting-nodes/requirements.md, Req 1).
+    for (const auto& peer_id : _configuration.learners()) {
+        init_peer(peer_id);
+    }
 
     // Reset heartbeat timer
     _last_heartbeat = std::chrono::steady_clock::now();
@@ -4022,6 +4549,10 @@ auto node<Types>::apply_committed_entries() -> void {
             auto new_config = deserialize_configuration<node_id_type>(entry.command());
             _configuration = new_config;
             _config_synchronizer.notify_configuration_committed(new_config, entry.index());
+            // add_learner()/remove_learner() register on _commit_waiter (not
+            // _config_synchronizer, which only tracks the joint/final voting-set
+            // phases) — this is a no-op when nothing is pending for this index.
+            _commit_waiter.notify_committed_and_applied(next_index);
             _last_applied = next_index;
             entries_applied_in_batch++;
 
@@ -4032,7 +4563,9 @@ auto node<Types>::apply_committed_entries() -> void {
 
             if (new_config.is_joint_consensus() && _state == kythira::server_state::leader) {
                 // Leader immediately appends C_new to start the second phase.
-                cluster_configuration_type c_new{new_config.nodes(), false, std::nullopt};
+                // Learners are preserved unchanged — the joint phase only affects the voting set.
+                cluster_configuration_type c_new{new_config.nodes(), false, std::nullopt,
+                                                 new_config.learners()};
                 auto c_new_bytes = serialize_configuration<node_id_type>(c_new);
                 log_entry_type c_new_entry{._term = _current_term,
                                            ._index = get_last_log_index() + 1,
@@ -4046,10 +4579,16 @@ auto node<Types>::apply_committed_entries() -> void {
             }
 
             if (!new_config.is_joint_consensus()) {
-                // C_new committed: remove peers that are no longer in the configuration.
+                // C_new (or a plain learner-only) commit: remove peers that are no
+                // longer tracked at all — checked against BOTH the voting set and the
+                // learner set, so add_learner()'s freshly-admitted learner (present only
+                // in learners(), not nodes()) is not immediately erased here.
                 for (auto it = _next_index.begin(); it != _next_index.end();) {
-                    bool in_new = std::find(new_config.nodes().begin(), new_config.nodes().end(),
-                                            it->first) != new_config.nodes().end();
+                    bool in_new =
+                        std::find(new_config.nodes().begin(), new_config.nodes().end(),
+                                  it->first) != new_config.nodes().end() ||
+                        std::find(new_config.learners().begin(), new_config.learners().end(),
+                                  it->first) != new_config.learners().end();
                     if (!in_new && it->first != _node_id) {
                         _match_index.erase(it->first);
                         it = _next_index.erase(it);
@@ -4638,11 +5177,14 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
     }
 
     if (is_leader_now) {
-        // Fire-and-forget: add_server() acquires its own lock, so call it after
-        // releasing ours.  The joining node is notified via the accepted=true response
-        // and then waits for the AppendEntries that carries C_new.
+        // Fire-and-forget: add_learner() acquires its own lock, so call it after
+        // releasing ours. The joining node is admitted as a learner (non-voting) —
+        // it replicates and catches up before an operator or the leader's automatic
+        // quorum-maintenance policy promotes it via promote_to_voter(). This avoids
+        // the availability gap of a brand-new, empty node counting toward quorum
+        // before it has replicated anything (.kiro/specs/non-voting-nodes/).
         // We discard the future — the log-append side-effect already occurred.
-        auto fut = add_server(req.joining_node_id());
+        auto fut = add_learner(req.joining_node_id());
         (void)fut;
         return cluster_join_response_type{true, std::nullopt};
     }
