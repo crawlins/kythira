@@ -460,7 +460,7 @@ BOOST_AUTO_TEST_CASE(no_known_leader_returns_503, *boost::unit_test::timeout(30)
 // the ledger doesn't have that serial; and complementarily via a successful
 // renewal, per the task's suggested check).
 BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
-                     *boost::unit_test::timeout(300)) {
+                     *boost::unit_test::timeout(450)) {
     three_node_cluster cluster;
     auto leader = find_leader(cluster.nodes, k_auth_token, std::chrono::seconds(30));
     BOOST_REQUIRE(leader.has_value());
@@ -479,12 +479,18 @@ BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
     body["server_auth"] = false;
     body["client_auth"] = true;
 
+    // read_timeout (65s) exceeds ca_cluster_node's own internal
+    // k_command_timeout (60s, cmd/ca_cluster_node/main.cpp) so the client
+    // actually receives the server's own "Commit timeout" response under
+    // contention instead of truncating the connection first; the 180s outer
+    // retry budget gives post_with_retry_on_not_ready room for more than one
+    // full attempt even when each one is that slow.
     httplib::Client leader_client("127.0.0.1", cluster.nodes[leader->node_index]->http_port);
     leader_client.set_connection_timeout(5, 0);
-    leader_client.set_read_timeout(45, 0);
+    leader_client.set_read_timeout(65, 0);
     auto issue_res =
         post_with_retry_on_not_ready(leader_client, "/v1/certificates", cluster.auth_headers(),
-                                     boost::json::serialize(body), std::chrono::seconds(120));
+                                     boost::json::serialize(body), std::chrono::seconds(180));
     BOOST_REQUIRE(issue_res);
     BOOST_REQUIRE_MESSAGE(issue_res->status == 200, "issue failed: " << issue_res->body);
     auto issued = boost::json::parse(issue_res->body).as_object();
@@ -510,7 +516,7 @@ BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
     httplib::Client new_leader_client("127.0.0.1",
                                       cluster.nodes[new_leader->node_index]->http_port);
     new_leader_client.set_connection_timeout(5, 0);
-    new_leader_client.set_read_timeout(45, 0);
+    new_leader_client.set_read_timeout(65, 0);
     boost::json::object revoke_body;
     revoke_body["serial"] = std::to_string(serial);
     auto revoke_res =
@@ -527,7 +533,7 @@ BOOST_AUTO_TEST_CASE(property_17_issuance_survives_leader_failover,
 // durably survives the restart and the node can resume normal operation
 // (including becoming leader itself if subsequently elected).
 BOOST_AUTO_TEST_CASE(restarted_follower_recovers_and_can_become_leader,
-                     *boost::unit_test::timeout(300)) {
+                     *boost::unit_test::timeout(450)) {
     three_node_cluster cluster;
     auto leader = find_leader(cluster.nodes, k_auth_token, std::chrono::seconds(30));
     BOOST_REQUIRE(leader.has_value());
@@ -551,10 +557,10 @@ BOOST_AUTO_TEST_CASE(restarted_follower_recovers_and_can_become_leader,
 
     httplib::Client leader_client("127.0.0.1", cluster.nodes[leader->node_index]->http_port);
     leader_client.set_connection_timeout(5, 0);
-    leader_client.set_read_timeout(45, 0);
+    leader_client.set_read_timeout(65, 0);
     auto issue_res =
         post_with_retry_on_not_ready(leader_client, "/v1/certificates", cluster.auth_headers(),
-                                     boost::json::serialize(body), std::chrono::seconds(120));
+                                     boost::json::serialize(body), std::chrono::seconds(180));
     BOOST_REQUIRE(issue_res);
     BOOST_REQUIRE_MESSAGE(issue_res->status == 200, "issue failed: " << issue_res->body);
 

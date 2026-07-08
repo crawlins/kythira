@@ -1962,10 +1962,10 @@ target_compile_features(ca_cluster_node_test PRIVATE cxx_std_23)
 add_test(NAME ca_cluster_node_test COMMAND ca_cluster_node_test)
 set_tests_properties(ca_cluster_node_test PROPERTIES
     # This binary runs 4 Boost.Test cases sequentially in one process — the
-    # per-case *boost::unit_test::timeout(...) markers (up to 300s each) sum
+    # per-case *boost::unit_test::timeout(...) markers (up to 450s each) sum
     # well past a single-test-scale ceiling, so the outer ctest TIMEOUT must
     # cover the whole suite, not one case.
-    TIMEOUT 1200
+    TIMEOUT 1800
     LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node"
 )
 

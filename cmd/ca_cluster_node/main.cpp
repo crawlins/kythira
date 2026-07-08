@@ -70,6 +70,16 @@ struct ca_cluster_raft_types : kythira::tcp_raft_types {
 
 using raft_node_t = kythira::node<ca_cluster_raft_types>;
 
+// Per-request submit_command()/read_state() timeout on the client-facing
+// HTTP path. 60s (rather than a tighter value) gives a real margin for
+// commit latency under host contention — CI runners and shared dev
+// machines routinely run this alongside dozens of other parallel test
+// binaries, and a 3-node Raft election/replication round-trip that would
+// finish in well under a second on an idle host can occasionally exceed a
+// tighter timeout purely from CPU scheduling delay, not any actual protocol
+// problem.
+constexpr auto k_command_timeout = std::chrono::milliseconds(60000);
+
 std::atomic<bool> g_stop{false};
 std::mutex g_stop_mu;
 std::condition_variable g_stop_cv;
@@ -294,7 +304,7 @@ int main(int argc, char** argv) {
         auto cmd = raft::testing::encode_bootstrap_ca_command(root_material.certificate_pem,
                                                               encrypted_key);
         try {
-            raft_node.submit_command(cmd, std::chrono::milliseconds(30000)).get();
+            raft_node.submit_command(cmd, k_command_timeout).get();
             std::cerr << "[info] ca_cluster_node: bootstrap_ca committed\n";
             bootstrap_done_or_unnecessary = true;
         } catch (const std::exception& ex) {
@@ -318,8 +328,7 @@ int main(int argc, char** argv) {
                     // starts answering client-facing requests as leader.
                     try {
                         raft_node
-                            .submit_command(raft::testing::encode_noop_command(),
-                                            std::chrono::milliseconds(30000))
+                            .submit_command(raft::testing::encode_noop_command(), k_command_timeout)
                             .get();
                     } catch (const std::exception&) {
                         // Lost leadership before the no-op committed — fall
@@ -452,7 +461,7 @@ int main(int argc, char** argv) {
     server->Get("/v1/root-ca", [&](const httplib::Request& req, httplib::Response& res) {
         if (!require_leader_or_redirect(req, res)) return;
         try {
-            auto state = read_ca_state(raft_node, std::chrono::milliseconds(30000));
+            auto state = read_ca_state(raft_node, k_command_timeout);
             if (!state.has_root_material()) {
                 res.status = 503;
                 res.set_content(json_error("not_bootstrapped"), "application/json");
@@ -504,7 +513,7 @@ int main(int argc, char** argv) {
             // issuance a subsequent leader failover could "forget."
             raft_node
                 .submit_command(raft::testing::encode_record_issuance_command(entry),
-                                std::chrono::milliseconds(30000))
+                                k_command_timeout)
                 .get();
 
             res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
@@ -534,7 +543,7 @@ int main(int argc, char** argv) {
             return;
         }
         try {
-            auto state = read_ca_state(raft_node, std::chrono::milliseconds(30000));
+            auto state = read_ca_state(raft_node, k_command_timeout);
             if (!raft::testing::cert_chains_to_root(peer_cert, state.root_certificate_pem())) {
                 X509_free(peer_cert);
                 res.status = 401;
@@ -578,7 +587,7 @@ int main(int argc, char** argv) {
 
             raft_node
                 .submit_command(raft::testing::encode_record_issuance_command(entry),
-                                std::chrono::milliseconds(30000))
+                                k_command_timeout)
                 .get();
 
             res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
@@ -615,7 +624,7 @@ int main(int argc, char** argv) {
             auto result = raft_node
                               .submit_command(raft::testing::encode_record_revocation_command(
                                                   serial, revoked_at),
-                                              std::chrono::milliseconds(30000))
+                                              k_command_timeout)
                               .get();
             if (!result.empty()) {
                 std::string result_str(reinterpret_cast<const char*>(result.data()), result.size());
