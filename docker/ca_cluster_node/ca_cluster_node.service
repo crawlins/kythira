@@ -1,0 +1,50 @@
+# Sample systemd unit for running one ca_cluster_node instance directly on a
+# Linux host (e.g. an EC2 instance) — the manual half of the 3-AZ deployment
+# path (Requirement 17.12a): deploy this same unit to three EC2 instances,
+# one per Availability Zone, each with its own /etc/default/ca_cluster_node
+# EnvironmentFile differing only in the per-AZ values called out below.
+#
+# Install (repeat on each of the 3 nodes):
+#   sudo cp ca_cluster_node.service /etc/systemd/system/ca_cluster_node.service
+#   sudo cp ca_cluster_node.env.example /etc/default/ca_cluster_node   # then edit it
+#   sudo mkdir -p /var/lib/ca_cluster_node && sudo chown ca-cluster-node:ca-cluster-node /var/lib/ca_cluster_node
+#   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/unseal.key /etc/ca_cluster_node/unseal.key
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ca_cluster_node
+#
+# EnvironmentFile must define NODE_ID, PEERS, and AUTH_TOKEN (see
+# ca_cluster_node.env.example for the exact per-node values that differ
+# across the three AZs) — /etc/ca_cluster_node/unseal.key MUST contain the
+# IDENTICAL passphrase on all three nodes (Requirement 17.4); losing it makes
+# the persisted CA key unrecoverable.
+
+[Unit]
+Description=Kythira ca_cluster_node (Raft-replicated CA cluster member)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/ca_cluster_node
+ExecStart=/usr/local/bin/ca_cluster_node \
+    --node-id ${NODE_ID} \
+    --rpc-port ${RPC_PORT:-7000} \
+    --http-port ${HTTP_PORT:-8443} \
+    --data-dir /var/lib/ca_cluster_node \
+    --unseal-key-file /etc/ca_cluster_node/unseal.key \
+    --peers ${PEERS} \
+    --auth-token ${CA_SERVICE_AUTH_TOKEN} \
+    ${BOOTSTRAP_CA_FLAG} \
+    ${CA_CLUSTER_NODE_EXTRA_ARGS}
+Restart=on-failure
+RestartSec=5s
+User=ca-cluster-node
+Group=ca-cluster-node
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ca_cluster_node
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

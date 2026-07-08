@@ -1,0 +1,38 @@
+# Sample systemd unit for running ca_service --serve directly on a Linux host
+# (e.g. an EC2 instance), as an alternative to the docker-compose long-running
+# deployment (docker/ca-service-server-compose.yml).
+#
+# Install:
+#   sudo cp ca_service.service /etc/systemd/system/ca_service.service
+#   sudo cp ca_service.env.example /etc/default/ca_service   # then edit it
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ca_service
+#
+# EnvironmentFile must define CA_SERVICE_AUTH_TOKEN (Requirement 11.4) and, when
+# --provider aws-acm-pca is used, CA_SERVICE_ACM_PCA_ARN / AWS_REGION — AWS
+# credentials themselves are resolved via the standard instance-profile /
+# default-credentials-provider chain, not this file (Requirement 12.4).
+
+[Unit]
+Description=Kythira ca_service (certificate provisioning API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/ca_service
+ExecStart=/usr/local/bin/ca_service --serve 0.0.0.0:8443 \
+    --provider ${CA_SERVICE_PROVIDER:-local} \
+    --auth-token ${CA_SERVICE_AUTH_TOKEN} \
+    ${CA_SERVICE_EXTRA_ARGS}
+Restart=on-failure
+RestartSec=5s
+User=ca-service
+Group=ca-service
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

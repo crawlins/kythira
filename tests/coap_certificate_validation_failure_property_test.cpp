@@ -8,10 +8,12 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/certificate_authority.hpp>
 
 #include <random>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <format>
 
@@ -36,18 +38,51 @@ constexpr std::uint64_t test_node_id = 1;
 constexpr std::uint16_t test_bind_port = 5684;
 constexpr const char* test_bind_address = "127.0.0.1";
 
-constexpr const char* valid_cert_content = R"(-----BEGIN CERTIFICATE-----
-MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOuMA0GCSqGSIb3DQEBBQUAMEUxCzAJBgNV
-BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
-aWRnaXRzIFB0eSBMdGQwHhcNMTMwODI3MjM1NDA3WhcNMTQwODI3MjM1NDA3WjBF
-MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50
-ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
-CgKCAQEAwuqTiuGqAXGHYAg/WQwIE9+96jceNVkSF7fvYxfUz9AbfxJy48sqh4Hz
-6VJArhHa8IyiAaYAZwd9YyLlJcBcBrze4IZrZVd18VKHk+WiZj0ECjAw+eCkqd3a
-LlyaHCCUDI/3Y5HuW8Arf+TFgdnuTTj0+VoM8RcPp5sBjPiMpsIwPiMAKbJ5dF9J
-8q1k2JGfLy3B3n+OcB6g==
------END CERTIFICATE-----
-)";
+// Real, cryptographically valid certificate PEM (replaces the previous
+// hand-authored placeholder, which decoded to truncated/invalid DER — see
+// Requirement 6.2 of the certificate-authority spec). Malformed fixtures below
+// (`invalid_certificates`) intentionally remain hand-authored: they test parser
+// robustness, not the CA framework.
+auto make_valid_cert_content() -> std::string {
+    raft::testing::certificate_authority ca;
+    raft::testing::leaf_certificate_options opts;
+    opts.subject.common_name = "coap-node";
+    opts.dns_names = {"coap-node.example.com"};
+    return ca.issue(opts).certificate_pem;
+}
+
+// Randomly corrupts `corruption_count` positions of `cert`, confined to the
+// base64 body between the PEM markers. The stub certificate validator
+// (coap_transport_impl.hpp, used whenever LIBCOAP_AVAILABLE is unset — the
+// case in CI, which doesn't install libcoap) only inspects that body for
+// invalid characters; corrupting only the BEGIN/END marker text or trailing
+// whitespace outside it (reachable by picking a position uniformly across
+// the WHOLE string, as this helper's precursor did) can leave a corrupted
+// certificate that the stub validator still accepts as well-formed, since
+// nothing it actually checks changed. Confining corruption to the body
+// itself is what the property under test — "any invalid certificate is
+// rejected" — actually requires exercising.
+auto corrupt_cert_body(std::string cert, std::mt19937& rng, std::size_t corruption_count)
+    -> std::string {
+    constexpr std::string_view kBegin = "-----BEGIN CERTIFICATE-----";
+    constexpr std::string_view kEnd = "-----END CERTIFICATE-----";
+    auto begin_pos = cert.find(kBegin);
+    auto end_pos = cert.find(kEnd);
+    if (begin_pos == std::string::npos || end_pos == std::string::npos || end_pos <= begin_pos) {
+        return cert;  // Shouldn't happen for a certificate_authority-issued PEM.
+    }
+    std::size_t body_start = begin_pos + kBegin.size();
+    std::size_t body_len = end_pos - body_start;
+    if (body_len == 0) return cert;
+
+    static constexpr char kInvalidChars[] = {'@', '#', '$', '%', '^', '&', '*', '(', ')', '!', '~'};
+    std::uniform_int_distribution<std::size_t> pos_dist(body_start, body_start + body_len - 1);
+    std::uniform_int_distribution<std::size_t> char_dist(0, sizeof(kInvalidChars) - 1);
+    for (std::size_t j = 0; j < corruption_count; ++j) {
+        cert[pos_dist(rng)] = kInvalidChars[char_dist(rng)];
+    }
+    return cert;
+}
 
 // Various invalid certificate formats for testing
 const std::vector<std::string> invalid_certificates = {
@@ -120,20 +155,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                         invalid_cert = invalid_certificates[i % invalid_certificates.size()];
                     } else {
                         // Generate corrupted version of valid certificate
-                        invalid_cert = valid_cert_content;
-
-                        // Randomly corrupt the certificate in a way that makes it obviously invalid
-                        std::size_t corruption_count = corruption_count_dist(rng);
-                        for (std::size_t j = 0; j < corruption_count; ++j) {
-                            if (!invalid_cert.empty()) {
-                                std::size_t pos = rng() % invalid_cert.length();
-                                // Use obviously invalid characters that will fail base64 validation
-                                char invalid_chars[] = {'@', '#', '$', '%', '^', '&',
-                                                        '*', '(', ')', '!', '~'};
-                                invalid_cert[pos] =
-                                    invalid_chars[rng() % (sizeof(invalid_chars) - 1)];
-                            }
-                        }
+                        invalid_cert = corrupt_cert_body(make_valid_cert_content(), rng,
+                                                         corruption_count_dist(rng));
                     }
 
                     // Certificate validation should fail for invalid certificates
@@ -190,20 +213,8 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                         invalid_client_cert = invalid_certificates[cert_index_dist(rng)];
                     } else {
                         // Generate corrupted version of valid certificate
-                        invalid_client_cert = valid_cert_content;
-
-                        // Randomly corrupt the certificate in a way that makes it obviously invalid
-                        std::size_t corruption_count = corruption_count_dist(rng);
-                        for (std::size_t j = 0; j < corruption_count; ++j) {
-                            if (!invalid_client_cert.empty()) {
-                                std::size_t pos = rng() % invalid_client_cert.length();
-                                // Use obviously invalid characters that will fail base64 validation
-                                char invalid_chars[] = {'@', '#', '$', '%', '^', '&',
-                                                        '*', '(', ')', '!', '~'};
-                                invalid_client_cert[pos] =
-                                    invalid_chars[rng() % (sizeof(invalid_chars) - 1)];
-                            }
-                        }
+                        invalid_client_cert = corrupt_cert_body(make_valid_cert_content(), rng,
+                                                                corruption_count_dist(rng));
                     }
 
                     // Client certificate validation should fail for invalid certificates
@@ -391,7 +402,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios,
             bool validation_result = false;
             bool exception_thrown = false;
             try {
-                validation_result = client.validate_peer_certificate(valid_cert_content);
+                validation_result = client.validate_peer_certificate(make_valid_cert_content());
             } catch (const kythira::coap_security_error& e) {
                 exception_thrown = true;
                 BOOST_TEST_MESSAGE(

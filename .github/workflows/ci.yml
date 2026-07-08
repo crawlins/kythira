@@ -132,6 +132,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Debug + LLVM source-based coverage instrumentation (-g, no
+      # optimization, -fprofile-instr-generate/-fcoverage-mapping) produces
+      # much larger statically-linked test binaries than the Release build
+      # in build-and-test — with ~700 test targets each statically linking
+      # Folly/Boost/OpenSSL/the AWS SDK, the runner's default ~14 GB free
+      # disk was no longer enough (certificate-authority added roughly 15
+      # more such binaries) and the build failed with "No space left on
+      # device". Reclaim space from large preinstalled toolchains this job
+      # never uses before building.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          df -h /
+
       - name: Install system dependencies
         run: |
           sudo apt-get update -q

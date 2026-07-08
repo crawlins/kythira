@@ -5,9 +5,12 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/test_types.hpp>
+#include "ca_test_fixture.hpp"
 #include <random>
 #include <thread>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 
 using namespace kythira;
 
@@ -16,9 +19,50 @@ constexpr std::size_t test_iterations = 100;
 constexpr std::chrono::milliseconds test_timeout{30000};
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 18683;
-constexpr const char* test_cert_file = "/tmp/test_cert.pem";
-constexpr const char* test_key_file = "/tmp/test_key.pem";
-constexpr const char* test_ca_file = "/tmp/test_ca.pem";
+
+// Real, cryptographically valid certificate material for the DTLS
+// baseline/happy-path cases below (replaces the previous nonexistent
+// `/tmp/test_*.pem` paths — see Requirement 6.2 of the certificate-authority
+// spec). Constructed once per test binary and shared across test cases.
+struct dtls_cert_material {
+    raft::testing::ca_test_fixture fixture;
+    std::string ca_file;
+    std::string cert_file;
+    std::string key_file;
+
+    dtls_cert_material() {
+        auto ca_temp = std::filesystem::temp_directory_path() /
+                       ("coap_dtls_ca_" + std::to_string(std::random_device{}()));
+        std::ofstream file(ca_temp);
+        file << fixture.root_certificate_pem();
+        file.close();
+        ca_file = ca_temp.string();
+
+        const auto& node_files = fixture.bootstrap_client("coap-node", {"127.0.0.1", "localhost"});
+        cert_file = node_files.cert_path();
+        key_file = node_files.key_path();
+    }
+
+    ~dtls_cert_material() {
+        std::error_code ec;
+        std::filesystem::remove(ca_file, ec);
+    }
+};
+
+auto& shared_dtls_material() {
+    static dtls_cert_material material;
+    return material;
+}
+
+auto test_cert_file() -> const std::string& {
+    return shared_dtls_material().cert_file;
+}
+auto test_key_file() -> const std::string& {
+    return shared_dtls_material().key_file;
+}
+auto test_ca_file() -> const std::string& {
+    return shared_dtls_material().ca_file;
+}
 }
 
 /**
@@ -49,30 +93,30 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
         // Vary configuration based on test variant
         switch (config_variant) {
             case 0:  // Standard certificate configuration
-                client_config.cert_file = test_cert_file;
-                client_config.key_file = test_key_file;
-                client_config.ca_file = test_ca_file;
+                client_config.cert_file = test_cert_file();
+                client_config.key_file = test_key_file();
+                client_config.ca_file = test_ca_file();
                 break;
 
             case 1:  // Certificate with custom cipher suites
-                client_config.cert_file = test_cert_file;
-                client_config.key_file = test_key_file;
-                client_config.ca_file = test_ca_file;
+                client_config.cert_file = test_cert_file();
+                client_config.key_file = test_key_file();
+                client_config.ca_file = test_ca_file();
                 client_config.cipher_suites = {"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
                                                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
                                                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"};
                 break;
 
             case 2:  // Certificate without CA file (self-signed)
-                client_config.cert_file = test_cert_file;
-                client_config.key_file = test_key_file;
+                client_config.cert_file = test_cert_file();
+                client_config.key_file = test_key_file();
                 client_config.verify_peer_cert = false;
                 break;
 
             case 3:  // Certificate with session resumption disabled
-                client_config.cert_file = test_cert_file;
-                client_config.key_file = test_key_file;
-                client_config.ca_file = test_ca_file;
+                client_config.cert_file = test_cert_file();
+                client_config.key_file = test_key_file();
+                client_config.ca_file = test_ca_file();
                 client_config.enable_session_resumption = false;
                 break;
 
@@ -106,9 +150,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
         // Test 2: Server DTLS context setup
         coap_server_config server_config;
         server_config.enable_dtls = true;
-        server_config.cert_file = test_cert_file;
-        server_config.key_file = test_key_file;
-        server_config.ca_file = test_ca_file;
+        server_config.cert_file = test_cert_file();
+        server_config.key_file = test_key_file();
+        server_config.ca_file = test_ca_file();
         server_config.verify_peer_cert = client_config.verify_peer_cert;
         server_config.cipher_suites = client_config.cipher_suites;
         server_config.enable_session_resumption = client_config.enable_session_resumption;
@@ -274,9 +318,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::time
                 break;
 
             case 5:  // Valid certificate configuration (files may not exist)
-                client_config.cert_file = test_cert_file;
-                client_config.key_file = test_key_file;
-                client_config.ca_file = test_ca_file;
+                client_config.cert_file = test_cert_file();
+                client_config.key_file = test_key_file();
+                client_config.ca_file = test_ca_file();
                 should_throw = false;  // May throw due to missing files, but config is valid
                 break;
 
@@ -440,9 +484,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, *boost::unit_test::ti
         // Create client configuration with custom cipher suites
         coap_client_config client_config;
         client_config.enable_dtls = true;
-        client_config.cert_file = test_cert_file;
-        client_config.key_file = test_key_file;
-        client_config.ca_file = test_ca_file;
+        client_config.cert_file = test_cert_file();
+        client_config.key_file = test_key_file();
+        client_config.ca_file = test_ca_file();
         client_config.cipher_suites = selected_ciphers;
 
         // Create test types and client
@@ -470,9 +514,9 @@ BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, *boost::unit_test::ti
         // Test 2: Server with matching cipher suites
         coap_server_config server_config;
         server_config.enable_dtls = true;
-        server_config.cert_file = test_cert_file;
-        server_config.key_file = test_key_file;
-        server_config.ca_file = test_ca_file;
+        server_config.cert_file = test_cert_file();
+        server_config.key_file = test_key_file();
+        server_config.ca_file = test_ca_file();
         server_config.cipher_suites = selected_ciphers;
 
         try {

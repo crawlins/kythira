@@ -4,6 +4,7 @@
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/certificate_authority.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <filesystem>
 #include <fstream>
@@ -54,23 +55,6 @@ AQEAuVMfn7jjvQqGjzgvKoK5u+J9J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
 // Invalid certificate content
 constexpr const char* invalid_cert_pem = R"(-----BEGIN CERTIFICATE-----
 INVALID_CERTIFICATE_CONTENT_HERE
------END CERTIFICATE-----
-)";
-
-// Expired certificate (dates in the past)
-constexpr const char* expired_cert_pem = R"(-----BEGIN CERTIFICATE-----
-MIIDXTCCAkWgAwIBAgIJAKoK/heBjcOuMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
-BAYTAkFVMRMwEQYDVQQIDApTb21lLVN0YXRlMSEwHwYDVQQKDBhJbnRlcm5ldCBX
-aWRnaXRzIFB0eSBMdGQwHhcNMjAwMTAxMDAwMDAwWhcNMjAwMTAyMDAwMDAwWjBF
-MQswCQYDVQQGEwJBVTETMBEGA1UECAwKU29tZS1TdGF0ZTEhMB8GA1UECgwYSW50
-ZXJuZXQgV2lkZ2l0cyBQdHkgTHRkMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
-CgKCAQEAuVMfn7jjvQqGjzgvKoK5u+J9J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5J5
-QIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQCqCoK/heBjcOuMA0GCSqGSIb3DQEBCw
 -----END CERTIFICATE-----
 )";
 
@@ -338,8 +322,14 @@ BOOST_AUTO_TEST_CASE(test_expired_certificate_detection, *boost::unit_test::time
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    auto expired_cert_path = create_temp_cert_file(expired_cert_pem);
-    auto key_path = create_temp_cert_file(valid_key_pem);
+    raft::testing::certificate_authority ca;
+    raft::testing::leaf_certificate_options leaf_opts;
+    leaf_opts.subject.common_name = "expired-client";
+    leaf_opts.dns_names = {"expired-client.example.com"};
+    auto expired_material = ca.issue_expired(leaf_opts);
+
+    auto expired_cert_path = create_temp_cert_file(expired_material.certificate_pem);
+    auto key_path = create_temp_cert_file(expired_material.private_key_pem);
 
     try {
         // Test expired certificate detection

@@ -57,6 +57,7 @@
     {
       "name": "aws-sdk-cpp",
       "features": [
+        "acm-pca",
         "autoscaling",
         "ec2",
         "iam",
