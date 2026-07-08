@@ -187,7 +187,11 @@ echo "  [coverage] Running tests ..."
 if [[ "${COVERAGE_FULL_SUITE:-0}" == "1" ]]; then
     CTEST_LABEL_ARGS=""
 else
-    CTEST_LABEL_ARGS="-LE slow|performance|verbose|benchmark"
+    # Anchored to match ci.yml's ctest invocations exactly — an unanchored
+    # alternative like "docker" would also match "docker_chaos_unit" as a
+    # substring, silently excluding tests that are supposed to run locally
+    # (see commit 089927a).
+    CTEST_LABEL_ARGS="-LE ^(slow|performance|verbose|benchmark|docker)$"
 fi
 
 # Each test process writes its own profraw file keyed by PID + module hash.
