@@ -317,7 +317,7 @@ namespace ca_state_machine_detail {
 
 [[nodiscard]] inline auto json_to_ledger_entry(const boost::json::object& obj) -> ca_ledger_entry {
     ca_ledger_entry e;
-    e.serial = static_cast<std::uint64_t>(obj.at("serial").to_number<std::int64_t>());
+    e.serial = obj.at("serial").to_number<std::uint64_t>();
     e.subject = std::string(obj.at("subject").as_string());
     e.dns_names = to_string_vector(obj.at("dns_names").as_array());
     e.ip_addresses = to_string_vector(obj.at("ip_addresses").as_array());
@@ -436,8 +436,7 @@ public:
                 return {};
             }
             case ca_command_type::record_revocation: {
-                auto serial =
-                    static_cast<std::uint64_t>(obj.at("serial").to_number<std::int64_t>());
+                auto serial = obj.at("serial").to_number<std::uint64_t>();
                 auto it =
                     std::find_if(_ledger.begin(), _ledger.end(),
                                  [serial](const ca_ledger_entry& e) { return e.serial == serial; });

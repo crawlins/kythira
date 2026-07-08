@@ -5,6 +5,7 @@
 #include <raft/ca_state_machine.hpp>
 
 #include <chrono>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -101,6 +102,41 @@ BOOST_AUTO_TEST_CASE(record_issuance_appends_to_ledger) {
     BOOST_TEST(sm.ledger()[0].subject == "client-a");
     BOOST_TEST(sm.ledger()[0].certificate_pem == entry.certificate_pem);
     BOOST_TEST(!sm.ledger()[0].revoked_at.has_value());
+}
+
+// Regression: certificate serial numbers are std::uint64_t and legitimately
+// use the full width (RFC 5280 wants high-entropy, non-sequential serials —
+// certificate_authority generates them accordingly), so roughly half of all
+// real serials have bit 63 set and don't fit in an int64_t. json_to_ledger_entry()
+// previously decoded via to_number<std::int64_t>() instead of
+// to_number<std::uint64_t>(), which boost::json rejects with a "not exact"
+// error for such values — surfacing only probabilistically (whichever random
+// serial a test happened to generate), which is exactly how this escaped
+// coverage the first time: every other test here uses small, hand-picked
+// serials that never exercise the high bit.
+BOOST_AUTO_TEST_CASE(record_issuance_survives_serial_exceeding_int64_max) {
+    ca_state_machine sm;
+    std::uint64_t large_serial = std::numeric_limits<std::uint64_t>::max();
+    auto entry = make_ledger_entry(large_serial, "client-large-serial");
+    auto result = sm.apply(encode_record_issuance_command(entry), 1);
+
+    BOOST_TEST(result.empty());
+    BOOST_REQUIRE(sm.ledger().size() == 1);
+    BOOST_TEST(sm.ledger()[0].serial == large_serial);
+
+    // Also exercise revocation of that same over-int64_t-range serial.
+    auto revoked_at = std::chrono::system_clock::now();
+    auto revoke_result = sm.apply(encode_record_revocation_command(large_serial, revoked_at), 2);
+    BOOST_TEST(revoke_result.empty());
+    BOOST_REQUIRE(sm.ledger()[0].revoked_at.has_value());
+
+    // And the snapshot round-trip, which serializes/deserializes the whole
+    // ledger through the same JSON encoding.
+    auto snapshot = sm.get_state();
+    ca_state_machine restored;
+    restored.restore_from_snapshot(snapshot, 2);
+    BOOST_REQUIRE(restored.ledger().size() == 1);
+    BOOST_TEST(restored.ledger()[0].serial == large_serial);
 }
 
 BOOST_AUTO_TEST_CASE(record_revocation_marks_matching_serial) {
