@@ -478,6 +478,9 @@ target_link_libraries(coap_certificate_validation_failure_property_test PRIVATE
     Boost::unit_test_framework
     boost_json
 )
+if(TARGET certificate_authority)
+    target_link_libraries(coap_certificate_validation_failure_property_test PRIVATE certificate_authority)
+endif()
 target_compile_features(coap_certificate_validation_failure_property_test PRIVATE cxx_std_23)
 add_test(NAME coap_certificate_validation_failure_property_test COMMAND coap_certificate_validation_failure_property_test)
 
@@ -917,6 +920,12 @@ target_link_libraries(quorum_management_test PRIVATE
 )
 if(TARGET Folly::folly)
     target_link_libraries(quorum_management_test PRIVATE Folly::folly)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+        target_link_libraries(quorum_management_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(quorum_management_test PRIVATE Boost::context)
+    endif()
 endif()
 target_compile_features(quorum_management_test PRIVATE cxx_std_23)
 add_test(NAME quorum_management_test COMMAND quorum_management_test)
@@ -951,6 +960,12 @@ target_link_libraries(docker_quorum_manager_test PRIVATE
 )
 if(TARGET Folly::folly)
     target_link_libraries(docker_quorum_manager_test PRIVATE Folly::folly)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+        target_link_libraries(docker_quorum_manager_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    elseif(TARGET Boost::context)
+        target_link_libraries(docker_quorum_manager_test PRIVATE Boost::context)
+    endif()
 endif()
 target_compile_features(docker_quorum_manager_test PRIVATE cxx_std_23)
 add_test(NAME docker_quorum_manager_test COMMAND docker_quorum_manager_test)
@@ -1303,6 +1318,12 @@ endif()
 if(TARGET OpenSSL::SSL)
     target_link_libraries(http_ssl_configuration_property_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
+if(TARGET certificate_authority)
+    target_link_libraries(http_ssl_configuration_property_test PRIVATE certificate_authority)
+endif()
+if(TARGET boost_json)
+    target_link_libraries(http_ssl_configuration_property_test PRIVATE boost_json)
+endif()
 target_compile_features(http_ssl_configuration_property_test PRIVATE cxx_std_23)
 add_test(NAME http_ssl_configuration_property_test COMMAND http_ssl_configuration_property_test)
 set_tests_properties(http_ssl_configuration_property_test PROPERTIES
@@ -1324,6 +1345,9 @@ if(TARGET httplib::httplib)
 endif()
 if(TARGET OpenSSL::SSL)
     target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(TARGET certificate_authority)
+    target_link_libraries(http_ssl_certificate_loading_unit_test PRIVATE certificate_authority)
 endif()
 target_compile_features(http_ssl_certificate_loading_unit_test PRIVATE cxx_std_23)
 add_test(NAME http_ssl_certificate_loading_unit_test COMMAND http_ssl_certificate_loading_unit_test)
@@ -1369,6 +1393,12 @@ endif()
 if(TARGET OpenSSL::SSL)
     target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 endif()
+if(TARGET certificate_authority)
+    target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE certificate_authority)
+endif()
+if(TARGET boost_json)
+    target_link_libraries(http_ssl_mutual_tls_integration_test PRIVATE boost_json)
+endif()
 target_compile_features(http_ssl_mutual_tls_integration_test PRIVATE cxx_std_23)
 add_test(NAME http_ssl_mutual_tls_integration_test COMMAND http_ssl_mutual_tls_integration_test)
 set_tests_properties(http_ssl_mutual_tls_integration_test PROPERTIES
@@ -1402,12 +1432,44 @@ target_link_libraries(coap_dtls_handshake_property_test PRIVATE
 if(TARGET Folly::folly)
     target_link_libraries(coap_dtls_handshake_property_test PRIVATE Folly::folly)
 endif()
+if(TARGET certificate_authority)
+    target_link_libraries(coap_dtls_handshake_property_test PRIVATE certificate_authority)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(coap_dtls_handshake_property_test PRIVATE httplib::httplib)
+endif()
 target_compile_features(coap_dtls_handshake_property_test PRIVATE cxx_std_23)
 add_test(NAME coap_dtls_handshake_property_test COMMAND coap_dtls_handshake_property_test)
 set_tests_properties(coap_dtls_handshake_property_test PROPERTIES
     TIMEOUT 120
     LABELS "property;coap;dtls;handshake"
 )
+
+if(TARGET certificate_authority)
+
+add_executable(coap_transport_reload_property_test coap_transport_reload_property_test.cpp)
+target_link_libraries(coap_transport_reload_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+    certificate_authority
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_transport_reload_property_test PRIVATE Folly::folly)
+endif()
+if(TARGET httplib::httplib)
+    target_link_libraries(coap_transport_reload_property_test PRIVATE httplib::httplib)
+endif()
+target_compile_features(coap_transport_reload_property_test PRIVATE cxx_std_23)
+add_test(NAME coap_transport_reload_property_test COMMAND coap_transport_reload_property_test)
+set_tests_properties(coap_transport_reload_property_test PROPERTIES
+    TIMEOUT 60
+    LABELS "property;coap;dtls;reload;ca"
+)
+
+else()
+    message(STATUS "certificate_authority not available — coap_transport_reload_property_test will not be built")
+endif()
 
 add_executable(coap_thread_safety_property_test coap_thread_safety_property_test.cpp)
 target_link_libraries(coap_thread_safety_property_test PRIVATE
@@ -1692,6 +1754,233 @@ else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery_unit_test will not be built")
 endif()
 
+# ── certificate_authority tests (OpenSSL required) ────────────────────────────
+
+if(TARGET certificate_authority)
+
+add_executable(certificate_authority_unit_test certificate_authority_unit_test.cpp)
+target_link_libraries(certificate_authority_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_features(certificate_authority_unit_test PRIVATE cxx_std_23)
+add_test(NAME certificate_authority_unit_test COMMAND certificate_authority_unit_test)
+set_tests_properties(certificate_authority_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;certificate_authority;ca"
+)
+
+add_executable(certificate_authority_property_test certificate_authority_property_test.cpp)
+target_link_libraries(certificate_authority_property_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_features(certificate_authority_property_test PRIVATE cxx_std_23)
+add_test(NAME certificate_authority_property_test COMMAND certificate_authority_property_test)
+set_tests_properties(certificate_authority_property_test PROPERTIES
+    TIMEOUT 90
+    LABELS "property;certificate_authority;ca"
+)
+
+add_executable(ca_state_machine_unit_test ca_state_machine_unit_test.cpp)
+target_link_libraries(ca_state_machine_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(ca_state_machine_unit_test PRIVATE cxx_std_23)
+add_test(NAME ca_state_machine_unit_test COMMAND ca_state_machine_unit_test)
+set_tests_properties(ca_state_machine_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;certificate_authority;ca;raft;state_machine"
+)
+
+add_executable(acme_jws_unit_test acme_jws_unit_test.cpp)
+target_link_libraries(acme_jws_unit_test PRIVATE
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(acme_jws_unit_test PRIVATE cxx_std_23)
+add_test(NAME acme_jws_unit_test COMMAND acme_jws_unit_test)
+set_tests_properties(acme_jws_unit_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;certificate_authority;ca;acme;jws"
+)
+
+add_executable(acme_test_server_unit_test acme_test_server_unit_test.cpp)
+target_link_libraries(acme_test_server_unit_test PRIVATE
+    certificate_authority   # transitively brings in KYTHIRA_HAS_LDNS via network_simulator, when libldns is found
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_features(acme_test_server_unit_test PRIVATE cxx_std_23)
+add_test(NAME acme_test_server_unit_test COMMAND acme_test_server_unit_test)
+set_tests_properties(acme_test_server_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;acme;test_server"
+)
+
+add_executable(acme_certificate_provider_test acme_certificate_provider_test.cpp)
+target_link_libraries(acme_certificate_provider_test PRIVATE
+    certificate_authority   # transitively brings in KYTHIRA_HAS_LDNS via network_simulator, when libldns is found
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_features(acme_certificate_provider_test PRIVATE cxx_std_23)
+add_test(NAME acme_certificate_provider_test COMMAND acme_certificate_provider_test)
+set_tests_properties(acme_certificate_provider_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;acme;provider"
+)
+
+add_executable(acme_identifier_type_test acme_identifier_type_test.cpp)
+target_link_libraries(acme_identifier_type_test PRIVATE
+    certificate_authority   # transitively brings in KYTHIRA_HAS_LDNS via network_simulator, when libldns is found
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_features(acme_identifier_type_test PRIVATE cxx_std_23)
+add_test(NAME acme_identifier_type_test COMMAND acme_identifier_type_test)
+set_tests_properties(acme_identifier_type_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;acme;provider"
+)
+
+if(TARGET ca_service)
+
+add_executable(ca_test_fixture_unit_test ca_test_fixture_unit_test.cpp)
+target_link_libraries(ca_test_fixture_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_test_fixture_unit_test PRIVATE
+    CA_SERVICE_PATH="$<TARGET_FILE:ca_service>"
+)
+add_dependencies(ca_test_fixture_unit_test ca_service)
+target_compile_features(ca_test_fixture_unit_test PRIVATE cxx_std_23)
+add_test(NAME ca_test_fixture_unit_test COMMAND ca_test_fixture_unit_test)
+set_tests_properties(ca_test_fixture_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;fixture"
+)
+
+add_executable(http_transport_reload_property_test http_transport_reload_property_test.cpp)
+target_link_libraries(http_transport_reload_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    certificate_authority
+    httplib::httplib
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(http_transport_reload_property_test PRIVATE Folly::folly)
+endif()
+target_compile_features(http_transport_reload_property_test PRIVATE cxx_std_23)
+add_test(NAME http_transport_reload_property_test COMMAND http_transport_reload_property_test)
+set_tests_properties(http_transport_reload_property_test PROPERTIES
+    TIMEOUT 60
+    LABELS "property;ssl;http;transport;reload;ca"
+)
+
+add_executable(ca_service_serve_integration_test ca_service_serve_integration_test.cpp)
+target_link_libraries(ca_service_serve_integration_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_service_serve_integration_test PRIVATE
+    CA_SERVICE_PATH="$<TARGET_FILE:ca_service>"
+)
+add_dependencies(ca_service_serve_integration_test ca_service)
+target_compile_features(ca_service_serve_integration_test PRIVATE cxx_std_23)
+add_test(NAME ca_service_serve_integration_test COMMAND ca_service_serve_integration_test)
+set_tests_properties(ca_service_serve_integration_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;ca_service;serve"
+)
+
+add_executable(ca_bootstrap_client_test ca_bootstrap_client_test.cpp)
+target_link_libraries(ca_bootstrap_client_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_bootstrap_client_test PRIVATE
+    CA_SERVICE_PATH="$<TARGET_FILE:ca_service>"
+)
+add_dependencies(ca_bootstrap_client_test ca_service)
+target_compile_features(ca_bootstrap_client_test PRIVATE cxx_std_23)
+add_test(NAME ca_bootstrap_client_test COMMAND ca_bootstrap_client_test)
+set_tests_properties(ca_bootstrap_client_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;ca_service;bootstrap"
+)
+
+if(TARGET ca_cluster_node)
+
+add_executable(ca_cluster_node_test ca_cluster_node_test.cpp)
+target_link_libraries(ca_cluster_node_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_cluster_node_test PRIVATE
+    CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>"
+)
+add_dependencies(ca_cluster_node_test ca_cluster_node)
+target_compile_features(ca_cluster_node_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_test COMMAND ca_cluster_node_test)
+set_tests_properties(ca_cluster_node_test PROPERTIES
+    # This binary runs 4 Boost.Test cases sequentially in one process — the
+    # per-case *boost::unit_test::timeout(...) markers (up to 300s each) sum
+    # well past a single-test-scale ceiling, so the outer ctest TIMEOUT must
+    # cover the whole suite, not one case.
+    TIMEOUT 1200
+    LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node"
+)
+
+else()
+    message(STATUS "ca_cluster_node not available — ca_cluster_node_test will not be built")
+endif()
+
+else()
+    message(STATUS "ca_service not available — ca_test_fixture_unit_test / ca_service_serve_integration_test will not be built")
+endif()
+
+else()
+    message(STATUS "OpenSSL not found — certificate_authority tests will not be built")
+endif()
+
 # ── AWS quorum manager tests (AWS SDK required) ───────────────────────────────
 
 if(AWSSDK_FOUND)
@@ -1736,6 +2025,27 @@ set_tests_properties(aws_quorum_manager_localstack_test PROPERTIES
     LABELS "integration;raft;quorum;aws;localstack;slow"
 )
 
+# LocalStack coverage for the ca_cluster_node-specific 3-AZ topology shape
+# (Requirement 17.12(b)) — see file header for what this does and doesn't
+# re-test relative to aws_quorum_manager_localstack_test.cpp above.
+add_executable(ca_cluster_node_localstack_test ca_cluster_node_localstack_test.cpp)
+target_compile_definitions(ca_cluster_node_localstack_test PRIVATE
+    KYTHIRA_AWS_LOCALSTACK_TESTS
+)
+target_link_libraries(ca_cluster_node_localstack_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(ca_cluster_node_localstack_test PRIVATE Folly::folly)
+endif()
+target_compile_features(ca_cluster_node_localstack_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_localstack_test COMMAND ca_cluster_node_localstack_test)
+set_tests_properties(ca_cluster_node_localstack_test PROPERTIES
+    TIMEOUT 300
+    LABELS "integration;raft;quorum;aws;localstack;slow;ca;ca_cluster_node"
+)
+
 # Real-EC2 integration tests — requires AWS credentials + env vars.
 if(LIBSSH2_FOUND)
 add_executable(aws_quorum_manager_real_ec2_test aws_quorum_manager_real_ec2_test.cpp)
@@ -1760,9 +2070,62 @@ set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
     TIMEOUT 600
     LABELS "integration;raft;quorum;aws;real-ec2;slow"
 )
+
+# Real-EC2 coverage for the ca_cluster_node-specific 3-AZ deployment — see
+# file header for what this verifies beyond aws_quorum_manager_real_ec2_test.cpp.
+add_executable(ca_cluster_node_real_ec2_test ca_cluster_node_real_ec2_test.cpp)
+target_compile_definitions(ca_cluster_node_real_ec2_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+    LIBSSH2_FOUND
+)
+target_link_libraries(ca_cluster_node_real_ec2_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    ${LIBSSH2_LIBRARIES}
+)
+if(TARGET Folly::folly)
+    target_link_libraries(ca_cluster_node_real_ec2_test PRIVATE Folly::folly)
+endif()
+target_include_directories(ca_cluster_node_real_ec2_test PRIVATE
+    ${LIBSSH2_INCLUDE_DIRS}
+)
+target_compile_features(ca_cluster_node_real_ec2_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_real_ec2_test COMMAND ca_cluster_node_real_ec2_test)
+set_tests_properties(ca_cluster_node_real_ec2_test PROPERTIES
+    TIMEOUT 900
+    LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node"
+)
 endif()  # LIBSSH2_FOUND
 
 endif()  # AWSSDK_FOUND
+
+# ── aws_acm_pca_provider tests (independent of the core AWS SDK component set) ─
+if(TARGET aws-cpp-sdk-acm-pca)
+
+add_executable(aws_acm_pca_provider_unit_test aws_acm_pca_provider_unit_test.cpp)
+target_link_libraries(aws_acm_pca_provider_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    aws-cpp-sdk-acm-pca
+)
+if(TARGET Folly::folly)
+    target_link_libraries(aws_acm_pca_provider_unit_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(aws_acm_pca_provider_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(aws_acm_pca_provider_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(aws_acm_pca_provider_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(aws_acm_pca_provider_unit_test PRIVATE cxx_std_23)
+add_test(NAME aws_acm_pca_provider_unit_test COMMAND aws_acm_pca_provider_unit_test)
+set_tests_properties(aws_acm_pca_provider_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;aws;acm-pca"
+)
+
+else()
+    message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider_unit_test will not be built")
+endif()
 
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
 add_subdirectory(chaos)

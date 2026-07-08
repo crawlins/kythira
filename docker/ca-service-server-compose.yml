@@ -1,0 +1,47 @@
+# Demonstrates ca_service running in long-running --serve mode (as opposed to
+# the oneshot init-container mode in docker/ca-provisioning-compose.yml), so
+# nodes on the same compose network — or, when the port is published, on hosts
+# outside it — can fetch certificates over HTTP instead of only from a shared
+# volume.
+#
+# No static IP addresses are configured; consumers address this service by its
+# compose service name ("ca-service"), consistent with the project's container
+# runtime compatibility rules (works unmodified under Docker and rootless Podman).
+
+networks:
+  ca-service-net:
+    driver: bridge
+
+services:
+  ca-service:
+    image: kythira-ca-service:dev
+    build:
+      context: ..
+      dockerfile: docker/ca_service/Dockerfile
+    networks:
+      - ca-service-net
+    environment:
+      CA_SERVICE_AUTH_TOKEN: "${CA_SERVICE_AUTH_TOKEN:?CA_SERVICE_AUTH_TOKEN must be set}"
+    # Overrides the image's default oneshot ENTRYPOINT invocation with the
+    # long-running --serve command; the same image is reused unmodified.
+    command:
+      - "--serve"
+      - "0.0.0.0:8443"
+      - "--provider"
+      - "local"
+      - "--auth-token"
+      - "${CA_SERVICE_AUTH_TOKEN}"
+    healthcheck:
+      # /healthz requires the bearer token too (Requirement 11.4: every
+      # request, no stated exception for health checks).
+      test: ["CMD", "curl", "-sf", "-H", "Authorization: Bearer ${CA_SERVICE_AUTH_TOKEN}",
+             "http://localhost:8443/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # Uncomment to make this service reachable from outside the compose network:
+    # ports:
+    #   - "8443:8443"
+
+  # Illustrative consumer: any node container on the same network reaches this
+  # service at http://ca-service:8443/... — no static IP needed.

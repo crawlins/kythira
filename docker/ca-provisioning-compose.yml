@@ -1,0 +1,75 @@
+# Demonstrates ca_service (oneshot mode) provisioning a shared root CA and
+# per-service leaf certificates into a named volume before dependent node
+# containers start. The mtls-node1/mtls-node2 services are illustrative stubs
+# (Alpine + a shell check) — wiring up an actual mTLS chaos test node is future
+# work, tracked separately from the certificate-authority framework itself.
+#
+# No static IP addresses are configured anywhere in this file; containers
+# address each other by compose service name only, so it works unmodified
+# under both Docker and rootless Podman (see CLAUDE.md's container runtime
+# compatibility rules).
+
+networks:
+  ca-provisioning-net:
+    driver: bridge
+
+volumes:
+  ca-material:
+
+services:
+  ca-service:
+    image: kythira-ca-service:dev
+    build:
+      context: ../..
+      dockerfile: docker/ca_service/Dockerfile
+    networks:
+      - ca-provisioning-net
+    volumes:
+      - ca-material:/ca
+    command:
+      - "--out-dir=/ca"
+      - "--service=mtls-node1"
+      - "--service=mtls-node2"
+      - "--domain=cluster.example.local"
+
+  mtls-node1:
+    image: alpine:3.20
+    hostname: mtls-node1
+    networks:
+      ca-provisioning-net:
+    volumes:
+      - ca-material:/ca:ro
+    depends_on:
+      ca-service:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        test -f /ca/root_ca.pem
+        test -f /ca/mtls-node1/cert.pem
+        test -f /ca/mtls-node1/key.pem
+        test -f /ca/mtls-node1/chain.pem
+        echo "mtls-node1: certificate material present"
+
+  mtls-node2:
+    image: alpine:3.20
+    hostname: mtls-node2
+    networks:
+      ca-provisioning-net:
+    volumes:
+      - ca-material:/ca:ro
+    depends_on:
+      ca-service:
+        condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        test -f /ca/root_ca.pem
+        test -f /ca/mtls-node2/cert.pem
+        test -f /ca/mtls-node2/key.pem
+        test -f /ca/mtls-node2/chain.pem
+        echo "mtls-node2: certificate material present"

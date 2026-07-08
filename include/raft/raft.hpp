@@ -251,6 +251,14 @@ public:
     /// @brief Returns `true` if this node currently believes it is the leader.
     [[nodiscard]] auto is_leader() const -> bool;
 
+    /// @brief Returns the node id of the most recently observed leader, if any.
+    ///
+    /// Populated from the `leader_id` of the last accepted AppendEntries RPC;
+    /// `std::nullopt` before this node has heard from any leader (e.g. during
+    /// the very first election). Used by client-facing layers built on top of
+    /// `node<Types>` (e.g. `ca_cluster_node`) to redirect non-leader requests.
+    [[nodiscard]] auto known_leader() const -> std::optional<node_id_type>;
+
     /// @brief Read-only snapshot of internal Raft state for test assertions.
     ///
     /// Valid only while the node is running and not being concurrently mutated.
@@ -1144,6 +1152,11 @@ auto node<Types>::is_leader() const -> bool {
     return _state == kythira::server_state::leader;
 }
 
+template<raft_types Types> auto node<Types>::known_leader() const -> std::optional<node_id_type> {
+    std::lock_guard<std::mutex> lock(_mutex);
+    return _known_leader;
+}
+
 template<raft_types Types>
 
 auto node<Types>::debug_state() const noexcept -> debug_snapshot {
@@ -1651,8 +1664,38 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
             _network_client.send_append_entries(follower_id, request, timeout));
     }
 
-    return kythira::raft_future_collector<append_entries_response_type>::collect_majority(
+    // NOTE: intentionally NOT kythira::raft_future_collector::collect_majority() here.
+    // That helper computes majority as (futures.size() / 2) + 1, which is correct
+    // for "strict majority of exactly these futures" — but heartbeat_futures excludes
+    // the leader itself (see the `if (follower_id == _node_id) continue;` loop above),
+    // so the true cluster majority only requires the leader's own implicit vote plus
+    // floor(heartbeat_futures.size() / 2) more, not a majority of the followers alone.
+    // Using collect_majority's formula here would require ALL followers to ack in a
+    // 3-node cluster (majority-of-2-followers = 2), making read_state() unavailable
+    // the moment a single follower is unreachable — defeating Raft's whole point of
+    // tolerating N/2 failures. required_follower_acks below is the corrected value:
+    // for a cluster of (heartbeat_futures.size() + 1) total nodes, true majority is
+    // (N/2)+1 including the leader's own vote, so followers needed = (N/2)+1-1 = N/2,
+    // i.e. (heartbeat_futures.size() + 1) / 2 with integer division.
+    const std::size_t required_follower_acks = (heartbeat_futures.size() + 1) / 2;
+    return kythira::raft_future_collector<append_entries_response_type>::collect_all_with_timeout(
                std::move(heartbeat_futures), timeout)
+        .thenValue([this, current_term, node_id, start_time, required_follower_acks](
+                       std::vector<kythira::Try<append_entries_response_type>> try_responses)
+                       -> std::vector<append_entries_response_type> {
+            std::vector<append_entries_response_type> responses;
+            responses.reserve(try_responses.size());
+            for (auto& try_response : try_responses) {
+                if (try_response.hasValue()) {
+                    responses.push_back(std::move(try_response.value()));
+                }
+            }
+            if (responses.size() < required_follower_acks) {
+                throw kythira::future_collection_exception("read_state_heartbeat_quorum",
+                                                           try_responses.size() - responses.size());
+            }
+            return responses;
+        })
         .thenValue(
             [this, current_term, node_id, start_time](
                 std::vector<append_entries_response_type> responses) -> std::vector<std::byte> {

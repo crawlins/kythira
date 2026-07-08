@@ -26,15 +26,18 @@ constexpr const char* invalid_tls_version = "TLSv9.9";
 
 BOOST_AUTO_TEST_SUITE(http_ssl_context_configuration_unit_tests)
 
-// **Task 15.3: Unit tests for SSL context configuration**
+// **Requirement 14: cpp_httplib_server/client SSL context configuration**
 // **Validates: Requirements 10.9, 10.13, 10.14**
+//
+// None of these cases configure a client certificate — they exercise pure
+// cipher-suite/TLS-version validation, which has no dependency on the
+// certificate-authority framework (no cert files are ever loaded here).
 
 BOOST_AUTO_TEST_CASE(test_cipher_suite_restriction_enforcement, *boost::unit_test::timeout(30)) {
     using test_types =
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test valid cipher suites
     kythira::cpp_httplib_client_config client_config;
     client_config.cipher_suites = valid_cipher_suites;
 
@@ -42,19 +45,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_restriction_enforcement, *boost::unit_tes
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should succeed with valid cipher suites
-        kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
-
-        BOOST_TEST(true);  // Test passes if construction succeeds
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available
-        BOOST_TEST_MESSAGE(
-            "SSL configuration error (expected if OpenSSL not available): " << e.what());
-        BOOST_TEST(true);
-    }
+    kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
+    BOOST_TEST(true);  // Valid cipher suites construct successfully.
 }
 
 BOOST_AUTO_TEST_CASE(test_invalid_cipher_suite_rejection, *boost::unit_test::timeout(30)) {
@@ -62,7 +54,6 @@ BOOST_AUTO_TEST_CASE(test_invalid_cipher_suite_rejection, *boost::unit_test::tim
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test invalid cipher suites
     kythira::cpp_httplib_client_config client_config;
     client_config.cipher_suites = invalid_cipher_suites;
 
@@ -70,18 +61,9 @@ BOOST_AUTO_TEST_CASE(test_invalid_cipher_suite_rejection, *boost::unit_test::tim
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail with invalid cipher suites
-        BOOST_CHECK_THROW(kythira::cpp_httplib_client<test_types> client(std::move(node_map),
-                                                                         client_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available or cipher suites are invalid
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW(
+        (kythira::cpp_httplib_client<test_types>(std::move(node_map), client_config, metrics)),
+        kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_tls_version_constraint_enforcement, *boost::unit_test::timeout(30)) {
@@ -89,7 +71,6 @@ BOOST_AUTO_TEST_CASE(test_tls_version_constraint_enforcement, *boost::unit_test:
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test valid TLS version range
     kythira::cpp_httplib_client_config client_config;
     client_config.min_tls_version = tls_v12;
     client_config.max_tls_version = tls_v13;
@@ -98,19 +79,8 @@ BOOST_AUTO_TEST_CASE(test_tls_version_constraint_enforcement, *boost::unit_test:
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should succeed with valid TLS version range
-        kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
-
-        BOOST_TEST(true);  // Test passes if construction succeeds
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available
-        BOOST_TEST_MESSAGE(
-            "SSL configuration error (expected if OpenSSL not available): " << e.what());
-        BOOST_TEST(true);
-    }
+    kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
+    BOOST_TEST(true);  // Valid TLS version range constructs successfully.
 }
 
 BOOST_AUTO_TEST_CASE(test_invalid_tls_version_range_rejection, *boost::unit_test::timeout(30)) {
@@ -118,7 +88,7 @@ BOOST_AUTO_TEST_CASE(test_invalid_tls_version_range_rejection, *boost::unit_test
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test invalid TLS version range (min > max)
+    // min > max is invalid.
     kythira::cpp_httplib_client_config client_config;
     client_config.min_tls_version = tls_v13;
     client_config.max_tls_version = tls_v12;
@@ -127,18 +97,9 @@ BOOST_AUTO_TEST_CASE(test_invalid_tls_version_range_rejection, *boost::unit_test
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail with invalid TLS version range
-        BOOST_CHECK_THROW(kythira::cpp_httplib_client<test_types> client(std::move(node_map),
-                                                                         client_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected error
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW(
+        (kythira::cpp_httplib_client<test_types>(std::move(node_map), client_config, metrics)),
+        kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_minimum_security_standards_enforcement, *boost::unit_test::timeout(30)) {
@@ -146,27 +107,18 @@ BOOST_AUTO_TEST_CASE(test_minimum_security_standards_enforcement, *boost::unit_t
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test TLS version below security requirements (TLS 1.0)
+    // TLS 1.0 is below the project's minimum security standard.
     kythira::cpp_httplib_client_config client_config;
-    client_config.min_tls_version = tls_v10;  // Below TLS 1.2 minimum
+    client_config.min_tls_version = tls_v10;
     client_config.max_tls_version = tls_v12;
 
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail with TLS version below security requirements
-        BOOST_CHECK_THROW(kythira::cpp_httplib_client<test_types> client(std::move(node_map),
-                                                                         client_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected error
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW(
+        (kythira::cpp_httplib_client<test_types>(std::move(node_map), client_config, metrics)),
+        kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_invalid_tls_version_string_rejection, *boost::unit_test::timeout(30)) {
@@ -174,7 +126,6 @@ BOOST_AUTO_TEST_CASE(test_invalid_tls_version_string_rejection, *boost::unit_tes
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test invalid TLS version string
     kythira::cpp_httplib_client_config client_config;
     client_config.min_tls_version = invalid_tls_version;
     client_config.max_tls_version = tls_v13;
@@ -183,18 +134,9 @@ BOOST_AUTO_TEST_CASE(test_invalid_tls_version_string_rejection, *boost::unit_tes
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail with invalid TLS version string
-        BOOST_CHECK_THROW(kythira::cpp_httplib_client<test_types> client(std::move(node_map),
-                                                                         client_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected error
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW(
+        (kythira::cpp_httplib_client<test_types>(std::move(node_map), client_config, metrics)),
+        kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_ssl_context_creation_and_configuration, *boost::unit_test::timeout(30)) {
@@ -202,7 +144,6 @@ BOOST_AUTO_TEST_CASE(test_ssl_context_creation_and_configuration, *boost::unit_t
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test SSL context creation with comprehensive configuration
     kythira::cpp_httplib_client_config client_config;
     client_config.cipher_suites = valid_cipher_suites;
     client_config.min_tls_version = tls_v12;
@@ -213,19 +154,8 @@ BOOST_AUTO_TEST_CASE(test_ssl_context_creation_and_configuration, *boost::unit_t
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should succeed with comprehensive SSL context configuration
-        kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
-
-        BOOST_TEST(true);  // Test passes if construction succeeds
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available
-        BOOST_TEST_MESSAGE(
-            "SSL configuration error (expected if OpenSSL not available): " << e.what());
-        BOOST_TEST(true);
-    }
+    kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
+    BOOST_TEST(true);  // Comprehensive, valid configuration constructs successfully.
 }
 
 BOOST_AUTO_TEST_CASE(test_ssl_context_error_handling, *boost::unit_test::timeout(30)) {
@@ -233,7 +163,7 @@ BOOST_AUTO_TEST_CASE(test_ssl_context_error_handling, *boost::unit_test::timeout
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test SSL context error handling with multiple invalid parameters
+    // Multiple invalid parameters at once.
     kythira::cpp_httplib_client_config client_config;
     client_config.cipher_suites = invalid_cipher_suites;
     client_config.min_tls_version = invalid_tls_version;
@@ -243,18 +173,9 @@ BOOST_AUTO_TEST_CASE(test_ssl_context_error_handling, *boost::unit_test::timeout
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail with multiple SSL context errors
-        BOOST_CHECK_THROW(kythira::cpp_httplib_client<test_types> client(std::move(node_map),
-                                                                         client_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected error
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW(
+        (kythira::cpp_httplib_client<test_types>(std::move(node_map), client_config, metrics)),
+        kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_server_ssl_context_configuration, *boost::unit_test::timeout(30)) {
@@ -262,7 +183,8 @@ BOOST_AUTO_TEST_CASE(test_server_ssl_context_configuration, *boost::unit_test::t
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test server SSL context configuration
+    // Certificate files that don't exist — a genuine configuration failure,
+    // independent of the certificate-authority framework.
     kythira::cpp_httplib_server_config server_config;
     server_config.enable_ssl = true;
     server_config.ssl_cert_path = "/path/to/server.crt";
@@ -272,19 +194,9 @@ BOOST_AUTO_TEST_CASE(test_server_ssl_context_configuration, *boost::unit_test::t
     server_config.max_tls_version = tls_v13;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should fail because certificate files don't exist, but SSL context validation should
-        // occur first
-        BOOST_CHECK_THROW(kythira::cpp_httplib_server<test_types> server(
-                              test_bind_address, test_bind_port, server_config, metrics),
-                          kythira::ssl_configuration_error);
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected error (certificate files don't exist or OpenSSL not available)
-        BOOST_TEST_MESSAGE("SSL configuration error (expected): " << e.what());
-        BOOST_TEST(true);
-    }
+    BOOST_CHECK_THROW((kythira::cpp_httplib_server<test_types>(test_bind_address, test_bind_port,
+                                                               server_config, metrics)),
+                      kythira::ssl_configuration_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_empty_cipher_suites_allowed, *boost::unit_test::timeout(30)) {
@@ -292,9 +204,9 @@ BOOST_AUTO_TEST_CASE(test_empty_cipher_suites_allowed, *boost::unit_test::timeou
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test empty cipher suites (should use defaults)
+    // Empty cipher suites means "use defaults" and must be accepted.
     kythira::cpp_httplib_client_config client_config;
-    client_config.cipher_suites = "";  // Empty - should use defaults
+    client_config.cipher_suites = "";
     client_config.min_tls_version = tls_v12;
     client_config.max_tls_version = tls_v13;
 
@@ -302,19 +214,8 @@ BOOST_AUTO_TEST_CASE(test_empty_cipher_suites_allowed, *boost::unit_test::timeou
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should succeed with empty cipher suites (uses defaults)
-        kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
-
-        BOOST_TEST(true);  // Test passes if construction succeeds
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available
-        BOOST_TEST_MESSAGE(
-            "SSL configuration error (expected if OpenSSL not available): " << e.what());
-        BOOST_TEST(true);
-    }
+    kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
+    BOOST_TEST(true);
 }
 
 BOOST_AUTO_TEST_CASE(test_empty_tls_versions_allowed, *boost::unit_test::timeout(30)) {
@@ -322,29 +223,18 @@ BOOST_AUTO_TEST_CASE(test_empty_tls_versions_allowed, *boost::unit_test::timeout
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, folly::CPUThreadPoolExecutor>;
 
-    // Test empty TLS versions (should use defaults)
+    // Empty TLS version bounds means "use defaults" and must be accepted.
     kythira::cpp_httplib_client_config client_config;
     client_config.cipher_suites = valid_cipher_suites;
-    client_config.min_tls_version = "";  // Empty - should use defaults
-    client_config.max_tls_version = "";  // Empty - should use defaults
+    client_config.min_tls_version = "";
+    client_config.max_tls_version = "";
 
     std::unordered_map<std::uint64_t, std::string> node_map;
     node_map[test_node_id] = test_node_url;
 
     typename test_types::metrics_type metrics;
-
-    try {
-        // This should succeed with empty TLS versions (uses defaults)
-        kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
-
-        BOOST_TEST(true);  // Test passes if construction succeeds
-
-    } catch (const kythira::ssl_configuration_error& e) {
-        // Expected if OpenSSL is not available
-        BOOST_TEST_MESSAGE(
-            "SSL configuration error (expected if OpenSSL not available): " << e.what());
-        BOOST_TEST(true);
-    }
+    kythira::cpp_httplib_client<test_types> client(std::move(node_map), client_config, metrics);
+    BOOST_TEST(true);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

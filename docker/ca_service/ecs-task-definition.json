@@ -1,0 +1,59 @@
+{
+  "family": "kythira-ca-service",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-service-execution-role",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-service-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ca-service",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-service:latest",
+      "essential": true,
+      "command": [
+        "--serve",
+        "0.0.0.0:8443",
+        "--provider",
+        "aws-acm-pca",
+        "--acm-pca-arn",
+        "arn:aws:acm-pca:REGION:ACCOUNT_ID:certificate-authority/CA_ID",
+        "--aws-region",
+        "REGION"
+      ],
+      "portMappings": [
+        {
+          "containerPort": 8443,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "CA_SERVICE_AUTH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-service/auth-token"
+        }
+      ],
+      "environment": [
+        {
+          "name": "CA_SERVICE_ROOT_FINGERPRINT",
+          "value": "FILL_IN_VIA_ca_service---print-root-fingerprint"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf -H \"Authorization: Bearer $CA_SERVICE_AUTH_TOKEN\" http://localhost:8443/healthz || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/kythira-ca-service",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "ca-service"
+        }
+      }
+    }
+  ]
+}

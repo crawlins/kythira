@@ -81,6 +81,20 @@ existing AWS integrations.
   illustrative cloud container target for a long-running `ca_service`.
 - **`ca_test_fixture`**: The test-fixture class described in Requirement 13
   that bundles CA setup and client certificate issuance into two primitives.
+- **Certificate pinning**: Trusting a TLS connection by comparing the
+  server's presented certificate (or, here, the root of its chain) against a
+  known-good fingerprint distributed out-of-band, instead of relying on
+  normal chain-of-trust verification. Used in Requirement 19 to solve the
+  bootstrap chicken-and-egg problem: a first-time caller has nothing signed
+  by the CA yet to chain-verify against.
+- **mDNS**: Multicast DNS (RFC 6762) — link-local, zero-configuration name
+  resolution for `.local` hostnames, commonly provided by Avahi (Linux) or
+  Bonjour/`mDNSResponder` (macOS). Already used elsewhere in this project by
+  `poco_peer_discovery`. Relevant to Requirement 20's Case 1.
+- **RFC 8738**: The ACME extension that adds `ip`-type identifiers (as
+  opposed to RFC 8555's original `dns`-type only), validated via `http-01`
+  or `tls-alpn-01` — never `dns-01`, since a bare IP address has no DNS zone
+  to place a challenge record in. Relevant to Requirement 20's Case 2.
 - **ACME**: Automatic Certificate Management Environment (RFC 8555) — the
   protocol Let's Encrypt and many other public CAs use. Domain control is
   proven via a challenge (`http-01` or `dns-01`) rather than by presenting an
@@ -893,3 +907,131 @@ rate-limited, publicly-routable CA.
     signing and `boost::json` (already used by `file_persistence.hpp`) — with
     a small base64url helper. No new external library dependency SHALL be
     introduced for ACME support.
+
+### Requirement 19: Server-certificate fingerprint pinning for first-contact bootstrap trust
+
+**User Story:** As an operator distributing a bearer token to a new instance so
+it can request its first certificate from `ca_service --serve` /
+`ca_cluster_node`, I want to distribute the server's certificate fingerprint
+through that same out-of-band channel, so the instance can confirm it's
+actually talking to the intended CA server before it has anything signed by
+that CA to chain-verify against.
+
+#### Acceptance Criteria
+
+1. WHEN `ca_service --serve` or `ca_cluster_node` is started with TLS enabled
+   (`--tls-cert`/`--tls-key`, or the `local` provider's self-issued default
+   per Requirement 11.5), it SHALL compute and print, at startup, the SHA-256
+   fingerprint of the root/issuing CA certificate backing its TLS listener —
+   for the `local` provider this is `certificate_authority::root_certificate_pem()`;
+   for an operator-supplied external certificate, the external issuer's root.
+   This SHALL be the *root's* fingerprint, not the leaf/serving certificate's
+   own — the leaf changes across hot-reload (Requirement 16) while the root
+   does not, so pinning the root keeps a distributed fingerprint valid across
+   rotations.
+2. `ca_service` / `ca_cluster_node` SHALL additionally support a
+   `--print-root-fingerprint` mode that computes and prints this fingerprint
+   and exits immediately, without starting the HTTP listener, so an operator
+   can capture it in a provisioning script without parsing startup logs.
+3. A pinned-verification bootstrap helper SHALL be provided
+   (`include/raft/ca_bootstrap_client.hpp`) that, given a base URL, a bearer
+   token, and an expected root fingerprint — all delivered through the same
+   out-of-band channel used for the token itself (e.g. the same
+   `EnvironmentFile` / `user_data` / secrets-manager entry) — performs: connect
+   over TLS, retrieve the server's presented certificate chain, compute the
+   SHA-256 fingerprint of the chain's root certificate, and accept the
+   connection only on an exact match — bypassing normal system-trust-store
+   chain verification for this specific bootstrap connection, since there is
+   no prior trust relationship to chain-verify against.
+4. WHEN the pinned fingerprint does not match, the helper SHALL abort the
+   connection and raise an error identifying the mismatch (expected vs.
+   observed fingerprint). It SHALL NOT fall back to unpinned or otherwise
+   weakened verification.
+5. Upon a successful pinned-fingerprint connection, the helper SHALL fetch
+   `GET /v1/root-ca` over that already-validated channel and return the
+   resulting root certificate PEM to the caller. Callers SHALL use that
+   fetched root PEM for normal chain verification on all subsequent
+   connections — including the bootstrap request that actually obtains the
+   first certificate, and every request thereafter. Fingerprint pinning is a
+   one-time bootstrap technique, not an ongoing trust model, so it is never
+   affected by the server's leaf certificate rotating under Requirement 16.
+6. Pinned-verification (this requirement) and bearer-token authentication
+   (Requirement 11.4) SHALL be independent and composable: pinning
+   establishes that the client can trust the server's identity; the token
+   establishes that the server can trust the client's request. Both SHALL be
+   satisfied before a `POST /v1/certificates` bootstrap request is considered
+   fully authenticated in either direction.
+7. The cloud deployment documentation/examples from Requirement 12 SHALL be
+   updated to show the root fingerprint distributed alongside the bearer
+   token — e.g. a second `EnvironmentFile` entry, `CA_SERVICE_ROOT_FINGERPRINT`,
+   next to `CA_SERVICE_AUTH_TOKEN`.
+
+### Requirement 20: Certificate issuance across LAN/mDNS, IP-only, and DNS-integrated node configurations
+
+**User Story:** As an operator deploying nodes into different network
+environments — a LAN where mDNS is available, an environment where the node
+has no discoverable name at all (only an IP), or an environment where the
+node already controls a DNS record — I want certificate issuance, including
+via ACME, to work correctly for whichever naming a node actually has, without
+requiring a DNS name it doesn't control.
+
+#### Acceptance Criteria
+
+1. `certificate_authority::issue()`/`sign_csr()`, `ca_test_fixture::bootstrap_client()`,
+   and `ca_service`/`ca_cluster_node`'s bearer-token-authenticated
+   `/v1/certificates` route already impose no requirement that a SAN be a
+   real, externally-resolvable DNS name — Requirement 2.5 only requires at
+   least one of `dns_names`/`ip_addresses` to be non-empty, and none of these
+   paths validate domain or name control at all (trust comes from the bearer
+   token, the shared volume, or the in-process call, per Requirements 7/11).
+   This requirement makes explicit that mDNS names (e.g. `node1.local`), bare
+   IP addresses, and ordinary DNS names SHALL all be equally valid inputs to
+   every one of these paths with no special-casing — they already satisfy
+   Cases 1–3 without modification.
+2. **LAN/mDNS (Case 1):** `acme_test_server`'s challenge validation
+   (Requirement 18.7–18.8) SHALL resolve an identifier ending in `.local` the
+   same way any other hostname is resolved on the validating host —
+   `getaddrinfo()` — relying on the host's own mDNS-capable resolver
+   configuration (e.g. `nss-mdns`/Avahi on Linux, native `mDNSResponder` on
+   macOS) rather than any custom mDNS client code. WHEN the validating host
+   has no mDNS-capable resolver configured, `.local` resolution SHALL fail
+   with an error distinguishable from a normal DNS failure (Requirement
+   20.6), not be silently retried against public DNS. mDNS is link-local:
+   this SHALL only be expected to succeed when `acme_test_server` and the
+   node being validated share a local network segment. Real public ACME CAs
+   SHALL NOT be expected to support `.local` identifiers at all — this
+   capability is specific to `acme_test_server` (or any private ACME CA an
+   operator runs on the same LAN), and `acme_certificate_provider`'s
+   documentation SHALL say so plainly.
+3. **IP-only, no mDNS, no controlled DNS record (Case 2):**
+   `acme_certificate_provider` SHALL support RFC 8738 IP-identifier
+   issuance. WHEN an identifier being requested is an IP address rather than
+   a DNS name, the ACME `newOrder` request's `identifier.type` SHALL be
+   `"ip"` (not `"dns"`), and that identifier's challenge SHALL always be
+   `http-01`, regardless of `acme_certificate_provider_config::challenge_type` —
+   `dns-01` SHALL NOT be attempted for an IP identifier, since RFC 8738 does
+   not define it for that identifier type. `challenge_type` therefore governs
+   DNS-identifier validation only. `acme_test_server` SHALL accept and
+   correctly validate `"ip"`-typed orders the same way a real RFC
+   8738-supporting CA would. (`tls-alpn-01`, RFC 8738's other IP-compatible
+   challenge type, is out of scope for this spec.)
+4. **DNS integration (Case 3):** WHEN a node already uses one of the
+   existing DNS-based `peer_discovery` implementations
+   (`rfc2136_ldns_discovery`, `rfc6763_ldns_peer_discovery`) and therefore
+   already controls a DNS zone and TSIG credential, that same configuration
+   SHALL be directly usable as `acme_certificate_provider_config::dns01_update_config`
+   (Requirement 18.2) without separate setup — both features already share
+   the identical RFC 2136 UPDATE mechanism (Requirement 18.4), so a node's
+   existing DNS-registration credentials for peer discovery are sufficient
+   for certificate issuance too.
+5. A single `sign_csr()` call whose `csr_signing_options` mixes DNS names and
+   IP addresses (e.g. a node with both an mDNS name and a bare IP as SANs)
+   SHALL validate each identifier using the challenge type appropriate to
+   *that identifier's own type* (per Requirements 20.2–20.3), not one
+   challenge type for the whole request — a single certificate's SANs MAY be
+   validated by different challenge mechanisms.
+6. mDNS resolution failure (Requirement 20.2) and RFC 2136 DNS UPDATE failure
+   (Requirement 18.4/20.4) SHALL surface as distinguishable error conditions
+   — an operator debugging a failed LAN deployment needs to tell "no
+   mDNS resolver on this host" apart from "the DNS zone update was rejected,"
+   since the fixes are unrelated.

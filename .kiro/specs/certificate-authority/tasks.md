@@ -1,8 +1,17 @@
 # Implementation Plan — Certificate Authority Framework
 
-## Status: Not Started
+## Status: Complete (35/35 tasks)
 
-**Last Updated**: July 7, 2026
+All 35 tasks are implemented, built, and verified. Tasks 31's LocalStack and
+real-EC2 coverage (`tests/ca_cluster_node_localstack_test.cpp`,
+`tests/ca_cluster_node_real_ec2_test.cpp`) is compile-verified but not
+executed — no LocalStack instance or real AWS credentials/EC2 access are
+available in this environment, consistent with the always-compiled-but-
+runtime-skipped pattern already used elsewhere in this project for
+AWS-infrastructure-dependent tests (see `tests/aws_acm_pca_provider_unit_test.cpp`).
+Every other task's test coverage runs and passes under `ctest`.
+
+**Last Updated**: July 8, 2026
 
 ## Overview
 
@@ -125,6 +134,26 @@ service on a cloud instance or in a long-running container.
       "wave": 20,
       "tasks": [31],
       "description": "LocalStack and real-EC2 test coverage for the 3-AZ ca_cluster_node AWS deployment — depends on tasks 25 and 27"
+    },
+    {
+      "wave": 21,
+      "tasks": [32],
+      "description": "Server-side root-fingerprint printing (ca_service / ca_cluster_node) — depends on tasks 12 and 25"
+    },
+    {
+      "wave": 22,
+      "tasks": [33],
+      "description": "ca_bootstrap_client pinned-verification helper and its test coverage — depends on task 32"
+    },
+    {
+      "wave": 23,
+      "tasks": [34],
+      "description": "Per-identifier ACME challenge-type dispatch (dns/ip classification) — depends on task 29"
+    },
+    {
+      "wave": 24,
+      "tasks": [35],
+      "description": ".local (mDNS) resolution in acme_test_server, plus Property 21/22 test coverage — depends on tasks 28 and 34"
     }
   ]
 }
@@ -132,7 +161,7 @@ service on a cloud instance or in a long-running container.
 
 ## Tasks
 
-- [ ] 1. Implement `certificate_authority` core in `include/raft/certificate_authority.hpp`
+- [x] 1. Implement `certificate_authority` core in `include/raft/certificate_authority.hpp`
   / `include/raft/certificate_authority_impl.hpp` / `src/certificate_authority.cpp`
   - Add top-level `certificate_authority` CMake library target, built only
     `if(TARGET OpenSSL::SSL)`, linked against `OpenSSL::SSL OpenSSL::Crypto`,
@@ -174,7 +203,7 @@ service on a cloud instance or in a long-running container.
   - Verify: `cmake --build build` succeeds with and without OpenSSL present
   - _Requirements: 1.1–1.5, 2.1–2.6, 3.1–3.4, 8.1–8.3_
 
-- [ ] 2. Implement revocation and CRL support on `certificate_authority`
+- [x] 2. Implement revocation and CRL support on `certificate_authority`
   - Depends on task 1 (`pem_material.serial`, internal mutex, `_ca_key`/`_ca_cert`)
   - Track every issued serial in an internal set at the end of each successful
     `issue*()` call
@@ -191,7 +220,7 @@ service on a cloud instance or in a long-running container.
     succeeds before `revoke()` is called
   - _Requirements: 4.1–4.3_
 
-- [ ] 3. Implement `temp_cert_files` RAII helper in `include/raft/certificate_authority.hpp`
+- [x] 3. Implement `temp_cert_files` RAII helper in `include/raft/certificate_authority.hpp`
   - Depends on task 1 (`pem_material` shape)
   - Ctor: build a unique directory name from `material.serial` plus a
     high-resolution timestamp under `std::filesystem::temp_directory_path()`;
@@ -209,7 +238,7 @@ service on a cloud instance or in a long-running container.
     the same test process never collide on a path
   - _Requirements: 5.1–5.5_
 
-- [ ] 4. Add framework test coverage: `tests/certificate_authority_unit_test.cpp`
+- [x] 4. Add framework test coverage: `tests/certificate_authority_unit_test.cpp`
   and `tests/certificate_authority_property_test.cpp`
   - Depends on tasks 1–3
   - Unit test: construct a CA per `key_algorithm` value; issue leaves with
@@ -229,7 +258,7 @@ service on a cloud instance or in a long-running container.
   - Verify: `ctest --test-dir build -R certificate_authority` passes
   - _Requirements: 1.1–1.5, 2.1–2.6, 3.1–3.4, 4.1–4.3_
 
-- [ ] 5. Migrate existing certificate-consuming tests off placeholder PEM fixtures
+- [x] 5. Migrate existing certificate-consuming tests off placeholder PEM fixtures
   - Depends on tasks 1, 3, and 15 (`ca_test_fixture`, in-process mode) — use
     the fixture rather than wiring `certificate_authority` + `temp_cert_files`
     by hand in each test file
@@ -257,7 +286,7 @@ service on a cloud instance or in a long-running container.
     handshake rather than short-circuiting on unparseable material
   - _Requirements: 6.1–6.4_
 
-- [ ] 6. Implement `ca_service` in `cmd/ca_service/main.cpp` + `cmd/ca_service/CMakeLists.txt`
+- [x] 6. Implement `ca_service` in `cmd/ca_service/main.cpp` + `cmd/ca_service/CMakeLists.txt`
   - Depends on tasks 1, 3 (uses `certificate_authority`; does not need
     `temp_cert_files`, since output is a fixed `--out-dir`, not a temp
     directory — writes files directly)
@@ -285,7 +314,7 @@ service on a cloud instance or in a long-running container.
     against `root_ca.pem`
   - _Requirements: 7.1–7.5_
 
-- [ ] 7. Package `ca_service` for Docker/Podman scenarios
+- [x] 7. Package `ca_service` for Docker/Podman scenarios
   - Depends on task 6
   - `docker/ca_service/Dockerfile`: two-stage build mirroring
     `docker/dns_discovery_node/Dockerfile` (builder stage compiles
@@ -303,7 +332,7 @@ service on a cloud instance or in a long-running container.
     exiting 0 before the dependent stubs start
   - _Requirements: 7.6–7.7_
 
-- [ ] 8. Implement `certificate_provider` concept, CSR signing, and
+- [x] 8. Implement `certificate_provider` concept, CSR signing, and
   `local_certificate_provider` in `include/raft/certificate_provider.hpp`
   (+ `sign_csr()` added to `certificate_authority`)
   - Depends on task 1 (`pem_material`, `certificate_authority` internals)
@@ -329,7 +358,7 @@ service on a cloud instance or in a long-running container.
     `sign_csr()` rejects a CSR whose signature doesn't match its own public key
   - _Requirements: 9.1–9.5_
 
-- [ ] 9. Extend `certificate_authority_property_test.cpp` with CSR/provider
+- [x] 9. Extend `certificate_authority_property_test.cpp` with CSR/provider
   coverage (Properties 7–8)
   - Depends on task 8
   - Property 7: for `csr = generate_key_and_csr(opts)` and
@@ -343,7 +372,7 @@ service on a cloud instance or in a long-running container.
   - Verify: `ctest --test-dir build -R certificate_authority` still passes
   - _Requirements: 9.1, 9.4_
 
-- [ ] 10. Implement `aws_acm_pca_provider` in
+- [x] 10. Implement `aws_acm_pca_provider` in
   `include/raft/aws_acm_pca_provider.hpp` / `_impl.hpp`
   - Depends on task 8 (`certificate_provider` concept, `csr_signing_options`,
     `pem_material`)
@@ -371,7 +400,7 @@ service on a cloud instance or in a long-running container.
     component present
   - _Requirements: 8.4–8.5, 10.1–10.7_
 
-- [ ] 11. Add `aws_acm_pca_provider` test coverage (unit / LocalStack / real)
+- [x] 11. Add `aws_acm_pca_provider` test coverage (unit / LocalStack / real)
   - Depends on task 10
   - `tests/aws_acm_pca_provider_unit_test.cpp`: config validation and
     `fiu_enable("raft/aws/acm_pca/...")`-forced error-path assertions, no live
@@ -388,7 +417,7 @@ service on a cloud instance or in a long-running container.
     without any AWS credentials configured
   - _Requirements: 10.1–10.7_
 
-- [ ] 12. Implement `ca_service --serve` mode
+- [x] 12. Implement `ca_service --serve` mode
   - Depends on tasks 6 (existing `cmd/ca_service/main.cpp` oneshot CLI), 8
     (`local_certificate_provider`), 10 (`aws_acm_pca_provider`)
   - Extend `cli_options` with `--serve <host:port>`, `--provider
@@ -412,7 +441,7 @@ service on a cloud instance or in a long-running container.
     confirms `401` without the header and `200`/expected JSON with it
   - _Requirements: 11.1–11.6_
 
-- [ ] 13. Add `ca_service` serve-mode integration test
+- [x] 13. Add `ca_service` serve-mode integration test
   - Depends on task 12
   - `tests/ca_service_serve_integration_test.cpp`: start `ca_service --serve`
     as a child process with `--provider local` and a known `--auth-token`;
@@ -423,7 +452,7 @@ service on a cloud instance or in a long-running container.
   - Verify: `ctest --test-dir build -R ca_service_serve` passes
   - _Requirements: 11.1–11.6_
 
-- [ ] 14. Package `ca_service --serve` for cloud and long-running-container deployment
+- [x] 14. Package `ca_service --serve` for cloud and long-running-container deployment
   - Depends on task 12 (reuses the `docker/ca_service/Dockerfile` image built
     in task 7 unmodified — no new image)
   - `docker/ca-service-server-compose.yml`: long-running `ca-service` container
@@ -444,7 +473,7 @@ service on a cloud instance or in a long-running container.
     `/healthz`
   - _Requirements: 12.1–12.6_
 
-- [ ] 15. Implement `ca_test_fixture` (in-process mode) in `tests/ca_test_fixture.hpp`
+- [x] 15. Implement `ca_test_fixture` (in-process mode) in `tests/ca_test_fixture.hpp`
   - Depends on tasks 1, 3 (`certificate_authority`, `temp_cert_files`); does
     NOT depend on `ca_service`/serve mode yet — that's task 16
   - Define `ca_test_fixture_options` and `ca_test_fixture` per the design's
@@ -465,7 +494,7 @@ service on a cloud instance or in a long-running container.
     calls)
   - _Requirements: 13.1, 13.3 (in-process path), 13.4, 13.5 (in-process path), 13.6_
 
-- [ ] 16. Extend `ca_test_fixture` with network-service mode
+- [x] 16. Extend `ca_test_fixture` with network-service mode
   - Depends on tasks 12 (`ca_service --serve`) and 15
   - Implement `start_network_service = true`: launch `ca_service --serve
     <serve_bind_address> --provider local --auth-token <fixture-generated
@@ -489,7 +518,7 @@ service on a cloud instance or in a long-running container.
     the child process itself
   - _Requirements: 13.1, 13.2, 13.3 (service path), 13.5 (service path)_
 
-- [ ] 17. Fix `cpp_httplib_server` to perform real TLS termination via `httplib::SSLServer`
+- [x] 17. Fix `cpp_httplib_server` to perform real TLS termination via `httplib::SSLServer`
   - Depends on task 15 (`ca_test_fixture`, for the test rewrites below)
   - Add `std::unique_ptr<httplib::SSLServer> _ssl_server` alongside the
     existing `_http_server`, both under `#ifdef CPPHTTPLIB_OPENSSL_SUPPORT`
@@ -520,7 +549,7 @@ service on a cloud instance or in a long-running container.
     passes with SSL actually established (not skipped/tolerated)
   - _Requirements: 14.1–14.6_
 
-- [ ] 18. Implement `reload_tls_material()` / `enable_auto_reload()` for `cpp_httplib_server` and `cpp_httplib_client`
+- [x] 18. Implement `reload_tls_material()` / `enable_auto_reload()` for `cpp_httplib_server` and `cpp_httplib_client`
   - Depends on task 17
   - `cpp_httplib_server::reload_tls_material()`: validate the new cert/key pair
     with the existing `validate_certificate_key_pair()` helper first; on
@@ -543,7 +572,7 @@ service on a cloud instance or in a long-running container.
     the new cert
   - _Requirements: 16.1, 16.3–16.7_
 
-- [ ] 19. Implement `reload_tls_material()` / `enable_auto_reload()` for `coap_server` and `coap_client`
+- [x] 19. Implement `reload_tls_material()` / `enable_auto_reload()` for `coap_server` and `coap_client`
   - Depends on task 15 (for test verification material); implementation itself
     has no dependency on the CA framework beyond that
   - Extract the existing PKI-config-building logic at
@@ -564,7 +593,7 @@ service on a cloud instance or in a long-running container.
     call; a new association afterward uses the new cert
   - _Requirements: 16.2–16.7_
 
-- [ ] 20. Implement `ca_test_fixture::renew()` and `temp_cert_files::replace_atomically()`
+- [x] 20. Implement `ca_test_fixture::renew()` and `temp_cert_files::replace_atomically()`
   - Depends on task 15
   - `temp_cert_files::replace_atomically(const pem_material&)` (private,
     used only by `renew()`): write `cert.pem.tmp`/`key.pem.tmp`/
@@ -581,7 +610,7 @@ service on a cloud instance or in a long-running container.
     identity preserved, validity window/serial advanced across `renew()`
   - _Requirements: 15.1, 15.2_
 
-- [ ] 21. Implement `ca_service`'s `POST /v1/certificates/renew` route
+- [x] 21. Implement `ca_service`'s `POST /v1/certificates/renew` route
   - Depends on task 12 (`ca_service --serve`)
   - Set the serve-mode `SSL_CTX`'s verify mode to `SSL_VERIFY_PEER` (request,
     not require, a client certificate) so bearer-token routes keep working
@@ -599,7 +628,7 @@ service on a cloud instance or in a long-running container.
     certificate gets `401`
   - _Requirements: 15.3–15.5_
 
-- [ ] 22. Add cross-cutting hot-reload/renewal property test coverage
+- [x] 22. Add cross-cutting hot-reload/renewal property test coverage
   - Depends on tasks 18, 19, 20, 21
   - `tests/http_transport_reload_property_test.cpp`: Properties 11–13 for
     `cpp_httplib_server` — in-flight connection survives reload, new
@@ -614,7 +643,7 @@ service on a cloud instance or in a long-running container.
   - Verify: `ctest --test-dir build -R "reload|ca_service_serve"` passes
   - _Requirements: 16.4 (Property 11–12), 16.3 (Property 13), 15.1/15.3/15.4 (Property 14)_
 
-- [ ] 23. Implement `certificate_authority::from_existing()`
+- [x] 23. Implement `certificate_authority::from_existing()`
   - Depends on task 1
   - Static factory parsing supplied `ca_cert_pem`/`ca_key_pem` via
     `PEM_read_bio_X509`/`PEM_read_bio_PrivateKey`, verifying the key matches
@@ -629,7 +658,7 @@ service on a cloud instance or in a long-running container.
     again, and confirm both leaves chain-verify against the same root
   - _Requirements: 17.9_
 
-- [ ] 24. Implement `ca_state_machine` in `include/raft/ca_state_machine.hpp`
+- [x] 24. Implement `ca_state_machine` in `include/raft/ca_state_machine.hpp`
   - Depends on task 23 (`from_existing`, used by `ca_cluster_node` in task 25,
     not by the state machine itself, but the type shapes are shared)
   - Define `ca_command_type`, `ca_ledger_entry`, and `ca_state_machine` per the
@@ -653,7 +682,7 @@ service on a cloud instance or in a long-running container.
     `restore_from_snapshot(get_state())` round-trip
   - _Requirements: 17.1–17.4_
 
-- [ ] 25. Implement `ca_cluster_node` in `cmd/ca_cluster_node/main.cpp` + `cmd/ca_cluster_node/CMakeLists.txt`
+- [x] 25. Implement `ca_cluster_node` in `cmd/ca_cluster_node/main.cpp` + `cmd/ca_cluster_node/CMakeLists.txt`
   - Depends on task 24 (`ca_state_machine`); reuses the `/v1/*` route handler
     logic already written for task 12 (`ca_service --serve`) and task 21 (the
     renewal route)
@@ -690,7 +719,7 @@ service on a cloud instance or in a long-running container.
     on disk
   - _Requirements: 17.5–17.11_
 
-- [ ] 26. Add multi-node `ca_cluster_node` test coverage
+- [x] 26. Add multi-node `ca_cluster_node` test coverage
   - Depends on task 25
   - `tests/ca_cluster_node_test.cpp`: bring up a 3-node cluster (in-process or
     via subprocesses, following whichever pattern
@@ -713,7 +742,7 @@ service on a cloud instance or in a long-running container.
     (60–180 s) given this test involves multi-node elections and real disk I/O
   - _Requirements: 17.1, 17.4, 17.5, 17.7, 17.8_
 
-- [ ] 27. Package/document 3-AZ AWS deployment for `ca_cluster_node`
+- [x] 27. Package/document 3-AZ AWS deployment for `ca_cluster_node`
   - Depends on task 25
   - `docker/ca_cluster_node/ecs-task-definitions/`: three sample ECS task
     definitions (or one parameterized template plus a note on the per-AZ
@@ -731,7 +760,7 @@ service on a cloud instance or in a long-running container.
     a working 3-AZ cluster from the examples without guessing any value
   - _Requirements: 17.12_
 
-- [ ] 28. Implement `acme_test_server` in `tests/acme_test_server.hpp`
+- [x] 28. Implement `acme_test_server` in `tests/acme_test_server.hpp`
   - Depends on task 1 (`certificate_authority`) only — no dependency on the
     ACME client, so this can be built and tested standalone first
   - Implement the RFC 8555 endpoints needed for the happy path: `/directory`,
@@ -756,7 +785,7 @@ service on a cloud instance or in a long-running container.
     expected result
   - _Requirements: 18.7, 18.8_
 
-- [ ] 29. Implement `acme_certificate_provider` in `include/raft/acme_certificate_provider.hpp` / `_impl.hpp`
+- [x] 29. Implement `acme_certificate_provider` in `include/raft/acme_certificate_provider.hpp` / `_impl.hpp`
   - Depends on task 8 (`certificate_provider` concept, `csr_signing_options`);
     the `dns_01` path additionally depends on the already-implemented
     `rfc2136_ldns_discovery` (no new task — reuse, not reimplementation)
@@ -781,7 +810,7 @@ service on a cloud instance or in a long-running container.
     `acme_test_server` completes a full `http_01` issuance
   - _Requirements: 18.1–18.6, 18.10_
 
-- [ ] 30. Add end-to-end and negative-path test coverage for ACME support
+- [x] 30. Add end-to-end and negative-path test coverage for ACME support
   - Depends on tasks 28 and 29
   - `tests/acme_certificate_provider_test.cpp`: full `http_01` and `dns_01`
     issuance against `acme_test_server` (the `dns_01` case needs a reachable
@@ -799,7 +828,7 @@ service on a cloud instance or in a long-running container.
     `dns_01` case excluded from the default run if applicable, per above)
   - _Requirements: 18.7, 18.9_
 
-- [ ] 31. Add LocalStack and real-EC2 test coverage for the 3-AZ `ca_cluster_node` AWS deployment
+- [x] 31. Add LocalStack and real-EC2 test coverage for the 3-AZ `ca_cluster_node` AWS deployment
   - Depends on tasks 25 (`ca_cluster_node`) and 27 (3-AZ packaging artifacts);
     reuses the existing `aws_ec2_quorum_manager` unmodified — no new AWS
     provisioning code
@@ -828,6 +857,87 @@ service on a cloud instance or in a long-running container.
   - Verify: `ctest --test-dir build -R ca_cluster_node_aws_localstack` passes
     without real AWS credentials
   - _Requirements: 17.12_
+
+- [x] 32. Implement server-side root-fingerprint printing on `ca_service` / `ca_cluster_node`
+  - Depends on tasks 12 (`ca_service --serve`) and 25 (`ca_cluster_node`)
+  - Compute the SHA-256 fingerprint of the root certificate backing the
+    listener's TLS material (`certificate_authority::root_certificate_pem()`
+    for the `local` provider; the external issuer's root when an
+    operator-supplied `--tls-cert` is used) via `X509_digest(cert,
+    EVP_sha256(), ...)`; log it once at startup when TLS is enabled
+  - Add `--print-root-fingerprint`: load just enough config to construct or
+    read the same root, print the fingerprint, exit 0 without binding any
+    port; usage error and non-zero exit if TLS was never configured (nothing
+    to fingerprint)
+  - Update the Requirement 12 deployment examples (`docker/ca_service/ca_service.service`,
+    `docker/ca_cluster_node/ca_cluster_node.service`, the ECS task
+    definitions) to show a `CA_SERVICE_ROOT_FINGERPRINT` /
+    `CA_CLUSTER_ROOT_FINGERPRINT` entry alongside the existing auth-token
+    entry in the same `EnvironmentFile`
+  - Verify: `ca_service --serve --tls-cert ... --tls-key ... --print-root-fingerprint`
+    prints a stable fingerprint that matches independently computing
+    `X509_digest` over the same cert file
+  - _Requirements: 19.1, 19.2, 19.7_
+
+- [x] 33. Implement `ca_bootstrap_client::fetch_trusted_root()` and its test coverage
+  - Depends on task 32
+  - `include/raft/ca_bootstrap_client.hpp`: `fetch_trusted_root(base_url,
+    expected_root_fingerprint_sha256) -> ca_bootstrap_result`; construct an
+    `httplib::Client` with chain verification disabled, hook the peer
+    certificate at handshake time (confirm exact cpp-httplib API against the
+    vendored version), compute `X509_digest` of the presented chain's root,
+    compare case-insensitively (accepting both colon-separated and bare hex)
+    against the expected value
+  - On mismatch: throw `std::runtime_error` naming both the expected and
+    observed fingerprints; never fall back to unpinned verification
+  - On match: issue `GET /v1/root-ca` over the same connection, return the
+    body as `ca_bootstrap_result::root_certificate_pem`
+  - `tests/ca_bootstrap_client_test.cpp`: two independent
+    `ca_test_fixture`s (`start_network_service = true`, each with its own
+    `--tls-cert`/`--tls-key`); verify Property 20 — correct fingerprint
+    against the matching fixture succeeds and returns that fixture's root
+    PEM; the other fixture's (valid, but different) fingerprint fails with a
+    mismatch error; a malformed expected-fingerprint string is rejected as a
+    usage error
+  - Verify: `ctest --test-dir build -R ca_bootstrap_client` passes
+  - _Requirements: 19.3, 19.4, 19.5, 19.6_
+
+- [x] 34. Implement per-identifier ACME challenge-type dispatch in `acme_certificate_provider`
+  - Depends on task 29
+  - Add `classify(identifier) -> {dns, ip}` (IPv4/IPv6 literal parsing via
+    `inet_pton`; anything else, including `.local` names, classifies as
+    `dns` — mDNS is not a distinct ACME identifier type)
+  - Add `challenge_for(identifier, configured_challenge_type)`: `ip`
+    identifiers always return `http-01`; `dns` identifiers return whatever
+    `acme_certificate_provider_config::challenge_type` says
+  - Set each identifier's `type` field (`"dns"` or `"ip"`) in the `newOrder`
+    request body from `classify()`, per RFC 8555 §7.1.3 / RFC 8738 §3
+  - Update `acme_test_server` (task 28) to accept and correctly validate
+    `"ip"`-typed orders (RFC 8738 support), not just `"dns"`
+  - Verify: a `csr_signing_options` mixing one DNS name and one IP address
+    issues successfully against `acme_test_server`, with the DNS name
+    validated per the configured `challenge_type` and the IP always via
+    `http-01`
+  - _Requirements: 20.3, 20.5_
+
+- [x] 35. Add `.local` (mDNS) resolution to `acme_test_server`'s challenge validation
+  - Depends on tasks 28 and 34
+  - Resolve challenge targets via ordinary `getaddrinfo()` (no custom mDNS
+    client code); add a capability probe (attempt resolution of a sentinel
+    `.local` name, or check `/etc/nsswitch.conf`'s `hosts:` line for an mDNS
+    NSS module) so a missing mDNS resolver produces a distinct, named error
+    rather than a generic resolution failure
+  - Add a test-only injection point to force the capability probe's result
+    (available/unavailable) without depending on the CI machine's actual
+    resolver configuration
+  - `tests/acme_identifier_type_test.cpp`: verify Property 21 (IP identifiers
+    always get `http-01` + `type: "ip"`, regardless of configured
+    `challenge_type`) and Property 22 (forced-unavailable probe produces the
+    distinguishable mDNS error, never a generic one; a real `.local` name on
+    an mDNS-capable test network resolves and validates successfully, or the
+    case is skipped — not failed — where no such network is available)
+  - Verify: `ctest --test-dir build -R acme_identifier_type` passes
+  - _Requirements: 20.2, 20.6_
 
 ## Notes
 
@@ -911,3 +1021,20 @@ service on a cloud instance or in a long-running container.
   (wave 3/4), without waiting on `ca_service --serve` (wave 7) to land first.
   Task 16 then upgrades the same fixture in place — call sites written against
   task 15 do not change when task 16 adds `start_network_service = true`.
+- Tasks 32–33 close a gap identified after the rest of the spec was written:
+  the bearer token (Requirement 11.4) only ever secured the client-to-server
+  direction of the bootstrap handshake. Root-fingerprint pinning secures the
+  other direction — the first-time caller confirming it's actually talking to
+  the intended CA server — using the same out-of-band distribution channel as
+  the token, rather than inventing a second one. Pinning the *root* rather
+  than the leaf is what keeps this compatible with hot-reload (tasks 18–19):
+  a distributed fingerprint stays valid across every future leaf rotation.
+- Tasks 34–35 make explicit that the non-ACME issuance paths (tasks 1, 15,
+  12) already handle LAN/mDNS names, bare IPs, and DNS-integrated nodes with
+  zero changes — they never validate domain control, so there was nothing to
+  add there. The only path where identifier *type* changes behavior is ACME,
+  because RFC 8555/8738 tie each identifier type to specific legal challenge
+  methods. `.local` resolution deliberately reuses the OS's own resolver
+  (`getaddrinfo()`) rather than adding a bundled mDNS client — Poco's DNSSD
+  support (already used by `poco_peer_discovery`) is for service discovery,
+  not simple hostname resolution, so it isn't the right tool here.

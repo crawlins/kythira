@@ -126,6 +126,17 @@ if(OpenSSL_FOUND)
     target_link_libraries(network_simulator INTERFACE OpenSSL::SSL OpenSSL::Crypto)
 endif()
 
+# cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
+# consumer-opt-in feature rather than a default one (no extra vcpkg feature is
+# needed on our side — we already depend on openssl directly). Without this
+# definition, httplib::SSLServer/SSLClient simply don't exist, which is what
+# left cpp_httplib_server's SSL support unimplemented (see certificate-authority
+# spec Requirement 14) and would otherwise block ca_service --serve's own
+# optional --tls-cert/--tls-key mode (Requirement 11.5).
+if(httplib_FOUND AND OpenSSL_FOUND)
+    target_compile_definitions(network_simulator INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
+endif()
+
 if(LIBCOAP_FOUND)
     target_include_directories(network_simulator INTERFACE ${LIBCOAP_INCLUDE_DIRS})
     target_link_libraries(network_simulator INTERFACE ${LIBCOAP_LIBRARIES})
@@ -219,6 +230,45 @@ else()
     message(STATUS "AWS SDK not found — aws_ec2_quorum_manager and aws_asg_quorum_manager disabled")
 endif()
 
+# ── ACM Private CA (aws_acm_pca_provider) ─────────────────────────────────────
+# Independent of KYTHIRA_HAS_AWS_SDK: environments with the core AWS SDK but
+# without the acm-pca component still build everything except aws_acm_pca_provider.
+# AWSSDKConfig.cmake short-circuits (skips its own body, including defining any
+# new component's imported target) once AWSSDK_FOUND is already TRUE from the
+# earlier find_package(AWSSDK COMPONENTS core ec2 ...) call above — unset it so
+# this second call actually re-runs and picks up the acm-pca component. Checking
+# for the component's own imported target afterward (rather than trusting
+# AWSSDK_FOUND) additionally guards against the component genuinely being
+# absent, matching the project's find_package(AWSSDK...) result caching model.
+unset(AWSSDK_FOUND)
+find_package(AWSSDK QUIET COMPONENTS acm-pca)
+if(TARGET aws-cpp-sdk-acm-pca)
+    message(STATUS "AWS ACM Private CA SDK component found")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AWS_ACM_PCA)
+    target_link_libraries(network_simulator INTERFACE aws-cpp-sdk-acm-pca)
+else()
+    message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider disabled")
+endif()
+
+# ── certificate_authority (CA testing/provisioning framework) ────────────────
+if(TARGET OpenSSL::SSL)
+    add_library(certificate_authority STATIC src/certificate_authority.cpp)
+    target_include_directories(certificate_authority PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    )
+    # network_simulator (PUBLIC): certificate_provider.hpp's kythira::Future usage
+    # pulls in Folly, which needs the same include-order/link setup
+    # network_simulator's INTERFACE target already carries — certificate_authority
+    # consumers get it transitively rather than duplicating the Folly/glog wiring.
+    target_link_libraries(certificate_authority PUBLIC OpenSSL::SSL OpenSSL::Crypto network_simulator)
+    target_compile_definitions(certificate_authority PUBLIC KYTHIRA_HAS_OPENSSL)
+    target_compile_features(certificate_authority PUBLIC cxx_std_23)
+    message(STATUS "certificate_authority target: enabled")
+else()
+    message(STATUS "OpenSSL not found — certificate_authority target disabled")
+endif()
+
 # ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────
 # Prefer the CMake config package (vcpkg, conan) over pkg-config so that we get
 # a proper imported target rather than a bare -lssh2 that the linker can't resolve.
@@ -290,6 +340,18 @@ endif()
 enable_testing()
 
 # Add subdirectories
+# cmd/ca_service and cmd/ca_cluster_node are added before tests/
+# (tests/CMakeLists.txt gates its dependent targets on `if(TARGET ca_service)`
+# / `if(TARGET ca_cluster_node)`, which only sees targets already defined
+# earlier in configure-time processing order).
+if(NOT ENABLE_COVERAGE)
+    if(TARGET certificate_authority)
+        add_subdirectory(cmd/ca_service)
+        if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+            add_subdirectory(cmd/ca_cluster_node)
+        endif()
+    endif()
+endif()
 if(Boost_FOUND)
     add_subdirectory(tests)
 endif()

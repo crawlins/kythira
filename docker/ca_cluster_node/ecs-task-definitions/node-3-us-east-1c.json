@@ -1,0 +1,88 @@
+{
+  "family": "kythira-ca-cluster-node-3",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-cluster-node-execution-role",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/kythira-ca-cluster-node-task-role",
+  "volumes": [
+    {
+      "name": "ca-cluster-node-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-EFS_ID",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "fsap-NODE_3_ACCESS_POINT_ID",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "ca-cluster-node-3",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/kythira-ca-cluster-node:latest",
+      "essential": true,
+      "entryPoint": [
+        "sh",
+        "-c"
+      ],
+      "command": [
+        "set -e; umask 077; echo \"$CA_CLUSTER_UNSEAL_KEY\" > /tmp/unseal.key; exec /usr/local/bin/ca_cluster_node --node-id 3 --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node --unseal-key-file /tmp/unseal.key --peers 1:ca-node-1.ca-cluster.internal:7000@https://ca-node-1.ca-cluster.internal:8443,2:ca-node-2.ca-cluster.internal:7000@https://ca-node-2.ca-cluster.internal:8443,3:ca-node-3.ca-cluster.internal:7000@https://ca-node-3.ca-cluster.internal:8443 --auth-token \"$CA_SERVICE_AUTH_TOKEN\""
+      ],
+      "portMappings": [
+        {
+          "containerPort": 7000,
+          "protocol": "tcp"
+        },
+        {
+          "containerPort": 8443,
+          "protocol": "tcp"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "ca-cluster-node-data",
+          "containerPath": "/var/lib/ca_cluster_node"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "CA_SERVICE_AUTH_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-cluster-node/auth-token"
+        },
+        {
+          "name": "CA_CLUSTER_UNSEAL_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-cluster-node/unseal-key"
+        }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8443/healthz || exit 1"
+        ],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 15
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/kythira-ca-cluster-node",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "node-3-us-east-1c"
+        }
+      },
+      "environment": [
+        {
+          "name": "CA_CLUSTER_ROOT_FINGERPRINT",
+          "value": "FILL_IN_VIA_ca_cluster_node---print-root-fingerprint"
+        }
+      ]
+    }
+  ]
+}

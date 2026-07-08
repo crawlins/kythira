@@ -38,7 +38,60 @@
 #define COAP_RESPONSE_CODE_PROXYING_NOT_SUPPORTED 0xA5
 #endif
 
+// Independent of LIBCOAP_AVAILABLE (which gates the real libcoap PKI wiring,
+// currently never defined in this project's build — coap_transport runs in
+// stub mode today; see reload_tls_material() below): KYTHIRA_HAS_OPENSSL is
+// defined whenever the certificate_authority target is available, and gives
+// reload_tls_material() genuine cert/key validation even while the rest of
+// DTLS setup stays stubbed.
+#ifdef KYTHIRA_HAS_OPENSSL
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#endif
+
 namespace kythira {
+
+#ifdef KYTHIRA_HAS_OPENSSL
+namespace detail {
+// Validates that cert_path/key_path parse as a real X.509 certificate and a
+// matching private key. Throws coap_security_error on any failure — used by
+// reload_tls_material() to satisfy Requirement 16.3's validate-before-apply
+// ordering regardless of whether the real libcoap PKI wiring is compiled in.
+inline void validate_pem_cert_key_pair(const std::string& cert_path, const std::string& key_path) {
+    FILE* cert_fp = std::fopen(cert_path.c_str(), "r");
+    if (cert_fp == nullptr) {
+        throw coap_security_error("reload_tls_material: cannot open certificate file: " +
+                                  cert_path);
+    }
+    X509* cert = PEM_read_X509(cert_fp, nullptr, nullptr, nullptr);
+    std::fclose(cert_fp);
+    if (cert == nullptr) {
+        throw coap_security_error("reload_tls_material: unparseable certificate: " + cert_path);
+    }
+
+    FILE* key_fp = std::fopen(key_path.c_str(), "r");
+    if (key_fp == nullptr) {
+        X509_free(cert);
+        throw coap_security_error("reload_tls_material: cannot open key file: " + key_path);
+    }
+    EVP_PKEY* key = PEM_read_PrivateKey(key_fp, nullptr, nullptr, nullptr);
+    std::fclose(key_fp);
+    if (key == nullptr) {
+        X509_free(cert);
+        throw coap_security_error("reload_tls_material: unparseable private key: " + key_path);
+    }
+
+    bool matches = X509_check_private_key(cert, key) == 1;
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    if (!matches) {
+        throw coap_security_error("reload_tls_material: private key does not match certificate");
+    }
+}
+}  // namespace detail
+#endif  // KYTHIRA_HAS_OPENSSL
 
 // CoAP client implementation
 template<typename Types>
@@ -884,6 +937,126 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         _metrics.emit();
     }
 #endif
+}
+
+// Re-reads cert_file/key_file/ca_file from disk and re-applies them to the
+// live _coap_context via coap_context_set_pki() (Requirement 16.2), without
+// tearing down the context or any existing DTLS association. This calls the
+// same coap_context_set_pki() entry point setup_dtls_context() already uses
+// at startup, with the (possibly updated) _config file paths — libcoap
+// re-reads and re-parses the PEM files named in pki_config on every call, so
+// no separate "build once, reuse" helper is required.
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::reload_tls_material() -> void {
+    if (_config.cert_file.empty() || _config.key_file.empty()) {
+        throw std::logic_error(
+            "reload_tls_material() requires cert_file and key_file to be configured");
+    }
+
+    // Validate before applying (Requirement 16.3), independent of whether the
+    // real libcoap PKI wiring below is compiled in.
+#ifdef KYTHIRA_HAS_OPENSSL
+    detail::validate_pem_cert_key_pair(_config.cert_file, _config.key_file);
+#endif
+
+#ifdef LIBCOAP_AVAILABLE
+    if (!_coap_context) {
+        throw coap_security_error("reload_tls_material: CoAP context is null");
+    }
+
+    coap_dtls_pki_t pki_config;
+    memset(&pki_config, 0, sizeof(pki_config));
+    pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
+    pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
+    pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
+    pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
+    pki_config.allow_expired_certs = 0;
+    pki_config.cert_chain_validation = 1;
+    pki_config.cert_chain_verify_depth = 10;
+    pki_config.check_cert_revocation = 1;
+    pki_config.allow_no_crl = 1;
+    pki_config.allow_expired_crl = 0;
+    pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
+    pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
+    pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
+    pki_config.pki_key.key.pem.ca_file =
+        _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+
+    if (_config.verify_peer_cert) {
+        pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
+                                              size_t asn1_length, coap_session_t* session,
+                                              unsigned depth, int found, void* arg) -> int {
+            auto* client = static_cast<coap_client<Types>*>(arg);
+            try {
+                BIO* bio = BIO_new(BIO_s_mem());
+                if (!bio) return 0;
+                const uint8_t* cert_data = asn1_public_cert;
+                X509* cert = d2i_X509(nullptr, &cert_data, static_cast<long>(asn1_length));
+                if (!cert) {
+                    BIO_free(bio);
+                    return 0;
+                }
+                if (!PEM_write_bio_X509(bio, cert)) {
+                    X509_free(cert);
+                    BIO_free(bio);
+                    return 0;
+                }
+                char* pem_data;
+                long pem_length = BIO_get_mem_data(bio, &pem_data);
+                std::string cert_pem(pem_data, pem_length);
+                X509_free(cert);
+                BIO_free(bio);
+                return client->validate_peer_certificate(cert_pem) ? 1 : 0;
+            } catch (const std::exception&) {
+                return 0;
+            }
+        };
+        pki_config.cn_call_back_arg = this;
+    }
+
+    if (!coap_context_set_pki(_coap_context, &pki_config)) {
+        throw coap_security_error("reload_tls_material: PKI setup rejected");
+    }
+#else
+    // libcoap's real PKI wiring is not compiled into this build (see the
+    // KYTHIRA_HAS_OPENSSL comment above setup_dtls_context()'s stub branch) —
+    // the cert/key pair has already been genuinely validated above; there is
+    // no live libcoap context to re-apply it to.
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+    disable_auto_reload();
+    _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::error_code ec;
+            auto mtime = std::filesystem::last_write_time(_config.cert_file, ec);
+            if (!ec && mtime != _last_reloaded_cert_mtime) {
+                try {
+                    reload_tls_material();
+                    _last_reloaded_cert_mtime = mtime;
+                } catch (const std::exception&) {
+                    auto metric = _metrics;
+                    metric.add_dimension("coap.client.tls_reload", "failed");
+                    metric.add_one();
+                    metric.emit();
+                }
+            }
+            std::this_thread::sleep_for(poll_interval);
+        }
+    });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::disable_auto_reload() -> void {
+    if (_auto_reload_thread.joinable()) {
+        _auto_reload_thread.request_stop();
+        _auto_reload_thread.join();
+    }
 }
 
 template<typename Types>
@@ -2431,6 +2604,106 @@ auto coap_server<Types>::setup_dtls_context() -> void {
     _logger.info("Server DTLS context setup completed",
                  {{"dtls_enabled", _config.enable_dtls ? "true" : "false"},
                   {"verify_peer_cert", _config.verify_peer_cert ? "true" : "false"}});
+}
+
+// Re-reads cert_file/key_file/ca_file from disk and re-applies them to the
+// live _coap_context via coap_context_set_pki() (Requirement 16.2), without
+// tearing down the context or any existing DTLS association.
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::reload_tls_material() -> void {
+    if (_config.cert_file.empty() || _config.key_file.empty()) {
+        throw std::logic_error(
+            "reload_tls_material() requires cert_file and key_file to be configured");
+    }
+
+    // Validate before applying (Requirement 16.3), independent of whether the
+    // real libcoap PKI wiring below is compiled in.
+#ifdef KYTHIRA_HAS_OPENSSL
+    detail::validate_pem_cert_key_pair(_config.cert_file, _config.key_file);
+#endif
+
+#ifdef LIBCOAP_AVAILABLE
+    if (!_coap_context) {
+        throw coap_security_error("reload_tls_material: CoAP context is null");
+    }
+
+    coap_dtls_pki_t pki_config;
+    memset(&pki_config, 0, sizeof(pki_config));
+    pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
+    pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
+    pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
+    pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
+    pki_config.allow_expired_certs = 0;
+    pki_config.cert_chain_validation = 1;
+    pki_config.cert_chain_verify_depth = 10;
+    pki_config.check_cert_revocation = 1;
+    pki_config.allow_no_crl = 1;
+    pki_config.allow_expired_crl = 0;
+    pki_config.pki_key.key_type = COAP_PKI_KEY_PEM;
+    pki_config.pki_key.key.pem.public_cert = _config.cert_file.c_str();
+    pki_config.pki_key.key.pem.private_key = _config.key_file.c_str();
+    pki_config.pki_key.key.pem.ca_file =
+        _config.ca_file.empty() ? nullptr : _config.ca_file.c_str();
+
+    if (_config.verify_peer_cert) {
+        pki_config.validate_cn_call_back = [](const char* cn, const uint8_t* asn1_public_cert,
+                                              size_t asn1_length, coap_session_t* session,
+                                              unsigned depth, int found, void* arg) -> int {
+            auto* server = static_cast<coap_server<Types>*>(arg);
+            try {
+                std::string cert_data(reinterpret_cast<const char*>(asn1_public_cert), asn1_length);
+                return server->validate_client_certificate(cert_data) ? 1 : 0;
+            } catch (const std::exception&) {
+                return 0;
+            }
+        };
+        pki_config.cn_call_back_arg = this;
+    }
+
+    if (!coap_context_set_pki(_coap_context, &pki_config)) {
+        throw coap_security_error("reload_tls_material: PKI setup rejected");
+    }
+#else
+    // libcoap's real PKI wiring is not compiled into this build — the cert/key
+    // pair has already been genuinely validated above; there is no live
+    // libcoap context to re-apply it to.
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+    disable_auto_reload();
+    _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::error_code ec;
+            auto mtime = std::filesystem::last_write_time(_config.cert_file, ec);
+            if (!ec && mtime != _last_reloaded_cert_mtime) {
+                try {
+                    reload_tls_material();
+                    _last_reloaded_cert_mtime = mtime;
+                } catch (const std::exception&) {
+                    // A failed automatic reload is reported, not fatal — the next
+                    // poll retries (Requirement 16.7).
+                    auto metric = _metrics;
+                    metric.add_dimension("coap.server.tls_reload", "failed");
+                    metric.add_one();
+                    metric.emit();
+                }
+            }
+            std::this_thread::sleep_for(poll_interval);
+        }
+    });
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::disable_auto_reload() -> void {
+    if (_auto_reload_thread.joinable()) {
+        _auto_reload_thread.request_stop();
+        _auto_reload_thread.join();
+    }
 }
 
 template<typename Types>

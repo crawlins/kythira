@@ -24,6 +24,9 @@
 #include <atomic>
 #include <vector>
 #include <optional>
+#include <filesystem>
+#include <thread>
+#include <stop_token>
 
 #include <raft/future.hpp>
 #include <raft/coap_utils.hpp>
@@ -375,6 +378,21 @@ public:
     auto acquire_concurrent_slot() -> bool;
     auto release_concurrent_slot() -> void;
 
+    /// Re-invokes coap_context_set_pki() on the existing, live _coap_context
+    /// with refreshed cert_file/key_file/ca_file paths, without tearing down
+    /// the context or any existing DTLS association. Validates the new
+    /// material via build_pki_config()'s own file-readability/parseability
+    /// checks first; on failure, throws and the previous material keeps
+    /// serving (all-or-nothing).
+    auto reload_tls_material() -> void;
+
+    /// Starts a background thread that polls cert_file's mtime every
+    /// poll_interval and calls reload_tls_material() when it has changed.
+    auto enable_auto_reload(std::chrono::seconds poll_interval) -> void;
+
+    /// Stops the auto-reload background thread cleanly (joined, not detached).
+    auto disable_auto_reload() -> void;
+
 private:
     serializer_type _serializer;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
@@ -382,6 +400,8 @@ private:
     kythira::coap_client_config _config;
     metrics_type _metrics;
     logger_type _logger;
+    std::jthread _auto_reload_thread;
+    std::filesystem::file_time_type _last_reloaded_cert_mtime{};
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
@@ -541,6 +561,18 @@ public:
     auto acquire_concurrent_slot() -> bool;
     auto release_concurrent_slot() -> void;
 
+    /// Re-invokes coap_context_set_pki() on the existing, live _coap_context
+    /// with refreshed cert_file/key_file/ca_file paths, without tearing down
+    /// the context or any existing DTLS association (Requirement 16.2).
+    auto reload_tls_material() -> void;
+
+    /// Starts a background thread that polls cert_file's mtime every
+    /// poll_interval and calls reload_tls_material() when it has changed.
+    auto enable_auto_reload(std::chrono::seconds poll_interval) -> void;
+
+    /// Stops the auto-reload background thread cleanly (joined, not detached).
+    auto disable_auto_reload() -> void;
+
 private:
     serializer_type _serializer;
     coap_context_t* _coap_context;
@@ -549,6 +581,8 @@ private:
     kythira::coap_server_config _config;
     metrics_type _metrics;
     logger_type _logger;
+    std::jthread _auto_reload_thread;
+    std::filesystem::file_time_type _last_reloaded_cert_mtime{};
 
     // Server state
     std::atomic<bool> _running{false};

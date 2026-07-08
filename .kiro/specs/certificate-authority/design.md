@@ -1364,6 +1364,191 @@ before any state change — a request with a tampered signature or a stale/
 reused nonce is rejected with the RFC 8555 `badSignature`/`badNonce` problem
 document, exercising `acme_certificate_provider`'s own error handling.
 
+## Architecture — first-contact bootstrap trust
+
+Requirement 11's bearer token secures one direction of the bootstrap
+handshake — the server trusting the client's request. It never addressed the
+other direction: when TLS is enabled on `--serve`, a brand-new instance has no
+certificate from this CA yet, so it has nothing to chain-verify the server's
+own presented certificate against. Requirement 19 closes that gap the same
+way `kubeadm join`'s `--discovery-token-ca-cert-hash` does — pin the *root*
+certificate's fingerprint (not the leaf, which rotates under Requirement 16's
+hot-reload) and distribute it through the same out-of-band channel as the
+token:
+
+```
+Operator provisioning step (once, out-of-band):
+  ca_service --print-root-fingerprint  →  sha256:AB:CD:...
+  Distribute alongside the bearer token: same EnvironmentFile / user_data /
+  secrets-manager entry that already carries CA_SERVICE_AUTH_TOKEN.
+
+New instance, first contact:
+  ca_bootstrap_client::fetch_trusted_root(base_url, expected_fingerprint)
+      TLS-connect, DO NOT chain-verify (nothing to verify against yet)
+      compute sha256 of the presented chain's root cert
+      match? → fetch GET /v1/root-ca over this connection, cache PEM, return
+      mismatch → abort, no fallback
+  ↓ (from here on, normal chain verification against the cached root)
+  POST /v1/certificates  (Authorization: Bearer <token>, verified against
+                           the now-cached root — no more pinning needed)
+```
+
+Pinning is deliberately a *one-time* bootstrap step, not the ongoing trust
+model — once the root PEM is fetched and cached, every subsequent connection
+(including the very request that gets the first certificate) uses ordinary
+X.509 chain verification. This is what decouples the pin from leaf rotation:
+the root the fingerprint identifies never changes across a `reload_tls_material()`
+call, only the leaf being served does.
+
+## Components and Interfaces (one more time)
+
+### 25. Server-side root-fingerprint printing
+
+`ca_service` / `ca_cluster_node`, when TLS is enabled, compute the SHA-256
+fingerprint of the root certificate backing their listener
+(`certificate_authority::root_certificate_pem()` for the `local` provider; the
+external issuer's root when an operator-supplied `--tls-cert` comes from
+elsewhere) via `X509_digest(cert, EVP_sha256(), ...)`, and:
+- Log it once at startup (`Root certificate fingerprint (sha256): AB:CD:...`).
+- Support `--print-root-fingerprint`: load just enough config to construct
+  the same root (or read an existing `--tls-cert` file directly), print the
+  fingerprint, and exit 0 without binding any port — a read-only,
+  side-effect-free mode safe to run repeatedly in a provisioning script.
+
+### 26. `include/raft/ca_bootstrap_client.hpp`
+
+```cpp
+namespace raft::testing {
+
+struct ca_bootstrap_result {
+    std::string root_certificate_pem;
+};
+
+// Connects to `base_url` over TLS WITHOUT chain verification, checks the
+// presented chain's root against `expected_root_fingerprint_sha256` (hex,
+// colon-separated or bare — both accepted), and on an exact match fetches
+// GET /v1/root-ca over that same connection. Throws on any mismatch; never
+// falls back to unpinned verification.
+[[nodiscard]] auto fetch_trusted_root(std::string base_url,
+                                       std::string expected_root_fingerprint_sha256)
+    -> ca_bootstrap_result;
+
+}  // namespace raft::testing
+```
+
+Implementation: an `httplib::Client` configured with
+`enable_server_certificate_verification(false)` (disabling httplib's normal
+chain check, since there's nothing to chain-verify against yet) plus a
+certificate callback — the exact cpp-httplib hook name/signature for
+inspecting the peer certificate mid-handshake SHALL be confirmed against the
+vendored version during implementation, following the same
+verify-before-committing-to-an-API-shape approach already used for the
+`ca_service` renewal route's peer-certificate lookup (component 17). The
+callback computes `X509_digest(peer_root, EVP_sha256(), ...)`, hex-encodes it,
+and compares case-insensitively against `expected_root_fingerprint_sha256`,
+raising `std::runtime_error` naming both values on mismatch. On success, the
+same connection issues `GET /v1/root-ca` and returns its body as
+`ca_bootstrap_result::root_certificate_pem`.
+
+Callers (a real node's provisioning script, or a future non-test-only
+equivalent of `ca_test_fixture` for production use) are expected to use this
+function *exactly once* per instance lifetime — to obtain the root PEM before
+making any further requests — and then construct their normal
+`cpp_httplib_client_config`/`coap_client_config` with `ca_cert_path` pointing
+at that fetched root for every subsequent connection, including the bootstrap
+`POST /v1/certificates` call itself.
+
+## Architecture — LAN/mDNS, IP-only, and DNS-integrated node configurations
+
+The non-ACME issuance paths (`certificate_authority::issue()`, `ca_test_fixture::bootstrap_client()`,
+`ca_service`'s bearer-token-authenticated `/v1/certificates`) already impose
+no constraint on what a SAN looks like — they never validate domain control
+in the first place, so mDNS names, bare IPs, and real DNS names are already
+interchangeable inputs. ACME is the one path where identifier *type* actually
+changes behavior, because each type has a different, protocol-defined way to
+prove control of it:
+
+```
+sign_csr() per-identifier dispatch (acme_certificate_provider):
+
+  identifier          ACME type   allowed challenge     validation mechanism
+  ─────────────────   ─────────   ────────────────────  ──────────────────────────────
+  "node1.example.com" "dns"       http-01 or dns-01      http-01: short-lived httplib
+                                   (per config)             server on the identifier
+                                                          dns-01: RFC 2136 UPDATE of
+                                                             _acme-challenge.<id>. TXT
+                                                             (same helper rfc2136_ldns_
+                                                             discovery already uses)
+
+  "node1.local"        "dns"      http-01 ONLY            http-01, but the *validator*
+                        (mDNS is                          (acme_test_server) resolves
+                         not a                             "node1.local" via plain
+                         separate                          getaddrinfo() — mDNS-capable
+                         ACME id                            only if the OS resolver is
+                         type)                              configured for it (nss-mdns/
+                                                             Avahi, mDNSResponder); no
+                                                             custom mDNS client code
+
+  "10.0.0.5"           "ip"       http-01 ONLY            http-01, direct IP connection;
+                        (RFC 8738)                          dns-01 is invalid for "ip"
+                                                             identifiers per RFC 8738 —
+                                                             never attempted
+```
+
+A single order's identifiers can span more than one row of this table — a
+node bootstrapping with both an mDNS name and a bare IP as SANs gets each one
+validated by whatever that identifier's own type requires, not one fixed
+mode for the whole request. `.local` names are *not* a distinct ACME
+identifier type in RFC 8555/8738 — they're ordinary `"dns"` identifiers whose
+only viable challenge happens to be `http-01`, because `dns-01` would need a
+real DNS zone to publish a TXT record in, which `.local` doesn't have.
+
+## Components and Interfaces (extending `acme_certificate_provider`/`acme_test_server`)
+
+### 27. Per-identifier challenge-type dispatch in `acme_certificate_provider`
+
+`sign_csr()`'s per-authorization loop (component 22) is extended with a
+dispatch step before selecting a challenge:
+
+```cpp
+enum class acme_identifier_type { dns, ip };
+
+auto classify(const std::string& identifier) -> acme_identifier_type {
+    // Parse as an IPv4/IPv6 literal (e.g. via inet_pton); anything else is "dns",
+    // including .local names — mDNS is not a separate identifier type.
+    return is_ip_literal(identifier) ? acme_identifier_type::ip : acme_identifier_type::dns;
+}
+
+auto challenge_for(const std::string& identifier, acme_certificate_provider_config::challenge_type configured)
+    -> std::string /* "http-01" | "dns-01" */ {
+    if (classify(identifier) == acme_identifier_type::ip) {
+        return "http-01";   // RFC 8738: dns-01 is not defined for "ip" identifiers
+    }
+    return configured == acme_certificate_provider_config::challenge_type::dns_01
+               ? "dns-01" : "http-01";
+}
+```
+
+The `newOrder` request's per-identifier JSON object carries `type: "ip"` or
+`type: "dns"` per RFC 8555 §7.1.3/RFC 8738 §3, set from `classify()` — this
+is what tells the ACME server which validation methods are even legal for
+that identifier, independent of which challenge `acme_certificate_provider`
+then selects from the ones the server offers.
+
+### 28. `.local` resolution in `acme_test_server`
+
+`acme_test_server`'s `POST /challenge/{id}` handler (component 24), when
+performing real `http-01` validation, resolves the target host via ordinary
+`getaddrinfo()` — the same call used for any other hostname. No mDNS-specific
+code is added; `.local` resolution works precisely when the host running
+`acme_test_server` has an mDNS-capable resolver configured (`nss-mdns` +
+Avahi on Linux, native on macOS) and fails with a distinguishable
+`mdns_resolver_unavailable`-style error (Requirement 20.6) otherwise —
+detected by checking `errno`/`EAI_NONAME` against a preflight capability
+probe (e.g. attempting to resolve a well-known `.local` sentinel, or
+checking for `libnss_mdns` in `/etc/nsswitch.conf`'s `hosts:` line) rather
+than letting a generic resolution failure masquerade as "challenge failed."
+
 ## Data Models
 
 ### `pem_material` example (leaf, server+client dual-purpose)
@@ -1600,6 +1785,39 @@ present within a bounded time after `sign_csr()`'s returned future settles
 immediately after both a successful and a deliberately-failed
 (`skip_challenge_validation` off, wrong token) issuance attempt.
 
+### Property 20: Pinned verification accepts only the exact expected root
+**Validates: Requirements 19.3, 19.4**
+
+`fetch_trusted_root(url, fp)` against a server whose root fingerprint is
+`fp` succeeds and returns that root's PEM. The identical call against a
+*different* server — backed by a different `certificate_authority` instance,
+producing a perfectly valid, well-formed certificate chain, just not the one
+`fp` names — fails with a mismatch error rather than silently accepting it.
+"Valid X.509" and "the pinned identity" are independent checks; passing one
+never substitutes for the other.
+
+### Property 21: IP identifiers never attempt `dns-01`
+**Validates: Requirements 20.3, 20.5**
+
+For any `csr_signing_options` containing at least one IP address in
+`ip_addresses`, inspecting the ACME requests `acme_certificate_provider`
+sends for that identifier shows `identifier.type == "ip"` and the selected
+challenge is always `http-01` — regardless of `challenge_type` being
+configured to `dns_01`. A mixed request (one DNS name, one IP) validates the
+DNS name however `challenge_type` says to, and the IP always via `http-01`,
+in the same `sign_csr()` call.
+
+### Property 22: `.local` validation degrades to a distinguishable error, never silent DNS
+**Validates: Requirements 20.2, 20.6**
+
+On a host with no mDNS-capable resolver configured, requesting a certificate
+for a `.local` identifier through `acme_test_server` fails with an error
+identifying the missing mDNS capability specifically — it does not fall
+through to querying public DNS for `node1.local` (which would either time out
+or, worse, resolve to something unrelated on a network with split-horizon
+DNS), and it is not reported as an indistinguishable generic "challenge
+failed."
+
 ## Error Handling
 
 - **OpenSSL call failures** (key generation, signing, extension construction):
@@ -1695,6 +1913,23 @@ immediately after both a successful and a deliberately-failed
   type (`urn:ietf:params:acme:error:badSignature`, `...:accountDoesNotExist`,
   `...:badNonce`) rather than a generic `400`, so `acme_certificate_provider`'s
   own error-surfacing can be tested against realistic server responses.
+- **`fetch_trusted_root()` fingerprint mismatch**: throws `std::runtime_error`
+  naming both the expected and observed SHA-256 fingerprints (never just
+  "verification failed") — an operator debugging a failed provisioning run
+  needs to see both values to tell a typo in the distributed fingerprint
+  apart from a genuine man-in-the-middle or misconfigured server.
+- **`--print-root-fingerprint` with no TLS material configured**: prints a
+  usage error and exits non-zero rather than fabricating or guessing a root
+  — there's nothing to fingerprint if TLS was never enabled.
+- **`.local` resolution failure** (no mDNS-capable resolver on the
+  `acme_test_server` host): a distinct, named error condition (Requirement
+  20.6), never conflated with "the node didn't respond to the challenge" —
+  the fix for one (install/configure `nss-mdns`) is unrelated to the fix for
+  the other (the node's `http-01` responder isn't actually reachable).
+- **RFC 2136 UPDATE failure during `dns-01`**: also its own distinguishable
+  error, per Requirement 20.6, consistent with how `rfc2136_ldns_discovery`
+  already surfaces UPDATE failures rather than folding them into a generic
+  DNS error.
 - **`ca_test_fixture` service-mode startup failure**: if the `ca_service` child
   process never reports `/healthz` healthy within `startup_timeout`, the
   constructor kills the child (best-effort) and throws `std::runtime_error`
@@ -1864,6 +2099,29 @@ immediately after both a successful and a deliberately-failed
   `ctest` run, matching `aws_quorum_manager_real_ec2_test.cpp`'s convention.
   This test has real per-run AWS cost (3 EC2 instances plus one replacement)
   and should be run sparingly — a scheduled/manual job, not on every PR.
+- **`tests/ca_bootstrap_client_test.cpp`** (new): starts two independent
+  `ca_test_fixture`s (each with `start_network_service = true` and its own
+  `--tls-cert`/`--tls-key`), computes each one's root fingerprint via
+  `--print-root-fingerprint`, and asserts Property 20 — `fetch_trusted_root()`
+  against fixture A's URL with fixture A's fingerprint succeeds and returns
+  fixture A's root PEM; the same call with fixture B's fingerprint (a
+  perfectly valid, unrelated CA) fails with a mismatch error rather than
+  succeeding against the wrong server. Also asserts a truncated/malformed
+  expected-fingerprint string is rejected as a usage error rather than
+  silently failing the comparison.
+- **`tests/acme_identifier_type_test.cpp`** (new, extends the ACME test
+  coverage from task 30): verifies Property 21 by inspecting the
+  `newOrder`/challenge-selection requests `acme_certificate_provider` sends
+  for a mixed DNS+IP `csr_signing_options` against `acme_test_server`,
+  confirming `identifier.type` and challenge selection per row of the
+  dispatch table in the new Architecture section. Verifies Property 22 by
+  running the `.local` validation path once with the test harness's mDNS
+  resolver capability probe forced to report "unavailable" (via a test-only
+  injection point, not by actually breaking the CI machine's resolver) and
+  confirming the distinguishable error, versus once with it reporting
+  "available" and a real `.local` hostname resolvable on the test network
+  (skipped, not failed, in CI environments without mDNS infrastructure —
+  following the same skip-don't-fail convention as the LocalStack tests).
 
 ## Dependencies
 
@@ -1888,3 +2146,11 @@ JWS/JWK signing uses OpenSSL EVP calls already linked for
 linked for `file_persistence.hpp`; `dns_01` reuses `rfc2136_ldns_discovery`'s
 existing libldns-based UPDATE code; `http_01` reuses the same
 `httplib::Server` already used by `ca_service`.
+
+No new dependency is introduced for Requirement 20 either: `.local`
+resolution uses the standard `getaddrinfo()` already linked into every
+component that does hostname resolution — it works when the host has an
+mDNS-capable NSS module (`nss-mdns`/Avahi, or macOS's native resolver)
+installed, and this spec does not add or require a bundled mDNS client
+library (Poco's DNSSD support, already an optional project dependency per
+`poco_peer_discovery`, is for *service* discovery and is not used here).
