@@ -65,6 +65,37 @@ This document lists the dependencies required to build and use the network simul
 - **Notes**: When libfiu is absent, the build is fully clean; chaos test targets are simply
   not compiled. The production library and all other tests are never affected.
 
+### OpenSSL ≥ 3.0 — certificate_authority (CA testing/provisioning framework)
+- **Status**: Optional — already a project dependency (HTTPS/TLS support); this component
+  reuses the same `find_package(OpenSSL QUIET)` detection
+- **Purpose**: `EVP_PKEY` key generation, `X509`/`X509_CRL` construction and signing, and
+  `X509V3` extension handling for `include/raft/certificate_authority.hpp`, `ca_service`,
+  and `ca_cluster_node`
+- **Notes**: When OpenSSL is not detected, the `certificate_authority` target, `ca_service`,
+  `ca_cluster_node`, and any test target depending on them are simply not defined; the rest
+  of the build is unaffected (`KYTHIRA_HAS_OPENSSL` mirrors the existing `KYTHIRA_HAS_LDNS` /
+  `KYTHIRA_HAS_POCO_DNSSD` optional-dependency pattern).
+
+### AWS SDK ACM Private CA component — aws_acm_pca_provider
+- **Status**: Optional — independent of the core `KYTHIRA_HAS_AWS_SDK` component set
+  already used by `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`
+- **Purpose**: `Aws::ACMPCA::ACMPCAClient` calls (`IssueCertificate`, `GetCertificate`,
+  `GetCertificateAuthorityCertificate`, `RevokeCertificate`) backing
+  `aws_acm_pca_provider`, one of two `certificate_provider` implementations
+- **Notes**: `find_package(AWSSDK QUIET COMPONENTS acm-pca)` defines
+  `KYTHIRA_HAS_AWS_ACM_PCA`. Environments with the core AWS SDK but without this
+  component still build everything except `aws_acm_pca_provider`.
+
+### libssh2 — real-EC2 `ca_cluster_node` deployment test
+- **Status**: Optional, test-only — `ca_cluster_node_real_ec2_test` only compiled when
+  detected (and only actually run against real AWS when `KYTHIRA_AWS_REAL_EC2_TESTS`
+  is set at runtime — always compiled but runtime-skipped otherwise)
+- **Purpose**: SSHes into freshly-launched EC2 instances to start `ca_cluster_node`
+  once all three peers' addresses are known (the node binary itself never needs SSH)
+- **Notes**: `find_package(libssh2 QUIET)`, falling back to a pkg-config check, defines
+  `LIBSSH2_FOUND`. Without it, `ca_cluster_node_real_ec2_test` is simply not compiled;
+  everything else is unaffected.
+
 ### Property-Based Testing Library
 - **RapidCheck** or similar C++ property-based testing framework
 - Required for property-based tests (tasks 4.5+)

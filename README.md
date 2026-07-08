@@ -30,6 +30,20 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - **Network Simulator** for testing and development
 - **Pluggable Design** supporting custom transport implementations
 
+### Certificate Management
+- **In-process Certificate Authority** — root CA generation, leaf issuance,
+  revocation/CRL, `from_existing()` round-trip
+- **`ca_service`** — CLI for Docker/Podman-volume certificate provisioning and
+  a long-running `--serve` HTTP API mode (local or AWS ACM Private CA backend)
+- **`ca_cluster_node`** — Raft-replicated CA for highly-available, multi-AZ
+  certificate issuance with leader failover
+- **ACME support (RFC 8555/8738)** — `acme_certificate_provider` speaks the
+  same protocol as Let's Encrypt, including `dns-01`/`http-01` challenges and
+  bare-IP identifiers
+- **Fingerprint-pinned bootstrap** — first-contact TLS trust from an
+  out-of-band root fingerprint, no prior certificate chain required
+- See [Certificate Authority & ACME](#certificate-authority--acme) below
+
 ### Testing & Quality
 - **71% Test Coverage** with 62/87 tests passing
 - **100% Built Test Pass Rate** (62/62 tests)
@@ -675,6 +689,85 @@ The full design is in
 
 ---
 
+## Certificate Authority & ACME
+
+Kythira includes a full certificate-issuance stack for standing up TLS-secured
+clusters and test scenarios without depending on a real, rate-limited public
+CA. See [`.kiro/specs/certificate-authority/`](.kiro/specs/certificate-authority/)
+for the full design and requirements.
+
+### Components
+
+- **`certificate_authority`** (`include/raft/certificate_authority.hpp`) — an
+  in-process root CA: generates a self-signed root on construction, issues
+  leaf certificates (`issue()`), signs externally-generated CSRs
+  (`sign_csr()`), revokes certificates and serves a CRL, and can be
+  reconstructed from previously-issued material via `from_existing()`.
+- **`ca_service`** (`cmd/ca_service/`) — a CLI wrapping `certificate_authority`
+  with two modes:
+  - **oneshot**: writes root + per-service leaf/key/chain PEM files to an
+    `--out-dir` for Docker/Podman compose-volume provisioning.
+  - **`--serve <host:port>`**: a long-running, bearer-token-authenticated HTTP
+    API (`local` or `aws-acm-pca` provider) exposing `GET /v1/root-ca`,
+    `POST /v1/certificates`, `POST /v1/certificates/renew`,
+    `POST /v1/certificates/revoke`, `GET /v1/crl`. Deployable as a
+    docker-compose service, a systemd unit, or an ECS task
+    (`docker/ca_service/`).
+- **`ca_cluster_node`** (`cmd/ca_cluster_node/`) — a Raft-replicated CA for
+  high availability: certificate issuance/revocation history is committed as
+  a replicated ledger (`ca_state_machine`), so the CA survives leader failover
+  without losing its private key or reissuing certificates already on record.
+  Packaged for a 3-AZ AWS deployment (`docker/ca_cluster_node/`).
+- **`acme_certificate_provider`** (`include/raft/acme_certificate_provider.hpp`)
+  — a `certificate_provider` implementation speaking RFC 8555 (ACME) against
+  any compliant CA, including Let's Encrypt. Supports `http-01` and `dns-01`
+  (via the same RFC 2136 UPDATE mechanism `rfc2136_ldns_discovery` uses) and
+  RFC 8738 bare-IP identifiers — IP identifiers always validate via `http-01`
+  regardless of the configured challenge type, since `dns-01` isn't defined
+  for them. `tests/acme_test_server.hpp` provides a self-contained mock ACME
+  server for testing without a real CA.
+- **`ca_bootstrap_client::fetch_trusted_root()`** (`include/raft/ca_bootstrap_client.hpp`)
+  — lets a fresh instance establish first-contact trust in a `ca_service`/
+  `ca_cluster_node` TLS listener from only an out-of-band SHA-256 root
+  fingerprint (`--print-root-fingerprint`) and bearer token, before any
+  certificate chain exists to verify the connection against.
+
+### Quick start: oneshot provisioning
+
+```bash
+ca_service --out-dir /tmp/ca-material \
+           --service mtls-node1 \
+           --service mtls-node2
+# /tmp/ca-material/root_ca.pem
+# /tmp/ca-material/mtls-node1/{cert,key,chain}.pem
+# /tmp/ca-material/mtls-node2/{cert,key,chain}.pem
+```
+
+### Quick start: `--serve` mode
+
+```bash
+ca_service --serve 0.0.0.0:8443 \
+           --tls-cert chain.pem --tls-key key.pem \
+           --auth-token "$(openssl rand -hex 32)"
+
+# Fetch the root once you've pinned its fingerprint out-of-band:
+ca_service --print-root-fingerprint --tls-cert chain.pem --tls-key key.pem
+```
+
+### Running the certificate-authority test suite
+
+```bash
+ctest --test-dir build -L certificate_authority
+```
+
+This includes `acme_jws_unit_test`, `acme_test_server_unit_test`,
+`acme_certificate_provider_test`, `acme_identifier_type_test` (Properties 21–22:
+per-identifier ACME challenge-type dispatch and `.local`/mDNS validation),
+`ca_cluster_node_test` (multi-node subprocess clusters, leader failover), and
+`ca_bootstrap_client_test` (fingerprint pinning).
+
+---
+
 ## Code Coverage
 
 ### Quick start
@@ -760,6 +853,12 @@ BOOST_AUTO_TEST_CASE(property_election_safety, * boost::unit_test::timeout(60)) 
 - **[CoAP Performance Tuning](doc/coap_performance_tuning.md)** - Optimization recommendations
 - **[CoAP Troubleshooting](doc/coap_troubleshooting.md)** - Diagnostic procedures
 - **[Network Simulator Design](.kiro/specs/network-simulator/design.md)** - Simulator architecture
+
+### Certificate Authority & ACME
+
+- **[Certificate Authority Design](.kiro/specs/certificate-authority/design.md)** - `certificate_authority`, `ca_service`, `ca_cluster_node`, and ACME architecture
+- **[Certificate Authority Requirements](.kiro/specs/certificate-authority/requirements.md)** - Detailed requirements
+- **[Certificate Authority Tasks](.kiro/specs/certificate-authority/tasks.md)** - Implementation task list
 
 ### Async Operations
 

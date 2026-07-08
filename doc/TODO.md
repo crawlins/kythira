@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: June 22, 2026
+**Last Updated**: July 8, 2026
 
 ## Current Status
 
@@ -8,8 +8,84 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 - **All tests passing** (100%)
 - **0 tests failing, 0 tests disabled, 0 flaky tests**
-- All specifications complete across all 7 feature areas (node bootstrap now complete)
+- All specifications complete across all 8 feature areas (certificate authority now complete)
 - Build clean with no errors or warnings
+
+### What Changed (July 7–8, 2026)
+
+- **Certificate Authority framework complete**: all 35 tasks of
+  `.kiro/specs/certificate-authority/` implemented, built, and tested. In-process
+  `certificate_authority` (root CA generation, leaf issuance, revocation/CRL,
+  `from_existing()` round-trip), `temp_cert_files` RAII helper, and
+  `ca_service` CLI (`cmd/ca_service/`) for both oneshot Docker/Podman-volume
+  provisioning and a long-running `--serve` HTTP API mode
+  (`local`/`aws-acm-pca` providers, bearer-token auth, `/v1/certificates`,
+  `/v1/certificates/renew`, `/v1/certificates/revoke`, `/v1/crl`,
+  `/v1/root-ca`).
+- **`aws_acm_pca_provider`**: `certificate_provider` implementation backed by
+  AWS Certificate Manager Private CA; unit/LocalStack/real-AWS test tiers
+  following the project's existing always-compiled-but-runtime-skipped
+  convention.
+- **TLS hot-reload**: `reload_tls_material()`/`enable_auto_reload()` for both
+  `cpp_httplib_server`/`cpp_httplib_client` and `coap_server`/`coap_client`,
+  plus `ca_test_fixture::renew()` and `temp_cert_files::replace_atomically()`
+  (atomic write-tmp-then-rename) so certificate rotation never serves a
+  half-written file.
+- **`ca_cluster_node`** (`cmd/ca_cluster_node/`): a Raft-replicated CA —
+  `ca_state_machine` records bootstrap/issuance/revocation as a deterministic
+  replicated ledger; the leader reconstructs a `certificate_authority` via
+  `from_existing()` and replays the ledger on every election; a `noop`
+  command is submitted immediately on election so previous-term entries
+  commit retroactively (Raft §5.4.2/Figure 8). Multi-node test coverage
+  drives real 3-process clusters over subprocesses, including leader
+  failover and restarted-follower recovery. Packaged for 3-AZ AWS deployment
+  (systemd unit, ECS task definitions, `docker/ca_cluster_node/`).
+- **ACME support (RFC 8555)**: `acme_test_server` (self-contained mock CA,
+  `tests/acme_test_server.hpp`) and `acme_certificate_provider`
+  (`include/raft/acme_certificate_provider.hpp`) — full JWS-signed order
+  lifecycle, http-01 and dns-01 (RFC 2136 UPDATE) challenges, RFC 8738
+  `"ip"`-typed identifiers, per-identifier challenge-type dispatch
+  (`acme_identifier::classify()`/`challenge_for()` — IP identifiers always
+  use http-01 regardless of configured challenge type), and `.local` (mDNS)
+  challenge validation via ordinary `getaddrinfo()` with a distinguishable
+  `mdnsResolverUnavailable` error when the validating host has no mDNS
+  resolver configured (nsswitch.conf-based capability probe with a
+  test-only override).
+- **Fingerprint-pinned bootstrap** (`include/raft/ca_bootstrap_client.hpp`):
+  `fetch_trusted_root()` lets a fresh instance, given only an out-of-band
+  SHA-256 root fingerprint and bearer token, establish first-contact trust
+  in a `ca_service`/`ca_cluster_node` TLS listener without any prior
+  certificate chain to verify against — `--print-root-fingerprint` prints
+  the operator-distributable fingerprint.
+- **Two pre-existing `raft.hpp` bugs found and fixed** while wiring
+  `ca_cluster_node`'s multi-node tests (not part of the certificate-authority
+  spec's own scope, but blocking correct multi-node behavior):
+  - `read_state()`'s quorum check used
+    `raft_future_collector<T>::collect_majority()`, which computed
+    `(followers.size()/2)+1` — wrongly requiring acknowledgment from *every*
+    follower in a 3-node cluster instead of a majority *including* the
+    leader's implicit self-vote. This made linearizable reads unavailable
+    with exactly one node down, in any cluster size. Fixed with
+    `collect_all_with_timeout()` plus an explicit
+    `required_follower_acks = (heartbeat_futures.size() + 1) / 2`.
+  - After a restart/election, previously-persisted log entries from a prior
+    term were never retroactively committed, stalling `read_state()`/state
+    application indefinitely. Fixed via the standard Raft no-op-on-election
+    technique: `ca_cluster_node` submits a `ca_command_type::noop` command
+    immediately upon becoming leader.
+  - Added `node<Types>::known_leader()` public accessor needed for
+    `ca_cluster_node`'s redirect-to-leader HTTP routes.
+- **httplib gotcha documented**: `SSLClient::enable_server_certificate_verification(false)`
+  disables cpp-httplib's *entire* verification block, including any custom
+  `server_certificate_verifier_` callback — not just the default chain check.
+  `ca_bootstrap_client.hpp` deliberately never calls it, relying solely on
+  the callback's explicit `CertificateAccepted`/`CertificateRejected` return.
+- **`quorum_management_test`/`docker_quorum_manager_test` linker fix**:
+  both were missing the `Boost::context`/`libboost_context.a` link already
+  required by every other Folly-linking test target (undefined reference to
+  `boost::context::detail::make_fcontext` when actually exercising Folly
+  fibers) — pre-existing, unrelated to this spec, fixed opportunistically
+  while verifying a full build.
 
 ### What Changed (June 19–22, 2026)
 
@@ -166,7 +242,7 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ---
 
-## Completed Specifications (All 6/6 Complete)
+## Completed Specifications (All 7/7 Complete)
 
 | Spec | Tasks | Status |
 |------|-------|--------|
@@ -176,6 +252,7 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 | Folly Concept Wrappers | 55/55 | ✅ Complete — full wrapper ecosystem |
 | Network Simulator | 26/26 | ✅ Complete — connection pooling, lifecycle management |
 | Network Concept Template Fix | all | ✅ Complete — unified single-parameter concepts |
+| Certificate Authority | 35/35 | ✅ Complete — local CA, `ca_service`/`ca_cluster_node`, ACME (RFC 8555/8738), fingerprint-pinned bootstrap; task 31's LocalStack/real-EC2 tests compile-verified only (no AWS access in this environment) |
 
 ---
 
@@ -231,6 +308,35 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - [ ] **`rfc6763_ldns_peer_discovery`** (full) — registers PTR + instance SRV +
   cluster-level SRV + domain-level SRV via RFC 2136; spec at
   `.kiro/specs/dns-peer-discovery/`
+
+### Certificate Management
+
+- [x] **Certificate authority framework** — in-process `certificate_authority`
+  (root CA generation, leaf issuance, revocation/CRL, `from_existing()`),
+  `temp_cert_files` RAII helper, `ca_service` CLI (oneshot Docker/Podman
+  provisioning + `--serve` HTTP API mode with `local`/`aws-acm-pca`
+  providers); spec at `.kiro/specs/certificate-authority/`; 35 tasks complete
+- [x] **`aws_acm_pca_provider`** — `certificate_provider` backed by AWS
+  Certificate Manager Private CA; unit/LocalStack/real-AWS test tiers
+- [x] **TLS hot-reload** — `reload_tls_material()`/`enable_auto_reload()` for
+  `cpp_httplib_server`/`client` and `coap_server`/`client`; atomic
+  write-tmp-then-rename certificate rotation via
+  `temp_cert_files::replace_atomically()`
+- [x] **`ca_cluster_node`** — Raft-replicated CA (`ca_state_machine` ledger of
+  bootstrap/issuance/revocation, leader reconstructs via `from_existing()`
+  and replays the ledger on election); multi-node subprocess test coverage
+  including leader failover; packaged for 3-AZ AWS deployment (systemd, ECS
+  task definitions); LocalStack/real-EC2 tests compile-verified only (no AWS
+  access in this environment)
+- [x] **ACME support (RFC 8555/8738)** — `acme_test_server` mock CA,
+  `acme_certificate_provider` (JWS order lifecycle, http-01/dns-01
+  challenges, `"ip"`-typed identifiers, per-identifier challenge-type
+  dispatch), `.local` (mDNS) challenge validation with a distinguishable
+  `mdnsResolverUnavailable` error when unavailable
+- [x] **Fingerprint-pinned bootstrap** — `ca_bootstrap_client::fetch_trusted_root()`
+  establishes first-contact TLS trust from an out-of-band SHA-256 root
+  fingerprint + bearer token, before any certificate chain exists to verify
+  against
 
 ### Minor Enhancements
 
