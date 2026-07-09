@@ -44,13 +44,21 @@ jobs:
           pip3 install --user "clang-format==22.1.5"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      # ── vcpkg (Boost, Folly, Poco, libcoap, …) ───────────────────────────
+      # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
+      # source (vcpkg's "edhoc" feature below) — lakers publishes no
+      # pre-built binaries for x64-linux, only embedded-MCU targets. Pinned
+      # explicitly rather than relying on the runner image's bundled
+      # toolchain so this doesn't silently break on a runner image update.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # ── vcpkg (Boost, Folly, Poco, libcoap, lakers, …) ───────────────────
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -59,7 +67,10 @@ jobs:
           # when vcpkg checks out port files), but no file blobs until accessed.
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage
+          # --x-feature=edhoc: builds the lakers overlay port (see
+          # vcpkg-overlays/lakers/) so LAKERS_AVAILABLE is defined and the
+          # EDHOC-to-OSCORE bootstrap path is exercised, not just stubbed.
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
@@ -158,19 +169,25 @@ jobs:
             ninja-build \
             libfiu-dev
 
+      # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
+      # source (vcpkg's "edhoc" feature below) — see the identical step in
+      # build-and-test for why this is pinned explicitly.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
