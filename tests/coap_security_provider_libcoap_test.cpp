@@ -97,6 +97,22 @@ auto make_context() -> coap_context_t* {
     return ctx;
 }
 
+// coap_new_client_session() (which every create_client_session() override
+// ultimately calls) asserts its server address is non-null in libcoap
+// builds with assertions compiled in (as CI's coverage build does) — a
+// release build with NDEBUG silently accepts nullptr instead, which is
+// what let this slip through local testing the first time. Always pass a
+// real (if unreachable) destination.
+auto make_loopback_addr(std::uint16_t port) -> coap_address_t {
+    coap_address_t addr;
+    coap_address_init(&addr);
+    addr.addr.sin.sin_family = AF_INET;
+    addr.addr.sin.sin_port = htons(port);
+    inet_pton(AF_INET, "127.0.0.1", &addr.addr.sin.sin_addr);
+    addr.size = sizeof(struct sockaddr_in);
+    return addr;
+}
+
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(coap_security_provider_libcoap_tests)
@@ -154,11 +170,10 @@ BOOST_AUTO_TEST_CASE(pki_provider_configures_client_and_server_sessions,
     dtls_pki_provider server_provider(creds, coap_security_role::server);
     auto* server_ctx = make_context();
     BOOST_CHECK_NO_THROW(server_provider.configure_session(server_ctx));
-    auto* session = server_provider.create_client_session(server_ctx, nullptr, nullptr,
-                                                          /*COAP_PROTO_UDP=*/0);
-    // No destination address given, so no real session is expected — this
-    // just exercises the call path, matching the other providers' pattern.
-    (void)session;
+    auto addr = make_loopback_addr(18730);
+    auto* session =
+        server_provider.create_client_session(server_ctx, nullptr, &addr, COAP_PROTO_UDP);
+    BOOST_CHECK(session != nullptr);
     coap_free_context(server_ctx);
 }
 
@@ -234,8 +249,9 @@ BOOST_AUTO_TEST_CASE(rpk_create_client_session_and_callback, *boost::unit_test::
     rpk_credentials creds{pub_pem, pub_pem, {pub_der}};
     dtls_rpk_provider provider(creds, coap_security_role::client);
     auto* ctx = make_context();
-    auto* session = provider.create_client_session(ctx, nullptr, nullptr, /*COAP_PROTO_UDP=*/0);
-    (void)session;
+    auto addr = make_loopback_addr(18731);
+    auto* session = provider.create_client_session(ctx, nullptr, &addr, COAP_PROTO_UDP);
+    BOOST_CHECK(session != nullptr);
 
     BOOST_CHECK_EQUAL(dtls_rpk_provider::validate_peer_key(
                           nullptr, reinterpret_cast<const uint8_t*>(pub_der.data()), pub_der.size(),
