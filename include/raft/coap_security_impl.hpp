@@ -137,8 +137,11 @@ public:
 
     [[nodiscard]] auto credentials() const -> const psk_credentials& { return _creds; }
 
-private:
 #ifdef LIBCOAP_AVAILABLE
+    // The server-side identity-matching decision (Requirement 2.1), public
+    // so it can be exercised directly by tests without needing a full DTLS
+    // handshake to reach it — coap_context_set_psk2() only ever invokes this
+    // from inside a real handshake.
     static auto validate_id_callback(coap_bin_const_t* identity, coap_session_t*, void* arg)
         -> const coap_bin_const_t* {
         auto* self = static_cast<dtls_psk_provider*>(arg);
@@ -152,6 +155,8 @@ private:
         return &psk_key;
     }
 #endif
+
+private:
     psk_credentials _creds;
     coap_security_role _role;
 };
@@ -224,8 +229,11 @@ public:
 
     [[nodiscard]] auto credentials() const -> const pki_credentials& { return _creds; }
 
-private:
 #ifdef LIBCOAP_AVAILABLE
+    // The CN-validation decision (Requirement 2.1/9.1's "trust libcoap's own
+    // validated result by default" behavior), public so it can be exercised
+    // directly by tests without a full handshake — see validate_cn's
+    // class-level comment above for why this trusts `validated` by default.
     static auto validate_cn(const char*, const uint8_t* asn1_public_cert, std::size_t asn1_length,
                             coap_session_t*, unsigned, int validated, void* arg) -> int {
         auto* self = static_cast<dtls_pki_provider*>(arg);
@@ -259,6 +267,8 @@ private:
         }
     }
 #endif
+
+private:
     pki_credentials _creds;
     coap_security_role _role;
 };
@@ -332,8 +342,9 @@ public:
         return false;
     }
 
-private:
 #ifdef LIBCOAP_AVAILABLE
+    // Public for the same testability reason as dtls_psk_provider::
+    // validate_id_callback / dtls_pki_provider::validate_cn above.
     static auto validate_peer_key(const char*, const uint8_t* asn1_public_cert,
                                   std::size_t asn1_length, coap_session_t*, unsigned, int,
                                   void* arg) -> int {
@@ -343,6 +354,8 @@ private:
         return self->is_trusted_peer_key(peer_key) ? 1 : 0;
     }
 #endif
+
+private:
     rpk_credentials _creds;
     coap_security_role _role;
 };
@@ -405,10 +418,18 @@ public:
     // after startup.
     auto add_recipient(coap_context_t* ctx, const std::vector<std::byte>& recipient_id) -> void {
 #ifdef LIBCOAP_AVAILABLE
-        coap_bin_const_t rid;
-        rid.s = reinterpret_cast<const uint8_t*>(recipient_id.data());
-        rid.length = recipient_id.size();
-        if (!coap_new_oscore_recipient(ctx, &rid)) {
+        // coap_new_oscore_recipient() takes ownership of *rid (it stores
+        // the pointer directly in its internal recipient chain and later
+        // frees it via coap_delete_bin_const(), including on the
+        // duplicate-recipient rejection path) — it must be a
+        // coap_new_bin_const() heap allocation, not a stack-local struct,
+        // or the eventual free() corrupts the heap.
+        coap_bin_const_t* rid = coap_new_bin_const(
+            reinterpret_cast<const uint8_t*>(recipient_id.data()), recipient_id.size());
+        if (!rid) {
+            throw coap_security_error("Failed to allocate OSCORE recipient ID");
+        }
+        if (!coap_new_oscore_recipient(ctx, rid)) {
             throw coap_security_error("Failed to add OSCORE recipient");
         }
 #else

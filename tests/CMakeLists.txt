@@ -400,6 +400,27 @@ target_compile_features(coap_dtls_rpk_test PRIVATE cxx_std_23)
 add_test(NAME coap_dtls_rpk_test COMMAND coap_dtls_rpk_test)
 set_tests_properties(coap_dtls_rpk_test PROPERTIES TIMEOUT 60 LABELS "coap;coap-security;unit")
 
+# Real-libcoap smoke coverage for the remaining providers' configure_session()/
+# create_client_session()/validation-callback bodies (no_auth, dtls_psk,
+# dtls_pki, plus bonus dtls_rpk/oscore calls) that coap_dtls_rpk_test.cpp and
+# coap_oscore_integration_test.cpp don't already reach directly.
+add_executable(coap_security_provider_libcoap_test coap_security_provider_libcoap_test.cpp)
+target_link_libraries(coap_security_provider_libcoap_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_security_provider_libcoap_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(TARGET libcoap::coap-3)
+    target_compile_definitions(coap_security_provider_libcoap_test PRIVATE LIBCOAP_AVAILABLE)
+    target_link_libraries(coap_security_provider_libcoap_test PRIVATE libcoap::coap-3)
+endif()
+target_compile_features(coap_security_provider_libcoap_test PRIVATE cxx_std_23)
+add_test(NAME coap_security_provider_libcoap_test COMMAND coap_security_provider_libcoap_test)
+set_tests_properties(coap_security_provider_libcoap_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;unit")
+
 # OSCORE integration (Requirement 9.4) — real libcoap round-trip; a no-op
 # fallback test runs if libcoap::coap-3 isn't available (see the file's own
 # #ifdef LIBCOAP_AVAILABLE guard and its header comment for why this is the
