@@ -27,9 +27,26 @@ using namespace kythira;
 
 namespace {
 
+// A no-op transport for the LAKERS_AVAILABLE-unset stub test below: the
+// stub run_edhoc_handshake() throws before ever touching its transport
+// argument, so it doesn't need a working one — just something that type-
+// checks as edhoc_transport without pulling in the synchronization
+// machinery real handshakes need (which would otherwise sit in every
+// build's binary, compiled but permanently unreachable, since the default
+// build has no vcpkg "edhoc" feature installed and so never takes the
+// #ifdef LAKERS_AVAILABLE branch below).
+class null_transport : public edhoc_transport {
+public:
+    auto send(const std::vector<std::byte>&) -> void override {}
+    auto receive() -> std::vector<std::byte> override { return {}; }
+};
+
+#ifdef LAKERS_AVAILABLE
+
 // Same test vectors as lakers' own lib/src/lib.rs test_handshake / this
 // project's vcpkg-overlays/lakers/ffi/tests/handshake.rs, so this test is
-// exercising known-good EDHOC material rather than ad hoc bytes.
+// exercising known-good EDHOC material rather than ad hoc bytes. Only used
+// by the two tests below this #ifdef.
 auto hex_decode(const std::string& hex) -> std::vector<std::byte> {
     auto nibble = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
@@ -62,22 +79,6 @@ auto cred_r() -> std::vector<std::byte> {
         "A2026008A101A5010202410A2001215820BBC34960526EA4D32E940CAD2A234148DDC21791A12AFBCBAC93622"
         "046DD44F02258204519E257236B2A0CE2023F0931F1F386CA7AFDA64FCDE0108C224C51EABF6072");
 }
-
-// A no-op transport for the LAKERS_AVAILABLE-unset stub test below: the
-// stub run_edhoc_handshake() throws before ever touching its transport
-// argument, so it doesn't need a working one — just something that type-
-// checks as edhoc_transport without pulling in the synchronization
-// machinery real handshakes need (which would otherwise sit in every
-// build's binary, compiled but permanently unreachable, since the default
-// build has no vcpkg "edhoc" feature installed and so never takes the
-// #ifdef LAKERS_AVAILABLE branch below).
-class null_transport : public edhoc_transport {
-public:
-    auto send(const std::vector<std::byte>&) -> void override {}
-    auto receive() -> std::vector<std::byte> override { return {}; }
-};
-
-#ifdef LAKERS_AVAILABLE
 
 // A blocking single-producer/single-consumer byte-message queue: run_edhoc_
 // handshake() drives each role from its own thread (each side's handshake
