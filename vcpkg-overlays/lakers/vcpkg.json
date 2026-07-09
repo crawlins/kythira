@@ -1,0 +1,8 @@
+{
+  "name": "lakers",
+  "version-string": "0.8.0-kythira.1",
+  "description": "EDHOC (RFC 9528) via the lake-rs/lakers Rust crate, wrapped by a small Kythira-authored C FFI (vcpkg-overlays/lakers/ffi) and built from source with cargo — lakers publishes no pre-built binaries for desktop/server targets, only embedded-MCU ones, so this port is a source build rather than a binary download.",
+  "homepage": "https://github.com/lake-rs/lakers",
+  "license": "BSD-3-Clause",
+  "supports": "!(windows | uwp)"
+}

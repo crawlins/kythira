@@ -68,5 +68,13 @@
     {
       "name": "libssh2"
     }
-  ]
+  ],
+  "features": {
+    "edhoc": {
+      "description": "EDHOC-to-OSCORE credential bootstrap for the CoAP transport (coap-transport-security spec's oscore_bootstrap::edhoc). Opt-in: requires a Rust toolchain (cargo/rustc) to build the lakers overlay port from source, since lakers publishes no pre-built binaries for this platform. Not part of the default install; omitting it just leaves LAKERS_AVAILABLE undefined and oscore_bootstrap::edhoc unavailable.",
+      "dependencies": [
+        "lakers"
+      ]
+    }
+  }
 }

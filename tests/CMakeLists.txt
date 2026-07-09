@@ -344,6 +344,137 @@ target_compile_features(coap_config_test PRIVATE cxx_std_23)
 add_test(NAME coap_config_test COMMAND coap_config_test)
 set_tests_properties(coap_config_test PROPERTIES TIMEOUT 60 LABELS "coap;unit")
 
+# ── coap-transport-security tests ─────────────────────────────────────────
+
+# Mode selection (Requirement 9.1, 9.2) — no libcoap/OpenSSL dependency,
+# runs entirely against the stub path.
+add_executable(coap_security_mode_selection_test coap_security_mode_selection_test.cpp)
+target_link_libraries(coap_security_mode_selection_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_security_mode_selection_test PRIVATE cxx_std_23)
+add_test(NAME coap_security_mode_selection_test COMMAND coap_security_mode_selection_test)
+set_tests_properties(coap_security_mode_selection_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;unit")
+
+# Legacy config migration (Requirement 8.3, 9.8).
+add_executable(coap_legacy_config_migration_test coap_legacy_config_migration_test.cpp)
+target_link_libraries(coap_legacy_config_migration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_legacy_config_migration_test PRIVATE cxx_std_23)
+add_test(NAME coap_legacy_config_migration_test COMMAND coap_legacy_config_migration_test)
+set_tests_properties(coap_legacy_config_migration_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;unit")
+
+# Capability check (Requirement 9.7) — exercises the "libcoap not compiled
+# in" stub path, so also has no real libcoap dependency.
+add_executable(coap_security_capability_check_test coap_security_capability_check_test.cpp)
+target_link_libraries(coap_security_capability_check_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_security_capability_check_test PRIVATE cxx_std_23)
+add_test(NAME coap_security_capability_check_test COMMAND coap_security_capability_check_test)
+set_tests_properties(coap_security_capability_check_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;unit")
+
+# DTLS-RPK (Requirement 9.3) — the is_trusted_peer_key() tests need
+# OpenSSL for EC key generation; the configure_session() smoke test needs
+# real libcoap (see the #ifdef LIBCOAP_AVAILABLE guard in the test file).
+add_executable(coap_dtls_rpk_test coap_dtls_rpk_test.cpp)
+target_link_libraries(coap_dtls_rpk_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_dtls_rpk_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(TARGET libcoap::coap-3)
+    target_compile_definitions(coap_dtls_rpk_test PRIVATE LIBCOAP_AVAILABLE)
+    target_link_libraries(coap_dtls_rpk_test PRIVATE libcoap::coap-3)
+endif()
+target_compile_features(coap_dtls_rpk_test PRIVATE cxx_std_23)
+add_test(NAME coap_dtls_rpk_test COMMAND coap_dtls_rpk_test)
+set_tests_properties(coap_dtls_rpk_test PROPERTIES TIMEOUT 60 LABELS "coap;coap-security;unit")
+
+# Real-libcoap smoke coverage for the remaining providers' configure_session()/
+# create_client_session()/validation-callback bodies (no_auth, dtls_psk,
+# dtls_pki, plus bonus dtls_rpk/oscore calls) that coap_dtls_rpk_test.cpp and
+# coap_oscore_integration_test.cpp don't already reach directly.
+add_executable(coap_security_provider_libcoap_test coap_security_provider_libcoap_test.cpp)
+target_link_libraries(coap_security_provider_libcoap_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_security_provider_libcoap_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+if(TARGET libcoap::coap-3)
+    target_compile_definitions(coap_security_provider_libcoap_test PRIVATE LIBCOAP_AVAILABLE)
+    target_link_libraries(coap_security_provider_libcoap_test PRIVATE libcoap::coap-3)
+endif()
+target_compile_features(coap_security_provider_libcoap_test PRIVATE cxx_std_23)
+add_test(NAME coap_security_provider_libcoap_test COMMAND coap_security_provider_libcoap_test)
+set_tests_properties(coap_security_provider_libcoap_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;unit")
+
+# OSCORE integration (Requirement 9.4) — real libcoap round-trip; a no-op
+# fallback test runs if libcoap::coap-3 isn't available (see the file's own
+# #ifdef LIBCOAP_AVAILABLE guard and its header comment for why this is the
+# one test target in this spec that turns LIBCOAP_AVAILABLE on).
+add_executable(coap_oscore_integration_test coap_oscore_integration_test.cpp)
+target_link_libraries(coap_oscore_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET libcoap::coap-3)
+    target_compile_definitions(coap_oscore_integration_test PRIVATE LIBCOAP_AVAILABLE)
+    target_link_libraries(coap_oscore_integration_test PRIVATE libcoap::coap-3)
+endif()
+target_compile_features(coap_oscore_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_oscore_integration_test COMMAND coap_oscore_integration_test)
+set_tests_properties(coap_oscore_integration_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;integration")
+
+# EDHOC-to-OSCORE bootstrap (Requirement 9.5) — only meaningful when the
+# optional vcpkg "edhoc" feature is installed (lakers::lakers target
+# present); a no-op fallback test runs otherwise (see the file's own
+# #ifdef LAKERS_AVAILABLE guard).
+add_executable(coap_edhoc_oscore_bootstrap_test coap_edhoc_oscore_bootstrap_test.cpp)
+target_link_libraries(coap_edhoc_oscore_bootstrap_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET lakers::lakers)
+    target_compile_definitions(coap_edhoc_oscore_bootstrap_test PRIVATE LAKERS_AVAILABLE)
+    target_link_libraries(coap_edhoc_oscore_bootstrap_test PRIVATE lakers::lakers)
+endif()
+target_compile_features(coap_edhoc_oscore_bootstrap_test PRIVATE cxx_std_23)
+add_test(NAME coap_edhoc_oscore_bootstrap_test COMMAND coap_edhoc_oscore_bootstrap_test)
+set_tests_properties(coap_edhoc_oscore_bootstrap_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;integration")
+
+# ACE-OAuth (Requirement 9.6) — mock Authorization Server via httplib.
+add_executable(coap_ace_oauth_test coap_ace_oauth_test.cpp)
+target_link_libraries(coap_ace_oauth_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET httplib::httplib)
+    target_link_libraries(coap_ace_oauth_test PRIVATE httplib::httplib)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_ace_oauth_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(coap_ace_oauth_test PRIVATE cxx_std_23)
+add_test(NAME coap_ace_oauth_test COMMAND coap_ace_oauth_test)
+set_tests_properties(coap_ace_oauth_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security;integration")
+
 # CoAP multicast address validation test
 add_executable(coap_multicast_address_validation_test coap_multicast_address_validation_test.cpp)
 target_link_libraries(coap_multicast_address_validation_test PRIVATE

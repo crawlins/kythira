@@ -1,0 +1,39 @@
+# Installed to share/lakers/lakers-config.cmake by portfile.cmake.
+# Exposes lakers::lakers, matching the find_package(lakers CONFIG) call in
+# the top-level CMakeLists.txt.
+
+if(NOT TARGET lakers::lakers)
+    add_library(lakers::lakers STATIC IMPORTED)
+    get_filename_component(_lakers_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+
+    set(_lakers_lib_release "${_lakers_root}/lib/liblakers_kythira_ffi.a")
+    set(_lakers_lib_debug "${_lakers_root}/debug/lib/liblakers_kythira_ffi.a")
+
+    if(EXISTS "${_lakers_lib_release}")
+        set_target_properties(lakers::lakers PROPERTIES
+            IMPORTED_LOCATION "${_lakers_lib_release}"
+        )
+    endif()
+    if(EXISTS "${_lakers_lib_debug}")
+        set_target_properties(lakers::lakers PROPERTIES
+            IMPORTED_LOCATION_DEBUG "${_lakers_lib_debug}"
+        )
+    endif()
+
+    set_target_properties(lakers::lakers PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_lakers_root}/include"
+    )
+
+    # The Rust staticlib needs libdl/libpthread/libm/libgcc_s's runtime
+    # support functions (getrandom's fallback path, panic unwinding) on
+    # Linux; harmless no-ops to add on other ELF-based *nix targets.
+    if(UNIX AND NOT APPLE)
+        set_target_properties(lakers::lakers PROPERTIES
+            INTERFACE_LINK_LIBRARIES "dl;pthread;m"
+        )
+    endif()
+
+    unset(_lakers_root)
+    unset(_lakers_lib_release)
+    unset(_lakers_lib_debug)
+endif()

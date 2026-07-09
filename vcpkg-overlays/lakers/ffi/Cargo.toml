@@ -1,0 +1,19 @@
+[package]
+name = "lakers-kythira-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+description = "Minimal C FFI (Initiator + Responder + exporter) over the lakers EDHOC crate, for Kythira's coap-transport-security OSCORE bootstrap."
+
+[lib]
+# staticlib for linking into the C++ side via the vcpkg overlay port;
+# rlib kept too so `cargo test` works directly against this crate.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Pinned to the v0.8.0 tag inspected while writing this integration
+# (commit 32d09af75d44c771582c21a82831ee3a5dc8aecc) rather than floating on
+# a branch, since lakers is not published in a way vcpkg's registry can
+# track directly (see vcpkg-overlays/lakers/README.md).
+lakers = { git = "https://github.com/lake-rs/lakers.git", tag = "v0.8.0", package = "lakers", default-features = false }
+lakers-crypto = { git = "https://github.com/lake-rs/lakers.git", tag = "v0.8.0", package = "lakers-crypto", default-features = false, features = ["rustcrypto"] }

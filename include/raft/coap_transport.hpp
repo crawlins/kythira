@@ -4,6 +4,9 @@
 #include <raft/coap_block_option.hpp>
 #include <raft/network.hpp>
 #include <raft/coap_exceptions.hpp>
+#include <raft/coap_security.hpp>
+#include <raft/coap_edhoc.hpp>
+#include <raft/coap_ace_oauth.hpp>
 #include <raft/metrics.hpp>
 #include <raft/logger.hpp>
 #include <raft/console_logger.hpp>
@@ -40,12 +43,19 @@
 struct coap_context_t;
 struct coap_session_t;
 struct coap_address_t;
-struct coap_uri_t;
 struct coap_pdu_t;
 struct coap_resource_t;
 struct coap_string_t;
 struct coap_string_t;
+#ifndef LIBCOAP_AVAILABLE
+// coap3/coap.h (included above when LIBCOAP_AVAILABLE is defined) already
+// declares these, but not as a forward-declarable `struct coap_uri_t`/
+// `struct coap_pdu_code_t` tag — coap_uri_t is an anonymous-struct typedef
+// and coap_pdu_code_t is an enum typedef, so redeclaring them here would
+// conflict rather than merely forward-declare.
+struct coap_uri_t;
 using coap_pdu_code_t = std::uint8_t;
+#endif
 
 namespace kythira {
 
@@ -208,6 +218,21 @@ struct coap_client_config {
     std::size_t max_cache_entries{100};
     std::chrono::milliseconds cache_ttl{60000};  // 1 minute
     bool enable_certificate_validation{true};
+
+    // Explicit channel-security mode (coap-transport-security spec). Left at
+    // its default (mode == none), the legacy DTLS fields above continue to
+    // drive behavior via translate_legacy_fields() (Requirement 8). Setting
+    // security.mode explicitly selects one of the five coap_auth_mode
+    // values without any field inference (Requirement 1.2).
+    coap_security_config security{};
+
+    // Required when security.mode == oscore and its oscore_credentials
+    // have bootstrap_method == edhoc: constructs the edhoc_transport used
+    // to carry EDHOC's messages to/from the peer (Requirement 5.2). Left
+    // null, EDHOC bootstrap fails construction with
+    // coap_credential_bootstrap_error (Requirement 5.4) rather than
+    // guessing at a transport.
+    std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
 };
 
 struct coap_server_config {
@@ -243,6 +268,14 @@ struct coap_server_config {
     std::chrono::seconds pool_reset_interval{300};  // Reset interval (5 minutes default)
     bool enable_serialization_caching{false};
     std::size_t serialization_cache_size{100};
+
+    // Explicit channel-security mode (coap-transport-security spec). See
+    // coap_client_config::security for the same semantics.
+    coap_security_config security{};
+
+    // See coap_client_config::edhoc_transport_factory for the same
+    // semantics (Requirement 5.2).
+    std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
 };
 
 // Memory pool for optimization - see memory_pool.hpp for implementation
@@ -393,10 +426,16 @@ public:
     /// Stops the auto-reload background thread cleanly (joined, not detached).
     auto disable_auto_reload() -> void;
 
+    /// The coap_security_provider selected for this client's
+    /// coap_client_config::security (post translate_legacy_fields()),
+    /// exposed for testing (Requirement 9.1).
+    [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
+
 private:
     serializer_type _serializer;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
     coap_context_t* _coap_context;
+    std::unique_ptr<coap_security_provider> _security_provider;
     kythira::coap_client_config _config;
     metrics_type _metrics;
     logger_type _logger;
@@ -573,9 +612,15 @@ public:
     /// Stops the auto-reload background thread cleanly (joined, not detached).
     auto disable_auto_reload() -> void;
 
+    /// The coap_security_provider selected for this server's
+    /// coap_server_config::security (post translate_legacy_fields()),
+    /// exposed for testing (Requirement 9.1).
+    [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
+
 private:
     serializer_type _serializer;
     coap_context_t* _coap_context;
+    std::unique_ptr<coap_security_provider> _security_provider;
     address_type _bind_address;
     port_type _bind_port;
     kythira::coap_server_config _config;

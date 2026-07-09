@@ -1,6 +1,43 @@
 # Implementation Plan — CoAP Transport Security
 
-## Status: Not Started
+## Status: Implemented
+
+All 17 tasks below are complete. Notable deviations from the original plan,
+discovered during implementation (see each task for detail):
+
+- **LIBCOAP_AVAILABLE has never been defined anywhere in this project's
+  build** (confirmed before writing any code) — the entire existing
+  `coap-transport` DTLS test suite runs libcoap's stub code path, not real
+  libcoap. Rather than risk the ~40 other never-compiled `#ifdef
+  LIBCOAP_AVAILABLE` branches across `coap_transport_impl.hpp` by turning it
+  on for the full templated transport, the new providers are tested directly
+  against bare libcoap contexts (`coap_dtls_rpk_test.cpp`,
+  `coap_oscore_integration_test.cpp` opt into `LIBCOAP_AVAILABLE` for just
+  those two binaries). `coap_client<Types>`/`coap_server<Types>` still gain
+  real OSCORE support at the one client session-creation call site that
+  matters for the main RPC path.
+- **lakers has no pre-built binary for this project's target triplet** —
+  only embedded-MCU releases exist upstream. The vcpkg overlay port builds
+  from source via cargo instead (Task 8), and is gated behind a new,
+  opt-in `edhoc` vcpkg feature (not part of the default install) so a
+  missing/broken Rust toolchain never affects the default build.
+- **lakers-c (upstream's own C bindings) only expose the Initiator role** —
+  insufficient for `coap_server`, which needs Responder. Task 8/9 vendor a
+  small (~500 line) Kythira-authored FFI crate
+  (`vcpkg-overlays/lakers/ffi/`) depending directly on the `lakers`/
+  `lakers-crypto` crates instead, exercised end-to-end by its own Rust test
+  (`ffi/tests/handshake.rs`) and by `coap_edhoc_oscore_bootstrap_test.cpp`.
+- **Real network-transport wiring for EDHOC-over-CoAP (a `.well-known/edhoc`
+  resource exchange) is out of scope for this pass** — `run_edhoc_handshake()`
+  takes a transport-agnostic `edhoc_transport` interface and is fully wired
+  into `coap_client`/`coap_server` construction via a pluggable
+  `edhoc_transport_factory`, but no concrete CoAP-resource-backed transport
+  ships yet; callers wanting `bootstrap_method == edhoc` today must supply
+  their own `edhoc_transport`.
+- Sender/recipient OSCORE IDs derived via EDHOC are two additional
+  `edhoc_exporter` labels rather than the RFC's literal C_I/C_R connection
+  identifiers (this FFI's message-parsing functions don't surface those) —
+  see `run_edhoc_handshake()`'s comment in `include/raft/coap_edhoc.hpp`.
 
 ## Overview
 
@@ -64,7 +101,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 1: Config Model and Provider Abstraction (Tasks 1-2)
 
-- [ ] 1. Add `coap_security.hpp` with `coap_auth_mode`, credential structs,
+- [x] 1. Add `coap_security.hpp` with `coap_auth_mode`, credential structs,
       and `coap_security_config`
   - New header `include/raft/coap_security.hpp`: `coap_auth_mode` enum
     (`none`, `dtls_psk`, `dtls_pki`, `dtls_rpk`, `oscore`);
@@ -81,7 +118,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
     `mode == none` and `credentials` holding `std::monostate`.
   - _Requirements: 1.1_
 
-- [ ] 2. Add `coap_security_provider` interface and `make_security_provider()`
+- [x] 2. Add `coap_security_provider` interface and `make_security_provider()`
       factory
   - Interface with `configure_session(coap_context_t*)`,
     `protect(coap_pdu_t*) -> coap_pdu_t*`, `unprotect(coap_pdu_t*) ->
@@ -102,7 +139,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 2: Wrap Existing PSK/PKI, Legacy Migration (Tasks 3-4)
 
-- [ ] 3. Add `dtls_psk_provider` and `dtls_pki_provider`, wrapping existing
+- [x] 3. Add `dtls_psk_provider` and `dtls_pki_provider`, wrapping existing
       logic
   - `dtls_psk_provider::configure_session()` calls the exact existing PSK
     setup code currently inline in `setup_dtls_context()`
@@ -123,7 +160,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
     invalid identity length, and certificate rejection cases.
   - _Requirements: 2.1, 9.1_
 
-- [ ] 4. Add legacy-field translation shim
+- [x] 4. Add legacy-field translation shim
   - `translate_legacy_fields(coap_client_config)` /
     `(coap_server_config)`: if `security.mode != none`, return
     `security` unchanged (and throw `coap_security_config_error` if legacy
@@ -142,7 +179,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 3: DTLS-RPK Provider (Task 5)
 
-- [ ] 5. Add `dtls_rpk_provider`
+- [x] 5. Add `dtls_rpk_provider`
   - Shares `coap_dtls_pki_t` setup structure with `dtls_pki_provider`
     (Task 3), differing in `pki_key.key_type` (raw-public-key type instead
     of `COAP_PKI_KEY_PEM`) and in the validation callback: compare the
@@ -157,7 +194,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 4: OSCORE Provider and Capability Check (Tasks 6-7)
 
-- [ ] 6. Add `oscore_provider` (static-provisioned credentials)
+- [x] 6. Add `oscore_provider` (static-provisioned credentials)
   - `configure_session()`: build context via `coap_new_oscore_conf()` from
     `oscore_credentials` fields; client side calls
     `coap_new_client_session_oscore()`, or `_psk`/`_pki` combined variant
@@ -174,7 +211,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
     the payload round-trips and that a tampered ciphertext is rejected.
   - _Requirements: 4.1, 4.2, 4.3, 4.5_
 
-- [ ] 7. Add OSCORE runtime capability check
+- [x] 7. Add OSCORE runtime capability check
   - At the start of `oscore_provider::configure_session()`, call
     `coap_oscore_is_supported()`; if false, throw
     `coap_unsupported_security_mode_error(coap_auth_mode::oscore, "OSCORE
@@ -189,7 +226,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 5: EDHOC Bootstrap (Tasks 8-9)
 
-- [ ] 8. Add vcpkg overlay port for `lakers`
+- [x] 8. Add vcpkg overlay port for `lakers`
   - Create `vcpkg-overlays/lakers/` with a `portfile.cmake` that downloads
     `lakers`'s published pre-built C static library and headers for the
     project's target triplet(s), and a `vcpkg.json` exposing a
@@ -201,7 +238,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
     the build environment.
   - _Requirements: 5.5_
 
-- [ ] 9. Add `run_edhoc_handshake()` and wire `oscore_bootstrap::edhoc`
+- [x] 9. Add `run_edhoc_handshake()` and wire `oscore_bootstrap::edhoc`
   - `run_edhoc_handshake(edhoc_params, session_handle) -> oscore_credentials`:
     drives the EDHOC exchange via `lakers`, then calls its
     `edhoc_exporter()` to derive `sender_id`/`recipient_id`/
@@ -227,7 +264,7 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 6: ACE-OAuth Credential Provisioning (Task 10)
 
-- [ ] 10. Add `run_ace_token_exchange()`
+- [x] 10. Add `run_ace_token_exchange()`
   - `run_ace_token_exchange(ace_oauth_config) ->
     std::variant<psk_credentials, oscore_credentials>`: performs the AS
     token request over HTTPS using the project's existing HTTP client
@@ -248,38 +285,38 @@ already confirmed present in the linked library (≥4.3.2; project pins
 
 ## Phase 7: Tests (Tasks 11-17)
 
-- [ ] 11. `tests/coap_security_mode_selection_test.cpp` (new file)
+- [x] 11. `tests/coap_security_mode_selection_test.cpp` (new file)
   - Each of the five `coap_auth_mode` values selects its corresponding
     provider type; inconsistent mode/credential combinations throw
     `coap_security_config_error`.
   - _Requirements: 9.1, 9.2_
 
-- [ ] 12. `tests/coap_legacy_config_migration_test.cpp` (new file)
+- [x] 12. `tests/coap_legacy_config_migration_test.cpp` (new file)
   - Every pre-existing DTLS-related test from `.kiro/specs/coap-transport/`
     re-run against the new `translate_legacy_fields()` path with identical
     results.
   - _Requirements: 8.3, 9.8_
 
-- [ ] 13. `tests/coap_dtls_rpk_test.cpp` (new file)
+- [x] 13. `tests/coap_dtls_rpk_test.cpp` (new file)
   - RPK peer-key match succeeds; mismatch is rejected.
   - _Requirements: 9.3_
 
-- [ ] 14. `tests/coap_oscore_integration_test.cpp` (new file)
+- [x] 14. `tests/coap_oscore_integration_test.cpp` (new file)
   - Client/server round-trip under plain OSCORE and OSCORE-over-DTLS-PSK;
     tampered-ciphertext rejection.
   - _Requirements: 9.4_
 
-- [ ] 15. `tests/coap_edhoc_oscore_bootstrap_test.cpp` (new file)
+- [x] 15. `tests/coap_edhoc_oscore_bootstrap_test.cpp` (new file)
   - EDHOC handshake derives a working OSCORE context; handshake failure
     (credential mismatch) prevents session establishment.
   - _Requirements: 9.5_
 
-- [ ] 16. `tests/coap_ace_oauth_test.cpp` (new file)
+- [x] 16. `tests/coap_ace_oauth_test.cpp` (new file)
   - Mock-AS-driven population of PSK and OSCORE credentials; failed
     exchange prevents transport initialization.
   - _Requirements: 9.6_
 
-- [ ] 17. `tests/coap_security_capability_check_test.cpp` (new file)
+- [x] 17. `tests/coap_security_capability_check_test.cpp` (new file)
   - `coap_oscore_is_supported()` stubbed false produces
     `coap_unsupported_security_mode_error` before any session mutation.
   - _Requirements: 9.7_

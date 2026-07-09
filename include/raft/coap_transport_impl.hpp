@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/coap_transport.hpp>
+#include <raft/coap_security_impl.hpp>
 #include <algorithm>
 #include <cctype>
 
@@ -104,6 +105,37 @@ coap_client<Types>::coap_client(
       _coap_context{nullptr},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // Resolve the explicit-or-legacy channel-security configuration and
+    // construct its provider up front (coap-transport-security spec,
+    // Requirement 1.2/1.3) — before any libcoap resource is allocated, so
+    // a bad mode/credential combination fails construction cleanly.
+    {
+        auto security = translate_legacy_fields(_config);
+        if (security.ace_bootstrap) {
+            auto result = run_ace_token_exchange(*security.ace_bootstrap);
+            std::visit(
+                [&](auto&& creds) { security.credentials = std::forward<decltype(creds)>(creds); },
+                result);
+        }
+        if (security.mode == coap_auth_mode::oscore) {
+            if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
+                throw coap_security_config_error(
+                    "security.mode == oscore requires oscore_credentials in "
+                    "security.credentials");
+            }
+            auto& osc = std::get<oscore_credentials>(security.credentials);
+            if (osc.bootstrap_method == oscore_bootstrap::edhoc) {
+                if (!_config.edhoc_transport_factory) {
+                    throw coap_credential_bootstrap_error(
+                        "edhoc", "no edhoc_transport_factory configured on coap_client_config");
+                }
+                auto transport = _config.edhoc_transport_factory();
+                osc = run_edhoc_handshake(osc.edhoc, *transport);
+            }
+        }
+        _security_provider = make_security_provider(security, coap_security_role::client);
+    }
+
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
     _coap_context = coap_new_context(nullptr);
@@ -140,8 +172,10 @@ coap_client<Types>::coap_client(
     _logger.warning("libcoap not available, using stub implementation");
 #endif
 
-    // Set up DTLS context if enabled
-    if (_config.enable_dtls) {
+    // Set up DTLS/security context if enabled, or if an explicit
+    // channel-security mode was configured (OSCORE and RPK have no
+    // enable_dtls-gated legacy equivalent to preserve).
+    if (_config.enable_dtls || _config.security.mode != coap_auth_mode::none) {
         _logger.debug("Setting up DTLS context for CoAP client");
         setup_dtls_context();
     }
@@ -216,6 +250,12 @@ coap_client<Types>::~coap_client() {
 
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::security_provider() const -> const coap_security_provider* {
+    return _security_provider.get();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::send_request_vote(std::uint64_t target,
                                            const kythira::request_vote_request<>& request,
                                            std::chrono::milliseconds timeout)
@@ -275,6 +315,36 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
       _bind_port{bind_port},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // Resolve the explicit-or-legacy channel-security configuration and
+    // construct its provider up front (coap-transport-security spec,
+    // Requirement 1.2/1.3) — before any libcoap resource is allocated.
+    {
+        auto security = translate_legacy_fields(_config);
+        if (security.ace_bootstrap) {
+            auto result = run_ace_token_exchange(*security.ace_bootstrap);
+            std::visit(
+                [&](auto&& creds) { security.credentials = std::forward<decltype(creds)>(creds); },
+                result);
+        }
+        if (security.mode == coap_auth_mode::oscore) {
+            if (!std::holds_alternative<oscore_credentials>(security.credentials)) {
+                throw coap_security_config_error(
+                    "security.mode == oscore requires oscore_credentials in "
+                    "security.credentials");
+            }
+            auto& osc = std::get<oscore_credentials>(security.credentials);
+            if (osc.bootstrap_method == oscore_bootstrap::edhoc) {
+                if (!_config.edhoc_transport_factory) {
+                    throw coap_credential_bootstrap_error(
+                        "edhoc", "no edhoc_transport_factory configured on coap_server_config");
+                }
+                auto transport = _config.edhoc_transport_factory();
+                osc = run_edhoc_handshake(osc.edhoc, *transport);
+            }
+        }
+        _security_provider = make_security_provider(security, coap_security_role::server);
+    }
+
     // Initialize libcoap context
 #ifdef LIBCOAP_AVAILABLE
     _coap_context = coap_new_context(nullptr);
@@ -328,8 +398,9 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     _logger.warning("libcoap not available, using stub implementation");
 #endif
 
-    // Set up DTLS context if enabled
-    if (_config.enable_dtls) {
+    // Set up DTLS/security context if enabled, or if an explicit
+    // channel-security mode was configured.
+    if (_config.enable_dtls || _config.security.mode != coap_auth_mode::none) {
         _logger.debug("Setting up DTLS context for CoAP server");
         setup_dtls_context();
     }
@@ -390,6 +461,12 @@ coap_server<Types>::~coap_server() {
 #endif
 
     _logger.info("CoAP server shutdown complete");
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::security_provider() const -> const coap_security_provider* {
+    return _security_provider.get();
 }
 
 template<typename Types>
@@ -722,6 +799,20 @@ auto coap_client<Types>::generate_message_id() -> std::uint16_t {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::setup_dtls_context() -> void {
+    // Explicit channel-security mode (coap-transport-security spec,
+    // Requirement 1.2): dispatch entirely to the provider and skip the
+    // legacy field-inference body below, which stays untouched so every
+    // existing DTLS-PSK/DTLS-PKI test (driven by cert_file/psk_identity with
+    // security.mode left at its default) continues to exercise identical
+    // logic (Requirement 8.3).
+    if (_config.security.mode != coap_auth_mode::none) {
+        _security_provider->configure_session(_coap_context);
+        _metrics.add_dimension("dtls_enabled", "true");
+        _metrics.add_dimension("auth_method", to_string(_config.security.mode));
+        _metrics.emit();
+        return;
+    }
+
     // Set up DTLS context for secure communication
 #ifdef LIBCOAP_AVAILABLE
     if (!_config.cert_file.empty() && !_config.key_file.empty()) {
@@ -2395,6 +2486,19 @@ auto coap_server<Types>::setup_resources() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::setup_dtls_context() -> void {
+    // Explicit channel-security mode (coap-transport-security spec,
+    // Requirement 1.2): dispatch entirely to the provider and skip the
+    // legacy field-inference body below, which stays untouched so every
+    // existing DTLS-PSK/DTLS-PKI test continues to exercise identical logic
+    // (Requirement 8.3).
+    if (_config.security.mode != coap_auth_mode::none) {
+        _security_provider->configure_session(_coap_context);
+        _metrics.add_dimension("dtls_auth_method", to_string(_config.security.mode));
+        _metrics.add_one();
+        _metrics.emit();
+        return;
+    }
+
     // Set up DTLS context for secure communication with actual libcoap integration
     if (!_config.enable_dtls) {
         _logger.debug("DTLS disabled, skipping DTLS context setup");
@@ -3695,7 +3799,11 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
             session =
                 coap_new_client_session_dtls(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
         } else {
-            session = coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_UDP);
+            // Delegates to the OSCORE-flavored constructor when
+            // security.mode == oscore; identical to the previous plain
+            // coap_new_client_session() call for every other mode.
+            session = _security_provider->create_client_session(_coap_context, nullptr, &dst_addr,
+                                                                COAP_PROTO_UDP);
         }
 
         if (session) {
