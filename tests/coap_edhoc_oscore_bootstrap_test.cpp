@@ -63,6 +63,22 @@ auto cred_r() -> std::vector<std::byte> {
         "046DD44F02258204519E257236B2A0CE2023F0931F1F386CA7AFDA64FCDE0108C224C51EABF6072");
 }
 
+// A no-op transport for the LAKERS_AVAILABLE-unset stub test below: the
+// stub run_edhoc_handshake() throws before ever touching its transport
+// argument, so it doesn't need a working one — just something that type-
+// checks as edhoc_transport without pulling in the synchronization
+// machinery real handshakes need (which would otherwise sit in every
+// build's binary, compiled but permanently unreachable, since the default
+// build has no vcpkg "edhoc" feature installed and so never takes the
+// #ifdef LAKERS_AVAILABLE branch below).
+class null_transport : public edhoc_transport {
+public:
+    auto send(const std::vector<std::byte>&) -> void override {}
+    auto receive() -> std::vector<std::byte> override { return {}; }
+};
+
+#ifdef LAKERS_AVAILABLE
+
 // A blocking single-producer/single-consumer byte-message queue: run_edhoc_
 // handshake() drives each role from its own thread (each side's handshake
 // is one blocking call doing several send()/receive() round trips), so
@@ -145,6 +161,8 @@ private:
     blocking_queue& _inbox;
     std::chrono::milliseconds _timeout;
 };
+
+#endif  // LAKERS_AVAILABLE
 
 }  // namespace
 
@@ -238,9 +256,7 @@ BOOST_AUTO_TEST_CASE(mismatched_peer_credential_fails_handshake, *boost::unit_te
 #else
 
 BOOST_AUTO_TEST_CASE(edhoc_unavailable_fails_descriptively, *boost::unit_test::timeout(10)) {
-    blocking_queue a;
-    blocking_queue b;
-    channel_transport transport(a, b);
+    null_transport transport;
     edhoc_params params;
     params.is_initiator = true;
     BOOST_CHECK_THROW(run_edhoc_handshake(params, transport), coap_credential_bootstrap_error);

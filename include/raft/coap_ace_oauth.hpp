@@ -19,20 +19,12 @@
 #include <boost/json.hpp>
 
 #include <cctype>
-#include <sstream>
 #include <string>
 #include <variant>
 
 namespace kythira {
 
 namespace detail {
-
-inline auto hex_encode(const std::vector<std::byte>& bytes) -> std::string {
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (auto b : bytes) out << std::setw(2) << static_cast<int>(std::to_integer<unsigned char>(b));
-    return out.str();
-}
 
 inline auto hex_decode(const std::string& hex) -> std::vector<std::byte> {
     if (hex.size() % 2 != 0) {

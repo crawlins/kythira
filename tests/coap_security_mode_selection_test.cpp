@@ -40,7 +40,12 @@ BOOST_AUTO_TEST_CASE(dtls_psk_mode_selects_dtls_psk_provider, *boost::unit_test:
     auto provider = make_security_provider(config, coap_security_role::client);
     BOOST_REQUIRE(provider != nullptr);
     BOOST_CHECK(provider->mode() == coap_auth_mode::dtls_psk);
-    BOOST_CHECK(dynamic_cast<dtls_psk_provider*>(provider.get()) != nullptr);
+    auto* psk_provider = dynamic_cast<dtls_psk_provider*>(provider.get());
+    BOOST_REQUIRE(psk_provider != nullptr);
+    // credentials() round-trips the exact struct passed in — confirms the
+    // factory doesn't copy/reconstruct it lossily along the way.
+    BOOST_CHECK_EQUAL(psk_provider->credentials().identity, "node-1");
+    BOOST_CHECK_EQUAL(psk_provider->credentials().key.size(), 16u);
 }
 
 BOOST_AUTO_TEST_CASE(dtls_pki_mode_selects_dtls_pki_provider, *boost::unit_test::timeout(10)) {
@@ -50,7 +55,10 @@ BOOST_AUTO_TEST_CASE(dtls_pki_mode_selects_dtls_pki_provider, *boost::unit_test:
     auto provider = make_security_provider(config, coap_security_role::client);
     BOOST_REQUIRE(provider != nullptr);
     BOOST_CHECK(provider->mode() == coap_auth_mode::dtls_pki);
-    BOOST_CHECK(dynamic_cast<dtls_pki_provider*>(provider.get()) != nullptr);
+    auto* pki_provider = dynamic_cast<dtls_pki_provider*>(provider.get());
+    BOOST_REQUIRE(pki_provider != nullptr);
+    BOOST_CHECK_EQUAL(pki_provider->credentials().cert_file, "/tmp/cert.pem");
+    BOOST_CHECK_EQUAL(pki_provider->credentials().key_file, "/tmp/key.pem");
 }
 
 BOOST_AUTO_TEST_CASE(dtls_rpk_mode_selects_dtls_rpk_provider, *boost::unit_test::timeout(10)) {
@@ -62,7 +70,9 @@ BOOST_AUTO_TEST_CASE(dtls_rpk_mode_selects_dtls_rpk_provider, *boost::unit_test:
     auto provider = make_security_provider(config, coap_security_role::client);
     BOOST_REQUIRE(provider != nullptr);
     BOOST_CHECK(provider->mode() == coap_auth_mode::dtls_rpk);
-    BOOST_CHECK(dynamic_cast<dtls_rpk_provider*>(provider.get()) != nullptr);
+    auto* rpk_provider = dynamic_cast<dtls_rpk_provider*>(provider.get());
+    BOOST_REQUIRE(rpk_provider != nullptr);
+    BOOST_CHECK_EQUAL(rpk_provider->credentials().public_key.size(), 32u);
 }
 
 BOOST_AUTO_TEST_CASE(oscore_mode_selects_oscore_provider, *boost::unit_test::timeout(10)) {
@@ -76,7 +86,9 @@ BOOST_AUTO_TEST_CASE(oscore_mode_selects_oscore_provider, *boost::unit_test::tim
     auto provider = make_security_provider(config, coap_security_role::client);
     BOOST_REQUIRE(provider != nullptr);
     BOOST_CHECK(provider->mode() == coap_auth_mode::oscore);
-    BOOST_CHECK(dynamic_cast<oscore_provider*>(provider.get()) != nullptr);
+    auto* oscore = dynamic_cast<oscore_provider*>(provider.get());
+    BOOST_REQUIRE(oscore != nullptr);
+    BOOST_CHECK_EQUAL(oscore->credentials().master_secret.size(), 16u);
 }
 
 BOOST_AUTO_TEST_CASE(mismatched_mode_and_credentials_throws_config_error,
