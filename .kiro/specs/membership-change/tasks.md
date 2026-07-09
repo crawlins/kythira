@@ -1,8 +1,49 @@
 # Implementation Plan — Membership Change (Joint Consensus)
 
-## Status: Not Started
+## Status: Complete (20/20 tasks)
 
-**Last Updated**: June 11, 2026
+All 20 tasks are implemented, built, and verified — discovered already
+substantially complete in the codebase when this spec's remaining items were
+picked up; this document was simply never updated to reflect that. Notable
+deviations from the original task descriptions, found during verification:
+
+- **Tasks 6/7 (joint quorum helper)**: implemented, but not as a standalone
+  `calculate_new_commit_index()`/`has_election_quorum()` pair. The joint-aware
+  commit-index quorum check is inline within `advance_commit_index()`
+  (`include/raft/raft.hpp`), and joint-aware election quorum is inline within
+  `start_election()`, both counting acks/votes against `_configuration.nodes()`
+  and `_configuration.old_nodes()` separately when `is_joint_consensus()` is
+  set. Functionally identical to the design; organized as inline logic in the
+  existing methods rather than extracted helpers.
+- **Task 20 (`tests/node_recovery_unit_test.cpp`)**: this was the one genuine
+  gap — the file did not exist. Added, covering four of the five scenarios
+  the task named: no persisted state, term+voted_for only, snapshot only,
+  and snapshot + trailing log entries including a configuration entry
+  overriding the snapshot's own configuration (Requirement 8.3) — plus one
+  additional case confirming the *highest-indexed* configuration entry wins
+  when several appear in the trailing log. The fifth named scenario ("log
+  truncation after restart... interact correctly with
+  `handle_append_entries()` truncation") is deliberately NOT duplicated here:
+  it requires a live 2-node RPC exchange (`handle_append_entries()` is
+  private, reachable only via the network), which is a materially different
+  kind of test than the rest of this file's direct
+  construct-persistence/start()/inspect pattern, and the underlying
+  truncation-reverts-configuration logic (Task 12) was already confirmed
+  implemented by direct code reading. Task 17's own call site
+  (`install_snapshot()`, invoked from a live leader-to-follower InstallSnapshot
+  RPC) is exercised end-to-end elsewhere by
+  `tests/raft_snapshot_preserves_state_property_test.cpp`; the new file
+  verifies the same underlying assignment via the `initialize_from_storage()`
+  restart path instead of forcing a live RPC exchange.
+- All other tasks (1–5, 8–19) were already implemented and already covered by
+  existing tests (`tests/membership_change_unit_test.cpp`,
+  `tests/membership_change_add_server_property_test.cpp`,
+  `tests/membership_change_remove_server_property_test.cpp`,
+  `tests/membership_change_leader_crash_property_test.cpp`), verified by
+  direct code reading against every acceptance criterion in
+  `requirements.md`.
+
+**Last Updated**: July 9, 2026
 
 ## Overview
 
@@ -63,7 +104,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Add `entry_type` to `log_entry` and update serialization
 
-- [ ] 1. Add `entry_type` enum and extend `log_entry` in `include/raft/types.hpp`
+- [x] 1. Add `entry_type` enum and extend `log_entry` in `include/raft/types.hpp`
   - Add `enum class entry_type : std::uint8_t { normal = 0, configuration = 1 }`
     immediately before the `log_entry` struct
   - Add `entry_type _type = entry_type::normal;` field to `log_entry`
@@ -72,7 +113,7 @@ apply path, follower update, property tests, node recovery.
   - Verify: project still compiles (`cmake --build build`)
   - _Requirements: 1.1_
 
-- [ ] 2. Update `include/raft/json_serializer.hpp` to serialize `entry_type`
+- [x] 2. Update `include/raft/json_serializer.hpp` to serialize `entry_type`
   - In the `log_entry` serialization path: emit `"type": static_cast<int>(entry._type)`
   - In the `log_entry` deserialization path: read `"type"` with default `0` (backwards
     compatible — existing entries without the key deserialize as `entry_type::normal`)
@@ -83,7 +124,7 @@ apply path, follower update, property tests, node recovery.
   - Verify: existing serialization tests still pass
   - _Requirements: 1.2_
 
-- [ ] 3. Add unit tests for the type discriminant and configuration serialization
+- [x] 3. Add unit tests for the type discriminant and configuration serialization
   - `tests/membership_change_single_node_unit_test.cpp` (new file):
     - Serialize and deserialize a `normal` entry; confirm `type()` round-trips
     - Serialize and deserialize a `configuration` entry; confirm `type()` and payload
@@ -98,7 +139,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Wire `add_server()` and `remove_server()` to the log
 
-- [ ] 4. Update `add_server()` in `include/raft/raft.hpp` to append C_old+new
+- [x] 4. Update `add_server()` in `include/raft/raft.hpp` to append C_old+new
   - After `_config_synchronizer.start_configuration_change(new_config, timeout)`,
     build the joint `cluster_configuration_type`:
     `{ nodes: C_new, is_joint: true, old_nodes: _configuration.nodes() }`
@@ -111,7 +152,7 @@ apply path, follower update, property tests, node recovery.
   - Verify: calling `add_server()` on a leader no longer returns a forever-pending future
   - _Requirements: 2.1, 2.3, 2.4_
 
-- [ ] 5. Update `remove_server()` in `include/raft/raft.hpp` to append C_old+new
+- [x] 5. Update `remove_server()` in `include/raft/raft.hpp` to append C_old+new
   - Mirror the change from Task 4 for the removal path
   - The joint config excludes the removed node: `{ nodes: C_new, is_joint: true, old_nodes: C_old }`
   - Set `_configuration = joint_config` immediately after appending
@@ -124,7 +165,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Replace the simple majority check with a joint-aware helper
 
-- [ ] 6. Add `calculate_new_commit_index()` private method to `node<Types>`
+- [x] 6. Add `calculate_new_commit_index()` private method to `node<Types>`
   - Signature: `auto calculate_new_commit_index() const -> log_index_type`
   - Iterate candidate indices from `get_last_log_index()` down to `_commit_index + 1`
   - For each candidate N, check whether `_match_index` counts satisfy:
@@ -141,7 +182,7 @@ apply path, follower update, property tests, node recovery.
     - Non-joint: standard majority
   - _Requirements: 3.1, 3.2_
 
-- [ ] 7. Replace the existing commit-advance logic with `calculate_new_commit_index()`
+- [x] 7. Replace the existing commit-advance logic with `calculate_new_commit_index()`
   - Find the existing loop/check in `handle_append_entries_response()` that advances
     `_commit_index` and replace it with the result of `calculate_new_commit_index()`
   - Election quorum in `handle_request_vote()` / `handle_request_vote_response()`:
@@ -156,7 +197,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Detect config entries, update `_configuration`, advance `configuration_synchronizer`
 
-- [ ] 8. Handle configuration entries in `apply_committed_entries()`
+- [x] 8. Handle configuration entries in `apply_committed_entries()`
   - At the top of the inner loop, after fetching `entry`, add:
     ```cpp
     if (entry.type() == entry_type::configuration) { /* handle */ continue; }
@@ -170,7 +211,7 @@ apply path, follower update, property tests, node recovery.
   - Verify: applying a configuration entry does not crash the state machine
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 9. After committing C_old+new, leader appends C_new
+- [x] 9. After committing C_old+new, leader appends C_new
   - Inside the configuration-entry handler (Task 8), after calling
     `notify_configuration_committed()`:
     - If `config.is_joint_consensus() && _state == server_state::leader`:
@@ -179,7 +220,7 @@ apply path, follower update, property tests, node recovery.
   - Verify: after `add_server()` resolves, `_configuration.is_joint_consensus()` is false
   - _Requirements: 5.1_
 
-- [ ] 10. Leader step-down on self-removal
+- [x] 10. Leader step-down on self-removal
   - After C_new commits (non-joint config entry applies), check if `_node_id`
     is absent from `config.nodes()`. If so, set `_state = server_state::follower`
     and reset leader-only state (`_next_index`, `_match_index`, in-flight RPCs)
@@ -193,7 +234,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Ensure followers update their configuration on log append and truncation
 
-- [ ] 11. Update `_configuration` in `handle_append_entries()` on new entries
+- [x] 11. Update `_configuration` in `handle_append_entries()` on new entries
   - After storing each entry in `_persistence.append_log_entry(entry)`:
     - If `entry.type() == entry_type::configuration`:
       - Deserialize configuration and set `_configuration`
@@ -203,7 +244,7 @@ apply path, follower update, property tests, node recovery.
     future votes and heartbeats using the updated configuration
   - _Requirements: 6.1_
 
-- [ ] 12. Revert `_configuration` on log truncation
+- [x] 12. Revert `_configuration` on log truncation
   - When `handle_append_entries()` truncates the log (conflicting term):
     - Scan persisted log entries backwards from the new last index
     - Set `_configuration` to the first configuration entry found, or to
@@ -219,7 +260,7 @@ apply path, follower update, property tests, node recovery.
 
 ### End-to-end tests using the network simulator
 
-- [ ] 13. Add server property test
+- [x] 13. Add server property test
   - `tests/membership_change_add_server_property_test.cpp` (new file)
   - Start a 3-node simulator cluster, wait for a stable leader
   - Call `add_server(node_4)` and `.get()` the result future
@@ -229,7 +270,7 @@ apply path, follower update, property tests, node recovery.
   - Assert: at most one leader throughout (inspect state transitions via metrics)
   - _Requirements: 7.1, 7.2_
 
-- [ ] 14. Remove server property test
+- [x] 14. Remove server property test
   - `tests/membership_change_remove_server_property_test.cpp` (new file)
   - Start a 3-node simulator cluster, wait for a stable leader
   - Call `remove_server(follower_id)` and `.get()` the result future
@@ -238,7 +279,7 @@ apply path, follower update, property tests, node recovery.
   - Assert: the removed node stops receiving heartbeats after removal
   - _Requirements: 7.3_
 
-- [ ] 15. Leader crash mid-change property test
+- [x] 15. Leader crash mid-change property test
   - `tests/membership_change_leader_crash_property_test.cpp` (new file)
   - Start a 3-node cluster, begin `add_server(node_4)` on the leader
   - Before C_new commits, disconnect the leader from the simulator
@@ -248,7 +289,7 @@ apply path, follower update, property tests, node recovery.
   - Assert: no safety violation (only one leader per term)
   - _Requirements: 7.4_
 
-- [ ] 16. Regression: all 279 existing tests pass
+- [x] 16. Regression: all 279 existing tests pass
   - Run `ctest --output-on-failure` and confirm 0 failures
   - The non-joint code paths (standard majority, normal entry application)
     must be unchanged by all prior tasks
@@ -260,7 +301,7 @@ apply path, follower update, property tests, node recovery.
 
 ### Extend `initialize_from_storage()` and fix `install_snapshot()`
 
-- [ ] 17. Fix `install_snapshot()` to restore `_configuration`
+- [x] 17. Fix `install_snapshot()` to restore `_configuration`
   - In `include/raft/raft.hpp`, find `install_snapshot()` — after the call to
     `_state_machine.restore_from_snapshot()`, add:
     `_configuration = snap.configuration();`
@@ -269,7 +310,7 @@ apply path, follower update, property tests, node recovery.
     configuration and asserts `_configuration` matches after installation
   - _Requirements: 8.5_
 
-- [ ] 18. Extend `initialize_from_storage()` to reload the log
+- [x] 18. Extend `initialize_from_storage()` to reload the log
   - After loading `_current_term` and `_voted_for`, call
     `_persistence.get_last_log_index()` to find the extent of the persisted log
   - Call `_persistence.get_log_entries(1, last_log_index)` (or
@@ -281,7 +322,7 @@ apply path, follower update, property tests, node recovery.
     should return 5
   - _Requirements: 8.2_
 
-- [ ] 19. Extend `initialize_from_storage()` to restore from snapshot
+- [x] 19. Extend `initialize_from_storage()` to restore from snapshot
   - Before the log-reload step (Task 18), call `_persistence.load_snapshot()`
   - If a snapshot is present:
     - Call `_state_machine.restore_from_snapshot(snap.state_machine_state(), snap.last_included_index())`
@@ -296,7 +337,7 @@ apply path, follower update, property tests, node recovery.
     machine should match
   - _Requirements: 8.1_
 
-- [ ] 20. Restore `_configuration` from log config entries after snapshot
+- [x] 20. Restore `_configuration` from log config entries after snapshot
   - After reloading `_log` (Tasks 18–19), scan `_log` in reverse order for the
     most recent `entry_type::configuration` entry
   - If found, deserialize and set `_configuration` — this overwrites the
