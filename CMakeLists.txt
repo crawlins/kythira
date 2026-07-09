@@ -59,6 +59,14 @@ if(PkgConfig_FOUND)
     pkg_check_modules(LIBLDNS QUIET ldns)
 endif()
 
+# EDHOC support (coap-transport-security spec, Requirement 5) — optional;
+# only present when vcpkg installed with the "edhoc" feature enabled (it
+# requires a Rust toolchain to build from source; see
+# vcpkg-overlays/lakers/README.md). Absent by default, in which case
+# LAKERS_AVAILABLE stays undefined and oscore_bootstrap::edhoc fails
+# construction with a descriptive error instead of silently degrading.
+find_package(lakers CONFIG QUIET)
+
 if(NOT folly_FOUND)
     message(WARNING "folly not found. Full implementation will require folly library.")
 endif()
@@ -124,6 +132,11 @@ endif()
 
 if(OpenSSL_FOUND)
     target_link_libraries(network_simulator INTERFACE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+
+if(lakers_FOUND)
+    target_link_libraries(network_simulator INTERFACE lakers::lakers)
+    target_compile_definitions(network_simulator INTERFACE LAKERS_AVAILABLE)
 endif()
 
 # cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
