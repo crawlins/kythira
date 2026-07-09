@@ -337,6 +337,35 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   establishes first-contact TLS trust from an out-of-band SHA-256 root
   fingerprint + bearer token, before any certificate chain exists to verify
   against
+- [ ] **`ca_cluster_node` RPC mTLS** — secure the Raft-internal RPC channel
+  between `ca_cluster_node` peers (currently plain TCP via
+  `tcp_rpc_client`/`tcp_rpc_server`) with mutual TLS; bootstrapped by a
+  static, operator-provisioned shared credential (mirroring the existing
+  unseal-passphrase distribution) before the CA root exists, then
+  automatically cut over to the cluster's own CA root once bootstrapped, via
+  a Raft-replicated `rpc_tls_ready` readiness set so the static credential
+  is exercised only for pre-CA traffic; design complete, not yet
+  implemented; spec at `.kiro/specs/ca-cluster-rpc-mtls/`
+
+### Cloud Provider Support
+
+- [x] **AWS** — `aws_ec2/asg_quorum_manager` (node ID = EC2 instance ID hex,
+  `DescribeInstanceStatus` liveness, consistency poll) and
+  `aws_acm_pca_provider` (`certificate_provider` backed by AWS Certificate
+  Manager Private CA); `aws-sdk-cpp` features: `acm-pca`, `autoscaling`,
+  `ec2`, `iam`, `s3`, `sts`
+- [ ] **Microsoft Azure** — quorum manager backed by a Virtual Machine Scale
+  Set (node ID = VM instance ID, instance-view power state for liveness) and
+  a `certificate_provider` backed by Azure Key Vault Certificates
+- [ ] **Google Cloud Platform (GCP)** — quorum manager backed by a Managed
+  Instance Group (node ID = GCE instance ID, `instances.get` status for
+  liveness) and a `certificate_provider` backed by Certificate Authority
+  Service (CAS)
+- [ ] **Oracle Cloud Infrastructure (OCI)** — quorum manager backed by an
+  Instance Pool and a `certificate_provider` backed by OCI Certificates
+  Service
+- [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
+  a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 
 ### Minor Enhancements
 
