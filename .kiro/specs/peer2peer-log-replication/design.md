@@ -97,6 +97,9 @@ include/raft/raft.hpp                           (extended)
   - node<Types>::maybe_gossip_progress()       — Requirement 3
   - node<Types>::maybe_catch_up_from_peer()    — Requirement 4-7
   - node<Types>::handle_fetch_log_entries(...) — responder side, Requirement 5
+  - node<Types>::cluster_members()     — Requirement 11.1/11.5,
+    called at every _configuration assignment site to push
+    update_membership() into _peer2peer_replicator
 ```
 
 ## Components and Interfaces
@@ -112,11 +115,15 @@ template<typename P, typename NodeId, typename Address, typename LogIndex>
 concept peer2peer_replicator =
     requires(P& replicator, NodeId self_id, Address self_address,
              std::uint64_t term, LogIndex last_log_index, LogIndex from_index,
-             LogIndex to_index, std::chrono::milliseconds timeout) {
+             LogIndex to_index, std::chrono::milliseconds timeout,
+             std::vector<NodeId> member_ids) {
         { replicator.advertise_progress(self_id, self_address, term, last_log_index) }
             -> std::same_as<kythira::Future<void>>;
         { replicator.find_catch_up_source(from_index, to_index, timeout) }
             -> std::same_as<kythira::Future<std::optional<peer_info<NodeId, Address>>>>;
+        // Requirement 11: keeps the replicator's peer set aligned with the
+        // replicated log's own core cluster membership.
+        { replicator.update_membership(member_ids) } -> std::same_as<kythira::Future<void>>;
     };
 
 // Requirement 1.3: zero behavioral change when a Types bundle doesn't opt in.
@@ -133,6 +140,9 @@ public:
     auto find_catch_up_source(LogIndex, LogIndex, std::chrono::milliseconds) const
         -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
+    }
+    auto update_membership(std::vector<NodeId>) -> kythira::Future<void> {
+        return kythira::FutureFactory::makeFuture();
     }
 };
 
@@ -172,10 +182,16 @@ public:
         return kythira::FutureFactory::makeFuture();
     }
 
+    // Requirement 11: find_catch_up_source only offers peers currently in
+    // _member_ids — a node this instance has learned about via advertise_progress
+    // but that has since been removed from the cluster (Requirement 11.1) is
+    // not offered as a catch-up source even if its stale table entry lingers.
     auto find_catch_up_source(LogIndex from_index, LogIndex /*to_index*/, std::chrono::milliseconds) const
         -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
+        auto members = _member_ids.rlock();
         auto locked = _table->rlock();
         for (const auto& [id, digest] : *locked) {
+            if (!members->contains(id)) continue;
             // Requirement 4: any peer gossiped as being at or past from_index
             // is a candidate — node<Types> itself decides via the RPC
             // response whether that peer still actually has the range.
@@ -187,8 +203,17 @@ public:
         return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
     }
 
+    auto update_membership(std::vector<NodeId> member_ids) -> kythira::Future<void> {
+        *_member_ids.wlock() = std::unordered_set<NodeId>(member_ids.begin(), member_ids.end());
+        return kythira::FutureFactory::makeFuture();
+    }
+
 private:
     std::shared_ptr<table_type> _table;
+    // Not part of the shared table — each node<Types> instance's own view
+    // of core cluster membership, exactly as update_membership() is called
+    // per-instance in the real system (Requirement 11.1).
+    folly::Synchronized<std::unordered_set<NodeId>> _member_ids;
 };
 
 }  // namespace kythira
@@ -290,7 +315,49 @@ auto node<Types>::maybe_catch_up_from_peer() -> void;
 // alongside the existing RequestVote/AppendEntries/InstallSnapshot handlers.
 auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type& request)
     -> fetch_log_entries_response_type;
+
+// Requirement 11.1/11.5: core cluster membership — _configuration.nodes(),
+// unioned with old_nodes() during a joint-consensus transition. Deliberately
+// excludes learners() (Requirement 11.2). Called under _mutex (all existing
+// _configuration assignment sites already hold it).
+auto node<Types>::cluster_members() const -> std::vector<node_id_type> {
+    auto members = _configuration.nodes();
+    if (_configuration.is_joint_consensus()) {
+        const auto& old_nodes = _configuration.old_nodes().value();
+        for (auto id : old_nodes) {
+            if (std::ranges::find(members, id) == members.end()) members.push_back(id);
+        }
+    }
+    return members;
+}
 ```
+
+### 6. Membership synchronization call sites (Requirement 11)
+
+`cluster_members()` is called — and its result pushed via
+`_peer2peer_replicator.update_membership(...)` (fire-and-forget, matching
+`maybe_gossip_progress()`'s error-handling posture) — immediately after
+every one of `raft.hpp`'s existing `_configuration = ...` assignments:
+
+```
+add_server()                       (leader append, joint config)
+remove_server()                    (leader append, joint config)
+apply_committed_entries()          (joint → final config transitions, 2 sites)
+handle_append_entries()            (follower adopts leader's config entry)
+install_snapshot()                 (configuration restored from snapshot)
+initialize_from_storage()          (configuration restored from persisted log)
+[truncation-revert site]           (configuration reverted on log conflict)
+```
+
+Each site's change is one line — a call to a small private helper
+`sync_peer2peer_membership()` that wraps
+`_peer2peer_replicator.update_membership(cluster_members())` — added
+immediately after the existing assignment, inside the same `_mutex`-held
+scope those assignments already execute in (the `update_membership` call
+itself returns a `Future` that is not waited on; only the local snapshot
+read of `_configuration` needs the lock, matching how `advertise_progress`
+is already fire-and-forget from a locked context in
+`maybe_gossip_progress()`).
 
 `maybe_catch_up_from_peer()`'s dispatch on transport support:
 
@@ -310,9 +377,47 @@ This mirrors the existing `if constexpr (network_client_with_cluster_join<...>)`
 dispatch already used for `ClusterJoin` (`raft.hpp:5278`) — no new dispatch
 idiom introduced.
 
+## Data Models
+
+### `fetch_log_entries` wire shape
+
+Mirrors `append_entries_request`/`response`'s existing JSON encoding
+(`json_serializer.hpp`) field-for-field, minus leader-only fields:
+
+```json
+// request
+{ "requester_id": 4, "from_index": 101, "to_index": 250 }
+
+// response
+{
+  "responder_id": 2,
+  "available": true,
+  "prev_log_term": 3,
+  "entries": [ { "term": 3, "index": 101, "command": "..base64..", "type": 0 }, "..." ]
+}
+```
+
+### Core cluster membership snapshot (`update_membership` payload)
+
+Not itself serialized over the wire (`peer2peer_replicator_type` is an
+in-process object, not an RPC) — `cluster_members()`
+(Requirement 11.1) produces a plain `std::vector<node_id_type>`:
+
+```
+_configuration.nodes()                      = [1, 2, 3]
+_configuration.is_joint_consensus()         = true
+_configuration.old_nodes()                  = [1, 2]        (C_old)
+                                        →
+cluster_members()                   = [1, 2, 3]      (union, no duplicates)
+```
+
+`learners()` is never included (Requirement 11.2), regardless of
+`is_joint_consensus()`.
+
 ## Correctness Properties
 
 ### Property 1: Zero behavioral change when not opted in
+**Validates: Requirements 1.3, 4.4, 7.3, 9.3**
 
 `no_op_peer2peer_replicator::find_catch_up_source` always resolves
 `std::nullopt` (Requirement 1.3). `maybe_catch_up_from_peer()` takes no
@@ -325,6 +430,7 @@ similarly resolve immediately without I/O. Verified directly by Requirement
 9.3's "bit-for-bit identical to today" property test.
 
 ### Property 2: Peer-to-peer catch-up cannot violate the Log Matching Property
+**Validates: Requirements 6.1, 6.2**
 
 `append_entries_with_consistency_check()` is the *same code* Raft already
 relies on for safety when the leader replicates — it rejects any batch whose
@@ -337,6 +443,7 @@ enters this check — the property that holds for leader-sourced batches holds
 identically for peer-sourced ones.
 
 ### Property 3: A bad or stale source peer cannot cause divergence
+**Validates: Requirements 6.4, 6.5**
 
 Suppose a lagging node `L` fetches from source peer `P`, and `P` turns out to
 be on an abandoned term (its entries were never actually committed by a real
@@ -355,6 +462,7 @@ peer-to-peer catch-up introduces no new failure shape, only a new *source*
 for entries that were always going to be subject to this check.
 
 ### Property 4: Peer-to-peer catch-up never advances commit index
+**Validates: Requirements 6.3**
 
 `append_entries_with_consistency_check()` (Requirement 6.1) does not touch
 `_commit_index` — that remains the exclusive responsibility of
@@ -366,6 +474,7 @@ until the real leader's next heartbeat confirms it — matching this spec's
 Design Decision 1 exactly.
 
 ### Property 5: At most one outstanding fetch per node
+**Validates: Requirements 4.5**
 
 Requirement 4.5's single-in-flight guard means `maybe_catch_up_from_peer()`
 cannot itself create unbounded concurrent load on a source peer or on the
@@ -374,6 +483,24 @@ requester's own bookkeeping — a straightforward reentrancy guard (a
 when the outstanding future resolves), the same shape already used for
 single-flight guards elsewhere in `raft.hpp` (e.g. the maintenance-thread's
 own one-tick-at-a-time execution).
+
+### Property 6: A peer's gossip/catch-up eligibility always matches its current core-membership status
+**Validates: Requirements 11.1, 11.2, 11.5**
+
+Because `update_membership()` is called at every one of the (currently
+eight) `_configuration` assignment sites (Component 6), a node removed via
+`remove_server()` stops being offered as a catch-up source as soon as the
+removal's configuration entry reaches the same point in `raft.hpp` that
+already updates `_configuration` for every other purpose — no separate
+"forget this peer" step, no separate staleness window beyond whatever a
+concrete `peer2peer_replicator_type` implementation's own propagation delay
+is (e.g. `static_peer2peer_replicator`'s `update_membership` takes effect on
+the very next `find_catch_up_source` call, since it's a synchronous local
+write). Symmetrically, a node added via `add_server()` becomes eligible at
+the same point. Learners (Requirement 11.2) are simply never in the set
+`update_membership` receives, so this property says nothing about them —
+they remain reachable only via the leader's ordinary `_next_index`-driven
+push, unaffected by this spec.
 
 ## Error Handling
 
@@ -424,6 +551,14 @@ own one-tick-at-a-time execution).
   `node<Types>`/`node_config<Types>` without a `peer2peer_replicator_type`
   continues to compile and pass completely unmodified — the regression gate
   for Requirement 2.5.
+- **Membership synchronization** (Property 6): using `static_peer2peer_replicator`
+  across a simulated cluster, drive an `add_server()` and confirm the new
+  node becomes catch-up-eligible (offered by `find_catch_up_source` on other
+  nodes) at the same point its configuration entry takes effect elsewhere;
+  drive a `remove_server()` and confirm the removed node stops being offered
+  as a source even though its last-known digest may still be in the shared
+  table; confirm a learner is never offered as a catch-up source
+  (Requirement 11.2) regardless of how far its log has advanced.
 
 ## Non-Goals
 

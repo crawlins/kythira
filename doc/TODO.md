@@ -332,8 +332,28 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   partitions, bursty joins); leader remains sole commit authority (no change
   to `_commit_index`/election safety), no-op default preserves today's
   leader-only behavior exactly, activates only for catch-up (steady-state
-  replication unchanged); spec at `.kiro/specs/peer2peer-log-replication/`;
-  19 tasks across 4 phases, design complete, not yet implemented
+  replication unchanged); the replicator's own peer set tracks
+  `node<Types>::cluster_members()` — the replicated log's core cluster
+  membership (`_configuration.nodes()`, unioned with `old_nodes()` during
+  joint consensus, excluding learners) — pushed via `update_membership()`
+  at every `_configuration` mutation site, not separately maintained
+  configuration; spec at `.kiro/specs/peer2peer-log-replication/`;
+  21 tasks across 4 phases, design complete, not yet implemented
+- [ ] **Peer-to-peer gossip transport** — `tcp_gossip_peer2peer_replicator`,
+  a real anti-entropy gossip implementation (randomized push-pull digest
+  exchange, Cassandra/Dynamo-style, not SWIM — Raft's own election timeouts
+  already cover liveness detection) of the `peer2peer_replicator` concept
+  above; self-contained TCP listener + background gossip thread,
+  independent of the Raft RPC transport (`network_client_type`/
+  `network_server_type` untouched); current membership comes exclusively
+  from `update_membership()` (driven by the log, per the spec above), never
+  separately configured — only node-ID-to-address resolution
+  (`address_book`) remains static, since addresses aren't log data; depends
+  on `.kiro/specs/peer2peer-log-replication/`; test strategy deliberately
+  avoids subprocess-spawning tests (single-process, real-TCP, multi-instance
+  instead) after `ca_cluster_node_test` was diagnosed as this project's
+  dominant CI-flake source; spec at `.kiro/specs/peer2peer-gossip-transport/`;
+  14 tasks across 4 phases, design complete, not yet implemented
 - [x] **Membership change (add/remove server)** — joint consensus (Raft §6):
   log entry type discriminant, leader append of C_old+new, joint quorum
   (commit-index and election), `apply_committed_entries()` config-entry
