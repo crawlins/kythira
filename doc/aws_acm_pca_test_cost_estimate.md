@@ -301,15 +301,54 @@ lower rate on the same model.
 **Alibaba Cloud's Private Certificate Authority (PCA)** is a real,
 documented product — a private CA purchased as a subscription instance
 (RSA, SM, or ECC algorithm; Alibaba unified pricing across algorithms in
-an October 2024 price cut) — but this document could **not** obtain actual
-dollar/yuan figures for it: Alibaba's pricing pages render the price table
-dynamically rather than as indexed text, and repeated searches turned up
-only the billing model description, not numbers. Two things are known with
-reasonable confidence: it's sold as an annual (not hourly-prorated)
-subscription per CA instance, which — like the Azure EZCA caveat above —
-would mean creating and deleting a CA per test session captures none of the
-proration benefit AWS/GCP/OCI offer; and it's priced separately from
-Alibaba's SSL Certificates Service (which sells commercial DV/OV
-certificates, not a private CA). Anyone who needs a real number should
-check the "Purchase and enable a private CA" console page directly rather
-than rely on this document.
+an October 2024 price cut). This document's own searches could not surface
+the actual price table (it renders dynamically rather than as indexed
+text), but the console's published rates are:
+
+| Item | Price |
+|---|---|
+| Private Root CA | $730/month |
+| Private Intermediate (subordinate) CA | $380/month |
+| Private certificate, 1-1,000/calendar year | $0.70 each |
+| Private certificate, 1,001-10,000/calendar year | $0.30 each |
+| Private certificate, over 120,000/calendar year | free |
+
+(The tier between 10,001 and 120,000 certificates/year isn't specified
+here.) Unlike AWS/GCP, Alibaba bills certificates **per calendar year**
+rather than per issuance — the console frames the per-certificate charge
+as an annual rate rather than a one-time-per-`IssueCertificate`-call fee
+the way AWS/GCP do, though functionally it still amounts to a fixed price
+per certificate at this volume.
+
+`aws_acm_pca_provider_config` targets a single CA ARN directly (no
+root/subordinate distinction — see Requirement 10.2), so the closest
+Alibaba analog is one CA, not the full two-tier hierarchy; a real
+deployment would typically keep the root CA offline and issue from the
+intermediate, so **Intermediate CA ($380/month)** is the more representative
+single-CA comparison, with Root CA included for completeness:
+
+| Alibaba CA choice | Hourly equivalent* | CA op, 2.6 hr session | + certs (15-40 @ $0.70) | **Per-session total** |
+|---|---|---|---|---|
+| Intermediate CA only | $380 ÷ 730 ≈ $0.52/hr | ≈ $1.35 | $10.50 - $28.00 | **≈ $11.95 - $29.65** |
+| Root CA only | $730 ÷ 730 = $1.00/hr exactly | ≈ $2.60 | $10.50 - $28.00 | **≈ $13.20 - $30.90** |
+| Full root + intermediate hierarchy | ≈ $1.52/hr combined | ≈ $3.96 | $10.50 - $28.00 | **≈ $14.15 - $32.25** |
+
+*\*Hourly-prorated figures assume the same "no minimum, billed by the
+hour" model already applied to AWS/GCP/OCI above — **this is not
+confirmed for Alibaba**. If Alibaba instead bills a full month regardless
+of how briefly the CA existed (plausible, given the per-certificate price
+is explicitly framed as an annual rate rather than per-transaction), then
+creating and deleting a CA per session captures none of that proration
+benefit — as with the Azure EZCA caveat above — and the CA fee would need
+to be treated as a monthly fixed cost shared across however many sessions
+ran that month, the same way the original pre-provisioned-CA section
+earlier in this document treats AWS's fee.
+
+Either way, Alibaba's single-CA per-session cost (**≈ $12-31**, using
+Intermediate or Root CA alone) lands almost exactly on top of **AWS
+general-purpose mode's ≈ $12.80-$31.75** — unsurprising, since Alibaba's
+$0.70/certificate rate is close to AWS's $0.75/certificate rate at this
+volume, and neither offers anything as cheap as AWS's $0.058/certificate
+short-lived-mode rate. None of the providers compared in this document
+beat AWS short-lived mode's ≈ $1.15-$2.80/session, except OCI's
+effectively-free tier for CA/certificate costs specifically.
