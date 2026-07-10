@@ -11,24 +11,39 @@ These tests are gated behind `KYTHIRA_AWS_REAL_EC2_TESTS` /
 CI (`ctest -LE '^(slow|performance|verbose|benchmark|docker)$'` in
 `.github/workflows/ci.yml`). They only run when a developer opts in locally
 with real AWS credentials, so there is no fixed "sessions per day/month" —
-figures below are quoted per session, with an optional amortized view.
+figures below are quoted per session, with monthly totals derived from
+usage frequency further down.
 
-## Why the Private CA itself isn't a per-session cost
+## Assumption: the CA is created and deleted with the test session
 
-Per `.kiro/specs/certificate-authority/requirements.md` (Requirement 10.2),
-`aws_acm_pca_provider_config` takes a pre-existing `certificate_authority_arn`
-and the provider "SHALL NOT create or delete a Private CA — provisioning one
-is an out-of-band operator action, given its ongoing per-CA cost." So a test
-session's marginal AWS spend is issuance/API calls against an already-running
-CA, not the CA's own monthly operation fee. That fee is a standing cost of
-the shared fixture, optionally amortized below.
+The rest of this document assumed a pre-provisioned, long-lived CA (per
+`.kiro/specs/certificate-authority/requirements.md` Requirement 10.2,
+`aws_acm_pca_provider` "SHALL NOT create or delete a Private CA —
+provisioning one is an out-of-band operator action"). **This section
+instead models the alternative where a test session creates its own CA at
+the start and deletes it at the end** — i.e. the CA becomes an ephemeral
+fixture with the same lifetime as an EC2 test-cluster resource, rather than
+a shared standing one. This does not match the current
+`aws_acm_pca_provider` implementation (which only ever targets an existing
+`certificate_authority_arn`); it would require the test harness itself to
+call `CreateCertificateAuthority` / `DeleteCertificateAuthority` directly,
+similar to how `RealEc2Fixture` provisions and tears down its VPC per test
+case.
+
+Per AWS's published pricing, CA operation charges have **no monthly
+minimum** — they are billed purely by the hour the CA exists (prorated from
+the monthly rate, i.e. monthly-rate ÷ ~730 hours/month), so a CA that lives
+only for the duration of a test session is billed only for those hours, not
+a full month. (There is also a one-time 30-day free trial on CA operation
+charges for the first private CA created per account per region, not
+modeled here since it only applies once.)
 
 ## AWS Private CA pricing (current, us-east-1)
 
-| Mode | CA operation | Per certificate |
-|---|---|---|
-| General-purpose | $400/month (prorated hourly, ≈ $0.548/hr) | $0.75 (first 1,000/mo), $0.35 (next 9,000), $0.10 above |
-| Short-lived certificate (≤7-day validity) | $50/month (≈ $0.069/hr) | $0.058 flat |
+| Mode | CA operation | Hourly equivalent | Per certificate |
+|---|---|---|---|
+| General-purpose | $400/month, prorated hourly, no minimum | ≈ $0.548/hr | $0.75 (first 1,000/mo), $0.35 (next 9,000), $0.10 above |
+| Short-lived certificate (≤7-day validity) | $50/month, prorated hourly, no minimum | ≈ $0.069/hr | $0.058 flat |
 
 Test certificates are short-lived by nature, so short-lived mode is the
 relevant comparison; general-purpose is included to show the cost of
@@ -62,11 +77,12 @@ type is pinned), so actual spend is typically 40-70% lower —
 **≈ $0.10-0.20 per full session** in practice. NAT Gateway and EIP hourly
 charges are not spot-discountable and dominate this subtotal.
 
-## ACM Private CA marginal cost per session
+## ACM Private CA cost per session
 
-Each of the ~10-11 real-EC2 test cases bootstraps a cluster (and several
-fault-injection cases provision replacement nodes), each node needing a
-certificate; call it 15-40 `IssueCertificate` calls per full session:
+**Certificate issuance.** Each of the ~10-11 real-EC2 test cases bootstraps
+a cluster (and several fault-injection cases provision replacement nodes),
+each node needing a certificate; call it 15-40 `IssueCertificate` calls per
+full session:
 
 | Mode | 15 certs | 40 certs |
 |---|---|---|
@@ -77,53 +93,76 @@ certificate; call it 15-40 `IssueCertificate` calls per full session:
 (Requirement 10.3-10.4) and other read/describe API calls are not separately
 billed.
 
+**CA operation, prorated to the session's lifetime.** Since the CA is now
+created at the start of the session and deleted at the end (see
+"Assumption" above), its $400 or $50 monthly fee is billed only for the
+hours it actually existed, with no minimum. Using the EC2 section's own
+session-duration estimate — 6 cases at ~10 min + 3 cases at ~20 min + 1
+nine-node case at ~25 min + the `ca_cluster_node` case at ~12 min ≈ 157 min
+≈ 2.6 hours — the CA-creation charge for that one session is:
+
+| Mode | Hourly rate | ≈ 2.6 hr session |
+|---|---|---|
+| Short-lived | $0.069/hr | ≈ $0.18 |
+| General-purpose | $0.548/hr | ≈ $1.44 |
+
+This is now a genuine per-session marginal cost (rather than a shared
+standing fee), because each session pays for its own CA's lifetime instead
+of sharing one that's already running.
+
 ## Combined estimate per test session
 
-| Scenario | Marginal cost (CA already running) | Fully loaded (CA's own fee amortized over ~10 sessions/month) |
-|---|---|---|
-| Short-lived CA mode, spot EC2 (recommended) | **≈ $1.00 - $2.50** | **≈ $6 - $7.50** |
-| General-purpose CA mode | **≈ $11 - $30** | **≈ $51 - $70** |
+Summing EC2/NAT/EIP (≈ $0.10-0.30), the prorated CA-operation charge for
+the session's own CA (≈ $0.18 / ≈ $1.44), and certificate issuance
+(15-40 certs):
 
-The "fully loaded" column assumes a shared CA used for ~10 real-AWS test
-sessions/month (occasional opt-in developer runs); it drops close to the
-marginal figure if the CA also serves other long-lived purposes, and rises
-if sessions are rarer. Short-lived CA mode is roughly 8-10x cheaper per
-session than general-purpose across every scenario, both because of the
-smaller monthly fee and the ~13x lower per-certificate price, so it is the
-right mode for `aws_acm_pca_provider_config.template_arn`/CA selection when
-the CA backing these tests is dedicated to testing.
+| Scenario | Per-session total |
+|---|---|
+| Short-lived CA mode, spot EC2 (recommended) | **≈ $1.15 - $2.80** |
+| General-purpose CA mode | **≈ $12.80 - $31.75** |
+
+There's no separate "fully loaded" figure to amortize anymore — because
+the CA's own fee is now paid fresh by each session rather than shared
+across sessions, the per-session total above already includes it in full.
+Short-lived CA mode is still roughly 10-11x cheaper per session than
+general-purpose, now driven almost entirely by the ~13x lower
+per-certificate price (the CA-operation charge itself is a small fraction
+of either total at this session length).
 
 ## Monthly cost, by usage frequency
 
 Since these tests are opt-in (gated behind `KYTHIRA_AWS_REAL_EC2_TESTS`,
 excluded from CI) rather than run on a fixed schedule, there's no single
 "actual" monthly figure — it depends on how often developers actually run
-them. The table below takes the per-session marginal range from the
-combined estimate above ($1.00-$2.50/session short-lived, $11-$30/session
-general-purpose) times three illustrative frequencies, plus the standing
-monthly CA operation fee ($50 short-lived, $400 general-purpose):
+them. Because the CA no longer persists between sessions, there is also no
+fixed monthly base fee anymore: monthly cost is purely the per-session
+total (≈ $1.15-$2.80 short-lived, ≈ $12.80-$31.75 general-purpose) times
+the number of sessions run that month:
 
-| Frequency | Sessions/month | Marginal cost, short-lived | Marginal cost, general-purpose | **Total/month, short-lived** | **Total/month, general-purpose** |
-|---|---|---|---|---|---|
-| Occasional (~couple times/week) | 10 | $10 - $25 | $110 - $300 | **≈ $60 - $75** | **≈ $510 - $700** |
-| Regular (~once/workday) | 20 | $20 - $50 | $220 - $600 | **≈ $70 - $100** | **≈ $620 - $1,000** |
-| Heavy (daily, incl. weekends) | 30 | $30 - $75 | $330 - $900 | **≈ $80 - $125** | **≈ $730 - $1,300** |
+| Frequency | Sessions/month | **Total/month, short-lived** | **Total/month, general-purpose** |
+|---|---|---|---|
+| Occasional (~couple times/week) | 10 | **≈ $11.50 - $28.00** | **≈ $128 - $317.50** |
+| Regular (~once/workday) | 20 | **≈ $23.00 - $56.00** | **≈ $256 - $635** |
+| Heavy (daily, incl. weekends) | 30 | **≈ $34.50 - $84.00** | **≈ $384 - $952.50** |
 
-Two things stand out:
+Two things stand out, both a direct consequence of the CA no longer being a
+shared fixture:
 
-- **In short-lived mode, the $50/month base fee dominates and usage barely
-  moves the total** (≈$60-75 → ≈$80-125 across a 3x increase in sessions),
-  because per-session marginal cost is small (~$1-2.50).
-- **In general-purpose mode, per-certificate issuance dominates and scales
-  linearly with usage** — the $400 base fee is a smaller share of the bill
-  than the $0.75/certificate charge once test volume is nontrivial, so
-  running the suite more often costs far more in general-purpose mode than
-  in short-lived mode (an extra 10 sessions/month adds ~$10-25 in
-  short-lived mode vs. ~$110-300 in general-purpose mode). Short-lived
-  mode is 6-10x cheaper per month at every frequency shown.
-- If the same Private CA also backs other long-running uses (e.g. a
-  staging `ca_service --provider aws-acm-pca` deployment per
-  `docker/ca_service/`), its $50/$400 monthly fee is already being paid
-  regardless of test usage, and only the marginal per-session cert-issuance
-  cost (≈$0.87-2.32/session, short-lived mode) should be attributed to
-  testing.
+- **Both modes now scale linearly with usage** — there is no fixed $50 or
+  $400 floor to dilute, so doubling the number of sessions run in a month
+  roughly doubles the bill in either mode. This is the opposite of the
+  pre-provisioned-CA scenario earlier in this document, where the base fee
+  dominated and usage barely moved the short-lived-mode total.
+- **Short-lived mode is cheaper at every frequency by roughly the same
+  ~10-11x factor** seen in the per-session estimate, since (with the fixed
+  base fee gone) the ratio between the two modes' monthly totals is now set
+  almost entirely by the per-certificate price difference rather than by
+  the base-fee difference.
+- Creating and deleting a real Private CA per test session also carries an
+  operational cost this document doesn't price: `CreateCertificateAuthority`
+  is not instantaneous (the CA must reach the `PENDING_CERTIFICATE` state,
+  and then be activated by installing a CA certificate before it can issue
+  anything), so a from-scratch CA adds setup latency to every session on
+  top of the dollar cost above — a further reason Requirement 10.2 treats
+  provisioning the CA as a one-time, out-of-band operator action rather
+  than something the test harness does itself.
