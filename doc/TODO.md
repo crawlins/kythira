@@ -324,6 +324,16 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Protocol Completeness
 
+- [ ] **Peer-to-peer log replication (gossip catch-up)** — opt-in
+  `peer2peer_replicator_type` extension so a lagging member pulls missing log
+  entries from another member that already has them instead of exclusively
+  from the leader, addressing the single-leader `replicate_to_followers()`
+  fan-out bottleneck for catch-up scenarios (rolling restarts, healed
+  partitions, bursty joins); leader remains sole commit authority (no change
+  to `_commit_index`/election safety), no-op default preserves today's
+  leader-only behavior exactly, activates only for catch-up (steady-state
+  replication unchanged); spec at `.kiro/specs/peer2peer-log-replication/`;
+  19 tasks across 4 phases, design complete, not yet implemented
 - [x] **Membership change (add/remove server)** — joint consensus (Raft §6):
   log entry type discriminant, leader append of C_old+new, joint quorum
   (commit-index and election), `apply_committed_entries()` config-entry
