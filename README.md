@@ -924,16 +924,27 @@ The implementation has been tested with multiple transport layers:
 ✅ **Core Raft Algorithm**: Leader election, log replication, commit advancement
 ✅ **Async Operations**: Commit waiting, future collections, error handling
 ✅ **HTTP/HTTPS Transport**: Production-ready with TLS and connection pooling
+✅ **CoAP/CoAPS Transport**: DTLS, block-wise transfer, EDHOC/OSCORE, ACE-OAuth
 ✅ **Error Handling**: Exponential backoff retry, timeout classification
 ✅ **Resource Management**: Proper cleanup, cancellation, leak prevention
-✅ **Testing**: 100% pass rate for built tests, comprehensive property testing
+✅ **Cluster Membership Changes**: Joint consensus (Raft §6) add/remove server,
+  with property tests and node-recovery-on-restart coverage
+✅ **Snapshots**: Log compaction and restart recovery, covered by dedicated
+  integration and property tests
+✅ **Certificate Authority**: In-process CA, `ca_service`/`ca_cluster_node`,
+  ACME (RFC 8555/8738), fingerprint-pinned bootstrap
+✅ **Testing**: 100% pass rate, comprehensive property/integration/chaos testing
+
+See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 
 ### What's In Progress
 
-⚠️ **Integration Tests**: 9 integration tests not yet built
-⚠️ **Safety Properties**: 6 core safety property tests not yet built
-⚠️ **Membership Changes**: Implementation exists but integration tests pending
-⚠️ **Snapshots**: Core functionality exists but full integration tests pending
+⚠️ **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
+  managers / certificate providers — AWS is implemented today
+⚠️ **`ca_cluster_node` RPC mTLS**: securing the Raft-internal RPC channel
+  between `ca_cluster_node` peers — design complete, not yet implemented
+⚠️ **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
+  alternatives to the current httplib-based transport
 
 ### Production Checklist
 
