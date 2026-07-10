@@ -137,56 +137,123 @@ public:
 
 ### Basic Raft Cluster
 
+`kythira::node<Types>` is parameterized by a single `Types` bundle (a
+`raft_types`-satisfying struct), not a list of positional template
+arguments — this lets you swap any component (transport, persistence,
+state machine, ...) independently. For simulator-based development and
+testing, define your bundle in terms of `kythira::simulator_network_client`/
+`simulator_network_server`; see [`examples/raft/basic_cluster.cpp`](examples/raft/basic_cluster.cpp)
+for a complete, runnable version of this example, and
+[HTTP Transport for Production](#http-transport-for-production) below for a
+transport suited to a real deployment.
+
 ```cpp
 #include <raft/raft.hpp>
-#include <raft/simulator_network.hpp>
-#include <raft/persistence.hpp>
-#include <raft/console_logger.hpp>
-#include <raft/metrics.hpp>
+#include <raft/test_state_machine.hpp>       // or your own KeyValueStore from above
+#include <network_simulator/network_simulator.hpp>
 
-// Use your state machine
-        return result;
-    }
+// A Types bundle satisfies the raft_types concept by providing every
+// component's concrete type as a nested alias.
+struct my_raft_types {
+    using future_type = kythira::Future<std::vector<std::byte>>;
+    using promise_type = kythira::Promise<std::vector<std::byte>>;
+    using try_type = kythira::Try<std::vector<std::byte>>;
 
-    auto create_snapshot() -> std::vector<std::byte> {
-        // Create snapshot of current state
-        return snapshot_data;
-    }
+    using node_id_type = std::uint64_t;
+    using term_id_type = std::uint64_t;
+    using log_index_type = std::uint64_t;
 
-    auto restore_snapshot(const std::vector<std::byte>& data) -> void {
-        // Restore state from snapshot
-    }
+    using serialized_data_type = std::vector<std::byte>;
+    using serializer_type = kythira::json_rpc_serializer<serialized_data_type>;
+
+    using raft_network_types = kythira::raft_simulator_network_types<std::string>;
+    using network_client_type =
+        kythira::simulator_network_client<raft_network_types, serializer_type, serialized_data_type>;
+    using network_server_type =
+        kythira::simulator_network_server<raft_network_types, serializer_type, serialized_data_type>;
+
+    using persistence_engine_type =
+        kythira::memory_persistence_engine<node_id_type, term_id_type, log_index_type>;
+    using logger_type = kythira::console_logger;
+    using metrics_type = kythira::noop_metrics;
+    using membership_manager_type = kythira::default_membership_manager<node_id_type>;
+    using state_machine_type = KeyValueStore;  // your state machine from above
+
+    using configuration_type = kythira::raft_configuration;
+
+    // node<Types> also needs these compound aliases (not checked by the
+    // raft_types concept itself, but required for node<Types> to instantiate).
+    using log_entry_type = kythira::log_entry<term_id_type, log_index_type>;
+    using cluster_configuration_type = kythira::cluster_configuration<node_id_type>;
+    using snapshot_type = kythira::snapshot<node_id_type, term_id_type, log_index_type>;
+    using request_vote_request_type =
+        kythira::request_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_vote_response_type = kythira::request_vote_response<term_id_type>;
+    using append_entries_request_type =
+        kythira::append_entries_request<node_id_type, term_id_type, log_index_type, log_entry_type>;
+    using append_entries_response_type =
+        kythira::append_entries_response<term_id_type, log_index_type>;
+    using install_snapshot_request_type =
+        kythira::install_snapshot_request<node_id_type, term_id_type, log_index_type>;
+    using install_snapshot_response_type = kythira::install_snapshot_response<term_id_type>;
 };
 
-// Create a 3-node Raft cluster
-using raft_node = kythira::node<
-    folly::Future,                          // Future type
-    KeyValueStore,                          // State machine
-    kythira::simulator_network_client,      // Network client
-    kythira::simulator_network_server,      // Network server
-    kythira::memory_persistence_engine,     // Persistence
-    kythira::console_logger,                // Logger
-    kythira::noop_metrics,                  // Metrics
-    kythira::default_membership_manager     // Membership
->;
+using raft_node = kythira::node<my_raft_types>;
 
-// Configure and start nodes
+// Wire up a 3-node network (the simulator needs an explicit edge between
+// every pair of nodes that should be able to reach each other).
+network_simulator::NetworkSimulator<my_raft_types::raft_network_types> sim;
+sim.start();
+auto net1 = sim.create_node("1");
+auto net2 = sim.create_node("2");
+auto net3 = sim.create_node("3");
+for (const auto& from : {"1", "2", "3"}) {
+    for (const auto& to : {"1", "2", "3"}) {
+        if (from != std::string_view{to}) sim.add_edge(from, to, {});
+    }
+}
+
+// Configure timing (the private-member-plus-accessor fields shown here
+// follow raft_configuration's naming; see include/raft/types.hpp).
 kythira::raft_configuration config;
-config.election_timeout_min = std::chrono::milliseconds{150};
-config.election_timeout_max = std::chrono::milliseconds{300};
-config.heartbeat_interval = std::chrono::milliseconds{50};
+config._election_timeout_min = std::chrono::milliseconds{150};
+config._election_timeout_max = std::chrono::milliseconds{300};
+config._heartbeat_interval = std::chrono::milliseconds{50};
 
-auto node1 = std::make_unique<raft_node>(1, config, /* components */);
-auto node2 = std::make_unique<raft_node>(2, config, /* components */);
-auto node3 = std::make_unique<raft_node>(3, config, /* components */);
+// Preferred construction: node_config<Types> with designated initializers —
+// every component is supplied explicitly, nothing is implicit or positional.
+auto make_node = [&](std::uint64_t id, auto net) {
+    return raft_node{kythira::node_config<my_raft_types>{
+        .node_id = id,
+        .network_client = {net, my_raft_types::serializer_type{}},
+        .network_server = {net, my_raft_types::serializer_type{}},
+        .persistence = {},
+        .logger = kythira::console_logger{kythira::log_level::info},
+        .metrics = {},
+        .membership = {},
+        .config = config,
+    }};
+};
+auto node1 = make_node(1, net1);
+auto node2 = make_node(2, net2);
+auto node3 = make_node(3, net3);
 
-node1->start();
-node2->start();
-node3->start();
+node1.set_cluster_configuration({1, 2, 3});
+node2.set_cluster_configuration({1, 2, 3});
+node3.set_cluster_configuration({1, 2, 3});
 
-// Submit a command (on leader)
+node1.start();
+node2.start();
+node3.start();
+
+// Wait for an election, then find the leader (any node — a non-leader
+// redirects/rejects a submit_command call rather than forwarding it).
+std::this_thread::sleep_for(config.election_timeout_max() + std::chrono::milliseconds{50});
+auto& leader = node1.is_leader() ? node1 : (node2.is_leader() ? node2 : node3);
+
+// Submit a command on the leader.
 std::vector<std::byte> command = serialize_command("SET", "key", "value");
-auto future = node1->submit_command(command, std::chrono::seconds{5});
+auto future = leader.submit_command(command, std::chrono::seconds{5});
 auto result = std::move(future).get();  // Waits for commit and application
 ```
 
