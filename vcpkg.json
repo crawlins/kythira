@@ -67,6 +67,12 @@
     },
     {
       "name": "libssh2"
+    },
+    {
+      "name": "stdexec",
+      "features": [
+        "tbb"
+      ]
     }
   ],
   "features": {

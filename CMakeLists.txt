@@ -67,8 +67,18 @@ endif()
 # construction with a descriptive error instead of silently degrading.
 find_package(lakers CONFIG QUIET)
 
+# stdexec-future-backend spec: a second, sender/receiver-based Future/
+# Promise/Executor implementation alongside the default Folly one. A
+# default (non-feature-gated) dependency, same as folly — see
+# vcpkg-overlays/stdexec/README.md for why it's an overlay port.
+find_package(stdexec CONFIG QUIET)
+
 if(NOT folly_FOUND)
     message(WARNING "folly not found. Full implementation will require folly library.")
+endif()
+
+if(NOT stdexec_FOUND)
+    message(WARNING "stdexec not found. The stdexec-backed Future/Promise implementation will not be available.")
 endif()
 
 if(NOT Boost_FOUND)
@@ -137,6 +147,23 @@ endif()
 if(lakers_FOUND)
     target_link_libraries(network_simulator INTERFACE lakers::lakers)
     target_compile_definitions(network_simulator INTERFACE LAKERS_AVAILABLE)
+endif()
+
+if(stdexec_FOUND)
+    target_link_libraries(network_simulator INTERFACE STDEXEC::stdexec)
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_STDEXEC)
+    # exec/single_thread_context.hpp (and likely other exec/ scheduler
+    # headers) reference TBB symbols unconditionally at link time —
+    # confirmed during the Phase 0 spike (see spike-notes.md) — regardless
+    # of whether stdexec itself was built with STDEXEC_ENABLE_TBB. The
+    # "tbb" vcpkg feature (requested in vcpkg.json) provisions a hermetic
+    # TBB build for exactly this.
+    find_package(TBB CONFIG QUIET)
+    if(TBB_FOUND)
+        target_link_libraries(network_simulator INTERFACE TBB::tbb)
+    else()
+        message(WARNING "TBB not found even though stdexec was — code using exec:: scheduler types that need TBB may fail to link. Re-run vcpkg install to pick up the \"tbb\" feature.")
+    endif()
 endif()
 
 # cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
