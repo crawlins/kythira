@@ -87,8 +87,14 @@ underneath me.
    - `find_catch_up_source(from_index, to_index, timeout) -> Future<std::optional<peer_info<NodeId, Address>>>`
      — return a peer believed (from gossiped digests) to hold entries
      covering `[from_index, to_index]`, or `std::nullopt` if none is known.
+   - `update_membership(member_ids) -> Future<void>` — informs the
+     replicator of the cluster's current membership (a
+     `std::vector<NodeId>`), so its notion of "who to gossip/catch-up with"
+     tracks the replicated log's own view of membership (Requirement 11)
+     rather than requiring separately maintained, driftable configuration.
 3. A `no_op_peer2peer_replicator<NodeId, Address, LogIndex>` SHALL be
-   provided: `advertise_progress` always succeeds immediately;
+   provided: `advertise_progress` and `update_membership` always succeed
+   immediately;
    `find_catch_up_source` always resolves to `std::nullopt`. Both
    `peer2peer_replicator` and `no_op_peer2peer_replicator` SHALL be verified
    with a `static_assert`, matching `peer_discovery.hpp`'s existing pattern.
@@ -387,12 +393,62 @@ path already is, so I can tell whether it's helping and diagnose it if not.
    at `debug` level via `_logger`, matching the verbosity and structured-
    field style of existing `AppendEntries`/`InstallSnapshot` logging.
 
+### Requirement 11: Membership synchronization from the replicated log
+
+**User Story:** As an operator, I want the set of peers a
+`peer2peer_replicator_type` implementation considers "in the cluster" to
+always match Raft's own core cluster membership — the same `cluster_configuration_type`
+every other part of `node<Types>` already treats as authoritative — so that
+`add_server()`/`remove_server()` (`.kiro/specs/membership-change/`) are
+automatically reflected in gossip/catch-up eligibility without any separate,
+independently-maintained peer list that could drift out of sync.
+
+#### Acceptance Criteria
+
+1. `node<Types>` SHALL call `_peer2peer_replicator.update_membership(member_ids)`
+   with the **core cluster membership** — `_configuration.nodes()`, unioned
+   with `_configuration.old_nodes().value()` when
+   `_configuration.is_joint_consensus()` is true (so a node mid-removal
+   during a joint-consensus transition continues to be gossiped with,
+   consistent with `replicate_to_followers()`'s own existing treatment of
+   C_old members, `include/raft/raft.hpp`) — every time `_configuration` is
+   assigned: leader append in `add_server()`/`remove_server()`, follower
+   adoption in `handle_append_entries()`, truncation-revert, snapshot
+   install (`install_snapshot()`), and log-driven configuration restore in
+   `initialize_from_storage()`.
+2. `learners()` (non-voting nodes, `.kiro/specs/non-voting-nodes/`) SHALL
+   NOT be included in the membership passed to `update_membership` — "core
+   cluster membership" is the voting member set (plus C_old during joint
+   consensus, per 11.1), not the full replication target set. A learner
+   still receives log entries the ordinary way (leader-pushed
+   `AppendEntries`, ` _next_index`-driven, unaffected by this spec); it is
+   simply not itself treated as a gossip/catch-up participant by this
+   requirement. Extending peer-to-peer catch-up eligibility to learners is
+   a reasonable future extension but is out of scope here — keeping the
+   synchronized set narrowly "core membership" avoids this spec having to
+   also reason about a learner's own promotion/removal lifecycle.
+3. `update_membership` calls SHALL be fire-and-forget from `node<Types>`'s
+   perspective — best-effort, matching `advertise_progress`'s existing
+   error-handling posture (Requirement 3.3): a failure or delay in
+   propagating a membership update SHALL NOT block or delay the log-mutating
+   operation that triggered it (log append, snapshot install, etc.).
+4. `no_op_peer2peer_replicator::update_membership` SHALL resolve immediately
+   and otherwise do nothing, consistent with the rest of its no-op contract
+   (Requirement 1.3) — this requirement introduces no new behavioral change
+   for any `Types` bundle that doesn't opt in.
+5. A helper (e.g. `cluster_members()`) computing the union in 11.1
+   SHALL be factored out once and reused at every call site listed there,
+   rather than duplicating the `is_joint_consensus()`/`old_nodes()` logic
+   at each of the (currently eight) existing `_configuration` assignment
+   sites in `raft.hpp`.
+
 ## Backwards Compatibility
 
 No existing `Types` bundle, `network_client`/`network_server` implementation,
 or test is modified by this spec's default behavior: `peer2peer_replicator_type`
 is an optional extension (Requirement 2.2) resolved to a no-op that always
-returns `std::nullopt` (Requirement 1.3) when absent, `fetch_log_entries`
+returns `std::nullopt` and ignores membership updates (Requirement 1.3,
+11.4) when absent, `fetch_log_entries`
 support is an optional transport extension (Requirement 5.2) that existing
 transports simply don't satisfy, and `replicate_to_followers()`'s leader-push
 path is untouched (Requirement 7.3). A cluster built entirely from pre-this-
