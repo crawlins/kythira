@@ -166,3 +166,96 @@ shared fixture:
   top of the dollar cost above — a further reason Requirement 10.2 treats
   provisioning the CA as a one-time, out-of-band operator action rather
   than something the test harness does itself.
+
+## How this changes on other cloud providers
+
+`doc/TODO.md`'s "Cloud Provider Support" section lists GCP (Certificate
+Authority Service + Managed Instance Group) and Azure (Key Vault
+Certificates + Virtual Machine Scale Set) as planned, not-yet-implemented
+`certificate_provider`/quorum-manager backends. Neither has code in this
+repo today, so the figures below are a pricing-only comparison, using the
+same session shape as above (2.6 hours, 3-9 node cluster + bastion, 15-40
+certificates issued) — not a measurement of anything Kythira currently
+runs.
+
+### Compute + NAT + IP (the EC2-equivalent side)
+
+| Provider | Small on-demand instance | NAT egress | Static/external IP |
+|---|---|---|---|
+| AWS (this doc, above) | t3.micro $0.0104/hr | NAT Gateway, flat $0.045/hr | EIP $0.005/hr |
+| GCP | e2-micro ≈ $0.0084/hr | Cloud NAT ≈ $0.0014/hr *per VM using it* (capped at $0.044/hr at 32+ VMs) | external IP ≈ $0.004/hr |
+| Azure | B1s ≈ $0.0104/hr | NAT Gateway, flat $0.045/hr | Standard Public IP ≈ $0.005/hr |
+
+Azure's rates are close enough to AWS's (same instance price, same flat
+NAT-gateway price, same IP price) that its EC2-equivalent subtotal is
+essentially the same **≈ $0.10-0.30 per session**. GCP is somewhat cheaper
+at this cluster size because Cloud NAT bills per attached VM instead of a
+flat gateway rate — for a 4-10 instance cluster that's roughly
+$0.006-$0.014/hr versus a flat $0.045/hr — putting GCP's subtotal at
+roughly **≈ $0.07-$0.21 per session**. All three are small next to the
+certificate-issuance cost below, so this isn't where provider choice
+matters most.
+
+### Private CA equivalents
+
+| Provider | Product | Monthly base fee | Hourly equivalent | Per-certificate (low-volume tier) |
+|---|---|---|---|---|
+| AWS | ACM Private CA, short-lived mode | $50 | ≈ $0.069/hr | $0.058 |
+| AWS | ACM Private CA, general-purpose mode | $400 | ≈ $0.548/hr | $0.75 (first 1,000/mo) |
+| GCP | Certificate Authority Service, DevOps tier | $20 | ≈ $0.027/hr | $0.30 (first 50,000/mo) |
+| GCP | Certificate Authority Service, Enterprise tier | $200 | ≈ $0.274/hr | $0.50 (first 50,000/mo) |
+| Azure | *(no first-party equivalent — see below)* | — | — | — |
+
+Both AWS and GCP publish per-hour-prorated pricing for their private-CA
+services, so "create the CA at session start, delete it at session end"
+works the same way on both. **Azure has no directly comparable first-party
+managed private-CA product** — Key Vault stores and rotates certificates
+but isn't itself a CA; issuing from a private hierarchy on Azure means
+either standing up your own CA (e.g. Active Directory Certificate
+Services) on a VM, or using a third-party marketplace SaaS such as
+Keytos EZCA ($200/month per CA, flat, with certificate issuance included
+at no additional per-certificate charge). Neither is quite the same shape
+as AWS/GCP's metered PaaS offerings, so the Azure numbers below carry more
+uncertainty than the AWS/GCP ones.
+
+### Per-session and monthly cost, by provider (15-40 certificates/session)
+
+| Provider / mode | Per session | 10 sessions/mo | 20 sessions/mo | 30 sessions/mo |
+|---|---|---|---|---|
+| AWS short-lived (recommended baseline) | ≈ $1.15 - $2.80 | ≈ $11.50 - $28 | ≈ $23 - $56 | ≈ $34.50 - $84 |
+| GCP DevOps tier | ≈ $4.67 - $12.32 | ≈ $47 - $123 | ≈ $93 - $246 | ≈ $140 - $370 |
+| GCP Enterprise tier | ≈ $8.31 - $20.96 | ≈ $83 - $210 | ≈ $166 - $419 | ≈ $249 - $629 |
+| AWS general-purpose | ≈ $12.80 - $31.75 | ≈ $128 - $317.50 | ≈ $256 - $635 | ≈ $384 - $952.50 |
+
+GCP's DevOps tier lands *between* AWS's two modes rather than undercutting
+AWS short-lived mode, and that's driven entirely by the per-certificate
+price, not the base fee: DevOps tier's $20/month base fee is 60% lower than
+AWS short-lived's $50, but its $0.30/certificate rate is over 5x AWS
+short-lived's $0.058 — and at only 15-40 certificates/session, the
+per-certificate charge matters more than the base fee either way. AWS
+short-lived mode remains the cheapest option of the three at this
+certificate volume; GCP Enterprise tier is a close second to AWS
+general-purpose mode ($8-21 vs. $12.80-31.75/session), being slightly
+cheaper on both its base fee ($200 vs $400) and per-cert rate ($0.50 vs
+$0.75).
+
+**Azure, self-hosted (AD CS on a VM):** no CA-specific fee at all — cost is
+just the hosting VM (a small Windows VM, since AD CS requires Windows
+Server; roughly $0.02-$0.06/hr including the Windows Server license
+component, on top of the EC2-equivalent side above) and zero per-certificate
+charge. That undercuts every managed option above in raw dollar terms
+(order of $0.10-$0.30/session), but it's not a managed service — the test
+harness would own CA setup, patching, and availability itself, which none
+of the other rows require and which this document doesn't price.
+
+**Azure, marketplace SaaS (EZCA):** $200/month flat per CA with certificate
+issuance included, which — *if* prorated to the hour the way AWS/GCP's own
+services are (unconfirmed for this third-party product; it may instead be
+a fixed monthly/annual commitment regardless of how long the CA exists) —
+would land around $0.71 for a 2.6-hour session plus $0 in per-certificate
+charges, i.e. comparable to or cheaper than GCP's Enterprise tier at this
+certificate volume. If it's actually billed as a standing monthly
+subscription rather than prorated hourly, creating and deleting the CA per
+session provides no savings, and the effective monthly cost would just be
+$200 regardless of how many sessions ran that month. Confirm the vendor's
+actual billing granularity before relying on either number.
