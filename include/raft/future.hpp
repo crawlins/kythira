@@ -373,6 +373,12 @@ public:
     // Set value using folly::Unit (for concept compliance)
     auto setValue(folly::Unit) -> void { _folly_promise.setValue(folly::Unit{}); }
 
+    // Set value using the backend-neutral kythira::unit (for concept
+    // compliance against the regenericized semi_promise concept, which
+    // names kythira::unit rather than folly::Unit — see
+    // include/concepts/future.hpp).
+    auto setValue(kythira::unit) -> void { _folly_promise.setValue(folly::Unit{}); }
+
     // Convenience method for void
     auto setValue() -> void { _folly_promise.setValue(folly::Unit{}); }
 
@@ -1506,7 +1512,7 @@ static_assert(kythira::future_factory<kythira::FutureFactory>,
 // Collector Operations Concept Compliance
 //-----------------------------------------------------------------------------
 
-static_assert(kythira::future_collector<kythira::FutureCollector>,
+static_assert(kythira::future_collector<kythira::FutureCollector, kythira::Future<int>>,
               "kythira::FutureCollector must satisfy future_collector concept");
 
 //-----------------------------------------------------------------------------

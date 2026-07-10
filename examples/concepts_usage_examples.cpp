@@ -124,8 +124,7 @@ template<kythira::promise<std::string> PromiseType>
 auto create_greeting_future(PromiseType promise, const std::string& name)
     -> kythira::Future<std::string> {
     // Get future before fulfilling promise
-    auto folly_future = promise.getFuture();
-    auto future = kythira::Future<std::string>(std::move(folly_future));
+    auto future = promise.getFuture();
 
     // Fulfill promise asynchronously
     std::thread([p = std::move(promise), name]() mutable {
@@ -158,16 +157,20 @@ auto fulfill_computation(SemiPromiseType& promise, int input) -> void {
 auto demonstrate_promise_concepts() -> void {
     std::cout << "\n=== Promise Concepts Example ===\n";
 
-    // Promise concept example
-    folly::Promise<std::string> greeting_promise;
+    // Promise concept example. Uses kythira::Promise<T> (the Folly-backed
+    // wrapper), not raw folly::Promise<T> directly — the regenericized
+    // promise/semi_promise concepts require setException(std::exception_ptr)
+    // and, for void, setValue(kythira::unit); only the wrapper provides
+    // those overloads, since bare Folly only knows folly::exception_wrapper/
+    // folly::Unit. See include/concepts/future.hpp's Requirement 1.1-1.3.
+    kythira::Promise<std::string> greeting_promise;
     auto greeting_future = create_greeting_future(std::move(greeting_promise), "World");
     auto greeting = std::move(greeting_future).get();
     std::cout << "Greeting: " << greeting << "\n";
 
     // Semi-promise concept example
-    folly::Promise<int> computation_promise;
-    auto computation_folly_future = computation_promise.getFuture();
-    auto computation_future = kythira::Future<int>(std::move(computation_folly_future));
+    kythira::Promise<int> computation_promise;
+    auto computation_future = computation_promise.getFuture();
     fulfill_computation(computation_promise, 7);
     auto computation_result = std::move(computation_future).get();
     std::cout << "Computation result: " << computation_result << "\n";
@@ -293,7 +296,7 @@ auto demonstrate_advanced_concepts() -> void {
 auto demonstrate_concept_validation() -> void {
     std::cout << "\n=== Concept Validation Example ===\n";
 
-    // Static assertions to verify Folly types satisfy concepts
+    // Static assertions to verify the Folly-backed kythira wrapper types satisfy concepts
     static_assert(kythira::try_type<kythira::Try<int>, int>);
     static_assert(kythira::try_type<kythira::Try<std::string>, std::string>);
     // Note: kythira::Try<void> is supported
@@ -304,8 +307,8 @@ auto demonstrate_concept_validation() -> void {
     // Note: kythira::Future<void> is supported
     static_assert(kythira::future<kythira::Future<void>, void>);
 
-    static_assert(kythira::semi_promise<folly::Promise<int>, int>);
-    static_assert(kythira::promise<folly::Promise<int>, int>);
+    static_assert(kythira::semi_promise<kythira::SemiPromise<int>, int>);
+    static_assert(kythira::promise<kythira::Promise<int>, int>);
 
     static_assert(kythira::executor<folly::CPUThreadPoolExecutor>);
 

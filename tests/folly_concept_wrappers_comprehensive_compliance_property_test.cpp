@@ -142,7 +142,7 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test,
 
     // Test 7: FutureCollector concept compliance
     {
-        static_assert(future_collector<FutureCollector>,
+        static_assert(future_collector<FutureCollector, Future<int>>,
                       "kythira::FutureCollector must satisfy future_collector concept");
 
         BOOST_TEST_MESSAGE("kythira::FutureCollector satisfies future_collector concept");
@@ -197,7 +197,8 @@ BOOST_AUTO_TEST_CASE(comprehensive_concept_compliance_validation_property_test,
         static_assert(!executor<int>, "int should not satisfy executor concept");
         static_assert(!keep_alive<int>, "int should not satisfy keep_alive concept");
         static_assert(!future_factory<int>, "int should not satisfy future_factory concept");
-        static_assert(!future_collector<int>, "int should not satisfy future_collector concept");
+        static_assert(!future_collector<int, Future<int>>,
+                      "int should not satisfy future_collector concept");
         static_assert(!try_type<int, int>, "int should not satisfy try_type concept");
 
         // Standard library types should not satisfy wrapper concepts

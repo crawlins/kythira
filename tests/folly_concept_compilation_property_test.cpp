@@ -54,7 +54,7 @@ BOOST_AUTO_TEST_CASE(property_concept_compilation_validation, *boost::unit_test:
                   "future_factory concept should be a boolean expression");
 
     // Test that future_collector concept is accessible and well-formed
-    static_assert(std::is_same_v<decltype(kythira::future_collector<int>), bool>,
+    static_assert(std::is_same_v<decltype(kythira::future_collector<int, int>), bool>,
                   "future_collector concept should be a boolean expression");
 
     // Test that future_continuation concept is accessible and well-formed
@@ -281,9 +281,7 @@ BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, *boost::unit_test::
         }
         [[nodiscard]] bool hasValue() const { return true; }
         [[nodiscard]] bool hasException() const { return false; }
-        [[nodiscard]] folly::exception_wrapper exception() const {
-            return folly::exception_wrapper{};
-        }
+        [[nodiscard]] std::exception_ptr exception() const { return nullptr; }
     };
 
     struct valid_future_type {
@@ -333,9 +331,7 @@ BOOST_AUTO_TEST_CASE(property_concept_constraint_validation, *boost::unit_test::
     struct valid_void_try_type {
         [[nodiscard]] bool hasValue() const { return true; }
         [[nodiscard]] bool hasException() const { return false; }
-        [[nodiscard]] folly::exception_wrapper exception() const {
-            return folly::exception_wrapper{};
-        }
+        [[nodiscard]] std::exception_ptr exception() const { return nullptr; }
         // No value() method for void case
     };
 

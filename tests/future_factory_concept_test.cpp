@@ -1,8 +1,9 @@
 #define BOOST_TEST_MODULE future_factory_concept_test
 #include <boost/test/unit_test.hpp>
 #include <concepts/future.hpp>
-#include <folly/ExceptionWrapper.h>
-#include <folly/Unit.h>
+#include <exception>
+#include <stdexcept>
+#include <utility>
 
 namespace {
 constexpr int test_value = 42;
@@ -14,12 +15,12 @@ namespace kythira {
 template<typename T> class MockFuture {
 public:
     explicit MockFuture(T value) : value_(std::move(value)) {}
-    explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
+    explicit MockFuture(std::exception_ptr ex) : exception_(std::move(ex)) {}
     MockFuture() = default;
 
     auto get() -> T {
         if (exception_) {
-            exception_.throw_exception();
+            std::rethrow_exception(exception_);
         }
         return std::move(value_);
     }
@@ -33,20 +34,20 @@ public:
 
 private:
     T value_{};
-    folly::exception_wrapper exception_;
+    std::exception_ptr exception_;
 };
 
-// Specialization for folly::Unit
-template<> class MockFuture<folly::Unit> {
+// Specialization for kythira::unit (the backend-neutral void stand-in)
+template<> class MockFuture<unit> {
 public:
-    explicit MockFuture(folly::exception_wrapper ex) : exception_(std::move(ex)) {}
+    explicit MockFuture(std::exception_ptr ex) : exception_(std::move(ex)) {}
     MockFuture() = default;
 
-    auto get() -> folly::Unit {
+    auto get() -> unit {
         if (exception_) {
-            exception_.throw_exception();
+            std::rethrow_exception(exception_);
         }
-        return folly::Unit{};
+        return unit{};
     }
 
     [[nodiscard]] auto isReady() const -> bool { return true; }
@@ -57,7 +58,7 @@ public:
     }
 
 private:
-    folly::exception_wrapper exception_;
+    std::exception_ptr exception_;
 };
 }
 
@@ -68,11 +69,11 @@ struct ValidFactory {
     }
 
     template<typename T>
-    static auto makeExceptionalFuture(folly::exception_wrapper ex) -> kythira::MockFuture<T> {
+    static auto makeExceptionalFuture(std::exception_ptr ex) -> kythira::MockFuture<T> {
         return kythira::MockFuture<T>(std::move(ex));
     }
 
-    static auto makeReadyFuture() -> kythira::MockFuture<folly::Unit> { return {}; }
+    static auto makeReadyFuture() -> kythira::MockFuture<kythira::unit> { return {}; }
 };
 
 // Test factory implementation that does NOT satisfy the concept (missing methods)
@@ -103,9 +104,8 @@ BOOST_AUTO_TEST_CASE(test_factory_method_signatures, *boost::unit_test::timeout(
     auto future_from_value = ValidFactory::makeFuture(test_value);
     BOOST_CHECK(future_from_value.isReady());
 
-    auto exception_wrapper = folly::exception_wrapper(std::runtime_error(test_error_message));
-    auto future_from_exception =
-        ValidFactory::makeExceptionalFuture<int>(std::move(exception_wrapper));
+    auto ex = std::make_exception_ptr(std::runtime_error(test_error_message));
+    auto future_from_exception = ValidFactory::makeExceptionalFuture<int>(std::move(ex));
     BOOST_CHECK(future_from_exception.isReady());
 
     auto ready_future = ValidFactory::makeReadyFuture();
@@ -115,8 +115,8 @@ BOOST_AUTO_TEST_CASE(test_factory_method_signatures, *boost::unit_test::timeout(
 BOOST_AUTO_TEST_CASE(test_concept_return_type_constraints, *boost::unit_test::timeout(30)) {
     // Test that the concept enforces correct return types
     using MakeFutureReturnType = decltype(ValidFactory::makeFuture(test_value));
-    using MakeExceptionalReturnType = decltype(ValidFactory::makeExceptionalFuture<int>(
-        std::declval<folly::exception_wrapper>()));
+    using MakeExceptionalReturnType =
+        decltype(ValidFactory::makeExceptionalFuture<int>(std::declval<std::exception_ptr>()));
     using MakeReadyReturnType = decltype(ValidFactory::makeReadyFuture());
 
     // Verify that return types satisfy the future concept
@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(test_concept_return_type_constraints, *boost::unit_test::ti
                   "makeFuture return type should satisfy future concept");
     static_assert(kythira::future<MakeExceptionalReturnType, int>,
                   "makeExceptionalFuture return type should satisfy future concept");
-    static_assert(kythira::future<MakeReadyReturnType, folly::Unit>,
+    static_assert(kythira::future<MakeReadyReturnType, kythira::unit>,
                   "makeReadyFuture return type should satisfy future concept");
 
     BOOST_CHECK(true);  // If we get here, static assertions passed
