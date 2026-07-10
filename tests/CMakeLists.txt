@@ -64,6 +64,22 @@ function(add_raft_completion_test test_name source_file)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endfunction()
 
+# Helper for stdexec-future-backend spec tests (.kiro/specs/stdexec-future-backend/).
+# kythira_test_pch already links STDEXEC::stdexec/TBB::tbb and defines
+# KYTHIRA_HAS_STDEXEC when stdexec_FOUND (root CMakeLists.txt), so no extra
+# per-target wiring is needed beyond gating registration itself — callers
+# wrap each add_stdexec_test() call in if(stdexec_FOUND) so these targets
+# simply don't exist when the optional dependency isn't available
+# (Requirement 4.3). "stdexec"/"future-backend" labels let
+# `ctest -L stdexec` / `ctest -LE stdexec` select or exclude this suite.
+function(add_stdexec_test test_name source_file)
+    add_executable(${test_name} ${source_file})
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch)
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS "stdexec;future-backend")
+endfunction()
+
 # Test files
 add_network_test(concept_test concept_test.cpp)
 add_network_test(folly_concept_compilation_property_test folly_concept_compilation_property_test.cpp)
@@ -2268,6 +2284,14 @@ set_tests_properties(aws_acm_pca_provider_unit_test PROPERTIES
 
 else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider_unit_test will not be built")
+endif()
+
+# ── stdexec-future-backend tests (.kiro/specs/stdexec-future-backend/) ───────
+# Optional: only present when stdexec was found (root CMakeLists.txt).
+if(stdexec_FOUND)
+    add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
+    add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
+    add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
 endif()
 
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
