@@ -36,7 +36,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test,
     // Test 1: Static assertion for concept compliance
     {
         // Test kythira::FutureCollector satisfies future_collector concept
-        static_assert(future_collector<FutureCollector>,
+        static_assert(future_collector<FutureCollector, Future<int>>,
                       "kythira::FutureCollector must satisfy future_collector concept");
 
         BOOST_TEST_MESSAGE("kythira::FutureCollector satisfies future_collector concept");
@@ -265,8 +265,9 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_concept_compliance_property_test,
  */
 BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, *boost::unit_test::timeout(30)) {
     // Test that basic types don't satisfy the concept
-    static_assert(!future_collector<int>, "int should not satisfy future_collector concept");
-    static_assert(!future_collector<std::string>,
+    static_assert(!future_collector<int, Future<int>>,
+                  "int should not satisfy future_collector concept");
+    static_assert(!future_collector<std::string, Future<int>>,
                   "std::string should not satisfy future_collector concept");
 
     // Test that types missing required methods don't satisfy the concept
@@ -277,7 +278,7 @@ BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, *boost::unit_test:
         // Missing collectAny, collectAnyWithoutException, and collectN
     };
 
-    static_assert(!future_collector<IncompleteFutureCollector>,
+    static_assert(!future_collector<IncompleteFutureCollector, Future<int>>,
                   "IncompleteFutureCollector should not satisfy future_collector concept");
 
     // Test that non-static methods don't satisfy the concept
@@ -300,7 +301,7 @@ BOOST_AUTO_TEST_CASE(future_collector_concept_rejection_test, *boost::unit_test:
         }
     };
 
-    static_assert(!future_collector<NonStaticFutureCollector>,
+    static_assert(!future_collector<NonStaticFutureCollector, Future<int>>,
                   "NonStaticFutureCollector should not satisfy future_collector concept");
 
     BOOST_TEST_MESSAGE("future_collector concept properly rejects invalid types");

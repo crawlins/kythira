@@ -114,7 +114,7 @@ auto create_test_futures() -> std::tuple<Future<int>, Future<std::string>, Futur
 
 // Generic function that works with future collector
 template<typename Collector>
-requires future_collector<Collector>
+requires future_collector<Collector, Future<int>>
 auto collect_test_futures(std::vector<Future<int>> futures) -> Future<std::vector<Try<int>>> {
     return Collector::collectAll(std::move(futures));
 }
@@ -570,10 +570,11 @@ BOOST_AUTO_TEST_CASE(concept_constraint_validation_test, *boost::unit_test::time
 
     // Test collector concept constraint
     {
-        static_assert(future_collector<FutureCollector>,
+        static_assert(future_collector<FutureCollector, Future<int>>,
                       "FutureCollector should satisfy future_collector concept");
-        static_assert(!future_collector<int>, "int should not satisfy future_collector concept");
-        static_assert(!future_collector<Future<int>>,
+        static_assert(!future_collector<int, Future<int>>,
+                      "int should not satisfy future_collector concept");
+        static_assert(!future_collector<Future<int>, Future<int>>,
                       "Future<int> should not satisfy future_collector concept");
 
         BOOST_TEST_MESSAGE("Collector concept constraints work correctly");

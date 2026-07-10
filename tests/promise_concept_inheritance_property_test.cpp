@@ -198,6 +198,11 @@ public:
         _fulfilled = true;
     }
 
+    // setException method (using std::exception_ptr, for concept compliance
+    // against the regenericized semi_promise concept — see
+    // include/concepts/future.hpp's Requirement 1.1-1.2)
+    auto setException(std::exception_ptr ex) -> void { setException(folly::exception_wrapper(ex)); }
+
     // isFulfilled method
     [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }
 
@@ -238,6 +243,10 @@ public:
         _fulfilled = true;
     }
 
+    // setValue method for void type (using kythira::unit, for concept
+    // compliance — see include/concepts/future.hpp's Requirement 1.3)
+    auto setValue(kythira::unit) -> void { setValue(folly::Unit{}); }
+
     // setException method (using folly::exception_wrapper)
     auto setException(folly::exception_wrapper ex) -> void {
         if (_fulfilled) {
@@ -247,6 +256,10 @@ public:
         _has_exception = true;
         _fulfilled = true;
     }
+
+    // setException method (using std::exception_ptr, for concept compliance
+    // — see include/concepts/future.hpp's Requirement 1.1-1.2)
+    auto setException(std::exception_ptr ex) -> void { setException(folly::exception_wrapper(ex)); }
 
     // isFulfilled method
     [[nodiscard]] auto isFulfilled() const -> bool { return _fulfilled; }

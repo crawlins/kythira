@@ -2,8 +2,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <concepts/future.hpp>
+#include <raft/future.hpp>
 
-// Include Folly headers for Promise (Folly doesn't have separate SemiPromise)
+// Include Folly headers for Promise (used by the runtime-behavior test below,
+// which exercises Folly's own API directly rather than concept compliance).
 #include <folly/futures/Promise.h>
 #include <folly/futures/Future.h>
 #include <folly/Try.h>
@@ -17,48 +19,53 @@ constexpr const char* test_name = "folly_semi_promise_concept_compliance_test";
 BOOST_AUTO_TEST_SUITE(folly_semi_promise_concept_compliance_tests)
 
 /**
- * Test that folly::Promise<T> satisfies semi_promise concept
- * Note: Folly doesn't have a separate SemiPromise class, but Promise provides the SemiPromise
- * interface Requirements: 10.1
+ * Test that kythira::SemiPromise<T> (the Folly-backed wrapper) satisfies the
+ * semi_promise concept. This checks the wrapper, not bare folly::Promise<T>
+ * directly — the regenericized concept requires setException(std::exception_ptr)
+ * and, for the void case, setValue(kythira::unit), and only the wrapper (not
+ * raw Folly, which only knows folly::exception_wrapper/folly::Unit) provides
+ * those overloads. See include/concepts/future.hpp's Requirement 1.1-1.3 for
+ * why the concept itself no longer names any Folly type.
+ * Requirements: 10.1
  */
 BOOST_AUTO_TEST_CASE(test_folly_promise_as_semi_promise_concept_compliance,
                      *boost::unit_test::timeout(30)) {
-    // Test folly::Promise<int> satisfies semi_promise concept
-    static_assert(kythira::semi_promise<folly::Promise<int>, int>,
-                  "folly::Promise<int> must satisfy semi_promise concept");
+    // Test kythira::SemiPromise<int> satisfies semi_promise concept
+    static_assert(kythira::semi_promise<kythira::SemiPromise<int>, int>,
+                  "kythira::SemiPromise<int> must satisfy semi_promise concept");
 
-    // Test folly::Promise<std::string> satisfies semi_promise concept
-    static_assert(kythira::semi_promise<folly::Promise<std::string>, std::string>,
-                  "folly::Promise<std::string> must satisfy semi_promise concept");
+    // Test kythira::SemiPromise<std::string> satisfies semi_promise concept
+    static_assert(kythira::semi_promise<kythira::SemiPromise<std::string>, std::string>,
+                  "kythira::SemiPromise<std::string> must satisfy semi_promise concept");
 
-    // Test folly::Promise<double> satisfies semi_promise concept
-    static_assert(kythira::semi_promise<folly::Promise<double>, double>,
-                  "folly::Promise<double> must satisfy semi_promise concept");
+    // Test kythira::SemiPromise<double> satisfies semi_promise concept
+    static_assert(kythira::semi_promise<kythira::SemiPromise<double>, double>,
+                  "kythira::SemiPromise<double> must satisfy semi_promise concept");
 
-    // Test folly::Promise<folly::Unit> satisfies semi_promise concept (folly uses Unit instead of
-    // void)
-    static_assert(kythira::semi_promise<folly::Promise<folly::Unit>, void>,
-                  "folly::Promise<folly::Unit> must satisfy semi_promise concept for void type");
+    // Test kythira::SemiPromise<void> satisfies semi_promise concept
+    static_assert(kythira::semi_promise<kythira::SemiPromise<void>, void>,
+                  "kythira::SemiPromise<void> must satisfy semi_promise concept for void type");
 
-    // Test folly::Promise with custom types
+    // Test kythira::SemiPromise with custom types
     struct CustomType {
         int value;
         std::string name;
     };
 
-    static_assert(kythira::semi_promise<folly::Promise<CustomType>, CustomType>,
-                  "folly::Promise<CustomType> must satisfy semi_promise concept");
+    static_assert(kythira::semi_promise<kythira::SemiPromise<CustomType>, CustomType>,
+                  "kythira::SemiPromise<CustomType> must satisfy semi_promise concept");
 
-    // Test folly::Promise with pointer types
-    static_assert(kythira::semi_promise<folly::Promise<int*>, int*>,
-                  "folly::Promise<int*> must satisfy semi_promise concept");
+    // Test kythira::SemiPromise with pointer types
+    static_assert(kythira::semi_promise<kythira::SemiPromise<int*>, int*>,
+                  "kythira::SemiPromise<int*> must satisfy semi_promise concept");
 
-    // Test folly::Promise with reference wrapper
-    static_assert(kythira::semi_promise<folly::Promise<std::reference_wrapper<int>>,
+    // Test kythira::SemiPromise with reference wrapper
+    static_assert(kythira::semi_promise<kythira::SemiPromise<std::reference_wrapper<int>>,
                                         std::reference_wrapper<int>>,
-                  "folly::Promise<std::reference_wrapper<int>> must satisfy semi_promise concept");
+                  "kythira::SemiPromise<std::reference_wrapper<int>> must satisfy semi_promise "
+                  "concept");
 
-    BOOST_TEST_MESSAGE("All folly::Promise types satisfy semi_promise concept");
+    BOOST_TEST_MESSAGE("All kythira::SemiPromise types satisfy semi_promise concept");
 }
 
 /**

@@ -76,11 +76,19 @@ BOOST_AUTO_TEST_CASE(try_concept_requirements_property_test, *boost::unit_test::
         BOOST_CHECK_EQUAL(try_with_double.value(), test_double);
     }
 
-    // Test 4: Verify folly::Try<T> also satisfies the concept (if it has the right interface)
+    // Test 4: raw folly::Try<T> (unlike kythira::Try<T>, tested above) does NOT
+    // satisfy try_type: folly::Try::exception() returns folly::exception_wrapper,
+    // which has no conversion to std::exception_ptr — the regenericized
+    // try_type concept requires exception() to be convertible to
+    // std::exception_ptr specifically (see include/concepts/future.hpp's
+    // Requirement 1.1). Only the kythira wrapper, whose exception() already
+    // returns std::exception_ptr directly, satisfies the concept; raw Folly
+    // types were never part of that guarantee (Requirement 1.5 covers wrapper
+    // types only). The rest of this block exercises folly::Try's own API
+    // directly, unrelated to concept compliance.
     {
-        // Note: folly::Try uses hasValue() and hasException() which matches our concept
-        static_assert(try_type<folly::Try<int>, int>,
-                      "folly::Try<int> should satisfy try_type concept");
+        static_assert(!try_type<folly::Try<int>, int>,
+                      "raw folly::Try<int> should not satisfy the regenericized try_type concept");
 
         folly::Try<int> folly_try_with_value(test_value);
         BOOST_CHECK(folly_try_with_value.hasValue());

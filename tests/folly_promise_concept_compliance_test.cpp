@@ -2,8 +2,10 @@
 #include <boost/test/unit_test.hpp>
 
 #include <concepts/future.hpp>
+#include <raft/future.hpp>
 
-// Include Folly headers for Promise
+// Include Folly headers for Promise (used by the runtime-behavior test below,
+// which exercises Folly's own API directly rather than concept compliance).
 #include <folly/futures/Promise.h>
 #include <folly/futures/Future.h>
 #include <folly/Try.h>
@@ -17,45 +19,48 @@ constexpr const char* test_name = "folly_promise_concept_compliance_test";
 BOOST_AUTO_TEST_SUITE(folly_promise_concept_compliance_tests)
 
 /**
- * Test that folly::Promise<T> satisfies promise concept
+ * Test that kythira::Promise<T> (the Folly-backed wrapper) satisfies the
+ * promise concept. See folly_semi_promise_concept_compliance_test.cpp's
+ * header comment for why this tests the wrapper rather than bare
+ * folly::Promise<T> directly.
  * Requirements: 10.2
  */
 BOOST_AUTO_TEST_CASE(test_folly_promise_concept_compliance, *boost::unit_test::timeout(30)) {
-    // Test folly::Promise<int> satisfies promise concept
-    static_assert(kythira::promise<folly::Promise<int>, int>,
-                  "folly::Promise<int> must satisfy promise concept");
+    // Test kythira::Promise<int> satisfies promise concept
+    static_assert(kythira::promise<kythira::Promise<int>, int>,
+                  "kythira::Promise<int> must satisfy promise concept");
 
-    // Test folly::Promise<std::string> satisfies promise concept
-    static_assert(kythira::promise<folly::Promise<std::string>, std::string>,
-                  "folly::Promise<std::string> must satisfy promise concept");
+    // Test kythira::Promise<std::string> satisfies promise concept
+    static_assert(kythira::promise<kythira::Promise<std::string>, std::string>,
+                  "kythira::Promise<std::string> must satisfy promise concept");
 
-    // Test folly::Promise<double> satisfies promise concept
-    static_assert(kythira::promise<folly::Promise<double>, double>,
-                  "folly::Promise<double> must satisfy promise concept");
+    // Test kythira::Promise<double> satisfies promise concept
+    static_assert(kythira::promise<kythira::Promise<double>, double>,
+                  "kythira::Promise<double> must satisfy promise concept");
 
-    // Test folly::Promise<folly::Unit> satisfies promise concept (folly uses Unit instead of void)
-    static_assert(kythira::promise<folly::Promise<folly::Unit>, void>,
-                  "folly::Promise<folly::Unit> must satisfy promise concept for void type");
+    // Test kythira::Promise<void> satisfies promise concept
+    static_assert(kythira::promise<kythira::Promise<void>, void>,
+                  "kythira::Promise<void> must satisfy promise concept for void type");
 
-    // Test folly::Promise with custom types
+    // Test kythira::Promise with custom types
     struct CustomType {
         int value;
         std::string name;
     };
 
-    static_assert(kythira::promise<folly::Promise<CustomType>, CustomType>,
-                  "folly::Promise<CustomType> must satisfy promise concept");
+    static_assert(kythira::promise<kythira::Promise<CustomType>, CustomType>,
+                  "kythira::Promise<CustomType> must satisfy promise concept");
 
-    // Test folly::Promise with pointer types
-    static_assert(kythira::promise<folly::Promise<int*>, int*>,
-                  "folly::Promise<int*> must satisfy promise concept");
+    // Test kythira::Promise with pointer types
+    static_assert(kythira::promise<kythira::Promise<int*>, int*>,
+                  "kythira::Promise<int*> must satisfy promise concept");
 
-    // Test folly::Promise with reference wrapper
-    static_assert(
-        kythira::promise<folly::Promise<std::reference_wrapper<int>>, std::reference_wrapper<int>>,
-        "folly::Promise<std::reference_wrapper<int>> must satisfy promise concept");
+    // Test kythira::Promise with reference wrapper
+    static_assert(kythira::promise<kythira::Promise<std::reference_wrapper<int>>,
+                                   std::reference_wrapper<int>>,
+                  "kythira::Promise<std::reference_wrapper<int>> must satisfy promise concept");
 
-    BOOST_TEST_MESSAGE("All folly::Promise types satisfy promise concept");
+    BOOST_TEST_MESSAGE("All kythira::Promise types satisfy promise concept");
 }
 
 /**
