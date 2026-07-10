@@ -92,3 +92,38 @@ session than general-purpose across every scenario, both because of the
 smaller monthly fee and the ~13x lower per-certificate price, so it is the
 right mode for `aws_acm_pca_provider_config.template_arn`/CA selection when
 the CA backing these tests is dedicated to testing.
+
+## Monthly cost, by usage frequency
+
+Since these tests are opt-in (gated behind `KYTHIRA_AWS_REAL_EC2_TESTS`,
+excluded from CI) rather than run on a fixed schedule, there's no single
+"actual" monthly figure — it depends on how often developers actually run
+them. The table below takes the per-session marginal range from the
+combined estimate above ($1.00-$2.50/session short-lived, $11-$30/session
+general-purpose) times three illustrative frequencies, plus the standing
+monthly CA operation fee ($50 short-lived, $400 general-purpose):
+
+| Frequency | Sessions/month | Marginal cost, short-lived | Marginal cost, general-purpose | **Total/month, short-lived** | **Total/month, general-purpose** |
+|---|---|---|---|---|---|
+| Occasional (~couple times/week) | 10 | $10 - $25 | $110 - $300 | **≈ $60 - $75** | **≈ $510 - $700** |
+| Regular (~once/workday) | 20 | $20 - $50 | $220 - $600 | **≈ $70 - $100** | **≈ $620 - $1,000** |
+| Heavy (daily, incl. weekends) | 30 | $30 - $75 | $330 - $900 | **≈ $80 - $125** | **≈ $730 - $1,300** |
+
+Two things stand out:
+
+- **In short-lived mode, the $50/month base fee dominates and usage barely
+  moves the total** (≈$60-75 → ≈$80-125 across a 3x increase in sessions),
+  because per-session marginal cost is small (~$1-2.50).
+- **In general-purpose mode, per-certificate issuance dominates and scales
+  linearly with usage** — the $400 base fee is a smaller share of the bill
+  than the $0.75/certificate charge once test volume is nontrivial, so
+  running the suite more often costs far more in general-purpose mode than
+  in short-lived mode (an extra 10 sessions/month adds ~$10-25 in
+  short-lived mode vs. ~$110-300 in general-purpose mode). Short-lived
+  mode is 6-10x cheaper per month at every frequency shown.
+- If the same Private CA also backs other long-running uses (e.g. a
+  staging `ca_service --provider aws-acm-pca` deployment per
+  `docker/ca_service/`), its $50/$400 monthly fee is already being paid
+  regardless of test usage, and only the marginal per-session cert-issuance
+  cost (≈$0.87-2.32/session, short-lived mode) should be attributed to
+  testing.
