@@ -261,25 +261,28 @@ auto result = std::move(future).get();  // Waits for commit and application
 
 ```cpp
 #include <raft/http_transport.hpp>
+#include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 
-// Define transport types
-struct production_transport {
-    using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
-    template<typename T> using future_template = folly::Future<T>;
-    using executor_type = folly::CPUThreadPoolExecutor;
-    using metrics_type = raft::prometheus_metrics;  // Your metrics implementation
-};
+// http_transport_types<Serializer, Metrics, Executor> is a ready-made Types
+// bundle satisfying the transport_types concept — swap in your own metrics
+// implementation (anything satisfying kythira::metrics<T>) in place of
+// kythira::noop_metrics below.
+using production_transport = kythira::http_transport_types<
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    folly::CPUThreadPoolExecutor>;
 
 // Server with HTTPS
-raft::cpp_httplib_server_config server_config;
+kythira::cpp_httplib_server_config server_config;
 server_config.enable_ssl = true;
 server_config.ssl_cert_path = "/etc/raft/server.crt";
 server_config.ssl_key_path = "/etc/raft/server.key";
 server_config.max_concurrent_connections = 100;
 
-raft::cpp_httplib_server<production_transport> server(
-    "0.0.0.0", 8443, server_config, metrics
+kythira::cpp_httplib_server<production_transport> server(
+    "0.0.0.0", 8443, server_config, kythira::noop_metrics{}
 );
 
 // Client with HTTPS
@@ -288,13 +291,13 @@ cluster_nodes[1] = "https://node1.example.com:8443";
 cluster_nodes[2] = "https://node2.example.com:8443";
 cluster_nodes[3] = "https://node3.example.com:8443";
 
-raft::cpp_httplib_client_config client_config;
+kythira::cpp_httplib_client_config client_config;
 client_config.enable_ssl_verification = true;
 client_config.ca_cert_path = "/etc/raft/ca.crt";
 client_config.connection_pool_size = 10;
 
-raft::cpp_httplib_client<production_transport> client(
-    std::move(cluster_nodes), client_config, metrics
+kythira::cpp_httplib_client<production_transport> client(
+    std::move(cluster_nodes), client_config, kythira::noop_metrics{}
 );
 ```
 
@@ -302,7 +305,15 @@ raft::cpp_httplib_client<production_transport> client(
 
 ```cpp
 #include <raft/coap_transport.hpp>
+#include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+
+// coap_transport_types<Serializer, Metrics, Executor> is CoAP's equivalent
+// of http_transport_types above.
+using iot_transport = kythira::coap_transport_types<
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    folly::Executor>;
 
 // Configure CoAP endpoints
 std::unordered_map<std::uint64_t, std::string> coap_endpoints = {
@@ -312,7 +323,7 @@ std::unordered_map<std::uint64_t, std::string> coap_endpoints = {
 };
 
 // Client configuration with DTLS
-coap_client_config coap_config;
+kythira::coap_client_config coap_config;
 coap_config.enable_dtls = true;
 coap_config.cert_file = "/etc/raft/coap-cert.pem";
 coap_config.key_file = "/etc/raft/coap-key.pem";
@@ -321,29 +332,25 @@ coap_config.ack_timeout = std::chrono::milliseconds{2000};
 coap_config.max_retransmit = 4;
 coap_config.enable_block_transfer = true;  // For large messages
 
-auto coap_client = kythira::coap_client<
-    raft::json_rpc_serializer<std::vector<std::byte>>,
-    raft::noop_metrics,
-    raft::console_logger
->(coap_endpoints, coap_config, metrics, logger);
+kythira::coap_client<iot_transport> client(
+    coap_endpoints, coap_config, kythira::noop_metrics{}
+);
 
 // Server configuration
-coap_server_config server_config;
+kythira::coap_server_config server_config;
 server_config.enable_dtls = true;
 server_config.cert_file = "/etc/raft/coap-cert.pem";
 server_config.key_file = "/etc/raft/coap-key.pem";
 server_config.ca_file = "/etc/raft/coap-ca.pem";
 server_config.max_concurrent_sessions = 200;
 
-auto coap_server = kythira::coap_server<
-    raft::json_rpc_serializer<std::vector<std::byte>>,
-    raft::noop_metrics,
-    raft::console_logger
->("0.0.0.0", 5684, server_config, metrics, logger);
+kythira::coap_server<iot_transport> server(
+    "0.0.0.0", 5684, server_config, kythira::noop_metrics{}
+);
 
 // Register handlers and start
-coap_server.register_request_vote_handler(vote_handler);
-coap_server.start();
+server.register_request_vote_handler(vote_handler);
+server.start();
 ```
 
 ## Architecture
