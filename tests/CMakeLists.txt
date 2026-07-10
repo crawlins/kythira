@@ -2098,6 +2098,17 @@ set_tests_properties(ca_cluster_node_test PROPERTIES
     # well past a single-test-scale ceiling, so the outer ctest TIMEOUT must
     # cover the whole suite, not one case.
     TIMEOUT 1800
+    # Each test case brings up a real 3-node Raft cluster as 3 real
+    # posix_spawn'd ca_cluster_node subprocesses plus this test process
+    # itself, all doing real (150-300ms) election timing over loopback TCP.
+    # Left free to run alongside the rest of the suite under `ctest -j`, CPU
+    # contention on CI's 4-vCPU runners routinely delayed those timers enough
+    # to flake — the test would retry/timeout waiting on elections that never
+    # converge fast enough, sometimes running long enough to hit the TIMEOUT
+    # above. PROCESSORS matches this to the runner's core count so ctest's
+    # scheduler won't start other tests alongside it, without hard-serializing
+    # the entire suite around it (RUN_SERIAL would do that unconditionally).
+    PROCESSORS 4
     LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node"
 )
 
