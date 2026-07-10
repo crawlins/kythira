@@ -259,3 +259,57 @@ subscription rather than prorated hourly, creating and deleting the CA per
 session provides no savings, and the effective monthly cost would just be
 $200 regardless of how many sessions ran that month. Confirm the vendor's
 actual billing granularity before relying on either number.
+
+### OCI and Alibaba Cloud
+
+`doc/TODO.md` also lists OCI (Instance Pool + OCI Certificates Service) and
+Alibaba Cloud (Auto Scaling Group + Alibaba Cloud SSL Certificates Service)
+as further planned, not-yet-implemented backends.
+
+**OCI is structurally the cheapest option researched for this session
+shape**, but not because of aggressive per-unit pricing — because its
+Certificates service and a slice of its compute/network are given away in
+the Always Free tier rather than metered per-hour like AWS/GCP/Azure:
+
+- **OCI Certificates Service** (which includes private CAs) is included in
+  every tenancy's Always Free allowance, up to **5 private CAs and 150
+  private certificates**, with no additional charge within that. A single
+  test session (1 CA, 15-40 certificates) fits entirely inside those limits,
+  so the CA-side cost is **$0**, not merely low. (If certificate volume or
+  CA count grew past the free allowance, OCI would presumably bill through
+  the same Vault/KMS consumption model referenced below, but nothing in the
+  documentation surfaced usage-based pricing beyond that free allowance.)
+- **NAT Gateway has no hourly fee at all** on OCI — only data egress beyond
+  the account's 10 TB/month free allowance is billed, unlike AWS's/Azure's
+  flat $0.045/hr or GCP's per-VM Cloud NAT charge.
+- **Compute**: 2 `VM.Standard.E2.1.Micro` instances are Always Free per
+  tenancy; a 3-9 node cluster plus bastion would need to pay standard
+  on-demand rates for the instances beyond those two (comparable in order
+  of magnitude to AWS t3.micro/GCP e2-micro, though this document didn't
+  pin down an exact figure).
+- **Vault/KMS**: if the private CA's key is software-protected (the
+  default), there's no separate Vault charge; HSM-protected keys add a
+  per-key-version monthly fee this document didn't quantify. A test CA has
+  no reason to require HSM protection, so this likely doesn't apply.
+
+Net effect: for exactly this session shape (one ephemeral CA, a handful of
+nodes, 15-40 certs), OCI's bill would plausibly be **at or near $0** for
+everything except the compute beyond the 2 free instances — categorically
+different from AWS/GCP/Azure's per-hour-metered model, rather than just a
+lower rate on the same model.
+
+**Alibaba Cloud's Private Certificate Authority (PCA)** is a real,
+documented product — a private CA purchased as a subscription instance
+(RSA, SM, or ECC algorithm; Alibaba unified pricing across algorithms in
+an October 2024 price cut) — but this document could **not** obtain actual
+dollar/yuan figures for it: Alibaba's pricing pages render the price table
+dynamically rather than as indexed text, and repeated searches turned up
+only the billing model description, not numbers. Two things are known with
+reasonable confidence: it's sold as an annual (not hourly-prorated)
+subscription per CA instance, which — like the Azure EZCA caveat above —
+would mean creating and deleting a CA per test session captures none of the
+proration benefit AWS/GCP/OCI offer; and it's priced separately from
+Alibaba's SSL Certificates Service (which sells commercial DV/OV
+certificates, not a private CA). Anyone who needs a real number should
+check the "Purchase and enable a private CA" console page directly rather
+than rely on this document.
