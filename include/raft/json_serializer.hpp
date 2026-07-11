@@ -421,6 +421,100 @@ public:
         return resp;
     }
 
+    // Serialize FetchLogEntries Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const fetch_log_entries_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "fetch_log_entries_request";
+        obj["requester_id"] = req.requester_id();
+        obj["from_index"] = req.from_index();
+        obj["to_index"] = req.to_index();
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Serialize FetchLogEntries Response
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename LogEntry = log_entry<TermId, LogIndex>>
+    [[nodiscard]] auto serialize(
+        const fetch_log_entries_response<TermId, LogIndex, LogEntry>& resp) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "fetch_log_entries_response";
+        obj["responder_id"] = resp.responder_id();
+        obj["available"] = resp.available();
+        obj["prev_log_term"] = resp.prev_log_term();
+
+        boost::json::array entries_array;
+        for (const auto& entry : resp.entries()) {
+            boost::json::object entry_obj;
+            entry_obj["term"] = entry.term();
+            entry_obj["index"] = entry.index();
+            entry_obj["command"] = bytes_to_base64(entry.command());
+            entry_obj["entry_type"] = static_cast<int>(entry.type());
+            entries_array.push_back(entry_obj);
+        }
+        obj["entries"] = entries_array;
+
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Deserialize FetchLogEntries Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    [[nodiscard]] auto deserialize_fetch_log_entries_request(const Data& data) const
+        -> fetch_log_entries_request<NodeId, TermId, LogIndex> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "fetch_log_entries_request") {
+            throw serialization_exception("Invalid message type for fetch_log_entries_request");
+        }
+
+        fetch_log_entries_request<NodeId, TermId, LogIndex> req;
+        if constexpr (std::same_as<NodeId, std::string>) {
+            req._requester_id = std::string(obj["requester_id"].as_string());
+        } else {
+            req._requester_id = static_cast<NodeId>(obj["requester_id"].as_int64());
+        }
+        req._from_index = static_cast<LogIndex>(obj["from_index"].as_int64());
+        req._to_index = static_cast<LogIndex>(obj["to_index"].as_int64());
+        return req;
+    }
+
+    // Deserialize FetchLogEntries Response
+    template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+             typename LogEntry = log_entry<TermId, LogIndex>>
+    [[nodiscard]] auto deserialize_fetch_log_entries_response(const Data& data) const
+        -> fetch_log_entries_response<TermId, LogIndex, LogEntry> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "fetch_log_entries_response") {
+            throw serialization_exception("Invalid message type for fetch_log_entries_response");
+        }
+
+        fetch_log_entries_response<TermId, LogIndex, LogEntry> resp;
+        resp._responder_id = static_cast<std::uint64_t>(obj["responder_id"].as_int64());
+        resp._available = obj["available"].as_bool();
+        resp._prev_log_term = static_cast<TermId>(obj["prev_log_term"].as_int64());
+
+        const auto& entries_array = obj["entries"].as_array();
+        for (const auto& entry_val : entries_array) {
+            const auto& entry_obj = entry_val.as_object();
+            LogEntry entry;
+            entry._term = static_cast<TermId>(entry_obj.at("term").as_int64());
+            entry._index = static_cast<LogIndex>(entry_obj.at("index").as_int64());
+            entry._command = base64_to_bytes(std::string(entry_obj.at("command").as_string()));
+            entry._type = entry_obj.contains("entry_type")
+                              ? static_cast<entry_type>(entry_obj.at("entry_type").as_int64())
+                              : entry_type::normal;
+            resp._entries.push_back(entry);
+        }
+
+        return resp;
+    }
+
     // Generic deserialize method that dispatches to specific deserialize methods
     template<typename T> [[nodiscard]] auto deserialize(const Data& data) const -> T {
         if constexpr (std::same_as<T, request_vote_request<>>) {
@@ -443,6 +537,10 @@ public:
             return deserialize_cluster_leave_request(data);
         } else if constexpr (std::same_as<T, cluster_leave_response<>>) {
             return deserialize_cluster_leave_response(data);
+        } else if constexpr (std::same_as<T, fetch_log_entries_request<>>) {
+            return deserialize_fetch_log_entries_request(data);
+        } else if constexpr (std::same_as<T, fetch_log_entries_response<>>) {
+            return deserialize_fetch_log_entries_response(data);
         } else {
             static_assert(std::is_same_v<T, void>, "Unsupported type for deserialization");
         }

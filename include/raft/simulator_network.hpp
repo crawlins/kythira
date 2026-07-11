@@ -276,6 +276,45 @@ public:
             });
     }
 
+    // Send FetchLogEntries RPC — peer-to-peer catch-up
+    // (.kiro/specs/peer2peer-log-replication/), routed by node_id like the
+    // core Raft RPCs.
+    auto send_fetch_log_entries(std::uint64_t target,
+                                const kythira::fetch_log_entries_request<>& req,
+                                std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::fetch_log_entries_response<>> {
+        auto data = _serializer.serialize(req);
+        std::vector<std::byte> payload(data.begin(), data.end());
+
+        address_type target_addr;
+        if constexpr (std::is_same_v<address_type, std::string>) {
+            target_addr = std::to_string(target);
+        } else {
+            target_addr = static_cast<address_type>(target);
+        }
+
+        typename NetworkTypes::message_type msg(_node->address(), 0, target_addr, _rpc_port,
+                                                std::move(payload));
+
+        return _node->send(std::move(msg), timeout)
+            .thenValue([this, timeout](bool success) {
+                if (!success) {
+                    throw kythira::network_exception("Failed to send FetchLogEntries RPC");
+                }
+                return _node->receive(timeout);
+            })
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::fetch_log_entries_response<> {
+                auto payload = response_msg.payload();
+                Data response_data;
+                if constexpr (requires { response_data.resize(0); }) {
+                    response_data.resize(payload.size());
+                    std::copy(payload.begin(), payload.end(), response_data.begin());
+                }
+                return _serializer.template deserialize_fetch_log_entries_response<>(response_data);
+            });
+    }
+
 private:
     node_type _node;
     Serializer _serializer;
@@ -310,7 +349,9 @@ public:
           _request_vote_handler(std::move(other._request_vote_handler)),
           _append_entries_handler(std::move(other._append_entries_handler)),
           _install_snapshot_handler(std::move(other._install_snapshot_handler)),
-          _cluster_join_handler(std::move(other._cluster_join_handler)) {}
+          _cluster_join_handler(std::move(other._cluster_join_handler)),
+          _cluster_leave_handler(std::move(other._cluster_leave_handler)),
+          _fetch_log_entries_handler(std::move(other._fetch_log_entries_handler)) {}
 
     // Move assignment
     simulator_network_server& operator=(simulator_network_server&& other) noexcept {
@@ -327,6 +368,8 @@ public:
             _append_entries_handler = std::move(other._append_entries_handler);
             _install_snapshot_handler = std::move(other._install_snapshot_handler);
             _cluster_join_handler = std::move(other._cluster_join_handler);
+            _cluster_leave_handler = std::move(other._cluster_leave_handler);
+            _fetch_log_entries_handler = std::move(other._fetch_log_entries_handler);
         }
         return *this;
     }
@@ -376,6 +419,15 @@ public:
             handler) -> void {
         std::unique_lock lock(_mutex);
         _cluster_leave_handler = std::move(handler);
+    }
+
+    // Register FetchLogEntries handler
+    // (.kiro/specs/peer2peer-log-replication/, Requirement 5.4/5.5)
+    auto register_fetch_log_entries_handler(std::function<kythira::fetch_log_entries_response<>(
+                                                const kythira::fetch_log_entries_request<>&)>
+                                                handler) -> void {
+        std::unique_lock lock(_mutex);
+        _fetch_log_entries_handler = std::move(handler);
     }
 
     // Start the server
@@ -431,6 +483,9 @@ private:
         _cluster_join_handler;
     std::function<kythira::cluster_leave_response<>(const kythira::cluster_leave_request<>&)>
         _cluster_leave_handler;
+    std::function<kythira::fetch_log_entries_response<>(
+        const kythira::fetch_log_entries_request<>&)>
+        _fetch_log_entries_handler;
 
     mutable std::shared_mutex _mutex;
 
@@ -545,6 +600,21 @@ private:
                 // Not a ClusterLeave request
             }
 
+            // Try FetchLogEntries
+            try {
+                auto request =
+                    _serializer.template deserialize_fetch_log_entries_request<>(request_data);
+
+                std::shared_lock lock(_mutex);
+                if (_fetch_log_entries_handler) {
+                    auto response = _fetch_log_entries_handler(request);
+                    send_response(msg.source_address(), response);
+                }
+                return;
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a FetchLogEntries request
+            }
+
             // Unknown message type - ignore
         } catch (const std::exception& e) {
             std::cerr << "[simulator_network_server] error handling message: " << e.what() << "\n";
@@ -600,5 +670,16 @@ static_assert(kythira::network_server_with_cluster_join<simulator_network_server
                   TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
                   std::vector<std::byte>>>,
               "simulator_network_server must satisfy network_server_with_cluster_join");
+
+// Verify the optional peer-to-peer catch-up extension
+// (.kiro/specs/peer2peer-log-replication/, Requirement 9.3)
+static_assert(kythira::network_client_with_log_fetch<simulator_network_client<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_client must satisfy network_client_with_log_fetch");
+static_assert(kythira::network_server_with_log_fetch<simulator_network_server<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_server must satisfy network_server_with_log_fetch");
 
 }  // namespace kythira
