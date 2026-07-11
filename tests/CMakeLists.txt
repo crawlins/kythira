@@ -283,6 +283,16 @@ add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 
+# Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
+add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
+add_raft_completion_test(peer2peer_catch_up_property_test peer2peer_catch_up_property_test.cpp)
+
+# Peer-to-peer gossip transport (real TCP) — .kiro/specs/peer2peer-gossip-transport/
+add_raft_completion_test(tcp_gossip_transport_merge_unit_test tcp_gossip_transport_merge_unit_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_wire_unit_test tcp_gossip_transport_wire_unit_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_integration_test tcp_gossip_transport_integration_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_catch_up_property_test tcp_gossip_transport_catch_up_property_test.cpp)
+
 # Learner (non-voting node) tests — .kiro/specs/non-voting-nodes/
 add_raft_completion_test(learner_mechanism_unit_test learner_mechanism_unit_test.cpp)
 add_raft_completion_test(learner_admission_capacity_test learner_admission_capacity_test.cpp)
