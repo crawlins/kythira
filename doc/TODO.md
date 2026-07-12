@@ -445,9 +445,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Minor Enhancements
 
-- [ ] **State machine examples** — counter, register, replicated log, and
+- [x] **State machine examples** — counter, register, replicated log, and
   distributed lock examples for documentation/demonstration purposes
-  (counter and register already exist as test targets)
+  (all four now have test targets)
 - [x] **libfiu integration** — fault injection chaos testing; spec at
   `.kiro/specs/libfiu-integration/`; 21 tasks complete: CMake detection,
   `fiu_do_on` fault points in persistence/network/state machine, RAII fault
