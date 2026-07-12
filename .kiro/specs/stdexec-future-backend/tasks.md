@@ -1,13 +1,27 @@
 # Implementation Plan
 
+**Status (as of 2026-07-12)**: Phases 0–2 (Tasks 0–13) are implemented and
+verified on the `feat/stdexec-future-backend` branch (commits `dd44707`,
+`6ea1224`, `63caec5`) — not yet merged into `main`. Phases 3–6 (Tasks 14–35:
+factory/continuations/collectors, executor shim, backend selection,
+cross-backend test parity, documentation) have not been started on any
+branch. Four sub-tasks within Phases 0–2 were not completed as distinct
+deliverables — see the inline notes below — and are left unchecked
+accordingly: **1.1** (optional-dependency-isolation CI/CMake check), the
+second bullet of **5** (standalone-compile check was verified ad hoc but
+never added as a persistent CMake/CTest target), **5.1**, and **6.1**/**6.2**
+(no dedicated property-test files exist for Properties 1–3; the existing
+regression suite incidentally exercises the same ground but was not written
+to validate these properties specifically).
+
 ## Phase 0: Spike and Dependency Setup
 
-- [ ] 0. Spike: confirm stdexec API surface assumptions before committing to Phase 2 design details
+- [x] 0. Spike: confirm stdexec API surface assumptions before committing to Phase 2 design details
   - Vendor a throwaway `stdexec` checkout and confirm: (a) minimum GCC/Clang versions that compile it cleanly against this project's C++23 setting, (b) whether `exec::when_any` or an equivalent first-completed-wins combinator exists, (c) whether a timed scheduler (`schedule_after`/`schedule_at`) ships in the vendored version, (d) whether an existing single-shot/manual-reset-event sender primitive exists in `exec` that could replace the hand-rolled `single_shot_channel`
   - Record findings in a short note in this spec directory (`spike-notes.md`) since design.md's Phase 2 section explicitly defers these questions to this spike
   - _Requirements: 13.5_
 
-- [ ] 1. Add stdexec as an optional vcpkg dependency
+- [x] 1. Add stdexec as an optional vcpkg dependency
   - Add `stdexec` to `vcpkg.json` dependencies
   - Add `find_package(stdexec CONFIG QUIET)` to root `CMakeLists.txt`, mirroring the existing `find_package(folly QUIET)` pattern
   - Emit a warning (not an error) when `stdexec` is not found, matching the existing Folly-not-found warning
@@ -21,34 +35,34 @@
 
 ## Phase 1: Regenericize the Concept Layer
 
-- [ ] 2. Introduce `kythira::unit` in the concept layer
+- [x] 2. Introduce `kythira::unit` in the concept layer
   - Add `kythira::unit` (trivial, default-constructible, `operator==`) to `include/concepts/future.hpp`
   - Do not remove `folly::Unit` usage from `include/raft/future.hpp` yet — this task only adds the new type
   - _Requirements: 2.1_
 
-- [ ] 3. Replace `folly::exception_wrapper` with `std::exception_ptr` in concept signatures
+- [x] 3. Replace `folly::exception_wrapper` with `std::exception_ptr` in concept signatures
   - Update `try_type` concept's exception-access requirement
   - Update `semi_promise` concept's `setException` requirement
   - Update `future_factory` concept's `makeExceptionalFuture` requirement
   - Remove the `#include <folly/ExceptionWrapper.h>` from `include/concepts/future.hpp` once no concept references it
   - _Requirements: 1.1, 1.2_
 
-- [ ] 4. Replace `folly::Unit` with `kythira::unit` in concept signatures
+- [x] 4. Replace `folly::Unit` with `kythira::unit` in concept signatures
   - Update `semi_promise` concept's void-specialization `setValue` requirement
   - Update `future_factory` concept's `makeReadyFuture` requirement
   - Remove the `#include <folly/Unit.h>` from `include/concepts/future.hpp` once no concept references it
   - _Requirements: 1.3, 2.1_
 
 - [ ] 5. Verify concept-layer Folly independence
-  - Compile `include/concepts/future.hpp` in isolation (a standalone translation unit including only this header) and confirm no Folly header is transitively included
-  - Add this standalone-compile check as a CMake/CTest target so regressions are caught automatically
+  - Compile `include/concepts/future.hpp` in isolation (a standalone translation unit including only this header) and confirm no Folly header is transitively included — **done** (verified ad hoc during Phase 1; commit `6ea1224`)
+  - Add this standalone-compile check as a CMake/CTest target so regressions are caught automatically — **not done**, no such target exists in `tests/CMakeLists.txt`
   - _Requirements: 1.4_
 
 - [ ] 5.1 Write property test for concept-layer Folly independence
   - **Property 2: Concept-Layer Folly Independence**
   - **Validates: Requirement 1.4**
 
-- [ ] 6. Verify the existing Folly backend still satisfies the regenericized concepts
+- [x] 6. Verify the existing Folly backend still satisfies the regenericized concepts
   - Recompile `include/raft/future.hpp` against the updated `include/concepts/future.hpp`
   - Confirm the existing `static_assert` block at the end of `include/raft/future.hpp` still passes unmodified
   - Confirm the existing `setException(const std::exception_ptr&)` overload on `SemiPromise`/`Promise` already satisfies the new concept requirement (it should, per design.md's analysis) — if it does not, adjust the Folly wrapper's overload set, not the concept
@@ -63,61 +77,61 @@
   - **Property 3: Unit Type Equivalence**
   - **Validates: Requirements 2.1, 2.2, 2.3, 2.4**
 
-- [ ] 7. Checkpoint — Phase 1 complete
+- [x] 7. Checkpoint — Phase 1 complete
   - Ensure all pre-existing tests still pass with the regenericized concepts before starting Phase 2
   - Ask the user if any concept change turned out to require touching `include/raft/future.hpp` beyond the `setException` overload check in Task 6
 
 ## Phase 2: stdexec-Backed Try, Single-Shot Channel, and Future
 
-- [ ] 8. Create `include/raft/future_stdexec.hpp` skeleton
+- [x] 8. Create `include/raft/future_stdexec.hpp` skeleton
   - Set up the `kythira::stdexec_backend` namespace
   - Add `#include <stdexec/execution.hpp>` and the `exec/` extension headers identified as needed by the Phase 0 spike
   - Forward-declare `Try`, `SemiPromise`, `Promise`, `Future`, `FutureFactory`, `FutureCollector`, `scheduler_executor_shim`
   - _Requirements: 4.4_
 
-- [ ] 9. Implement `into_try` and the `stdexec`-backed `Try<T>`
+- [x] 9. Implement `into_try` and the `stdexec`-backed `Try<T>`
   - Implement `Try<T>` as a value/`std::exception_ptr` tagged union (or `std::variant`), independent of any sender
   - Implement `into_try(sender) -> Try<T>` via a receiver whose `set_value`/`set_error`/`set_stopped` populate a `Try<T>`, mapping "stopped" to `operation_cancelled` per design.md's Error Handling section
   - Add `static_assert` confirming `stdexec_backend::Try<T>` satisfies the regenericized `try_type` concept for `int`, `void`, `std::string`, and a custom struct
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
-- [ ] 9.1 Write property test for stdexec Try fidelity
+- [x] 9.1 Write property test for stdexec Try fidelity
   - **Property 6: stdexec Try Fidelity**
   - **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5**
 
-- [ ] 10. Implement `single_shot_channel<T>` shared state and atomic state machine
+- [x] 10. Implement `single_shot_channel<T>` shared state and atomic state machine
   - Implement the empty/waiting/complete state machine from design.md using a single atomic compare-exchange for the fulfill-vs-connect race
   - Implement double-fulfillment detection (throws on the losing `set_value`/`set_error` call)
   - Implement broken-promise completion when the shared state is destroyed with no fulfillment but a receiver already started
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5_
 
-- [ ] 10.1 Write property test for single-shot channel exactly-once completion
+- [x] 10.1 Write property test for single-shot channel exactly-once completion
   - **Property 7: Single-Shot Channel Exactly-Once Completion**
   - **Validates: Requirements 6.2, 6.3, 6.4**
   - Cover interleavings explicitly: fulfill-before-connect, connect-before-fulfill, concurrent fulfillment attempts from multiple threads (only one should win, the other should throw), high-iteration stress test for the race window
 
-- [ ] 10.2 Write property test for single-shot channel broken-promise semantics
+- [x] 10.2 Write property test for single-shot channel broken-promise semantics
   - **Property 8: Single-Shot Channel Broken-Promise Semantics**
   - **Validates: Requirement 6.5**
 
-- [ ] 11. Implement `stdexec`-backed `SemiPromise<T>`/`Promise<T>` over `single_shot_channel`
+- [x] 11. Implement `stdexec`-backed `SemiPromise<T>`/`Promise<T>` over `single_shot_channel`
   - `SemiPromise<T>`: `setValue`/`setException`/`isFulfilled` delegating to the shared `single_shot_channel`
   - `Promise<T>`: adds `getFuture()`/`getSemiFuture()` returning a `Future<T>` wrapping the channel's sender
   - Add `static_assert` confirming compliance with regenericized `semi_promise` and `promise` concepts
   - _Requirements: 6.6_
 
-- [ ] 12. Implement `stdexec`-backed `Future<T>::get()`, `isReady()`, `wait(timeout)`
+- [x] 12. Implement `stdexec`-backed `Future<T>::get()`, `isReady()`, `wait(timeout)`
   - `get()` via `stdexec::sync_wait` (or the equivalent identified in the Phase 0 spike), rethrowing on error
   - `isReady()` via a non-blocking poll of the underlying `single_shot_channel` state where the future is backed by one; for factory-created (already-ready) futures, always `true`
   - `wait(timeout)` without leaking the operation state on timeout, per design.md's Broken Promise / Timeout Cleanup section
   - Add `static_assert` confirming compliance with the regenericized `future` concept
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 12.1 Write property test for stdexec future blocking get correctness
+- [x] 12.1 Write property test for stdexec future blocking get correctness
   - **Property 9: stdexec Future Blocking Get Correctness**
   - **Validates: Requirements 7.1, 7.2, 7.3**
 
-- [ ] 13. Checkpoint — Phase 2 core primitives complete
+- [x] 13. Checkpoint — Phase 2 core primitives complete
   - Ensure Try, single_shot_channel, SemiPromise, Promise, and basic Future (get/isReady/wait only, no continuations yet) all pass their tests before adding continuation/transformation/collection operations on top
   - This checkpoint exists because every later task in Phase 2/3 builds on `single_shot_channel`; catching a design flaw here is far cheaper than after continuations are layered on
 
