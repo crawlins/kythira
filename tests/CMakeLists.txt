@@ -1670,6 +1670,32 @@ set_tests_properties(register_state_machine_test PROPERTIES
     LABELS "unit;state_machine;example"
 )
 
+# Replicated log state machine test (example state machine)
+add_executable(replicated_log_state_machine_test replicated_log_state_machine_test.cpp)
+target_link_libraries(replicated_log_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(replicated_log_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME replicated_log_state_machine_test COMMAND replicated_log_state_machine_test)
+set_tests_properties(replicated_log_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
+# Distributed lock state machine test (example state machine)
+add_executable(distributed_lock_state_machine_test distributed_lock_state_machine_test.cpp)
+target_link_libraries(distributed_lock_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(distributed_lock_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME distributed_lock_state_machine_test COMMAND distributed_lock_state_machine_test)
+set_tests_properties(distributed_lock_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
 # State machine integration test (end-to-end command application)
 add_executable(raft_state_machine_integration_test raft_state_machine_integration_test.cpp)
 target_link_libraries(raft_state_machine_integration_test PRIVATE
