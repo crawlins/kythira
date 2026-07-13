@@ -72,6 +72,10 @@ template<raft_types Types> struct node_config {
     using _qmth_ = _quorum_manager_type_traits<Types, typename Types::node_id_type, address_type>;
     using quorum_manager_type = typename _qmth_::quorum_manager_type;
     using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
+    using _p2prth_ =
+        _peer2peer_replicator_type_traits<Types, typename Types::node_id_type, address_type,
+                                          typename Types::log_index_type>;
+    using peer2peer_replicator_type = typename _p2prth_::peer2peer_replicator_type;
 
     // ── Required fields (no in-struct default) ────────────────────────────────
     typename Types::node_id_type node_id;                 ///< Unique identifier for this node.
@@ -89,7 +93,8 @@ template<raft_types Types> struct node_config {
     peer_discovery_type peer_discovery{};  ///< Peer-discovery back-end.
     quorum_manager_type quorum_manager{};  ///< Infrastructure quorum manager.
     std::unordered_map<typename Types::node_id_type, placement_group_id_type>
-        initial_placement{};  ///< Initial node-to-placement-group mapping.
+        initial_placement{};                           ///< Initial node-to-placement-group mapping.
+    peer2peer_replicator_type peer2peer_replicator{};  ///< Peer-to-peer catch-up replicator.
 };
 
 /// @brief Raft consensus node with fully pluggable component types.
@@ -143,6 +148,10 @@ public:
     using append_entries_response_type = typename Types::append_entries_response_type;
     using install_snapshot_request_type = typename Types::install_snapshot_request_type;
     using install_snapshot_response_type = typename Types::install_snapshot_response_type;
+    using fetch_log_entries_request_type =
+        fetch_log_entries_request<node_id_type, term_id_type, log_index_type>;
+    using fetch_log_entries_response_type =
+        fetch_log_entries_response<term_id_type, log_index_type, log_entry_type>;
 
     // Bootstrap type aliases (with fallbacks for Types that predate them)
     using _bth = kythira::_bootstrap_type_traits<Types, node_id_type>;
@@ -157,6 +166,11 @@ public:
     using _qmth = kythira::_quorum_manager_type_traits<Types, node_id_type, address_type>;
     using quorum_manager_type = typename _qmth::quorum_manager_type;
     using placement_group_id_type = typename quorum_manager_type::placement_group_id_type;
+
+    // Peer-to-peer replicator type alias (with fallback to no_op for Types that predate it)
+    using _p2prth = kythira::_peer2peer_replicator_type_traits<Types, node_id_type, address_type,
+                                                               log_index_type>;
+    using peer2peer_replicator_type = typename _p2prth::peer2peer_replicator_type;
 
     using client_id_t = std::uint64_t;  ///< Opaque client identifier for session tracking.
     using serial_number_t =
@@ -177,7 +191,8 @@ public:
          logger_type logger, metrics_type metrics, membership_manager_type membership,
          configuration_type config = configuration_type{},
          address_type self_address = address_type{},
-         peer_discovery_type peer_discovery = peer_discovery_type{});
+         peer_discovery_type peer_discovery = peer_discovery_type{},
+         peer2peer_replicator_type peer2peer_replicator = peer2peer_replicator_type{});
     /// @}
 
     /// @name Client operations
@@ -387,6 +402,18 @@ private:
             return id;
         } else {
             return std::to_string(id);
+        }
+    }
+
+    // Helper to convert node_id to uint64_t for RPC target routing and
+    // fetch_log_entries_response's fixed-width responder_id field — every
+    // existing RPC send already routes by std::uint64_t target regardless of
+    // node_id_type (see network_client's send_* signatures).
+    static auto node_id_to_u64(const node_id_type& id) -> std::uint64_t {
+        if constexpr (std::is_same_v<node_id_type, std::string>) {
+            return 0;
+        } else {
+            return static_cast<std::uint64_t>(id);
         }
     }
 
@@ -642,6 +669,21 @@ private:
     bool _quorum_immediate_check{false};
 
     // ========================================================================
+    // Peer-to-peer catch-up members (.kiro/specs/peer2peer-log-replication/)
+    // ========================================================================
+
+    // Peer-to-peer replicator implementation (default: no_op — preserves today's
+    // leader-only replication behavior byte-for-byte).
+    peer2peer_replicator_type _peer2peer_replicator{};
+
+    // When this node last called advertise_progress(); gates maybe_gossip_progress()
+    // to _config.progress_gossip_interval() cadence (Requirement 3.1).
+    std::chrono::steady_clock::time_point _last_progress_gossip{};
+
+    // At most one outstanding peer-to-peer fetch at a time (Requirement 4.5).
+    bool _catch_up_in_flight{false};
+
+    // ========================================================================
     // Synchronization
     // ========================================================================
 
@@ -696,6 +738,41 @@ private:
     auto create_snapshot(const std::vector<std::byte>& state_machine_state) -> void;
     auto compact_log() -> void;
     auto install_snapshot(const snapshot_type& snap) -> void;
+
+    // ── Peer-to-peer catch-up helpers (.kiro/specs/peer2peer-log-replication/) ──
+
+    // Rules 3-5 of handle_append_entries(): prevLogIndex/prevLogTerm consistency
+    // check, conflict-truncation, and append — extracted so the peer-to-peer
+    // fetch path (maybe_catch_up_from_peer()) gets the exact same Log Matching
+    // Property guarantees as leader-driven replication, with no separate safety
+    // argument needed. Does NOT touch _commit_index, _known_leader, or the
+    // election timer — those remain exclusively handle_append_entries()'s own
+    // concern. Must be called with _mutex held.
+    [[nodiscard]] auto append_entries_with_consistency_check(
+        log_index_type prev_log_index, term_id_type prev_log_term,
+        const std::vector<log_entry_type>& entries) -> append_entries_response_type;
+
+    // Core cluster membership: _configuration.nodes(), unioned with old_nodes()
+    // during joint consensus. Excludes learners() (Requirement 11.2).
+    [[nodiscard]] auto cluster_members() const -> std::vector<node_id_type>;
+
+    // Fire-and-forget push of cluster_members() into _peer2peer_replicator.
+    // Called immediately after every _configuration assignment (Requirement 11.1).
+    // Must be called with _mutex held (or before start(), single-threaded).
+    auto sync_peer2peer_membership() -> void;
+
+    // Responder side of fetch_log_entries (Requirement 5.4/5.5). Only reachable
+    // if network_server_with_log_fetch<network_server_type>.
+    [[nodiscard]] auto handle_fetch_log_entries(const fetch_log_entries_request_type& request)
+        -> fetch_log_entries_response_type;
+
+    // Advertises this node's own progress digest, gated by
+    // _config.progress_gossip_interval() (Requirement 3).
+    auto maybe_gossip_progress() -> void;
+
+    // Detects the catch-up gap and, if it exceeds _config.catch_up_gap_threshold(),
+    // fetches missing entries from a peer (Requirement 4-7).
+    auto maybe_catch_up_from_peer() -> void;
 
     // ── Quorum management helpers (Req 12-15) ────────────────────────────────
 
@@ -821,7 +898,8 @@ node<Types>::node(node_config<Types> cfg)
       _rng{std::random_device{}()},
       _self_address{std::move(cfg.self_address)},
       _peer_discovery{std::move(cfg.peer_discovery)},
-      _quorum_manager{std::move(cfg.quorum_manager)} {
+      _quorum_manager{std::move(cfg.quorum_manager)},
+      _peer2peer_replicator{std::move(cfg.peer2peer_replicator)} {
     _placement_map.insert(cfg.initial_placement.begin(), cfg.initial_placement.end());
     _configuration._nodes = {_node_id};
     _configuration._is_joint_consensus = false;
@@ -839,7 +917,8 @@ node<Types>::node(node_id_type node_id, network_client_type network_client,
                   network_server_type network_server, persistence_engine_type persistence,
                   logger_type logger, metrics_type metrics, membership_manager_type membership,
                   configuration_type config, address_type self_address,
-                  peer_discovery_type peer_discovery)
+                  peer_discovery_type peer_discovery,
+                  peer2peer_replicator_type peer2peer_replicator)
     : node(node_config<Types>{
           .node_id = std::move(node_id),
           .network_client = std::move(network_client),
@@ -851,6 +930,7 @@ node<Types>::node(node_id_type node_id, network_client_type network_client,
           .config = std::move(config),
           .self_address = std::move(self_address),
           .peer_discovery = std::move(peer_discovery),
+          .peer2peer_replicator = std::move(peer2peer_replicator),
       }) {}
 
 template<raft_types Types>
@@ -862,6 +942,7 @@ auto node<Types>::set_cluster_configuration(const std::vector<node_id_type>& nod
     _configuration._is_joint_consensus = false;
     _configuration._old_nodes = std::nullopt;
     _boot_configuration = _configuration;
+    sync_peer2peer_membership();
 
     _logger.info("Cluster configuration updated", {{"node_id", node_id_to_string(_node_id)},
                                                    {"num_nodes", std::to_string(node_ids.size())}});
@@ -1878,6 +1959,18 @@ auto node<Types>::start() -> void {
     // Register RPC handlers with network server
     register_rpc_handlers();
 
+    // Start any lifecycle-capable peer2peer_replicator (e.g.
+    // tcp_gossip_peer2peer_replicator's background listener/gossip thread) now
+    // that this object has reached its final address inside node<Types> —
+    // never call this any earlier, since a node_config<Types>-constructed
+    // instance may still be moved before this point. Detected structurally
+    // (not via a named concept) so peer2peer_replicator_type implementations
+    // with no such lifecycle (no_op_peer2peer_replicator,
+    // static_peer2peer_replicator) are unaffected.
+    if constexpr (requires { _peer2peer_replicator.start(); }) {
+        _peer2peer_replicator.start();
+    }
+
     // Start the network server
     _network_server.start();
 
@@ -1931,6 +2024,10 @@ auto node<Types>::stop() -> void {
 
     // Stop the network server
     _network_server.stop();
+
+    if constexpr (requires { _peer2peer_replicator.stop(); }) {
+        _peer2peer_replicator.stop();
+    }
 
     _logger.info("Raft node stopped successfully", {{"node_id", node_id_to_string(_node_id)}});
 }
@@ -2029,6 +2126,7 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     append_log_entry(joint_entry);
     _persistence.append_log_entry(joint_entry);
     _configuration = joint_config;
+    sync_peer2peer_membership();
 
     _metrics.set_metric_name("raft_add_server_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2172,6 +2270,7 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
     append_log_entry(joint_entry);
     _persistence.append_log_entry(joint_entry);
     _configuration = joint_config;
+    sync_peer2peer_membership();
     _unresponsive_followers.erase(old_node);
 
     _metrics.set_metric_name("raft_remove_server_started");
@@ -2293,6 +2392,7 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
     append_log_entry(entry);
     _persistence.append_log_entry(entry);
     _configuration = new_config;
+    sync_peer2peer_membership();
 
     _metrics.set_metric_name("raft_add_learner_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2371,6 +2471,7 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
     append_log_entry(entry);
     _persistence.append_log_entry(entry);
     _configuration = new_config;
+    sync_peer2peer_membership();
     // _next_index/_match_index for `learner` are cleaned up once this entry commits
     // and apply_committed_entries() observes it is no longer in nodes() or learners().
 
@@ -2496,6 +2597,7 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
     append_log_entry(joint_entry);
     _persistence.append_log_entry(joint_entry);
     _configuration = joint_config;
+    sync_peer2peer_membership();
 
     _metrics.set_metric_name("raft_promote_to_voter_started");
     _metrics.add_dimension("node_id", node_id_to_string(_node_id));
@@ -2533,6 +2635,17 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
 template<raft_types Types>
 
 auto node<Types>::check_election_timeout() -> void {
+    // Requirement 3.2/4.1 (.kiro/specs/peer2peer-log-replication/): gossip this
+    // node's own progress and check for a peer-to-peer catch-up opportunity on
+    // every tick, regardless of server_state. Piggybacked here because this is
+    // the one tick callback every existing binary's external timer loop already
+    // calls unconditionally for every node state — unlike check_heartbeat_timeout(),
+    // which returns early for non-leaders before doing any other per-tick work.
+    // Both manage their own locking internally and never hold _mutex across
+    // network I/O.
+    maybe_gossip_progress();
+    maybe_catch_up_from_peer();
+
     std::unique_lock<std::mutex> lock(_mutex);
 
     // Only followers and candidates check for election timeout
@@ -2697,6 +2810,35 @@ auto node<Types>::initialize_from_storage() -> void {
                                                    {"current_term", std::to_string(_current_term)},
                                                    {"last_applied", std::to_string(_last_applied)},
                                                    {"log_size", std::to_string(_log.size())}});
+
+    // Covers both _configuration assignments above (snapshot restore and
+    // log-scan restore) — called once, single-threaded, before start() has
+    // spawned any other thread (Requirement 11.1).
+    sync_peer2peer_membership();
+}
+
+template<raft_types Types>
+
+auto node<Types>::cluster_members() const -> std::vector<node_id_type> {
+    auto members = _configuration.nodes();
+    if (_configuration.is_joint_consensus()) {
+        const auto& old_nodes = _configuration.old_nodes().value();
+        for (auto id : old_nodes) {
+            if (std::ranges::find(members, id) == members.end()) {
+                members.push_back(id);
+            }
+        }
+    }
+    return members;
+}
+
+template<raft_types Types>
+
+auto node<Types>::sync_peer2peer_membership() -> void {
+    // Fire-and-forget, matching advertise_progress()'s error-handling posture
+    // (Requirement 11.3) — a failure or delay here must never block the
+    // log-mutating operation that triggered it.
+    _peer2peer_replicator.update_membership(cluster_members());
 }
 
 template<raft_types Types>
@@ -2733,6 +2875,15 @@ auto node<Types>::register_rpc_handlers() -> void {
         _network_server.register_cluster_leave_handler(
             [this](const cluster_leave_request_type& req) -> cluster_leave_response_type {
                 return this->handle_cluster_leave(req);
+            });
+    }
+
+    // Register FetchLogEntries handler if the network server supports it
+    // (.kiro/specs/peer2peer-log-replication/, Requirement 5.3)
+    if constexpr (network_server_with_log_fetch<network_server_type>) {
+        _network_server.register_fetch_log_entries_handler(
+            [this](const fetch_log_entries_request_type& req) -> fetch_log_entries_response_type {
+                return this->handle_fetch_log_entries(req);
             });
     }
 
@@ -2941,15 +3092,60 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
         _reconnect_cv.notify_all();
     }
 
+    // Rules 3-5 (consistency check, conflict-truncation, append) — extracted into
+    // append_entries_with_consistency_check() (.kiro/specs/peer2peer-log-replication/,
+    // Requirement 6.1) so the peer-to-peer fetch path shares this exact logic.
+    auto response = append_entries_with_consistency_check(
+        request.prev_log_index(), request.prev_log_term(), request.entries());
+    if (!response.success()) {
+        return response;
+    }
+
+    // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
+    // entry)
+    if (request.leader_commit() > _commit_index) {
+        auto old_commit_index = _commit_index;
+        _commit_index = std::min(request.leader_commit(), get_last_log_index());
+
+        _logger.debug("Updated commit index",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"old_commit_index", std::to_string(old_commit_index)},
+                       {"new_commit_index", std::to_string(_commit_index)},
+                       {"leader_commit", std::to_string(request.leader_commit())}});
+
+        // Apply newly committed entries to state machine
+        apply_committed_entries();
+    }
+
+    _logger.debug("AppendEntries succeeded",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"last_log_index", std::to_string(get_last_log_index())},
+                   {"commit_index", std::to_string(_commit_index)}});
+
+    _metrics.set_metric_name("raft_append_entries_accepted");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_dimension("entries_appended", std::to_string(request.entries().size()));
+    _metrics.add_one();
+    _metrics.emit();
+
+    return response;
+}
+
+template<raft_types Types>
+
+auto node<Types>::append_entries_with_consistency_check(log_index_type prev_log_index,
+                                                        term_id_type prev_log_term,
+                                                        const std::vector<log_entry_type>& entries)
+    -> append_entries_response_type {
     // Rule 3: Reply false if log doesn't contain an entry at prevLogIndex whose term matches
     // prevLogTerm (§5.3)
-    if (request.prev_log_index() > 0) {
+    if (prev_log_index > 0) {
         // Check if we have an entry at prevLogIndex
-        if (request.prev_log_index() > get_last_log_index()) {
+        if (prev_log_index > get_last_log_index()) {
             // We don't have enough entries
             _logger.debug("Rejecting AppendEntries: log too short",
                           {{"node_id", node_id_to_string(_node_id)},
-                           {"prev_log_index", std::to_string(request.prev_log_index())},
+                           {"prev_log_index", std::to_string(prev_log_index)},
                            {"last_log_index", std::to_string(get_last_log_index())}});
 
             _metrics.set_metric_name("raft_append_entries_rejected");
@@ -2964,15 +3160,15 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
         }
 
         // Check if the term at prevLogIndex matches prevLogTerm
-        auto prev_entry = get_log_entry(request.prev_log_index());
-        if (!prev_entry.has_value() || prev_entry->term() != request.prev_log_term()) {
+        auto prev_entry = get_log_entry(prev_log_index);
+        if (!prev_entry.has_value() || prev_entry->term() != prev_log_term) {
             // Term mismatch at prevLogIndex
             auto conflict_term = prev_entry.has_value() ? prev_entry->term() : term_id_type{0};
 
             _logger.debug("Rejecting AppendEntries: term mismatch at prevLogIndex",
                           {{"node_id", node_id_to_string(_node_id)},
-                           {"prev_log_index", std::to_string(request.prev_log_index())},
-                           {"expected_term", std::to_string(request.prev_log_term())},
+                           {"prev_log_index", std::to_string(prev_log_index)},
+                           {"expected_term", std::to_string(prev_log_term)},
                            {"actual_term", std::to_string(conflict_term)}});
 
             _metrics.set_metric_name("raft_append_entries_rejected");
@@ -2982,10 +3178,10 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             _metrics.emit();
 
             // Find the first index of the conflicting term for faster backtracking
-            log_index_type conflict_index = request.prev_log_index();
+            log_index_type conflict_index = prev_log_index;
             if (prev_entry.has_value()) {
                 // Search backwards to find first entry with this term
-                for (log_index_type i = request.prev_log_index(); i > 0; --i) {
+                for (log_index_type i = prev_log_index; i > 0; --i) {
                     auto entry = get_log_entry(i);
                     if (!entry.has_value() || entry->term() != conflict_term) {
                         conflict_index = i + 1;
@@ -3005,9 +3201,9 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // Rule 4: If an existing entry conflicts with a new one (same index but different terms),
     // delete the existing entry and all that follow it (§5.3)
     bool log_modified = false;
-    for (std::size_t i = 0; i < request.entries().size(); ++i) {
-        const auto& new_entry = request.entries()[i];
-        auto entry_index = request.prev_log_index() + i + 1;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto& new_entry = entries[i];
+        auto entry_index = prev_log_index + i + 1;
 
         // Check if we have an entry at this index
         if (entry_index <= get_last_log_index()) {
@@ -3032,9 +3228,9 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     }
 
     // Rule 5: Append any new entries not already in the log
-    for (std::size_t i = 0; i < request.entries().size(); ++i) {
-        const auto& new_entry = request.entries()[i];
-        auto entry_index = request.prev_log_index() + i + 1;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto& new_entry = entries[i];
+        auto entry_index = prev_log_index + i + 1;
 
         if (entry_index > get_last_log_index()) {
             // This is a new entry - append it
@@ -3053,6 +3249,9 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
     // After any log modification (truncation or append), rescan backward for the most recent
     // configuration entry and update _configuration.  This handles both the "follower receives
     // a config entry" path and the "log is truncated past a config entry" path in one place.
+    // Applies identically whether entries arrived from the leader or a peer
+    // (.kiro/specs/peer2peer-log-replication/design.md Property 2/3) — nothing about
+    // this rescan is leader-specific.
     if (log_modified) {
         cluster_configuration_type reverted = _boot_configuration;
         for (auto it = _log.rbegin(); it != _log.rend(); ++it) {
@@ -3062,39 +3261,14 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
             }
         }
         _configuration = reverted;
-    }
+        sync_peer2peer_membership();
 
-    // Rule 6: If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new
-    // entry)
-    if (request.leader_commit() > _commit_index) {
-        auto old_commit_index = _commit_index;
-        _commit_index = std::min(request.leader_commit(), get_last_log_index());
-
-        _logger.debug("Updated commit index",
-                      {{"node_id", node_id_to_string(_node_id)},
-                       {"old_commit_index", std::to_string(old_commit_index)},
-                       {"new_commit_index", std::to_string(_commit_index)},
-                       {"leader_commit", std::to_string(request.leader_commit())}});
-
-        // Apply newly committed entries to state machine
-        apply_committed_entries();
-    }
-
-    // Persist current term if it was updated
-    if (log_modified || request.term() > _current_term) {
+        // Persist current term alongside any log modification (matches the
+        // pre-extraction combined condition; the other original disjunct,
+        // "request.term() > _current_term" evaluated after Rule 2 already
+        // synced _current_term up to request.term(), was always false there).
         _persistence.save_current_term(_current_term);
     }
-
-    _logger.debug("AppendEntries succeeded",
-                  {{"node_id", node_id_to_string(_node_id)},
-                   {"last_log_index", std::to_string(get_last_log_index())},
-                   {"commit_index", std::to_string(_commit_index)}});
-
-    _metrics.set_metric_name("raft_append_entries_accepted");
-    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-    _metrics.add_dimension("entries_appended", std::to_string(request.entries().size()));
-    _metrics.add_one();
-    _metrics.emit();
 
     return append_entries_response_type{_current_term, true, std::nullopt, std::nullopt};
 }
@@ -4429,6 +4603,246 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
     _metrics.emit();
 }
 
+// ============================================================================
+// Peer-to-peer catch-up (.kiro/specs/peer2peer-log-replication/)
+// ============================================================================
+
+template<raft_types Types>
+
+auto node<Types>::handle_fetch_log_entries(const fetch_log_entries_request_type& request)
+    -> fetch_log_entries_response_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    _logger.debug("Received FetchLogEntries RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"requester_id", node_id_to_string(request.requester_id())},
+                   {"from_index", std::to_string(request.from_index())},
+                   {"to_index", std::to_string(request.to_index())}});
+
+    // Requirement 5.4: available=false if this node doesn't itself have an entry
+    // at from_index (already compacted into a snapshot, or simply doesn't have it
+    // yet) — never blocks waiting to acquire it, never recurses into its own
+    // peer2peer_replicator on the requester's behalf.
+    auto from_entry = get_log_entry(request.from_index());
+    if (!from_entry.has_value()) {
+        _logger.debug("FetchLogEntries: entry not available",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"from_index", std::to_string(request.from_index())}});
+        return fetch_log_entries_response_type{
+            node_id_to_u64(_node_id), false, term_id_type{0}, {}};
+    }
+
+    term_id_type prev_log_term{0};
+    if (request.from_index() > 1) {
+        auto prev_entry = get_log_entry(request.from_index() - 1);
+        if (prev_entry.has_value()) {
+            prev_log_term = prev_entry->term();
+        }
+        // else: the entry immediately before from_index was already compacted into
+        // a snapshot whose term this node doesn't separately track here — falls
+        // back to term 0, which will simply fail the requester's consistency check
+        // (Requirement 6.2) and be treated as a failed catch-up attempt
+        // (Requirement 7.1), never a safety issue (design.md Property 3).
+    }
+
+    // Requirement 5.5: never serve more than min(to_index, get_last_log_index()).
+    auto last_index_to_serve = std::min(request.to_index(), get_last_log_index());
+    std::vector<log_entry_type> entries_to_send;
+    for (log_index_type idx = request.from_index(); idx <= last_index_to_serve; ++idx) {
+        auto entry = get_log_entry(idx);
+        if (!entry.has_value()) {
+            break;
+        }
+        entries_to_send.push_back(entry.value());
+    }
+
+    _logger.debug("FetchLogEntries: serving entries",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"requester_id", node_id_to_string(request.requester_id())},
+                   {"count", std::to_string(entries_to_send.size())}});
+
+    return fetch_log_entries_response_type{node_id_to_u64(_node_id), true, prev_log_term,
+                                           std::move(entries_to_send)};
+}
+
+template<raft_types Types>
+
+auto node<Types>::maybe_gossip_progress() -> void {
+    // Requirement 3.2: advertised regardless of server_state (leader, candidate,
+    // or follower) — a lagging leader that just lost an election still has
+    // entries other nodes may need.
+    address_type self_address;
+    term_id_type term;
+    log_index_type last_log_index;
+    node_id_type self_id;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto now = std::chrono::steady_clock::now();
+        // Requirement 3.1: gated by progress_gossip_interval so this does not
+        // fire on every maintenance-thread tick.
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_progress_gossip) <
+            _config.progress_gossip_interval()) {
+            return;
+        }
+        _last_progress_gossip = now;
+        self_address = _self_address;
+        term = _current_term;
+        last_log_index = get_last_log_index();
+        self_id = _node_id;
+    }
+
+    // Requirement 3.3: best-effort, fire-and-forget — a transport error here must
+    // never block or delay any Raft-critical operation. Captures _stop_flag per
+    // this project's async-callback convention (guards against dangling `this`
+    // if the node is destroyed while the future is still outstanding).
+    auto stop_flag = _stop_flag;
+    _peer2peer_replicator.advertise_progress(self_id, self_address, term, last_log_index)
+        .thenTry([this, stop_flag](auto try_result) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
+            if (try_result.hasException()) {
+                this->_logger.debug("Failed to advertise progress via peer2peer_replicator",
+                                    {{"node_id", node_id_to_string(this->_node_id)}});
+            }
+        });
+}
+
+template<raft_types Types>
+
+auto node<Types>::maybe_catch_up_from_peer() -> void {
+    log_index_type from_index;
+    log_index_type to_index;
+    std::chrono::milliseconds timeout;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        // Requirement 4.3: a leader never triggers catch-up fetches for itself —
+        // it is, by definition of _commit_index's quorum requirement, never the
+        // node furthest behind.
+        if (_state == kythira::server_state::leader) {
+            return;
+        }
+        // Requirement 4.5: at most one outstanding peer-to-peer fetch at a time.
+        if (_catch_up_in_flight) {
+            return;
+        }
+        from_index = get_last_log_index() + 1;
+        auto max_entries = static_cast<log_index_type>(_config.catch_up_fetch_max_entries());
+        to_index = max_entries > 0 ? from_index + max_entries - 1 : from_index;
+        timeout = _config.catch_up_fetch_timeout();
+        _catch_up_in_flight = true;
+    }
+
+    _metrics.set_metric_name("raft_peer_catch_up_attempt");
+    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+    _metrics.add_one();
+    _metrics.emit();
+
+    auto stop_flag = _stop_flag;
+    _peer2peer_replicator.find_catch_up_source(from_index, to_index, timeout)
+        .thenTry([this, stop_flag, from_index, to_index, timeout](auto try_result) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
+
+            // Requirement 4.4/7.1: no source known (including always, for
+            // no_op_peer2peer_replicator) — no-op this tick, re-evaluated next tick.
+            if (try_result.hasException() || !try_result.value().has_value()) {
+                std::lock_guard<std::mutex> lock(this->_mutex);
+                this->_catch_up_in_flight = false;
+                return;
+            }
+
+            auto source = try_result.value().value();
+
+            if constexpr (!network_client_with_log_fetch<network_client_type>) {
+                // Requirement 5.3: transport doesn't support fetch_log_entries —
+                // peer-to-peer catch-up is unreachable regardless of
+                // peer2peer_replicator_type configuration.
+                std::lock_guard<std::mutex> lock(this->_mutex);
+                this->_catch_up_in_flight = false;
+            } else {
+                fetch_log_entries_request_type request{._requester_id = this->_node_id,
+                                                       ._from_index = from_index,
+                                                       ._to_index = to_index};
+
+                this->_logger.debug("Attempting peer-to-peer catch-up fetch",
+                                    {{"node_id", node_id_to_string(this->_node_id)},
+                                     {"source_peer", node_id_to_string(source.node_id)},
+                                     {"from_index", std::to_string(from_index)},
+                                     {"to_index", std::to_string(to_index)}});
+
+                auto stop_flag2 = stop_flag;
+                this->_network_client
+                    .send_fetch_log_entries(node_id_to_u64(source.node_id), request, timeout)
+                    .thenTry([this, stop_flag2, from_index, source](auto resp_try) {
+                        if (stop_flag2->load(std::memory_order_acquire)) {
+                            return;
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(this->_mutex);
+                            this->_catch_up_in_flight = false;
+                        }
+
+                        // Requirement 7.1: RPC failure — logged, no-op this tick.
+                        if (resp_try.hasException()) {
+                            this->_logger.debug(
+                                "Peer-to-peer catch-up fetch failed",
+                                {{"node_id", node_id_to_string(this->_node_id)},
+                                 {"source_peer", node_id_to_string(source.node_id)}});
+                            return;
+                        }
+
+                        auto response = resp_try.value();
+                        if (!response.available()) {
+                            this->_logger.debug(
+                                "Peer-to-peer catch-up source unavailable",
+                                {{"node_id", node_id_to_string(this->_node_id)},
+                                 {"source_peer", node_id_to_string(source.node_id)}});
+                            return;
+                        }
+
+                        // Requirement 6.2: apply exactly as if this were an AppendEntries
+                        // payload from prev_log_index = from_index - 1 — same
+                        // consistency-check-and-truncate guarantees as leader-driven
+                        // replication (Requirement 6.1). Never touches _commit_index,
+                        // _known_leader, or the election timer (Requirement 6.3).
+                        append_entries_response_type consistency_response;
+                        log_index_type new_last_index{};
+                        {
+                            std::lock_guard<std::mutex> lock(this->_mutex);
+                            consistency_response = this->append_entries_with_consistency_check(
+                                from_index - 1, response.prev_log_term(), response.entries());
+                            new_last_index = this->get_last_log_index();
+                        }
+
+                        if (consistency_response.success()) {
+                            this->_metrics.set_metric_name("raft_peer_catch_up_success");
+                            this->_metrics.add_dimension("node_id",
+                                                         node_id_to_string(this->_node_id));
+                            this->_metrics.add_dimension("source_peer",
+                                                         node_id_to_string(source.node_id));
+                            this->_metrics.add_one();
+                            this->_metrics.emit();
+                            this->_logger.debug(
+                                "Peer-to-peer catch-up succeeded",
+                                {{"node_id", node_id_to_string(this->_node_id)},
+                                 {"source_peer", node_id_to_string(source.node_id)},
+                                 {"last_log_index", std::to_string(new_last_index)}});
+                        } else {
+                            // Requirement 6.2/7.1: consistency check failed — the fetched
+                            // batch was discarded entirely, treated as a failed catch-up
+                            // attempt (design.md Property 3: never a safety issue).
+                            this->_logger.debug(
+                                "Peer-to-peer catch-up consistency check failed",
+                                {{"node_id", node_id_to_string(this->_node_id)},
+                                 {"source_peer", node_id_to_string(source.node_id)}});
+                        }
+                    });
+            }
+        });
+}
+
 template<raft_types Types>
 
 auto node<Types>::advance_commit_index() -> void {
@@ -4591,6 +5005,7 @@ auto node<Types>::apply_committed_entries() -> void {
         if (entry.type() == entry_type::configuration) {
             auto new_config = deserialize_configuration<node_id_type>(entry.command());
             _configuration = new_config;
+            sync_peer2peer_membership();
             _config_synchronizer.notify_configuration_committed(new_config, entry.index());
             // add_learner()/remove_learner() register on _commit_waiter (not
             // _config_synchronizer, which only tracks the joint/final voting-set
@@ -5102,6 +5517,7 @@ auto node<Types>::install_snapshot(const snapshot_type& snap) -> void {
 
         // Restore cluster configuration from the snapshot
         _configuration = snap.configuration();
+        sync_peer2peer_membership();
 
         // Update last_applied to snapshot's last_included_index
         _last_applied = snap.last_included_index();

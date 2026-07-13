@@ -1,15 +1,113 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 10, 2026
+**Last Updated**: July 12, 2026
 
 ## Current Status
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%)
+- **All tests passing** (100%) — 358 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
-- All specifications complete across all 8 feature areas (membership change now complete)
+- All specifications complete across all 8 feature areas (membership change now complete),
+  plus peer-to-peer log replication/gossip catch-up and state machine examples
 - Build clean with no errors or warnings
+- Coverage floor: 88.62% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 11–12, 2026)
+
+- **Peer-to-peer log replication and TCP gossip transport implemented**: lands
+  both `.kiro/specs/peer2peer-log-replication/` (the abstract catch-up
+  mechanism) and `.kiro/specs/peer2peer-gossip-transport/` (a real network
+  transport for it), since the gossip spec couldn't compile or be exercised
+  without its foundation and neither had been started. Previously, log
+  replication in `node<Types>` was a strict star topology — only the leader
+  could supply missing entries, so its own CPU/bandwidth capped how fast a
+  cluster converged when many members fell behind at once (rolling restart,
+  healed partition, bursty joins).
+  - New opt-in `peer2peer_replicator` concept
+    (`include/raft/peer2peer_replication.hpp`), mirroring `peer_discovery`'s
+    shape: a `no_op_peer2peer_replicator` default guarantees zero behavioral
+    change for any `Types` bundle that doesn't opt in, and
+    `static_peer2peer_replicator` is an in-memory reference/test
+    implementation.
+  - New `fetch_log_entries_request`/`response` RPC pair (`types.hpp`) plus
+    optional `network_client_with_log_fetch`/`network_server_with_log_fetch`
+    extension concepts (`network.hpp`), wired into `json_serializer.hpp` and
+    `simulator_network.hpp` exactly like the existing `ClusterJoin`/
+    `ClusterLeave` optional extensions.
+  - `raft.hpp`: extracted `append_entries_with_consistency_check()` from
+    `handle_append_entries()`'s Rules 3–5 so the peer-to-peer fetch path
+    reuses the exact same conflict/truncation guarantees as leader-driven
+    replication — a bad or stale source peer can only cause wasted local
+    work, never a committed entry being lost or altered.
+  - A replicator's peer set now tracks `cluster_members()` automatically via
+    `sync_peer2peer_membership()`, wired into every `_configuration`
+    mutation site (including `set_cluster_configuration()`, which the
+    peer2peer-log-replication spec's own design doc had missed because it
+    mutates `_configuration`'s fields in place rather than via a single
+    assignment) — never separately configured.
+  - `maybe_gossip_progress()`/`maybe_catch_up_from_peer()` piggyback on
+    `check_election_timeout()` (called unconditionally for every node state
+    by every existing binary's external timer loop) since this codebase has
+    no dedicated maintenance-thread tick.
+  - **`tcp_gossip_peer2peer_replicator`** (`include/raft/tcp_gossip_transport.hpp`,
+    583 lines): a real anti-entropy gossip implementation (randomized
+    push-pull digest exchange, Cassandra/Dynamo-style — not SWIM, since
+    Raft's own election timeouts already cover liveness detection),
+    self-contained TCP listener plus background gossip thread, entirely
+    independent of whatever `network_client_type`/`network_server_type` the
+    owning node uses for Raft RPCs. Starts its background threads lazily via
+    an explicit `start()`/`stop()` pair (detected structurally via
+    `if constexpr (requires {...})`) rather than in the constructor, since
+    `node_config<Types>` holds `peer2peer_replicator_type` by value and
+    `node<Types>`'s constructor moves it once — moving an object after its
+    background threads have captured `this` would dangle.
+  - 6 new test files (concept/no-op/static unit tests, an end-to-end
+    property suite proving a joining node converges via a peer while
+    excluded from ever reaching the leader, a `remove_server()`-revokes-
+    eligibility test, a no-op-vs-undeclared parity test, pure-logic
+    merge/prune/wire unit tests for the gossip transport, a real-TCP
+    single-process integration test, and a mixed-transport property suite —
+    real gossip sockets, simulated Raft RPCs — covering catch-up
+    convergence, freshness expiry, and membership-removal). Full existing
+    regression suite verified green alongside them.
+- **State machine examples completed**: `replicated_log_state_machine` and
+  `distributed_lock_state_machine` brought up to parity with
+  `counter`/`register` (test targets, `CMakeLists.txt` wiring). Found and
+  fixed a determinism defect in `distributed_lock_state_machine::apply()`:
+  it called `std::chrono::steady_clock::now()` to compute lock expiry, which
+  is non-deterministic across Raft replicas (clock skew, GC pauses,
+  different machines) and violates the `state_machine` concept's requirement
+  that every replica reach identical state from the same command at the same
+  log index. Replaced wall-clock expiry with log-index-based expiry
+  (`expiry_index = acquire_index + timeout_entries`), using the `index`
+  argument `apply()` already receives — the one value every replica is
+  guaranteed to agree on. The `ACQUIRE` command's third argument is renamed
+  `timeout_ms` → `timeout_entries` to match; `include/raft/examples/README.md`
+  and this file both updated accordingly. New
+  `tests/replicated_log_state_machine_test.cpp` and
+  `tests/distributed_lock_state_machine_test.cpp` mirror the existing
+  counter/register test structure, each with a `static_assert` against
+  `kythira::state_machine` to catch future signature drift at compile time;
+  distributed lock's suite includes a dedicated determinism test applying
+  the same command sequence — including an expiry and re-acquisition — to
+  two independent instances and asserting byte-identical `get_state()` after
+  every command.
+- **Coverage hook no longer hangs on debuginfod network stalls**: the
+  pre-commit coverage-ratchet step intermittently took several minutes to
+  what looked like an indefinite hang at "[coverage] Measuring ...". Root
+  cause: `llvm-profdata-18`/`llvm-cov-18` on this system are built with
+  debuginfod (libcurl) support, and `DEBUGINFOD_URLS` is set globally in the
+  environment; left alone, both tools attempt a network round-trip per test
+  binary to fetch debug info they already have embedded locally, and in this
+  network-restricted environment those connections stall (silently dropped,
+  not refused) instead of failing fast. Confirmed directly — clearing
+  `DEBUGINFOD_URLS` took the coverage report over all 306 test binaries from
+  66 minutes wall clock down to 1.9 seconds. Fix: explicitly clear
+  `DEBUGINFOD_URLS` for both the `llvm-profdata` merge and `llvm-cov` report
+  invocations. An earlier, incorrect diagnosis had attributed this to LLVM's
+  internal thread pool and worked around it with `--num-threads=1`; that
+  workaround is superseded by this fix.
 
 ### What Changed (July 9–10, 2026)
 
@@ -324,36 +422,36 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Protocol Completeness
 
-- [ ] **Peer-to-peer log replication (gossip catch-up)** — opt-in
+- [x] **Peer-to-peer log replication (gossip catch-up)** — opt-in
   `peer2peer_replicator_type` extension so a lagging member pulls missing log
   entries from another member that already has them instead of exclusively
   from the leader, addressing the single-leader `replicate_to_followers()`
   fan-out bottleneck for catch-up scenarios (rolling restarts, healed
   partitions, bursty joins); leader remains sole commit authority (no change
-  to `_commit_index`/election safety), no-op default preserves today's
-  leader-only behavior exactly, activates only for catch-up (steady-state
-  replication unchanged); the replicator's own peer set tracks
+  to `_commit_index`/election safety), no-op default (`no_op_peer2peer_replicator`)
+  preserves today's leader-only behavior exactly, activates only for catch-up
+  (steady-state replication unchanged); the replicator's own peer set tracks
   `node<Types>::cluster_members()` — the replicated log's core cluster
   membership (`_configuration.nodes()`, unioned with `old_nodes()` during
-  joint consensus, excluding learners) — pushed via `update_membership()`
+  joint consensus, excluding learners) — pushed via `sync_peer2peer_membership()`
   at every `_configuration` mutation site, not separately maintained
   configuration; spec at `.kiro/specs/peer2peer-log-replication/`;
-  21 tasks across 4 phases, design complete, not yet implemented
-- [ ] **Peer-to-peer gossip transport** — `tcp_gossip_peer2peer_replicator`,
+  21 tasks across 4 phases complete
+- [x] **Peer-to-peer gossip transport** — `tcp_gossip_peer2peer_replicator`,
   a real anti-entropy gossip implementation (randomized push-pull digest
   exchange, Cassandra/Dynamo-style, not SWIM — Raft's own election timeouts
   already cover liveness detection) of the `peer2peer_replicator` concept
   above; self-contained TCP listener + background gossip thread,
   independent of the Raft RPC transport (`network_client_type`/
   `network_server_type` untouched); current membership comes exclusively
-  from `update_membership()` (driven by the log, per the spec above), never
-  separately configured — only node-ID-to-address resolution
+  from `sync_peer2peer_membership()` (driven by the log, per the spec above),
+  never separately configured — only node-ID-to-address resolution
   (`address_book`) remains static, since addresses aren't log data; depends
   on `.kiro/specs/peer2peer-log-replication/`; test strategy deliberately
   avoids subprocess-spawning tests (single-process, real-TCP, multi-instance
   instead) after `ca_cluster_node_test` was diagnosed as this project's
   dominant CI-flake source; spec at `.kiro/specs/peer2peer-gossip-transport/`;
-  14 tasks across 4 phases, design complete, not yet implemented
+  14 tasks across 4 phases complete
 - [x] **Membership change (add/remove server)** — joint consensus (Raft §6):
   log entry type discriminant, leader append of C_old+new, joint quorum
   (commit-index and election), `apply_committed_entries()` config-entry
@@ -445,9 +543,9 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Minor Enhancements
 
-- [ ] **State machine examples** — counter, register, replicated log, and
+- [x] **State machine examples** — counter, register, replicated log, and
   distributed lock examples for documentation/demonstration purposes
-  (counter and register already exist as test targets)
+  (all four now have test targets)
 - [x] **libfiu integration** — fault injection chaos testing; spec at
   `.kiro/specs/libfiu-integration/`; 21 tasks complete: CMake detection,
   `fiu_do_on` fault points in persistence/network/state machine, RAII fault

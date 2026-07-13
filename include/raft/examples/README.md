@@ -77,21 +77,33 @@ std::cout << "Total entries: " << sm.entry_count() << "\n";
 
 ### 4. Distributed Lock State Machine (`distributed_lock_state_machine.hpp`)
 
-**Use Case**: Distributed locking with timeout-based expiration.
+**Use Case**: Distributed locking with expiration based on log index.
 
 **Operations**:
-- `ACQUIRE <lock_id> <owner> <timeout_ms>` - Acquire lock
+- `ACQUIRE <lock_id> <owner> <timeout_entries>` - Acquire lock, expiring after
+  `timeout_entries` subsequently applied log entries
 - `RELEASE <lock_id> <owner>` - Release lock
 - `QUERY <lock_id>` - Check lock status
+
+Expiration is measured in applied log entries rather than wall-clock time.
+`apply(command, index)` must be deterministic — every replica has to reach
+identical state from the same command at the same log index — and a
+wall-clock read (`std::chrono::steady_clock::now()`) inside `apply()` would
+violate that (clock skew, GC pauses, and different machines can all cause
+replicas to disagree on whether a lock has expired). `index` is the one
+value every replica is guaranteed to agree on for a given `apply()` call, so
+a lock acquired at index `N` with `timeout_entries = T` expires once any
+node applies an entry at index `>= N + T`.
 
 **Example**:
 ```cpp
 kythira::examples::distributed_lock_state_machine sm;
 
-std::string cmd = "ACQUIRE mylock client1 5000";
+// Acquire "mylock" for up to 100 subsequently applied log entries
+std::string cmd = "ACQUIRE mylock client1 100";
 std::vector<std::byte> bytes(reinterpret_cast<const std::byte*>(cmd.data()),
                              reinterpret_cast<const std::byte*>(cmd.data() + cmd.size()));
-auto result = sm.apply(bytes, 1);
+auto result = sm.apply(bytes, 1);  // applied at log index 1, expires at index 101
 
 std::string result_str(reinterpret_cast<const char*>(result.data()), result.size());
 if (result_str == "OK") {

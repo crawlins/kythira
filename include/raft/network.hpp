@@ -96,4 +96,30 @@ concept network_server_with_cluster_leave = requires(
     { server.register_cluster_leave_handler(handler) } -> std::same_as<void>;
 };
 
+// ============================================================================
+// Optional peer-to-peer catch-up extension (.kiro/specs/peer2peer-log-replication/,
+// Requirement 5.2) — NOT required by the base network concepts so existing
+// transports (simulator_network_*, tcp_rpc_*, tls_tcp_rpc_*) are unaffected
+// until each one opts in.
+// ============================================================================
+
+// Satisfied by a network_client that can send fetch_log_entries RPCs.
+template<typename C>
+concept network_client_with_log_fetch =
+    requires(C client, std::uint64_t target, const kythira::fetch_log_entries_request<>& req,
+             std::chrono::milliseconds timeout) {
+        {
+            client.send_fetch_log_entries(target, req, timeout)
+        } -> std::same_as<kythira::Future<kythira::fetch_log_entries_response<>>>;
+    };
+
+// Satisfied by a network_server that can register a fetch_log_entries handler.
+template<typename S>
+concept network_server_with_log_fetch =
+    requires(S server, std::function<kythira::fetch_log_entries_response<>(
+                           const kythira::fetch_log_entries_request<>&)>
+                           handler) {
+        { server.register_fetch_log_entries_handler(handler) } -> std::same_as<void>;
+    };
+
 }  // namespace kythira

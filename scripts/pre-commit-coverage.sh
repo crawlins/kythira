@@ -146,7 +146,11 @@ _NEEDS_CONFIGURE=0
 if [[ ! -f "${COVERAGE_BUILD}/CMakeCache.txt" ]]; then
     _NEEDS_CONFIGURE=1
 else
-    _CACHED_CXX=$(grep "^CMAKE_CXX_COMPILER:FILEPATH=" \
+    # CMake stores this entry as STRING (not FILEPATH) when set explicitly
+    # via -DCMAKE_CXX_COMPILER=..., which is how this script configures it
+    # below — match both cache-entry types or this always reads empty and
+    # forces a full rm -rf + rebuild of build-coverage/ on every commit.
+    _CACHED_CXX=$(grep -E "^CMAKE_CXX_COMPILER:(FILEPATH|STRING)=" \
                   "${COVERAGE_BUILD}/CMakeCache.txt" 2>/dev/null | cut -d= -f2 || true)
     if [[ ! "${_CACHED_CXX}" =~ clang ]]; then
         echo "  [coverage] Reconfiguring build-coverage/ for clang source-based coverage ..."
@@ -210,6 +214,15 @@ if ! LLVM_PROFILE_FILE="${COVERAGE_BUILD}/%p-%m.profraw" \
 fi
 
 # ── Merge per-process profiles ────────────────────────────────────────────────
+# llvm-profdata/llvm-cov below are built with debuginfod (libcurl) support,
+# and this machine has DEBUGINFOD_URLS set globally. Left alone, each tool
+# tries a network round-trip per binary/module to fetch debug info it
+# already has locally; in this network-restricted environment those
+# connections stall instead of failing fast, turning a ~2s report into a
+# 60+ minute one that looks like an indefinite hang (blocked in poll(),
+# near-zero CPU). Disabling debuginfod is correct regardless of network
+# environment: these are locally-built binaries with embedded debug info,
+# so remote symbol fetching is never needed here.
 echo "  [coverage] Measuring ..."
 COVERAGE_PROFDATA="${COVERAGE_BUILD}/merged.profdata"
 mapfile -t _PROFRAW < <(find "${COVERAGE_BUILD}" -name "*.profraw" 2>/dev/null)
@@ -217,7 +230,7 @@ if [[ ${#_PROFRAW[@]} -eq 0 ]]; then
     echo "  [coverage] WARNING: no .profraw files generated — skipping ratchet."
     exit 0
 fi
-"$LLVM_PROFDATA" merge -sparse "${_PROFRAW[@]}" -o "${COVERAGE_PROFDATA}" 2>/dev/null
+DEBUGINFOD_URLS="" "$LLVM_PROFDATA" merge -sparse "${_PROFRAW[@]}" -o "${COVERAGE_PROFDATA}" 2>/dev/null
 
 # ── Collect test binaries for llvm-cov ────────────────────────────────────────
 mapfile -t _TEST_BINS < <(find "${COVERAGE_BUILD}/tests" -maxdepth 1 \
@@ -235,7 +248,7 @@ done
 # ── Report line coverage ───────────────────────────────────────────────────────
 # llvm-cov report columns: Filename Regions Missed Cover% Lines Missed LineCover% …
 # $7 on the TOTAL row is the line coverage percentage.
-LLVM_COV_OUT=$("$LLVM_COV" report \
+LLVM_COV_OUT=$(DEBUGINFOD_URLS="" "$LLVM_COV" report \
     --instr-profile="${COVERAGE_PROFDATA}" \
     "${_MAIN_BIN}" \
     "${_EXTRA_BINS[@]}" \

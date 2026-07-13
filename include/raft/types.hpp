@@ -6,6 +6,7 @@
 #include <concepts/future.hpp>
 #include <raft/metrics.hpp>
 #include <raft/peer_discovery.hpp>
+#include <raft/peer2peer_replication.hpp>
 #include <concepts>
 #include <cstdint>
 #include <string>
@@ -270,6 +271,53 @@ concept install_snapshot_response_type = requires(const T& resp) {
     { resp.term() } -> std::same_as<TermId>;
 };
 
+/// @brief Request for the peer-to-peer `fetch_log_entries` RPC
+/// (`.kiro/specs/peer2peer-log-replication/`).
+///
+/// Requests entries `[from_index, to_index]` from a peer believed, via
+/// gossiped progress digests, to already hold them — never sent to or by the
+/// leader-only replication path.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
+struct fetch_log_entries_request {
+    NodeId _requester_id;
+    LogIndex _from_index;
+    LogIndex _to_index;
+
+    [[nodiscard]] auto requester_id() const -> NodeId { return _requester_id; }
+    [[nodiscard]] auto from_index() const -> LogIndex { return _from_index; }
+    [[nodiscard]] auto to_index() const -> LogIndex { return _to_index; }
+};
+
+/// @brief Response to a `fetch_log_entries_request`.
+///
+/// Shaped like `append_entries_request` minus the leader-only fields
+/// (`leader_id`/`leader_commit`) — the responder is never treated as a
+/// leader; the requester applies `entries` via the same
+/// consistency-check-and-truncate logic used for `AppendEntries`, with
+/// `prev_log_index = from_index - 1` and `prev_log_term = prev_log_term()`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
+/// @tparam LogEntry Log-entry type; defaults to `log_entry<TermId, LogIndex>`.
+template<typename TermId = std::uint64_t, typename LogIndex = std::uint64_t,
+         typename LogEntry = log_entry<TermId, LogIndex>>
+requires term_id<TermId> && log_index<LogIndex> && log_entry_type<LogEntry, TermId, LogIndex>
+struct fetch_log_entries_response {
+    std::uint64_t _responder_id;
+    bool _available;
+    TermId _prev_log_term;
+    std::vector<LogEntry> _entries;
+
+    [[nodiscard]] auto responder_id() const -> std::uint64_t { return _responder_id; }
+    [[nodiscard]] auto available() const -> bool { return _available; }
+    [[nodiscard]] auto prev_log_term() const -> TermId { return _prev_log_term; }
+    [[nodiscard]] auto entries() const -> const std::vector<LogEntry>& { return _entries; }
+};
+
 /// @brief Default RequestVote request.
 /// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
 /// @tparam TermId   Term number type; defaults to `uint64_t`.
@@ -521,6 +569,21 @@ struct raft_configuration {
     /// out-of-cycle `assess_quorum` call.
     std::size_t _quorum_heartbeat_failure_threshold{3};
 
+    // ── Peer-to-peer catch-up (.kiro/specs/peer2peer-log-replication/) ───────────
+    /// Cadence at which a node advertises its own progress digest via
+    /// `peer2peer_replicator_type::advertise_progress` — coarser than
+    /// `_heartbeat_interval` since progress digests are advisory, not
+    /// correctness-critical.
+    std::chrono::milliseconds _progress_gossip_interval{500};
+    /// Catch-up gap (highest known `last_log_index` across all progress digests
+    /// minus this node's own `get_last_log_index()`) that triggers a
+    /// `find_catch_up_source` lookup.
+    std::uint64_t _catch_up_gap_threshold{50};
+    /// Maximum number of entries requested by a single `fetch_log_entries` call.
+    std::uint64_t _catch_up_fetch_max_entries{500};
+    /// Deadline for a single `fetch_log_entries` RPC.
+    std::chrono::milliseconds _catch_up_fetch_timeout{5000};
+
     // ── Application-failure policy ────────────────────────────────────────────
     application_failure_policy _application_failure_policy{application_failure_policy::halt};
     std::size_t _application_retry_max_attempts{3};
@@ -539,6 +602,18 @@ struct raft_configuration {
     }
     [[nodiscard]] auto quorum_heartbeat_failure_threshold() const -> std::size_t {
         return _quorum_heartbeat_failure_threshold;
+    }
+    [[nodiscard]] auto progress_gossip_interval() const -> std::chrono::milliseconds {
+        return _progress_gossip_interval;
+    }
+    [[nodiscard]] auto catch_up_gap_threshold() const -> std::uint64_t {
+        return _catch_up_gap_threshold;
+    }
+    [[nodiscard]] auto catch_up_fetch_max_entries() const -> std::uint64_t {
+        return _catch_up_fetch_max_entries;
+    }
+    [[nodiscard]] auto catch_up_fetch_timeout() const -> std::chrono::milliseconds {
+        return _catch_up_fetch_timeout;
     }
 
     [[nodiscard]] auto election_timeout_min() const -> std::chrono::milliseconds {
@@ -771,6 +846,30 @@ template<typename T, typename NodeId> struct _bootstrap_type_traits<T, NodeId, t
     using cluster_join_response_type = cluster_join_response<NodeId, typename T::address_type>;
     using cluster_leave_request_type = cluster_leave_request<NodeId, typename T::address_type>;
     using cluster_leave_response_type = cluster_leave_response<NodeId, typename T::address_type>;
+};
+
+// ============================================================================
+// Peer-to-peer replicator type-detection helpers
+// (.kiro/specs/peer2peer-log-replication/, Requirement 2.1) — mirrors
+// _bootstrap_type_traits/_has_bootstrap_types: Types bundles that don't
+// declare peer2peer_replicator_type fall back to no_op_peer2peer_replicator
+// transparently, so this extension is purely additive.
+// ============================================================================
+
+template<typename T>
+concept _has_peer2peer_replicator_type = requires { typename T::peer2peer_replicator_type; };
+
+// Primary: no peer2peer_replicator_type declared → fall back to no_op
+template<typename T, typename NodeId, typename Address, typename LogIndex,
+         bool = _has_peer2peer_replicator_type<T>>
+struct _peer2peer_replicator_type_traits {
+    using peer2peer_replicator_type = no_op_peer2peer_replicator<NodeId, Address, LogIndex>;
+};
+
+// Specialisation: peer2peer_replicator_type is present → use it
+template<typename T, typename NodeId, typename Address, typename LogIndex>
+struct _peer2peer_replicator_type_traits<T, NodeId, Address, LogIndex, true> {
+    using peer2peer_replicator_type = typename T::peer2peer_replicator_type;
 };
 
 // ============================================================================

@@ -15,6 +15,9 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - **State Machine Application** with failure handling and recovery
 - **Snapshot Support** for log compaction and efficient catch-up
 - **Cluster Membership Changes** using joint consensus
+- **Peer-to-Peer Log Replication** (opt-in) — lagging followers can catch up
+  from any peer instead of only the leader, via a gossip-based transport; see
+  [Peer-to-Peer Log Replication & Gossip Transport](#peer-to-peer-log-replication--gossip-transport)
 
 ### Advanced Features
 - **Async Operations** using generic future concepts (Folly, std::future, custom)
@@ -45,11 +48,11 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **71% Test Coverage** with 62/87 tests passing
-- **100% Built Test Pass Rate** (62/62 tests)
+- **358 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
-- **Integration Tests** for end-to-end validation
-- **Zero Test Failures** in compiled test suite
+- **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
+- **Zero Test Failures** across the full test suite
 
 ## Requirements
 
@@ -261,25 +264,28 @@ auto result = std::move(future).get();  // Waits for commit and application
 
 ```cpp
 #include <raft/http_transport.hpp>
+#include <raft/http_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 
-// Define transport types
-struct production_transport {
-    using serializer_type = raft::json_rpc_serializer<std::vector<std::byte>>;
-    template<typename T> using future_template = folly::Future<T>;
-    using executor_type = folly::CPUThreadPoolExecutor;
-    using metrics_type = raft::prometheus_metrics;  // Your metrics implementation
-};
+// http_transport_types<Serializer, Metrics, Executor> is a ready-made Types
+// bundle satisfying the transport_types concept — swap in your own metrics
+// implementation (anything satisfying kythira::metrics<T>) in place of
+// kythira::noop_metrics below.
+using production_transport = kythira::http_transport_types<
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    folly::CPUThreadPoolExecutor>;
 
 // Server with HTTPS
-raft::cpp_httplib_server_config server_config;
+kythira::cpp_httplib_server_config server_config;
 server_config.enable_ssl = true;
 server_config.ssl_cert_path = "/etc/raft/server.crt";
 server_config.ssl_key_path = "/etc/raft/server.key";
 server_config.max_concurrent_connections = 100;
 
-raft::cpp_httplib_server<production_transport> server(
-    "0.0.0.0", 8443, server_config, metrics
+kythira::cpp_httplib_server<production_transport> server(
+    "0.0.0.0", 8443, server_config, kythira::noop_metrics{}
 );
 
 // Client with HTTPS
@@ -288,13 +294,13 @@ cluster_nodes[1] = "https://node1.example.com:8443";
 cluster_nodes[2] = "https://node2.example.com:8443";
 cluster_nodes[3] = "https://node3.example.com:8443";
 
-raft::cpp_httplib_client_config client_config;
+kythira::cpp_httplib_client_config client_config;
 client_config.enable_ssl_verification = true;
 client_config.ca_cert_path = "/etc/raft/ca.crt";
 client_config.connection_pool_size = 10;
 
-raft::cpp_httplib_client<production_transport> client(
-    std::move(cluster_nodes), client_config, metrics
+kythira::cpp_httplib_client<production_transport> client(
+    std::move(cluster_nodes), client_config, kythira::noop_metrics{}
 );
 ```
 
@@ -302,7 +308,15 @@ raft::cpp_httplib_client<production_transport> client(
 
 ```cpp
 #include <raft/coap_transport.hpp>
+#include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+
+// coap_transport_types<Serializer, Metrics, Executor> is CoAP's equivalent
+// of http_transport_types above.
+using iot_transport = kythira::coap_transport_types<
+    kythira::json_rpc_serializer<std::vector<std::byte>>,
+    kythira::noop_metrics,
+    folly::Executor>;
 
 // Configure CoAP endpoints
 std::unordered_map<std::uint64_t, std::string> coap_endpoints = {
@@ -312,7 +326,7 @@ std::unordered_map<std::uint64_t, std::string> coap_endpoints = {
 };
 
 // Client configuration with DTLS
-coap_client_config coap_config;
+kythira::coap_client_config coap_config;
 coap_config.enable_dtls = true;
 coap_config.cert_file = "/etc/raft/coap-cert.pem";
 coap_config.key_file = "/etc/raft/coap-key.pem";
@@ -321,29 +335,25 @@ coap_config.ack_timeout = std::chrono::milliseconds{2000};
 coap_config.max_retransmit = 4;
 coap_config.enable_block_transfer = true;  // For large messages
 
-auto coap_client = kythira::coap_client<
-    raft::json_rpc_serializer<std::vector<std::byte>>,
-    raft::noop_metrics,
-    raft::console_logger
->(coap_endpoints, coap_config, metrics, logger);
+kythira::coap_client<iot_transport> client(
+    coap_endpoints, coap_config, kythira::noop_metrics{}
+);
 
 // Server configuration
-coap_server_config server_config;
+kythira::coap_server_config server_config;
 server_config.enable_dtls = true;
 server_config.cert_file = "/etc/raft/coap-cert.pem";
 server_config.key_file = "/etc/raft/coap-key.pem";
 server_config.ca_file = "/etc/raft/coap-ca.pem";
 server_config.max_concurrent_sessions = 200;
 
-auto coap_server = kythira::coap_server<
-    raft::json_rpc_serializer<std::vector<std::byte>>,
-    raft::noop_metrics,
-    raft::console_logger
->("0.0.0.0", 5684, server_config, metrics, logger);
+kythira::coap_server<iot_transport> server(
+    "0.0.0.0", 5684, server_config, kythira::noop_metrics{}
+);
 
 // Register handlers and start
-coap_server.register_request_vote_handler(vote_handler);
-coap_server.start();
+server.register_request_vote_handler(vote_handler);
+server.start();
 ```
 
 ## Architecture
@@ -442,20 +452,20 @@ All major components are pluggable via template parameters:
 
 ### Test Status
 
-See [RAFT_TESTS_FINAL_STATUS.md](RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis.
+See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis and [doc/TODO.md](doc/TODO.md) for full task-by-task project status.
 
 **Summary**:
-- **Total Tests**: 87
-- **Passing**: 62 (71%)
+- **Total Tests**: 358 (registered in CTest)
+- **Passing**: 358 (100%)
 - **Failing**: 0 (0%)
-- **Not Built**: 25 (29%)
-- **Built Test Pass Rate**: 100% (62/62)
+- **Line Coverage**: 88.6%+ (non-decreasing ratchet, see [Code Coverage](#code-coverage))
 
 ### Test Categories
 
-- **Property-Based Tests** (51 tests): Validate correctness properties across random inputs
-- **Integration Tests** (10 tests): End-to-end cluster behavior validation
-- **Unit Tests** (26 tests): Component-level testing
+- **Property-Based Tests**: safety and liveness properties validated across randomized inputs, including dedicated determinism tests for state machines
+- **Integration Tests**: end-to-end cluster behavior, including multi-process Raft/CA clusters with leader failover
+- **Unit Tests**: component-level testing across transports, persistence, peer discovery, and peer-to-peer replication
+- **Chaos & Docker-Chaos Tests**: libfiu fault injection and real multi-node OS-level fault scenarios (see [Chaos Testing](#chaos-testing) and [Docker Chaos Testing](#docker-chaos-testing))
 
 ### Running Tests
 
@@ -835,6 +845,77 @@ per-identifier ACME challenge-type dispatch and `.local`/mDNS validation),
 
 ---
 
+## Peer-to-Peer Log Replication & Gossip Transport
+
+By default, log replication in `node<Types>` is a strict star topology: only
+the leader can supply missing entries to a follower that has fallen behind.
+That's fine in steady state, but it makes the leader's own CPU/bandwidth the
+bottleneck for how fast a cluster converges when many members fall behind at
+once — a rolling restart, a healed network partition, or several nodes
+joining in a burst. This is opt-in and off by default; the leader remains the
+sole commit authority in all cases. See
+[`.kiro/specs/peer2peer-log-replication/`](.kiro/specs/peer2peer-log-replication/)
+and [`.kiro/specs/peer2peer-gossip-transport/`](.kiro/specs/peer2peer-gossip-transport/)
+for the full design and requirements.
+
+### Components
+
+- **`peer2peer_replicator`** (`include/raft/peer2peer_replication.hpp`) — an
+  opt-in concept, shaped like `peer_discovery`. `no_op_peer2peer_replicator`
+  is the default `peer2peer_replicator_type` and guarantees zero behavioral
+  change for any `Types` bundle that doesn't opt in;
+  `static_peer2peer_replicator` is an in-memory reference/test
+  implementation.
+- **`fetch_log_entries_request`/`response`** (`include/raft/types.hpp`) — the
+  RPC pair a peer-to-peer fetch uses, with optional
+  `network_client_with_log_fetch`/`network_server_with_log_fetch` extension
+  concepts (`network.hpp`), wired into `json_serializer.hpp` and
+  `simulator_network.hpp` the same way the existing `ClusterJoin`/
+  `ClusterLeave` optional extensions are.
+- **`tcp_gossip_peer2peer_replicator`** (`include/raft/tcp_gossip_transport.hpp`)
+  — a real anti-entropy gossip implementation: a self-contained TCP listener
+  plus a background thread running periodic randomized push-pull digest
+  exchange (Cassandra/Dynamo-style — not SWIM, since Raft's own election
+  timeouts already cover liveness detection), entirely independent of
+  whatever `network_client_type`/`network_server_type` the node uses for
+  Raft RPCs — a gossip-layer bug or overload can never touch consensus
+  traffic.
+
+A peer-to-peer fetch reuses the exact same
+`append_entries_with_consistency_check()` conflict/truncation guarantees as
+leader-driven replication, so a bad or stale source peer can only cause
+wasted local work, never a committed entry being lost or altered. A
+replicator's peer set tracks the replicated log's own cluster membership
+(`node<Types>::cluster_members()`, kept current at every `_configuration`
+mutation site, including joint-consensus transitions) automatically — it is
+never separately configured; only node-ID-to-address resolution
+(`tcp_gossip_config::address_book`) remains static, since addresses aren't
+log data.
+
+### Enabling gossip catch-up
+
+```cpp
+#include <raft/tcp_gossip_transport.hpp>
+
+kythira::tcp_gossip_config<node_id_type, std::string> gossip_config;
+gossip_config.listen_port = 9500;
+gossip_config.address_book = {{2, "10.0.0.2:9500"}, {3, "10.0.0.3:9500"}};
+gossip_config.fanout = 3;
+gossip_config.gossip_round_interval = std::chrono::milliseconds{500};
+
+// Add `peer2peer_replicator_type = kythira::tcp_gossip_peer2peer_replicator<
+//     node_id_type, std::string, log_index_type>;` to your Types bundle, then:
+auto node_cfg = kythira::node_config<my_raft_types>{
+    // ... every other field as in the Basic Raft Cluster example above ...
+    .peer2peer_replicator = my_raft_types::peer2peer_replicator_type{gossip_config},
+};
+```
+
+Leave `peer2peer_replicator_type` as the default `no_op_peer2peer_replicator`
+to preserve today's leader-only replication behavior exactly.
+
+---
+
 ## Code Coverage
 
 ### Quick start
@@ -904,7 +985,9 @@ BOOST_AUTO_TEST_CASE(property_election_safety, * boost::unit_test::timeout(60)) 
 
 ### Raft Implementation
 
-- **[Raft Test Status](RAFT_TESTS_FINAL_STATUS.md)** - Comprehensive test suite analysis
+- **[Raft Test Status](doc/RAFT_TESTS_FINAL_STATUS.md)** - Comprehensive test suite analysis
+- **[Raft Implementation Status](doc/RAFT_IMPLEMENTATION_STATUS.md)** - Per-component implementation status
+- **[Performance Validation](doc/PERFORMANCE_VALIDATION.md)** - Benchmark methodology and results
 - **[Test Fix Summary](TEST_FIX_SUMMARY.md)** - Property-based testing improvements
 - **[Raft Design](.kiro/specs/raft-consensus/design.md)** - Architecture and design decisions
 - **[Raft Requirements](.kiro/specs/raft-consensus/requirements.md)** - Detailed requirements
@@ -1000,7 +1083,11 @@ The implementation has been tested with multiple transport layers:
   integration and property tests
 ✅ **Certificate Authority**: In-process CA, `ca_service`/`ca_cluster_node`,
   ACME (RFC 8555/8738), fingerprint-pinned bootstrap
-✅ **Testing**: 100% pass rate, comprehensive property/integration/chaos testing
+✅ **Peer-to-Peer Log Replication**: opt-in gossip-based catch-up
+  (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
+  entries from any peer, not just the leader; leader remains sole commit
+  authority; off by default
+✅ **Testing**: 100% pass rate (358 tests), comprehensive property/integration/chaos testing
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 
@@ -1029,13 +1116,17 @@ Before deploying to production:
 
 ## Contributing
 
-Contributions are welcome! Areas where help is needed:
+Contributions are welcome! See [`doc/TODO.md`](doc/TODO.md) for the full
+outstanding-work list. Areas where help is needed:
 
-1. **Build Missing Tests**: 25 tests need CMake configuration
-2. **Integration Testing**: Complete end-to-end cluster scenarios
-3. **Performance Optimization**: Profiling and optimization
-4. **Documentation**: More examples and tutorials
-5. **Transport Implementations**: gRPC, custom protocols
+1. **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
+   managers / certificate providers
+2. **`ca_cluster_node` RPC mTLS**: securing the Raft-internal RPC channel —
+   design complete at `.kiro/specs/ca-cluster-rpc-mtls/`, not yet implemented
+3. **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
+   alternatives to the current httplib-based transport
+4. **Performance Optimization**: Profiling and memory usage optimization
+5. **Documentation**: More examples and tutorials
 
 ## Troubleshooting
 

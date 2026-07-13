@@ -299,6 +299,16 @@ add_raft_completion_test(membership_change_leave_rpc_unit_test membership_change
 add_raft_completion_test(membership_change_leave_rpc_property_test membership_change_leave_rpc_property_test.cpp)
 add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 
+# Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
+add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
+add_raft_completion_test(peer2peer_catch_up_property_test peer2peer_catch_up_property_test.cpp)
+
+# Peer-to-peer gossip transport (real TCP) — .kiro/specs/peer2peer-gossip-transport/
+add_raft_completion_test(tcp_gossip_transport_merge_unit_test tcp_gossip_transport_merge_unit_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_wire_unit_test tcp_gossip_transport_wire_unit_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_integration_test tcp_gossip_transport_integration_test.cpp)
+add_raft_completion_test(tcp_gossip_transport_catch_up_property_test tcp_gossip_transport_catch_up_property_test.cpp)
+
 # Learner (non-voting node) tests — .kiro/specs/non-voting-nodes/
 add_raft_completion_test(learner_mechanism_unit_test learner_mechanism_unit_test.cpp)
 add_raft_completion_test(learner_admission_capacity_test learner_admission_capacity_test.cpp)
@@ -1672,6 +1682,32 @@ target_link_libraries(register_state_machine_test PRIVATE
 target_compile_features(register_state_machine_test PRIVATE cxx_std_23)
 add_test(NAME register_state_machine_test COMMAND register_state_machine_test)
 set_tests_properties(register_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
+# Replicated log state machine test (example state machine)
+add_executable(replicated_log_state_machine_test replicated_log_state_machine_test.cpp)
+target_link_libraries(replicated_log_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(replicated_log_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME replicated_log_state_machine_test COMMAND replicated_log_state_machine_test)
+set_tests_properties(replicated_log_state_machine_test PROPERTIES
+    TIMEOUT 30
+    LABELS "unit;state_machine;example"
+)
+
+# Distributed lock state machine test (example state machine)
+add_executable(distributed_lock_state_machine_test distributed_lock_state_machine_test.cpp)
+target_link_libraries(distributed_lock_state_machine_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(distributed_lock_state_machine_test PRIVATE cxx_std_23)
+add_test(NAME distributed_lock_state_machine_test COMMAND distributed_lock_state_machine_test)
+set_tests_properties(distributed_lock_state_machine_test PROPERTIES
     TIMEOUT 30
     LABELS "unit;state_machine;example"
 )
