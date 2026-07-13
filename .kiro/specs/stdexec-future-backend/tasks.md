@@ -210,58 +210,58 @@ to validate these properties specifically).
 
 ## Phase 4: Executor Compatibility Shim and Backend Selection
 
-- [ ] 24. Implement `scheduler_executor_shim`
+- [x] 24. Implement `scheduler_executor_shim`
   - Wrap a `stdexec` scheduler, implement `.add(func)` by connecting/starting `stdexec::schedule(scheduler) | stdexec::then(func)` and blocking until it completes
   - Document (in a header comment) the overhead and semantic differences from native scheduler usage, per Requirement 3.4
   - Add `static_assert` confirming it satisfies the existing (non-regenericized) `executor` and `keep_alive` concepts
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
 
-- [ ] 24.1 Write property test for executor/scheduler shim correctness
+- [x] 24.1 Write property test for executor/scheduler shim correctness
   - **Property 4: Executor/Scheduler Shim Correctness**
   - **Validates: Requirements 3.2, 3.4**
 
-- [ ] 25. Add `KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option and `kythira::future_default` alias
+- [x] 25. Add `KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option and `kythira::future_default` alias
   - Add the CMake option (values `folly`/`stdexec`, default `folly`) to root `CMakeLists.txt`
   - Add `include/raft/future_default.hpp` defining `kythira::future_default<T>` per the selected backend
   - Confirm switching the option requires no changes to templated core code
   - _Requirements: 11.1, 11.2, 11.3, 11.5_
 
-- [ ] 25.1 Write property test for backend selection isolation
+- [x] 25.1 Write property test for backend selection isolation
   - **Property 15: Backend Selection Isolation**
   - **Validates: Requirements 11.2, 11.5**
 
-- [ ] 26. Add compile-fail checks for backend non-interference
+- [x] 26. Add compile-fail checks for backend non-interference
   - Add `tests/backend_non_interference_compile_fail_test.cpp` with `static_assert(!requires{...})` checks verifying `stdexec_backend` types cannot be combined with Folly-backend-only types (e.g. `stdexec_backend::Future::via` given a Folly `Executor*`)
   - _Requirements: 11.4_
 
-- [ ] 26.1 Write property test for backend non-interference
+- [x] 26.1 Write property test for backend non-interference
   - **Property 14: Backend Non-Interference**
   - **Validates: Requirement 11.4**
 
 ## Phase 5: Test Suite Parity and Cross-Backend Validation
 
-- [ ] 27. Port the Folly concept-compliance test suite structure to stdexec
+- [x] 27. Port the Folly concept-compliance test suite structure to stdexec
   - Create `tests/stdexec_future_concept_compliance_property_test.cpp`, `tests/stdexec_promise_concept_compliance_property_test.cpp`, `tests/stdexec_semi_promise_concept_compliance_property_test.cpp`, `tests/stdexec_executor_concept_compliance_property_test.cpp`, `tests/stdexec_concept_wrappers_unit_test.cpp`
   - Mirror the existing `tests/folly_*` files' scenarios so coverage is comparable, not just present
   - Use two-argument `BOOST_AUTO_TEST_CASE` with appropriate timeouts throughout, per `test-execution-standards.md`
   - _Requirements: 12.2, 12.3_
 
-- [ ] 28. Add cross-backend fidelity tests
+- [x] 28. Add cross-backend fidelity tests
   - Create `tests/stdexec_concept_wrappers_interoperability_property_test.cpp` running the same operation (value, exception, timeout, collection scenarios) through both backends and asserting equivalent externally observable results
   - _Requirements: 12.4_
 
-- [ ] 29. Register all new test targets with CTest, labeled appropriately
+- [x] 29. Register all new test targets with CTest, labeled appropriately
   - Add `add_test` entries for every new test file
   - Apply `stdexec` and `future-backend` labels so `ctest -L stdexec` / `ctest -LE stdexec` work
   - Gate all new test targets behind `if(stdexec_FOUND)` in CMakeLists.txt
   - _Requirements: 12.5, 4.3_
 
-- [ ] 30. Run full test suite and store results per project convention
+- [x] 30. Run full test suite and store results per project convention
   - `ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tee test_results_<timestamp>.txt`
   - Confirm zero regressions in the pre-existing Folly suite and all new stdexec suite tests pass
   - _Requirements: 12.5_
 
-- [ ] 31. Checkpoint — Phase 5 complete
+- [x] 31. Checkpoint — Phase 5 complete
   - Ensure all tests (existing + new) pass; ask the user if any cross-backend fidelity test reveals an intentional (documented) behavioral difference rather than a bug
 
 ## Phase 6: Documentation

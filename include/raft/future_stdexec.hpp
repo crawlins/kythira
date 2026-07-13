@@ -60,6 +60,7 @@ template<typename T> class Promise;
 template<typename T> class Future;
 class FutureFactory;
 class FutureCollector;
+class scheduler_executor_shim;
 
 namespace detail {
 // Detects Future<U> for any U, so thenValue/thenTry/thenError can tell a
@@ -1576,6 +1577,51 @@ public:
 static_assert(kythira::future_collector<FutureCollector, Future<int>>,
               "stdexec_backend::FutureCollector must satisfy future_collector concept for "
               "Future<int>");
+
+// ── scheduler_executor_shim (Requirement 3) ─────────────────────────────────
+//
+// A compatibility path satisfying the (still Folly-shaped) executor/
+// keep_alive concepts by wrapping stdexec::sync_wait(schedule(scheduler) |
+// then(func)) inside .add() — this blocks the calling thread of .add() for
+// the duration of func, real overhead new code should avoid by using
+// via(scheduler) directly instead of routing through this shim. Exists only
+// so existing executor/keep_alive-typed call sites (which predate this
+// spec and are not being converted) can, if they ever need to, accept a
+// stdexec scheduler without their own code changing shape.
+class scheduler_executor_shim {
+public:
+    template<typename Scheduler>
+    requires(!std::is_same_v<std::decay_t<Scheduler>, scheduler_executor_shim>)
+    explicit scheduler_executor_shim(Scheduler sched) : _handle(std::move(sched)) {}
+
+    scheduler_executor_shim(const scheduler_executor_shim&) = default;
+    auto operator=(const scheduler_executor_shim&) -> scheduler_executor_shim& = default;
+    scheduler_executor_shim(scheduler_executor_shim&&) = default;
+    auto operator=(scheduler_executor_shim&&) -> scheduler_executor_shim& = default;
+
+    template<typename F> auto add(F&& func) -> void {
+        ex::sync_wait(_handle.schedule() |
+                      ex::then([func = std::forward<F>(func)](kythira::unit) mutable { func(); }));
+    }
+
+    [[nodiscard]] auto get() const -> void* {
+        // keep_alive's `get()` only needs to return something
+        // convertible-to-void*, conventionally used as an identity/validity
+        // check by callers — this shim's scheduler_handle already provides
+        // reference-equality semantics via operator==, so the KeepAlive
+        // vocabulary's exact non-null pointer identity isn't load-bearing
+        // here the way it is for the Folly backend's raw folly::Executor*.
+        return const_cast<void*>(static_cast<const void*>(this));
+    }
+
+private:
+    scheduler_handle _handle;
+};
+
+static_assert(kythira::executor<scheduler_executor_shim>,
+              "stdexec_backend::scheduler_executor_shim must satisfy executor concept");
+static_assert(kythira::keep_alive<scheduler_executor_shim>,
+              "stdexec_backend::scheduler_executor_shim must satisfy keep_alive concept");
 
 }  // namespace kythira::stdexec_backend
 
