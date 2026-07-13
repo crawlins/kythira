@@ -164,6 +164,21 @@ if(stdexec_FOUND)
     else()
         message(WARNING "TBB not found even though stdexec was — code using exec:: scheduler types that need TBB may fail to link. Re-run vcpkg install to pick up the \"tbb\" feature.")
     endif()
+    # Confirmed via an isolated repro during Phase 3 (see
+    # .kiro/specs/stdexec-future-backend/spike-notes.md): GCC 13 at -O2/-O3
+    # miscompiles exec::any_sender's small-buffer-optimized move
+    # constructor — moving one any_sender holding a small payload (e.g.
+    # stdexec::just(int), the common case) into another any_sender of the
+    # same type corrupts the heap, crashing on a later, unrelated
+    # allocation. -O1 is unaffected, as is clang++-18 at every level;
+    # -fno-strict-aliasing at -O2/-O3 with GCC also resolves it, so that's
+    # applied here rather than capping GCC builds at -O1 project-wide.
+    # GCC-only: clang++-18 needs no workaround and -fno-strict-aliasing is
+    # a spelling GCC understands but is unnecessary noise on other
+    # compilers' command lines.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(network_simulator INTERFACE -fno-strict-aliasing)
+    endif()
 endif()
 
 # cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
