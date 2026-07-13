@@ -86,15 +86,23 @@ BOOST_AUTO_TEST_CASE(property_start_and_fulfill_race_stress, *boost::unit_test::
     for (int i = 0; i < stress_iterations; ++i) {
         single_shot_channel<int> ch;
         std::atomic<bool> ready{false};
+        int observed = -1;
         std::thread starter([&] {
             while (!ready.load(std::memory_order_acquire)) {
             }
             auto [v] = stdexec::sync_wait(ch.get_sender()).value();
-            BOOST_CHECK_EQUAL(v, i);
+            observed = v;
         });
         ready.store(true, std::memory_order_release);
         ch.set_value(i);
         starter.join();
+        // Checked on the main thread, after join() — Boost.Test's
+        // assertion/logging machinery isn't thread-safe, so BOOST_CHECK*
+        // must never be called from a non-main thread (confirmed via
+        // ThreadSanitizer flagging exactly this pattern as a data race
+        // inside boost::unit_test::unit_test_log_t, unrelated to any
+        // single_shot_channel code).
+        BOOST_CHECK_EQUAL(observed, i);
     }
 }
 
@@ -149,13 +157,17 @@ BOOST_AUTO_TEST_CASE(property_try_set_error_completes_a_waiting_receiver,
                      *boost::unit_test::timeout(60)) {
     for (int i = 0; i < property_test_iterations; ++i) {
         single_shot_channel<int> ch;
-        std::thread completer([&ch] {
+        bool fulfilled = false;
+        std::thread completer([&ch, &fulfilled] {
             std::this_thread::sleep_for(std::chrono::microseconds(200));
-            bool ok = ch.try_set_error(std::make_exception_ptr(std::runtime_error("broken")));
-            BOOST_CHECK(ok);
+            fulfilled = ch.try_set_error(std::make_exception_ptr(std::runtime_error("broken")));
         });
         BOOST_CHECK_THROW(stdexec::sync_wait(ch.get_sender()), std::runtime_error);
         completer.join();
+        // See property_start_and_fulfill_race_stress's comment: checked
+        // after join(), not inside the thread — Boost.Test's own
+        // assertion machinery isn't thread-safe.
+        BOOST_CHECK(fulfilled);
     }
 }
 

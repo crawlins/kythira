@@ -163,3 +163,86 @@ dependency. Recorded here rather than resolved, since it is a Task 1
 6. `single_shot_channel` (Task 10) remains hand-rolled exactly as designed
    — no existing primitive replaces it. `exec::create` may simplify its
    implementation but does not change its design.
+
+## Phase 3 findings
+
+Two real bugs surfaced while writing Phase 3's property tests (Tasks
+14.1-22.1) and running them repeatedly/under ThreadSanitizer — both fixed
+in `include/raft/future_stdexec.hpp`, neither caught by the Phase 0/1/2
+work since those exercised each primitive at most once per process run.
+
+1. **`Future<T>::within()` deadlock** (this vendored `stdexec`'s
+   `exec::any_sender` forwards no queries by default): the original
+   design used `exec::when_any` to race the original sender against a
+   timeout, relying on `when_any` requesting cancellation on the losing
+   branch. But `any_receiver_t<T>` (this file's erasure type, used to
+   store every `Future<T>`) declares no query-forwarding list, so
+   `stdexec::get_stop_token` on the erased receiver always resolves to
+   `never_stop_token` regardless of what the real downstream receiver
+   offers — `single_shot_channel`-backed senders can never observe or
+   acknowledge a stop request through that erasure boundary. `within()`
+   therefore hung forever whenever the *original* future was the one
+   that timed out — its entire purpose. Adding a stop-token query to the
+   erasure (`exec::queries<inplace_stop_token(get_stop_token_t)
+   noexcept>`) fixes the specific deadlock but breaks unrelated
+   `let_value`/`let_error` compositions elsewhere in the file (GCC:
+   `dependent_sender_error`, env-less `get_completion_signatures` becomes
+   ill-formed once any non-default query is declared) — not viable
+   project-wide. Fixed instead by not relying on `when_any`'s
+   cancellation at all: `within()` (and `FutureCollector`'s
+   `collectAny`/`collectAnyWithoutException`/`collectN`) race independent
+   writers against a shared `single_shot_channel`/`Promise`, launched via
+   `exec::start_detached` rather than `exec::when_any` or
+   `exec::async_scope::spawn()` (the latter's destructor asserts every
+   spawned operation already completed, which a losing branch — e.g. a
+   promise the caller never fulfills — can violate for an unbounded
+   time).
+
+2. **GCC 13 `-O2`/`-O3` memory corruption in `exec::any_sender`'s
+   small-buffer-optimized move**: moving one `any_sender_t<T>` into
+   another `any_sender_t<T>` of the same type — the ordinary
+   take-by-value-then-move-into-member constructor idiom `Future<T>`
+   originally used — corrupts the heap when the underlying erased
+   sender is small enough to live in `any_sender`'s inline buffer (e.g.
+   `stdexec::just(int)`, the common case). Confirmed via an isolated,
+   library-only repro (no project code) that: `-O1` is unaffected;
+   `-O2`/`-O3` both reproduce it; `clang++-18` is unaffected at every
+   level; a payload large enough to force heap allocation instead of the
+   inline buffer is unaffected; `-fno-strict-aliasing` at `-O2`/`-O3`
+   with GCC resolves it. Root-caused to GCC-specific aliasing/inlining
+   assumptions rather than a portable logic bug in `any_sender` itself.
+   Fixed two ways: `Future<T>`/`Future<void>`'s sender-accepting
+   constructor is now a template that erases directly from the original
+   concrete sender (never move-constructing `any_sender_t<T>` from an
+   already-erased `any_sender_t<T>`) everywhere that pattern could be
+   eliminated; `CMakeLists.txt` also applies `-fno-strict-aliasing` to
+   `network_simulator` when `stdexec_FOUND` and the compiler is GCC, as a
+   blanket safety net for the paths (e.g. `stdexec::then`/`let_value`'s
+   own internal sender-adaptor storage) that still perform an equivalent
+   same-type move internally, outside this file's control.
+
+3. **ThreadSanitizer-found data race in `single_shot_channel`'s
+   `try_fulfill`/`single_shot_operation_state::start()`**: the original
+   implementation CAS'd the `empty -> complete` transition lock-free
+   (no `resume_mu`), relying on `compare_exchange_strong`'s
+   failure-order-implies-acquire semantics (`memory_order_acq_rel`'s
+   failure order is `memory_order_acquire` per the standard) for
+   `start()`'s failed-CAS fallback path to correctly synchronize with
+   the write of `channel_shared_state::result`. That's well-defined
+   C++, but ThreadSanitizer flagged the read in `complete_now()` as
+   racing against the write in `try_fulfill` anyway under
+   g++-13/libstdc++, in `property_start_and_fulfill_race_stress`
+   (`single_shot_channel_property_test.cpp`). Rather than resolve
+   whether that's a TSan false positive or a genuine gap in this
+   toolchain's recognition of that pattern, `try_fulfill` now takes
+   `resume_mu` for both the `empty->complete` and `waiting->complete`
+   transitions, and `start()` takes the same lock before ever reading
+   `state`/`result` — an unambiguous, mutex-only happens-before edge
+   that doesn't depend on the subtlety at all. Confirmed clean under
+   ThreadSanitizer afterward across repeated runs. Separately (unrelated
+   to `single_shot_channel` itself): two pre-existing property tests in
+   the same file called `BOOST_CHECK*` from inside a spawned
+   `std::thread` — Boost.Test's own logging/checkpoint machinery isn't
+   thread-safe, which TSan also flagged. Fixed by capturing the result
+   in a plain variable and asserting on it after `join()`, the standard
+   pattern for this codebase's other multi-threaded property tests.

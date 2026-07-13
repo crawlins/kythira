@@ -2328,6 +2328,11 @@ if(stdexec_FOUND)
     add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
     add_stdexec_test(stdexec_try_concept_compliance_property_test stdexec_try_concept_compliance_property_test.cpp)
     add_stdexec_test(stdexec_future_blocking_get_property_test stdexec_future_blocking_get_property_test.cpp)
+    add_stdexec_test(stdexec_future_factory_property_test stdexec_future_factory_property_test.cpp)
+    add_stdexec_test(stdexec_future_transformation_property_test stdexec_future_transformation_property_test.cpp)
+    add_stdexec_test(stdexec_future_scheduling_property_test stdexec_future_scheduling_property_test.cpp)
+    add_stdexec_test(stdexec_future_collector_property_test stdexec_future_collector_property_test.cpp)
+    add_stdexec_test(cross_backend_concept_compliance_property_test cross_backend_concept_compliance_property_test.cpp)
 endif()
 
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────

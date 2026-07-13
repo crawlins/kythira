@@ -137,74 +137,74 @@ to validate these properties specifically).
 
 ## Phase 3: stdexec-Backed Factory, Continuations, Transformations, Collections
 
-- [ ] 14. Implement `stdexec`-backed `FutureFactory`
+- [x] 14. Implement `stdexec`-backed `FutureFactory`
   - `makeFuture(value)` via `stdexec::just`
   - `makeExceptionalFuture<T>(ex)` via `stdexec::just_error`
   - `makeReadyFuture()` via `stdexec::just(kythira::unit{})`
   - Add `static_assert` confirming compliance with the regenericized `future_factory` concept
   - _Requirements: 8.1, 8.2, 8.3, 8.4_
 
-- [ ] 14.1 Write property test for factory operation fidelity
+- [x] 14.1 Write property test for factory operation fidelity
   - **Property 11: Factory Operation Fidelity**
   - **Validates: Requirements 8.1, 8.2, 8.3**
 
-- [ ] 15. Implement `thenValue`/`thenTry` on `stdexec`-backed `Future<T>`
+- [x] 15. Implement `thenValue`/`thenTry` on `stdexec`-backed `Future<T>`
   - Compose via `stdexec::then`
   - Implement automatic flattening when the callback returns a `Future<U>`, matching the Folly backend's existing flattening overloads
   - Handle both void and non-void future types
   - _Requirements: 9.1, 9.3_
 
-- [ ] 16. Implement `thenError` on `stdexec`-backed `Future<T>`
+- [x] 16. Implement `thenError` on `stdexec`-backed `Future<T>`
   - Compose via `stdexec` error-handling adaptors, normalizing the error channel to `std::exception_ptr` at the callback boundary
   - Implement automatic flattening when the callback returns a `Future<T>`
   - _Requirements: 9.2, 9.3_
 
-- [ ] 16.1 Write property test for continuation and transformation fidelity (thenValue/thenTry/thenError)
+- [x] 16.1 Write property test for continuation and transformation fidelity (thenValue/thenTry/thenError)
   - **Property 12: Continuation and Transformation Fidelity** (partial — thenValue/thenTry/thenError only; via/delay/within/ensure covered by Task 18.1)
   - **Validates: Requirements 9.1, 9.2, 9.3**
 
-- [ ] 17. Implement `via(scheduler)` and `ensure(func)` on `stdexec`-backed `Future<T>`
+- [x] 17. Implement `via(scheduler)` and `ensure(func)` on `stdexec`-backed `Future<T>`
   - `via` using the `stdexec` transfer/`continue_on` adaptor identified in the Phase 0 spike
   - `ensure` guaranteeing execution on both value and error paths
   - _Requirements: 9.4, 9.6_
 
-- [ ] 18. Implement `delay(duration)` and `within(timeout)` on `stdexec`-backed `Future<T>`
+- [x] 18. Implement `delay(duration)` and `within(timeout)` on `stdexec`-backed `Future<T>`
   - Use the vendored `stdexec`/`exec` timed scheduler if the Phase 0 spike found one; otherwise implement a minimal timed single-shot channel reusing the Task 10 primitive
   - Confirm neither operation blocks a thread for the duration of the delay/timeout (this is the entire motivation for adopting a non-blocking model — regressing to a blocking sleep anywhere here defeats the purpose)
   - _Requirements: 9.5_
 
-- [ ] 18.1 Write property test for continuation and transformation fidelity (via/delay/within/ensure)
+- [x] 18.1 Write property test for continuation and transformation fidelity (via/delay/within/ensure)
   - **Property 12: Continuation and Transformation Fidelity** (remainder)
   - **Validates: Requirements 9.4, 9.5, 9.6, 12.4**
 
-- [ ] 19. Implement `stdexec`-backed `FutureCollector::collectAll`
+- [x] 19. Implement `stdexec`-backed `FutureCollector::collectAll`
   - Compose via `stdexec::when_all` over `into_try`-wrapped input senders so individual failures don't cancel siblings
   - Preserve input ordering in the result vector
   - _Requirements: 10.1_
 
-- [ ] 20. Implement `stdexec`-backed `FutureCollector::collectAny` and `collectAnyWithoutException`
+- [x] 20. Implement `stdexec`-backed `FutureCollector::collectAny` and `collectAnyWithoutException`
   - Use the vendored first-completed-wins combinator if the Phase 0 spike found one; otherwise implement using `single_shot_channel<std::pair<size_t, Try<T>>>` per design.md
   - `collectAnyWithoutException` continues past individual failures to find the first success
   - _Requirements: 10.2, 10.3_
 
-- [ ] 21. Implement `stdexec`-backed `FutureCollector::collectN`
+- [x] 21. Implement `stdexec`-backed `FutureCollector::collectN`
   - Return the first N completed results with original indices
   - _Requirements: 10.4_
 
-- [ ] 21.1 Write property test for collective operation fidelity
+- [x] 21.1 Write property test for collective operation fidelity
   - **Property 13: Collective Operation Fidelity**
   - **Validates: Requirements 10.1, 10.2, 10.3, 10.4, 12.4**
 
-- [ ] 22. Add `static_assert` compliance checks for all Phase 3 components
+- [x] 22. Add `static_assert` compliance checks for all Phase 3 components
   - Confirm `FutureCollector` satisfies the regenericized `future_collector` concept
   - Confirm `Future<T>` (with continuations) satisfies `future_continuation` and `future_transformable`
   - _Requirements: 8.4, 10.5_
 
-- [ ] 22.1 Write property test for cross-backend concept compliance
+- [x] 22.1 Write property test for cross-backend concept compliance
   - **Property 10: Cross-Backend Concept Compliance**
   - **Validates: Requirements 5.5, 6.6, 7.4, 7.5, 8.4, 10.5, 12.1**
 
-- [ ] 23. Checkpoint — Phase 3 complete, stdexec backend feature-complete
+- [x] 23. Checkpoint — Phase 3 complete, stdexec backend feature-complete
   - Ensure all stdexec backend tests pass before starting executor-shim and backend-selection work
   - Ask the user if any operation from the Folly backend's API surface was found to have no reasonable stdexec mapping
 
