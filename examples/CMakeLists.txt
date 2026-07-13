@@ -77,6 +77,22 @@ set_tests_properties(migration_guide_example_test PROPERTIES
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
 )
 
+# stdexec-future-backend spec (.kiro/specs/stdexec-future-backend/, Task 32):
+# Folly-vs-stdexec backend comparison. network_simulator already links
+# STDEXEC::stdexec/TBB::tbb and defines KYTHIRA_HAS_STDEXEC when
+# stdexec_FOUND (root CMakeLists.txt), so add_network_example needs no
+# extra wiring — only gating the registration itself so this target simply
+# doesn't exist when the optional stdexec dependency isn't available.
+if(stdexec_FOUND)
+    add_network_example(stdexec_backend_migration_guide_example stdexec-backend/migration_guide_example.cpp)
+    add_test(NAME stdexec_backend_migration_guide_example_test COMMAND stdexec_backend_migration_guide_example)
+    set_tests_properties(stdexec_backend_migration_guide_example_test PROPERTIES
+        TIMEOUT 60
+        LABELS "example;migration;stdexec;future-backend;unit"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+endif()
+
 # Performance benchmark report
 add_network_example(performance_benchmark_report performance_benchmark_report.cpp)
 

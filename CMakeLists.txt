@@ -199,6 +199,17 @@ if(KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_FUTURE_BACKEND_STDEXEC)
 endif()
 
+# Property 5: Optional Dependency Isolation (Task 1.1, Requirements 4.2,
+# 4.3) — configures a throwaway build directory with stdexec hidden from
+# find_package() and confirms the rest of the project still configures
+# and builds. `cmake --build build --target verify-optional-dependency-isolation`.
+add_custom_target(verify-optional-dependency-isolation
+    COMMAND ${CMAKE_SOURCE_DIR}/scripts/verify-optional-dependency-isolation.sh
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Verifying the project builds correctly with stdexec hidden from find_package()"
+    VERBATIM
+)
+
 # cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
 # consumer-opt-in feature rather than a default one (no extra vcpkg feature is
 # needed on our side — we already depend on openssl directly). Without this

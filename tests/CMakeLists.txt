@@ -120,6 +120,7 @@ set_tests_properties(raft_comprehensive_performance_benchmark_verbose PROPERTIES
 )
 add_network_test(kythira_future_concept_compliance_test kythira_future_concept_compliance_test.cpp)
 add_network_test(kythira_future_concept_compliance_property_test kythira_future_concept_compliance_property_test.cpp)
+add_network_test(folly_backend_concept_regenericization_property_test folly_backend_concept_regenericization_property_test.cpp)
 add_network_test(try_concept_requirements_property_test try_concept_requirements_property_test.cpp)
 add_network_test(semi_promise_concept_requirements_property_test semi_promise_concept_requirements_property_test.cpp)
 add_network_test(promise_concept_inheritance_property_test promise_concept_inheritance_property_test.cpp)
@@ -2323,6 +2324,20 @@ else()
 endif()
 
 # ── stdexec-future-backend tests (.kiro/specs/stdexec-future-backend/) ───────
+# Property 2 (Concept-Layer Folly Independence, Task 5/5.1) is not gated
+# behind stdexec_FOUND: it verifies include/concepts/future.hpp itself
+# never depends on Folly, a property that holds (or doesn't) regardless of
+# whether the optional stdexec backend is available. Deliberately a raw
+# add_executable rather than add_network_test/add_stdexec_test — both of
+# those link network_simulator, which adds Folly's include directories to
+# every target that uses it, defeating the point of this check.
+add_executable(concepts_future_folly_independence_test concepts_future_folly_independence_test.cpp)
+target_compile_features(concepts_future_folly_independence_test PRIVATE cxx_std_23)
+add_test(NAME concepts_future_folly_independence_test COMMAND concepts_future_folly_independence_test)
+set_tests_properties(concepts_future_folly_independence_test PROPERTIES
+    LABELS "unit;concepts;folly-independence;stdexec;future-backend"
+)
+
 # Optional: only present when stdexec was found (root CMakeLists.txt).
 if(stdexec_FOUND)
     add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
@@ -2341,6 +2356,7 @@ if(stdexec_FOUND)
     add_stdexec_test(stdexec_concept_wrappers_interoperability_property_test stdexec_concept_wrappers_interoperability_property_test.cpp)
     add_stdexec_test(backend_non_interference_compile_fail_test backend_non_interference_compile_fail_test.cpp)
     add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
+    add_stdexec_test(unit_type_equivalence_property_test unit_type_equivalence_property_test.cpp)
 endif()
 
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
