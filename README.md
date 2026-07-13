@@ -26,6 +26,11 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - **Timeout Classification** for intelligent error handling
 - **Resource Management** with proper cleanup and leak prevention
 - **Comprehensive Logging** for debugging and observability
+- **stdexec-Backed Future Implementation** (optional, opt-in) — a second,
+  sender/receiver-based `Future`/`Promise`/`Executor` family alongside the
+  default Folly one, for new code that wants direct access to `stdexec`
+  schedulers/algorithms; see
+  [stdexec Future Backend](#stdexec-future-backend-optional)
 
 ### Transport Layers
 - **HTTP/HTTPS Transport** with TLS support and connection pooling
@@ -48,7 +53,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **358 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **378 Tests, 100% Pass Rate** — 0 failing, 0 disabled
 - **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
@@ -455,8 +460,8 @@ All major components are pluggable via template parameters:
 See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis and [doc/TODO.md](doc/TODO.md) for full task-by-task project status.
 
 **Summary**:
-- **Total Tests**: 358 (registered in CTest)
-- **Passing**: 358 (100%)
+- **Total Tests**: 378 (registered in CTest)
+- **Passing**: 378 (100%)
 - **Failing**: 0 (0%)
 - **Line Coverage**: 88.6%+ (non-decreasing ratchet, see [Code Coverage](#code-coverage))
 
@@ -916,6 +921,105 @@ to preserve today's leader-only replication behavior exactly.
 
 ---
 
+## stdexec Future Backend (Optional)
+
+A second, [`stdexec`](https://github.com/NVIDIA/stdexec) (P2300
+sender/receiver) backed implementation of the `Future`/`Promise`/`Try`/
+`Executor` family, alongside the default Folly one. See
+[`.kiro/specs/stdexec-future-backend/`](.kiro/specs/stdexec-future-backend/)
+for the full design.
+
+**Scope** — see
+[`include/raft/future_stdexec_README.md`](include/raft/future_stdexec_README.md)
+for the complete picture, but in short: no existing production call site is
+converted by this feature, Folly is not removed or made optional-only, and
+GPU execution (`nvexec`) is out of scope. This is a second, independent
+implementation for new code that specifically wants direct access to
+`stdexec` schedulers/algorithms — not a replacement or a migration path.
+
+### Components
+
+- **`kythira::stdexec_backend::{Try, SemiPromise, Promise, Future}`**
+  (`include/raft/future_stdexec.hpp`) — satisfy the same backend-neutral
+  concepts (`include/concepts/future.hpp`) as the Folly backend, in their
+  own namespace so the two are never silently interchangeable. `Future<T>`
+  supports the full continuation/transformation/scheduling surface:
+  `thenValue`/`thenTry`/`thenError`, `ensure`, `via(scheduler_handle)`,
+  `delay`/`within`.
+- **`scheduler_handle`** — a small type erasure over any concrete `stdexec`
+  scheduler, letting `via()` accept `exec::single_thread_context`,
+  `exec::timed_thread_context`, or any other scheduler type uniformly.
+- **`FutureFactory`/`FutureCollector`** — `makeFuture`/`makeReadyFuture`/
+  `makeExceptionalFuture` and `collectAll`/`collectAny`/
+  `collectAnyWithoutException`/`collectN`, matching the Folly backend's
+  semantics exactly (verified by
+  [`tests/stdexec_concept_wrappers_interoperability_property_test.cpp`](tests/stdexec_concept_wrappers_interoperability_property_test.cpp),
+  which runs equivalent operations through both backends and compares
+  results).
+- **`scheduler_executor_shim`** — a compatibility shim satisfying the
+  (Folly-shaped) `executor`/`keep_alive` concepts by wrapping
+  `stdexec::sync_wait(schedule(scheduler) | then(func))` inside `.add()`;
+  documented overhead (blocks the calling thread of `.add()`) — new code
+  should use `via(scheduler)` directly instead.
+
+### Enabling the stdexec backend
+
+Requires the optional `stdexec` vcpkg dependency (present by default in
+this project's `vcpkg.json`, gated at the CMake level):
+
+```cpp
+#include <raft/future_stdexec.hpp>
+#include <exec/single_thread_context.hpp>
+
+exec::single_thread_context ctx;
+kythira::stdexec_backend::scheduler_handle handle(ctx.get_scheduler());
+
+auto future = kythira::stdexec_backend::FutureFactory::makeFuture(42)
+                  .via(&handle)
+                  .thenValue([](int x) { return x + 1; });
+int result = std::move(future).get();  // 43
+```
+
+For non-templated call sites that just want "the project's chosen
+backend" without spelling out which, `kythira::future_default<T>`
+(`include/raft/future_default.hpp`) resolves to either backend based on
+the `KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option (`folly`, the default,
+or `stdexec`):
+
+```bash
+cmake -S . -B build -DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec \
+      -DCMAKE_PREFIX_PATH="$(pwd)/vcpkg_installed/x64-linux"
+```
+
+Templated core code that is already generic over a future type never
+references `future_default` and is completely unaffected by this option
+either way.
+
+### Running the stdexec backend test suite
+
+```bash
+ctest --test-dir build -L stdexec
+```
+
+Covers concept compliance (`Try`/`Promise`/`SemiPromise`/`Future`/
+`Executor`), the hand-rolled `single_shot_channel` primitive's exactly-once
+completion and broken-promise semantics, factory/continuation/collector
+operation fidelity, cross-backend interoperability, and backend
+non-interference (compile-time checks that the two backends' types cannot
+be silently mixed). See
+[`examples/stdexec-backend/migration_guide_example.cpp`](examples/stdexec-backend/migration_guide_example.cpp)
+for a runnable side-by-side comparison of both backends.
+
+> **Note**: a GCC 13 miscompilation of `exec::any_sender`'s
+> small-buffer-optimized move constructor at `-O2`/`-O3` was found and
+> fixed during implementation (`-fno-strict-aliasing` for GCC builds in
+> `CMakeLists.txt`) — see
+> [`spike-notes.md`](.kiro/specs/stdexec-future-backend/spike-notes.md)'s
+> "Phase 3 findings" for the full diagnosis if you hit unexplained
+> heap corruption while working in this area on GCC.
+
+---
+
 ## Code Coverage
 
 ### Quick start
@@ -1087,7 +1191,10 @@ The implementation has been tested with multiple transport layers:
   (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
   entries from any peer, not just the leader; leader remains sole commit
   authority; off by default
-✅ **Testing**: 100% pass rate (358 tests), comprehensive property/integration/chaos testing
+✅ **stdexec Future Backend**: optional, opt-in second `Future`/`Promise`/
+  `Executor` implementation for new `stdexec`-specific code; Folly stays
+  the default and is unaffected either way
+✅ **Testing**: 100% pass rate (378 tests), comprehensive property/integration/chaos testing
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 

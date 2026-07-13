@@ -1,17 +1,75 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 12, 2026
+**Last Updated**: July 13, 2026
 
 ## Current Status
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%) — 358 tests registered in CTest
+- **All tests passing** (100%) — 378 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
-  plus peer-to-peer log replication/gossip catch-up and state machine examples
+  plus peer-to-peer log replication/gossip catch-up, state machine examples, and the
+  stdexec future backend
 - Build clean with no errors or warnings
-- Coverage floor: 88.62% (non-decreasing ratchet, see `coverage_floor.txt`)
+- Coverage floor: 88.87% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 13, 2026)
+
+- **stdexec future backend complete — all 52/52 tasks**: `.kiro/specs/stdexec-future-backend/`
+  Phases 3–6 (Tasks 14–35) implemented — the full continuation/
+  transformation/scheduling surface on `stdexec_backend::Future<T>`
+  (`thenValue`/`thenTry`/`thenError`/`ensure`/`via`/`delay`/`within`),
+  `FutureFactory`/`FutureCollector` (`collectAll`/`collectAny`/
+  `collectAnyWithoutException`/`collectN`), `scheduler_executor_shim`,
+  backend selection (`KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option,
+  `include/raft/future_default.hpp`), and a full test suite (19 targets,
+  `ctest -L stdexec`) including cross-backend fidelity tests comparing
+  Folly and stdexec behavior directly and compile-time backend
+  non-interference checks. Phases 0–2 (the concept regenericization and
+  core `Try`/`single_shot_channel`/`Promise`/`Future` primitives) had
+  already landed on this branch. Also closed the 4 sub-tasks left
+  unchecked from that earlier Phase 0–2 work: Property 5 (Optional
+  Dependency Isolation, `scripts/verify-optional-dependency-isolation.sh`
+  + the `verify-optional-dependency-isolation` CMake target, using
+  `-DCMAKE_DISABLE_FIND_PACKAGE_stdexec=ON` rather than mutating
+  `vcpkg_installed/`), Property 2 (Concept-Layer Folly Independence,
+  `tests/concepts_future_folly_independence_test.cpp` — a raw
+  `add_executable` that deliberately doesn't link `network_simulator`, so
+  a regression pulling Folly into `concepts/future.hpp` would fail to
+  compile rather than pass silently), Property 1 (Concept Regenericization
+  Preserves Folly Compliance,
+  `tests/folly_backend_concept_regenericization_property_test.cpp`), and
+  Property 3 (Unit Type Equivalence,
+  `tests/unit_type_equivalence_property_test.cpp`).
+  - **`within()`'s implementation changed mid-spec**: the original design
+    used `exec::when_any` to race the original sender against a timeout,
+    but `when_any`'s cancel-the-loser behavior depends on a stop token
+    reaching the losing branch through this file's `any_sender_t<T>` type
+    erasure — and `any_receiver_t<T>` is declared with the default empty
+    query-forwarding list, so that stop token never arrives, leaving
+    `when_any` waiting forever for a `single_shot_channel`-backed loser
+    that can never acknowledge a stop request it never received.
+    Reimplemented using the same "race to fulfill a shared channel,
+    loser's result silently discarded" pattern already used by
+    `FutureCollector::collectAny`, launched via `exec::start_detached`
+    rather than `exec::async_scope::spawn()` (the latter's destructor
+    asserts every spawned operation has already completed, which a
+    losing branch — e.g. a promise the caller never fulfills — can
+    violate for an unbounded time).
+  - **Real GCC 13 miscompilation found and fixed**: at `-O2`/`-O3`, GCC 13
+    miscompiles `exec::any_sender`'s small-buffer-optimized move
+    constructor — moving one `any_sender` holding a small payload (e.g.
+    `stdexec::just(int)`, the common case) into another `any_sender` of
+    the same type corrupts the heap. The corruption doesn't crash
+    immediately; it crashes on a later, unrelated allocation, which made
+    the first several repro attempts misleading (a property test calling
+    `FutureFactory::makeFuture(v).get()` in a 200-iteration loop always
+    crashed on exactly the *second* iteration). Fixed with
+    `-fno-strict-aliasing` for GCC builds only (`CMakeLists.txt`);
+    `clang++-18` is unaffected at every optimization level. Full
+    diagnosis in `.kiro/specs/stdexec-future-backend/spike-notes.md`'s
+    "Phase 3 findings" section.
 
 ### What Changed (July 11–12, 2026)
 
@@ -408,6 +466,17 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   tolerance band for CI-vs-local measurement noise; coverage job's
   disk-reclaim step widened after intermittent "No space left on device"
   link failures
+- [x] **stdexec future backend** — a second, `stdexec` (P2300 sender/receiver)
+  backed `Future`/`Promise`/`Try`/`Executor` implementation alongside the
+  default Folly one, for new code wanting direct access to `stdexec`
+  schedulers/algorithms; `include/raft/future_stdexec.hpp`, backend
+  selection via `KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option
+  (`include/raft/future_default.hpp`); no existing production call site
+  converted, Folly stays the default and required dependency regardless;
+  spec at `.kiro/specs/stdexec-future-backend/`; 52/52 tasks complete;
+  found and fixed a real GCC 13 `-O2`/`-O3` miscompilation of
+  `exec::any_sender`'s small-buffer-optimized move constructor along the
+  way (`-fno-strict-aliasing` for GCC builds, `clang++-18` unaffected)
 - [ ] **Remove unused includes** — `#include <future>` in
   `http_transport_impl.hpp`, duplicate folly includes in `simulator_impl.hpp`
 - [ ] **Folly CMake detection** — improve `find_package` logic so builds

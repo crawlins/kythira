@@ -1,18 +1,39 @@
 # Implementation Plan
 
-**Status (as of 2026-07-12)**: Phases 0–2 (Tasks 0–13) are implemented and
-verified on the `feat/stdexec-future-backend` branch (commits `dd44707`,
-`6ea1224`, `63caec5`) — not yet merged into `main`. Phases 3–6 (Tasks 14–35:
-factory/continuations/collectors, executor shim, backend selection,
-cross-backend test parity, documentation) have not been started on any
-branch. Four sub-tasks within Phases 0–2 were not completed as distinct
-deliverables — see the inline notes below — and are left unchecked
-accordingly: **1.1** (optional-dependency-isolation CI/CMake check), the
-second bullet of **5** (standalone-compile check was verified ad hoc but
-never added as a persistent CMake/CTest target), **5.1**, and **6.1**/**6.2**
-(no dedicated property-test files exist for Properties 1–3; the existing
-regression suite incidentally exercises the same ground but was not written
-to validate these properties specifically).
+**Status (as of 2026-07-13)**: All 52 tasks across all 6 phases (Tasks 0–35,
+including every lettered sub-task) are complete and verified on the
+`feat/stdexec-future-backend` branch — not yet merged into `main`. The full
+`stdexec`-backed `Future`/`Promise`/`Try`/`FutureFactory`/`FutureCollector`/
+`scheduler_executor_shim` surface is implemented in
+`include/raft/future_stdexec.hpp`, backend selection is wired up via
+`KYTHIRA_DEFAULT_FUTURE_BACKEND`/`include/raft/future_default.hpp`, and the
+full stdexec test suite (19 targets, `ctest -L stdexec`) passes 100%,
+alongside `folly_backend_concept_regenericization_property_test` (Folly-only,
+not stdexec-labeled since it needs no stdexec dependency).
+
+The four sub-tasks previously left unchecked from the Phase 0–2 work are
+now closed:
+- **1.1** (Property 5, Optional Dependency Isolation) —
+  `scripts/verify-optional-dependency-isolation.sh`, wired as the
+  `verify-optional-dependency-isolation` CMake target.
+- **5**'s second bullet (standalone-compile check as a persistent
+  CMake/CTest target) and **5.1** (Property 2, Concept-Layer Folly
+  Independence) — both closed by the same file,
+  `tests/concepts_future_folly_independence_test.cpp`.
+- **6.1** (Property 1, Concept Regenericization Preserves Folly
+  Compliance) — `tests/folly_backend_concept_regenericization_property_test.cpp`.
+- **6.2** (Property 3, Unit Type Equivalence) —
+  `tests/unit_type_equivalence_property_test.cpp`.
+
+A real GCC 13 miscompilation was found and fixed during Phase 3: at
+`-O2`/`-O3`, GCC 13 miscompiles `exec::any_sender`'s small-buffer-optimized
+move constructor, corrupting the heap when one `any_sender` holding a small
+payload (e.g. `stdexec::just(int)`) is moved into another `any_sender` of
+the same type — the corruption doesn't crash immediately, it crashes on a
+later, unrelated allocation, which made the first several repro attempts
+misleading. Fixed with `-fno-strict-aliasing` for GCC builds only
+(`CMakeLists.txt`); `clang++-18` is unaffected at every optimization level.
+See `spike-notes.md`'s "Phase 3 findings" section for the full diagnosis.
 
 ## Phase 0: Spike and Dependency Setup
 
@@ -28,10 +49,10 @@ to validate these properties specifically).
   - Gate all new `stdexec`-backend targets behind `if(stdexec_FOUND)`
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 1.1 Write property test for optional dependency isolation
+- [x] 1.1 Write property test for optional dependency isolation
   - **Property 5: Optional Dependency Isolation**
   - **Validates: Requirements 4.2, 4.3**
-  - Implemented as a CI/CMake-level check (configure with a build directory that has `stdexec` hidden from `find_package`, verify the rest of the project still configures and builds) rather than a C++ test
+  - Implemented as a CI/CMake-level check (configure with a build directory that has `stdexec` hidden from `find_package`, verify the rest of the project still configures and builds) rather than a C++ test — `scripts/verify-optional-dependency-isolation.sh`, wired as the `verify-optional-dependency-isolation` CMake target (root `CMakeLists.txt`); uses `-DCMAKE_DISABLE_FIND_PACKAGE_stdexec=ON` rather than mutating `vcpkg_installed/`, confirms both the graceful "stdexec not found" warning and a full build of a representative Folly-backed target
 
 ## Phase 1: Regenericize the Concept Layer
 
@@ -53,14 +74,15 @@ to validate these properties specifically).
   - Remove the `#include <folly/Unit.h>` from `include/concepts/future.hpp` once no concept references it
   - _Requirements: 1.3, 2.1_
 
-- [ ] 5. Verify concept-layer Folly independence
-  - Compile `include/concepts/future.hpp` in isolation (a standalone translation unit including only this header) and confirm no Folly header is transitively included — **done** (verified ad hoc during Phase 1; commit `6ea1224`)
-  - Add this standalone-compile check as a CMake/CTest target so regressions are caught automatically — **not done**, no such target exists in `tests/CMakeLists.txt`
+- [x] 5. Verify concept-layer Folly independence
+  - Compile `include/concepts/future.hpp` in isolation (a standalone translation unit including only this header) and confirm no Folly header is transitively included — verified ad hoc during Phase 1 (commit `6ea1224`), now also enforced automatically (see next bullet)
+  - Add this standalone-compile check as a CMake/CTest target so regressions are caught automatically — `tests/concepts_future_folly_independence_test.cpp`, a raw `add_executable` (deliberately not `add_network_test`/`add_stdexec_test`, both of which link `network_simulator` and would add Folly's include directories back in, defeating the check) registered directly in `tests/CMakeLists.txt`
   - _Requirements: 1.4_
 
-- [ ] 5.1 Write property test for concept-layer Folly independence
+- [x] 5.1 Write property test for concept-layer Folly independence
   - **Property 2: Concept-Layer Folly Independence**
   - **Validates: Requirement 1.4**
+  - `tests/concepts_future_folly_independence_test.cpp` — doubles as this task's dedicated test and Task 5's CMake/CTest target; a minimal `try_type`-satisfying type defined inline (no Folly, no backend) exercises the regenericized concept surface
 
 - [x] 6. Verify the existing Folly backend still satisfies the regenericized concepts
   - Recompile `include/raft/future.hpp` against the updated `include/concepts/future.hpp`
@@ -69,13 +91,15 @@ to validate these properties specifically).
   - Run the full existing test suite via CTest and confirm zero regressions
   - _Requirements: 1.5, 2.4_
 
-- [ ] 6.1 Write property test for concept regenericization preserving Folly compliance
+- [x] 6.1 Write property test for concept regenericization preserving Folly compliance
   - **Property 1: Concept Regenericization Preserves Folly Compliance**
   - **Validates: Requirements 1.4, 1.5, 2.4**
+  - `tests/folly_backend_concept_regenericization_property_test.cpp` — re-asserts the full Folly wrapper surface against the regenericized concepts, exercises the `setException(std::exception_ptr)`/`setValue(kythira::unit{})` overloads directly across 100 iterations each, and confirms runtime behavior (thenValue/thenError/via/collectAll) is unchanged
 
-- [ ] 6.2 Write property test for unit type equivalence
+- [x] 6.2 Write property test for unit type equivalence
   - **Property 3: Unit Type Equivalence**
   - **Validates: Requirements 2.1, 2.2, 2.3, 2.4**
+  - `tests/unit_type_equivalence_property_test.cpp` — confirms `kythira::unit`'s `setValue(unit{})` path matches the pre-existing no-arg `setValue()` path on the Folly backend, that `makeReadyFuture()`'s `Future<folly::Unit>` is unaffected by `kythira::unit`'s introduction, and that the stdexec backend's `kythira::unit`-only void handling is observably equivalent to the Folly backend's void-future behavior
 
 - [x] 7. Checkpoint — Phase 1 complete
   - Ensure all pre-existing tests still pass with the regenericized concepts before starting Phase 2
@@ -266,18 +290,18 @@ to validate these properties specifically).
 
 ## Phase 6: Documentation
 
-- [ ] 32. Write the stdexec backend migration guide
+- [x] 32. Write the stdexec backend migration guide
   - Add `examples/stdexec-backend/migration_guide_example.cpp` modeled on the existing `examples/migration_guide_example.cpp`, showing Folly-backend and stdexec-backend code side by side for: basic future creation, chaining, promise/future pairs, error handling, collective operations
   - _Requirements: 13.4_
 
-- [ ] 33. Document scope boundaries explicitly
+- [x] 33. Document scope boundaries explicitly
   - State in the new header's file-level doc comment and in a short `include/raft/future_stdexec.hpp`-adjacent README-style note: no production call site is converted by this feature, Folly is not removed or made optional-only, GPU/`nvexec` is out of scope
   - _Requirements: 13.1, 13.2, 13.3_
 
-- [ ] 34. Record validated stdexec version and compiler matrix
+- [x] 34. Record validated stdexec version and compiler matrix
   - Record the specific `stdexec` version/commit and minimum GCC/Clang versions validated during this implementation (from the Phase 0 spike notes, updated with any findings from later phases)
   - _Requirements: 13.5_
 
-- [ ] 35. Final checkpoint — complete validation
+- [x] 35. Final checkpoint — complete validation
   - Ensure all tests pass, all `static_assert` compliance checks pass, documentation is complete
   - Ask the user if questions arise before considering this spec done
