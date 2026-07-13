@@ -1,6 +1,13 @@
 # Implementation Plan — Complete State Machine Examples
 
-## Status: Not started
+## Status: Complete (6/6 tasks)
+
+Implemented in commit `acea06f` (`feat(raft): complete state machine examples
+per kiro spec`). Verified directly against the working tree: the determinism
+fix, both test files (with every case this spec lists), the CMake wiring, and
+both doc updates are all present, and `ctest --test-dir build -R
+state_machine` passes 19/19 (including `replicated_log_state_machine_test`
+and `distributed_lock_state_machine_test`).
 
 ## Overview
 
@@ -54,7 +61,7 @@ flaky or would encode the bug as "expected" behavior.
 
 ## Phase 1: Determinism Fix (Task 1)
 
-- [ ] 1. Replace wall-clock expiry with Log_Index_Based_Expiry in
+- [x] 1. Replace wall-clock expiry with Log_Index_Based_Expiry in
   `include/raft/examples/distributed_lock_state_machine.hpp`
   - Rename `lock_info::expiry_ms` → `lock_info::expiry_index`
   - Thread the `index` parameter from `apply()` down into `acquire()` and
@@ -74,7 +81,7 @@ flaky or would encode the bug as "expected" behavior.
 
 ## Phase 2: Test Coverage (Tasks 2-3)
 
-- [ ] 2. Write `tests/replicated_log_state_machine_test.cpp`
+- [x] 2. Write `tests/replicated_log_state_machine_test.cpp`
   - Structure: `BOOST_TEST_MODULE`, `make_command()` helper, one
     `BOOST_AUTO_TEST_CASE` per case below, `*boost::unit_test::timeout(10)`
     on each — mirror `tests/counter_state_machine_test.cpp`
@@ -85,7 +92,7 @@ flaky or would encode the bug as "expected" behavior.
     entry containing embedded null/non-ASCII bytes round-trips unchanged
   - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5_
 
-- [ ] 3. Write `tests/distributed_lock_state_machine_test.cpp`
+- [x] 3. Write `tests/distributed_lock_state_machine_test.cpp`
   - Structure: same pattern as task 2
   - Cases: `ACQUIRE` on free lock → `"OK"`; second `ACQUIRE` by different
     owner before expiry → `"LOCKED"`; `RELEASE` by owner → `"OK"` and lock
@@ -115,7 +122,7 @@ static_assert(kythira::state_machine<replicated_log_state_machine, std::uint64_t
 
 ## Phase 3: Build Integration (Task 4)
 
-- [ ] 4. Add both executables to `tests/CMakeLists.txt`
+- [x] 4. Add both executables to `tests/CMakeLists.txt`
   - Insert after the existing `register_state_machine_test` block (~line
     1671), before the "State machine integration test" comment
   - Identical five-call shape as counter/register: `add_executable` →
@@ -131,7 +138,7 @@ static_assert(kythira::state_machine<replicated_log_state_machine, std::uint64_t
 
 ## Phase 4: Verification (Task 5)
 
-- [ ] 5. End-to-end verification
+- [x] 5. End-to-end verification
   - `cmake --build build -j$(nproc)` — full build succeeds, no new warnings
   - `ctest --test-dir build -R state_machine --output-on-failure` — all four
     example state machine tests pass (counter, register, replicated log,
@@ -147,7 +154,7 @@ static_assert(kythira::state_machine<replicated_log_state_machine, std::uint64_t
 
 ## Phase 5: Documentation (Task 6)
 
-- [ ] 6. Reconcile documentation
+- [x] 6. Reconcile documentation
   - `doc/TODO.md`: mark the "State machine examples" line `[x]`; update the
     parenthetical from "(counter and register already exist as test
     targets)" to note all four now have test targets
@@ -163,11 +170,11 @@ static_assert(kythira::state_machine<replicated_log_state_machine, std::uint64_t
 
 | Phase | Tasks | Status |
 |-------|-------|--------|
-| 1 | 1     | Not started |
-| 2 | 2-3   | Not started |
-| 3 | 4     | Not started |
-| 4 | 5     | Not started |
-| 5 | 6     | Not started |
+| 1 | 1     | Complete |
+| 2 | 2-3   | Complete |
+| 3 | 4     | Complete |
+| 4 | 5     | Complete |
+| 5 | 6     | Complete |
 
 **Total**: 6 tasks
 
