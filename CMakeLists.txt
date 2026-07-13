@@ -181,6 +181,24 @@ if(stdexec_FOUND)
     endif()
 endif()
 
+# Requirement 11: which backend kythira::future_default<T> (the non-generic
+# call sites that just want "the project's chosen future implementation"
+# without spelling out a backend) resolves to. Templated core code that is
+# already generic over a future type never references future_default and
+# is unaffected by this option either way (Requirement 11.2/11.5).
+set(KYTHIRA_DEFAULT_FUTURE_BACKEND "folly" CACHE STRING
+    "Backend kythira::future_default<T> resolves to: folly (default) or stdexec")
+set_property(CACHE KYTHIRA_DEFAULT_FUTURE_BACKEND PROPERTY STRINGS folly stdexec)
+if(NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly" AND NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec")
+    message(FATAL_ERROR "KYTHIRA_DEFAULT_FUTURE_BACKEND must be \"folly\" or \"stdexec\", got \"${KYTHIRA_DEFAULT_FUTURE_BACKEND}\"")
+endif()
+if(KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec")
+    if(NOT stdexec_FOUND)
+        message(FATAL_ERROR "KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec requires the stdexec dependency, which was not found")
+    endif()
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_FUTURE_BACKEND_STDEXEC)
+endif()
+
 # cpp-httplib is a single header; its own vcpkg port treats "openssl" as a
 # consumer-opt-in feature rather than a default one (no extra vcpkg feature is
 # needed on our side — we already depend on openssl directly). Without this
