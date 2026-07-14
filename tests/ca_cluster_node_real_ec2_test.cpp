@@ -64,6 +64,8 @@
 
 #include <folly/init/Init.h>
 
+#include "aws_real_ec2_test_support.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -109,6 +111,13 @@ struct AwsSdkFixture {
 
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
+
+// BOOST_GLOBAL_FIXTURE forms an identifier from its argument, so a
+// namespace-qualified type must be brought into scope unqualified first.
+using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
+using kythira::testing::aws_real_ec2::CostSummaryFixture;
+BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
+BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
 
 auto env(const char* name) -> std::string {
     const char* v = std::getenv(name);
@@ -173,11 +182,23 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
 // bastion complexity) — sufficient for a short-lived test cluster reached
 // directly via public IP + a security group scoped to the test runner's
 // own IP for both SSH and the ca_cluster_node HTTP port.
-struct three_az_network_fixture {
+struct three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup_target {
     std::shared_ptr<Aws::EC2::EC2Client> ec2;
     std::string vpc_id, igw_id, route_table_id, sg_id, key_name;
     std::string private_key_pem;
     std::map<std::string, std::string> subnet_by_az;
+    kythira::testing::aws_real_ec2::TestCostReport cost_report{
+        std::string(boost::unit_test::framework::current_test_case().p_name)};
+    bool torn_down_ = false;
+
+    // Called once per node right after RunInstances succeeds for it (this
+    // fixture provisions nodes one at a time via aws_ec2_quorum_manager
+    // rather than in one batch RunInstances call, unlike RealEc2Fixture's
+    // own track_instances(count)).
+    void track_instance(const std::string& label, const std::string& instance_type) {
+        cost_report.resources.push_back(
+            {label, kythira::testing::aws_real_ec2::ec2_hourly_rate(instance_type)});
+    }
 
     three_az_network_fixture() {
         Aws::Client::ClientConfiguration cli_cfg;
@@ -193,6 +214,11 @@ struct three_az_network_fixture {
         if (env("KYTHIRA_EC2_TEST_AMI").empty()) {
             throw std::runtime_error("KYTHIRA_EC2_TEST_AMI not set (skip)");
         }
+
+        // Register as the signal-cleanup target before any AWS resource is
+        // created so a signal arriving mid-setup still invokes teardown()
+        // (matching RealEc2Fixture's identical placement).
+        kythira::testing::aws_real_ec2::g_active_aws_fixture.store(this, std::memory_order_release);
 
         Aws::EC2::Model::CreateVpcRequest vpc_req;
         vpc_req.SetCidrBlock("10.220.0.0/16");
@@ -277,7 +303,19 @@ struct three_az_network_fixture {
         private_key_pem = std::string(kp_out.GetResult().GetKeyMaterial());
     }
 
-    ~three_az_network_fixture() {
+    // signal_cleanup_target's destructor is deliberately non-virtual
+    // (protected, never deleted through a base pointer), so this
+    // destructor doesn't `override` anything — only teardown() does.
+    ~three_az_network_fixture() { teardown(); }
+
+    void teardown() noexcept override {
+        if (torn_down_) {
+            return;
+        }
+        torn_down_ = true;
+        kythira::testing::aws_real_ec2::g_active_aws_fixture.store(nullptr,
+                                                                   std::memory_order_release);
+
         if (!key_name.empty()) {
             Aws::EC2::Model::DeleteKeyPairRequest req;
             req.SetKeyName(key_name);
@@ -313,6 +351,12 @@ struct three_az_network_fixture {
             req.SetVpcId(vpc_id);
             ec2->DeleteVpc(req);
         }
+
+        for (auto& r : cost_report.resources) {
+            r.finalize();
+        }
+        BOOST_TEST_MESSAGE(cost_report.format());
+        kythira::testing::aws_real_ec2::g_cost_accumulator.add(std::move(cost_report));
     }
 
     // Public IP of an already-running instance, via DescribeInstances.
@@ -398,6 +442,7 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         cluster.push_back({.node_id = peer.node_id, .group_id = az});
         auto colon = peer.address.rfind(':');
         private_ips.push_back(peer.address.substr(0, colon));
+        track_instance("node " + std::to_string(peer.node_id) + " (" + az + ")", cfg.instance_type);
     }
     BOOST_REQUIRE_EQUAL(cluster.size(), 3u);
 
@@ -426,7 +471,12 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     std::ostringstream peers;
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
         if (i > 0) peers << ",";
-        peers << (i + 1) << ":" << public_ips[i] << ":7000@https://" << public_ips[i] << ":8443";
+        // start_node_command() below passes no --tls-cert/--tls-key, so
+        // ca_cluster_node's client-facing listener falls back to plain
+        // HTTP (with its own "running without TLS" warning) — the peers
+        // URL scheme and the curl checks below must match what's actually
+        // listening, not what a production deployment would use.
+        peers << (i + 1) << ":" << public_ips[i] << ":7000@http://" << public_ips[i] << ":8443";
     }
     std::string peers_arg = peers.str();
 
@@ -445,12 +495,12 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
     while (std::chrono::steady_clock::now() < deadline && leader_ip.empty()) {
         for (const auto& ip : public_ips) {
-            auto out = ssh_execute(ip, private_key_pem,
-                                   "curl -sf -o /dev/null -w '%{http_code}' "
-                                   "-H 'Authorization: Bearer " +
-                                       std::string(TEST_AUTH_TOKEN) +
-                                       "' https://localhost:8443/v1/root-ca -k",
-                                   std::chrono::seconds(30));
+            auto out =
+                ssh_execute(ip, private_key_pem,
+                            "curl -sf -o /dev/null -w '%{http_code}' "
+                            "-H 'Authorization: Bearer " +
+                                std::string(TEST_AUTH_TOKEN) + "' http://localhost:8443/v1/root-ca",
+                            std::chrono::seconds(30));
             if (out == "200") {
                 leader_ip = ip;
                 break;

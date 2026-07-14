@@ -70,6 +70,8 @@
 
 #include <folly/init/Init.h>
 
+#include "aws_real_ec2_test_support.hpp"
+
 #include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
@@ -139,121 +141,19 @@ auto find_tag_val(const Aws::Vector<Aws::EC2::Model::Tag>& tags, const std::stri
     return {};
 }
 
-// ── Cost estimation ───────────────────────────────────────────────────────────
+// ── Cost estimation (aws-quorum-manager Requirement 20) ─────────────────────
 //
-// Published on-demand us-east-1 Linux prices ($/hr, approximate).
-// Source: https://aws.amazon.com/ec2/pricing/on-demand/ (June 2025)
-auto ec2_hourly_rate(const std::string& type) -> double {
-    static const std::map<std::string, double> kRates{
-        {"t3.nano", 0.0052},    {"t3.micro", 0.0104},   {"t3.small", 0.0208},
-        {"t3.medium", 0.0416},  {"t3.large", 0.0832},   {"t3.xlarge", 0.1664},
-        {"t3.2xlarge", 0.3328}, {"t2.nano", 0.0058},    {"t2.micro", 0.0116},
-        {"t2.small", 0.0230},   {"t2.medium", 0.0464},  {"t2.large", 0.0928},
-        {"m5.large", 0.0960},   {"m5.xlarge", 0.1920},  {"m5.2xlarge", 0.3840},
-        {"m6i.large", 0.0960},  {"m6i.xlarge", 0.1920}, {"c5.large", 0.0850},
-        {"c5.xlarge", 0.1700},  {"r5.large", 0.1260},   {"r5.xlarge", 0.2520},
-    };
-    auto it = kRates.find(type);
-    return (it != kRates.end()) ? it->second : 0.0104;
-}
-
-constexpr double kNatGwHourly = 0.045;
-constexpr double kEipHourly = 0.005;
-
-struct BilledResource {
-    std::string label;
-    double hourly_rate{0.0};
-    std::chrono::steady_clock::time_point start{std::chrono::steady_clock::now()};
-    std::optional<std::chrono::steady_clock::time_point> stop;
-
-    void finalize() {
-        if (!stop) {
-            stop = std::chrono::steady_clock::now();
-        }
-    }
-
-    auto hours() const -> double {
-        auto e = stop.value_or(std::chrono::steady_clock::now());
-        return std::chrono::duration<double>(e - start).count() / 3600.0;
-    }
-    auto minutes() const -> double { return hours() * 60.0; }
-    auto cost_usd() const -> double { return hours() * hourly_rate; }
-};
-
-struct TestCostReport {
-    std::string test_name;
-    std::vector<BilledResource> resources;
-
-    auto total_usd() const -> double {
-        double t = 0.0;
-        for (const auto& r : resources) {
-            t += r.cost_usd();
-        }
-        return t;
-    }
-
-    auto format() const -> std::string {
-        std::ostringstream oss;
-        oss << std::fixed;
-        oss << "\n[aws-cost] " << test_name << "\n";
-        for (const auto& r : resources) {
-            oss << "[aws-cost]   " << std::left << std::setw(38) << r.label << std::right
-                << std::setw(7) << std::setprecision(1) << r.minutes() << " min"
-                << "   $" << std::setprecision(6) << r.cost_usd() << "\n";
-        }
-        oss << "[aws-cost]   " << std::left << std::setw(38) << "TOTAL" << std::right
-            << std::setw(11) << " "
-            << "$" << std::setprecision(6) << total_usd() << "\n";
-        return oss.str();
-    }
-};
-
-struct CostAccumulator {
-    std::mutex mtx;
-    std::vector<TestCostReport> reports;
-
-    void add(TestCostReport r) {
-        std::lock_guard<std::mutex> lk{mtx};
-        reports.push_back(std::move(r));
-    }
-};
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-CostAccumulator g_cost_accumulator;
-
-struct CostSummaryFixture {
-    ~CostSummaryFixture() {
-        std::lock_guard<std::mutex> lk{g_cost_accumulator.mtx};
-        const auto& reps = g_cost_accumulator.reports;
-        if (reps.empty()) {
-            return;
-        }
-
-        double grand = 0.0;
-        for (const auto& r : reps) {
-            grand += r.total_usd();
-        }
-
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(6);
-        oss << "\n================================================================\n";
-        oss << " AWS Real-EC2 Test Cost Estimate Summary\n";
-        oss << "================================================================\n";
-        for (const auto& r : reps) {
-            oss << "  " << std::left << std::setw(52) << r.test_name << "  $" << r.total_usd()
-                << "\n";
-        }
-        oss << "----------------------------------------------------------------\n";
-        oss << "  " << std::left << std::setw(52) << "GRAND TOTAL"
-            << "  $" << grand << "\n";
-        oss << "================================================================\n";
-        oss << " Pricing: spot Linux/UNIX rates queried via DescribeSpotPriceHistory at test\n";
-        oss << " start.  Actual spot price varies by AZ and fluctuates over time.\n";
-        oss << " Use AWS Cost Explorer for authoritative billing data.\n";
-        oss << "================================================================\n";
-        BOOST_TEST_MESSAGE(oss.str());
-    }
-};
+// Extracted into a shared header (ca-cluster-rpc-mtls-real-aws spec,
+// Requirement 6) so every real-EC2 test binary gets it, not just this one —
+// behavior/output-format unchanged, `using` brings the names into this
+// file's existing unqualified usage below.
+using kythira::testing::aws_real_ec2::BilledResource;
+using kythira::testing::aws_real_ec2::CostSummaryFixture;
+using kythira::testing::aws_real_ec2::ec2_hourly_rate;
+using kythira::testing::aws_real_ec2::g_cost_accumulator;
+using kythira::testing::aws_real_ec2::kEipHourly;
+using kythira::testing::aws_real_ec2::kNatGwHourly;
+using kythira::testing::aws_real_ec2::TestCostReport;
 
 BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 
@@ -384,12 +284,12 @@ auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& 
 // Signals NOT intercepted: SIGKILL/SIGSTOP (untrappable), SIGALRM (used by
 // Boost.Test's per-case timeout machinery).
 
-struct RealEc2Fixture;  // forward declaration
-
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-std::atomic<RealEc2Fixture*> g_active_fixture{nullptr};
-
-void install_signal_handlers();  // forward declaration; defined after the struct
+// Signal-cleanup registration (g_active_aws_fixture, install_aws_signal_handlers)
+// now lives in aws_real_ec2_test_support.hpp — see this file's `using`
+// declarations below and RealEc2Fixture's `signal_cleanup_target` base.
+using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
+using kythira::testing::aws_real_ec2::g_active_aws_fixture;
+using kythira::testing::aws_real_ec2::signal_cleanup_target;
 
 // ── RealEc2Fixture ────────────────────────────────────────────────────────────
 //
@@ -399,7 +299,7 @@ void install_signal_handlers();  // forward declaration; defined after the struc
 // per-test).  SSH private key material is held in memory — never written to
 // disk.
 
-struct RealEc2Fixture {
+struct RealEc2Fixture : signal_cleanup_target {
     bool torn_down_{false};
 
     // ── Config from environment ─────────────────────────────────────────────
@@ -602,7 +502,7 @@ struct RealEc2Fixture {
 
         // Register as the signal-cleanup target before any AWS resources are
         // created so a signal arriving mid-setup still invokes teardown().
-        g_active_fixture.store(this, std::memory_order_release);
+        g_active_aws_fixture.store(this, std::memory_order_release);
 
         create_vpc();
         create_igw();
@@ -620,7 +520,7 @@ struct RealEc2Fixture {
     }
 
     ~RealEc2Fixture() {
-        g_active_fixture.store(nullptr, std::memory_order_release);
+        g_active_aws_fixture.store(nullptr, std::memory_order_release);
         teardown();
     }
 
@@ -1200,7 +1100,7 @@ struct RealEc2Fixture {
 
     // ── Teardown ──────────────────────────────────────────────────────────────
 
-    void teardown() {
+    void teardown() noexcept override {
         if (torn_down_) {
             return;
         }
@@ -1379,40 +1279,10 @@ struct RealEc2Fixture {
     }
 };
 
-// ── Signal handler ────────────────────────────────────────────────────────────
-
-void signal_cleanup_handler(int sig) {
-    // Call teardown on the active fixture, then re-raise with default disposition
-    // so the process exits with the correct status / coredump behaviour.
-    RealEc2Fixture* f = g_active_fixture.exchange(nullptr, std::memory_order_acq_rel);
-    if (f != nullptr) {
-        f->teardown();
-    }
-
-    struct sigaction sa{};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(sig, &sa, nullptr);
-    raise(sig);
-}
-
-void install_signal_handlers() {
-    struct sigaction sa{};
-    sa.sa_handler = signal_cleanup_handler;
-    sigemptyset(&sa.sa_mask);
-    // SA_RESETHAND: restore default after first invocation so nested signals
-    // are not swallowed if teardown itself faults.
-    sa.sa_flags = SA_RESETHAND;
-    for (int sig : {SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGPIPE}) {
-        sigaction(sig, &sa, nullptr);
-    }
-}
-
-struct SignalHandlerFixture {
-    SignalHandlerFixture() { install_signal_handlers(); }
-};
-
-BOOST_GLOBAL_FIXTURE(SignalHandlerFixture);
+// Signal handler installation (aws_signal_cleanup_handler,
+// install_aws_signal_handlers) now lives in aws_real_ec2_test_support.hpp —
+// only the global-fixture registration below is per-binary.
+BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
 
 // ── Test cases ────────────────────────────────────────────────────────────────
 
