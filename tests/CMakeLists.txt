@@ -2373,6 +2373,40 @@ set_tests_properties(ca_cluster_node_real_ec2_test PROPERTIES
     TIMEOUT 900
     LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node"
 )
+
+# Real-EC2 coverage for the RPC-TLS-enabled 3-AZ ca_cluster_node deployment
+# (ca-cluster-rpc-mtls-real-aws spec) — see file header for what this
+# verifies beyond ca_cluster_node_real_ec2_test.cpp's plain-TCP coverage.
+# Needs certificate_authority (bootstrap-credential generation, CSR
+# generation) and boost_json (certificate-issuance request bodies) in
+# addition to the other real-EC2 tests' usual dependencies.
+if(TARGET certificate_authority)
+add_executable(ca_cluster_node_rpc_tls_real_ec2_test ca_cluster_node_rpc_tls_real_ec2_test.cpp)
+target_compile_definitions(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE
+    KYTHIRA_AWS_REAL_EC2_TESTS
+    LIBSSH2_FOUND
+)
+target_link_libraries(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE
+    network_simulator
+    certificate_authority
+    boost_json
+    Boost::unit_test_framework
+    ${LIBSSH2_LIBRARIES}
+)
+if(TARGET Folly::folly)
+    target_link_libraries(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE Folly::folly)
+endif()
+target_include_directories(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE
+    ${LIBSSH2_INCLUDE_DIRS}
+)
+target_compile_features(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_rpc_tls_real_ec2_test COMMAND ca_cluster_node_rpc_tls_real_ec2_test)
+set_tests_properties(ca_cluster_node_rpc_tls_real_ec2_test PROPERTIES
+    TIMEOUT 1800
+    LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node;rpc_tls"
+)
+endif()  # TARGET certificate_authority
+
 endif()  # LIBSSH2_FOUND
 
 endif()  # AWSSDK_FOUND
