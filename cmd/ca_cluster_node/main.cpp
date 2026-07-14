@@ -614,6 +614,35 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     //    Types instantiation actually uses tls_tcp_rpc_client/server. ──────
     bool cutover_finalized = false;
     bool trust_widened = false;
+    std::optional<std::chrono::steady_clock::time_point> root_first_seen_at;
+    // Lower bound on how long a node waits, after first observing the CA
+    // root exists, before it PRESENTS its own CA-issued identity —
+    // deliberately separate from (and larger than) one maintenance-thread
+    // tick. Confirmed necessary during this spec's implementation: on a
+    // contended host, the node that acquires fastest (typically the
+    // leader, whose fetch_root_cert_pem() is an in-process read) can
+    // finish widening-then-acquiring-then-switching within the SAME
+    // maintenance tick the root commits on, while a follower's own widen
+    // still needs a real HTTP round trip to the leader's /v1/root-ca to
+    // even begin — and that endpoint itself requires a quorum-confirmed
+    // leader read (node<Types>::read_state()'s read-index heartbeat),
+    // which depends on RPC connectivity to a majority of followers. If
+    // the leader switches its presented identity before ANY follower has
+    // widened, every follower starts rejecting the leader's connections,
+    // which breaks the very read-index heartbeats read_state() needs —
+    // which in turn breaks /v1/root-ca for every follower still trying to
+    // widen, since it can no longer get a quorum-confirmed read either.
+    // That is a genuine deadlock, not a slow-and-eventually-resolves
+    // race: it was reproduced reliably on GitHub Actions' shared runners
+    // (though not on faster/idle hardware) as this spec's ca_cluster_node
+    // _rpc_tls_test hanging past its /v1/certificates budget with every
+    // follower stuck rejecting the leader's traffic indefinitely. This
+    // grace period keeps RPC fully on the old (universally-trusted)
+    // credential for a bounded window after the root is known, giving
+    // every already-alive node's maintenance thread a realistic chance to
+    // widen (a plain HTTP call, unaffected by RPC-TLS as long as nobody
+    // has switched their presented identity yet) before anyone switches.
+    constexpr auto k_identity_acquire_grace = std::chrono::seconds(3);
 
     // Widening what this node ACCEPTS (Requirement 6.1) is deliberately
     // decoupled from acquiring/PRESENTING this node's own CA-issued
@@ -642,6 +671,9 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             if (trust_widened) return;
             auto root_pem = fetch_root_cert_pem(raft_node, cfg);
             if (!root_pem.has_value()) return;
+            if (!root_first_seen_at.has_value()) {
+                root_first_seen_at = std::chrono::steady_clock::now();
+            }
 
             auto dual_policy = kythira::either(
                 cfg.rpc_tls_config.trust_policy.bootstrap_fingerprint_hex.value_or(""), *root_pem);
@@ -659,6 +691,10 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
             return;
         } else {
             if (have_valid_persisted_peer_cert(cfg.data_dir)) return;
+            if (!root_first_seen_at.has_value() ||
+                std::chrono::steady_clock::now() - *root_first_seen_at < k_identity_acquire_grace) {
+                return;
+            }
 
             auto root_pem = fetch_root_cert_pem(raft_node, cfg);
             if (!root_pem.has_value()) return;
@@ -691,14 +727,14 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
                 return;
             }
 
-            // Requirement 5.3: PRESENT the new certificate. Safe to do
-            // now specifically because maybe_widen_rpc_trust_policy()
-            // above already ran this same tick (and every prior tick
-            // since the root became known) — this node's OWN accept
-            // policy, and (by the same replicated-root-observation
-            // argument) every peer's, already accepts CA-chain identities
-            // regardless of whether that peer has finished acquiring its
-            // own yet.
+            // Requirement 5.3: PRESENT the new certificate. This node's
+            // OWN accept policy was already widened above (same tick or
+            // earlier). Every OTHER already-alive node's accept policy is
+            // assumed widened too, by now, because of the
+            // k_identity_acquire_grace wait above — not merely because
+            // the root became "replicated" (replication alone doesn't
+            // bound how long a peer's maintenance thread takes to notice
+            // and act on it).
             rpc_server_handle.reload_identity(rpc_peer_cert_path(cfg.data_dir),
                                               rpc_peer_key_path(cfg.data_dir));
             rpc_client_handle.reload_identity(rpc_peer_cert_path(cfg.data_dir),
