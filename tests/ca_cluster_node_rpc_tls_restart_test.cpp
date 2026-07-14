@@ -325,11 +325,6 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     }
     BOOST_REQUIRE_MESSAGE(ready, "cluster never reached an issuance-capable state");
 
-    // Give the maintenance threads a further generous window to reach full
-    // cutover on all three nodes (each node's own persisted peer cert file
-    // under --data-dir is what this test actually depends on existing).
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-
     // Pick a non-leader node to restart (restarting the leader would also
     // trigger a failover, an orthogonal concern already covered by
     // tests/ca_cluster_node_test.cpp's own failover property).
@@ -337,13 +332,33 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     BOOST_REQUIRE(leader_index.has_value());
     std::size_t restart_index = (*leader_index + 1) % nodes.size();
 
-    // Confirm the persisted peer certificate actually exists before relying
-    // on it — otherwise a false pass here would just mean "plain TCP-like
-    // behavior happened to still work," not "Property 5 held."
+    // Poll for the maintenance threads to reach full cutover on all three
+    // nodes (each node's own persisted peer cert file under --data-dir is
+    // what this test actually depends on existing) — a fixed sleep here
+    // previously raced main.cpp's own k_identity_acquire_grace (a 3-second
+    // minimum delay, added after ca-cluster-rpc-mtls's CI-only deadlock
+    // fix, between a node first observing the CA root and that node
+    // switching its presented identity): under CI contention this test's
+    // own fixed wait could elapse before that grace period even finished,
+    // let alone before real CSR generation/signing/persisting completed
+    // afterward. Polling avoids needing to keep two independently-tuned
+    // timing constants in sync by hand.
     auto peer_cert_path = std::filesystem::path(tmp_root) /
                           ("node" + std::to_string(nodes[restart_index]->node_id)) /
                           "rpc_peer_cert.pem";
-    BOOST_REQUIRE_MESSAGE(std::filesystem::exists(peer_cert_path),
+    bool cutover_complete = false;
+    auto cutover_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::chrono::steady_clock::now() < cutover_deadline) {
+        if (std::filesystem::exists(peer_cert_path)) {
+            cutover_complete = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    // Confirm the persisted peer certificate actually exists before relying
+    // on it — otherwise a false pass here would just mean "plain TCP-like
+    // behavior happened to still work," not "Property 5 held."
+    BOOST_REQUIRE_MESSAGE(cutover_complete,
                           "no persisted RPC peer certificate found before restart — "
                           "cutover likely hadn't happened yet");
 
