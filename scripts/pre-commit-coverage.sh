@@ -259,6 +259,7 @@ LLVM_COV_OUT=$(DEBUGINFOD_URLS="" "$LLVM_COV" report \
     --ignore-filename-regex='.*/tests/docker_chaos/.*' \
     --ignore-filename-regex='.*/tests/aws_quorum_manager_localstack_test.*' \
     --ignore-filename-regex='.*/tests/aws_quorum_manager_real_ec2_test.*' \
+    --ignore-filename-regex='.*/tests/future_backend_benchmark_test.*' \
     --ignore-filename-regex='.*/examples/.*' \
     2>&1)
 

@@ -30,7 +30,8 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
   sender/receiver-based `Future`/`Promise`/`Executor` family alongside the
   default Folly one, for new code that wants direct access to `stdexec`
   schedulers/algorithms; see
-  [stdexec Future Backend](#stdexec-future-backend-optional)
+  [stdexec Future Backend](#stdexec-future-backend-optional), including a
+  [Folly-vs-stdexec performance comparison](#comparing-folly-vs-stdexec-performance)
 
 ### Transport Layers
 - **HTTP/HTTPS Transport** with TLS support and connection pooling
@@ -53,7 +54,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **378 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **380 Tests, 100% Pass Rate** — 0 failing, 0 disabled
 - **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
@@ -1017,6 +1018,28 @@ for a runnable side-by-side comparison of both backends.
 > [`spike-notes.md`](.kiro/specs/stdexec-future-backend/spike-notes.md)'s
 > "Phase 3 findings" for the full diagnosis if you hit unexplained
 > heap corruption while working in this area on GCC.
+
+### Comparing Folly vs. stdexec performance
+
+A dedicated benchmark suite compares the two backends across a fixed
+catalog of scenarios (creation/resolution, promise fulfillment, `thenValue`
+chains, `thenError`, `via(scheduler)`, `collectAll`/`collectAny`,
+`delay`/`within` overhead) without changing either implementation or the
+default backend:
+
+```bash
+# Fast, CI-registered sanity-floor checks (per-backend only, no
+# cross-backend assertions)
+ctest --test-dir build -L future-backend
+
+# Full, report-quality comparison — prints a side-by-side table and writes
+# timestamped CSV/JSON to test_results/
+./build/examples/future_backend_benchmark_report
+```
+
+See [`doc/future_backend_performance_comparison.md`](doc/future_backend_performance_comparison.md)
+for the full scenario catalog, methodology, known structural asymmetries,
+and reference numbers.
 
 ---
 
