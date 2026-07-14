@@ -2359,6 +2359,18 @@ if(stdexec_FOUND)
     add_stdexec_test(unit_type_equivalence_property_test unit_type_equivalence_property_test.cpp)
 endif()
 
+# ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
+# Single binary rather than a second add_stdexec_test()-gated executable:
+# the Folly-only sanity floors must still run when stdexec is unavailable,
+# and both sets share ci_bench_config()/BOOST_TEST_MODULE, so the internal
+# #if defined(KYTHIRA_HAS_STDEXEC) guard (design.md) avoids duplicating
+# that shared setup across two binaries for no benefit.
+add_network_test(future_backend_benchmark_test future_backend_benchmark_test.cpp)
+set_tests_properties(future_backend_benchmark_test PROPERTIES
+    LABELS "performance;benchmark;future-backend"
+    TIMEOUT 120
+)
+
 # ── Chaos tests (libfiu required) ─────────────────────────────────────────────
 add_subdirectory(chaos)
 

@@ -6,13 +6,43 @@
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%) — 378 tests registered in CTest
+- **All tests passing** (100%) — 380 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
-  plus peer-to-peer log replication/gossip catch-up, state machine examples, and the
-  stdexec future backend
+  plus peer-to-peer log replication/gossip catch-up, state machine examples, the
+  stdexec future backend, and the Folly-vs-stdexec performance benchmark suite
 - Build clean with no errors or warnings
-- Coverage floor: 88.87% (non-decreasing ratchet, see `coverage_floor.txt`)
+- Coverage floor: 88.92% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 13, 2026, later)
+
+- **future-backend-performance-benchmark complete — all 23 tasks**:
+  `.kiro/specs/future-backend-performance-benchmark/` adds a benchmark
+  suite comparing `kythira::Future<T>` (Folly) against
+  `kythira::stdexec_backend::Future<T>` (stdexec) across a fixed catalog of
+  9 scenarios (creation/resolution for 3 payload shapes, same-/cross-thread
+  promise fulfillment, `thenValue` chains at 3 depths, `thenError`,
+  `via(scheduler)`, `collectAll` at 3 widths, `collectAny`, `delay`/`within`
+  overhead). Every scenario is one function template
+  (`examples/future-backend-benchmark/benchmark_harness.hpp`) instantiated
+  once per backend via a `folly_backend_traits`/`stdexec_backend_traits`
+  pair, so there is exactly one implementation per scenario — the two
+  backends' numbers can never silently drift apart by comparing two
+  different operations. Adds `tests/future_backend_benchmark_test.cpp`
+  (CTest-registered, `LABELS "performance;benchmark;future-backend"`,
+  hardware-independent sanity floors only — no test compares one backend's
+  result against the other's) and
+  `examples/future-backend-benchmark/benchmark_report.cpp` (a standalone,
+  developer-run comparison report writing timestamped CSV/JSON to
+  `test_results/`). Builds and runs Folly-only when `stdexec_FOUND` is
+  false, with the `stdexec` column and delta omitted from the report rather
+  than printed as zeroed placeholders. Does not change
+  `KYTHIRA_DEFAULT_FUTURE_BACKEND` or recommend a default; see
+  `doc/future_backend_performance_comparison.md` for methodology, the full
+  scenario catalog, known structural asymmetries (the cross-thread
+  scenario's per-iteration `std::thread` spawn cost, the GCC
+  `-fno-strict-aliasing` mitigation already in place for `stdexec` targets),
+  and reference numbers from a real run.
 
 ### What Changed (July 13, 2026)
 

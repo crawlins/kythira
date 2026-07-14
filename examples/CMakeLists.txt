@@ -93,6 +93,32 @@ if(stdexec_FOUND)
     )
 endif()
 
+# future-backend-performance-benchmark spec: standalone Folly-vs-stdexec
+# comparison report generator. Unlike stdexec_backend_migration_guide_example
+# above, this target is NOT gated behind stdexec_FOUND — it must build and
+# run (Folly-only) even when stdexec is unavailable (Requirement 1.4,
+# Property 6); add_network_example already links network_simulator, which
+# conditionally links STDEXEC::stdexec/TBB::tbb and defines
+# KYTHIRA_HAS_STDEXEC only when stdexec_FOUND, so no extra wiring is
+# needed here either way. Report-quality runs (full iteration counts) are
+# not CTest-registered (Requirement 5) — run manually, e.g.
+# ./build/examples/future_backend_benchmark_report. The reduced-iteration
+# CTest entry below is a smoke test only (catches a build/runtime
+# regression in the report binary itself — CLI parsing, table printing,
+# CSV/JSON writing), mirroring performance_benchmark_report_test below;
+# neither contributes to the coverage ratchet either way, since
+# scripts/pre-commit-coverage.sh's llvm-cov invocation excludes all of
+# examples/ from line-coverage measurement.
+add_network_example(future_backend_benchmark_report future-backend-benchmark/benchmark_report.cpp)
+
+add_test(NAME future_backend_benchmark_report_test
+    COMMAND future_backend_benchmark_report --iterations 300 --warmup 20)
+set_tests_properties(future_backend_benchmark_report_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;performance;benchmark;future-backend"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
 # Performance benchmark report
 add_network_example(performance_benchmark_report performance_benchmark_report.cpp)
 
