@@ -13,7 +13,7 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   stdexec future backend, the Folly-vs-stdexec performance benchmark suite, and
   RPC-internal mTLS for `ca_cluster_node`
 - Build clean with no errors or warnings
-- Coverage floor: 88.92% (non-decreasing ratchet, see `coverage_floor.txt`)
+- Coverage floor: 88.95% (non-decreasing ratchet, see `coverage_floor.txt`)
 
 ### What Changed (July 14, 2026)
 
@@ -78,6 +78,48 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
        onto its CSR-signing request so the leader, which alone can
        actually call `submit_command()` successfully, submits it on the
        follower's behalf.
+- **ca-cluster-rpc-mtls: CI-only deadlock found and fixed post-merge**:
+  the PR above passed every local/sandbox test run, merged, and then
+  failed `ca_cluster_node_rpc_tls_test` reliably (3/3 retries, both
+  compilers) on GitHub Actions' shared runners specifically. Root cause:
+  the leader's own `fetch_root_cert_pem()` is an in-process read, so it
+  could widen-then-acquire-then-switch its presented RPC identity within
+  the same maintenance tick the CA root committed on — before any
+  follower's maintenance thread had a real chance to widen its own trust
+  policy (which needs an HTTP round trip to the leader's `/v1/root-ca`,
+  itself gated on a quorum-confirmed `read_state()`). Once the leader
+  switched, every follower started rejecting its traffic, which broke the
+  very read-index heartbeats `/v1/root-ca` needed to keep answering — a
+  genuine circular deadlock, not a race that resolves given more time.
+  Fixed with a 3-second grace period (`k_identity_acquire_grace`) between
+  a node first observing the CA root and that node switching its
+  presented identity, giving every already-alive peer's widen step a real
+  window while RPC is still universally on the old, mutually-trusted
+  bootstrap credential. Verified locally under `taskset`-constrained CPU
+  plus background load in addition to the unconstrained runs, then
+  confirmed clean on CI. Landed as a separate commit
+  (`fix(ca-cluster-node): delay RPC-TLS identity switch until peers can
+  widen`) on the same PR.
+- **ca-cluster-rpc-mtls: coverage-ratchet CMake gating bug found and
+  fixed**: `tls_tcp_rpc_unit_test`/`tls_tcp_rpc_integration_test` were
+  accidentally registered inside `tests/CMakeLists.txt`'s
+  `if(TARGET ca_service)` block, which — unlike their actual dependency
+  (`certificate_authority` only) — is unavailable under coverage builds
+  (`ENABLE_COVERAGE` disables `cmd/ca_service`/`cmd/ca_cluster_node`
+  entirely), so neither test binary, and none of `tls_tcp_rpc.hpp`'s
+  coverage, was ever measured. Moved both out to be gated only by the
+  enclosing `if(TARGET certificate_authority)`. Once actually measured,
+  `reload_identity()`/`reload_trust_policy()`/`is_running()` (needed for
+  live cutover, but not exercised by the round-trip-shaped tests written
+  first) and the new `record_rpc_tls_ready` state-machine command turned
+  up as genuine, unrelated-to-this-fix coverage gaps — closed with a
+  dedicated reload test, an append_entries/install_snapshot round trip
+  (previously only request_vote was exercised), and a
+  `record_rpc_tls_ready`/`rpc_tls_ready_node_ids()` unit test. Coverage
+  floor raised 88.92% → 88.95%.
+- **`ca-cluster-rpc-mtls-real-aws` spec authored** (not yet
+  implemented) — see Certificate Management, below, for the summary;
+  full spec at `.kiro/specs/ca-cluster-rpc-mtls-real-aws/`.
 
 ### What Changed (July 13, 2026, later)
 
@@ -675,15 +717,41 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   establishes first-contact TLS trust from an out-of-band SHA-256 root
   fingerprint + bearer token, before any certificate chain exists to verify
   against
-- [ ] **`ca_cluster_node` RPC mTLS** — secure the Raft-internal RPC channel
-  between `ca_cluster_node` peers (currently plain TCP via
-  `tcp_rpc_client`/`tcp_rpc_server`) with mutual TLS; bootstrapped by a
+- [x] **`ca_cluster_node` RPC mTLS** — secures the Raft-internal RPC channel
+  between `ca_cluster_node` peers (previously plain TCP via
+  `tcp_rpc_client`/`tcp_rpc_server`, itself untouched) with mutual TLS via
+  a new sibling transport (`include/raft/tls_tcp_rpc.hpp`,
+  `tls_tcp_rpc_client`/`tls_tcp_rpc_server`); two-phase bootstrap — a
   static, operator-provisioned shared credential (mirroring the existing
-  unseal-passphrase distribution) before the CA root exists, then
-  automatically cut over to the cluster's own CA root once bootstrapped, via
-  a Raft-replicated `rpc_tls_ready` readiness set so the static credential
-  is exercised only for pre-CA traffic; design complete, not yet
-  implemented; spec at `.kiro/specs/ca-cluster-rpc-mtls/`
+  unseal-passphrase distribution) authenticates peers before the CA root
+  exists, then each node self-service-acquires its own CA-issued
+  certificate and cuts over automatically once a Raft-replicated
+  `rpc_tls_ready` readiness set shows every configured peer has done the
+  same; spec at `.kiro/specs/ca-cluster-rpc-mtls/`, 13/13 tasks complete;
+  4 real concurrency bugs (persistent client `SSL_CTX*`, server-side
+  socket timeouts, accept/present trust-widening ordering, follower
+  RPC-forwarding gaps) plus a 5th, CI-only deadlock (leader switching
+  identity before any follower had time to widen its own trust policy,
+  which broke the read-index heartbeats the follower's own widen step
+  needed — closed with a 3-second grace period) found and fixed via
+  multi-process and real-CI testing, none of which loopback/2-node-
+  in-process testing alone caught; real-AWS validation tracked separately
+  — see below
+- [ ] **`ca_cluster_node` RPC mTLS — real-AWS validation** — extends
+  `certificate-authority`'s existing real-EC2 harness
+  (`tests/ca_cluster_node_real_ec2_test.cpp`, today plain-TCP only) to run
+  RPC TLS across three real, separate EC2 instances: bootstrap-and-cutover
+  with the bootstrap credential deleted afterward, staggered node join,
+  restart without the bootstrap credential, and a security-group
+  network-isolation recovery scenario — the last of which no loopback test
+  can exercise at all. Directly motivated by the CI-only deadlock above:
+  loopback/CI-container testing already missed one real race once, so this
+  adds a second, environment-specific line of defense on real
+  infrastructure. Also generalizes `aws-quorum-manager`'s cost-tracking and
+  signal-driven-cleanup apparatus (today only in
+  `tests/aws_quorum_manager_real_ec2_test.cpp`) into a shared header so
+  every real-EC2 test binary gets both. Spec complete
+  (`.kiro/specs/ca-cluster-rpc-mtls-real-aws/`), 0/9 tasks implemented.
 
 ### Cloud Provider Support
 
@@ -704,6 +772,45 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   Service
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
+
+### Metrics Backends
+
+All entries below are `kythira::metrics`-concept implementations
+(`include/raft/metrics.hpp`) — today only satisfied by `noop_metrics`, a
+zero-cost stub. `metrics_type` is a compile-time template parameter on
+`raft_types`/`tcp_raft_types` (default `noop_metrics`), so adding a concrete
+backend needs no change to that seam, only a new type satisfying the
+concept (`set_metric_name`/`add_dimension`/`add_one`/`add_count`/
+`add_duration`/`add_value`/`emit`, all non-blocking — I/O deferred to a
+background emitter).
+
+- [ ] **AWS CloudWatch** — `PutMetricData`-backed implementation forwarding
+  to CloudWatch instead of a third-party agent; natural pairing with
+  `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`, already implemented
+  (Cloud Provider Support, above)
+- [ ] **Azure Monitor** — forwards to Azure Monitor's custom-metrics API;
+  pairs with the Azure quorum manager/certificate provider entry above
+- [ ] **GCP Cloud Monitoring** — forwards to Cloud Monitoring's
+  `timeSeries.create` API; pairs with the GCP quorum manager/certificate
+  provider entry above
+- [ ] **OCI Monitoring** — forwards to OCI Monitoring's `PostMetricData`
+  API; pairs with the OCI quorum manager/certificate provider entry above
+- [ ] **Alibaba Cloud CloudMonitor** — forwards to CloudMonitor's custom-
+  metrics API; pairs with the Alibaba Cloud quorum manager/certificate
+  provider entry above
+- [ ] **Prometheus** — exposes an HTTP `/metrics` scrape endpoint (text
+  exposition format); the dominant pull-based backend for Kubernetes/
+  container deployments
+- [ ] **Telegraf** — emits to a local Telegraf agent (StatsD or InfluxDB
+  line protocol over UDP/TCP), letting operators fan metrics out to
+  whatever Telegraf output plugin they already run (InfluxDB, Graphite,
+  Kafka, etc.) without Kythira needing to pick one
+- [ ] **VictoriaMetrics** — Prometheus-remote-write-compatible, so likely
+  shares most of the Prometheus implementation's wire format rather than
+  needing a wholly separate one
+- [ ] **NetData** — via NetData's StatsD-compatible collector or its own
+  REST API, for operators already running NetData for host-level
+  monitoring who want Kythira's Raft/RPC metrics in the same dashboard
 
 ### Minor Enhancements
 
