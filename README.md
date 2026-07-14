@@ -54,7 +54,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **380 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **384 Tests, 100% Pass Rate** — 0 failing, 0 disabled
 - **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
@@ -800,7 +800,13 @@ for the full design and requirements.
   high availability: certificate issuance/revocation history is committed as
   a replicated ledger (`ca_state_machine`), so the CA survives leader failover
   without losing its private key or reissuing certificates already on record.
-  Packaged for a 3-AZ AWS deployment (`docker/ca_cluster_node/`).
+  Packaged for a 3-AZ AWS deployment (`docker/ca_cluster_node/`). Its
+  Raft-internal RPC channel supports optional mutual TLS
+  (`--rpc-tls-cert`/`--rpc-tls-key`, `include/raft/tls_tcp_rpc.hpp`),
+  bootstrapped by a static operator-provisioned credential and
+  automatically cut over to the cluster's own CA root once it exists — see
+  `docker/ca_cluster_node/README.md`'s "Securing the Raft-internal RPC
+  channel" section.
 - **`acme_certificate_provider`** (`include/raft/acme_certificate_provider.hpp`)
   — a `certificate_provider` implementation speaking RFC 8555 (ACME) against
   any compliant CA, including Let's Encrypt. Supports `http-01` and `dns-01`
@@ -1210,6 +1216,11 @@ The implementation has been tested with multiple transport layers:
   integration and property tests
 ✅ **Certificate Authority**: In-process CA, `ca_service`/`ca_cluster_node`,
   ACME (RFC 8555/8738), fingerprint-pinned bootstrap
+✅ **`ca_cluster_node` RPC mTLS**: mutual TLS on the Raft-internal RPC
+  channel between `ca_cluster_node` peers, bootstrapped by a static
+  operator-provisioned credential and automatically cut over to the
+  cluster's own CA root once it exists — no operator action beyond
+  initial provisioning
 ✅ **Peer-to-Peer Log Replication**: opt-in gossip-based catch-up
   (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
   entries from any peer, not just the leader; leader remains sole commit
@@ -1217,7 +1228,7 @@ The implementation has been tested with multiple transport layers:
 ✅ **stdexec Future Backend**: optional, opt-in second `Future`/`Promise`/
   `Executor` implementation for new `stdexec`-specific code; Folly stays
   the default and is unaffected either way
-✅ **Testing**: 100% pass rate (378 tests), comprehensive property/integration/chaos testing
+✅ **Testing**: 100% pass rate (384 tests), comprehensive property/integration/chaos testing
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 
@@ -1225,8 +1236,6 @@ See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 
 ⚠️ **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
   managers / certificate providers — AWS is implemented today
-⚠️ **`ca_cluster_node` RPC mTLS**: securing the Raft-internal RPC channel
-  between `ca_cluster_node` peers — design complete, not yet implemented
 ⚠️ **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
   alternatives to the current httplib-based transport
 
@@ -1251,12 +1260,10 @@ outstanding-work list. Areas where help is needed:
 
 1. **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
    managers / certificate providers
-2. **`ca_cluster_node` RPC mTLS**: securing the Raft-internal RPC channel —
-   design complete at `.kiro/specs/ca-cluster-rpc-mtls/`, not yet implemented
-3. **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
+2. **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
    alternatives to the current httplib-based transport
-4. **Performance Optimization**: Profiling and memory usage optimization
-5. **Documentation**: More examples and tutorials
+3. **Performance Optimization**: Profiling and memory usage optimization
+4. **Documentation**: More examples and tutorials
 
 ## Troubleshooting
 

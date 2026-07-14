@@ -46,11 +46,17 @@ connection time, so no application-level change is needed.
    `file_persistence` survives task replacement (Requirement 17: a restarted
    node recovers from disk).
 4. A Secrets Manager secret `kythira/ca-cluster-node/auth-token` (bearer
-   token, identical across all three nodes) and
+   token, identical across all three nodes),
    `kythira/ca-cluster-node/unseal-key` (the unseal passphrase, byte-identical
-   across all three nodes per Requirement 17.4).
-5. IAM execution role with `secretsmanager:GetSecretValue` for the two
-   secrets above and standard ECS/EFS execution permissions; IAM task role —
+   across all three nodes per Requirement 17.4), and — for RPC-internal mTLS
+   (`.kiro/specs/ca-cluster-rpc-mtls/`, optional but recommended) —
+   `kythira/ca-cluster-node/rpc-tls-cert`/`rpc-tls-key` (the RPC bootstrap
+   credential, likewise byte-identical across all three nodes; see
+   `../README.md`'s "Securing the Raft-internal RPC channel" section for how
+   to generate it, and note it is only needed for each node's very first
+   cutover, not its ongoing operation).
+5. IAM execution role with `secretsmanager:GetSecretValue` for the secrets
+   above and standard ECS/EFS execution permissions; IAM task role —
    `ca_cluster_node` itself makes no AWS API calls in the manual path, so an
    empty/minimal task role is sufficient (contrast with `ca_service
    --provider aws-acm-pca`'s ACM-PCA permissions in `docker/ca_service/ecs-task-role-policy.json`,
@@ -59,12 +65,16 @@ connection time, so no application-level change is needed.
 
 ## The unseal-key-file requirement
 
-`--unseal-key-file` expects a **file path**, not an environment variable, but
-ECS `secrets` only injects environment variables. Each task definition's
-`command` is a small `sh -c` wrapper that writes the injected
-`CA_CLUSTER_UNSEAL_KEY` secret to `/tmp/unseal.key` (`chmod 600`, ephemeral
-container filesystem — never touches the EFS-backed persistent volume) before
-exec'ing `ca_cluster_node --unseal-key-file /tmp/unseal.key`.
+`--unseal-key-file` (and, likewise, `--rpc-tls-cert`/`--rpc-tls-key`) expect
+**file paths**, not environment variables, but ECS `secrets` only injects
+environment variables. Each task definition's `command` is a small `sh -c`
+wrapper that writes the injected `CA_CLUSTER_UNSEAL_KEY`,
+`CA_CLUSTER_RPC_TLS_CERT`, and `CA_CLUSTER_RPC_TLS_KEY` secrets to
+`/tmp/unseal.key`, `/tmp/rpc_bootstrap.crt`, and `/tmp/rpc_bootstrap.key`
+respectively (`chmod 600`, ephemeral container filesystem — never touches
+the EFS-backed persistent volume) before exec'ing `ca_cluster_node
+--unseal-key-file /tmp/unseal.key --rpc-tls-cert /tmp/rpc_bootstrap.crt
+--rpc-tls-key /tmp/rpc_bootstrap.key`.
 
 ## Deploying
 

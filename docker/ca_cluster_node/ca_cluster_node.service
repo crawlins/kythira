@@ -9,6 +9,8 @@
 #   sudo cp ca_cluster_node.env.example /etc/default/ca_cluster_node   # then edit it
 #   sudo mkdir -p /var/lib/ca_cluster_node && sudo chown ca-cluster-node:ca-cluster-node /var/lib/ca_cluster_node
 #   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/unseal.key /etc/ca_cluster_node/unseal.key
+#   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/rpc_bootstrap.crt /etc/ca_cluster_node/rpc_bootstrap.crt
+#   sudo install -m 0600 -o ca-cluster-node -g ca-cluster-node /path/to/rpc_bootstrap.key /etc/ca_cluster_node/rpc_bootstrap.key
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now ca_cluster_node
 #
@@ -16,7 +18,12 @@
 # ca_cluster_node.env.example for the exact per-node values that differ
 # across the three AZs) — /etc/ca_cluster_node/unseal.key MUST contain the
 # IDENTICAL passphrase on all three nodes (Requirement 17.4); losing it makes
-# the persisted CA key unrecoverable.
+# the persisted CA key unrecoverable. rpc_bootstrap.{crt,key} (RPC-internal
+# mTLS, .kiro/specs/ca-cluster-rpc-mtls/) MUST likewise be byte-identical on
+# all three nodes for their first startup, but — unlike the unseal key —
+# are only needed for that initial cutover, not for the node's entire
+# lifetime (see ca_cluster_node.env.example's RPC_TLS_CERT/RPC_TLS_KEY
+# comment for details).
 
 [Unit]
 Description=Kythira ca_cluster_node (Raft-replicated CA cluster member)
@@ -34,6 +41,8 @@ ExecStart=/usr/local/bin/ca_cluster_node \
     --unseal-key-file /etc/ca_cluster_node/unseal.key \
     --peers ${PEERS} \
     --auth-token ${CA_SERVICE_AUTH_TOKEN} \
+    --rpc-tls-cert ${RPC_TLS_CERT} \
+    --rpc-tls-key ${RPC_TLS_KEY} \
     ${BOOTSTRAP_CA_FLAG} \
     ${CA_CLUSTER_NODE_EXTRA_ARGS}
 Restart=on-failure

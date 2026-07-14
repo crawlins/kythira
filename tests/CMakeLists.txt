@@ -2048,6 +2048,46 @@ set_tests_properties(acme_identifier_type_test PROPERTIES
     LABELS "integration;certificate_authority;ca;acme;provider"
 )
 
+# ── ca-cluster-rpc-mtls (.kiro/specs/ca-cluster-rpc-mtls/) ──────────────────
+# tls_tcp_rpc_unit_test/tls_tcp_rpc_integration_test exercise
+# include/raft/tls_tcp_rpc.hpp directly (no ca_cluster_node subprocess
+# needed) so they only require certificate_authority, already satisfied by
+# this enclosing if(TARGET certificate_authority) block. Deliberately placed
+# BEFORE the if(TARGET ca_service) block below: ca_service (and therefore
+# ca_cluster_node) is unavailable under coverage builds (ENABLE_COVERAGE
+# disables both cmd/ca_service and cmd/ca_cluster_node subdirectories), and
+# nesting these two here would silently drop them — and all coverage of
+# tls_tcp_rpc.hpp — from every coverage build.
+
+add_executable(tls_tcp_rpc_unit_test tls_tcp_rpc_unit_test.cpp)
+target_link_libraries(tls_tcp_rpc_unit_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+target_compile_features(tls_tcp_rpc_unit_test PRIVATE cxx_std_23)
+add_test(NAME tls_tcp_rpc_unit_test COMMAND tls_tcp_rpc_unit_test)
+set_tests_properties(tls_tcp_rpc_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;ca_cluster_node;rpc_tls"
+)
+
+add_executable(tls_tcp_rpc_integration_test tls_tcp_rpc_integration_test.cpp)
+target_link_libraries(tls_tcp_rpc_integration_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    boost_json
+)
+target_compile_features(tls_tcp_rpc_integration_test PRIVATE cxx_std_23)
+add_test(NAME tls_tcp_rpc_integration_test COMMAND tls_tcp_rpc_integration_test)
+set_tests_properties(tls_tcp_rpc_integration_test PROPERTIES
+    TIMEOUT 90
+    LABELS "integration;certificate_authority;ca;ca_cluster_node;rpc_tls"
+)
+
 if(TARGET ca_service)
 
 add_executable(ca_test_fixture_unit_test ca_test_fixture_unit_test.cpp)
@@ -2163,6 +2203,48 @@ set_tests_properties(ca_cluster_node_test PROPERTIES
     # the entire suite around it (RUN_SERIAL would do that unconditionally).
     PROCESSORS 4
     LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node"
+)
+
+add_executable(ca_cluster_node_rpc_tls_test ca_cluster_node_rpc_tls_test.cpp)
+target_link_libraries(ca_cluster_node_rpc_tls_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_cluster_node_rpc_tls_test PRIVATE
+    CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>"
+)
+add_dependencies(ca_cluster_node_rpc_tls_test ca_cluster_node)
+target_compile_features(ca_cluster_node_rpc_tls_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_rpc_tls_test COMMAND ca_cluster_node_rpc_tls_test)
+set_tests_properties(ca_cluster_node_rpc_tls_test PROPERTIES
+    TIMEOUT 600
+    PROCESSORS 4
+    LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node;rpc_tls"
+)
+
+add_executable(ca_cluster_node_rpc_tls_restart_test ca_cluster_node_rpc_tls_restart_test.cpp)
+target_link_libraries(ca_cluster_node_rpc_tls_restart_test PRIVATE
+    certificate_authority
+    Boost::unit_test_framework
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    httplib::httplib
+    boost_json
+)
+target_compile_definitions(ca_cluster_node_rpc_tls_restart_test PRIVATE
+    CA_CLUSTER_NODE_PATH="$<TARGET_FILE:ca_cluster_node>"
+)
+add_dependencies(ca_cluster_node_rpc_tls_restart_test ca_cluster_node)
+target_compile_features(ca_cluster_node_rpc_tls_restart_test PRIVATE cxx_std_23)
+add_test(NAME ca_cluster_node_rpc_tls_restart_test COMMAND ca_cluster_node_rpc_tls_restart_test)
+set_tests_properties(ca_cluster_node_rpc_tls_restart_test PROPERTIES
+    TIMEOUT 600
+    PROCESSORS 4
+    LABELS "integration;certificate_authority;ca;ca_cluster_node;raft;multi_node;rpc_tls"
 )
 
 else()
