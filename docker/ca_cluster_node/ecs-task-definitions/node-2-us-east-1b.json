@@ -31,7 +31,7 @@
         "-c"
       ],
       "command": [
-        "set -e; umask 077; echo \"$CA_CLUSTER_UNSEAL_KEY\" > /tmp/unseal.key; exec /usr/local/bin/ca_cluster_node --node-id 2 --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node --unseal-key-file /tmp/unseal.key --peers 1:ca-node-1.ca-cluster.internal:7000@https://ca-node-1.ca-cluster.internal:8443,2:ca-node-2.ca-cluster.internal:7000@https://ca-node-2.ca-cluster.internal:8443,3:ca-node-3.ca-cluster.internal:7000@https://ca-node-3.ca-cluster.internal:8443 --auth-token \"$CA_SERVICE_AUTH_TOKEN\""
+        "set -e; umask 077; echo \"$CA_CLUSTER_UNSEAL_KEY\" > /tmp/unseal.key; echo \"$CA_CLUSTER_RPC_TLS_CERT\" > /tmp/rpc_bootstrap.crt; echo \"$CA_CLUSTER_RPC_TLS_KEY\" > /tmp/rpc_bootstrap.key; exec /usr/local/bin/ca_cluster_node --node-id 2 --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node --unseal-key-file /tmp/unseal.key --rpc-tls-cert /tmp/rpc_bootstrap.crt --rpc-tls-key /tmp/rpc_bootstrap.key --peers 1:ca-node-1.ca-cluster.internal:7000@https://ca-node-1.ca-cluster.internal:8443,2:ca-node-2.ca-cluster.internal:7000@https://ca-node-2.ca-cluster.internal:8443,3:ca-node-3.ca-cluster.internal:7000@https://ca-node-3.ca-cluster.internal:8443 --auth-token \"$CA_SERVICE_AUTH_TOKEN\""
       ],
       "portMappings": [
         {
@@ -57,6 +57,14 @@
         {
           "name": "CA_CLUSTER_UNSEAL_KEY",
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-cluster-node/unseal-key"
+        },
+        {
+          "name": "CA_CLUSTER_RPC_TLS_CERT",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-cluster-node/rpc-tls-cert"
+        },
+        {
+          "name": "CA_CLUSTER_RPC_TLS_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:kythira/ca-cluster-node/rpc-tls-key"
         }
       ],
       "healthCheck": {

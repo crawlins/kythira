@@ -60,7 +60,7 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 1: Trust Policy and Transport (Tasks 1-2)
 
-- [ ] 1. Add `tls_rpc_trust_policy` and `tls_tcp_rpc_config`
+- [x] 1. Add `tls_rpc_trust_policy` and `tls_tcp_rpc_config`
   - New `include/raft/tls_tcp_rpc.hpp`. `tls_rpc_trust_policy` with
     `bootstrap_fingerprint_hex`/`ca_root_pem` optionals and `accepts(X509*)`;
     factory helpers `pinned_fingerprint(hex)`, `ca_root_only(pem)`,
@@ -73,7 +73,7 @@ only for the traffic that necessarily predates the CA it helps create.
     ordinary `X509_verify_cert`.
   - _Requirements: 1.3, 2.2_
 
-- [ ] 2. Add `tls_tcp_rpc_client` / `tls_tcp_rpc_server`
+- [x] 2. Add `tls_tcp_rpc_client` / `tls_tcp_rpc_server`
   - Same public surface as `tcp_rpc_client`/`tcp_rpc_server`
     (`send_request_vote`/`send_append_entries`/`send_install_snapshot`;
     `register_*_handler`/`start`/`stop`/`is_running`), `static_assert`ed
@@ -93,7 +93,7 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 2: Replicated Cutover State and Config Wiring (Tasks 3-4)
 
-- [ ] 3. Add `ca_command_type::record_rpc_tls_ready`
+- [x] 3. Add `ca_command_type::record_rpc_tls_ready`
   - `ca_state_machine.hpp`: new enumerator, `encode_record_rpc_tls_ready_command(node_id)`
     following the existing `encode_*_command` shape, `apply()` case
     inserting into an idempotent `std::set<std::uint64_t> _rpc_tls_ready`,
@@ -101,7 +101,7 @@ only for the traffic that necessarily predates the CA it helps create.
     `get_state()`/`restore_from_snapshot()`.
   - _Requirements: 4.1, 4.2, 4.3_
 
-- [ ] 4. `ca_cluster_node_config` / CLI flags for RPC TLS
+- [x] 4. `ca_cluster_node_config` / CLI flags for RPC TLS
   - `config.hpp`: `rpc_tls_cert_path`/`rpc_tls_key_path` fields;
     `--rpc-tls-cert`/`--rpc-tls-key` argument parsing with the same
     both-or-neither validation as `--tls-cert`/`--tls-key`.
@@ -109,7 +109,7 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 3: Wire the Transport into `ca_cluster_node` (Task 5)
 
-- [ ] 5. Swap `ca_cluster_raft_types`'s network types when RPC TLS is enabled
+- [x] 5. Swap `ca_cluster_raft_types`'s network types when RPC TLS is enabled
   - `main.cpp`: when `--rpc-tls-cert`/`--rpc-tls-key` are given, construct
     `tls_tcp_rpc_client`/`tls_tcp_rpc_server` (initial trust policy:
     `pinned_fingerprint` of the configured bootstrap credential) instead of
@@ -129,7 +129,7 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 4: Maintenance-Thread Behaviors (Tasks 6-8)
 
-- [ ] 6. `maybe_acquire_rpc_identity()`
+- [x] 6. `maybe_acquire_rpc_identity()`
   - New maintenance-thread closure: checks for an already-persisted, valid
     peer certificate under `--data-dir` first (no-op if present); otherwise,
     once `read_ca_state()` shows root material exists, generates a key/CSR
@@ -143,14 +143,14 @@ only for the traffic that necessarily predates the CA it helps create.
     blocks the election/heartbeat timer threads.
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 7.1_
 
-- [ ] 7. `maybe_finalize_rpc_tls_cutover()`
+- [x] 7. `maybe_finalize_rpc_tls_cutover()`
   - New maintenance-thread closure: once `rpc_tls_ready_node_ids()` (via
     `read_ca_state()`) is a superset of `cfg.all_node_ids()`, calls
     `reload_trust_policy(ca_root_only(...))` on both local transport
     instances and latches `cutover_finalized` so this only happens once.
   - _Requirements: 6.1, 6.2_
 
-- [ ] 8. `maybe_renew_rpc_identity()`
+- [x] 8. `maybe_renew_rpc_identity()`
   - New maintenance-thread closure: when the persisted peer certificate is
     within its renewal window, calls `POST /v1/certificates/renew`
     (mTLS-authenticated with the current peer certificate, matching
@@ -160,7 +160,7 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 5: Deployment Packaging (Task 9)
 
-- [ ] 9. Update deployment docs/packaging for the bootstrap credential
+- [x] 9. Update deployment docs/packaging for the bootstrap credential
   - `docker/ca_cluster_node/ca_cluster_node.env.example`: new
     `CA_CLUSTER_RPC_TLS_CERT`/`_KEY` entries alongside the unseal-key
     guidance, and the one-line `openssl req -x509 ...` generation command
@@ -179,19 +179,19 @@ only for the traffic that necessarily predates the CA it helps create.
 
 ## Phase 6: Tests (Tasks 10-13)
 
-- [ ] 10. `tests/tls_tcp_rpc_unit_test.cpp` (new file)
+- [x] 10. `tests/tls_tcp_rpc_unit_test.cpp` (new file)
   - `tls_rpc_trust_policy::accepts()` under all three policy shapes;
     fingerprint match/mismatch; chain verifies/doesn't; `either` accepts
     what either alone would.
   - _Requirements: 1.2, 2.2_
 
-- [ ] 11. `tests/tls_tcp_rpc_integration_test.cpp` (new file)
+- [x] 11. `tests/tls_tcp_rpc_integration_test.cpp` (new file)
   - Real sockets, real OpenSSL: 2-node `tls_tcp_rpc_client`/`server` pair,
     one real mutual-TLS handshake + RPC round trip per trust policy; a
     missing/untrusted client cert rejected.
   - _Requirements: 1.1, 1.2, 1.4_
 
-- [ ] 12. `tests/ca_cluster_node_rpc_tls_test.cpp` (new file, multi-process)
+- [x] 12. `tests/ca_cluster_node_rpc_tls_test.cpp` (new file, multi-process)
   - Extends the existing `ca_cluster_node` multi-process test pattern: 3
     real processes started with only the bootstrap credential; confirms
     election/replication over TLS, `bootstrap_ca` committing, all three
@@ -203,7 +203,7 @@ only for the traffic that necessarily predates the CA it helps create.
     gap opens.
   - _Requirements: 5.1-5.4, 6.1-6.3_
 
-- [ ] 13. `tests/ca_cluster_node_rpc_tls_restart_test.cpp` (new file, multi-process)
+- [x] 13. `tests/ca_cluster_node_rpc_tls_restart_test.cpp` (new file, multi-process)
   - Cutover a 3-node cluster, delete the bootstrap credential, restart one
     node without it configured, confirm it rejoins using its persisted
     peer certificate (Requirement 7.1); separately, force a peer

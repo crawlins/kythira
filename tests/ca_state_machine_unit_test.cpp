@@ -170,6 +170,21 @@ BOOST_AUTO_TEST_CASE(record_revocation_unknown_serial_rejected_deterministically
     BOOST_TEST(!sm.ledger()[0].revoked_at.has_value());
 }
 
+BOOST_AUTO_TEST_CASE(record_rpc_tls_ready_tracks_node_ids) {
+    ca_state_machine sm;
+
+    auto result = sm.apply(encode_record_rpc_tls_ready_command(2), 1);
+
+    BOOST_TEST(result.empty());
+    BOOST_TEST((sm.rpc_tls_ready_node_ids() == std::set<std::uint64_t>{2}));
+
+    sm.apply(encode_record_rpc_tls_ready_command(1), 2);
+    // Idempotent — a node re-submitting after a retry doesn't duplicate.
+    sm.apply(encode_record_rpc_tls_ready_command(2), 3);
+
+    BOOST_TEST((sm.rpc_tls_ready_node_ids() == std::set<std::uint64_t>{1, 2}));
+}
+
 BOOST_AUTO_TEST_CASE(noop_command_leaves_state_unchanged) {
     ca_state_machine sm;
     sm.apply(encode_bootstrap_ca_command("root", encrypt_ca_private_key("key", "pass")), 1);

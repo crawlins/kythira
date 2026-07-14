@@ -1,18 +1,83 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 13, 2026
+**Last Updated**: July 14, 2026
 
 ## Current Status
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%) — 380 tests registered in CTest
+- **All tests passing** (100%) — 384 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
-  stdexec future backend, and the Folly-vs-stdexec performance benchmark suite
+  stdexec future backend, the Folly-vs-stdexec performance benchmark suite, and
+  RPC-internal mTLS for `ca_cluster_node`
 - Build clean with no errors or warnings
 - Coverage floor: 88.92% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 14, 2026)
+
+- **ca-cluster-rpc-mtls complete — all 13 tasks**:
+  `.kiro/specs/ca-cluster-rpc-mtls/` secures `ca_cluster_node`'s
+  Raft-internal RPC channel (previously plain, unauthenticated TCP via
+  `tcp_rpc_client`/`tcp_rpc_server`) with mutual TLS, via a two-phase
+  bootstrap: peers first mutually authenticate using a small, static,
+  operator-provisioned credential (distributed the same way as the
+  existing unseal passphrase), then, once the CA root exists, each node
+  self-service-acquires its own CA-issued peer certificate and cuts over
+  automatically — no operator action beyond initial provisioning.
+  `tcp_rpc.hpp` itself is untouched; the new transport
+  (`include/raft/tls_tcp_rpc.hpp`, `tls_tcp_rpc_client`/
+  `tls_tcp_rpc_server`) is a sibling satisfying the same
+  `network_client`/`network_server` concepts, wired in via a second
+  `ca_cluster_raft_types` alternative selected by a runtime check in
+  `cmd/ca_cluster_node/main.cpp` (template-instantiated once per Types, no
+  duplicated ~500-line node-construction body). Adds `ca_state_machine`'s
+  `record_rpc_tls_ready` command/set, `--rpc-tls-cert`/`--rpc-tls-key`/
+  `--rpc-timeout-ms` CLI flags, and updated `docker/ca_cluster_node/`
+  deployment packaging (systemd unit, env example, ECS task definitions)
+  for the bootstrap credential.
+  - **Real bugs found and fixed during multi-process integration testing**
+    (none of which were caught by unit/2-node-in-process testing alone —
+    all three only manifested under a real 3-process cluster with actual
+    TLS handshake latency):
+    1. `tls_tcp_rpc_client` originally rebuilt its `SSL_CTX*` from scratch
+       — including re-reading and re-parsing the identity cert/key files
+       from disk — on every single RPC call. At this project's default
+       50ms heartbeat cadence, that's disk I/O plus a full asymmetric-key
+       setup on Raft's own liveness-timer critical path; under real host
+       contention it reliably drove elections into the hundreds of terms.
+       Fixed by caching one long-lived `SSL_CTX*` per client, mutated only
+       by `reload_identity()`, mirroring the server side.
+    2. The accepted server-side socket had no `SO_RCVTIMEO`/`SO_SNDTIMEO`
+       at all (unlike the client's own `connect_to()`) — a client that
+       gave up mid-handshake left the server's per-connection thread
+       blocked forever, leaking one thread and one fd per stall and
+       compounding under load.
+    3. A node was switching *what it presented* (to its own newly-acquired
+       CA-issued certificate) at the same moment it acquired that
+       certificate — but a peer that hadn't independently reached the
+       CA root yet was still evaluating incoming connections under
+       `pinned_fingerprint` alone and would reject the now-unrecognized
+       cert outright. Fixed by decoupling "widen what this node accepts"
+       (triggered the moment the CA root is known to exist, via
+       `maybe_widen_rpc_trust_policy()`) from "switch what this node
+       presents" (only after acquiring its own certificate) — every peer
+       observing the same replicated root widens before any single peer
+       can finish acquiring and start presenting.
+    4. `node<Types>::read_state()`/`submit_command()` have no built-in
+       leader-forwarding — a follower's call fails immediately with "not
+       leader" rather than reaching the actual leader. The original
+       design (mirrored from this spec's own design.md sketch) called
+       both unconditionally from every node, which works for the leader
+       but never for followers. Fixed by adding a leader/follower split
+       (`fetch_root_cert_pem()`, matching the CSR-signing path's existing
+       split) that uses the client-facing HTTP API — a transport
+       completely unaffected by RPC-TLS trust state — for followers, and
+       piggybacking a follower's own `record_rpc_tls_ready` submission
+       onto its CSR-signing request so the leader, which alone can
+       actually call `submit_command()` successfully, submits it on the
+       follower's behalf.
 
 ### What Changed (July 13, 2026, later)
 

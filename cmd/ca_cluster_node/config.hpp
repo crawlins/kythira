@@ -1,5 +1,9 @@
 #pragma once
 
+#ifdef KYTHIRA_HAS_OPENSSL
+#include <raft/tls_tcp_rpc.hpp>
+#endif
+
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -37,10 +41,34 @@ struct ca_cluster_node_config {
     std::string tls_cert_path;
     std::string tls_key_path;
     bool print_root_fingerprint{false};
+    // RPC-internal mTLS (.kiro/specs/ca-cluster-rpc-mtls/, Requirement 3.1).
+    // Initially points at the operator-provisioned bootstrap credential;
+    // ca_cluster_node's own maintenance thread later hot-reloads the live
+    // transport onto a CA-issued peer certificate persisted under
+    // data_dir (Requirement 7.1) without ever touching these fields again.
+    std::string rpc_tls_cert_path;
+    std::string rpc_tls_key_path;
+#ifdef KYTHIRA_HAS_OPENSSL
+    // Resolved (not CLI-facing) transport config main() actually constructs
+    // tls_tcp_rpc_client/server with — populated from rpc_tls_cert_path/
+    // rpc_tls_key_path (or a persisted peer certificate, Requirement 7.1)
+    // before run_ca_cluster_node() is instantiated.
+    kythira::tls_tcp_rpc_config rpc_tls_config;
+#endif
 
     std::chrono::milliseconds election_timeout_min{150};
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};
+    // Per-RPC-call deadline (kythira::raft_configuration::_rpc_timeout,
+    // include/raft/types.hpp) — same 100ms default as that struct itself,
+    // so plain-TCP behavior is unchanged unless explicitly overridden.
+    // Operators enabling --rpc-tls-cert/--rpc-tls-key SHOULD raise this:
+    // every RPC call under RPC TLS pays a full TLS handshake (asymmetric
+    // crypto, no session reuse across the per-call-connect transport
+    // model — see include/raft/tls_tcp_rpc.hpp), which can plausibly
+    // exceed 100ms under real host contention, causing the client to give
+    // up on an RPC the server is still legitimately processing.
+    std::chrono::milliseconds rpc_timeout{100};
 
     // All node IDs in the cluster (self + peers) — for set_cluster_configuration().
     [[nodiscard]] auto all_node_ids() const -> std::vector<std::uint64_t> {
@@ -114,6 +142,7 @@ namespace detail {
         << "                       --peers <id>:<rpc_host>:<rpc_port>@<http_address>[,...]\n"
         << "                       [--rpc-address <addr>] [--bootstrap-ca]\n"
         << "                       [--auth-token <token>] [--tls-cert <path> --tls-key <path>]\n"
+        << "                       [--rpc-tls-cert <path> --rpc-tls-key <path>]\n"
         << "                       [--print-root-fingerprint]\n";
     std::exit(1);
 }
@@ -160,6 +189,10 @@ namespace detail {
             cfg.tls_cert_path = next();
         } else if (arg == "--tls-key") {
             cfg.tls_key_path = next();
+        } else if (arg == "--rpc-tls-cert") {
+            cfg.rpc_tls_cert_path = next();
+        } else if (arg == "--rpc-tls-key") {
+            cfg.rpc_tls_key_path = next();
         } else if (arg == "--print-root-fingerprint") {
             cfg.print_root_fingerprint = true;
         } else if (arg == "--election-timeout-min-ms") {
@@ -168,6 +201,8 @@ namespace detail {
             cfg.election_timeout_max = std::chrono::milliseconds(std::stoll(next()));
         } else if (arg == "--heartbeat-interval-ms") {
             cfg.heartbeat_interval = std::chrono::milliseconds(std::stoll(next()));
+        } else if (arg == "--rpc-timeout-ms") {
+            cfg.rpc_timeout = std::chrono::milliseconds(std::stoll(next()));
         } else if (arg == "-h" || arg == "--help") {
             usage_error("");
         } else {
@@ -177,6 +212,9 @@ namespace detail {
 
     if (!cfg.tls_cert_path.empty() != !cfg.tls_key_path.empty()) {
         usage_error("--tls-cert and --tls-key must be given together");
+    }
+    if (!cfg.rpc_tls_cert_path.empty() != !cfg.rpc_tls_key_path.empty()) {
+        usage_error("--rpc-tls-cert and --rpc-tls-key must be given together");
     }
     if (cfg.print_root_fingerprint) {
         // Requirement 19.2: prints the fingerprint and exits without binding

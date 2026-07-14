@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -50,6 +51,7 @@ enum class ca_command_type : std::uint8_t {
     record_issuance = 1,
     record_revocation = 2,
     noop = 3,
+    record_rpc_tls_ready = 4,
 };
 
 struct ca_ledger_entry {
@@ -387,6 +389,19 @@ namespace ca_state_machine_detail {
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
+/// Encodes a `record_rpc_tls_ready` command (`.kiro/specs/ca-cluster-rpc-mtls/`,
+/// Requirement 4.3) — a node submits this for its own `node_id` once it has
+/// switched its RPC transport to also present and accept a CA-issued
+/// certificate (Requirement 5.3). `apply()` treats a repeat of the same
+/// `node_id` as a no-op (Requirement 4.1).
+[[nodiscard]] inline auto encode_record_rpc_tls_ready_command(std::uint64_t node_id)
+    -> std::vector<std::byte> {
+    boost::json::object obj;
+    obj["type"] = static_cast<int>(ca_command_type::record_rpc_tls_ready);
+    obj["node_id"] = node_id;
+    return ca_state_machine_detail::bytes_from_json(obj);
+}
+
 /// Replicated CA state: root material (encrypted key + plaintext cert, the
 /// cert being public by nature) plus the full issuance/revocation ledger.
 /// Satisfies `kythira::state_machine<ca_state_machine, std::uint64_t>` so it
@@ -450,6 +465,10 @@ public:
             case ca_command_type::noop: {
                 return {};
             }
+            case ca_command_type::record_rpc_tls_ready: {
+                _rpc_tls_ready.insert(obj.at("node_id").to_number<std::uint64_t>());
+                return {};
+            }
         }
         throw std::invalid_argument("ca_state_machine: unknown command type");
     }
@@ -463,6 +482,9 @@ public:
         for (const auto& e : _ledger)
             ledger_arr.push_back(ca_state_machine_detail::ledger_entry_to_json(e));
         obj["ledger"] = ledger_arr;
+        boost::json::array rpc_tls_ready_arr;
+        for (auto id : _rpc_tls_ready) rpc_tls_ready_arr.push_back(id);
+        obj["rpc_tls_ready"] = rpc_tls_ready_arr;
         return ca_state_machine_detail::bytes_from_json(obj);
     }
 
@@ -473,6 +495,7 @@ public:
             _encrypted_ca_key_pem.clear();
             _root_cert_pem.clear();
             _ledger.clear();
+            _rpc_tls_ready.clear();
             return;
         }
         auto obj = ca_state_machine_detail::json_from_bytes(snapshot).as_object();
@@ -482,6 +505,15 @@ public:
         _ledger.clear();
         for (const auto& v : obj.at("ledger").as_array()) {
             _ledger.push_back(ca_state_machine_detail::json_to_ledger_entry(v.as_object()));
+        }
+        _rpc_tls_ready.clear();
+        // Snapshots taken before this field existed (older log entries)
+        // simply have no "rpc_tls_ready" key — treat that as an empty set
+        // rather than throwing, so restoring an old snapshot doesn't crash.
+        if (auto* v = obj.if_contains("rpc_tls_ready")) {
+            for (const auto& e : v->as_array()) {
+                _rpc_tls_ready.insert(e.to_number<std::uint64_t>());
+            }
         }
     }
 
@@ -494,6 +526,14 @@ public:
     [[nodiscard]] auto ledger() const -> const std::vector<ca_ledger_entry>& { return _ledger; }
     [[nodiscard]] auto last_applied_index() const -> log_index_t { return _last_applied_index; }
 
+    // Requirement 4.2: the set of node ids that have committed their own
+    // record_rpc_tls_ready(self) — a node uses this (via read_state()) to
+    // decide when every configured peer has switched to CA-issued RPC
+    // identity and it is therefore safe to finalize cutover (Requirement 6.2).
+    [[nodiscard]] auto rpc_tls_ready_node_ids() const -> std::set<std::uint64_t> {
+        return _rpc_tls_ready;
+    }
+
 private:
     [[nodiscard]] static auto error_result(std::string_view error) -> std::vector<std::byte> {
         boost::json::object obj;
@@ -505,6 +545,7 @@ private:
     std::string _encrypted_ca_key_pem;  // AES-256-GCM ciphertext + nonce + tag + salt, base64
     std::string _root_cert_pem;         // plaintext — the CA cert itself is public
     std::vector<ca_ledger_entry> _ledger;
+    std::set<std::uint64_t> _rpc_tls_ready;
     log_index_t _last_applied_index{0};
 };
 

@@ -35,7 +35,57 @@ only in `NODE_ID` and whether `BOOTSTRAP_CA_FLAG` is set — `PEERS` and
 `CA_SERVICE_AUTH_TOKEN` are identical across all three, as is the unseal
 passphrase installed separately at `/etc/ca_cluster_node/unseal.key`
 (Requirement 17.4: byte-identical on every node, or the persisted CA key
-becomes unrecoverable).
+becomes unrecoverable), and — if RPC TLS is enabled, see below —
+`rpc_bootstrap.crt`/`rpc_bootstrap.key`.
+
+## Securing the Raft-internal RPC channel (RPC TLS, `.kiro/specs/ca-cluster-rpc-mtls/`)
+
+Separate from the client-facing HTTPS listener's own TLS
+(`--tls-cert`/`--tls-key`, fingerprint-pinned per the section below),
+`ca_cluster_node` also supports mutual TLS on the Raft-internal RPC channel
+between the three cluster peers themselves. This is optional
+(`--rpc-tls-cert`/`--rpc-tls-key`; omitting both falls back to plain,
+unauthenticated TCP with a startup warning) but recommended outside a fully
+trusted network boundary.
+
+**Two-phase bootstrap, entirely automatic after initial setup:**
+
+1. **Before the CA root exists**, all three nodes mutually authenticate
+   using a small, static, self-signed credential the operator generates
+   once and copies byte-identical to all three nodes — the same
+   distribution model as `unseal.key`:
+   ```
+   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+     -nodes -keyout rpc_bootstrap.key -out rpc_bootstrap.crt -days 3650 \
+     -subj "/CN=ca-cluster-rpc-bootstrap"
+   ```
+   Install both files (mode `0600`) alongside `unseal.key` and pass
+   `--rpc-tls-cert`/`--rpc-tls-key` (see `ca_cluster_node.env.example`'s
+   `RPC_TLS_CERT`/`RPC_TLS_KEY`).
+2. **Once the CA root exists** (after `--bootstrap-ca` commits), each node
+   automatically requests its own certificate from the now-running cluster,
+   hot-reloads its RPC transport to present it, and starts a dual-trust
+   window accepting either credential. No operator action is required.
+3. **Once every configured node has completed step 2**, each node
+   independently finalizes cutover, no longer accepting the bootstrap
+   credential's fingerprint for new RPC connections. From this point on, a
+   restarted node rejoins using its own persisted certificate
+   (`--data-dir`) — the bootstrap credential is never needed again.
+
+If RPC TLS is enabled, consider raising the Raft timing flags beyond their
+plain-TCP defaults — every RPC call now pays a full TLS handshake, which is
+measurably slower under real host load:
+```
+--election-timeout-min-ms 1000 --election-timeout-max-ms 2000 \
+--heartbeat-interval-ms 300 --rpc-timeout-ms 2000
+```
+
+See `.kiro/specs/ca-cluster-rpc-mtls/design.md` for the full design and
+`ca_cluster_node.env.example`'s `RPC_TLS_CERT`/`RPC_TLS_KEY` comment for the
+exact provisioning steps. **Path 3** (`aws_ec2_quorum_manager`, below) needs
+no additional code or configuration beyond what Path 1 already needs — the
+bootstrap credential is baked into the AMI exactly like `unseal.key`
+already is.
 
 ## Path 2 — manual, ECS Fargate
 
