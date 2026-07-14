@@ -54,7 +54,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **384 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **385 Tests, 100% Pass Rate** — 0 failing, 0 disabled
 - **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
@@ -1228,7 +1228,7 @@ The implementation has been tested with multiple transport layers:
 ✅ **stdexec Future Backend**: optional, opt-in second `Future`/`Promise`/
   `Executor` implementation for new `stdexec`-specific code; Folly stays
   the default and is unaffected either way
-✅ **Testing**: 100% pass rate (384 tests), comprehensive property/integration/chaos testing
+✅ **Testing**: 100% pass rate (385 tests), comprehensive property/integration/chaos testing
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
 

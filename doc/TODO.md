@@ -6,7 +6,7 @@
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%) — 384 tests registered in CTest
+- **All tests passing** (100%) — 385 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
@@ -737,21 +737,36 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   multi-process and real-CI testing, none of which loopback/2-node-
   in-process testing alone caught; real-AWS validation tracked separately
   — see below
-- [ ] **`ca_cluster_node` RPC mTLS — real-AWS validation** — extends
+- [x] **`ca_cluster_node` RPC mTLS — real-AWS validation** — extends
   `certificate-authority`'s existing real-EC2 harness
-  (`tests/ca_cluster_node_real_ec2_test.cpp`, today plain-TCP only) to run
-  RPC TLS across three real, separate EC2 instances: bootstrap-and-cutover
+  (`tests/ca_cluster_node_real_ec2_test.cpp`, plain-TCP) to run RPC TLS
+  across three real, separate EC2 instances via a new sibling fixture
+  (`tests/ca_cluster_node_rpc_tls_real_ec2_test.cpp`): bootstrap-and-cutover
   with the bootstrap credential deleted afterward, staggered node join,
-  restart without the bootstrap credential, and a security-group
-  network-isolation recovery scenario — the last of which no loopback test
-  can exercise at all. Directly motivated by the CI-only deadlock above:
-  loopback/CI-container testing already missed one real race once, so this
-  adds a second, environment-specific line of defense on real
-  infrastructure. Also generalizes `aws-quorum-manager`'s cost-tracking and
-  signal-driven-cleanup apparatus (today only in
-  `tests/aws_quorum_manager_real_ec2_test.cpp`) into a shared header so
-  every real-EC2 test binary gets both. Spec complete
-  (`.kiro/specs/ca-cluster-rpc-mtls-real-aws/`), 0/9 tasks implemented.
+  restart without the bootstrap credential, and a network-isolation
+  recovery scenario (subnet-level deny-all NACL swap, reusing the same
+  proven technique `aws_quorum_manager_real_ec2_test.cpp` already
+  implements, rather than the per-instance security-group reassignment
+  originally speced but never actually used anywhere in this codebase) —
+  the last of which no loopback test can exercise at all. Directly
+  motivated by the CI-only deadlock above: loopback/CI-container testing
+  already missed one real race once, so this adds a second,
+  environment-specific line of defense on real infrastructure. Also
+  generalizes `aws-quorum-manager`'s cost-tracking and signal-driven-cleanup
+  apparatus (previously only in `tests/aws_quorum_manager_real_ec2_test.cpp`)
+  into a shared header (`tests/aws_real_ec2_test_support.hpp`) so every
+  real-EC2 test binary gets both — including
+  `ca_cluster_node_real_ec2_test.cpp`, which had neither before and would
+  have leaked a VPC and running EC2 instances if killed mid-run; fixed an
+  unrelated pre-existing bug found along the way in that same file (its
+  `--peers`/curl checks used `https://` against a server the test never
+  actually configures with `--tls-cert`/`--tls-key`). Spec complete,
+  9/9 tasks implemented (`.kiro/specs/ca-cluster-rpc-mtls-real-aws/`); full
+  project builds cleanly and every fixture was confirmed to fail gracefully
+  with a clear "skip" message when AWS credentials are absent — same
+  compile-verified-only limitation `ca_cluster_node_real_ec2_test.cpp`
+  already had (no AWS account available in this environment to actually run
+  any of the three real-EC2 binaries).
 
 ### Cloud Provider Support
 
