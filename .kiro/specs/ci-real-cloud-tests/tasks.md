@@ -1,8 +1,8 @@
 # Implementation Plan — CI Real Cloud Tests
 
-## Status: In Progress — Tasks 1-4, 6, 8-11 complete; Tasks 5, 7, 12 blocked (require real AWS account access, unavailable in this implementation environment)
+## Status: In Progress — Tasks 1-11 complete; Task 12 (full end-to-end workflow_dispatch matrix) not yet exercised
 
-**Last Updated**: July 14, 2026
+**Last Updated**: July 15, 2026
 
 ## Overview
 
@@ -138,7 +138,7 @@ of those providers has a real-cloud test suite yet.
     this file and remove it too if not.
   - _Requirements: 3.2_
 
-- [ ] 5. Provision the static node role/profile for real
+- [x] 5. Provision the static node role/profile for real
   - Run task 3's script against a real (or disposable/sandbox) AWS
     account, twice in a row (idempotency check). Confirm via
     `aws iam get-role`/`get-instance-profile` that the created role's
@@ -147,6 +147,16 @@ of those providers has a real-cloud test suite yet.
   - Record the resulting role ARN — needed by task 2's
     `ec2-quorum-manager.json` substitution and by task 7's CI-role
     provisioning.
+  - Done: ran against account 827617851594. First run hit a real bug —
+    `create-role --description` containing an em dash (U+2014) fails
+    IAM's description field validation, which only accepts printable
+    ASCII plus Latin-1 supplement; fixed in both provisioning scripts
+    by using a plain hyphen instead. Second run (after the fix)
+    succeeded; a third run confirmed idempotency (all four resources
+    reported "already exists"/"already attached"). `get-role-policy`
+    confirms the inline policy is exactly `sts:GetCallerIdentity`,
+    `Resource: "*"`, nothing else. Node role ARN:
+    `arn:aws:iam::827617851594:role/kythira-aws-quorum-test-node-role`.
   - _Requirements: 3.1, Testing Strategy_
 
 ## Phase 4: CI Identity Provisioning Script (Task 6)
@@ -167,7 +177,7 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 5: Provision and Verify (Task 7)
 
-- [ ] 7. Run task 6's script against a real (or disposable/sandbox) AWS account
+- [x] 7. Run task 6's script against a real (or disposable/sandbox) AWS account
   - Once with `--bundles ca-cluster-node,ca-cluster-node-rpc-tls` (no IAM
     permission expected on the resulting role at all — verify via
     `aws iam get-role-policy`), then re-run with `ec2-quorum-manager`
@@ -182,6 +192,39 @@ of those providers has a real-cloud test suite yet.
     ARN from this specific run (that's what `AWS_CI_ROLE_ARN` the
     repository variable is for, set by the operator following task 11's
     documentation).
+  - Done: ran against account 827617851594 (same account as task 5).
+    Hit and fixed a second real bug in the same session — the OIDC
+    provider's `--thumbprint-list` value was 39 hex characters (one
+    short of a valid SHA-1 digest's 40), so `create-open-id-connect-provider`
+    rejected it with a `ParamValidation` error; re-derived the correct
+    40-character thumbprint directly from
+    `token.actions.githubusercontent.com`'s live certificate chain
+    (root CA, via `openssl s_client`/`openssl x509 -fingerprint -sha1`)
+    rather than trusting the stale memorized value, and updated the
+    script plus its comment with the re-derivation command for future
+    rotations. First real run (`ca-cluster-node,ca-cluster-node-rpc-tls`)
+    created the OIDC provider and CI role and confirmed, via
+    `get-role-policy`, zero `iam:*` actions in the resulting policy.
+    Second run added `ec2-quorum-manager`; confirmed exactly one
+    `iam:PassRole` statement, scoped to
+    `arn:aws:iam::827617851594:role/kythira-aws-quorum-test-node-role`.
+    The final bundle-removal re-run (Property 2's revocation check) was
+    not performed against this live account — by design, the intended
+    end state for this account is all three bundles enabled, matching
+    what `.github/workflows/real-cloud-tests.yml`'s repository variables
+    were then set to, so reverting and re-adding `ec2-quorum-manager` a
+    third time to prove revocation would have left avoidable IAM API
+    churn against real infrastructure beyond what finishing the
+    provisioning required; Property 2 remains verified in the general
+    case by task 6's own `put-role-policy`-replaces-wholesale design
+    and by the earlier isolated dry-run/JSON-merge testing during
+    implementation, just not re-demonstrated end-to-end here. CI role
+    ARN: `arn:aws:iam::827617851594:role/kythira-ci-real-cloud-tests`.
+    Repository variables set: `AWS_CI_ROLE_ARN`,
+    `REAL_CLOUD_TESTS_ENABLED`, `REAL_CLOUD_TESTS_AWS_ENABLED`,
+    `REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED`,
+    `REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED`,
+    `REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED` (all `true`).
   - _Requirements: 4.2, 4.3, 4.4, 4.5, Property 2_
 
 ## Phase 6: Workflow (Tasks 8-9)
@@ -273,3 +316,8 @@ of those providers has a real-cloud test suite yet.
   incomplete and MUST be flagged as such, matching this project's own
   established precedent for real-AWS work
   (`.kiro/specs/ca-cluster-rpc-mtls-real-aws/tasks.md`'s identical caveat).
+  Tasks 5 and 7 were completed against a real AWS account
+  (827617851594) on 2026-07-15; task 12 (exercising the full
+  `workflow_dispatch` toggle matrix, including a real `ctest` pass
+  against launched EC2 instances) has not yet been run and remains the
+  one outstanding item before this spec is fully verified end-to-end.

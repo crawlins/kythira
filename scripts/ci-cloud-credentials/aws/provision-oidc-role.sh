@@ -104,14 +104,18 @@ EXISTING_PROVIDER_ARN=$(aws iam list-open-id-connect-providers \
 if [[ -n "${EXISTING_PROVIDER_ARN}" && "${EXISTING_PROVIDER_ARN}" != "None" ]]; then
     echo "  already exists: ${EXISTING_PROVIDER_ARN}"
 else
-    # AWS documents this thumbprint requirement for GitHub's OIDC provider;
-    # aws iam create-open-id-connect-provider requires at least one entry
-    # even though AWS no longer validates it against the actual TLS chain
-    # for well-known providers — see AWS's own GitHub OIDC setup guide.
+    # aws iam create-open-id-connect-provider requires at least one
+    # thumbprint entry even though AWS no longer validates it against the
+    # actual TLS chain for well-known providers. The value here is the
+    # SHA-1 fingerprint of the root CA currently at the top of
+    # token.actions.githubusercontent.com's certificate chain (re-derive
+    # with: echo | openssl s_client -showcerts -connect
+    # token.actions.githubusercontent.com:443 2>/dev/null | openssl x509
+    # -noout -fingerprint -sha1, taking the last cert in the chain).
     run aws iam create-open-id-connect-provider \
         --url "https://${OIDC_PROVIDER_URL}" \
         --client-id-list "${OIDC_AUDIENCE}" \
-        --thumbprint-list "6938fd4d98bab03faadb97b34396831e3780aea"
+        --thumbprint-list "ab9d0263244dd0326eb67015705a667e79cfe998"
 fi
 
 echo "[step] Build trust policy"
@@ -148,7 +152,7 @@ else
         --role-name "${ROLE_NAME}" \
         --assume-role-policy-document "${TRUST_POLICY}" \
         --max-session-duration "${SESSION_DURATION}" \
-        --description "kythira CI real-cloud-tests OIDC role — .kiro/specs/ci-real-cloud-tests/"
+        --description "kythira CI real-cloud-tests OIDC role - .kiro/specs/ci-real-cloud-tests/"
 fi
 # No permissions boundary is attached — this role never holds
 # iam:CreateRole (or any IAM-write action), so there is nothing for a
