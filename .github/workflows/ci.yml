@@ -48,15 +48,29 @@ jobs:
         uses: actions/checkout@v4
 
       # ── System dependencies ───────────────────────────────────────────────
+      # Retries the whole update+install cycle: the ubuntu-24.04-arm runner
+      # image has been observed losing outbound HTTP(S) route to
+      # ports.ubuntu.com for a minute or more at a time (IPv6 "Network is
+      # unreachable" plus IPv4 connection timeouts), well past what apt's
+      # own per-package retry window covers. Re-running apt-get update
+      # first on each attempt picks a fresh mirror/connection rather than
+      # retrying against the same failed one.
       - name: Install system dependencies
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            g++-13 \
-            clang-18 \
-            cmake \
-            ninja-build \
-            libfiu-dev
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 g++-13 \
+                 clang-18 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
 
       - name: Install Python tools
         run: |
