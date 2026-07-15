@@ -104,7 +104,7 @@ else
     run aws iam create-role \
         --role-name "${ROLE_NAME}" \
         --assume-role-policy-document "${TRUST_POLICY}" \
-        --description "kythira aws_quorum_manager_real_ec2_test node identity — .kiro/specs/ci-real-cloud-tests/"
+        --description "kythira aws_quorum_manager_real_ec2_test node identity - .kiro/specs/ci-real-cloud-tests/"
 fi
 
 echo "[step] Ensure inline policy: ${POLICY_NAME}"
