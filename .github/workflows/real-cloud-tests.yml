@@ -31,6 +31,10 @@ on:
         description: "AWS bundle: ca-cluster-node-rpc-tls"
         type: boolean
         required: false
+      aws_bundle_ami_build:
+        description: "AWS bundle: ami-build (builds the ca_cluster_node AMI via Packer)"
+        type: boolean
+        required: false
       azure_enabled:
         description: "Azure (not yet implemented — see doc/TODO.md Cloud Provider Support)"
         type: boolean
@@ -158,6 +162,73 @@ jobs:
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_rpc_tls_real_ec2_test$' --output-on-failure
+
+  # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
+  # Independent of the `aws` job above: builds a new AMI (and its backing
+  # snapshot) on every run, which persists and accrues storage cost until an
+  # operator deregisters it — see packer/ca_cluster_node/README.md's cleanup
+  # section — so this is its own explicitly-toggled bundle, never bundled
+  # into the weekly ca-cluster-node real-EC2 test run.
+  # .kiro/specs/ca-cluster-node-ami/ Requirement 13.
+  ami-build:
+    name: Build ca_cluster_node AMI (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.aws_enabled == 'true'
+        || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true'))
+      && (github.event.inputs.aws_bundle_ami_build == 'true'
+        || (github.event.inputs.aws_bundle_ami_build == null && vars.REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED == 'true'))
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if AWS_CI_ROLE_ARN is unset
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED is true but the AWS_CI_ROLE_ARN repository variable is unset. See scripts/ci-cloud-credentials/aws/README.md." >&2
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-ami-build
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      - name: Install Packer
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+          sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends packer
+
+      - name: Build AMI
+        run: |
+          packer/ca_cluster_node/scripts/build.sh \
+            --arch ${{ matrix.arch }} \
+            --region ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: ca-cluster-node-ami-manifest-${{ matrix.arch }}
+          path: packer-manifest.json
 
   # ── Scaffolded, not-yet-implemented providers ───────────────────────────
   # doc/TODO.md's "Cloud Provider Support" section is the source of truth

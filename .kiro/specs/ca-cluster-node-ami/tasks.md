@@ -1,8 +1,34 @@
 # Implementation Plan — `ca_cluster_node` AMI Build
 
-## Status: Not Started
+## Status: Complete — all 8 tasks (statically verified; see note below)
 
 **Last Updated**: July 15, 2026
+
+All artifacts described below exist in the repository (`packer/ca_cluster_node/`,
+CI wiring, documentation, credential bundle). The development environment
+this spec was implemented in initially had no `packer` CLI, no AWS
+credentials, and no reachable Docker daemon (the `docker` CLI is present but
+`dockerd` is not) — `packer` and `shellcheck` were subsequently installed
+directly into it (both install cleanly via `apt.releases.hashicorp.com`/
+Ubuntu's own repos, no daemon or AWS account required), which let every
+static check this spec's own `packer-ca-cluster-node` CI job runs —
+`packer fmt -check -diff`, `packer init`, `packer validate -syntax-only`,
+`shellcheck`, and the secret-absence grep — actually run and pass locally,
+in addition to `bash -n`, manual HCL review, and JSON/YAML validation.
+Three real issues were caught this way (a secret-absence grep false
+positive from `provision.sh`'s own explanatory comment, a `packer fmt`
+alignment mismatch, and a shellcheck SC2015 finding in the cloud-init
+cleanup line) and fixed. What remains unverified in this environment is
+only what genuinely requires infrastructure it doesn't have: an actual
+`extract-binary.sh` Docker build and `provision.sh`'s container-based
+smoke test (need a running Docker/Podman daemon), a full (non-`-syntax-only`)
+`packer validate`/`packer build` (needs real AWS credentials to resolve the
+template's `amazon-parameterstore` data source), and therefore a real
+`build.sh` AMI build. The first real exercise of those will be, once an
+operator enables the `ami-build` bundle, the real-cloud-tests workflow job
+(needs AWS credentials + a native `arm64` runner). This mirrors the
+"compile-verified only" caveat already used elsewhere in this project for
+AWS-dependent work (e.g. `.kiro/specs/ca-cluster-rpc-mtls-real-aws/`).
 
 ## Overview
 
@@ -63,7 +89,7 @@ Reference material to read before starting:
 
 ## Tasks
 
-- [ ] 1. `extract-binary.sh`
+- [x] 1. `extract-binary.sh`
   - Create `packer/ca_cluster_node/scripts/extract-binary.sh` per
     design.md's Component 4:
     - `--arch amd64|arm64` (required), `--out PATH` (optional, defaults to
@@ -80,7 +106,7 @@ Reference material to read before starting:
     should report `ELF 64-bit ... x86-64`).
   - _Requirements: 2.2, 2.3, 9.3_
 
-- [ ] 2. Packer template skeleton
+- [x] 2. Packer template skeleton
   - Create `packer/ca_cluster_node/variables.pkr.hcl` and
     `packer/ca_cluster_node/ca_cluster_node.pkr.hcl` per design.md's
     Components 1-2:
@@ -106,7 +132,7 @@ Reference material to read before starting:
     credentials present.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 3.1, 3.2, 3.3, 6.1, 6.2, 6.3, 7.1, 7.2, 9.1, 9.2_
 
-- [ ] 3. `provision.sh`
+- [x] 3. `provision.sh`
   - Create `packer/ca_cluster_node/scripts/provision.sh` per design.md's
     Component 3 — runtime packages (`libssl3 curl`), binary install,
     `ca-cluster-node` system user creation (idempotent — guarded by `id -u`
@@ -123,7 +149,7 @@ Reference material to read before starting:
     does NOT exist, and `id ca-cluster-node` succeeds.
   - _Requirements: 4.1, 4.2, 5.1, 5.2_
 
-- [ ] 4. `build.sh`
+- [x] 4. `build.sh`
   - Create `packer/ca_cluster_node/scripts/build.sh` per design.md's
     Component 5:
     - `--arch` (required), `--region` (default `us-east-1` or `$AWS_REGION`),
@@ -143,7 +169,7 @@ Reference material to read before starting:
     from Requirement 6.2 present.
   - _Requirements: 7.3, 8.1, 8.2, 8.3, 8.4_
 
-- [ ] 5. Static CI checks
+- [x] 5. Static CI checks
   - Add a job (or steps within an existing job) to `ci.yml` that runs, on
     every push/PR touching `packer/ca_cluster_node/**`:
     - `packer fmt -check -diff`
@@ -160,7 +186,7 @@ Reference material to read before starting:
     it actually catches problems (revert the temporary break afterward).
   - _Requirements: 10.1, 10.2_
 
-- [ ] 6. Documentation
+- [x] 6. Documentation
   - Create `packer/ca_cluster_node/README.md` per Requirement 11 AC 1:
     prerequisites, `build.sh` usage, tag/naming scheme, manifest location,
     explicit no-secrets guarantee, and the manual `docker run` smoke-test
@@ -180,7 +206,7 @@ Reference material to read before starting:
     confirm it's gone; `ctest` still passes (comment-only source change).
   - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-- [ ] 7. CI credential bundle
+- [x] 7. CI credential bundle
   - Create `scripts/ci-cloud-credentials/aws/policies/ami-build.json` per
     design.md's CI Integration section (EC2 lifecycle + `CreateImage`/
     `DeregisterImage`/snapshot actions + scoped `ssm:GetParameter` on
@@ -196,7 +222,7 @@ Reference material to read before starting:
     containing every action from `ami-build.json`.
   - _Requirements: 12.1, 12.2, 12.3_
 
-- [ ] 8. `ami-build` CI workflow job
+- [x] 8. `ami-build` CI workflow job
   - Add the `ami-build` job to `.github/workflows/real-cloud-tests.yml` per
     design.md's CI Integration section: matrix over `arch: [amd64, arm64]`
     with native runners (`ubuntu-24.04`, `ubuntu-24.04-arm`), the same
