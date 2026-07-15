@@ -121,14 +121,25 @@ jobs:
           aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
 
       # ── System dependencies (identical to ci.yml's build-and-test job) ────
+      # Retries the whole update+install cycle: the ubuntu-24.04-arm runner
+      # image has been observed losing outbound HTTP(S) route to
+      # ports.ubuntu.com for a minute or more at a time, well past what
+      # apt's own per-package retry window covers.
       - name: Install system dependencies
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 \
-            cmake \
-            ninja-build \
-            libfiu-dev
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -245,12 +256,24 @@ jobs:
           role-session-name: kythira-ci-ami-build
           aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
 
+      # Retries the whole repo-setup+update+install cycle: the
+      # ubuntu-24.04-arm runner image has been observed losing outbound
+      # HTTP(S) route to ports.ubuntu.com for a minute or more at a time,
+      # well past what apt's own per-package retry window covers.
       - name: Install Packer
         run: |
-          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
-          sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends packer
+          for attempt in 1 2 3; do
+            if curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add - \
+                 && sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+                 && sudo apt-get update -q \
+                 && sudo apt-get install -y --no-install-recommends packer; then
+              exit 0
+            fi
+            echo "::warning::Packer install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::Packer install failed after 3 attempts" >&2
+          exit 1
 
       - name: Build AMI
         run: |
