@@ -22,6 +22,30 @@ The body MUST be a detailed summary of the changes. Specifically:
 - A one-line body is only acceptable when the subject line is genuinely
   self-contained (e.g. a pure rename with no behavioural effect).
 
+## Working branch commits
+
+When committing work to a working/feature branch, reset to `origin/main`
+and rebuild the commit(s) instead of layering incremental commits on top
+of each other:
+
+1. `git fetch origin main`, then check the branch's merge-base against
+   `origin/main`. If `origin/main` has moved ahead of that merge-base,
+   rebase the branch onto it first — never discard upstream commits.
+2. `git reset --soft origin/main` to collapse the branch's own commits back
+   into a single staged diff (safe only once step 1 confirms the branch's
+   base already matches `origin/main`).
+3. Recommit from that staged diff with fresh commit message(s) written from
+   the accumulated changes and the actual work done — treat prior commit
+   messages as scratch notes, not the final record. Follow the Commit
+   messages rules above, including splitting into multiple commits when the
+   diff covers more than one logical concern.
+4. If the branch was already pushed (e.g. it backs an open PR), push with
+   `git push --force-with-lease` to update it in place.
+
+This keeps each working branch's history clean and reviewable — one (or a
+few, logically-separated) well-described commits rather than an
+accumulation of "wip" / "fix typo" / "address feedback" commits.
+
 ## Container runtime compatibility
 
 Any test, compose file, or harness code that runs containers MUST work with both:
