@@ -61,16 +61,23 @@ permissions:
 
 jobs:
   # ── AWS ──────────────────────────────────────────────────────────────────
+  # Runs on both x86_64 and native arm64 runners so the Graviton/arm64 branch
+  # in tests/aws_quorum_manager_real_ec2_test.cpp (instance-type fallback,
+  # AMI architecture filter, target_arch selection) actually gets compiled
+  # and exercised by CI instead of only ever existing as unbuilt source on an
+  # x86_64-only runner. See .kiro/specs/arm64-ci-verification/ Requirement 7.
   aws:
-    name: Real Cloud Tests (AWS)
-    runs-on: ubuntu-24.04
+    name: Real Cloud Tests (AWS, ${{ matrix.arch_label }})
+    runs-on: ${{ matrix.os }}
     # All three bundle ctest steps below can run sequentially in this one
     # job when every bundle is enabled. Sum of their own worst-case CTest
     # TIMEOUT properties (tests/CMakeLists.txt): 10800s (ec2-quorum-manager)
     # + 900s (ca-cluster-node) + 9000s (ca-cluster-node-rpc-tls) = 345 min,
     # plus build/checkout/credential overhead. 360 is GitHub Actions'
     # own default job timeout cap for hosted runners, so this is set
-    # explicitly to that ceiling rather than left implicit.
+    # explicitly to that ceiling rather than left implicit. Applies to both
+    # the x64 and arm64 matrix legs — the sequential-bundle math above
+    # doesn't depend on architecture.
     timeout-minutes: 360
     environment: real-cloud-tests
     permissions:
@@ -81,6 +88,15 @@ jobs:
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
       && (github.event.inputs.aws_enabled == 'true'
         || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true'))
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch_label: x64
+          - os: ubuntu-24.04-arm
+            arch_label: arm64
 
     env:
       BUNDLE_EC2_QUORUM: ${{ (github.event.inputs.aws_bundle_ec2_quorum == 'true') || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED == 'true') }}
@@ -117,28 +133,39 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Cache vcpkg packages
         uses: actions/cache@v4
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          # runner.arch keeps the x64 and arm64 legs' caches isolated from
+          # each other (.kiro/specs/arm64-ci-verification/ Requirement 4).
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
-          VCPKG_DEFAULT_TRIPLET: x64-linux
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
       - name: Configure (Release, real-cloud tests enabled)
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
 
       - name: Build
