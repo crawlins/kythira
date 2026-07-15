@@ -1,0 +1,23 @@
+# Every docker/*/Dockerfile that builds from source does `COPY . .` from the
+# repository root. Host-side CMake build directories (created by ci.yml or
+# any local `cmake -B build`) bake the host's absolute source path into
+# CMakeCache.txt; if one of these directories is copied into an image build
+# context, the container's own `cmake -B build` step refuses to reconfigure
+# ("The source ... does not match the source ... used to generate cache")
+# because /src (the container's checkout path) doesn't match the host path
+# recorded in the stale cache. Mirrors the CMake-artifact entries in
+# .gitignore — vcpkg_installed/ is deliberately NOT excluded here, since
+# poco_discovery_node's Dockerfile (and others) rely on COPY . . bringing in
+# already-built vcpkg packages rather than re-bootstrapping vcpkg in-image.
+build/
+build-fmt/
+build-coverage/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Testing/
+CTestTestfile.cmake
+test_results/
+
+.git/
