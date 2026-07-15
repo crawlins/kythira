@@ -377,6 +377,93 @@ jobs:
           name: coverage-report
           path: coverage-html/
 
+  # ── TEMPORARY: ccache experiment ────────────────────────────────────────────
+  # One-off measurement job, not part of the permanent pipeline and not wired
+  # into any required check. Builds this repo's own code once with a cold,
+  # job-local ccache (nothing persisted via actions/cache — the cache exists
+  # only for this job's lifetime), wipes the build directory (but not the
+  # ccache dir) and builds again, then prints `ccache -s` after each phase.
+  # Answers: how much does an unchanged rebuild-from-scratch actually cost
+  # with ccache vs. without. Delete this job once the numbers are collected.
+  ccache-experiment:
+    name: ccache experiment (clang++-18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            cmake \
+            ninja-build \
+            libfiu-dev \
+            ccache
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: ccache setup
+        run: |
+          ccache --max-size=5G
+          ccache -z
+
+      - name: Configure (Release, ccache launcher)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build #1 (cold ccache)
+        run: cmake --build build -j$(nproc)
+
+      - name: ccache stats after cold build
+        run: ccache -s
+
+      - name: Reset ccache stats counters (keep cached objects)
+        run: ccache -z
+
+      - name: Wipe build directory only (ccache cache dir survives)
+        run: rm -rf build
+
+      - name: Reconfigure (Release, ccache launcher)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build #2 (warm ccache, nothing changed since build #1)
+        run: cmake --build build -j$(nproc)
+
+      - name: ccache stats after warm build
+        run: ccache -s
+
   # ── Packer template checks (ca_cluster_node AMI) ────────────────────────────
   # Static-only: no AWS credentials, no EC2 spend, no vcpkg/C++ build — cheap
   # enough to just always run rather than wire up per-job path filtering.
