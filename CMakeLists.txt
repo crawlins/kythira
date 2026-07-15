@@ -9,6 +9,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Export compile commands for IDE support
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# vcpkg triplet for this host, used everywhere a path under vcpkg_installed/
+# needs to be resolved manually (i.e. anywhere find_package()/vcpkg's own
+# CMAKE_PREFIX_PATH wiring isn't already doing it for us). Kythira only
+# targets 64-bit x86 and 64-bit ARM Linux; every other CMAKE_SYSTEM_PROCESSOR
+# value falls back to x64-linux rather than failing configure outright.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    set(KYTHIRA_VCPKG_TRIPLET "arm64-linux")
+else()
+    set(KYTHIRA_VCPKG_TRIPLET "x64-linux")
+endif()
+
 # Code coverage support
 option(ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
 
@@ -110,8 +121,8 @@ if(folly_FOUND)
     target_link_libraries(network_simulator INTERFACE Folly::folly)
     # When linking Folly, we must also link Boost::context (required by Folly fibers)
     # Use vcpkg static library if available for compatibility
-    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
-        target_link_libraries(network_simulator INTERFACE "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_context.a")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_context.a")
+        target_link_libraries(network_simulator INTERFACE "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_context.a")
     elseif(TARGET Boost::context)
         target_link_libraries(network_simulator INTERFACE Boost::context)
     endif()
@@ -125,10 +136,10 @@ if(Boost_FOUND)
     # Create boost_json imported library using vcpkg static library if available
     # This ensures compatibility with vcpkg-built Folly
     if(NOT TARGET boost_json)
-        if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+        if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
             add_library(boost_json STATIC IMPORTED)
             set_target_properties(boost_json PROPERTIES
-                IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a"
+                IMPORTED_LOCATION "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a"
             )
         elseif(TARGET Boost::json)
             add_library(boost_json ALIAS Boost::json)
@@ -239,25 +250,40 @@ endif()
 # ── Poco DNSSD (poco_peer_discovery) ──────────────────────────────────────────
 # DNSSD is not a vcpkg feature; the static libs are built manually and placed
 # in the vcpkg_installed tree alongside the standard poco[net] artifacts.
+# This project only manually builds/provides these archives for x64-linux —
+# on any other resolved triplet (e.g. arm64-linux) the EXISTS check below
+# simply fails and POCO_DNSSD_FOUND stays FALSE, exactly like an x64-linux
+# host that hasn't built the archives either. See doc/TODO.md / README.md's
+# ARM support section for this known limitation.
 set(POCO_DNSSD_FOUND FALSE)
-set(_poco_dnssd_lib     "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoDNSSD.a")
-set(_poco_dnssd_avahi   "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoDNSSDAvahi.a")
-set(_poco_dnssd_inc     "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/include")
+set(_poco_dnssd_lib     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSD.a")
+set(_poco_dnssd_avahi   "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSDAvahi.a")
+set(_poco_dnssd_inc     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/include")
 if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
     # avahi-client / avahi-common are runtime-installed but their dev headers and
     # unversioned .so symlinks are absent without the -dev package.  We look first
     # in the extracted deb tree (symlinks or static archives created without sudo).
+    # CMAKE_LIBRARY_ARCHITECTURE is CMake's own Debian/Ubuntu multiarch-tuple
+    # detection (e.g. "x86_64-linux-gnu", "aarch64-linux-gnu"); fall back to a
+    # triplet-derived guess only in the unlikely case it's unset.
+    if(CMAKE_LIBRARY_ARCHITECTURE)
+        set(_avahi_multiarch_tuple "${CMAKE_LIBRARY_ARCHITECTURE}")
+    elseif(KYTHIRA_VCPKG_TRIPLET STREQUAL "arm64-linux")
+        set(_avahi_multiarch_tuple "aarch64-linux-gnu")
+    else()
+        set(_avahi_multiarch_tuple "x86_64-linux-gnu")
+    endif()
     find_library(AVAHI_CLIENT_LIB
         NAMES avahi-client
-        PATHS /tmp/avahi-dev/usr/lib/x86_64-linux-gnu
-              /usr/lib/x86_64-linux-gnu
+        PATHS /tmp/avahi-dev/usr/lib/${_avahi_multiarch_tuple}
+              /usr/lib/${_avahi_multiarch_tuple}
               /usr/lib
         NO_DEFAULT_PATH
     )
     find_library(AVAHI_COMMON_LIB
         NAMES avahi-common
-        PATHS /tmp/avahi-dev/usr/lib/x86_64-linux-gnu
-              /usr/lib/x86_64-linux-gnu
+        PATHS /tmp/avahi-dev/usr/lib/${_avahi_multiarch_tuple}
+              /usr/lib/${_avahi_multiarch_tuple}
               /usr/lib
         NO_DEFAULT_PATH
     )
@@ -266,8 +292,8 @@ if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
         set(POCO_DNSSD_LIBRARIES
             "${_poco_dnssd_avahi}"
             "${_poco_dnssd_lib}"
-            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoNet.a"
-            "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libPocoFoundation.a"
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoNet.a"
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoFoundation.a"
             "${AVAHI_CLIENT_LIB}"
             "${AVAHI_COMMON_LIB}"
         )

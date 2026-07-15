@@ -25,10 +25,15 @@ cd "$REPO_ROOT"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 
+case "$(uname -m)" in
+    aarch64|arm64) VCPKG_TRIPLET="arm64-linux" ;;
+    *)             VCPKG_TRIPLET="x64-linux" ;;
+esac
+
 echo "[verify-optional-dependency-isolation] Configuring with stdexec hidden from find_package() ..."
 CONFIGURE_LOG="$(mktemp)"
 if ! cmake -S "$REPO_ROOT" -B "$BUILD_DIR" \
-      -DCMAKE_PREFIX_PATH="$REPO_ROOT/vcpkg_installed/x64-linux" \
+      -DCMAKE_PREFIX_PATH="$REPO_ROOT/vcpkg_installed/$VCPKG_TRIPLET" \
       -DCMAKE_DISABLE_FIND_PACKAGE_stdexec=ON \
       > "$CONFIGURE_LOG" 2>&1; then
     echo "[verify-optional-dependency-isolation] FAILED — configure step itself failed:"
