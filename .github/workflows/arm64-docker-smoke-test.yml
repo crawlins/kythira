@@ -1,0 +1,98 @@
+name: ARM64 Docker Image Smoke Test
+
+# Manually-triggered verification that the Docker chaos/discovery images
+# (chaos_node, poco_discovery_node, bind9, dns_discovery_node,
+# dns_sd_discovery_node) build and their scenario tests pass natively on
+# arm64 — Task 10 of .kiro/specs/arm64-ci-verification/ (Requirements 6.2,
+# 6.3). Deliberately decoupled from ci.yml, the same way real-cloud-tests.yml
+# is: these scenario tests are excluded from the default per-PR gate on
+# every architecture (they run via bespoke CMake custom targets, not ctest,
+# and require a container runtime at execution time), so this workflow is
+# workflow_dispatch-only rather than running on every push/PR.
+#
+# ca_cluster_node and ca_service's Dockerfiles were also triplet-
+# parameterized in this spec but have no CMake image/test target of their
+# own (they're built directly for deployment, not through this harness), so
+# they're out of scope for this smoke test.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  arm64-docker-smoke-test:
+    name: Docker Image Smoke Test (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            g++-13 \
+            cmake \
+            ninja-build
+
+      - name: Verify a container runtime is available
+        run: |
+          docker version
+          docker compose version
+
+      # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
+      # source (vcpkg's "edhoc" feature below) — see the identical step in
+      # ci.yml's build-and-test job.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          # Shares the same key format (and, on a warm cache, the same
+          # entry) as ci.yml's build-and-test job, so this job doesn't pay
+          # its own from-scratch vcpkg build if that cache is still live.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
+
+      # Each target below builds its own image(s) (DEPENDS) and the scenario
+      # test binaries that exercise them, then runs the full scenario suite
+      # against a live container cluster on this arm64 host.
+      - name: Run docker-chaos-tests (chaos_node image + 7 scenario tests)
+        run: cmake --build build --target docker-chaos-tests -j$(nproc)
+
+      - name: Run docker-poco-discovery-tests (poco_discovery_node image)
+        run: cmake --build build --target docker-poco-discovery-tests -j$(nproc)
+
+      - name: Run docker-dns-discovery-tests (bind9 + dns_discovery_node images)
+        run: cmake --build build --target docker-dns-discovery-tests -j$(nproc)
+
+      - name: Run docker-dns-sd-discovery-tests (bind9 + dns_sd_discovery_node images)
+        run: cmake --build build --target docker-dns-sd-discovery-tests -j$(nproc)
