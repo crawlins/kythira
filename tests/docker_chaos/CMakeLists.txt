@@ -4,9 +4,9 @@ if(NOT Boost_FOUND OR NOT httplib_FOUND)
 endif()
 
 # Resolve boost_json the same way the rest of the project does.
-if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
     set(_boost_json_lib
-        "${CMAKE_SOURCE_DIR}/vcpkg_installed/x64-linux/lib/libboost_json.a")
+        "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
 elseif(TARGET Boost::json)
     set(_boost_json_lib Boost::json)
 else()
