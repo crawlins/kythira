@@ -68,6 +68,76 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   exercise of those will be an operator-enabled `ami-build` run. See
   `.kiro/specs/ca-cluster-node-ami/tasks.md`'s status note for the exact
   verification boundary.
+- **arm64 CI verification complete — `.kiro/specs/arm64-ci-verification/`**:
+  Kythira's CI was entirely x86_64-only — the vcpkg triplet `x64-linux` was
+  hardcoded as a literal in both workflow files, four `CMakeLists.txt` files,
+  and every `docker/*/Dockerfile`, and
+  `tests/aws_quorum_manager_real_ec2_test.cpp`'s existing
+  `__aarch64__`/`__arm64__` Graviton-selection branch (from the
+  `aws-quorum-manager` spec) had never actually compiled, since it was only
+  ever built on an x86_64 runner. A pre-implementation spike
+  (`spike-notes.md`) verified every vcpkg dependency's `supports` platform
+  expression at the pinned `builtin-baseline` allows `arm64-linux` (Folly,
+  the AWS SDK for C++, Boost, Poco, libcoap, cpp-httplib, libssh2, stdexec,
+  and both Kythira-authored overlay ports all clear cleanly) before any
+  workflow changes were made.
+  - Introduced a single `KYTHIRA_VCPKG_TRIPLET` CMake variable
+    (`CMakeLists.txt`), replacing every hardcoded `vcpkg_installed/x64-linux`
+    literal across the root, `tests/`, `tests/chaos/`, and
+    `tests/docker_chaos/` `CMakeLists.txt` files and
+    `scripts/verify-optional-dependency-isolation.sh`.
+  - Fixed the Avahi `find_library` search
+    (`poco_peer_discovery`'s DNSSD backend), which only checked
+    `/usr/lib/x86_64-linux-gnu`, to derive the correct Debian multiarch tuple
+    via `CMAKE_LIBRARY_ARCHITECTURE` — it would otherwise have missed the
+    library entirely on an arm64 host even when installed.
+  - Added `${{ runner.arch }}` to every vcpkg `actions/cache` key in
+    `ci.yml` and `real-cloud-tests.yml`. The prior key was keyed only on
+    `runner.os` (always `"Linux"` on both architectures), which would have
+    let an arm64 runner silently restore or corrupt an x86_64-built cache
+    entry the moment a second architecture shared the workflow.
+  - Added native `ubuntu-24.04-arm` legs to `ci.yml`'s `build-and-test`
+    matrix (both `g++-13` and `clang++-18`) and to `real-cloud-tests.yml`'s
+    `aws` job, so the dead Graviton EC2-provisioning branch mentioned above
+    now actually compiles and, when the `ec2-quorum-manager` bundle runs,
+    provisions a real Graviton instance. Coverage and format-check stay
+    x86_64-only by design (coverage % isn't expected to vary by
+    architecture, and the job is already disk/time-constrained on one
+    architecture; `clang-format` output is architecture-independent).
+  - Parameterized all 7 `docker/*/Dockerfile` build stages with a
+    `uname -m`-derived triplet; `chaos_node` needed no change (it has no
+    vcpkg dependency) and `bind9` needed no change (no CMake build).
+  - **Verified against a real CI run** (crawlins/kythira#47): all four
+    `build-and-test` matrix legs passed on a cold vcpkg cache, including
+    the `--x-feature=edhoc` Rust/`lakers` build on both new arm64 legs, with
+    no arm64-specific failures — the spike's static `supports`-expression
+    analysis held up against an actual build. Measured wall-clock times
+    (`g++-13, arm64` ~76 min, `clang++-18, arm64` ~46 min, `g++-13, x64`
+    ~51 min, `clang++-18, x64` ~68 min) fit comfortably inside the existing
+    120-minute per-leg timeout, so it was left unchanged rather than
+    tightened — a cache-miss run is exactly when that headroom matters.
+  - **Known, explicitly deferred limitation** (documented rather than
+    silently skipped, per the spec's own Requirement 3.2 guidance):
+    PocoDNSSD's manually-built static archives are provided only for
+    `x64-linux` in this repository, so `poco_peer_discovery`'s DNSSD backend
+    degrades to disabled on `arm64-linux` — same behavior as any x64 host
+    missing the archives. See `README.md`'s new "ARM (arm64) Support"
+    section.
+  - **Docker image arm64 smoke test — in progress**: the implementation
+    sandbox had no working AWS credentials (`aws sts
+    get-caller-identity` returned `InvalidClientTokenId`) and no reachable
+    container daemon to verify the Docker triplet parameterization on real
+    arm64 hardware. Rather than provision new billable AWS infrastructure
+    for a one-off check, added
+    `.github/workflows/arm64-docker-smoke-test.yml` — a
+    `workflow_dispatch`-only job reusing the same `ubuntu-24.04-arm`
+    GitHub-hosted runner already proven above, building and running the
+    `docker-chaos-tests`, `docker-poco-discovery-tests`,
+    `docker-dns-discovery-tests`, and `docker-dns-sd-discovery-tests`
+    CMake targets. Awaiting its first real run once this lands on `main`
+    (GitHub only accepts `workflow_dispatch` API calls against workflows
+    already present on the default branch) — results will be recorded in
+    a follow-up entry.
 
 ### What Changed (July 14, 2026)
 

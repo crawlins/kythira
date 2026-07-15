@@ -87,6 +87,32 @@ cmake --build .
 ctest
 ```
 
+## ARM (arm64) Support
+
+Kythira is built and tested natively on 64-bit ARM (`aarch64`, vcpkg triplet
+`arm64-linux`) Linux, alongside the existing x86_64 matrix. CI runs both
+architectures on GitHub-hosted runners — `ubuntu-24.04` (x86_64) and
+`ubuntu-24.04-arm` (arm64) — compiling natively on each, not cross-compiling
+or emulating under QEMU. See
+[`.kiro/specs/arm64-ci-verification/`](.kiro/specs/arm64-ci-verification/)
+for the full design.
+
+**Known limitations:**
+
+- **PocoDNSSD is x86_64-only in this repository.** The `poco_peer_discovery`
+  DNSSD backend depends on manually-built `libPocoDNSSD.a`/
+  `libPocoDNSSDAvahi.a` static archives (Poco's DNSSD component isn't a
+  standard vcpkg feature) that are only provided for the `x64-linux` triplet.
+  On `arm64-linux`, CMake configuration falls through to
+  `POCO_DNSSD_FOUND=FALSE` and `poco_peer_discovery` builds with that backend
+  disabled — the same graceful degradation an x86_64 host without the
+  prebuilt archives already sees today. rfc1035/rfc2136-based discovery
+  (`libldns`) is unaffected on either architecture.
+- **32-bit ARM (`armv7`/`armhf`) and non-Linux ARM (macOS, Windows) are out
+  of scope.** This project targets server-class 64-bit ARM Linux (e.g. AWS
+  Graviton), matching the architectures already selected by
+  `tests/aws_quorum_manager_real_ec2_test.cpp`'s EC2 provisioning logic.
+
 ## Project Structure
 
 ```
