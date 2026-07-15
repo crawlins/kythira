@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 14, 2026
+**Last Updated**: July 15, 2026
 
 ## Current Status
 
@@ -14,6 +14,31 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   RPC-internal mTLS for `ca_cluster_node`
 - Build clean with no errors or warnings
 - Coverage floor: 88.95% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 15, 2026)
+
+- **`ca-cluster-node-ami` spec authored** (not yet implemented) — a
+  Packer-based build pipeline for a golden, secret-free AMI with
+  `ca_cluster_node` and its systemd unit pre-installed, resolving the
+  "(baked into an AMI, e.g. via Packer)" placeholder already referenced by
+  `docker/ca_cluster_node/README.md`'s Path 3,
+  `docker/ca_cluster_node/ecs-task-definitions/README.md`'s automated
+  alternative, and `tests/ca_cluster_node_real_ec2_test.cpp`'s
+  `KYTHIRA_EC2_TEST_AMI` env var — all three assumed this AMI existed with
+  no template or script actually producing it. The binary is extracted
+  from `docker/ca_cluster_node/Dockerfile`'s existing `builder` stage
+  (`docker create`/`cp`) rather than recompiled independently, so there
+  remains exactly one place that knows how to build `ca_cluster_node` from
+  source; the source AMI is Ubuntu 24.04 (matching the Dockerfile's
+  runtime stage) rather than Amazon Linux 2023, to avoid a glibc ABI
+  mismatch; no secrets are baked in (unseal passphrase, auth token, RPC
+  bootstrap credentials stay injected per-instance at launch time,
+  unchanged from today's manual systemd-install flow). CI wiring follows
+  the existing `real-cloud-tests.yml` three-level toggle model and
+  `scripts/ci-cloud-credentials/` bundle pattern, gated independently of
+  the existing `ca-cluster-node` bundle since every AMI build leaves a
+  billable AMI/snapshot behind. Full spec at
+  `.kiro/specs/ca-cluster-node-ami/`; draft PR #44.
 
 ### What Changed (July 14, 2026)
 
@@ -767,6 +792,12 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   compile-verified-only limitation `ca_cluster_node_real_ec2_test.cpp`
   already had (no AWS account available in this environment to actually run
   any of the three real-EC2 binaries).
+- [ ] **`ca_cluster_node` custom AMI (Packer build pipeline)** — spec
+  authored, not yet implemented; produces a golden, secret-free AMI with
+  `ca_cluster_node` and its systemd unit pre-installed, giving
+  `aws_ec2_quorum_manager_config.image_id` and
+  `KYTHIRA_EC2_TEST_AMI` a real, scripted producer instead of a manually
+  hand-built AMI; spec at `.kiro/specs/ca-cluster-node-ami/`
 
 ### Cloud Provider Support
 
