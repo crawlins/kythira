@@ -1,6 +1,6 @@
 # Implementation Plan — CI Real Cloud Tests
 
-## Status: Not Started
+## Status: In Progress — Tasks 1-4, 6, 8-11 complete; Tasks 5, 7, 12 blocked (require real AWS account access, unavailable in this implementation environment)
 
 **Last Updated**: July 14, 2026
 
@@ -71,22 +71,36 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 1: Verify the Ground Truth (Task 1)
 
-- [ ] 1. Re-derive and confirm the bundle → AWS action mapping
-  - Re-run `grep -oE "Aws::[A-Za-z0-9]+::Model::[A-Za-z]+Request"` against
+- [x] 1. Re-derive and confirm the bundle → AWS action mapping
+  - Grep client *method* call sites, not request *type* construction
+    sites — `grep -oE "\bec2->[A-Za-z]+\("` (and `_ec2->`/`_ec2_client->`
+    for `include/raft/aws_ec2_quorum_manager.hpp`) against
     `tests/aws_quorum_manager_real_ec2_test.cpp`,
     `tests/ca_cluster_node_real_ec2_test.cpp`,
     `tests/ca_cluster_node_rpc_tls_real_ec2_test.cpp`, and
-    `include/raft/aws_ec2_quorum_manager.hpp`, comparing against
-    requirements.md's Requirement 2.1/2.2 lists — these files may have
-    changed since this spec was written; treat any discrepancy as
-    authoritative over the spec text and update requirements.md if so.
-    Also confirm `create_iam_role()`'s exact trust/inline-policy JSON
-    (needed verbatim by task 3).
+    `include/raft/aws_ec2_quorum_manager.hpp`. A request-type-name grep
+    (`Aws::[A-Za-z0-9]+::Model::[A-Za-z]+Request`) undercounts: it misses
+    brace-initialized calls with no named request variable (e.g.
+    `ec2->CreateInternetGateway({})`, found missing from
+    `ca_cluster_node_real_ec2_test.cpp`/`ca_cluster_node_rpc_tls_real_ec2_test.cpp`'s
+    first-pass list during this spec's own review) and misses every
+    action reached only transitively through
+    `kythira::aws_ec2_quorum_manager<>::provision_node()`/
+    `decommission_node()` (`RunInstances`, `CreateTags`,
+    `TerminateInstances`, `DescribeInstanceStatus` — all four were
+    missing from `ca-cluster-node`/`ca-cluster-node-rpc-tls`'s original
+    Requirement 2.2 list for exactly this reason, since neither test file
+    spells those calls out itself). Compare against requirements.md's
+    Requirement 2.1/2.2 lists — these files may have changed further
+    since this correction; treat any new discrepancy as authoritative
+    over the spec text and update requirements.md again if so. Also
+    confirm `create_iam_role()`'s exact trust/inline-policy JSON (needed
+    verbatim by task 3).
   - _Requirements: 2.1, 2.2_
 
 ## Phase 2: IAM Policy Fragments and Node-Role Script (Tasks 2-3)
 
-- [ ] 2. `scripts/ci-cloud-credentials/aws/policies/*.json`
+- [x] 2. `scripts/ci-cloud-credentials/aws/policies/*.json`
   - `ec2-quorum-manager.json`, `ca-cluster-node.json`,
     `ca-cluster-node-rpc-tls.json` — bare `Statement` arrays per
     design.md's Data Models "IAM Policy Bundle Shape" section, using
@@ -97,7 +111,7 @@ of those providers has a real-cloud test suite yet.
     design.md's note on EC2's own resource-level permission limits.
   - _Requirements: 2.1, 2.2, 2.4, 3.4_
 
-- [ ] 3. `scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh`
+- [x] 3. `scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh`
   - Bash + AWS CLI, `set -euo pipefail`, matching
     `scripts/pre-commit-coverage.sh`'s style. Implements design.md
     Component 3's 5 steps: sanity check, `ensure_role()` (trust policy
@@ -111,7 +125,7 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 3: Test Code Change and Node-Role Provisioning (Tasks 4-5)
 
-- [ ] 4. Modify `tests/aws_quorum_manager_real_ec2_test.cpp`
+- [x] 4. Modify `tests/aws_quorum_manager_real_ec2_test.cpp`
   - Replace `create_iam_role()` (and its corresponding teardown steps:
     `RemoveRoleFromInstanceProfile`/`DeleteRolePolicy`/
     `DeleteInstanceProfile`/`DeleteRole`) with
@@ -137,7 +151,7 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 4: CI Identity Provisioning Script (Task 6)
 
-- [ ] 6. `scripts/ci-cloud-credentials/aws/provision-oidc-role.sh`
+- [x] 6. `scripts/ci-cloud-credentials/aws/provision-oidc-role.sh`
   - Bash + AWS CLI, matching `scripts/pre-commit-coverage.sh`'s style.
     Implements design.md Component 2's 7 steps: sanity check,
     `ensure_oidc_provider()`, `build_trust_policy()`, `ensure_role()`
@@ -172,7 +186,7 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 6: Workflow (Tasks 8-9)
 
-- [ ] 8. `.github/workflows/real-cloud-tests.yml` — AWS job
+- [x] 8. `.github/workflows/real-cloud-tests.yml` — AWS job
   - `workflow_dispatch` inputs + `schedule` trigger per design.md
     Component 1's exact shape; the `RUN_ENABLED`/`AWS_ENABLED`/per-bundle
     `env:` resolution pattern (distinguishing "explicitly false" from
@@ -189,7 +203,7 @@ of those providers has a real-cloud test suite yet.
   - `.github/workflows/ci.yml` SHALL NOT be modified by this task.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 5.1, 5.2, 5.3, 5.4, 5.6, 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 9. Scaffold `azure`/`gcp`/`oci`/`alibaba` jobs
+- [x] 9. Scaffold `azure`/`gcp`/`oci`/`alibaba` jobs
   - Each job: `if:` gated the same way as the AWS job on its own
     provider-enabled toggle; single step printing "no real-cloud tests
     implemented for <provider> yet — see doc/TODO.md Cloud Provider
@@ -200,14 +214,14 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 7: Documentation (Tasks 10-11)
 
-- [ ] 10. `scripts/ci-cloud-credentials/README.md`
+- [x] 10. `scripts/ci-cloud-credentials/README.md`
   - Top-level overview: the three-level toggle model, the service-bundle
     concept, the two-script split for AWS (CI identity vs. static node
     role) and why, a provider table (AWS linking to `aws/README.md`;
     Azure/GCP/OCI/Alibaba stating "not yet implemented").
   - _Requirements: 6.1_
 
-- [ ] 11. `scripts/ci-cloud-credentials/aws/README.md`
+- [x] 11. `scripts/ci-cloud-credentials/aws/README.md`
   - Prerequisites, first-time setup walkthrough (exact
     `provision-quorum-test-node-role.sh` invocation *before*
     `provision-oidc-role.sh`'s, since the latter's `ec2-quorum-manager`

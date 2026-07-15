@@ -1,0 +1,214 @@
+name: Real Cloud Tests
+
+# Runs this project's real-cloud integration tests (today: AWS only —
+# see .kiro/specs/ci-real-cloud-tests/) against actual cloud-provider
+# infrastructure, authenticated via short-lived OIDC-federated credentials.
+# Deliberately decoupled from ci.yml: ci.yml's own -LE label filter already
+# excludes every real-ec2-labeled test from every ordinary push/PR run, and
+# this workflow never modifies that file. Gated by three independent
+# on/off levels — see scripts/ci-cloud-credentials/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_real_cloud_tests:
+        description: "Master switch (overrides REAL_CLOUD_TESTS_ENABLED for this run only)"
+        type: boolean
+        required: false
+      aws_enabled:
+        description: "AWS (overrides REAL_CLOUD_TESTS_AWS_ENABLED for this run only)"
+        type: boolean
+        required: false
+      aws_bundle_ec2_quorum:
+        description: "AWS bundle: ec2-quorum-manager"
+        type: boolean
+        required: false
+      aws_bundle_ca_cluster:
+        description: "AWS bundle: ca-cluster-node"
+        type: boolean
+        required: false
+      aws_bundle_ca_cluster_rpc_tls:
+        description: "AWS bundle: ca-cluster-node-rpc-tls"
+        type: boolean
+        required: false
+      azure_enabled:
+        description: "Azure (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        type: boolean
+        required: false
+      gcp_enabled:
+        description: "GCP (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        type: boolean
+        required: false
+      oci_enabled:
+        description: "OCI (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        type: boolean
+        required: false
+      alibaba_enabled:
+        description: "Alibaba Cloud (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        type: boolean
+        required: false
+  schedule:
+    # Monday 06:00 UTC — balances catching real-infrastructure drift early
+    # against not incurring real cloud spend needlessly. Adjust freely.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  # ── AWS ──────────────────────────────────────────────────────────────────
+  aws:
+    name: Real Cloud Tests (AWS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.aws_enabled == 'true'
+        || (github.event.inputs.aws_enabled == null && vars.REAL_CLOUD_TESTS_AWS_ENABLED == 'true'))
+
+    env:
+      BUNDLE_EC2_QUORUM: ${{ (github.event.inputs.aws_bundle_ec2_quorum == 'true') || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED == 'true') }}
+      BUNDLE_CA_CLUSTER: ${{ (github.event.inputs.aws_bundle_ca_cluster == 'true') || (github.event.inputs.aws_bundle_ca_cluster == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED == 'true') }}
+      BUNDLE_CA_CLUSTER_RPC_TLS: ${{ (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == 'true') || (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED == 'true') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if AWS_CI_ROLE_ARN is unset
+        if: ${{ vars.AWS_CI_ROLE_ARN == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_AWS_ENABLED is true but the AWS_CI_ROLE_ARN repository variable is unset. See scripts/ci-cloud-credentials/aws/README.md." >&2
+          exit 1
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: kythira-ci-real-cloud-tests
+          aws-region: ${{ vars.AWS_REAL_CLOUD_TESTS_REGION || 'us-east-1' }}
+
+      # ── System dependencies (identical to ci.yml's build-and-test job) ────
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 \
+            cmake \
+            ninja-build \
+            libfiu-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Configure (Release, real-cloud tests enabled)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DKYTHIRA_AWS_REAL_EC2_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Fail closed if a real-EC2 test binary is missing
+        run: |
+          for t in aws_quorum_manager_real_ec2_test ca_cluster_node_real_ec2_test ca_cluster_node_rpc_tls_real_ec2_test; do
+            if [ ! -x "build/tests/$t" ]; then
+              echo "::error::$t was not built — check LIBSSH2_FOUND/KYTHIRA_HAS_AWS_SDK at configure time." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run ec2-quorum-manager bundle
+        if: ${{ env.BUNDLE_EC2_QUORUM == 'true' }}
+        env:
+          KYTHIRA_TEST_IAM_INSTANCE_PROFILE: kythira-aws-quorum-test-node-profile
+        run: |
+          ctest --test-dir build -L 'real-ec2' -R '^aws_quorum_manager_real_ec2_test$' --output-on-failure
+
+      - name: Run ca-cluster-node bundle
+        if: ${{ env.BUNDLE_CA_CLUSTER == 'true' }}
+        run: |
+          ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_real_ec2_test$' --output-on-failure
+
+      - name: Run ca-cluster-node-rpc-tls bundle
+        if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
+        run: |
+          ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_rpc_tls_real_ec2_test$' --output-on-failure
+
+  # ── Scaffolded, not-yet-implemented providers ───────────────────────────
+  # doc/TODO.md's "Cloud Provider Support" section is the source of truth
+  # for which providers have real-cloud test coverage — none of these four
+  # do yet. Each job no-ops with a clear message rather than failing, so an
+  # operator who enables one of these toggles sees why nothing ran instead
+  # of a confusing red X. .kiro/specs/ci-real-cloud-tests/ Requirement 1.5.
+  azure:
+    name: Real Cloud Tests (Azure)
+    runs-on: ubuntu-24.04
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.azure_enabled == 'true'
+        || (github.event.inputs.azure_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_ENABLED == 'true'))
+    steps:
+      - name: No real-cloud tests implemented for Azure yet
+        run: echo "No real-cloud tests implemented for Azure yet — see doc/TODO.md Cloud Provider Support."
+
+  gcp:
+    name: Real Cloud Tests (GCP)
+    runs-on: ubuntu-24.04
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.gcp_enabled == 'true'
+        || (github.event.inputs.gcp_enabled == null && vars.REAL_CLOUD_TESTS_GCP_ENABLED == 'true'))
+    steps:
+      - name: No real-cloud tests implemented for GCP yet
+        run: echo "No real-cloud tests implemented for GCP yet — see doc/TODO.md Cloud Provider Support."
+
+  oci:
+    name: Real Cloud Tests (OCI)
+    runs-on: ubuntu-24.04
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.oci_enabled == 'true'
+        || (github.event.inputs.oci_enabled == null && vars.REAL_CLOUD_TESTS_OCI_ENABLED == 'true'))
+    steps:
+      - name: No real-cloud tests implemented for OCI yet
+        run: echo "No real-cloud tests implemented for OCI yet — see doc/TODO.md Cloud Provider Support."
+
+  alibaba:
+    name: Real Cloud Tests (Alibaba Cloud)
+    runs-on: ubuntu-24.04
+    if: |
+      (github.event.inputs.run_real_cloud_tests == 'true'
+        || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
+      && (github.event.inputs.alibaba_enabled == 'true'
+        || (github.event.inputs.alibaba_enabled == null && vars.REAL_CLOUD_TESTS_ALIBABA_ENABLED == 'true'))
+    steps:
+      - name: No real-cloud tests implemented for Alibaba Cloud yet
+        run: echo "No real-cloud tests implemented for Alibaba Cloud yet — see doc/TODO.md Cloud Provider Support."
