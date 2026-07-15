@@ -132,7 +132,8 @@ jobs:
                  clang-18 \
                  cmake \
                  ninja-build \
-                 libfiu-dev; then
+                 libfiu-dev \
+                 ccache; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -171,6 +172,26 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
+      # ccache: lower priority than ci.yml's own jobs since this workflow only
+      # runs weekly/on-demand (a longer cache-reuse window, smaller practical
+      # benefit), but the same restore-broad/save-unique mechanism as
+      # ci.yml's build-and-test/coverage jobs. runner.arch is part of the key
+      # for the same reason as the vcpkg cache key above — this job now has
+      # both x64 and arm64 legs, and runner.os alone is "Linux" for both.
+      # See .kiro/specs/ccache-adoption/ and
+      # .kiro/specs/arm64-ci-verification/ Requirement 4.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+            ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
       - name: Configure (Release, real-cloud tests enabled)
         run: |
           cmake -B build -G Ninja \
@@ -181,6 +202,13 @@ jobs:
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Fail closed if a real-EC2 test binary is missing
         run: |

@@ -20,6 +20,27 @@ else()
     set(KYTHIRA_VCPKG_TRIPLET "x64-linux")
 endif()
 
+# ccache: speeds up rebuilds by skipping recompilation of translation units
+# whose preprocessed content + compiler flags exactly match a prior compile.
+# Purely opt-in acceleration — absent or disabled, the build is identical to
+# today. See .kiro/specs/ccache-adoption/ for the measured impact (~59%
+# reduction in a from-scratch "nothing changed" rebuild; real numbers from
+# a throwaway CI experiment, not a guess).
+option(KYTHIRA_ENABLE_CCACHE "Use ccache to speed up rebuilds when available" ON)
+
+if(KYTHIRA_ENABLE_CCACHE)
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "" FORCE)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}" CACHE STRING "" FORCE)
+        message(STATUS "ccache: enabled (${CCACHE_PROGRAM})")
+    else()
+        message(STATUS "ccache: not found, building without it")
+    endif()
+else()
+    message(STATUS "ccache: disabled (KYTHIRA_ENABLE_CCACHE=OFF)")
+endif()
+
 # Code coverage support
 option(ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
 

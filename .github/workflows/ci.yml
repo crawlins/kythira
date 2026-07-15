@@ -63,7 +63,8 @@ jobs:
                  clang-18 \
                  cmake \
                  ninja-build \
-                 libfiu-dev; then
+                 libfiu-dev \
+                 ccache; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -143,6 +144,29 @@ jobs:
         run: cmake --build build-fmt --target format-check
 
       # ── Release build + tests ─────────────────────────────────────────────
+      # ccache: restore-broad/save-unique — the restore key is unique per run
+      # (never hits) so restore-keys always resolves to the most recent prior
+      # cache for this OS+compiler+branch; the save step's key is likewise
+      # unique per run so actions/cache/save never skips saving (unlike the
+      # combined action used for vcpkg_installed/ above, which should skip
+      # saving except when vcpkg.json's hash actually changes). runner.arch
+      # is part of the key for the same reason it's part of the vcpkg
+      # cache key above: runner.os alone is "Linux" for both the x64 and
+      # arm64 legs of this matrix, and ccache's own cached objects are not
+      # portable across architectures. See .kiro/specs/ccache-adoption/ and
+      # .kiro/specs/arm64-ci-verification/ Requirement 4.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
       - name: Configure (Release)
         run: |
           cmake -B build -G Ninja \
@@ -153,6 +177,13 @@ jobs:
 
       - name: Build
         run: cmake --build build -j$(nproc)
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Test
         id: test
@@ -230,7 +261,8 @@ jobs:
             llvm-18 \
             cmake \
             ninja-build \
-            libfiu-dev
+            libfiu-dev \
+            ccache
 
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
       # source (vcpkg's "edhoc" feature below) — see the identical step in
@@ -258,6 +290,25 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
       # ── Coverage build + tests ────────────────────────────────────────────
+      # ccache: smaller --max-size (1G, vs. 2G for build-and-test) — this job
+      # has repeated "No space left on device" history from ~148 statically-
+      # linked binaries (see "Free disk space" step's comment above); the
+      # ccache restore below runs after that reclaim step, not before, so it
+      # never eats into headroom that step is specifically freeing up. Same
+      # restore-broad/save-unique key pattern as build-and-test; see
+      # .kiro/specs/ccache-adoption/.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-coverage-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=1G
+
       - name: Configure (Coverage)
         run: |
           cmake -B build-coverage -G Ninja \
@@ -268,6 +319,13 @@ jobs:
 
       - name: Build (Coverage)
         run: cmake --build build-coverage -j$(nproc)
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-coverage-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Test (Coverage)
         id: test-coverage
