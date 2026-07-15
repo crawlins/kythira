@@ -1,0 +1,261 @@
+# Implementation Plan — CI Real Cloud Tests
+
+## Status: Not Started
+
+**Last Updated**: July 14, 2026
+
+## Overview
+
+Add a decoupled, OIDC-authenticated GitHub Actions workflow that runs this
+project's three existing real-AWS test binaries on a schedule and on
+demand, gated by three independent levels of on/off configurability
+(whole-feature, per-provider, per-service-bundle). The CI role's own IAM
+footprint is a single, narrowly-scoped `iam:PassRole` statement — no
+`iam:CreateRole` or any other IAM-write permission — made possible by
+provisioning the `ec2-quorum-manager` bundle's node instance-profile once,
+in advance, via its own separate script, rather than having the test (or
+the CI role) create and destroy one per run. Azure/GCP/OCI/Alibaba Cloud
+get scaffolded extension points only — no real implementation, since none
+of those providers has a real-cloud test suite yet.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    {
+      "wave": 1,
+      "tasks": [1],
+      "description": "Verify the bundle-to-permission mapping against current source (Property 1) before writing anything that depends on it being correct"
+    },
+    {
+      "wave": 2,
+      "tasks": [2, 3],
+      "description": "IAM policy JSON fragments and the node-role provisioning script — independent of each other, both depend on wave 1's verified action list"
+    },
+    {
+      "wave": 3,
+      "tasks": [4, 5],
+      "description": "Modify the quorum-manager test to resolve (not create) its instance profile, and provision that static role/profile for real — independent of each other, both depend on wave 2"
+    },
+    {
+      "wave": 4,
+      "tasks": [6],
+      "description": "provision-oidc-role.sh (CI's own identity) — depends on wave 2's policy files existing to reference"
+    },
+    {
+      "wave": 5,
+      "tasks": [7],
+      "description": "Provision the CI role for real using task 6's script — needed before wave 6's workflow can be end-to-end tested; depends on wave 3 having already produced a real node-role ARN to reference"
+    },
+    {
+      "wave": 6,
+      "tasks": [8, 9],
+      "description": "real-cloud-tests.yml workflow (AWS job) and the scaffolded non-AWS provider jobs — independent of each other, both depend on the workflow file existing as one PR"
+    },
+    {
+      "wave": 7,
+      "tasks": [10, 11],
+      "description": "Documentation (top-level + AWS-specific) — depends on the final script/workflow interface from waves 2-6"
+    },
+    {
+      "wave": 8,
+      "tasks": [12],
+      "description": "End-to-end verification against real AWS across every toggle combination — depends on everything above"
+    }
+  ]
+}
+```
+
+## Tasks
+
+## Phase 1: Verify the Ground Truth (Task 1)
+
+- [ ] 1. Re-derive and confirm the bundle → AWS action mapping
+  - Re-run `grep -oE "Aws::[A-Za-z0-9]+::Model::[A-Za-z]+Request"` against
+    `tests/aws_quorum_manager_real_ec2_test.cpp`,
+    `tests/ca_cluster_node_real_ec2_test.cpp`,
+    `tests/ca_cluster_node_rpc_tls_real_ec2_test.cpp`, and
+    `include/raft/aws_ec2_quorum_manager.hpp`, comparing against
+    requirements.md's Requirement 2.1/2.2 lists — these files may have
+    changed since this spec was written; treat any discrepancy as
+    authoritative over the spec text and update requirements.md if so.
+    Also confirm `create_iam_role()`'s exact trust/inline-policy JSON
+    (needed verbatim by task 3).
+  - _Requirements: 2.1, 2.2_
+
+## Phase 2: IAM Policy Fragments and Node-Role Script (Tasks 2-3)
+
+- [ ] 2. `scripts/ci-cloud-credentials/aws/policies/*.json`
+  - `ec2-quorum-manager.json`, `ca-cluster-node.json`,
+    `ca-cluster-node-rpc-tls.json` — bare `Statement` arrays per
+    design.md's Data Models "IAM Policy Bundle Shape" section, using
+    task 1's confirmed action lists. Only `ec2-quorum-manager.json`
+    carries an IAM statement (`iam:PassRole`, scoped via the
+    `{{ACCOUNT_ID}}`/static-role-ARN placeholder — Requirement 2.1/3.4);
+    every EC2 statement across all three files uses `Resource: "*"` per
+    design.md's note on EC2's own resource-level permission limits.
+  - _Requirements: 2.1, 2.2, 2.4, 3.4_
+
+- [ ] 3. `scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh`
+  - Bash + AWS CLI, `set -euo pipefail`, matching
+    `scripts/pre-commit-coverage.sh`'s style. Implements design.md
+    Component 3's 5 steps: sanity check, `ensure_role()` (trust policy
+    and inline policy content copied verbatim from task 1's confirmed
+    `create_iam_role()`), `ensure_role_policy()`, `ensure_instance_profile()`,
+    print ARN.
+  - CLI flags: `--role-name` (default `kythira-aws-quorum-test-node-role`),
+    `--profile-name` (default `kythira-aws-quorum-test-node-profile`),
+    `--dry-run`.
+  - _Requirements: 3.1, 4.7_
+
+## Phase 3: Test Code Change and Node-Role Provisioning (Tasks 4-5)
+
+- [ ] 4. Modify `tests/aws_quorum_manager_real_ec2_test.cpp`
+  - Replace `create_iam_role()` (and its corresponding teardown steps:
+    `RemoveRoleFromInstanceProfile`/`DeleteRolePolicy`/
+    `DeleteInstanceProfile`/`DeleteRole`) with
+    `resolve_iam_instance_profile()` per design.md Component 4: reads
+    `KYTHIRA_TEST_IAM_INSTANCE_PROFILE`, falls back to the literal
+    `kythira-aws-quorum-test-node-profile` when unset, makes no IAM API
+    call at all. Remove the now-unused `iam_role_name`/`iam_policy_name`
+    fields and their UUID-based generation; decide whether the `iam`
+    (`Aws::IAM::IAMClient`) member is still needed for anything else in
+    this file and remove it too if not.
+  - _Requirements: 3.2_
+
+- [ ] 5. Provision the static node role/profile for real
+  - Run task 3's script against a real (or disposable/sandbox) AWS
+    account, twice in a row (idempotency check). Confirm via
+    `aws iam get-role`/`get-instance-profile` that the created role's
+    inline policy matches task 1's confirmed content exactly
+    (`sts:GetCallerIdentity` only).
+  - Record the resulting role ARN — needed by task 2's
+    `ec2-quorum-manager.json` substitution and by task 7's CI-role
+    provisioning.
+  - _Requirements: 3.1, Testing Strategy_
+
+## Phase 4: CI Identity Provisioning Script (Task 6)
+
+- [ ] 6. `scripts/ci-cloud-credentials/aws/provision-oidc-role.sh`
+  - Bash + AWS CLI, matching `scripts/pre-commit-coverage.sh`'s style.
+    Implements design.md Component 2's 7 steps: sanity check,
+    `ensure_oidc_provider()`, `build_trust_policy()`, `ensure_role()`
+    (no permissions boundary — Requirement 3.3), `build_bundle_policy()`
+    (substituting task 5's account ID into `ec2-quorum-manager.json`'s
+    `{{ACCOUNT_ID}}` placeholder), `ensure_role_policy()`, print ARN +
+    follow-up `gh variable set` commands.
+  - CLI flags: `--github-org`, `--github-repo`, `--bundles`,
+    `--role-name` (default `kythira-ci-real-cloud-tests`),
+    `--session-duration-seconds` (default `3600`), `--ref-restriction`,
+    `--dry-run`.
+  - _Requirements: 3.5, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7_
+
+## Phase 5: Provision and Verify (Task 7)
+
+- [ ] 7. Run task 6's script against a real (or disposable/sandbox) AWS account
+  - Once with `--bundles ca-cluster-node,ca-cluster-node-rpc-tls` (no IAM
+    permission expected on the resulting role at all — verify via
+    `aws iam get-role-policy`), then re-run with `ec2-quorum-manager`
+    added (exactly one `iam:PassRole` statement now present, scoped to
+    task 5's node-role ARN), then re-run with `ec2-quorum-manager`
+    removed again (that statement gone — Property 2's revocation check).
+    Twice-in-a-row idempotency (Requirement 4.2) confirmed as part of the
+    same session.
+  - Record the resulting CI-role ARN for wave 6's workflow testing; this
+    task's AWS account/role is disposable infrastructure, not itself a
+    deliverable — no code or config file in this repository stores the
+    ARN from this specific run (that's what `AWS_CI_ROLE_ARN` the
+    repository variable is for, set by the operator following task 11's
+    documentation).
+  - _Requirements: 4.2, 4.3, 4.4, 4.5, Property 2_
+
+## Phase 6: Workflow (Tasks 8-9)
+
+- [ ] 8. `.github/workflows/real-cloud-tests.yml` — AWS job
+  - `workflow_dispatch` inputs + `schedule` trigger per design.md
+    Component 1's exact shape; the `RUN_ENABLED`/`AWS_ENABLED`/per-bundle
+    `env:` resolution pattern (distinguishing "explicitly false" from
+    "unset, fall through to the variable"); the `environment:
+    real-cloud-tests` + `id-token: write` block; the fail-closed
+    `AWS_CI_ROLE_ARN`-unset check; `configure-aws-credentials@v4`; build
+    steps reusing `ci.yml`'s existing build-and-test job's steps (system
+    deps/vcpkg/Rust toolchain/configure/build — copy, not a shared
+    composite action, unless a later task finds shared-action extraction
+    clearly worth the indirection); the fail-closed missing-binary check;
+    one `ctest -L 'real-ec2' -R '^<binary>$'` step per bundle, each gated
+    on its own `if:`; the `ec2-quorum-manager` step's explicit
+    `KYTHIRA_TEST_IAM_INSTANCE_PROFILE` env var.
+  - `.github/workflows/ci.yml` SHALL NOT be modified by this task.
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 5.1, 5.2, 5.3, 5.4, 5.6, 7.1, 7.2, 7.3, 7.4_
+
+- [ ] 9. Scaffold `azure`/`gcp`/`oci`/`alibaba` jobs
+  - Each job: `if:` gated the same way as the AWS job on its own
+    provider-enabled toggle; single step printing "no real-cloud tests
+    implemented for <provider> yet — see doc/TODO.md Cloud Provider
+    Support" and exiting 0 (success, not failure — an operator who
+    enables a not-yet-implemented provider should see a clear,
+    non-alarming message, not a red X).
+  - _Requirements: 1.2, 1.5_
+
+## Phase 7: Documentation (Tasks 10-11)
+
+- [ ] 10. `scripts/ci-cloud-credentials/README.md`
+  - Top-level overview: the three-level toggle model, the service-bundle
+    concept, the two-script split for AWS (CI identity vs. static node
+    role) and why, a provider table (AWS linking to `aws/README.md`;
+    Azure/GCP/OCI/Alibaba stating "not yet implemented").
+  - _Requirements: 6.1_
+
+- [ ] 11. `scripts/ci-cloud-credentials/aws/README.md`
+  - Prerequisites, first-time setup walkthrough (exact
+    `provision-quorum-test-node-role.sh` invocation *before*
+    `provision-oidc-role.sh`'s, since the latter's `ec2-quorum-manager`
+    bundle references the former's role ARN, plus exact `gh variable set`
+    commands), how to add/remove a bundle later, how to verify setup
+    worked, an AWS cost estimate for one full run of each bundle (styled
+    after `doc/aws_acm_pca_test_cost_estimate.md`), and teardown
+    instructions for both roles.
+  - _Requirements: 6.2, 6.3_
+
+## Phase 8: End-to-End Verification (Task 12)
+
+- [ ] 12. Exercise every toggle combination via `workflow_dispatch`
+  - Master off (job list shows nothing ran); AWS off with master on (AWS
+    job skipped); all AWS bundles off (AWS job runs, no `ctest` step
+    executes, `configure-aws-credentials` step still runs since
+    Requirement 1.3 gates test execution, not credential acquisition,
+    confirm this matches design intent or tighten Requirement 1.3's
+    wording if credential acquisition should also be skipped when no
+    bundle is enabled); one bundle on at a time (three runs, one per
+    bundle, each passing against real AWS — the `ec2-quorum-manager` run
+    is the end-to-end confirmation that `iam:PassRole` alone, with no
+    IAM-write permission, is sufficient to launch instances with the
+    static node profile attached); `AWS_CI_ROLE_ARN` unset with AWS
+    enabled (confirms Requirement 7.1's fail-closed message, not a
+    downstream credential-step error); task 7's bundle-removal re-run
+    repeated once more here against the actual `AWS_CI_ROLE_ARN` the
+    workflow uses, confirming a subsequent workflow run with
+    `ec2-quorum-manager` re-disabled genuinely can no longer launch an
+    instance with any instance profile attached (Property 2, end-to-end).
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 7.1, 7.2, Testing Strategy_
+
+## Notes
+
+- No new external dependency: `aws-actions/configure-aws-credentials@v4`
+  is a GitHub-maintained, widely-used action; both provisioning scripts
+  use only the AWS CLI (already a prerequisite for any AWS work in this
+  project) and bash. No new `vcpkg.json` entries.
+- This spec touches `.github/workflows/` (new file only — `ci.yml` itself
+  is unmodified), adds `scripts/ci-cloud-credentials/`, and makes one
+  targeted edit to `tests/aws_quorum_manager_real_ec2_test.cpp` (task 4) —
+  every other file under `tests/`, all of `include/raft/`, `cmd/`, and
+  `docker/` are untouched.
+- Tasks 5, 7, and 12's real-AWS verification requires an AWS account with
+  billing enabled and a repository maintainer's ability to set repository
+  variables and (for the `environment: real-cloud-tests` approval gate,
+  if configured) approve a deployment — if no such account/access is
+  available in a given implementation environment, these tasks remain
+  incomplete and MUST be flagged as such, matching this project's own
+  established precedent for real-AWS work
+  (`.kiro/specs/ca-cluster-rpc-mtls-real-aws/tasks.md`'s identical caveat).
