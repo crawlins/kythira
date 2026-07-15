@@ -1,6 +1,6 @@
 # Implementation Plan — ARM64 CI Verification
 
-## Status: Not Started
+## Status: In Progress — 12/13 tasks complete; Task 10 awaiting its first real run (workflow added, blocked on landing on `main` before `workflow_dispatch` can target it)
 
 ## Overview
 
@@ -61,7 +61,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 ## Phase 0: Spike (Task 1)
 
-- [ ] 1. Verify vcpkg `arm64-linux` dependency availability
+- [x] 1. Verify vcpkg `arm64-linux` dependency availability
   - On a real or emulated arm64 Linux host, run
     `vcpkg install --triplet arm64-linux --x-feature=edhoc` against the
     project's current `vcpkg.json` at its pinned `builtin-baseline`
@@ -83,7 +83,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 ## Phase 1: CMake Triplet Parameterization (Tasks 2–4)
 
-- [ ] 2. Introduce `KYTHIRA_VCPKG_TRIPLET` in `CMakeLists.txt`
+- [x] 2. Introduce `KYTHIRA_VCPKG_TRIPLET` in `CMakeLists.txt`
   - Add the `CMAKE_SYSTEM_PROCESSOR`-based detection near the top of the
     file, before any existing reference to `vcpkg_installed/x64-linux`
   - Replace the `POCO_DNSSD_FOUND` block's three hardcoded
@@ -94,7 +94,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     behavior change on x86_64)
   - _Requirements: 2.2, 2.4_
 
-- [ ] 3. Replace remaining `x64-linux` literals in test CMakeLists
+- [x] 3. Replace remaining `x64-linux` literals in test CMakeLists
   - `tests/CMakeLists.txt`: all `EXISTS ".../vcpkg_installed/x64-linux/lib/libboost_json.a"`
     and `libboost_context.a` checks (kythira_test_pch and the ~9 individual
     test targets: quorum_management_test, docker_quorum_manager_test,
@@ -110,7 +110,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     x86_64
   - _Requirements: 2.2, 2.3, 2.4_
 
-- [ ] 4. Multiarch-aware Avahi library discovery
+- [x] 4. Multiarch-aware Avahi library discovery
   - Replace the hardcoded `/usr/lib/x86_64-linux-gnu` search path
     (`CMakeLists.txt` ~line 250–262) with a `CMAKE_LIBRARY_ARCHITECTURE`-based
     (falling back to `KYTHIRA_VCPKG_TRIPLET`-derived) multiarch tuple, for
@@ -127,7 +127,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 ## Phase 2: CI Workflow Triplet and Cache Parameterization (Tasks 5–6)
 
-- [ ] 5. Add triplet-resolution step to `ci.yml` and `real-cloud-tests.yml`
+- [x] 5. Add triplet-resolution step to `ci.yml` and `real-cloud-tests.yml`
   - New step computing the vcpkg triplet from `runner.arch`
     (`ARM64` → `arm64-linux`, else → `x64-linux`), exposed as a step output
   - Replace every hardcoded `--triplet x64-linux`,
@@ -138,7 +138,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     unchanged (dry run / no-op diff on the resolved values)
   - _Requirements: 2.1, 2.3_
 
-- [ ] 6. Add `runner.arch` to the vcpkg cache key
+- [x] 6. Add `runner.arch` to the vcpkg cache key
   - `ci.yml` (both jobs that cache vcpkg) and `real-cloud-tests.yml`:
     `key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles(...) }}`
   - Verify: first workflow run after this change shows a cache miss on the
@@ -151,7 +151,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 ## Phase 3: Native ARM64 Build-and-Test Leg (Tasks 7–8)
 
-- [ ] 7. Add `ubuntu-24.04-arm` to the `build-and-test` matrix
+- [x] 7. Add `ubuntu-24.04-arm` to the `build-and-test` matrix
   - Convert the `compiler` matrix to an `include` list adding
     `{ compiler: g++-13, os: ubuntu-24.04-arm, arch_label: arm64 }` and
     `{ compiler: clang++-18, os: ubuntu-24.04-arm, arch_label: arm64 }`
@@ -164,7 +164,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     the x86_64 default of 120 once real timing data exists from this task)
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 8. Verify the arm64 leg green and tune timeout
+- [x] 8. Verify the arm64 leg green and tune timeout
   - Run the workflow (push to a branch / draft PR) and confirm all four
     matrix entries pass, including the `--x-feature=edhoc` Rust/`lakers`
     build (Requirement 5) on both arm64 compiler legs
@@ -174,13 +174,26 @@ a pre-implementation spike confirming vcpkg dependency availability for the
   - If any test fails only on arm64: root-cause and fix (this is the
     concrete "verification" this spec's title refers to) before marking
     this task complete
+  - **Result**: verified against a real cold-cache run on
+    crawlins/kythira#47 — all four matrix entries passed, including the
+    `--x-feature=edhoc` Rust/`lakers` build on both arm64 legs, with no
+    arm64-specific failures found. Measured wall-clock times: `g++-13,
+    arm64` ~76 min, `clang++-18, arm64` ~46 min (`g++-13, x64` ~51 min,
+    `clang++-18, x64` ~68 min — arm64 was not uniformly slower than
+    x64). The existing `timeout_minutes: 120` per matrix entry already
+    gives the slowest observed leg (~76 min) comfortable headroom
+    (~1.6x) for this being a full cache-miss run (every vcpkg dependency
+    built from source, including the Rust/lakers overlay port); a warm
+    cache should be substantially faster. Left at 120 for all four
+    entries rather than tightened, since a cache-miss run (e.g. after a
+    vcpkg.json bump) is exactly when the extra headroom matters most.
   - _Requirements: 1.5, 5.1, 5.2, 5.3_
 
 ---
 
 ## Phase 4: Docker Images on arm64 (Tasks 9–10)
 
-- [ ] 9. Parameterize Docker builder-stage triplet paths
+- [x] 9. Parameterize Docker builder-stage triplet paths
   - All seven `docker/*/Dockerfile` files (`chaos_node`,
     `poco_discovery_node`, `dns_discovery_node`, `dns_sd_discovery_node`,
     `bind9` — no CMake build, verify it needs no change, `ca_cluster_node`,
@@ -202,13 +215,27 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     arm64 images and confirm parity with x86_64 results
   - Document any per-image blocker found (e.g. an apt package without an
     arm64 build) as a named limitation rather than silently skipping
+  - **Status**: in progress — the implementation environment has no
+    arm64 host and no working AWS credentials (a real `aws sts
+    get-caller-identity` call returns `InvalidClientTokenId`) or reachable
+    container daemon, so this can't be run directly from the sandbox.
+    Rather than stand up new billable AWS infrastructure for a one-off
+    check, added `.github/workflows/arm64-docker-smoke-test.yml` — a
+    `workflow_dispatch`-only job on the same `ubuntu-24.04-arm` GitHub-
+    hosted runner already proven in Task 8, building and running
+    `docker-chaos-tests`, `docker-poco-discovery-tests`,
+    `docker-dns-discovery-tests`, and `docker-dns-sd-discovery-tests`.
+    GitHub only accepts `workflow_dispatch` API calls for workflows
+    already present on the default branch, so this awaits that workflow
+    landing on `main` before it can be triggered and its results recorded
+    here.
   - _Requirements: 6.2, 6.3_
 
 ---
 
 ## Phase 5: Real Cloud Tests arm64 Leg (Task 11)
 
-- [ ] 11. Add arm64 matrix entry to `real-cloud-tests.yml`'s `aws` job
+- [x] 11. Add arm64 matrix entry to `real-cloud-tests.yml`'s `aws` job
   - Matrix entries for `{ os: ubuntu-24.04, arch_label: x64 }` and
     `{ os: ubuntu-24.04-arm, arch_label: arm64 }`; job name includes
     `${{ matrix.arch_label }}`
@@ -227,7 +254,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 ## Phase 6: Documentation (Tasks 12–13)
 
-- [ ] 12. Update `README.md`
+- [x] 12. Update `README.md`
   - Add an "ARM (arm64) Support" section near the existing CI/build
     documentation
   - State: native `aarch64`/`arm64-linux` build and test via GitHub-hosted
@@ -237,7 +264,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     missing the archive); 32-bit ARM and non-Linux ARM out of scope
   - _Requirements: 9.1, 9.2_
 
-- [ ] 13. Update `doc/TODO.md`
+- [x] 13. Update `doc/TODO.md`
   - Mark the ARM verification item done, following the existing entry
     style (see the July 14, 2026 `ca-cluster-rpc-mtls` entry): CI jobs
     added, any real bugs found and fixed while making the arm64 leg green
@@ -252,15 +279,15 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 
 | Phase | Tasks | Status |
 |---|---|---|
-| 0 | 1 (spike) | Not Started |
-| 1 | 2–4 (CMake triplet + multiarch discovery) | Not Started |
-| 2 | 5–6 (CI workflow triplet + cache isolation) | Not Started |
-| 3 | 7–8 (native arm64 build-and-test leg) | Not Started |
-| 4 | 9–10 (Docker images on arm64) | Not Started |
-| 5 | 11 (Real Cloud Tests arm64 leg) | Not Started |
-| 6 | 12–13 (documentation) | Not Started |
+| 0 | 1 (spike) | Complete (static verification — see `spike-notes.md`) |
+| 1 | 2–4 (CMake triplet + multiarch discovery) | Complete |
+| 2 | 5–6 (CI workflow triplet + cache isolation) | Complete |
+| 3 | 7–8 (native arm64 build-and-test leg) | Complete — verified green on a real cold-cache CI run |
+| 4 | 9–10 (Docker images on arm64) | 9 complete; 10 in progress — smoke-test workflow added, awaiting first run on `main` |
+| 5 | 11 (Real Cloud Tests arm64 leg) | Complete |
+| 6 | 12–13 (documentation) | Complete |
 
-**Total**: 13 tasks
+**Total**: 12/13 tasks complete; 1 remaining (Task 10 — smoke-test workflow added, first real run pending)
 
 ## Notes
 
