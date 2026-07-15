@@ -219,10 +219,41 @@ jobs:
             fi
           done
 
+      # aws_quorum_manager_real_ec2_test's own RealEc2Fixture re-resolves
+      # the AMI via ec2:DescribeImages in its constructor, which Boost.Test
+      # re-runs once per test case (10x per full suite run) when
+      # KYTHIRA_TEST_AMI_ID is unset — a real run surfaced this hitting
+      # AWS throttling partway through, failing the last few cases with
+      # "could not determine AMI" once DescribeImages stopped returning
+      # results. Resolving it once here and passing it through
+      # KYTHIRA_TEST_AMI_ID (which the fixture already checks first, before
+      # ever calling DescribeImages itself) avoids the repeated-call
+      # pattern entirely rather than just retrying it.
+      - name: Resolve test AMI ID
+        if: ${{ env.BUNDLE_EC2_QUORUM == 'true' }}
+        id: resolve-ami
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            ARCH=arm64
+          else
+            ARCH=x86_64
+          fi
+          AMI_ID=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters "Name=name,Values=al2023-ami-*${ARCH}*" "Name=architecture,Values=${ARCH}" "Name=virtualization-type,Values=hvm" \
+            --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+            --output text)
+          if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
+            echo "::error::Could not resolve a current al2023 AMI for architecture ${ARCH}." >&2
+            exit 1
+          fi
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Run ec2-quorum-manager bundle
         if: ${{ env.BUNDLE_EC2_QUORUM == 'true' }}
         env:
           KYTHIRA_TEST_IAM_INSTANCE_PROFILE: kythira-aws-quorum-test-node-profile
+          KYTHIRA_TEST_AMI_ID: ${{ steps.resolve-ami.outputs.ami_id }}
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^aws_quorum_manager_real_ec2_test$' --output-on-failure
 
