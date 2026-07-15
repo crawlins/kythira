@@ -13,10 +13,16 @@ WORKDIR /src
 COPY . .
 
 # CMAKE_PREFIX_PATH makes find_package() resolve from the vcpkg installed tree.
-RUN cmake -B build -G Ninja \
+# uname -m-derived triplet so the same Dockerfile builds correctly whether
+# the (native, non-emulated) build host is x86_64 or arm64.
+RUN case "$(uname -m)" in \
+        aarch64) TRIPLET=arm64-linux ;; \
+        *)       TRIPLET=x64-linux ;; \
+    esac; \
+    cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_STANDARD=23 \
-        -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/x64-linux \
+        -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET \
     && cmake --build build --target poco_discovery_node -j$(nproc)
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────

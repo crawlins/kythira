@@ -10,9 +10,15 @@ RUN apt-get update && \
 WORKDIR /src
 COPY . .
 
-RUN cmake -B build -G Ninja \
+# uname -m-derived triplet so the same Dockerfile builds correctly whether
+# the (native, non-emulated) build host is x86_64 or arm64.
+RUN case "$(uname -m)" in \
+        aarch64) TRIPLET=arm64-linux ;; \
+        *)       TRIPLET=x64-linux ;; \
+    esac; \
+    cmake -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/x64-linux && \
+        -DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET && \
     cmake --build build --target dns_sd_discovery_node
 
 # Stage 2 — runtime
