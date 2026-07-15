@@ -96,6 +96,27 @@ This document lists the dependencies required to build and use the network simul
   `LIBSSH2_FOUND`. Without it, `ca_cluster_node_real_ec2_test` is simply not compiled;
   everything else is unaffected.
 
+### ccache — faster rebuilds
+- **Status**: Optional — auto-detected via `find_program(ccache)`; absent, the build is
+  identical to today (`-DKYTHIRA_ENABLE_CCACHE=OFF` to force off even when installed)
+- **Purpose**: Skips recompiling a translation unit whose preprocessed content and
+  compiler flags exactly match a prior compile. Measured on this project's own CI: a
+  from-scratch rebuild where nothing changed since the last build dropped from 29m07s to
+  11m59s (~59% reduction) — the remaining time is link time, which ccache cannot cache;
+  a build that touches a widely-included header will see less benefit than this best case.
+- **Installation**:
+  ```bash
+  # Ubuntu/Debian
+  sudo apt install ccache
+
+  # macOS (Homebrew)
+  brew install ccache
+  ```
+- **Notes**: No `CCACHE_DIR`/`--max-size` configuration is required for local use —
+  ccache's own defaults (`~/.ccache`, 5 GB) apply. CI uses smaller, explicit `--max-size`
+  values scoped to each job's own disk budget (`.kiro/specs/ccache-adoption/`); that
+  sizing is CI-only and not relevant to local use.
+
 ### Property-Based Testing Library
 - **RapidCheck** or similar C++ property-based testing framework
 - Required for property-based tests (tasks 4.5+)
