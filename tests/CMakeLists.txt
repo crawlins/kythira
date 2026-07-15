@@ -2345,7 +2345,17 @@ target_include_directories(aws_quorum_manager_real_ec2_test PRIVATE
 target_compile_features(aws_quorum_manager_real_ec2_test PRIVATE cxx_std_23)
 add_test(NAME aws_quorum_manager_real_ec2_test COMMAND aws_quorum_manager_real_ec2_test)
 set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
-    TIMEOUT 600
+    # This single ctest invocation runs all 10 Boost.Test cases in the
+    # binary sequentially; individual cases already carry their own
+    # up-to-1200s Boost.Test timeouts (6 at 600s, 3 at 1200s, plus the
+    # nine-node case at 1200s), and doc/aws_acm_pca_test_cost_estimate.md
+    # estimates ~157 min for a full run. The previous 600s value could
+    # never let more than the first case finish before ctest force-killed
+    # the whole binary. 10800s (180 min) comfortably exceeds the sum of
+    # every case's own worst-case timeout plus fixture setup/teardown
+    # overhead, and matches real-cloud-tests.yml's own job-level
+    # timeout-minutes: 180.
+    TIMEOUT 10800
     LABELS "integration;raft;quorum;aws;real-ec2;slow"
 )
 
@@ -2402,7 +2412,13 @@ target_include_directories(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE
 target_compile_features(ca_cluster_node_rpc_tls_real_ec2_test PRIVATE cxx_std_23)
 add_test(NAME ca_cluster_node_rpc_tls_real_ec2_test COMMAND ca_cluster_node_rpc_tls_real_ec2_test)
 set_tests_properties(ca_cluster_node_rpc_tls_real_ec2_test PROPERTIES
-    TIMEOUT 1800
+    # Same class of mismatch as aws_quorum_manager_real_ec2_test above:
+    # this binary runs 4 Boost.Test cases sequentially, each already
+    # carrying its own boost::unit_test::timeout(1700), so the previous
+    # 1800s outer value could never let more than the first case finish.
+    # 9000s (150 min) covers the sum of all four cases' worst-case
+    # timeouts (6800s) plus per-case fixture setup/teardown overhead.
+    TIMEOUT 9000
     LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node;rpc_tls"
 )
 endif()  # TARGET certificate_authority
