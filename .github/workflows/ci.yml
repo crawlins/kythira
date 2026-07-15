@@ -13,16 +13,35 @@ permissions:
 
 jobs:
   # ── Build and test ──────────────────────────────────────────────────────────
-  # Runs under both GCC and Clang to catch compiler-specific issues.
+  # Runs under both GCC and Clang, on both x86_64 and native arm64 runners, to
+  # catch compiler- and architecture-specific issues.
+  # .kiro/specs/arm64-ci-verification/ (Requirement 1): arm64 legs run on
+  # GitHub-hosted ubuntu-24.04-arm runners — native hardware, not emulated.
   build-and-test:
-    name: Build & Test (${{ matrix.compiler }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    name: Build & Test (${{ matrix.compiler }}, ${{ matrix.arch_label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
 
     strategy:
       fail-fast: false
       matrix:
-        compiler: [g++-13, clang++-18]
+        include:
+          - compiler: g++-13
+            os: ubuntu-24.04
+            arch_label: x64
+            timeout_minutes: 120
+          - compiler: clang++-18
+            os: ubuntu-24.04
+            arch_label: x64
+            timeout_minutes: 120
+          - compiler: g++-13
+            os: ubuntu-24.04-arm
+            arch_label: arm64
+            timeout_minutes: 120
+          - compiler: clang++-18
+            os: ubuntu-24.04-arm
+            arch_label: arm64
+            timeout_minutes: 120
 
     steps:
       - name: Checkout
@@ -46,11 +65,27 @@ jobs:
 
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
       # source (vcpkg's "edhoc" feature below) — lakers publishes no
-      # pre-built binaries for x64-linux, only embedded-MCU targets. Pinned
-      # explicitly rather than relying on the runner image's bundled
-      # toolchain so this doesn't silently break on a runner image update.
+      # pre-built binaries for x64-linux or arm64-linux, only embedded-MCU
+      # targets. Pinned explicitly rather than relying on the runner image's
+      # bundled toolchain so this doesn't silently break on a runner image
+      # update. dtolnay/rust-toolchain installs a native aarch64-unknown-
+      # linux-gnu toolchain on the arm64 runner the same way it installs
+      # x86_64-unknown-linux-gnu on x64 (see spike-notes.md).
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # ── vcpkg triplet ─────────────────────────────────────────────────────
+      # .kiro/specs/arm64-ci-verification/ (Requirement 2): resolved from the
+      # runner's own architecture rather than hardcoded, so this same job
+      # definition serves both x64 and arm64 matrix entries.
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
 
       # ── vcpkg (Boost, Folly, Poco, libcoap, lakers, …) ───────────────────
       - name: Cache vcpkg packages
@@ -58,7 +93,10 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          # runner.arch is part of the key (Requirement 4) so an arm64 leg
+          # can never restore (or silently corrupt) an x86_64-built cache
+          # entry, or vice versa — runner.os alone is "Linux" on both.
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
@@ -70,22 +108,24 @@ jobs:
           # --x-feature=edhoc: builds the lakers overlay port (see
           # vcpkg-overlays/lakers/) so LAKERS_AVAILABLE is defined and the
           # EDHOC-to-OSCORE bootstrap path is exercised, not just stubbed.
-          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
         env:
-          VCPKG_DEFAULT_TRIPLET: x64-linux
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
 
       # ── Format check ──────────────────────────────────────────────────────
-      # Only run once (not per compiler) since formatting is compiler-agnostic.
+      # Only run once per workflow run (x64/g++-13), never per-architecture,
+      # since clang-format output does not vary by target architecture
+      # (.kiro/specs/arm64-ci-verification/ Requirement 8.1).
       - name: Configure (format-check)
-        if: matrix.compiler == 'g++-13'
+        if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
         run: |
           cmake -B build-fmt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       - name: Check formatting
-        if: matrix.compiler == 'g++-13'
+        if: matrix.compiler == 'g++-13' && matrix.arch_label == 'x64'
         run: cmake --build build-fmt --target format-check
 
       # ── Release build + tests ─────────────────────────────────────────────
@@ -94,7 +134,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build
@@ -115,7 +155,7 @@ jobs:
         uses: dorny/test-reporter@v1
         if: always()
         with:
-          name: Unit Tests (${{ matrix.compiler }})
+          name: Unit Tests (${{ matrix.compiler }}, ${{ matrix.arch_label }})
           path: test-results.xml
           reporter: java-junit
           fail-on-error: false
@@ -125,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results-${{ matrix.compiler }}
+          name: test-results-${{ matrix.compiler }}-${{ matrix.arch_label }}
           path: test-results.xml
 
       - name: Fail if tests failed
@@ -189,7 +229,10 @@ jobs:
         id: vcpkg-cache
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+          # This job stays x86_64-only (Requirement 8.2), so runner.arch is
+          # always X64 here — included anyway to keep the key format
+          # consistent with build-and-test's cache key (Requirement 4).
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
