@@ -54,15 +54,6 @@
 #include <aws/ec2/model/RunInstancesRequest.h>
 #include <aws/ec2/model/Tag.h>
 #include <aws/ec2/model/TerminateInstancesRequest.h>
-#include <aws/iam/IAMClient.h>
-#include <aws/iam/model/AddRoleToInstanceProfileRequest.h>
-#include <aws/iam/model/CreateInstanceProfileRequest.h>
-#include <aws/iam/model/CreateRoleRequest.h>
-#include <aws/iam/model/DeleteInstanceProfileRequest.h>
-#include <aws/iam/model/DeleteRoleRequest.h>
-#include <aws/iam/model/DeleteRolePolicyRequest.h>
-#include <aws/iam/model/PutRolePolicyRequest.h>
-#include <aws/iam/model/RemoveRoleFromInstanceProfileRequest.h>
 #include <aws/sts/STSClient.h>
 #include <aws/sts/model/GetCallerIdentityRequest.h>
 
@@ -311,7 +302,6 @@ struct RealEc2Fixture : signal_cleanup_target {
 
     // ── AWS clients ─────────────────────────────────────────────────────────
     std::shared_ptr<Aws::EC2::EC2Client> ec2;
-    std::shared_ptr<Aws::IAM::IAMClient> iam;
 
     // ── Cluster UUID (scopes all resource names) ─────────────────────────────
     std::string uuid;
@@ -345,10 +335,9 @@ struct RealEc2Fixture : signal_cleanup_target {
     std::string az3_original_nacl_assoc_id;
 
     // ── IAM ─────────────────────────────────────────────────────────────────
-    std::string iam_role_name;
-    std::string iam_policy_name;
-    std::string iam_profile_name;
-    std::string iam_profile_arn;
+    // Resolved, not created — see resolve_iam_instance_profile()'s own
+    // comment for why (.kiro/specs/ci-real-cloud-tests/ Requirement 3).
+    std::string node_instance_profile_name;
 
     // ── SSH key (in memory only) ─────────────────────────────────────────────
     std::string ssh_key_name;
@@ -456,7 +445,6 @@ struct RealEc2Fixture : signal_cleanup_target {
         Aws::Client::ClientConfiguration cli_cfg;
         cli_cfg.region = region;
         ec2 = std::make_shared<Aws::EC2::EC2Client>(cli_cfg);
-        iam = std::make_shared<Aws::IAM::IAMClient>(cli_cfg);
 
         Aws::STS::STSClient sts{cli_cfg};
         auto id_out = sts.GetCallerIdentity(Aws::STS::Model::GetCallerIdentityRequest{});
@@ -511,7 +499,7 @@ struct RealEc2Fixture : signal_cleanup_target {
         create_nat_gateway();
         create_private_route_table();
         create_security_groups();
-        create_iam_role();
+        resolve_iam_instance_profile();
         create_ssh_keypair();
         create_deny_all_nacl();
         launch_bastion();
@@ -718,53 +706,25 @@ struct RealEc2Fixture : signal_cleanup_target {
         }
     }
 
-    void create_iam_role() {
-        iam_role_name = uuid + "-role";
-        iam_policy_name = uuid + "-policy";
-        iam_profile_name = uuid + "-profile";
-
-        const char* trust = R"({
-            "Version":"2012-10-17",
-            "Statement":[{
-                "Effect":"Allow",
-                "Principal":{"Service":"ec2.amazonaws.com"},
-                "Action":"sts:AssumeRole"
-            }]
-        })";
-        Aws::IAM::Model::CreateRoleRequest role_req;
-        role_req.SetRoleName(iam_role_name);
-        role_req.SetAssumeRolePolicyDocument(trust);
-        BOOST_REQUIRE(iam->CreateRole(role_req).IsSuccess());
-
-        // Policy: STS identity for diagnostics.  Heartbeat tag writes
-        // and DescribeInstances are no longer needed by cluster nodes.
-        const std::string policy = R"({
-            "Version":"2012-10-17",
-            "Statement":[{
-                "Effect":"Allow",
-                "Action":["sts:GetCallerIdentity"],
-                "Resource":"*"
-            }]
-        })";
-        Aws::IAM::Model::PutRolePolicyRequest pol_req;
-        pol_req.SetRoleName(iam_role_name);
-        pol_req.SetPolicyName(iam_policy_name);
-        pol_req.SetPolicyDocument(policy);
-        BOOST_REQUIRE(iam->PutRolePolicy(pol_req).IsSuccess());
-
-        Aws::IAM::Model::CreateInstanceProfileRequest prof_req;
-        prof_req.SetInstanceProfileName(iam_profile_name);
-        auto prof_out = iam->CreateInstanceProfile(prof_req);
-        BOOST_REQUIRE(prof_out.IsSuccess());
-        iam_profile_arn = std::string(prof_out.GetResult().GetInstanceProfile().GetArn());
-
-        Aws::IAM::Model::AddRoleToInstanceProfileRequest add_req;
-        add_req.SetInstanceProfileName(iam_profile_name);
-        add_req.SetRoleName(iam_role_name);
-        BOOST_REQUIRE(iam->AddRoleToInstanceProfile(add_req).IsSuccess());
-
-        // IAM propagation delay.
-        std::this_thread::sleep_for(std::chrono::seconds{10});
+    // Resolves the instance-profile name to attach to launched nodes —
+    // does NOT create one. .kiro/specs/ci-real-cloud-tests/ Requirement 3:
+    // include/raft/aws_ec2_quorum_manager.hpp (the production code this
+    // fixture tests) never calls an IAM API at all — iam_instance_profile
+    // is a plain string, referenced by name on RunInstances, with no
+    // opinion about how that name came to exist. Creating a fresh role/
+    // policy/instance-profile per test run (as this method used to) was
+    // purely fixture setup, not something any assertion in this file
+    // depends on happening freshly — so it's replaced with resolving an
+    // existing, pre-provisioned one instead
+    // (scripts/ci-cloud-credentials/aws/provision-quorum-test-node-role.sh,
+    // run once by an operator, not by CI). This is also what lets the CI
+    // role's own AWS permissions (scripts/ci-cloud-credentials/aws/provision-oidc-role.sh)
+    // hold zero IAM-write actions — only a narrowly-scoped iam:PassRole.
+    void resolve_iam_instance_profile() {
+        const char* env_override = std::getenv("KYTHIRA_TEST_IAM_INSTANCE_PROFILE");
+        node_instance_profile_name = (env_override != nullptr && *env_override != '\0')
+                                         ? std::string(env_override)
+                                         : std::string("kythira-aws-quorum-test-node-profile");
     }
 
     void create_ssh_keypair() {
@@ -811,7 +771,7 @@ struct RealEc2Fixture : signal_cleanup_target {
         req.AddSecurityGroupIds(bastion_sg_id);
         req.SetKeyName(ssh_key_name);
         Aws::EC2::Model::IamInstanceProfileSpecification iam_spec;
-        iam_spec.SetName(iam_profile_name);
+        iam_spec.SetName(node_instance_profile_name);
         req.SetIamInstanceProfile(iam_spec);
         Aws::EC2::Model::InstanceMarketOptionsRequest market_opts;
         market_opts.SetMarketType(Aws::EC2::Model::MarketType::spot);
@@ -868,7 +828,7 @@ struct RealEc2Fixture : signal_cleanup_target {
         mgr_cfg.subnet_by_group["AZ2"] = subnet_az2_id;
         mgr_cfg.subnet_by_group["AZ3"] = subnet_az3_id;
         mgr_cfg.security_group_ids.push_back(cluster_sg_id);
-        mgr_cfg.iam_instance_profile = iam_profile_name;
+        mgr_cfg.iam_instance_profile = node_instance_profile_name;
         mgr_cfg.provision_timeout = std::chrono::seconds{120};
         mgr_cfg.poll_interval = std::chrono::seconds{5};
         mgr_cfg.aws.region = region;
@@ -1139,31 +1099,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteSecurityGroup(req);
         }
 
-        // f: IAM — remove role from profile, delete role policy, delete profile, delete role.
-        if (!iam_profile_name.empty() && !iam_role_name.empty()) {
-            Aws::IAM::Model::RemoveRoleFromInstanceProfileRequest rrfip;
-            rrfip.SetInstanceProfileName(iam_profile_name);
-            rrfip.SetRoleName(iam_role_name);
-            iam->RemoveRoleFromInstanceProfile(rrfip);
-        }
-        if (!iam_role_name.empty() && !iam_policy_name.empty()) {
-            Aws::IAM::Model::DeleteRolePolicyRequest drp;
-            drp.SetRoleName(iam_role_name);
-            drp.SetPolicyName(iam_policy_name);
-            iam->DeleteRolePolicy(drp);
-        }
-        if (!iam_profile_name.empty()) {
-            Aws::IAM::Model::DeleteInstanceProfileRequest dip;
-            dip.SetInstanceProfileName(iam_profile_name);
-            iam->DeleteInstanceProfile(dip);
-        }
-        if (!iam_role_name.empty()) {
-            Aws::IAM::Model::DeleteRoleRequest dr;
-            dr.SetRoleName(iam_role_name);
-            iam->DeleteRole(dr);
-        }
-
-        // g: delete NAT gateway first and poll until fully deleted.
+        // f: delete NAT gateway first and poll until fully deleted.
         // This MUST happen before subnet deletion — subnets cannot be removed
         // while a NAT gateway occupying them is still in "deleting" state.
         if (!nat_gw_id.empty()) {
@@ -1188,14 +1124,14 @@ struct RealEc2Fixture : signal_cleanup_target {
             }
         }
 
-        // h: release EIP (must be after NAT GW is deleted — it holds the association).
+        // g: release EIP (must be after NAT GW is deleted — it holds the association).
         if (!eip_alloc_id.empty()) {
             Aws::EC2::Model::ReleaseAddressRequest d;
             d.SetAllocationId(eip_alloc_id);
             ec2->ReleaseAddress(d);
         }
 
-        // i: disassociate and delete private route table.
+        // h: disassociate and delete private route table.
         if (!subnet_az1_assoc_id.empty()) {
             Aws::EC2::Model::DisassociateRouteTableRequest d;
             d.SetAssociationId(subnet_az1_assoc_id);
@@ -1217,7 +1153,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteRouteTable(d);
         }
 
-        // j: delete private subnets (AZ1/AZ2/AZ3).
+        // i: delete private subnets (AZ1/AZ2/AZ3).
         for (const auto& sid : {subnet_az1_id, subnet_az2_id, subnet_az3_id}) {
             if (!sid.empty()) {
                 Aws::EC2::Model::DeleteSubnetRequest d;
@@ -1226,7 +1162,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             }
         }
 
-        // k: disassociate public route table, delete route table, delete public subnet.
+        // j: disassociate public route table, delete route table, delete public subnet.
         if (!pub_rtb_assoc_id.empty()) {
             Aws::EC2::Model::DisassociateRouteTableRequest d;
             d.SetAssociationId(pub_rtb_assoc_id);
@@ -1243,7 +1179,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteSubnet(d);
         }
 
-        // l: delete cluster + bastion SGs.
+        // k: delete cluster + bastion SGs.
         for (const auto& sg : {cluster_sg_id, bastion_sg_id}) {
             if (!sg.empty()) {
                 Aws::EC2::Model::DeleteSecurityGroupRequest d;
@@ -1252,7 +1188,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             }
         }
 
-        // m: detach + delete IGW.
+        // l: detach + delete IGW.
         if (!igw_id.empty() && !vpc_id.empty()) {
             Aws::EC2::Model::DetachInternetGatewayRequest d;
             d.SetInternetGatewayId(igw_id);
@@ -1263,7 +1199,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteInternetGateway(del);
         }
 
-        // n: delete VPC.
+        // m: delete VPC.
         if (!vpc_id.empty()) {
             Aws::EC2::Model::DeleteVpcRequest d;
             d.SetVpcId(vpc_id);

@@ -149,15 +149,32 @@ have used it.
 2. The `ca-cluster-node` bundle (`tests/ca_cluster_node_real_ec2_test.cpp`)
    and the `ca-cluster-node-rpc-tls` bundle
    (`tests/ca_cluster_node_rpc_tls_real_ec2_test.cpp`) SHALL each map to
-   the EC2 action subset those files actually use (VPC/subnet/security-
-   group/route-table/internet-gateway/key-pair create-and-delete,
-   `RunInstances`, `TerminateInstances`, `DescribeInstances`, plus — for
-   `ca-cluster-node-rpc-tls` only — the deny-all-NACL action subset:
-   `CreateNetworkAcl`, `CreateNetworkAclEntry`, `DescribeNetworkAcls`,
-   `ReplaceNetworkAclAssociation`, `DeleteNetworkAcl`) plus
-   `sts:GetCallerIdentity`. Neither bundle SHALL include any IAM action at
-   all, not even `iam:PassRole` — those two test files never attach an
-   instance profile to a launched node.
+   the EC2 action subset those files use directly on their own `ec2`
+   client member (VPC/subnet/security-group/route-table/internet-gateway/
+   key-pair create-and-delete, `DescribeInstances`, `ModifySubnetAttribute`,
+   plus — for `ca-cluster-node-rpc-tls` only — the deny-all-NACL action
+   subset: `CreateNetworkAcl`, `CreateNetworkAclEntry`,
+   `DescribeNetworkAcls`, `ReplaceNetworkAclAssociation`,
+   `DeleteNetworkAcl`) *plus* the actions both files' own
+   `kythira::aws_ec2_quorum_manager<>::provision_node()`/`decommission_node()`
+   calls trigger transitively inside `include/raft/aws_ec2_quorum_manager.hpp`
+   (`RunInstances`, `CreateTags`, `TerminateInstances`,
+   `DescribeInstanceStatus` — the last two specifically because both test
+   files call `decommission_node()` in teardown, not merely
+   `provision_node()`) plus `sts:GetCallerIdentity`. Neither bundle SHALL
+   include any IAM action at all, not even `iam:PassRole` — those two test
+   files never attach an instance profile to a launched node. (This AC was
+   corrected during implementation: an initial grep pass over
+   `Aws::EC2::Model::*Request` construction sites missed `CreateInternetGateway`
+   — called via `ec2->CreateInternetGateway({})`'s brace-initialization,
+   which carries no explicit type name to grep for — and missed every
+   action reached only transitively through the quorum manager, since
+   those calls are on a `_ec2` member inside a different header entirely,
+   not spelled out in the test file being grepped. Task 1 in tasks.md now
+   greps client *method* call sites — `ec2->MethodName(`,
+   `_ec2->MethodName(` — rather than request *type* construction sites,
+   and greps `include/raft/aws_ec2_quorum_manager.hpp` for any bundle that
+   uses it, to avoid repeating either gap.)
 3. Between the three bundles, the CI role's total IAM footprint is exactly
    one action (`iam:PassRole`), scoped to exactly one resource (the static
    node role's ARN) — no bundle, individually or in combination, ever
