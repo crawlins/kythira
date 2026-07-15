@@ -377,6 +377,49 @@ jobs:
           name: coverage-report
           path: coverage-html/
 
+  # ── Packer template checks (ca_cluster_node AMI) ────────────────────────────
+  # Static-only: no AWS credentials, no EC2 spend, no vcpkg/C++ build — cheap
+  # enough to just always run rather than wire up per-job path filtering.
+  # `packer validate -syntax-only` (rather than a full `validate`) is used
+  # deliberately: a full validate would try to evaluate the template's
+  # `amazon-parameterstore` data source, which calls the AWS SSM API and
+  # would fail (or hang) without credentials — this job intentionally has
+  # none. The real, credential-backed `packer validate` runs inside
+  # scripts/build.sh, after its own `aws sts get-caller-identity` check.
+  # See .kiro/specs/ca-cluster-node-ami/.
+  packer-ca-cluster-node:
+    name: Packer (ca_cluster_node AMI)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Packer and shellcheck
+        run: |
+          curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+          sudo apt-add-repository "deb [arch=$(dpkg --print-architecture)] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends packer shellcheck
+
+      - name: packer fmt -check
+        run: packer fmt -check -diff packer/ca_cluster_node/*.pkr.hcl
+
+      - name: packer init + validate (syntax only, no AWS credentials)
+        run: |
+          packer init packer/ca_cluster_node/ca_cluster_node.pkr.hcl
+          packer validate -syntax-only packer/ca_cluster_node/ca_cluster_node.pkr.hcl
+
+      - name: shellcheck
+        run: shellcheck packer/ca_cluster_node/scripts/*.sh
+
+      - name: Secret-absence check
+        run: |
+          ! grep -riE 'unseal|auth.?token|bootstrap.*key' \
+            packer/ca_cluster_node/ca_cluster_node.pkr.hcl \
+            packer/ca_cluster_node/scripts/provision.sh
+
   # ── API documentation → GitHub Pages ───────────────────────────────────────
   # Runs only on pushes to main (not on pull-request builds).
   # Requires GitHub Pages to be enabled in the repository settings with the

@@ -39,6 +39,35 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   the existing `ca-cluster-node` bundle since every AMI build leaves a
   billable AMI/snapshot behind. Full spec at
   `.kiro/specs/ca-cluster-node-ami/`; draft PR #44.
+- **`ca-cluster-node-ami` implemented — all 8 tasks**: the spec above is no
+  longer just a plan. `packer/ca_cluster_node/` now holds the Packer
+  template (`ca_cluster_node.pkr.hcl`/`variables.pkr.hcl`) and its three
+  orchestration scripts (`extract-binary.sh`, `provision.sh`, `build.sh`);
+  a new `packer-ca-cluster-node` job in `ci.yml` runs `packer fmt`/`packer
+  validate -syntax-only`/`shellcheck`/a secret-absence grep on every push
+  (no AWS credentials needed — `-syntax-only` specifically avoids the
+  template's `amazon-parameterstore` data source making a real AWS SSM
+  call); a new `ami-build` bundle (`scripts/ci-cloud-credentials/aws/policies/ami-build.json`,
+  wired into `provision-oidc-role.sh` and `real-cloud-tests.yml` as an
+  `amd64`/`arm64` matrix job on native runners) can produce a real AMI on
+  demand; and the placeholder `// AMI running ca_cluster_node` text is gone
+  from `docker/ca_cluster_node/README.md`, its ECS README, and
+  `tests/ca_cluster_node_real_ec2_test.cpp`'s header comment, replaced with
+  a pointer to `packer/ca_cluster_node/README.md`. The sandbox this was
+  implemented in initially had no `packer` CLI, no AWS credentials, and no
+  reachable Docker daemon; `packer` and `shellcheck` were subsequently
+  installed directly into it (no daemon/AWS account needed for either), which
+  caught and fixed three real issues before this landed — a secret-absence
+  grep false positive from `provision.sh`'s own explanatory comment, a
+  `packer fmt` alignment mismatch, and a shellcheck SC2015 finding in the
+  cloud-init cleanup line — and let every static check (`packer fmt`,
+  `packer init` + `validate -syntax-only`, `shellcheck`, secret-absence grep)
+  actually run and pass locally. Still unexercised in this environment: an
+  actual `extract-binary.sh` Docker build and a real AMI build against AWS
+  (need a container daemon and AWS credentials respectively) — the first real
+  exercise of those will be an operator-enabled `ami-build` run. See
+  `.kiro/specs/ca-cluster-node-ami/tasks.md`'s status note for the exact
+  verification boundary.
 
 ### What Changed (July 14, 2026)
 
@@ -792,12 +821,17 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   compile-verified-only limitation `ca_cluster_node_real_ec2_test.cpp`
   already had (no AWS account available in this environment to actually run
   any of the three real-EC2 binaries).
-- [ ] **`ca_cluster_node` custom AMI (Packer build pipeline)** — spec
-  authored, not yet implemented; produces a golden, secret-free AMI with
-  `ca_cluster_node` and its systemd unit pre-installed, giving
-  `aws_ec2_quorum_manager_config.image_id` and
+- [x] **`ca_cluster_node` custom AMI (Packer build pipeline)** — produces a
+  golden, secret-free AMI with `ca_cluster_node` and its systemd unit
+  pre-installed, giving `aws_ec2_quorum_manager_config.image_id` and
   `KYTHIRA_EC2_TEST_AMI` a real, scripted producer instead of a manually
-  hand-built AMI; spec at `.kiro/specs/ca-cluster-node-ami/`
+  hand-built AMI; `packer/ca_cluster_node/` (template + `extract-binary.sh`/
+  `provision.sh`/`build.sh`), a static-checks CI job, and an on-demand
+  `ami-build` CI bundle; spec at `.kiro/specs/ca-cluster-node-ami/`, all 8
+  tasks complete (statically verified — `packer fmt`/`init`/`validate
+  -syntax-only`/`shellcheck` all run and pass locally; see the spec's
+  tasks.md status note for exactly what still needs a container daemon or
+  AWS credentials to exercise)
 
 ### Cloud Provider Support
 

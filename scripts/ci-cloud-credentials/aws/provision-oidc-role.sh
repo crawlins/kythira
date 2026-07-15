@@ -47,7 +47,8 @@ Required:
   --github-org ORG        e.g. crawlins
   --github-repo REPO      e.g. kythira
   --bundles LIST          Comma-separated: ec2-quorum-manager,ca-cluster-node,
-                           ca-cluster-node-rpc-tls (any non-empty subset)
+                           ca-cluster-node-rpc-tls,ami-build (any non-empty
+                           subset)
 
 Optional:
   --role-name NAME               default: kythira-ci-real-cloud-tests
@@ -210,6 +211,7 @@ for bundle in "${BUNDLE_LIST[@]}"; do
         ec2-quorum-manager) VAR="REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED" ;;
         ca-cluster-node) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED" ;;
         ca-cluster-node-rpc-tls) VAR="REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED" ;;
+        ami-build) VAR="REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED" ;;
         *) continue ;;
     esac
     echo "  gh variable set ${VAR} --body true"

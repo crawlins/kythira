@@ -97,14 +97,18 @@ unseal passphrase, IAM roles).
 
 For operators who want Kythira to detect and replace a failed node's EC2
 instance automatically rather than hand-managing three long-lived instances
-or ECS services: run `ca_cluster_node` on EC2 via Path 1's systemd unit (baked
-into an AMI, e.g. via Packer), and configure the project's existing
-`aws_ec2_quorum_manager` with one placement group per AZ:
+or ECS services: run `ca_cluster_node` on EC2 via Path 1's systemd unit,
+pre-baked into an AMI with `packer/ca_cluster_node/scripts/build.sh --arch
+amd64 --region us-east-1` (see [`packer/ca_cluster_node/README.md`](../../packer/ca_cluster_node/README.md)
+for the full build pipeline — no secrets are baked in; per-node
+configuration is still supplied at launch time exactly as in Path 1), and
+configure the project's existing `aws_ec2_quorum_manager` with one placement
+group per AZ:
 
 ```cpp
 kythira::aws_ec2_quorum_manager_config cfg;
 cfg.cluster_name = "ca-cluster";
-cfg.image_id = "ami-...";                 // AMI running ca_cluster_node
+cfg.image_id = "ami-...";                 // from `build.sh`'s stdout, or packer-manifest.json
 cfg.node_port = 7000;                     // Raft RPC port
 cfg.topology.groups = {
     {.group_id = "us-east-1a", .target_count = 1},

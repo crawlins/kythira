@@ -101,8 +101,8 @@ exactly this shape); this task adds no new provisioning mechanism:
 ```cpp
 kythira::aws_ec2_quorum_manager_config cfg;
 cfg.cluster_name = "ca-cluster";
-cfg.image_id = "ami-...";                 // AMI running ca_cluster_node (see this dir's Dockerfile
-                                           // for the build, or bake it into an AMI via Packer)
+cfg.image_id = "ami-...";                 // built via packer/ca_cluster_node/scripts/build.sh —
+                                           // see ../../../packer/ca_cluster_node/README.md
 cfg.node_port = 7000;                     // Raft RPC port
 cfg.topology.groups = {
     {.group_id = "us-east-1a", .target_count = 1},

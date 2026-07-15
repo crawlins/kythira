@@ -31,7 +31,7 @@ toggles via the `real-cloud-tests` GitHub Environment.
 A "bundle" is a named group of cloud-provider permissions mapped 1:1 to one
 real-cloud CTest binary. Splitting by bundle rather than granting a
 provider's CI role every permission every real-cloud test might ever need
-means enabling one bundle never grants blast radius for another. AWS's three
+means enabling one bundle never grants blast radius for another. AWS's four
 bundles today:
 
 | Bundle | CTest binary | What it needs |
@@ -39,6 +39,7 @@ bundles today:
 | `ec2-quorum-manager` | `aws_quorum_manager_real_ec2_test` | Broad EC2 lifecycle + one scoped `iam:PassRole` |
 | `ca-cluster-node` | `ca_cluster_node_real_ec2_test` | EC2 lifecycle only |
 | `ca-cluster-node-rpc-tls` | `ca_cluster_node_rpc_tls_real_ec2_test` | EC2 lifecycle + Network ACL actions |
+| `ami-build` | *(no dedicated ctest binary — runs `packer build`)* | EC2 instance lifecycle + AMI/snapshot creation ([`packer/ca_cluster_node/`](../../packer/ca_cluster_node/)) |
 
 ## Providers
 

@@ -10,9 +10,9 @@
 // Requires (all via environment variables, following the convention already
 // established by aws_quorum_manager_real_ec2_test.cpp):
 //   KYTHIRA_EC2_TEST_AMI        AMI ID with /usr/local/bin/ca_cluster_node
-//                               installed (see docker/ca_cluster_node/Dockerfile
-//                               for the binary; bake it into an AMI via Packer
-//                               or a launch script)
+//                               installed — build one with
+//                               packer/ca_cluster_node/scripts/build.sh
+//                               (see packer/ca_cluster_node/README.md)
 //   KYTHIRA_EC2_TEST_KEY_NAME   (optional) existing EC2 key pair name to reuse;
 //                               a fresh one is created/destroyed per test otherwise
 //   AWS credentials via the standard provider chain; AWS_REGION or a default
