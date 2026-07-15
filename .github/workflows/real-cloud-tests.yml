@@ -60,7 +60,14 @@ jobs:
   aws:
     name: Real Cloud Tests (AWS)
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # All three bundle ctest steps below can run sequentially in this one
+    # job when every bundle is enabled. Sum of their own worst-case CTest
+    # TIMEOUT properties (tests/CMakeLists.txt): 10800s (ec2-quorum-manager)
+    # + 900s (ca-cluster-node) + 9000s (ca-cluster-node-rpc-tls) = 345 min,
+    # plus build/checkout/credential overhead. 360 is GitHub Actions'
+    # own default job timeout cap for hosted runners, so this is set
+    # explicitly to that ceiling rather than left implicit.
+    timeout-minutes: 360
     environment: real-cloud-tests
     permissions:
       id-token: write
