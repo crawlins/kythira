@@ -5,6 +5,8 @@
 #include <raft/rfc1035_peer_discovery.hpp>
 #include <raft/rfc2136_dns_sd_discovery.hpp>
 #include <raft/rfc2136_ldns_discovery.hpp>
+#include <raft/rfc6763_ldns_peer_discovery.hpp>
+#include <raft/rfc6763_peer_discovery.hpp>
 
 #include <folly/init/Init.h>
 
@@ -216,6 +218,111 @@ BOOST_AUTO_TEST_CASE(find_peers_unreachable_returns_empty, *boost::unit_test::ti
     kythira::rfc2136_dns_sd_discovery disc{make_dns_sd_cfg()};
     auto peers = disc.find_peers(std::chrono::milliseconds{200}).get();
     BOOST_TEST(peers.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc6763_peer_discovery ───────────────────────────────────────────────────
+
+namespace {
+
+kythira::rfc6763_peer_discovery::config make_rfc6763_cfg() {
+    return {k_server, k_port, "_raft._tcp." + std::string{k_zone}};
+}
+
+kythira::rfc6763_ldns_peer_discovery::config make_rfc6763_ldns_cfg() {
+    kythira::rfc6763_ldns_peer_discovery::config cfg;
+    cfg.query = make_rfc6763_cfg();
+    cfg.zone = k_zone;
+    cfg.domain_service_name = "_raft._tcp.example.local.";
+    cfg.domain_zone = "example.local.";
+    cfg.srv_priority = 10;
+    cfg.srv_weight = 0;
+    cfg.ttl = 120;
+    return cfg;
+}
+
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(rfc6763_suite)
+
+BOOST_AUTO_TEST_CASE(construct_with_config) {
+    BOOST_CHECK_NO_THROW((kythira::rfc6763_peer_discovery{make_rfc6763_cfg()}));
+}
+
+BOOST_AUTO_TEST_CASE(register_node_is_noop, *boost::unit_test::timeout(5)) {
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+    BOOST_CHECK_NO_THROW(disc.register_node("n1", "10.0.0.1:4001").get());
+}
+
+BOOST_AUTO_TEST_CASE(find_peers_unreachable_server_returns_empty, *boost::unit_test::timeout(10)) {
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+    auto peers = disc.find_peers(std::chrono::milliseconds{200}).get();
+    BOOST_TEST(peers.empty());
+}
+
+BOOST_AUTO_TEST_CASE(find_peers_does_not_throw_on_network_failure, *boost::unit_test::timeout(10)) {
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+    BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{200}).get());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc6763_ldns_peer_discovery ─────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(rfc6763_ldns_suite)
+
+BOOST_AUTO_TEST_CASE(concept_satisfied) {
+    static_assert(
+        kythira::peer_discovery<kythira::rfc6763_ldns_peer_discovery, std::string, std::string>);
+    BOOST_TEST(true);
+}
+
+BOOST_AUTO_TEST_CASE(construct_with_config) {
+    BOOST_CHECK_NO_THROW((kythira::rfc6763_ldns_peer_discovery{make_rfc6763_ldns_cfg()}));
+}
+
+// send_update short-circuits on empty zone before any allocation or network I/O.
+BOOST_AUTO_TEST_CASE(register_node_empty_zone_throws, *boost::unit_test::timeout(5)) {
+    auto cfg = make_rfc6763_ldns_cfg();
+    cfg.zone = "";
+    kythira::rfc6763_ldns_peer_discovery disc{std::move(cfg)};
+    BOOST_CHECK_THROW(disc.register_node("n1", "10.0.0.1:4001"), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(register_node_malformed_address_throws, *boost::unit_test::timeout(5)) {
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+    BOOST_CHECK_THROW(disc.register_node("n1", "no-port-here"), std::invalid_argument);
+}
+
+BOOST_AUTO_TEST_CASE(register_node_port_out_of_range_throws, *boost::unit_test::timeout(5)) {
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+    BOOST_CHECK_THROW(disc.register_node("n1", "10.0.0.1:70000"), std::invalid_argument);
+}
+
+// Empty server (zone still valid, so build_cluster_update succeeds) → ldns_resolver has
+// no nameservers → ldns_resolver_send_pkt returns a non-OK status immediately (no I/O) →
+// exercises the real send_pkt network path rather than short-circuiting via fiu faults.
+BOOST_AUTO_TEST_CASE(register_node_no_nameserver_throws, *boost::unit_test::timeout(5)) {
+    auto cfg = make_rfc6763_ldns_cfg();
+    cfg.query.server = "";
+    kythira::rfc6763_ldns_peer_discovery disc{std::move(cfg)};
+    BOOST_CHECK_THROW(disc.register_node("n1", "10.0.0.1:4001"), std::runtime_error);
+}
+
+// No registration → _self_id is empty → deregister_self is a no-op → dtor silent.
+BOOST_AUTO_TEST_CASE(dtor_silent_when_no_registration, *boost::unit_test::timeout(5)) {
+    {
+        kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+    }
+    BOOST_TEST(true);
+}
+
+// Delegates to rfc6763 which returns empty; find_peers must not throw.
+BOOST_AUTO_TEST_CASE(find_peers_returns_empty_on_unreachable_server,
+                     *boost::unit_test::timeout(10)) {
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+    BOOST_CHECK_NO_THROW(disc.find_peers(std::chrono::milliseconds{200}).get());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

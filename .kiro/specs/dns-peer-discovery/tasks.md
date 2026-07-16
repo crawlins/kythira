@@ -1,8 +1,8 @@
 # Implementation Plan — DNS Peer Discovery
 
-## Status: In Progress (tasks 3 and 4 remain; task 6 added and complete)
+## Status: Complete (all tasks, including task 6 added outside original scope)
 
-**Last Updated**: June 22, 2026
+**Last Updated**: July 15, 2026
 
 ## Overview
 
@@ -76,7 +76,7 @@ The `peer_discovery` concept and `peer_info` type are defined in
   - Verify: `cmake --build build` succeeds with and without libldns present
   - _Requirements: 2.1–2.9, 6.1, 6.3, 6.4_
 
-- [ ] 3. Implement `rfc6763_peer_discovery` in `include/raft/rfc6763_peer_discovery.hpp`
+- [x] 3. Implement `rfc6763_peer_discovery` in `include/raft/rfc6763_peer_discovery.hpp`
   - Guard with `#ifdef KYTHIRA_HAS_LDNS` (libldns already detected by task 1)
   - Define `rfc6763_peer_discovery::config` struct with fields: `server`, `port`
     (53), `service_name` (cluster-level, e.g. `"_raft._tcp.cluster.example.com."`)
@@ -94,7 +94,7 @@ The `peer_discovery` concept and `peer_info` type are defined in
   - Verify: `cmake --build build` succeeds with and without libldns present
   - _Requirements: 4.1–4.4_
 
-- [ ] 4. Implement `rfc6763_ldns_peer_discovery` in
+- [x] 4. Implement `rfc6763_ldns_peer_discovery` in
   `include/raft/rfc6763_ldns_peer_discovery.hpp`
   - Depends on task 3 (`rfc6763_peer_discovery`)
   - Guard with `#ifdef KYTHIRA_HAS_LDNS`
