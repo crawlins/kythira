@@ -8,6 +8,8 @@
 #include <raft/rfc1035_peer_discovery.hpp>
 #include <raft/rfc2136_dns_sd_discovery.hpp>
 #include <raft/rfc2136_ldns_discovery.hpp>
+#include <raft/rfc6763_ldns_peer_discovery.hpp>
+#include <raft/rfc6763_peer_discovery.hpp>
 
 #include <folly/init/Init.h>
 
@@ -25,10 +27,23 @@ static constexpr const char* k_rfc2136_update = "raft/dns/rfc2136/send_update";
 static constexpr const char* k_rfc2136_update_noop = "raft/dns/rfc2136/send_update/noop";
 static constexpr const char* k_dns_sd_update = "raft/dns/rfc2136_dns_sd/send_update_rr";
 static constexpr const char* k_dns_sd_update_noop = "raft/dns/rfc2136_dns_sd/send_update_rr/noop";
+static constexpr const char* k_rfc6763_fail = "raft/dns/rfc6763/find_peers/fail";
+static constexpr const char* k_rfc6763_inject = "raft/dns/rfc6763/find_peers/inject";
+static constexpr const char* k_rfc6763_ldns_update = "raft/dns/rfc6763_ldns/send_update";
+static constexpr const char* k_rfc6763_ldns_update_noop = "raft/dns/rfc6763_ldns/send_update/noop";
 
 static constexpr const char* k_all_dns_faults[] = {
-    k_rfc1035_fail,        k_rfc1035_ipv4,  k_rfc1035_mixed,      k_rfc2136_update,
-    k_rfc2136_update_noop, k_dns_sd_update, k_dns_sd_update_noop,
+    k_rfc1035_fail,
+    k_rfc1035_ipv4,
+    k_rfc1035_mixed,
+    k_rfc2136_update,
+    k_rfc2136_update_noop,
+    k_dns_sd_update,
+    k_dns_sd_update_noop,
+    k_rfc6763_fail,
+    k_rfc6763_inject,
+    k_rfc6763_ldns_update,
+    k_rfc6763_ldns_update_noop,
 };
 
 struct DnsChaosFixture {
@@ -69,6 +84,22 @@ kythira::rfc1035_peer_discovery::config make_rfc1035_cfg() {
 
 kythira::rfc2136_ldns_discovery::config make_rfc2136_cfg() {
     return {make_rfc1035_cfg(), k_zone, 30, "", "hmac-sha256.", ""};
+}
+
+kythira::rfc6763_peer_discovery::config make_rfc6763_cfg() {
+    return {k_server, k_port, "_raft._tcp." + std::string{k_zone}};
+}
+
+kythira::rfc6763_ldns_peer_discovery::config make_rfc6763_ldns_cfg() {
+    kythira::rfc6763_ldns_peer_discovery::config cfg;
+    cfg.query = make_rfc6763_cfg();
+    cfg.zone = k_zone;
+    cfg.domain_service_name = "_raft._tcp.example.local.";
+    cfg.domain_zone = "example.local.";
+    cfg.srv_priority = 10;
+    cfg.srv_weight = 0;
+    cfg.ttl = 120;
+    return cfg;
 }
 
 kythira::rfc2136_dns_sd_discovery::config make_dns_sd_cfg() {
@@ -338,6 +369,138 @@ BOOST_AUTO_TEST_CASE(fresher_fires_and_stop_joins, *boost::unit_test::timeout(10
         // dtor: stop_fresher joins the running fresher thread, then send_deregister noops.
     }
     fiu_disable(k_dns_sd_update_noop);
+    BOOST_TEST(true);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc6763 chaos ───────────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(rfc6763_chaos_suite)
+
+// Verify the "fail" fault point returns an empty list and does not throw.
+BOOST_AUTO_TEST_CASE(find_peers_fail_returns_empty, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+
+    fiu_enable(k_rfc6763_fail, 1, nullptr, 0);
+    auto peers = disc.find_peers(std::chrono::milliseconds{5000}).get();
+    fiu_disable(k_rfc6763_fail);
+
+    BOOST_TEST(peers.empty());
+}
+
+// Verify the "inject" fault point returns exactly the two hardcoded SRV-derived entries.
+BOOST_AUTO_TEST_CASE(find_peers_inject_returns_two_peers, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+
+    fiu_enable(k_rfc6763_inject, 1, nullptr, 0);
+    auto peers = disc.find_peers(std::chrono::milliseconds{5000}).get();
+    fiu_disable(k_rfc6763_inject);
+
+    BOOST_REQUIRE_EQUAL(peers.size(), 2u);
+    BOOST_CHECK_EQUAL(peers[0].node_id, "node1.cluster.example.com.");
+    BOOST_CHECK_EQUAL(peers[0].address, "node1.cluster.example.com.:4001");
+    BOOST_CHECK_EQUAL(peers[1].node_id, "node2.cluster.example.com.");
+    BOOST_CHECK_EQUAL(peers[1].address, "node2.cluster.example.com.:4002");
+}
+
+// With no fault active, find_peers must not return injected data (unreachable server → empty).
+BOOST_AUTO_TEST_CASE(find_peers_no_fault_does_not_inject, *boost::unit_test::timeout(10)) {
+    clear_faults();
+    kythira::rfc6763_peer_discovery disc{make_rfc6763_cfg()};
+
+    auto peers = disc.find_peers(std::chrono::milliseconds{200}).get();
+
+    BOOST_TEST(peers.empty());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── rfc6763_ldns chaos ──────────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_SUITE(rfc6763_ldns_chaos_suite)
+
+// register_node stores registration state then calls send_pkt twice; "noop" skips
+// both updates without throwing, so register_node returns normally. find_peers then
+// filters out the entry whose address matches self_address.
+BOOST_AUTO_TEST_CASE(find_peers_self_filter, *boost::unit_test::timeout(5)) {
+    clear_faults();
+
+    // Keep noop active through the entire scope so the dtor's deregister_self()
+    // also skips the network call.
+    fiu_enable(k_rfc6763_ldns_update_noop, 1, nullptr, 0);
+    {
+        kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+        BOOST_CHECK_NO_THROW(disc.register_node("node1", "node1.cluster.example.com.:4001").get());
+
+        fiu_enable(k_rfc6763_inject, 1, nullptr, 0);
+        auto peers = disc.find_peers(std::chrono::milliseconds{5000}).get();
+        fiu_disable(k_rfc6763_inject);
+
+        // Injected: {"node1...","node1...:4001"}, {"node2...","node2...:4002"}
+        // Self: "node1.cluster.example.com.:4001" → filtered out
+        BOOST_REQUIRE_EQUAL(peers.size(), 1u);
+        BOOST_CHECK_EQUAL(peers[0].address, "node2.cluster.example.com.:4002");
+    }
+    fiu_disable(k_rfc6763_ldns_update_noop);
+}
+
+// Without any register_node call, self_address is empty → all injected peers returned.
+BOOST_AUTO_TEST_CASE(find_peers_no_self_address_returns_all, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+
+    fiu_enable(k_rfc6763_inject, 1, nullptr, 0);
+    auto peers = disc.find_peers(std::chrono::milliseconds{5000}).get();
+    fiu_disable(k_rfc6763_inject);
+
+    BOOST_REQUIRE_EQUAL(peers.size(), 2u);
+}
+
+// "fail" fault on rfc6763 propagates through rfc6763_ldns::find_peers as an empty list.
+BOOST_AUTO_TEST_CASE(find_peers_empty_when_rfc6763_faulted, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+
+    fiu_enable(k_rfc6763_fail, 1, nullptr, 0);
+    auto peers = disc.find_peers(std::chrono::milliseconds{5000}).get();
+    fiu_disable(k_rfc6763_fail);
+
+    BOOST_TEST(peers.empty());
+}
+
+// "send_update" fault causes register_node to throw std::runtime_error on the
+// first (cluster-zone) UPDATE.
+BOOST_AUTO_TEST_CASE(register_node_throws_when_send_update_faulted, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+
+    fiu_enable(k_rfc6763_ldns_update, 1, nullptr, 0);
+    BOOST_CHECK_THROW(disc.register_node("node1", "node1.cluster.example.com.:4001"),
+                      std::runtime_error);
+    fiu_disable(k_rfc6763_ldns_update);
+}
+
+// Dtor must silently absorb the exception from deregister_self when the fault is active.
+// Step 1: register via "noop" fault so registration state is set without network I/O.
+// Step 2: swap to "throw" fault; dtor calls deregister_self → send_pkt throws,
+//         but the dtor's catch(...) swallows it.
+BOOST_AUTO_TEST_CASE(dtor_silent_when_deregister_faulted, *boost::unit_test::timeout(5)) {
+    clear_faults();
+    {
+        kythira::rfc6763_ldns_peer_discovery disc{make_rfc6763_ldns_cfg()};
+
+        fiu_enable(k_rfc6763_ldns_update_noop, 1, nullptr, 0);
+        BOOST_CHECK_NO_THROW(disc.register_node("node1", "node1.cluster.example.com.:4001").get());
+        fiu_disable(k_rfc6763_ldns_update_noop);
+
+        // Registration state is set; activate throw fault so deregister fails.
+        fiu_enable(k_rfc6763_ldns_update, 1, nullptr, 0);
+        // disc destroyed here; dtor calls deregister_self → throws; catch(...) swallows.
+    }
+    fiu_disable(k_rfc6763_ldns_update);
     BOOST_TEST(true);
 }
 
