@@ -17,6 +17,17 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### What Changed (July 16, 2026)
 
+- **Example-configuration requirement added to Cloud Provider Support and
+  Metrics Backends.** Every entry in both `doc/TODO.md` sections —
+  including the already-implemented AWS cloud-provider support, which
+  doesn't yet have this — now carries an explicit requirement that its
+  implementation ship with at least one example configuration file (a
+  `.env.example`, sample YAML/JSON, or documented CLI-flag set) plus
+  documentation showing how to configure and run it, mirroring the
+  existing `docker/ca_cluster_node/ca_cluster_node.env.example`/
+  `docker/ca_service/ca_service.env.example` convention. Recorded as a
+  shared preamble under each section rather than duplicated per bullet,
+  since it applies uniformly across every entry (present and future).
 - **`dns-peer-discovery` spec complete — final two tasks
   (`rfc6763_peer_discovery`, `rfc6763_ldns_peer_discovery`)**: the last two of
   the spec's five DNS-based `peer_discovery` implementations.
@@ -955,6 +966,17 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### Cloud Provider Support
 
+**Requirement (applies to every entry below, including AWS):** each cloud
+provider's support SHALL ship with at least one example configuration file
+(e.g. a `.env.example`, sample YAML/JSON config, or documented CLI-flag
+set) and accompanying documentation showing how to configure and run it —
+mirroring the existing `docker/ca_cluster_node/ca_cluster_node.env.example`/
+`docker/ca_service/ca_service.env.example` convention. AWS support does not
+yet have this; it's tracked here as an outstanding documentation gap rather
+than a separate checklist entry, since the underlying feature is already
+implemented and this is example/documentation work, not a missing
+capability.
+
 - [x] **AWS** — `aws_ec2/asg_quorum_manager` (node ID = EC2 instance ID hex,
   `DescribeInstanceStatus` liveness, consistency poll) and
   `aws_acm_pca_provider` (`certificate_provider` backed by AWS Certificate
@@ -983,6 +1005,12 @@ backend needs no change to that seam, only a new type satisfying the
 concept (`set_metric_name`/`add_dimension`/`add_one`/`add_count`/
 `add_duration`/`add_value`/`emit`, all non-blocking — I/O deferred to a
 background emitter).
+
+**Requirement (applies to every entry below):** each metrics/logging agent
+integration SHALL ship with at least one example configuration file (e.g.
+an agent config snippet, scrape config, or `.env.example`) and accompanying
+documentation showing how to point it at a real backend — same convention
+as the Cloud Provider Support requirement above.
 
 - [ ] **AWS CloudWatch** — `PutMetricData`-backed implementation forwarding
   to CloudWatch instead of a third-party agent; natural pairing with
