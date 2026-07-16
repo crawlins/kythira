@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 15, 2026
+**Last Updated**: July 16, 2026
 
 ## Current Status
 
@@ -13,7 +13,48 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   stdexec future backend, the Folly-vs-stdexec performance benchmark suite, and
   RPC-internal mTLS for `ca_cluster_node`
 - Build clean with no errors or warnings
-- Coverage floor: 88.95% (non-decreasing ratchet, see `coverage_floor.txt`)
+- Coverage floor: 89.16% (non-decreasing ratchet, see `coverage_floor.txt`)
+
+### What Changed (July 16, 2026)
+
+- **`dns-peer-discovery` spec complete — final two tasks
+  (`rfc6763_peer_discovery`, `rfc6763_ldns_peer_discovery`)**: the last two of
+  the spec's five DNS-based `peer_discovery` implementations.
+  `rfc6763_peer_discovery` provides `find_peers` only, via a single RFC 6763
+  SRV query at the cluster-level service name (mirrors
+  `rfc1035_peer_discovery`'s partial-implementation shape, including a no-op
+  `register_node` stub and fiu fault-injection hooks). `rfc6763_ldns_peer_discovery`
+  is the full implementation: registers PTR + instance SRV + cluster-level
+  SRV in one RFC 2136 UPDATE to the cluster zone, plus a domain-level SRV in
+  a second UPDATE to the domain zone, and delegates `find_peers` to the
+  embedded `rfc6763_peer_discovery` with self-filtering. Registration state
+  is committed to member variables only after both UPDATEs succeed —
+  mirroring `rfc2136_ldns_discovery`'s existing invariant — after an eager
+  first draft left the destructor's `deregister_self()` attempting a real
+  network DELETE with no configurable resolver timeout following a
+  partially-failed registration, hanging a chaos test past its timeout.
+  DELETE updates always target RFC 2136 §2.5.4 delete-specific-RR (exact
+  owner/type/rdata) rather than deleting the whole RRset, so removing one
+  node's PTR/cluster-level-SRV entry never disturbs other live nodes sharing
+  the same RRset. Added matching unit and chaos test suites to the existing
+  `dns_peer_discovery_unit_test`/`dns_peer_discovery_chaos_test` binaries
+  (one new case specifically to exercise the real, fault-free
+  `send_pkt`/`make_resolver` network-failure path, needed to keep the
+  project's function-coverage ratchet from regressing — every other
+  `register_node` test short-circuits via fiu faults before
+  `make_resolver()` is ever called); verified the project builds clean with
+  and without libldns present. `.kiro/specs/dns-peer-discovery/` is now
+  fully complete (all 6 tasks, including the out-of-scope
+  `rfc2136_dns_sd_discovery` addition); PR #55.
+- **`main` branch protection required-status-check names fixed**: discovered
+  while waiting on PR #55's auto-merge — `required_status_checks.contexts`
+  still listed the pre-matrix job names (`Build & Test (g++-13)`,
+  `Build & Test (clang++-18)`) from before CI was split into an arm64/x64
+  matrix, so GitHub was waiting indefinitely for checks that no longer post
+  under those exact names (`Build & Test (g++-13, x64)`, `..., arm64`,
+  `Build & Test (clang++-18, x64)`, `..., arm64`), blocking auto-merge on
+  every PR against `main` regardless of actual CI outcome. Updated to the
+  four current matrix job names plus `Coverage (clang++-18)`.
 
 ### What Changed (July 15, 2026)
 
@@ -807,11 +848,20 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
   TXT field so stale entries from crashed nodes expire; 6 unit tests + 4 chaos tests;
   Docker scenario test (`docker-dns-sd-discovery-tests`) with BIND9; spec at
   `.kiro/specs/dns-peer-discovery/`
-- [ ] **`rfc6763_peer_discovery`** (partial) — SRV-query-only peer discovery; building
-  block for `rfc6763_ldns_peer_discovery`; spec at `.kiro/specs/dns-peer-discovery/`
-- [ ] **`rfc6763_ldns_peer_discovery`** (full) — registers PTR + instance SRV +
-  cluster-level SRV + domain-level SRV via RFC 2136; spec at
-  `.kiro/specs/dns-peer-discovery/`
+- [x] **`rfc6763_peer_discovery`** (partial) — SRV-query-only peer discovery via a
+  single RFC 6763 SRV query at the cluster-level service name; building block for
+  `rfc6763_ldns_peer_discovery`; spec at `.kiro/specs/dns-peer-discovery/`
+- [x] **`rfc6763_ldns_peer_discovery`** (full) — registers PTR + instance SRV +
+  cluster-level SRV (one RFC 2136 UPDATE to the cluster zone) + domain-level SRV
+  (a second UPDATE to the domain zone) per node; delegates `find_peers` to the
+  embedded `rfc6763_peer_discovery` with self-filtering; registration state is
+  only committed after both UPDATEs succeed so a partially-failed registration
+  leaves the destructor's cleanup a true no-op instead of attempting a real
+  network DELETE with no configurable resolver timeout; deletes always use RFC
+  2136 §2.5.4 delete-specific-RR (exact owner/type/rdata) so removing one
+  node's entry never disturbs other live nodes sharing the same PTR/SRV
+  RRset; spec at `.kiro/specs/dns-peer-discovery/`, now fully complete (all 6
+  tasks, including the out-of-scope `rfc2136_dns_sd_discovery` addition)
 
 ### Certificate Management
 
