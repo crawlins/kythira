@@ -1,8 +1,8 @@
 # Implementation Plan — OTLP Telemetry Backend
 
-## Status: Not Started
+## Status: Complete (not build-verified in this environment — see Notes)
 
-**Last Updated**: July 17, 2026
+**Last Updated**: July 17, 2026 (implementation pass)
 
 ## Overview
 
@@ -66,7 +66,7 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Phase 1: Shared Export Engine (Tasks 1-2)
 
-- [ ] 1. Add `otlp_resource` and `otlp_export_config`
+- [x] 1. Add `otlp_resource` and `otlp_export_config`
   - New `include/raft/otlp_exporter.hpp`. `otlp_resource` with
     `service_name`/`service_instance_id`/`service_namespace`/
     `extra_attributes` and `to_json()` producing an OTLP `Resource` object's
@@ -79,7 +79,7 @@ Collector container in a new `docker_chaos` scenario test.
     and a `std::hash` specialization for use as an `unordered_map` key.
   - _Requirements: 4.1, 5.1_
 
-- [ ] 2. Add `otlp_http_batch_exporter<Record>` and `real_http_poster()`
+- [x] 2. Add `otlp_http_batch_exporter<Record>` and `real_http_poster()`
   - Same file. `http_post_result`, `http_poster_fn`, `real_http_poster()`
     (a `cpp-httplib`-backed `httplib::Client`/`SSLClient` POST, selected by
     `endpoint_base_url`'s scheme).
@@ -96,7 +96,7 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Phase 2: Concept-Conforming Classes (Tasks 3-4)
 
-- [ ] 3. Add `otlp_metrics`
+- [x] 3. Add `otlp_metrics`
   - New `include/raft/otlp_metrics.hpp`. `pending_metric_record` (name,
     dimensions, one of `{sum_delta{count}, histogram{count, sum, bucket_counts},
     gauge{value}}`); `set_metric_name`/`add_dimension` accumulate into a
@@ -118,7 +118,7 @@ Collector container in a new `docker_chaos` scenario test.
   - `static_assert(metrics<otlp_metrics>, ...)`.
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 4.2_
 
-- [ ] 4. Add `otlp_logger`
+- [x] 4. Add `otlp_logger`
   - New `include/raft/otlp_logger.hpp`. `pending_log_record` (time,
     severity_number, severity_text, body, attributes); `log_level` →
     `(severity_number, severity_text)` per design.md's table; `log(level,
@@ -133,7 +133,7 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Phase 3: `chaos_node` Wiring (Tasks 5-6)
 
-- [ ] 5. `chaos_node` OTLP environment variables
+- [x] 5. `chaos_node` OTLP environment variables
   - `cmd/chaos_node/config.hpp`: optional `OTLP_ENDPOINT`, `OTLP_HEADERS`
     (comma-separated `key=value`, parsed the same way `PEERS` is already
     tokenized in this file), `OTLP_SERVICE_NAME` (default
@@ -143,7 +143,7 @@ Collector container in a new `docker_chaos` scenario test.
     Tasks 3-4.
   - _Requirements: 5.2_
 
-- [ ] 6. Wire `otlp_metrics`/`otlp_logger` into `main.cpp`
+- [x] 6. Wire `otlp_metrics`/`otlp_logger` into `main.cpp`
   - `cmd/chaos_node/main.cpp`: `tcp_raft_types_with_otlp : tcp_raft_types`
     (same shape as the existing `tcp_raft_types_with_docker_qm`) setting
     `logger_type = otlp_logger`, `metrics_type = otlp_metrics`.
@@ -158,7 +158,7 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Phase 4: Example Configuration and Documentation (Tasks 7-8)
 
-- [ ] 7. Collector config and compose examples
+- [x] 7. Collector config and compose examples
   - New `docker/otel-collector/otel-collector-config.yaml`: OTLP/HTTP
     receiver on `4318`, `debug` and `file` exporters (`file` writing to a
     path under a mounted volume, for Task 11's scenario test to read).
@@ -167,7 +167,7 @@ Collector container in a new `docker_chaos` scenario test.
     block on at least one node service.
   - _Requirements: 6.1, 5.4_
 
-- [ ] 8. Documentation and `doc/TODO.md` update
+- [x] 8. Documentation and `doc/TODO.md` update
   - New `doc/otlp_telemetry_backend.md`: env vars (Task 5), wire shape
     (design.md's worked JSON examples), pointing `chaos_node` at a real
     Collector, and the explicit OTLP/HTTP-JSON-only scope note.
@@ -179,7 +179,7 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Phase 5: Tests (Tasks 9-11)
 
-- [ ] 9. `tests/otlp_metrics_test.cpp` / `tests/otlp_logger_test.cpp` (new files)
+- [x] 9. `tests/otlp_metrics_test.cpp` / `tests/otlp_logger_test.cpp` (new files)
   - Injected stub `Poster` (Requirement 3.7): exact JSON assertions for each
     of `add_one`/`add_count`/`add_duration`/`add_value` and each
     `log_level`; two successive `emit()` calls on the same series confirming
@@ -189,7 +189,7 @@ Collector container in a new `docker_chaos` scenario test.
     produces no pushed record.
   - _Requirements: 1.2, 1.3, 1.4, 2.2, 2.3_
 
-- [ ] 10. `tests/otlp_exporter_unit_test.cpp` (new file)
+- [x] 10. `tests/otlp_exporter_unit_test.cpp` (new file)
   - Stub `Poster`: drop-oldest behavior at `max_queue_size`; batch triggers
     on both size and interval boundaries; retry count/backoff timing against
     a poster that fails a configured number of times then succeeds;
@@ -197,7 +197,7 @@ Collector container in a new `docker_chaos` scenario test.
     flush attempt and joins cleanly with no detached thread.
   - _Requirements: 3.2, 3.3, 3.4, 3.5, 3.6_
 
-- [ ] 11. `tests/docker_chaos/otlp_collector_test.cpp` (new file, Docker scenario)
+- [x] 11. `tests/docker_chaos/otlp_collector_test.cpp` (new file, Docker scenario)
   - New `docker/otlp-collector-compose.yml`: `chaos_node` service(s) with
     `OTLP_ENDPOINT` pointed at a compose-service-name address (no static
     IPs, per CLAUDE.md), plus an `otel/opentelemetry-collector-contrib`
@@ -221,6 +221,17 @@ Collector container in a new `docker_chaos` scenario test.
 
 ## Notes
 
+- **Build verification caveat**: this implementation pass could not run
+  `vcpkg install`/CMake configure-and-build in the environment it was
+  written in (no pre-installed vcpkg dependencies, and bootstrapping
+  folly/aws-sdk-cpp/etc. from scratch was judged too slow/heavy to attempt
+  here) or the Docker-dependent scenario test. Every file was written and
+  manually re-read against this project's established boost::json/httplib/
+  concept-conformance idioms (cross-checked against
+  `include/raft/ca_http_helpers.hpp`, `console_logger.hpp`, `metrics.hpp`,
+  existing `tests/*_test.cpp`), but none of it has been compiled or run yet.
+  Treat CI's first real build/test run on this branch as the actual
+  first verification pass, not a formality.
 - No new `vcpkg.json` dependency: `cpp-httplib` and `boost-json` (both
   already present) are sufficient for OTLP/HTTP JSON. OTLP/gRPC and
   protobuf-binary encoding are explicitly out of scope (design.md
