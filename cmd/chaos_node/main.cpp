@@ -6,6 +6,8 @@
 #include <raft/file_persistence.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
+#include <raft/otlp_logger.hpp>
+#include <raft/otlp_metrics.hpp>
 #include <raft/raft.hpp>
 #include <raft/tcp_raft_types.hpp>
 #include <raft/tcp_rpc.hpp>
@@ -48,6 +50,16 @@ namespace {
 // the no_op fallback.
 struct tcp_raft_types_with_docker_qm : kythira::tcp_raft_types {
     using quorum_manager_type = kythira::docker_quorum_manager<node_id_type, std::string>;
+};
+
+// Inherits all type aliases from tcp_raft_types; swaps logger_type/
+// metrics_type to the OTLP implementations (.kiro/specs/otlp-telemetry-backend/,
+// Requirement 5.3). Selected at startup, not combined with
+// tcp_raft_types_with_docker_qm above in this pass — OTLP + docker quorum
+// manager together is future work, not required by that spec.
+struct tcp_raft_types_with_otlp : kythira::tcp_raft_types {
+    using logger_type = kythira::otlp_logger;
+    using metrics_type = kythira::otlp_metrics;
 };
 
 // Core startup logic templated on the raft types.  Both the plain and the
@@ -144,6 +156,38 @@ int main(int argc, char** argv) {
         client.add_peer(p.node_id, p.host, p.port);
     }
     kythira::file_persistence_engine<> persistence(cfg.data_dir);
+
+    // ── OTLP telemetry (.kiro/specs/otlp-telemetry-backend/, Req 5.3) ─────────
+    // Opt-in and additive: unset OTLP_ENDPOINT leaves today's console_logger/
+    // noop_metrics path (below) completely unchanged. Not combined with the
+    // docker quorum manager path in this pass (see tcp_raft_types_with_otlp's
+    // comment above).
+    if (cfg.otlp_endpoint) {
+        kythira::otlp_export_config otlp_cfg;
+        otlp_cfg.endpoint_base_url = *cfg.otlp_endpoint;
+        otlp_cfg.headers = cfg.otlp_headers;
+
+        kythira::otlp_resource otlp_res;
+        otlp_res.service_name = cfg.otlp_service_name;
+        otlp_res.service_instance_id = std::to_string(cfg.node_id);
+
+        std::cerr << "[info] telemetry: otlp (" << *cfg.otlp_endpoint << ")\n";
+
+        kythira::node_config<tcp_raft_types_with_otlp> ncfg{
+            .node_id = cfg.node_id,
+            .network_client = std::move(client),
+            .network_server = std::move(server),
+            .persistence = std::move(persistence),
+            .logger = kythira::otlp_logger{otlp_cfg, otlp_res},
+            .metrics = kythira::otlp_metrics{otlp_cfg, otlp_res},
+            .membership = kythira::default_membership_manager<std::uint64_t>{},
+            .config = raft_cfg,
+        };
+
+        return run_node<tcp_raft_types_with_otlp>(cfg, std::move(ncfg));
+    }
+
+    std::cerr << "[info] telemetry: console/noop\n";
 
     // ── Quorum manager selection (Req 19 AC 2) ────────────────────────────────
     const char* qm_env = std::getenv("QUORUM_MANAGER");

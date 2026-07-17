@@ -13,6 +13,14 @@ services:
       ELECTION_TIMEOUT_MIN_MS: "150"
       ELECTION_TIMEOUT_MAX_MS: "300"
       HEARTBEAT_INTERVAL_MS: "50"
+      # OTLP telemetry backend (.kiro/specs/otlp-telemetry-backend/,
+      # Requirement 5.4) — optional; uncomment to point this node at an
+      # OpenTelemetry Collector reachable from this network (e.g. the
+      # otel-collector service in docker/otlp-collector-compose.yml) instead
+      # of the default console_logger/noop_metrics.
+      # OTLP_ENDPOINT: "http://otel-collector:4318"
+      # OTLP_SERVICE_NAME: "kythira-chaos-node"
+      # OTLP_HEADERS: "x-api-key=replace-with-a-real-key"
     ports:
       - "7001:7000"   # RPC
       - "8081:8080"   # HTTP control plane

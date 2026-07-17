@@ -2,8 +2,10 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace chaos_node {
@@ -26,6 +28,13 @@ struct node_config {
     std::chrono::milliseconds election_timeout_min{150};
     std::chrono::milliseconds election_timeout_max{300};
     std::chrono::milliseconds heartbeat_interval{50};
+
+    // OTLP telemetry backend (.kiro/specs/otlp-telemetry-backend/,
+    // Requirement 5.2). All optional — chaos_node falls back to
+    // console_logger/noop_metrics when OTLP_ENDPOINT is unset.
+    std::optional<std::string> otlp_endpoint;
+    std::vector<std::pair<std::string, std::string>> otlp_headers;
+    std::string otlp_service_name{"kythira-chaos-node"};
 
     // Parse from environment variables.
     // Throws std::invalid_argument if NODE_ID or PEERS are missing / malformed.
@@ -82,6 +91,31 @@ struct node_config {
 
         if (cfg.node_id == 0)
             throw std::invalid_argument("chaos_node: NODE_ID must be a positive integer");
+
+        // OTLP_ENDPOINT — unset/empty means OTLP support stays off.
+        if (std::string otlp_endpoint_str = get_opt("OTLP_ENDPOINT", ""); !otlp_endpoint_str.empty())
+            cfg.otlp_endpoint = std::move(otlp_endpoint_str);
+
+        cfg.otlp_service_name = get_opt("OTLP_SERVICE_NAME", "kythira-chaos-node");
+
+        // OTLP_HEADERS = "key=value,key=value,..."
+        std::string headers_str = get_opt("OTLP_HEADERS", "");
+        std::string header_tok;
+        for (char c : headers_str + ',') {
+            if (c == ',') {
+                if (!header_tok.empty()) {
+                    auto eq = header_tok.find('=');
+                    if (eq == std::string::npos)
+                        throw std::invalid_argument("chaos_node: malformed OTLP_HEADERS token: " +
+                                                    header_tok);
+                    cfg.otlp_headers.emplace_back(header_tok.substr(0, eq),
+                                                  header_tok.substr(eq + 1));
+                    header_tok.clear();
+                }
+            } else {
+                header_tok += c;
+            }
+        }
 
         return cfg;
     }
