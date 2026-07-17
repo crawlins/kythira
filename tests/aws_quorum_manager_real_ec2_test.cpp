@@ -492,19 +492,32 @@ struct RealEc2Fixture : signal_cleanup_target {
         // created so a signal arriving mid-setup still invokes teardown().
         g_active_aws_fixture.store(this, std::memory_order_release);
 
-        create_vpc();
-        create_igw();
-        create_public_subnet();
-        create_private_subnets();
-        create_nat_gateway();
-        create_private_route_table();
-        create_security_groups();
-        resolve_iam_instance_profile();
-        create_ssh_keypair();
-        create_deny_all_nacl();
-        launch_bastion();
+        // A BOOST_REQUIRE failure partway through this sequence throws out of
+        // the constructor, which means the object is never considered fully
+        // constructed and ~RealEc2Fixture() never runs — every resource
+        // created by the steps that already succeeded (VPC, subnets, key
+        // pair, ...) would otherwise leak silently. Catch here and run the
+        // same teardown() the destructor would have, then rethrow so
+        // Boost.Test still records the failure.
+        try {
+            create_vpc();
+            create_igw();
+            create_public_subnet();
+            create_private_subnets();
+            create_nat_gateway();
+            create_private_route_table();
+            create_security_groups();
+            resolve_iam_instance_profile();
+            create_ssh_keypair();
+            create_deny_all_nacl();
+            launch_bastion();
 
-        build_mgr_cfg();
+            build_mgr_cfg();
+        } catch (...) {
+            g_active_aws_fixture.store(nullptr, std::memory_order_release);
+            teardown();
+            throw;
+        }
     }
 
     ~RealEc2Fixture() {

@@ -220,87 +220,99 @@ struct three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup
         // (matching RealEc2Fixture's identical placement).
         kythira::testing::aws_real_ec2::g_active_aws_fixture.store(this, std::memory_order_release);
 
-        Aws::EC2::Model::CreateVpcRequest vpc_req;
-        vpc_req.SetCidrBlock("10.220.0.0/16");
-        auto vpc_out = ec2->CreateVpc(vpc_req);
-        BOOST_REQUIRE_MESSAGE(vpc_out.IsSuccess(),
-                              "CreateVpc: " + std::string(vpc_out.GetError().GetMessage()));
-        vpc_id = std::string(vpc_out.GetResult().GetVpc().GetVpcId());
+        // A BOOST_REQUIRE failure partway through this sequence throws out of
+        // the constructor, which means the object is never considered fully
+        // constructed and ~three_az_network_fixture() never runs — every
+        // resource created by the steps that already succeeded would
+        // otherwise leak silently. Catch here and run the same teardown()
+        // the destructor would have, then rethrow so Boost.Test still
+        // records the failure.
+        try {
+            Aws::EC2::Model::CreateVpcRequest vpc_req;
+            vpc_req.SetCidrBlock("10.220.0.0/16");
+            auto vpc_out = ec2->CreateVpc(vpc_req);
+            BOOST_REQUIRE_MESSAGE(vpc_out.IsSuccess(),
+                                  "CreateVpc: " + std::string(vpc_out.GetError().GetMessage()));
+            vpc_id = std::string(vpc_out.GetResult().GetVpc().GetVpcId());
 
-        Aws::EC2::Model::ModifySubnetAttributeRequest unused;
-        (void)unused;
+            Aws::EC2::Model::ModifySubnetAttributeRequest unused;
+            (void)unused;
 
-        auto igw_out = ec2->CreateInternetGateway({});
-        BOOST_REQUIRE(igw_out.IsSuccess());
-        igw_id = std::string(igw_out.GetResult().GetInternetGateway().GetInternetGatewayId());
-        Aws::EC2::Model::AttachInternetGatewayRequest attach_req;
-        attach_req.SetVpcId(vpc_id);
-        attach_req.SetInternetGatewayId(igw_id);
-        ec2->AttachInternetGateway(attach_req);
+            auto igw_out = ec2->CreateInternetGateway({});
+            BOOST_REQUIRE(igw_out.IsSuccess());
+            igw_id = std::string(igw_out.GetResult().GetInternetGateway().GetInternetGatewayId());
+            Aws::EC2::Model::AttachInternetGatewayRequest attach_req;
+            attach_req.SetVpcId(vpc_id);
+            attach_req.SetInternetGatewayId(igw_id);
+            ec2->AttachInternetGateway(attach_req);
 
-        Aws::EC2::Model::CreateRouteTableRequest rt_req;
-        rt_req.SetVpcId(vpc_id);
-        auto rt_out = ec2->CreateRouteTable(rt_req);
-        BOOST_REQUIRE(rt_out.IsSuccess());
-        route_table_id = std::string(rt_out.GetResult().GetRouteTable().GetRouteTableId());
-        Aws::EC2::Model::CreateRouteRequest route_req;
-        route_req.SetRouteTableId(route_table_id);
-        route_req.SetDestinationCidrBlock("0.0.0.0/0");
-        route_req.SetGatewayId(igw_id);
-        ec2->CreateRoute(route_req);
+            Aws::EC2::Model::CreateRouteTableRequest rt_req;
+            rt_req.SetVpcId(vpc_id);
+            auto rt_out = ec2->CreateRouteTable(rt_req);
+            BOOST_REQUIRE(rt_out.IsSuccess());
+            route_table_id = std::string(rt_out.GetResult().GetRouteTable().GetRouteTableId());
+            Aws::EC2::Model::CreateRouteRequest route_req;
+            route_req.SetRouteTableId(route_table_id);
+            route_req.SetDestinationCidrBlock("0.0.0.0/0");
+            route_req.SetGatewayId(igw_id);
+            ec2->CreateRoute(route_req);
 
-        int octet = 1;
-        for (const std::string& az : {region() + "a", region() + "b", region() + "c"}) {
-            Aws::EC2::Model::CreateSubnetRequest sn_req;
-            sn_req.SetVpcId(vpc_id);
-            sn_req.SetCidrBlock("10.220." + std::to_string(octet++) + ".0/24");
-            sn_req.SetAvailabilityZone(az);
-            auto sn_out = ec2->CreateSubnet(sn_req);
-            BOOST_REQUIRE_MESSAGE(sn_out.IsSuccess(), "CreateSubnet(" + az + ")");
-            std::string subnet_id = std::string(sn_out.GetResult().GetSubnet().GetSubnetId());
-            subnet_by_az[az] = subnet_id;
+            int octet = 1;
+            for (const std::string& az : {region() + "a", region() + "b", region() + "c"}) {
+                Aws::EC2::Model::CreateSubnetRequest sn_req;
+                sn_req.SetVpcId(vpc_id);
+                sn_req.SetCidrBlock("10.220." + std::to_string(octet++) + ".0/24");
+                sn_req.SetAvailabilityZone(az);
+                auto sn_out = ec2->CreateSubnet(sn_req);
+                BOOST_REQUIRE_MESSAGE(sn_out.IsSuccess(), "CreateSubnet(" + az + ")");
+                std::string subnet_id = std::string(sn_out.GetResult().GetSubnet().GetSubnetId());
+                subnet_by_az[az] = subnet_id;
 
-            Aws::EC2::Model::ModifySubnetAttributeRequest map_public;
-            map_public.SetSubnetId(subnet_id);
-            Aws::EC2::Model::AttributeBooleanValue v;
-            v.SetValue(true);
-            map_public.SetMapPublicIpOnLaunch(v);
-            ec2->ModifySubnetAttribute(map_public);
+                Aws::EC2::Model::ModifySubnetAttributeRequest map_public;
+                map_public.SetSubnetId(subnet_id);
+                Aws::EC2::Model::AttributeBooleanValue v;
+                v.SetValue(true);
+                map_public.SetMapPublicIpOnLaunch(v);
+                ec2->ModifySubnetAttribute(map_public);
 
-            Aws::EC2::Model::AssociateRouteTableRequest assoc_req;
-            assoc_req.SetRouteTableId(route_table_id);
-            assoc_req.SetSubnetId(subnet_id);
-            ec2->AssociateRouteTable(assoc_req);
+                Aws::EC2::Model::AssociateRouteTableRequest assoc_req;
+                assoc_req.SetRouteTableId(route_table_id);
+                assoc_req.SetSubnetId(subnet_id);
+                ec2->AssociateRouteTable(assoc_req);
+            }
+
+            Aws::EC2::Model::CreateSecurityGroupRequest sg_req;
+            sg_req.SetGroupName("kythira-ca-cluster-real-ec2-test-sg");
+            sg_req.SetDescription("kythira ca_cluster_node real-EC2 test");
+            sg_req.SetVpcId(vpc_id);
+            auto sg_out = ec2->CreateSecurityGroup(sg_req);
+            BOOST_REQUIRE(sg_out.IsSuccess());
+            sg_id = std::string(sg_out.GetResult().GetGroupId());
+
+            for (int port : {22, 7000, 8443}) {
+                Aws::EC2::Model::AuthorizeSecurityGroupIngressRequest ing_req;
+                ing_req.SetGroupId(sg_id);
+                Aws::EC2::Model::IpPermission perm;
+                perm.SetIpProtocol("tcp");
+                perm.SetFromPort(port);
+                perm.SetToPort(port);
+                Aws::EC2::Model::IpRange range;
+                range.SetCidrIp("0.0.0.0/0");  // test-only; scope down for anything longer-lived
+                perm.AddIpRanges(range);
+                ing_req.AddIpPermissions(perm);
+                ec2->AuthorizeSecurityGroupIngress(ing_req);
+            }
+
+            key_name = "kythira-ca-cluster-test-key-" + std::to_string(::getpid());
+            Aws::EC2::Model::CreateKeyPairRequest kp_req;
+            kp_req.SetKeyName(key_name);
+            auto kp_out = ec2->CreateKeyPair(kp_req);
+            BOOST_REQUIRE_MESSAGE(kp_out.IsSuccess(), "CreateKeyPair");
+            private_key_pem = std::string(kp_out.GetResult().GetKeyMaterial());
+        } catch (...) {
+            teardown();
+            throw;
         }
-
-        Aws::EC2::Model::CreateSecurityGroupRequest sg_req;
-        sg_req.SetGroupName("kythira-ca-cluster-real-ec2-test-sg");
-        sg_req.SetDescription("kythira ca_cluster_node real-EC2 test");
-        sg_req.SetVpcId(vpc_id);
-        auto sg_out = ec2->CreateSecurityGroup(sg_req);
-        BOOST_REQUIRE(sg_out.IsSuccess());
-        sg_id = std::string(sg_out.GetResult().GetGroupId());
-
-        for (int port : {22, 7000, 8443}) {
-            Aws::EC2::Model::AuthorizeSecurityGroupIngressRequest ing_req;
-            ing_req.SetGroupId(sg_id);
-            Aws::EC2::Model::IpPermission perm;
-            perm.SetIpProtocol("tcp");
-            perm.SetFromPort(port);
-            perm.SetToPort(port);
-            Aws::EC2::Model::IpRange range;
-            range.SetCidrIp("0.0.0.0/0");  // test-only; scope down for anything longer-lived
-            perm.AddIpRanges(range);
-            ing_req.AddIpPermissions(perm);
-            ec2->AuthorizeSecurityGroupIngress(ing_req);
-        }
-
-        key_name = "kythira-ca-cluster-test-key-" + std::to_string(::getpid());
-        Aws::EC2::Model::CreateKeyPairRequest kp_req;
-        kp_req.SetKeyName(key_name);
-        auto kp_out = ec2->CreateKeyPair(kp_req);
-        BOOST_REQUIRE_MESSAGE(kp_out.IsSuccess(), "CreateKeyPair");
-        private_key_pem = std::string(kp_out.GetResult().GetKeyMaterial());
     }
 
     // signal_cleanup_target's destructor is deliberately non-virtual
