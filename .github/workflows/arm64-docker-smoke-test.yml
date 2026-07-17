@@ -10,6 +10,11 @@ name: ARM64 Docker Image Smoke Test
 # and require a container runtime at execution time), so this workflow is
 # workflow_dispatch-only rather than running on every push/PR.
 #
+# docker-otlp-collector-tests (.kiro/specs/otlp-telemetry-backend/,
+# Requirement 7.4) also runs here: it reuses the chaos_node image already
+# built above and pulls the official otel/opentelemetry-collector-contrib
+# image directly, so it needs no dedicated image-build step of its own.
+#
 # ca_cluster_node and ca_service's Dockerfiles were also triplet-
 # parameterized in this spec but have no CMake image/test target of their
 # own (they're built directly for deployment, not through this harness), so
@@ -96,3 +101,6 @@ jobs:
 
       - name: Run docker-dns-sd-discovery-tests (bind9 + dns_sd_discovery_node images)
         run: cmake --build build --target docker-dns-sd-discovery-tests -j$(nproc)
+
+      - name: Run docker-otlp-collector-tests (chaos_node image + real OTel Collector)
+        run: cmake --build build --target docker-otlp-collector-tests -j$(nproc)

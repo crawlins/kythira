@@ -103,6 +103,14 @@ add_docker_chaos_scenario_test(docker_dns_discovery_test
 add_docker_chaos_scenario_test(docker_dns_sd_discovery_test
     "${CMAKE_SOURCE_DIR}/tests/docker_chaos/dns_sd_discovery_test.cpp")
 
+# ── OTLP telemetry backend Docker scenario test (Requirement 7) ─────────────
+# Real chaos_node + real otel/opentelemetry-collector-contrib; no custom
+# image needed for the collector (pulled directly, mirroring
+# docker/ca-provisioning-compose.yml's use of stock alpine:3.20).
+
+add_docker_chaos_scenario_test(docker_otlp_collector_test
+    "${CMAKE_SOURCE_DIR}/tests/docker_chaos/otlp_collector_test.cpp")
+
 # ── Container runtime detection ───────────────────────────────────────────────
 #
 # CONTAINER_RUNTIME  — CMake cache variable; empty = auto-detect (docker then podman).
@@ -141,6 +149,7 @@ if(_RUNTIME_EXE)
     set(_DNS_DISCOVERY_DOCKERFILE        "${CMAKE_SOURCE_DIR}/docker/dns_discovery_node/Dockerfile")
     set(_DNS_SD_DISCOVERY_COMPOSE_FILE   "${CMAKE_SOURCE_DIR}/docker/dns-sd-discovery-compose.yml")
     set(_DNS_SD_DISCOVERY_DOCKERFILE     "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/Dockerfile")
+    set(_OTLP_COLLECTOR_COMPOSE_FILE     "${CMAKE_SOURCE_DIR}/docker/otlp-collector-compose.yml")
 
     # Env-var prefix injected into every scenario-test invocation.
     set(_RT_ENV
@@ -279,13 +288,27 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
+    # otel-collector's image is pulled directly (no custom Dockerfile, per
+    # Requirement 7.2) — this target only needs the existing chaos-node image.
+    add_custom_target(docker-otlp-collector-tests
+        COMMAND ${CMAKE_COMMAND} -E env
+                ${_RT_ENV}
+                KYTHIRA_OTLP_COLLECTOR_COMPOSE_FILE=${_OTLP_COLLECTOR_COMPOSE_FILE}
+                $<TARGET_FILE:docker_otlp_collector_test>
+                --log_level=message
+        DEPENDS docker-chaos-image docker_otlp_collector_test
+        COMMENT "Running OTLP telemetry backend Collector scenario test (runtime: ${CONTAINER_RUNTIME})"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+
     message(STATUS
         "Container runtime: ${_RUNTIME_EXE} — "
         "docker-chaos-image, docker-chaos-tests, "
         "docker-poco-discovery-image, docker-poco-discovery-tests, "
         "docker-bind9-image, "
         "docker-dns-discovery-image, docker-dns-discovery-tests, "
-        "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests targets available")
+        "docker-dns-sd-discovery-image, docker-dns-sd-discovery-tests, "
+        "docker-otlp-collector-tests targets available")
 else()
     foreach(_t
         docker-chaos-image docker-chaos-tests
@@ -293,7 +316,8 @@ else()
         docker-poco-discovery-image docker-poco-discovery-tests
         docker-bind9-image
         docker-dns-discovery-image docker-dns-discovery-tests
-        docker-dns-sd-discovery-image docker-dns-sd-discovery-tests)
+        docker-dns-sd-discovery-image docker-dns-sd-discovery-tests
+        docker-otlp-collector-tests)
         add_custom_target(${_t}
             COMMAND ${CMAKE_COMMAND} -E echo
                     "'${_t}' requires docker or podman on PATH"

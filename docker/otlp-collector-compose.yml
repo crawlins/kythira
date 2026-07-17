@@ -1,0 +1,65 @@
+# docker/otlp-collector-compose.yml — one chaos_node instance emitting real
+# OTLP/HTTP JSON metrics/logs to a real OpenTelemetry Collector container.
+#
+# Used by tests/docker_chaos/otlp_collector_test.cpp
+# (.kiro/specs/otlp-telemetry-backend/, Requirement 7.2) to prove the full
+# path — recording call -> batch exporter -> real HTTP POST -> real
+# Collector OTLP receiver -> real Collector parse — works end to end, not
+# just that the JSON this project constructs matches what it believes the
+# OTLP schema to be.
+#
+# A single node is sufficient: a 1-node cluster's majority is 1, so it
+# self-elects leader and accepts commands without needing peers — this test
+# is about the OTLP wire path, not multi-node Raft behavior (already covered
+# by the other docker_chaos scenario tests).
+#
+# No static IPs (CLAUDE.md container-runtime-compatibility rule): the node
+# reaches the collector by compose service name only, so this works
+# unmodified under both Docker and rootless Podman.
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    container_name: otlp-collector-test-collector
+    hostname: otel-collector
+    # The upstream image runs as a non-root user by default; Docker/Podman
+    # create a fresh named volume's mount point owned by root, so the file
+    # exporter's write to /data would otherwise fail with permission denied.
+    # Running this test-only container as root sidesteps that — not
+    # something a production deployment need do.
+    user: "0:0"
+    volumes:
+      - ./otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otlp-export-data:/data
+    networks:
+      - otlp-collector-net
+
+  node1:
+    image: kythira-chaos-node:dev
+    container_name: otlp-collector-test-node1
+    hostname: node1
+    environment:
+      NODE_ID: "1"
+      PEERS: ""
+      RPC_PORT: "7000"
+      HTTP_PORT: "8080"
+      FIU_PORT: "9000"
+      DATA_DIR: "/var/lib/chaos_node"
+      ELECTION_TIMEOUT_MIN_MS: "150"
+      ELECTION_TIMEOUT_MAX_MS: "300"
+      HEARTBEAT_INTERVAL_MS: "50"
+      OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTLP_SERVICE_NAME: "kythira-chaos-node"
+    ports:
+      - "8091:8080"   # HTTP control plane
+    depends_on:
+      - otel-collector
+    networks:
+      - otlp-collector-net
+
+networks:
+  otlp-collector-net:
+    driver: bridge
+
+volumes:
+  otlp-export-data:
