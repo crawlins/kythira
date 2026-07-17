@@ -1,0 +1,37 @@
+# OpenTelemetry Collector config for the otlp-telemetry-backend spec
+# (.kiro/specs/otlp-telemetry-backend/, Requirement 6.1).
+#
+# Receives OTLP/HTTP JSON on :4318 from otlp_metrics/otlp_logger
+# (include/raft/otlp_metrics.hpp, include/raft/otlp_logger.hpp) and:
+#   - logs a human-readable summary to the collector's own stdout (debug
+#     exporter) — useful when pointing chaos_node at this collector by hand;
+#   - appends every received export request, verbatim as OTLP JSON, to a
+#     file under a mounted volume (file exporter) — this is what
+#     tests/docker_chaos/otlp_collector_test.cpp reads to assert real
+#     metric/log data made it all the way through (Requirement 7.3).
+#
+# Minimal-machinery by design (mirrors docker/ca-provisioning-compose.yml's
+# use of stock alpine:3.20 rather than a purpose-built image): this is the
+# official otel/opentelemetry-collector-contrib image, unmodified, configured
+# entirely via this bind-mounted file — no custom Dockerfile.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: normal
+  file:
+    path: /data/otlp-export.jsonl
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [debug, file]
+    logs:
+      receivers: [otlp]
+      exporters: [debug, file]

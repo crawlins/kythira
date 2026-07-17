@@ -880,6 +880,38 @@ target_link_libraries(noop_metrics_template_test PRIVATE
 target_compile_features(noop_metrics_template_test PRIVATE cxx_std_23)
 add_test(NAME noop_metrics_template_test COMMAND noop_metrics_template_test)
 
+# ── OTLP telemetry backend (.kiro/specs/otlp-telemetry-backend/) ─────────────
+
+# Shared batch exporter mechanics: drop-oldest overflow, batch-by-size/
+# interval triggers, retry/backoff, final-flush-on-destruction.
+add_executable(otlp_exporter_unit_test otlp_exporter_unit_test.cpp)
+target_link_libraries(otlp_exporter_unit_test PRIVATE
+    network_simulator
+)
+target_compile_features(otlp_exporter_unit_test PRIVATE cxx_std_23)
+add_test(NAME otlp_exporter_unit_test COMMAND otlp_exporter_unit_test)
+set_tests_properties(otlp_exporter_unit_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# otlp_metrics: Sum/Histogram/Gauge mapping, delta start-time chaining,
+# concept conformance.
+add_executable(otlp_metrics_test otlp_metrics_test.cpp)
+target_link_libraries(otlp_metrics_test PRIVATE
+    network_simulator
+)
+target_compile_features(otlp_metrics_test PRIVATE cxx_std_23)
+add_test(NAME otlp_metrics_test COMMAND otlp_metrics_test)
+set_tests_properties(otlp_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
+# otlp_logger: SeverityNumber mapping, attribute mapping, min-level
+# filtering, concept conformance.
+add_executable(otlp_logger_test otlp_logger_test.cpp)
+target_link_libraries(otlp_logger_test PRIVATE
+    network_simulator
+)
+target_compile_features(otlp_logger_test PRIVATE cxx_std_23)
+add_test(NAME otlp_logger_test COMMAND otlp_logger_test)
+set_tests_properties(otlp_logger_test PROPERTIES TIMEOUT 60 LABELS "unit")
+
 # Membership manager concept test
 add_executable(membership_concept_test membership_concept_test.cpp)
 target_link_libraries(membership_concept_test PRIVATE
