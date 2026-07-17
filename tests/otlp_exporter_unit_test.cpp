@@ -30,7 +30,7 @@ struct test_record {
 [[nodiscard]] auto encode(const kythira::otlp_resource&, std::span<const test_record> records)
     -> boost::json::object {
     boost::json::array arr;
-    for (const auto& r : records) arr.push_back(r.value);
+    for (const auto& r : records) arr.push_back(boost::json::value(r.value));
     return boost::json::object{{"records", arr}};
 }
 
