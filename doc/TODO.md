@@ -17,15 +17,32 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### What Changed (July 16, 2026)
 
-- **Testing-tier requirement added to Metrics Backends.** Every entry now
-  requires two tests: a Docker-based test against a self-provisioned
-  instance of the agent/aggregator (or a local emulator like LocalStack for
-  vendor APIs that have one), mirroring the existing `docker_chaos`
-  scenario-test convention and enabled by default; and, where the backend
-  has a real vendor-managed counterpart, a second test against the actual
-  cloud service, following the existing `ci-real-cloud-tests` opt-in toggle
+- **Metrics Backends: cloud-vendor entries scoped down to config-only, plus
+  a testing-tier requirement for every entry.** The five cloud-vendor
+  monitoring entries (AWS CloudWatch, Azure Monitor, GCP Cloud Monitoring,
+  OCI Monitoring, Alibaba Cloud CloudMonitor) are no longer scoped as
+  bespoke `kythira::metrics` SDK implementations — the intention is now
+  example monitoring *configuration* (e.g. an OpenTelemetry Collector
+  exporter config, or the vendor's own native agent config) routing
+  Kythira's telemetry to that vendor, plus documentation, since an
+  OpenTelemetry Collector (or the vendor's own agent) already does that
+  integration work well and re-implementing it five times inside Kythira
+  would just duplicate it while tying Kythira to five vendor SDKs. The
+  self-hosted agents (Prometheus, Telegraf, VictoriaMetrics, NetData)
+  remain full `kythira::metrics` implementations, since nothing else
+  speaks their wire protocol on Kythira's behalf. Every entry (both kinds)
+  now also requires two tests: a Docker-based test against a
+  self-provisioned instance of the agent/aggregator (or a local emulator
+  like LocalStack for vendor APIs that have one, or a config-syntax-only
+  check where no emulator exists), mirroring the existing `docker_chaos`
+  scenario-test convention and enabled by default; and, where a real
+  vendor-managed service exists, a second test against the actual cloud
+  service — validating the example config's routing mechanism for the
+  cloud-vendor entries, since there's no Kythira-side SDK call to test
+  directly — following the existing `ci-real-cloud-tests` opt-in toggle
   pattern and disabled by default (real credentials, real cost). Purely a
-  documentation/requirements addition — no test code added yet.
+  documentation/requirements addition — no test code or example configs
+  added yet.
 - **Example-configuration requirement added to Cloud Provider Support and
   Metrics Backends.** Every entry in both `doc/TODO.md` sections —
   including the already-implemented AWS cloud-provider support, which
@@ -1006,7 +1023,7 @@ capability.
 
 ### Metrics Backends
 
-All entries below are `kythira::metrics`-concept implementations
+Most entries below are `kythira::metrics`-concept implementations
 (`include/raft/metrics.hpp`) — today only satisfied by `noop_metrics`, a
 zero-cost stub. `metrics_type` is a compile-time template parameter on
 `raft_types`/`tcp_raft_types` (default `noop_metrics`), so adding a concrete
@@ -1014,6 +1031,23 @@ backend needs no change to that seam, only a new type satisfying the
 concept (`set_metric_name`/`add_dimension`/`add_one`/`add_count`/
 `add_duration`/`add_value`/`emit`, all non-blocking — I/O deferred to a
 background emitter).
+
+**Cloud-vendor monitoring services (AWS CloudWatch, Azure Monitor, GCP
+Cloud Monitoring, OCI Monitoring, Alibaba Cloud CloudMonitor) are
+intentionally out of scope for a bespoke `kythira::metrics` implementation
+each.** The intention for these five is to provide example monitoring
+*configuration* — e.g. an OpenTelemetry Collector exporter config for that
+vendor, or the vendor's own native agent config — routing whatever
+telemetry Kythira already emits through a shared exporter to that vendor's
+ingestion API, plus documentation, rather than a full custom SDK-based
+`kythira::metrics` type per vendor. Writing and maintaining five separate
+vendor-SDK integrations inside Kythira itself would duplicate integration
+work already done well by an OpenTelemetry Collector (or the vendor's own
+agent), and would tie Kythira's own dependency footprint to every vendor
+SDK it wants to support. The self-hosted agents below (Prometheus,
+Telegraf, VictoriaMetrics, NetData) remain full `kythira::metrics`
+implementations — they have no equivalent "someone else already wrote the
+integration" story, so Kythira has to speak their wire protocol directly.
 
 **Requirement (applies to every entry below):** each metrics/logging agent
 integration SHALL ship with at least one example configuration file (e.g.
@@ -1036,15 +1070,23 @@ as the Cloud Provider Support requirement above.
   scenario test, including on GitHub-hosted CI runners (which are
   themselves cloud-hosted infrastructure, but that is incidental — this
   requirement does not itself call for provisioning any separate, billable
-  cloud resource).
-- A second test exercising the **actual vendor-managed service** (a real
-  `PutMetricData` call to AWS CloudWatch, a real Azure Monitor ingestion
-  call, a real GCP Cloud Monitoring `timeSeries.create` call, etc. — where
-  the backend has one; self-hosted-only agents like Prometheus/Telegraf/
-  NetData have no such vendor-managed counterpart and so need only the
-  Docker-based test above) SHALL be added, following the existing
-  `.kiro/specs/ci-real-cloud-tests/` toggle pattern already used by
+  cloud resource). For a cloud-vendor entry with no self-hostable emulator
+  for its specific monitoring API, this tier MAY instead validate just the
+  example config's syntax/schema (e.g. `otelcol validate` or equivalent)
+  rather than a full data round-trip, since there is nothing to emulate
+  the vendor's ingestion endpoint against locally.
+- A second test exercising the **actual vendor-managed service** SHALL be
+  added, following the existing `.kiro/specs/ci-real-cloud-tests/` toggle
+  pattern already used by
   `aws_quorum_manager_real_ec2_test.cpp`/`ca_cluster_node_real_ec2_test.cpp`.
+  For the five cloud-vendor monitoring entries (config-only per the
+  section-level note above), this test stands up the routing mechanism
+  described by the example config — e.g. a real OpenTelemetry Collector
+  configured per that example, or the vendor's own agent configured per
+  it — against the real service, and confirms a known metric arrives; it
+  is not a direct SDK call from Kythira's own code, since none exists for
+  these five. Self-hosted-only agents (Prometheus/Telegraf/NetData) have no
+  vendor-managed counterpart and so need only the Docker-based test above.
   This test SHALL be **disabled by default** — real credentials and real
   cost are required, so it only runs when explicitly opted into, exactly
   like every other real-cloud test in this project.
@@ -1062,20 +1104,31 @@ as the Cloud Provider Support requirement above.
   (CloudWatch, Prometheus, etc.) indirectly — those entries are not
   themselves considered done by this one; they remain useful as direct,
   Collector-free integrations.
-- [ ] **AWS CloudWatch** — `PutMetricData`-backed implementation forwarding
-  to CloudWatch instead of a third-party agent; natural pairing with
+- [ ] **AWS CloudWatch** — example monitoring configuration (e.g. an
+  OpenTelemetry Collector `awscloudwatch`/`awsemf` exporter config, or the
+  CloudWatch agent's own config) routing Kythira's exported telemetry to
+  CloudWatch, plus documentation — not a bespoke `kythira::metrics`
+  implementation (see the section-level note above); natural pairing with
   `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`, already implemented
   (Cloud Provider Support, above)
-- [ ] **Azure Monitor** — forwards to Azure Monitor's custom-metrics API;
-  pairs with the Azure quorum manager/certificate provider entry above
-- [ ] **GCP Cloud Monitoring** — forwards to Cloud Monitoring's
-  `timeSeries.create` API; pairs with the GCP quorum manager/certificate
-  provider entry above
-- [ ] **OCI Monitoring** — forwards to OCI Monitoring's `PostMetricData`
-  API; pairs with the OCI quorum manager/certificate provider entry above
-- [ ] **Alibaba Cloud CloudMonitor** — forwards to CloudMonitor's custom-
-  metrics API; pairs with the Alibaba Cloud quorum manager/certificate
-  provider entry above
+- [ ] **Azure Monitor** — example monitoring configuration (e.g. an
+  OpenTelemetry Collector `azuremonitor` exporter config) routing to Azure
+  Monitor's custom-metrics API, plus documentation — not a bespoke
+  `kythira::metrics` implementation; pairs with the Azure quorum
+  manager/certificate provider entry above
+- [ ] **GCP Cloud Monitoring** — example monitoring configuration (e.g. an
+  OpenTelemetry Collector `googlecloud` exporter config) routing to Cloud
+  Monitoring's `timeSeries.create` API, plus documentation — not a bespoke
+  `kythira::metrics` implementation; pairs with the GCP quorum
+  manager/certificate provider entry above
+- [ ] **OCI Monitoring** — example monitoring configuration routing to OCI
+  Monitoring's `PostMetricData` API, plus documentation — not a bespoke
+  `kythira::metrics` implementation; pairs with the OCI quorum
+  manager/certificate provider entry above
+- [ ] **Alibaba Cloud CloudMonitor** — example monitoring configuration
+  routing to CloudMonitor's custom-metrics API, plus documentation — not a
+  bespoke `kythira::metrics` implementation; pairs with the Alibaba Cloud
+  quorum manager/certificate provider entry above
 - [ ] **Prometheus** — exposes an HTTP `/metrics` scrape endpoint (text
   exposition format); the dominant pull-based backend for Kubernetes/
   container deployments
