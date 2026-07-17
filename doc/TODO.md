@@ -17,6 +17,15 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ### What Changed (July 16, 2026)
 
+- **Testing-tier requirement added to Metrics Backends.** Every entry now
+  requires two tests: a Docker-based test against a self-provisioned
+  instance of the agent/aggregator (or a local emulator like LocalStack for
+  vendor APIs that have one), mirroring the existing `docker_chaos`
+  scenario-test convention and enabled by default; and, where the backend
+  has a real vendor-managed counterpart, a second test against the actual
+  cloud service, following the existing `ci-real-cloud-tests` opt-in toggle
+  pattern and disabled by default (real credentials, real cost). Purely a
+  documentation/requirements addition — no test code added yet.
 - **Example-configuration requirement added to Cloud Provider Support and
   Metrics Backends.** Every entry in both `doc/TODO.md` sections —
   including the already-implemented AWS cloud-provider support, which
@@ -1011,6 +1020,34 @@ integration SHALL ship with at least one example configuration file (e.g.
 an agent config snippet, scrape config, or `.env.example`) and accompanying
 documentation showing how to point it at a real backend — same convention
 as the Cloud Provider Support requirement above.
+
+**Testing requirement (applies to every entry below):**
+
+- A test that sends real data to a **self-provisioned** instance of that
+  agent/aggregator via Docker (a real Prometheus/OTel Collector/Telegraf+
+  backend/NetData container, or a local emulator such as LocalStack for a
+  vendor API that has one, mirroring the existing
+  `aws_quorum_manager_localstack_test.cpp` pattern) SHALL be added, mirroring
+  the existing `docker_chaos` scenario-test convention (e.g.
+  `docker-dns-sd-discovery-tests`, `docker-poco-discovery-tests`) and
+  following `CLAUDE.md`'s container-runtime-compatibility rules. This test
+  SHALL be **enabled by default** — it runs in every environment with a
+  container runtime available, the same as every other `docker_chaos`
+  scenario test, including on GitHub-hosted CI runners (which are
+  themselves cloud-hosted infrastructure, but that is incidental — this
+  requirement does not itself call for provisioning any separate, billable
+  cloud resource).
+- A second test exercising the **actual vendor-managed service** (a real
+  `PutMetricData` call to AWS CloudWatch, a real Azure Monitor ingestion
+  call, a real GCP Cloud Monitoring `timeSeries.create` call, etc. — where
+  the backend has one; self-hosted-only agents like Prometheus/Telegraf/
+  NetData have no such vendor-managed counterpart and so need only the
+  Docker-based test above) SHALL be added, following the existing
+  `.kiro/specs/ci-real-cloud-tests/` toggle pattern already used by
+  `aws_quorum_manager_real_ec2_test.cpp`/`ca_cluster_node_real_ec2_test.cpp`.
+  This test SHALL be **disabled by default** — real credentials and real
+  cost are required, so it only runs when explicitly opted into, exactly
+  like every other real-cloud test in this project.
 
 - [ ] **AWS CloudWatch** — `PutMetricData`-backed implementation forwarding
   to CloudWatch instead of a third-party agent; natural pairing with
