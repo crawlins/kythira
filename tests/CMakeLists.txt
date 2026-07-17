@@ -884,9 +884,14 @@ add_test(NAME noop_metrics_template_test COMMAND noop_metrics_template_test)
 
 # Shared batch exporter mechanics: drop-oldest overflow, batch-by-size/
 # interval triggers, retry/backoff, final-flush-on-destruction.
+# Needs boost_json explicitly (unlike console_logger_test/metrics_concept_test
+# above, which never touch Boost.JSON) — network_simulator does not provide
+# it transitively; see coap_event_logging_property_test above for the same
+# pattern.
 add_executable(otlp_exporter_unit_test otlp_exporter_unit_test.cpp)
 target_link_libraries(otlp_exporter_unit_test PRIVATE
     network_simulator
+    boost_json
 )
 target_compile_features(otlp_exporter_unit_test PRIVATE cxx_std_23)
 add_test(NAME otlp_exporter_unit_test COMMAND otlp_exporter_unit_test)
@@ -897,6 +902,7 @@ set_tests_properties(otlp_exporter_unit_test PROPERTIES TIMEOUT 60 LABELS "unit"
 add_executable(otlp_metrics_test otlp_metrics_test.cpp)
 target_link_libraries(otlp_metrics_test PRIVATE
     network_simulator
+    boost_json
 )
 target_compile_features(otlp_metrics_test PRIVATE cxx_std_23)
 add_test(NAME otlp_metrics_test COMMAND otlp_metrics_test)
@@ -907,6 +913,7 @@ set_tests_properties(otlp_metrics_test PROPERTIES TIMEOUT 60 LABELS "unit")
 add_executable(otlp_logger_test otlp_logger_test.cpp)
 target_link_libraries(otlp_logger_test PRIVATE
     network_simulator
+    boost_json
 )
 target_compile_features(otlp_logger_test PRIVATE cxx_std_23)
 add_test(NAME otlp_logger_test COMMAND otlp_logger_test)
