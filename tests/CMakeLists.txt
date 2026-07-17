@@ -1150,6 +1150,14 @@ set_tests_properties(quorum_leader_integration_test PROPERTIES
 )
 
 # docker_quorum_manager unit tests (Req 18 — embedded mock Docker API server)
+# Guarded on httplib_FOUND (docker_quorum_manager.hpp uses httplib::Client
+# directly): the minimal in-container CMake configure used by
+# docker/chaos_node/Dockerfile (no vcpkg, chaos_node target only) doesn't
+# have httplib available, and this target was previously unconditional here
+# even though every other httplib::httplib-using target in this file guards
+# on it (e.g. `if(TARGET httplib::httplib)` a few lines up, or the
+# `if(TARGET ca_service)` block a few hundred lines down).
+if(httplib_FOUND)
 add_executable(docker_quorum_manager_test docker_quorum_manager_test.cpp)
 target_link_libraries(docker_quorum_manager_test PRIVATE
     Boost::unit_test_framework
@@ -1171,6 +1179,7 @@ set_tests_properties(docker_quorum_manager_test PROPERTIES
     TIMEOUT 60
     LABELS "unit;raft;quorum"
 )
+endif()
 
 # Bootstrap property tests
 add_executable(bootstrap_property_test bootstrap_property_test.cpp)
@@ -2039,6 +2048,13 @@ set_tests_properties(acme_jws_unit_test PROPERTIES
     LABELS "unit;certificate_authority;ca;acme;jws"
 )
 
+# Guarded on httplib_FOUND: acme_test_server.hpp (this trio's shared mock
+# ACME server) uses httplib directly, and these three were previously
+# unconditional here even though every other httplib::httplib-using target
+# in this file guards on it. Surfaced by the minimal in-container CMake
+# configure docker/chaos_node/Dockerfile uses (no vcpkg, chaos_node target
+# only), where httplib is unavailable.
+if(httplib_FOUND)
 add_executable(acme_test_server_unit_test acme_test_server_unit_test.cpp)
 target_link_libraries(acme_test_server_unit_test PRIVATE
     certificate_authority   # transitively brings in KYTHIRA_HAS_LDNS via network_simulator, when libldns is found
@@ -2086,6 +2102,7 @@ set_tests_properties(acme_identifier_type_test PROPERTIES
     TIMEOUT 90
     LABELS "integration;certificate_authority;ca;acme;provider"
 )
+endif()
 
 # ── ca-cluster-rpc-mtls (.kiro/specs/ca-cluster-rpc-mtls/) ──────────────────
 # tls_tcp_rpc_unit_test/tls_tcp_rpc_integration_test exercise
