@@ -22,7 +22,12 @@
 
 namespace kythira {
 
-enum class otlp_metric_shape : std::uint8_t { none, sum_delta, histogram, gauge };
+enum class otlp_metric_shape : std::uint8_t {
+    none,
+    sum_delta,
+    histogram,
+    gauge
+};
 
 /// Finalized shape of one `set_metric_name`...`emit()` call. Carries its own
 /// copy of the histogram bounds it was bucketed against (rather than a
@@ -36,8 +41,8 @@ struct otlp_metric_record {
 
     std::int64_t sum_count = 0;  // shape == sum_delta
 
-    double histogram_sum_ms = 0.0;             // shape == histogram
-    std::vector<double> histogram_bounds_ms;    // shape == histogram
+    double histogram_sum_ms = 0.0;                       // shape == histogram
+    std::vector<double> histogram_bounds_ms;             // shape == histogram
     std::vector<std::uint64_t> histogram_bucket_counts;  // shape == histogram
 
     double gauge_value = 0.0;  // shape == gauge
@@ -66,10 +71,10 @@ namespace otlp_metrics_detail {
             case otlp_metric_shape::sum_delta:
                 data_point["startTimeUnixNano"] = std::to_string(record.start_time_unix_nano);
                 data_point["asInt"] = std::to_string(record.sum_count);
-                metric["sum"] = boost::json::object{
-                    {"aggregationTemporality", "AGGREGATION_TEMPORALITY_DELTA"},
-                    {"isMonotonic", true},
-                    {"dataPoints", boost::json::array{data_point}}};
+                metric["sum"] =
+                    boost::json::object{{"aggregationTemporality", "AGGREGATION_TEMPORALITY_DELTA"},
+                                        {"isMonotonic", true},
+                                        {"dataPoints", boost::json::array{data_point}}};
                 break;
 
             case otlp_metric_shape::histogram: {
@@ -84,18 +89,20 @@ namespace otlp_metrics_detail {
 
                 boost::json::array counts;
                 counts.reserve(record.histogram_bucket_counts.size());
-                for (auto count : record.histogram_bucket_counts) counts.push_back(std::to_string(count));
+                for (auto count : record.histogram_bucket_counts)
+                    counts.push_back(std::to_string(count));
                 data_point["bucketCounts"] = counts;
 
-                metric["histogram"] = boost::json::object{
-                    {"aggregationTemporality", "AGGREGATION_TEMPORALITY_DELTA"},
-                    {"dataPoints", boost::json::array{data_point}}};
+                metric["histogram"] =
+                    boost::json::object{{"aggregationTemporality", "AGGREGATION_TEMPORALITY_DELTA"},
+                                        {"dataPoints", boost::json::array{data_point}}};
                 break;
             }
 
             case otlp_metric_shape::gauge:
                 data_point["asDouble"] = record.gauge_value;
-                metric["gauge"] = boost::json::object{{"dataPoints", boost::json::array{data_point}}};
+                metric["gauge"] =
+                    boost::json::object{{"dataPoints", boost::json::array{data_point}}};
                 break;
 
             case otlp_metric_shape::none:
@@ -126,7 +133,7 @@ public:
     // otlp_http_batch_exporter itself) so unit tests can substitute a stub
     // without any real network I/O — see tests/otlp_metrics_test.cpp.
     explicit otlp_metrics(otlp_export_config config, otlp_resource resource,
-                         http_poster_fn poster = real_http_poster())
+                          http_poster_fn poster = real_http_poster())
         : _histogram_bounds(config.histogram_bounds_ms),
           _construction_time(otlp_now_unix_nanos()),
           _exporter(std::move(config), std::move(resource), "/v1/metrics",

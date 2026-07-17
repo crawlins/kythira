@@ -27,8 +27,8 @@ struct test_record {
     int value = 0;
 };
 
-[[nodiscard]] auto encode(const kythira::otlp_resource&, std::span<const test_record> records)
-    -> boost::json::object {
+[[nodiscard]] auto encode(const kythira::otlp_resource&,
+                          std::span<const test_record> records) -> boost::json::object {
     boost::json::array arr;
     for (const auto& r : records) arr.push_back(r.value);
     return boost::json::object{{"records", arr}};
@@ -47,11 +47,10 @@ auto test_drop_oldest_overflow() -> bool {
     kythira::otlp_export_config cfg;
     cfg.endpoint_base_url = "http://localhost:1";
     cfg.max_queue_size = 10;
-    cfg.max_batch_size = 1000;          // never reached by this test's pushes
-    cfg.flush_interval = 60s;           // background thread parked throughout
+    cfg.max_batch_size = 1000;  // never reached by this test's pushes
+    cfg.flush_interval = 60s;   // background thread parked throughout
 
-    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode,
-                           make_recording_poster(state));
+    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode, make_recording_poster(state));
 
     for (int i = 0; i < 15; ++i) exporter.push(test_record{i});
 
@@ -76,8 +75,7 @@ auto test_batch_triggers_on_size() -> bool {
     cfg.max_batch_size = 3;
     cfg.flush_interval = 10s;  // must NOT be what triggers the flush below
 
-    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode,
-                           make_recording_poster(state));
+    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode, make_recording_poster(state));
 
     exporter.push(test_record{1});
     exporter.push(test_record{2});
@@ -103,8 +101,7 @@ auto test_batch_triggers_on_interval() -> bool {
     cfg.max_batch_size = 1000;  // must NOT be what triggers the flush below
     cfg.flush_interval = 50ms;
 
-    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode,
-                           make_recording_poster(state));
+    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode, make_recording_poster(state));
 
     exporter.push(test_record{1});
 
@@ -132,8 +129,7 @@ auto test_retry_then_success() -> bool {
     cfg.max_retries = 3;
     cfg.retry_backoff_base = 10ms;
 
-    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode,
-                           make_recording_poster(state));
+    test_exporter exporter(cfg, test_resource(), "/v1/test", &encode, make_recording_poster(state));
 
     exporter.push(test_record{1});
 
@@ -164,10 +160,10 @@ auto test_non_retryable_status_dropped_without_retry() -> bool {
     cfg.max_retries = 3;
     cfg.retry_backoff_base = 10ms;
 
-    kythira::http_poster_fn poster = [call_count](std::string_view, std::string_view,
-                                                  const std::vector<std::pair<std::string, std::string>>&,
-                                                  std::string_view,
-                                                  std::chrono::milliseconds) -> kythira::http_post_result {
+    kythira::http_poster_fn poster =
+        [call_count](std::string_view, std::string_view,
+                     const std::vector<std::pair<std::string, std::string>>&, std::string_view,
+                     std::chrono::milliseconds) -> kythira::http_post_result {
         call_count->fetch_add(1, std::memory_order_relaxed);
         return {.ok = false, .status = 400};
     };
