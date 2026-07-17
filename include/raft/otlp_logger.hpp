@@ -94,8 +94,21 @@ public:
           _exporter(std::move(config), std::move(resource), "/v1/logs",
                     &otlp_logger_detail::encode_batch, std::move(poster)) {}
 
-    otlp_logger(otlp_logger&&) noexcept = default;
-    auto operator=(otlp_logger&&) noexcept -> otlp_logger& = default;
+    // Hand-written rather than `= default`: std::mutex has no move
+    // constructor, so a defaulted one would silently be deleted (matches
+    // console_logger's existing convention of not moving _mutex at all —
+    // the moved-to object gets a fresh, default-constructed one).
+    otlp_logger(otlp_logger&& other) noexcept
+        : _min_level(other._min_level), _exporter(std::move(other._exporter)) {}
+
+    auto operator=(otlp_logger&& other) noexcept -> otlp_logger& {
+        if (this != &other) {
+            _min_level = other._min_level;
+            _exporter = std::move(other._exporter);
+        }
+        return *this;
+    }
+
     otlp_logger(const otlp_logger&) = delete;
     auto operator=(const otlp_logger&) -> otlp_logger& = delete;
 

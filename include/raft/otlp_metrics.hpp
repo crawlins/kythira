@@ -82,15 +82,23 @@ namespace otlp_metrics_detail {
                 data_point["count"] = std::to_string(1);
                 data_point["sum"] = record.histogram_sum_ms;
 
+                // array::push_back only accepts an already-constructed
+                // value/value&&/pilfered<value> — no implicit conversion
+                // from double or std::string participates in overload
+                // resolution there (that leniency is specific to value's own
+                // constructors and to value_ref-based list-initialization),
+                // so each element is wrapped in boost::json::value(...)
+                // explicitly.
                 boost::json::array bounds;
                 bounds.reserve(record.histogram_bounds_ms.size());
-                for (double bound : record.histogram_bounds_ms) bounds.push_back(bound);
+                for (double bound : record.histogram_bounds_ms)
+                    bounds.push_back(boost::json::value(bound));
                 data_point["explicitBounds"] = bounds;
 
                 boost::json::array counts;
                 counts.reserve(record.histogram_bucket_counts.size());
                 for (auto count : record.histogram_bucket_counts)
-                    counts.push_back(std::to_string(count));
+                    counts.push_back(boost::json::value(std::to_string(count)));
                 data_point["bucketCounts"] = counts;
 
                 metric["histogram"] =
@@ -139,8 +147,28 @@ public:
           _exporter(std::move(config), std::move(resource), "/v1/metrics",
                     &otlp_metrics_detail::encode_batch, std::move(poster)) {}
 
-    otlp_metrics(otlp_metrics&&) noexcept = default;
-    auto operator=(otlp_metrics&&) noexcept -> otlp_metrics& = default;
+    // Hand-written rather than `= default`: std::mutex has no move
+    // constructor, so a defaulted one would silently be deleted (matches
+    // console_logger's existing convention of not moving _mutex at all —
+    // the moved-to object gets a fresh, default-constructed one).
+    otlp_metrics(otlp_metrics&& other) noexcept
+        : _pending(std::move(other._pending)),
+          _histogram_bounds(std::move(other._histogram_bounds)),
+          _construction_time(other._construction_time),
+          _series_start_time(std::move(other._series_start_time)),
+          _exporter(std::move(other._exporter)) {}
+
+    auto operator=(otlp_metrics&& other) noexcept -> otlp_metrics& {
+        if (this != &other) {
+            _pending = std::move(other._pending);
+            _histogram_bounds = std::move(other._histogram_bounds);
+            _construction_time = other._construction_time;
+            _series_start_time = std::move(other._series_start_time);
+            _exporter = std::move(other._exporter);
+        }
+        return *this;
+    }
+
     otlp_metrics(const otlp_metrics&) = delete;
     auto operator=(const otlp_metrics&) -> otlp_metrics& = delete;
 
