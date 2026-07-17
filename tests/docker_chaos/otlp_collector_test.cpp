@@ -76,9 +76,8 @@ bool wait_for_leader_and_submit(const std::string& key, const std::string& value
 // host bind-mount, so this works identically under Docker and rootless
 // Podman without depending on host-vs-container UID mapping.
 std::string read_collector_export() {
-    auto result = docker_chaos::os::real_exec(
-        {docker_chaos::os::container_runtime(), "exec", k_collector_container, "cat",
-         k_export_path});
+    auto result = docker_chaos::os::real_exec({docker_chaos::os::container_runtime(), "exec",
+                                               k_collector_container, "cat", k_export_path});
     return result.out;
 }
 
@@ -109,7 +108,8 @@ struct OtlpCollectorFixture {
 
 BOOST_AUTO_TEST_SUITE(otlp_collector)
 
-BOOST_FIXTURE_TEST_CASE(node_becomes_healthy, OtlpCollectorFixture, *boost::unit_test::timeout(90)) {
+BOOST_FIXTURE_TEST_CASE(node_becomes_healthy, OtlpCollectorFixture,
+                        *boost::unit_test::timeout(90)) {
     BOOST_TEST(is_healthy());
 }
 

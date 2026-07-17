@@ -39,16 +39,15 @@ namespace kythira {
 // ── Time helper ──────────────────────────────────────────────────────────────
 
 [[nodiscard]] inline auto otlp_now_unix_nanos() -> std::uint64_t {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
 }
 
 // ── JSON helpers shared by otlp_metrics.hpp / otlp_logger.hpp ────────────────
 
-[[nodiscard]] inline auto otlp_string_kv(std::string_view key, std::string_view value)
-    -> boost::json::object {
+[[nodiscard]] inline auto otlp_string_kv(std::string_view key,
+                                         std::string_view value) -> boost::json::object {
     return boost::json::object{
         {"key", boost::json::string(key)},
         {"value", boost::json::object{{"stringValue", boost::json::string(value)}}}};
@@ -77,8 +76,10 @@ struct otlp_resource {
         boost::json::array attrs;
         attrs.push_back(otlp_string_kv("service.name", service_name));
         attrs.push_back(otlp_string_kv("service.instance.id", service_instance_id));
-        if (service_namespace) attrs.push_back(otlp_string_kv("service.namespace", *service_namespace));
-        for (const auto& [key, value] : extra_attributes) attrs.push_back(otlp_string_kv(key, value));
+        if (service_namespace)
+            attrs.push_back(otlp_string_kv("service.namespace", *service_namespace));
+        for (const auto& [key, value] : extra_attributes)
+            attrs.push_back(otlp_string_kv(key, value));
         return boost::json::object{{"attributes", attrs}};
     }
 };
@@ -99,7 +100,7 @@ struct otlp_export_config {
 
     // Requirement 1.4: milliseconds; spread covering sub-millisecond to
     // multi-second Raft RPC/consensus latencies.
-    std::vector<double> histogram_bounds_ms{1,  2,   5,   10,  25,  50,   100,
+    std::vector<double> histogram_bounds_ms{1,   2,   5,    10,   25,   50,   100,
                                             250, 500, 1000, 2500, 5000, 10000};
 };
 
@@ -108,8 +109,8 @@ struct otlp_export_config {
 using otlp_series_key = std::string;
 
 [[nodiscard]] inline auto otlp_make_series_key(
-    std::string_view name, const std::vector<std::pair<std::string, std::string>>& dimensions)
-    -> otlp_series_key {
+    std::string_view name,
+    const std::vector<std::pair<std::string, std::string>>& dimensions) -> otlp_series_key {
     auto sorted = dimensions;
     std::ranges::sort(sorted);
     std::string key(name);
@@ -133,18 +134,18 @@ struct http_post_result {
 /// `path` is the OTLP signal path ("/v1/metrics" or "/v1/logs"). Kept
 /// separate rather than a single pre-joined URL so the default implementation
 /// never has to parse one back apart.
-using http_poster_fn = std::function<http_post_result(
-    std::string_view origin, std::string_view path,
-    const std::vector<std::pair<std::string, std::string>>& headers, std::string_view json_body,
-    std::chrono::milliseconds timeout)>;
+using http_poster_fn =
+    std::function<http_post_result(std::string_view origin, std::string_view path,
+                                   const std::vector<std::pair<std::string, std::string>>& headers,
+                                   std::string_view json_body, std::chrono::milliseconds timeout)>;
 
 /// Real `cpp-httplib`-backed poster (`httplib::Client` auto-selects TLS based
 /// on `origin`'s scheme, same as every other httplib::Client construction in
 /// this project — see include/raft/ca_bootstrap_client.hpp).
 [[nodiscard]] inline auto real_http_poster() -> http_poster_fn {
     return [](std::string_view origin, std::string_view path,
-             const std::vector<std::pair<std::string, std::string>>& headers,
-             std::string_view json_body, std::chrono::milliseconds timeout) -> http_post_result {
+              const std::vector<std::pair<std::string, std::string>>& headers,
+              std::string_view json_body, std::chrono::milliseconds timeout) -> http_post_result {
         httplib::Client client{std::string(origin)};
         const auto secs = static_cast<time_t>(timeout.count() / 1000);
         const auto usecs = static_cast<time_t>((timeout.count() % 1000) * 1000);
@@ -175,8 +176,7 @@ using otlp_encode_fn =
 /// move-constructible requirement — while the background thread's captured
 /// `this` (pointing at `impl`, never at the outer wrapper) stays valid across
 /// moves of the wrapper.
-template<typename Record>
-class otlp_http_batch_exporter {
+template<typename Record> class otlp_http_batch_exporter {
 public:
     otlp_http_batch_exporter(otlp_export_config config, otlp_resource resource,
                              std::string signal_path, otlp_encode_fn<Record> encode,
@@ -205,7 +205,7 @@ public:
 private:
     struct impl {
         impl(otlp_export_config cfg, otlp_resource res, std::string path,
-            otlp_encode_fn<Record> enc, http_poster_fn p)
+             otlp_encode_fn<Record> enc, http_poster_fn p)
             : config(std::move(cfg)),
               resource(std::move(res)),
               signal_path(std::move(path)),
@@ -280,9 +280,8 @@ private:
 
             auto backoff = config.retry_backoff_base;
             for (unsigned attempt = 0; attempt <= config.max_retries; ++attempt) {
-                auto result =
-                    poster(config.endpoint_base_url, signal_path, config.headers, json_body,
-                          config.http_timeout);
+                auto result = poster(config.endpoint_base_url, signal_path, config.headers,
+                                     json_body, config.http_timeout);
                 if (result.ok) return;
 
                 const bool retryable = result.status == 0 || result.status == 429 ||

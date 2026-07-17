@@ -99,9 +99,7 @@ public:
     otlp_logger(const otlp_logger&) = delete;
     auto operator=(const otlp_logger&) -> otlp_logger& = delete;
 
-    auto log(log_level level, std::string_view message) -> void {
-        log(level, message, {});
-    }
+    auto log(log_level level, std::string_view message) -> void { log(level, message, {}); }
 
     auto log(log_level level, std::string_view message,
              const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
@@ -126,42 +124,42 @@ public:
 
     auto trace(std::string_view message) -> void { log(log_level::trace, message); }
     auto trace(std::string_view message,
-              const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+               const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::trace, message, key_value_pairs);
     }
 
     auto debug(std::string_view message) -> void { log(log_level::debug, message); }
     auto debug(std::string_view message,
-              const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+               const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::debug, message, key_value_pairs);
     }
 
     auto info(std::string_view message) -> void { log(log_level::info, message); }
     auto info(std::string_view message,
-             const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+              const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::info, message, key_value_pairs);
     }
 
     auto warning(std::string_view message) -> void { log(log_level::warning, message); }
     auto warning(std::string_view message,
-                const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+                 const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::warning, message, key_value_pairs);
     }
 
     auto error(std::string_view message) -> void { log(log_level::error, message); }
     auto error(std::string_view message,
-              const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+               const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::error, message, key_value_pairs);
     }
 
     auto critical(std::string_view message) -> void { log(log_level::critical, message); }
     auto critical(std::string_view message,
-                 const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
+                  const std::vector<std::pair<std::string_view, std::string_view>>& key_value_pairs)
         -> void {
         log(log_level::critical, message, key_value_pairs);
     }

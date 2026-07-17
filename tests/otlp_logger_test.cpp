@@ -41,9 +41,9 @@ auto test_severity_mapping() -> bool {
         const char* text;
     };
     const expectation cases[] = {
-        {kythira::log_level::trace, 1, "TRACE"},   {kythira::log_level::debug, 5, "DEBUG"},
-        {kythira::log_level::info, 9, "INFO"},     {kythira::log_level::warning, 13, "WARN"},
-        {kythira::log_level::error, 17, "ERROR"},  {kythira::log_level::critical, 21, "FATAL"},
+        {kythira::log_level::trace, 1, "TRACE"},  {kythira::log_level::debug, 5, "DEBUG"},
+        {kythira::log_level::info, 9, "INFO"},    {kythira::log_level::warning, 13, "WARN"},
+        {kythira::log_level::error, 17, "ERROR"}, {kythira::log_level::critical, 21, "FATAL"},
     };
 
     std::size_t expected_calls = 0;

@@ -93,7 +93,8 @@ struct node_config {
             throw std::invalid_argument("chaos_node: NODE_ID must be a positive integer");
 
         // OTLP_ENDPOINT — unset/empty means OTLP support stays off.
-        if (std::string otlp_endpoint_str = get_opt("OTLP_ENDPOINT", ""); !otlp_endpoint_str.empty())
+        if (std::string otlp_endpoint_str = get_opt("OTLP_ENDPOINT", "");
+            !otlp_endpoint_str.empty())
             cfg.otlp_endpoint = std::move(otlp_endpoint_str);
 
         cfg.otlp_service_name = get_opt("OTLP_SERVICE_NAME", "kythira-chaos-node");
