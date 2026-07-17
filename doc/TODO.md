@@ -1049,6 +1049,19 @@ as the Cloud Provider Support requirement above.
   cost are required, so it only runs when explicitly opted into, exactly
   like every other real-cloud test in this project.
 
+- [x] **OTLP (OpenTelemetry Protocol)** — `otlp_metrics`
+  (`include/raft/otlp_metrics.hpp`) and `otlp_logger`
+  (`include/raft/otlp_logger.hpp`), covering both metrics and logging (this
+  section's Requirement/Testing-requirement language above applies to
+  logging integrations too, not metrics alone); OTLP/HTTP JSON only, no
+  gRPC/protobuf-binary; shared non-blocking batching exporter
+  (`include/raft/otlp_exporter.hpp`); wired into `chaos_node` as opt-in via
+  `OTLP_ENDPOINT`; spec at `.kiro/specs/otlp-telemetry-backend/`. Because
+  OTLP is vendor-neutral, a suitably configured OpenTelemetry Collector
+  reaches many of the vendor-specific backends still listed below
+  (CloudWatch, Prometheus, etc.) indirectly — those entries are not
+  themselves considered done by this one; they remain useful as direct,
+  Collector-free integrations.
 - [ ] **AWS CloudWatch** — `PutMetricData`-backed implementation forwarding
   to CloudWatch instead of a third-party agent; natural pairing with
   `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`, already implemented
