@@ -27,8 +27,8 @@ auto first_metric(const std::string& body) -> boost::json::object {
     return metrics_arr.at(0).as_object();
 }
 
-auto first_data_point(const boost::json::object& metric,
-                      std::string_view shape_key) -> boost::json::object {
+auto first_data_point(const boost::json::object& metric, std::string_view shape_key)
+    -> boost::json::object {
     return metric.at(shape_key).as_object().at("dataPoints").as_array().at(0).as_object();
 }
 
