@@ -1111,6 +1111,38 @@ as the Cloud Provider Support requirement above.
   scenario tests; Podman runtime support and rootless Podman compatibility;
   25 original tasks + 5 expansion tasks complete;
   spec at `.kiro/specs/docker-chaos/`
+- [ ] **`docker/chaos_node/Dockerfile` can't actually build `chaos_node`** —
+  discovered while validating `.kiro/specs/otlp-telemetry-backend/`'s
+  `docker-otlp-collector-tests` via a manual `arm64-docker-smoke-test.yml`
+  dispatch: that workflow's `docker-chaos-image` build step fails with
+  `ninja: error: unknown target 'chaos_node'`. Root cause: the top-level
+  `CMakeLists.txt` only adds `cmd/chaos_node` (and therefore defines the
+  `chaos_node` target at all) when `folly_FOUND AND Boost_FOUND AND
+  httplib_FOUND`, but `docker/chaos_node/Dockerfile`'s builder stage only
+  `apt-get install`s Boost/OpenSSL/libfiu — never folly, and no
+  `libfolly-dev`-equivalent apt package exists to add. This isn't a loose
+  CMake gate that can just be relaxed: `tcp_raft_types` (what `chaos_node`
+  uses) hardcodes `kythira::Future`/`Promise`/`Try`
+  (`include/raft/future.hpp`), which unconditionally `#include`s real
+  folly headers — it doesn't go through the project's already-existing
+  pluggable `future_default` backend alias (which does support a
+  folly-free `stdexec` backend elsewhere). So `chaos_node` is genuinely,
+  currently folly-dependent, and the only real fix is bootstrapping
+  vcpkg (+ folly, a slow from-source build with its own large dependency
+  chain: fmt, glog, gflags, double-conversion, libevent, etc.) inside the
+  Dockerfile's builder stage — a real Dockerfile rewrite, not a one-line
+  guard fix, and one that would slow down every `docker-chaos-image`
+  build (the shared dependency of every `docker_chaos` scenario test, not
+  just the OTLP one). Likely broken since folly became a hard
+  `chaos_node` requirement — i.e. probably never worked via this exact
+  path, on `main` or otherwise; `arm64-docker-smoke-test.yml` failed for
+  unrelated reasons (stale `CMakeCache.txt`, then a separate pre-existing
+  `httplib::httplib`-without-`httplib_FOUND`-guard bug already fixed
+  in `.kiro/specs/otlp-telemetry-backend/`'s PR) before ever reaching
+  this one. Also blocks fully validating `docker-otlp-collector-tests`
+  end to end — its own code and CMake wiring are otherwise complete (see
+  `.kiro/specs/otlp-telemetry-backend/tasks.md` Task 11), just never
+  actually run in CI yet.
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---
