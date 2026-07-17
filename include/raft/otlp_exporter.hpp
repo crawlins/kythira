@@ -46,8 +46,8 @@ namespace kythira {
 
 // ── JSON helpers shared by otlp_metrics.hpp / otlp_logger.hpp ────────────────
 
-[[nodiscard]] inline auto otlp_string_kv(std::string_view key,
-                                         std::string_view value) -> boost::json::object {
+[[nodiscard]] inline auto otlp_string_kv(std::string_view key, std::string_view value)
+    -> boost::json::object {
     return boost::json::object{
         {"key", boost::json::string(key)},
         {"value", boost::json::object{{"stringValue", boost::json::string(value)}}}};
@@ -109,8 +109,8 @@ struct otlp_export_config {
 using otlp_series_key = std::string;
 
 [[nodiscard]] inline auto otlp_make_series_key(
-    std::string_view name,
-    const std::vector<std::pair<std::string, std::string>>& dimensions) -> otlp_series_key {
+    std::string_view name, const std::vector<std::pair<std::string, std::string>>& dimensions)
+    -> otlp_series_key {
     auto sorted = dimensions;
     std::ranges::sort(sorted);
     std::string key(name);
