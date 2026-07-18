@@ -18,7 +18,9 @@ namespace {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;

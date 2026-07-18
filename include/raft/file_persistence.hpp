@@ -75,10 +75,11 @@ public:
         fiu_do_on("raft/persistence/save_voted_for",
                   throw std::runtime_error("chaos: save_voted_for"););
         std::lock_guard lock(_mu);
-        if constexpr (std::is_same_v<NodeId, std::string>)
+        if constexpr (std::is_same_v<NodeId, std::string>) {
             atomic_write(_dir / "voted_for", node);
-        else
+        } else {
             atomic_write(_dir / "voted_for", std::to_string(node));
+        }
         _voted_for = node;
     }
 
@@ -98,7 +99,9 @@ public:
         auto line = entry_to_json(entry) + "\n";
         auto path = _dir / "log";
         std::ofstream f(path, std::ios::app | std::ios::binary);
-        if (!f) throw std::runtime_error("file_persistence: cannot open log for append");
+        if (!f) {
+            throw std::runtime_error("file_persistence: cannot open log for append");
+        }
         f.write(line.data(), static_cast<std::streamsize>(line.size()));
         f.flush();
     }
@@ -106,7 +109,9 @@ public:
     auto get_log_entry(LogIndex index) -> std::optional<log_entry_t> {
         std::lock_guard lock(_mu);
         auto it = _log.find(index);
-        if (it == _log.end()) return std::nullopt;
+        if (it == _log.end()) {
+            return std::nullopt;
+        }
         return it->second;
     }
 
@@ -115,17 +120,24 @@ public:
         std::vector<log_entry_t> result;
         for (LogIndex i = start; i <= end; ++i) {
             auto it = _log.find(i);
-            if (it != _log.end()) result.push_back(it->second);
+            if (it != _log.end()) {
+                result.push_back(it->second);
+            }
         }
         return result;
     }
 
     auto get_last_log_index() -> LogIndex {
         std::lock_guard lock(_mu);
-        if (_log.empty()) return LogIndex{0};
+        if (_log.empty()) {
+            return LogIndex{0};
+        }
         LogIndex max{0};
-        for (const auto& [idx, _] : _log)
-            if (idx > max) max = idx;
+        for (const auto& [idx, _] : _log) {
+            if (idx > max) {
+                max = idx;
+            }
+        }
         return max;
     }
 
@@ -134,14 +146,18 @@ public:
                   throw std::runtime_error("chaos: truncate_log"););
         std::lock_guard lock(_mu);
         auto it = _log.begin();
-        while (it != _log.end()) it = (it->first >= index) ? _log.erase(it) : std::next(it);
+        while (it != _log.end()) {
+            it = (it->first >= index) ? _log.erase(it) : std::next(it);
+        }
         rewrite_log_file();
     }
 
     auto delete_log_entries_before(LogIndex index) -> void {
         std::lock_guard lock(_mu);
         auto it = _log.begin();
-        while (it != _log.end()) it = (it->first < index) ? _log.erase(it) : std::next(it);
+        while (it != _log.end()) {
+            it = (it->first < index) ? _log.erase(it) : std::next(it);
+        }
         rewrite_log_file();
     }
 
@@ -175,10 +191,11 @@ private:
         // voted_for
         if (auto s = read_file(_dir / "voted_for"); s && *s != "none" && !s->empty()) {
             try {
-                if constexpr (std::is_same_v<NodeId, std::string>)
+                if constexpr (std::is_same_v<NodeId, std::string>) {
                     _voted_for = *s;
-                else
+                } else {
                     _voted_for = static_cast<NodeId>(std::stoull(*s));
+                }
             } catch (...) {
             }
         }
@@ -189,7 +206,9 @@ private:
             std::ifstream f(log_path);
             std::string line;
             while (std::getline(f, line)) {
-                if (line.empty()) continue;
+                if (line.empty()) {
+                    continue;
+                }
                 try {
                     auto entry = json_to_entry(line);
                     _log[entry.index()] = entry;
@@ -210,9 +229,13 @@ private:
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     static auto read_file(const std::filesystem::path& p) -> std::optional<std::string> {
-        if (!std::filesystem::exists(p)) return std::nullopt;
+        if (!std::filesystem::exists(p)) {
+            return std::nullopt;
+        }
         std::ifstream f(p);
-        if (!f) return std::nullopt;
+        if (!f) {
+            return std::nullopt;
+        }
         return std::string(std::istreambuf_iterator<char>(f), {});
     }
 
@@ -221,7 +244,9 @@ private:
         tmp += ".tmp";
         {
             std::ofstream f(tmp, std::ios::trunc | std::ios::binary);
-            if (!f) throw std::runtime_error("file_persistence: cannot write " + tmp.string());
+            if (!f) {
+                throw std::runtime_error("file_persistence: cannot write " + tmp.string());
+            }
             f.write(content.data(), static_cast<std::streamsize>(content.size()));
         }
         std::filesystem::rename(tmp, path);
@@ -232,9 +257,13 @@ private:
         // Write in index order
         std::vector<LogIndex> indices;
         indices.reserve(_log.size());
-        for (const auto& [idx, _] : _log) indices.push_back(idx);
+        for (const auto& [idx, _] : _log) {
+            indices.push_back(idx);
+        }
         std::sort(indices.begin(), indices.end());
-        for (auto idx : indices) content += entry_to_json(_log.at(idx)) + "\n";
+        for (auto idx : indices) {
+            content += entry_to_json(_log.at(idx)) + "\n";
+        }
         atomic_write(_dir / "log", content);
     }
 
@@ -268,20 +297,22 @@ private:
         // primary (new) configuration nodes
         boost::json::array nodes;
         for (auto n : snap.configuration().nodes()) {
-            if constexpr (std::is_same_v<NodeId, std::string>)
+            if constexpr (std::is_same_v<NodeId, std::string>) {
                 nodes.push_back(boost::json::string(n));
-            else
+            } else {
                 nodes.push_back(static_cast<std::uint64_t>(n));
+            }
         }
         obj["nodes"] = nodes;
         obj["is_joint_consensus"] = snap.configuration().is_joint_consensus();
         if (snap.configuration().is_joint_consensus() && snap.configuration().old_nodes()) {
             boost::json::array old_nodes;
             for (auto n : *snap.configuration().old_nodes()) {
-                if constexpr (std::is_same_v<NodeId, std::string>)
+                if constexpr (std::is_same_v<NodeId, std::string>) {
                     old_nodes.push_back(boost::json::string(n));
-                else
+                } else {
                     old_nodes.push_back(static_cast<std::uint64_t>(n));
+                }
             }
             obj["old_nodes"] = old_nodes;
         }
@@ -295,20 +326,22 @@ private:
         snap._last_included_term = static_cast<TermId>(obj["last_included_term"].as_int64());
         snap._state_machine_state = base64_to_bytes(std::string(obj["state"].as_string()));
         for (const auto& n : obj["nodes"].as_array()) {
-            if constexpr (std::is_same_v<NodeId, std::string>)
+            if constexpr (std::is_same_v<NodeId, std::string>) {
                 snap._configuration._nodes.emplace_back(n.as_string());
-            else
+            } else {
                 snap._configuration._nodes.push_back(static_cast<NodeId>(n.as_int64()));
+            }
         }
         snap._configuration._is_joint_consensus =
             obj.contains("is_joint_consensus") ? obj["is_joint_consensus"].as_bool() : false;
         if (snap._configuration._is_joint_consensus && obj.contains("old_nodes")) {
             std::vector<NodeId> old_nodes;
             for (const auto& n : obj["old_nodes"].as_array()) {
-                if constexpr (std::is_same_v<NodeId, std::string>)
+                if constexpr (std::is_same_v<NodeId, std::string>) {
                     old_nodes.emplace_back(n.as_string());
-                else
+                } else {
                     old_nodes.push_back(static_cast<NodeId>(n.as_int64()));
+                }
             }
             snap._configuration._old_nodes = std::move(old_nodes);
         }
@@ -327,8 +360,12 @@ private:
         out.reserve(((in.size() + 2) / 3) * 4);
         for (std::size_t i = 0; i < in.size(); i += 3) {
             std::uint32_t v = static_cast<std::uint8_t>(in[i]) << 16;
-            if (i + 1 < in.size()) v |= static_cast<std::uint8_t>(in[i + 1]) << 8;
-            if (i + 2 < in.size()) v |= static_cast<std::uint8_t>(in[i + 2]);
+            if (i + 1 < in.size()) {
+                v |= static_cast<std::uint8_t>(in[i + 1]) << 8;
+            }
+            if (i + 2 < in.size()) {
+                v |= static_cast<std::uint8_t>(in[i + 2]);
+            }
             out += k_b64[(v >> 18) & 0x3F];
             out += k_b64[(v >> 12) & 0x3F];
             out += (i + 1 < in.size()) ? k_b64[(v >> 6) & 0x3F] : '=';
@@ -341,7 +378,9 @@ private:
         static const auto tbl = [] {
             std::array<int8_t, 256> t{};
             t.fill(-1);
-            for (int i = 0; i < 64; ++i) t[static_cast<uint8_t>(k_b64[i])] = static_cast<int8_t>(i);
+            for (int i = 0; i < 64; ++i) {
+                t[static_cast<uint8_t>(k_b64[i])] = static_cast<int8_t>(i);
+            }
             return t;
         }();
         std::vector<std::byte> out;
@@ -349,9 +388,13 @@ private:
         std::uint32_t v = 0;
         int bits = 0;
         for (char c : in) {
-            if (c == '=') break;
+            if (c == '=') {
+                break;
+            }
             int8_t b = tbl[static_cast<uint8_t>(c)];
-            if (b < 0) continue;
+            if (b < 0) {
+                continue;
+            }
             v = (v << 6) | static_cast<std::uint32_t>(b);
             bits += 6;
             if (bits >= 8) {

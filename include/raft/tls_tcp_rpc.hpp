@@ -102,7 +102,9 @@ struct tls_rpc_trust_policy {
     // this function is the single place both sides ultimately agree an
     // absent certificate is never acceptable).
     [[nodiscard]] auto accepts(X509* presented) const -> bool {
-        if (presented == nullptr) return false;
+        if (presented == nullptr) {
+            return false;
+        }
         if (bootstrap_fingerprint_hex.has_value()) {
             std::string observed;
             try {
@@ -111,7 +113,9 @@ struct tls_rpc_trust_policy {
             } catch (const std::exception&) {
                 observed.clear();
             }
-            if (!observed.empty() && observed == *bootstrap_fingerprint_hex) return true;
+            if (!observed.empty() && observed == *bootstrap_fingerprint_hex) {
+                return true;
+            }
         }
         if (ca_root_pem.has_value() &&
             raft::testing::cert_chains_to_root(presented, *ca_root_pem)) {
@@ -148,7 +152,9 @@ inline auto write_all(SSL* ssl, const void* buf, std::size_t n) -> bool {
     const auto* p = static_cast<const char*>(buf);
     while (n > 0) {
         int w = SSL_write(ssl, p, static_cast<int>(n));
-        if (w <= 0) return false;
+        if (w <= 0) {
+            return false;
+        }
         p += w;
         n -= static_cast<std::size_t>(w);
     }
@@ -159,7 +165,9 @@ inline auto read_all(SSL* ssl, void* buf, std::size_t n) -> bool {
     auto* p = static_cast<char*>(buf);
     while (n > 0) {
         int r = SSL_read(ssl, p, static_cast<int>(n));
-        if (r <= 0) return false;
+        if (r <= 0) {
+            return false;
+        }
         p += r;
         n -= static_cast<std::size_t>(r);
     }
@@ -173,11 +181,17 @@ inline auto frame_send(SSL* ssl, std::string_view payload) -> bool {
 
 inline auto frame_recv(SSL* ssl) -> std::optional<std::string> {
     std::uint32_t net_len{};
-    if (!read_all(ssl, &net_len, 4)) return std::nullopt;
+    if (!read_all(ssl, &net_len, 4)) {
+        return std::nullopt;
+    }
     std::uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 64u * 1024u * 1024u) return std::nullopt;
+    if (len == 0 || len > 64u * 1024u * 1024u) {
+        return std::nullopt;
+    }
     std::string buf(len, '\0');
-    if (!read_all(ssl, buf.data(), len)) return std::nullopt;
+    if (!read_all(ssl, buf.data(), len)) {
+        return std::nullopt;
+    }
     return buf;
 }
 
@@ -224,7 +238,9 @@ struct ssl_conn_guard {
 struct fd_guard {
     int fd;
     ~fd_guard() {
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0) {
+            ::close(fd);
+        }
     }
 };
 
@@ -254,7 +270,9 @@ public:
     explicit client_impl(tls_tcp_rpc_config config) : _config(config) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_client_method());
-        if (_ctx == nullptr) throw std::runtime_error("tls_tcp_rpc_client: SSL_CTX_new failed");
+        if (_ctx == nullptr) {
+            throw std::runtime_error("tls_tcp_rpc_client: SSL_CTX_new failed");
+        }
         SSL_CTX_set_verify(_ctx, SSL_VERIFY_PEER, raft::testing::accept_any_peer_certificate);
         try {
             load_identity(_ctx, config.cert_path, config.key_path, "tls_tcp_rpc_client");
@@ -266,7 +284,9 @@ public:
     }
 
     ~client_impl() {
-        if (_ctx != nullptr) SSL_CTX_free(_ctx);
+        if (_ctx != nullptr) {
+            SSL_CTX_free(_ctx);
+        }
     }
 
     client_impl(const client_impl&) = delete;
@@ -329,7 +349,9 @@ public:
 
         X509* presented = SSL_get1_peer_certificate(raw_ssl);
         bool trusted = policy_snapshot.accepts(presented);
-        if (presented != nullptr) X509_free(presented);
+        if (presented != nullptr) {
+            X509_free(presented);
+        }
         if (!trusted) {
             return FutureFactory::makeExceptionalFuture<Resp>(
                 std::make_exception_ptr(network_exception(
@@ -379,7 +401,9 @@ public:
         : _port(port), _config(std::move(config)) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_server_method());
-        if (_ctx == nullptr) throw std::runtime_error("tls_tcp_rpc_server: SSL_CTX_new failed");
+        if (_ctx == nullptr) {
+            throw std::runtime_error("tls_tcp_rpc_server: SSL_CTX_new failed");
+        }
         SSL_CTX_set_verify(_ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                            raft::testing::accept_any_peer_certificate);
         try {
@@ -393,7 +417,9 @@ public:
 
     ~server_impl() {
         stop();
-        if (_ctx != nullptr) SSL_CTX_free(_ctx);
+        if (_ctx != nullptr) {
+            SSL_CTX_free(_ctx);
+        }
     }
 
     server_impl(const server_impl&) = delete;
@@ -406,7 +432,9 @@ public:
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
 
     void start() {
-        if (_running.exchange(true)) return;
+        if (_running.exchange(true)) {
+            return;
+        }
 
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
@@ -433,13 +461,17 @@ public:
     }
 
     void stop() {
-        if (!_running.exchange(false)) return;
+        if (!_running.exchange(false)) {
+            return;
+        }
         int fd = _listen_fd.exchange(-1);
         if (fd >= 0) {
             ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
-        if (_accept_thread.joinable()) _accept_thread.join();
+        if (_accept_thread.joinable()) {
+            _accept_thread.join();
+        }
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
@@ -466,7 +498,9 @@ private:
     void accept_loop() {
         while (_running) {
             int client = ::accept(_listen_fd.load(), nullptr, nullptr);
-            if (client < 0) break;
+            if (client < 0) {
+                break;
+            }
             std::thread([this, client] {
                 handle(client);
                 ::close(client);
@@ -503,7 +537,9 @@ private:
             raw_ssl = SSL_new(_ctx);
             policy_snapshot = _config.trust_policy;
         }
-        if (raw_ssl == nullptr) return;
+        if (raw_ssl == nullptr) {
+            return;
+        }
 
         SSL_set_fd(raw_ssl, fd);
         if (SSL_accept(raw_ssl) != 1) {
@@ -518,11 +554,17 @@ private:
         // certificate at all" case during the handshake above.
         X509* presented = SSL_get1_peer_certificate(raw_ssl);
         bool trusted = policy_snapshot.accepts(presented);
-        if (presented != nullptr) X509_free(presented);
-        if (!trusted) return;
+        if (presented != nullptr) {
+            X509_free(presented);
+        }
+        if (!trusted) {
+            return;
+        }
 
         auto data = frame_recv(raw_ssl);
-        if (!data.has_value()) return;
+        if (!data.has_value()) {
+            return;
+        }
 
         std::string type = tcp_detail::extract_type_field(*data);
         auto bytes = tcp_detail::str_to_bytes(*data);

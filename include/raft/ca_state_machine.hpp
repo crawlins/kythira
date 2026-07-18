@@ -80,8 +80,12 @@ constexpr std::string_view k_b64_alphabet =
     out.reserve(((in.size() + 2) / 3) * 4);
     for (std::size_t i = 0; i < in.size(); i += 3) {
         std::uint32_t v = static_cast<std::uint32_t>(in[i]) << 16;
-        if (i + 1 < in.size()) v |= static_cast<std::uint32_t>(in[i + 1]) << 8;
-        if (i + 2 < in.size()) v |= static_cast<std::uint32_t>(in[i + 2]);
+        if (i + 1 < in.size()) {
+            v |= static_cast<std::uint32_t>(in[i + 1]) << 8;
+        }
+        if (i + 2 < in.size()) {
+            v |= static_cast<std::uint32_t>(in[i + 2]);
+        }
         out += k_b64_alphabet[(v >> 18) & 0x3F];
         out += k_b64_alphabet[(v >> 12) & 0x3F];
         out += (i + 1 < in.size()) ? k_b64_alphabet[(v >> 6) & 0x3F] : '=';
@@ -94,9 +98,10 @@ constexpr std::string_view k_b64_alphabet =
     static const auto tbl = [] {
         std::array<int8_t, 256> t{};
         t.fill(-1);
-        for (int i = 0; i < 64; ++i)
+        for (int i = 0; i < 64; ++i) {
             t[static_cast<std::uint8_t>(k_b64_alphabet[static_cast<std::size_t>(i)])] =
                 static_cast<int8_t>(i);
+        }
         return t;
     }();
     std::vector<unsigned char> out;
@@ -104,9 +109,13 @@ constexpr std::string_view k_b64_alphabet =
     std::uint32_t v = 0;
     int bits = 0;
     for (char c : in) {
-        if (c == '=') break;
+        if (c == '=') {
+            break;
+        }
         int8_t b = tbl[static_cast<std::uint8_t>(c)];
-        if (b < 0) continue;
+        if (b < 0) {
+            continue;
+        }
         v = (v << 6) | static_cast<std::uint32_t>(b);
         bits += 6;
         if (bits >= 8) {
@@ -124,7 +133,9 @@ constexpr std::string_view k_b64_alphabet =
     while ((code = ERR_get_error()) != 0) {
         char buf[256];
         ERR_error_string_n(code, buf, sizeof(buf));
-        if (!first) out << "; ";
+        if (!first) {
+            out << "; ";
+        }
         out << buf;
         first = false;
     }
@@ -140,7 +151,9 @@ constexpr int k_tag_len = 16;
 
 [[nodiscard]] inline auto random_bytes(int n) -> std::vector<unsigned char> {
     std::vector<unsigned char> buf(static_cast<std::size_t>(n));
-    if (RAND_bytes(buf.data(), n) != 1) throw_openssl_error("ca_state_machine: RAND_bytes failed");
+    if (RAND_bytes(buf.data(), n) != 1) {
+        throw_openssl_error("ca_state_machine: RAND_bytes failed");
+    }
     return buf;
 }
 
@@ -180,33 +193,41 @@ struct cipher_ctx_guard {
     auto key = d::pbkdf2_derive_key(passphrase, salt.data(), static_cast<int>(salt.size()));
 
     EVP_CIPHER_CTX* raw_ctx = EVP_CIPHER_CTX_new();
-    if (raw_ctx == nullptr) d::throw_openssl_error("ca_state_machine: EVP_CIPHER_CTX_new failed");
+    if (raw_ctx == nullptr) {
+        d::throw_openssl_error("ca_state_machine: EVP_CIPHER_CTX_new failed");
+    }
     d::cipher_ctx_guard guard{raw_ctx};
 
-    if (EVP_EncryptInit_ex(raw_ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1)
+    if (EVP_EncryptInit_ex(raw_ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_EncryptInit_ex (cipher) failed");
+    }
     if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_SET_IVLEN, static_cast<int>(nonce.size()),
-                            nullptr) != 1)
+                            nullptr) != 1) {
         d::throw_openssl_error("ca_state_machine: setting GCM IV length failed");
-    if (EVP_EncryptInit_ex(raw_ctx, nullptr, nullptr, key.data(), nonce.data()) != 1)
+    }
+    if (EVP_EncryptInit_ex(raw_ctx, nullptr, nullptr, key.data(), nonce.data()) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_EncryptInit_ex (key/iv) failed");
+    }
 
     std::vector<unsigned char> ciphertext(key_pem.size());
     int out_len = 0;
     if (EVP_EncryptUpdate(raw_ctx, ciphertext.data(), &out_len,
                           reinterpret_cast<const unsigned char*>(key_pem.data()),
-                          static_cast<int>(key_pem.size())) != 1)
+                          static_cast<int>(key_pem.size())) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_EncryptUpdate failed");
+    }
     int total_len = out_len;
     int final_len = 0;
-    if (EVP_EncryptFinal_ex(raw_ctx, ciphertext.data() + total_len, &final_len) != 1)
+    if (EVP_EncryptFinal_ex(raw_ctx, ciphertext.data() + total_len, &final_len) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_EncryptFinal_ex failed");
+    }
     total_len += final_len;
     ciphertext.resize(static_cast<std::size_t>(total_len));
 
     std::vector<unsigned char> tag(static_cast<std::size_t>(d::k_tag_len));
-    if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_GET_TAG, d::k_tag_len, tag.data()) != 1)
+    if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_GET_TAG, d::k_tag_len, tag.data()) != 1) {
         d::throw_openssl_error("ca_state_machine: retrieving GCM tag failed");
+    }
 
     std::vector<unsigned char> bundle;
     bundle.reserve(salt.size() + nonce.size() + tag.size() + ciphertext.size());
@@ -243,26 +264,33 @@ struct cipher_ctx_guard {
     auto key = d::pbkdf2_derive_key(passphrase, salt, d::k_salt_len);
 
     EVP_CIPHER_CTX* raw_ctx = EVP_CIPHER_CTX_new();
-    if (raw_ctx == nullptr) d::throw_openssl_error("ca_state_machine: EVP_CIPHER_CTX_new failed");
+    if (raw_ctx == nullptr) {
+        d::throw_openssl_error("ca_state_machine: EVP_CIPHER_CTX_new failed");
+    }
     d::cipher_ctx_guard guard{raw_ctx};
 
-    if (EVP_DecryptInit_ex(raw_ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1)
+    if (EVP_DecryptInit_ex(raw_ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_DecryptInit_ex (cipher) failed");
-    if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_SET_IVLEN, d::k_nonce_len, nullptr) != 1)
+    }
+    if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_SET_IVLEN, d::k_nonce_len, nullptr) != 1) {
         d::throw_openssl_error("ca_state_machine: setting GCM IV length failed");
-    if (EVP_DecryptInit_ex(raw_ctx, nullptr, nullptr, key.data(), nonce) != 1)
+    }
+    if (EVP_DecryptInit_ex(raw_ctx, nullptr, nullptr, key.data(), nonce) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_DecryptInit_ex (key/iv) failed");
+    }
 
     std::vector<unsigned char> plaintext(ciphertext_len);
     int out_len = 0;
     if (ciphertext_len > 0 && EVP_DecryptUpdate(raw_ctx, plaintext.data(), &out_len, ciphertext,
-                                                static_cast<int>(ciphertext_len)) != 1)
+                                                static_cast<int>(ciphertext_len)) != 1) {
         d::throw_openssl_error("ca_state_machine: EVP_DecryptUpdate failed");
+    }
     int total_len = out_len;
 
     if (EVP_CIPHER_CTX_ctrl(raw_ctx, EVP_CTRL_GCM_SET_TAG, d::k_tag_len,
-                            const_cast<unsigned char*>(tag)) != 1)
+                            const_cast<unsigned char*>(tag)) != 1) {
         d::throw_openssl_error("ca_state_machine: setting GCM tag failed");
+    }
 
     int final_len = 0;
     if (EVP_DecryptFinal_ex(raw_ctx, plaintext.data() + total_len, &final_len) != 1) {
@@ -290,7 +318,9 @@ namespace ca_state_machine_detail {
 
 [[nodiscard]] inline auto string_array(const std::vector<std::string>& v) -> boost::json::array {
     boost::json::array a;
-    for (const auto& s : v) a.push_back(boost::json::string(s));
+    for (const auto& s : v) {
+        a.push_back(boost::json::string(s));
+    }
     return a;
 }
 
@@ -298,7 +328,9 @@ namespace ca_state_machine_detail {
     -> std::vector<std::string> {
     std::vector<std::string> v;
     v.reserve(a.size());
-    for (const auto& e : a) v.emplace_back(e.as_string());
+    for (const auto& e : a) {
+        v.emplace_back(e.as_string());
+    }
     return v;
 }
 
@@ -326,7 +358,7 @@ namespace ca_state_machine_detail {
     e.certificate_pem = std::string(obj.at("certificate_pem").as_string());
     e.not_before = from_epoch_seconds(obj.at("not_before").to_number<std::int64_t>());
     e.not_after = from_epoch_seconds(obj.at("not_after").to_number<std::int64_t>());
-    if (auto* v = obj.if_contains("revoked_at")) {
+    if (const auto* v = obj.if_contains("revoked_at")) {
         e.revoked_at = from_epoch_seconds(v->to_number<std::int64_t>());
     }
     return e;
@@ -336,14 +368,18 @@ namespace ca_state_machine_detail {
     -> std::vector<std::byte> {
     auto s = boost::json::serialize(obj);
     std::vector<std::byte> out(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) out[i] = static_cast<std::byte>(s[i]);
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        out[i] = static_cast<std::byte>(s[i]);
+    }
     return out;
 }
 
 [[nodiscard]] inline auto json_from_bytes(const std::vector<std::byte>& bytes)
     -> boost::json::value {
     std::string s(bytes.size(), '\0');
-    for (std::size_t i = 0; i < bytes.size(); ++i) s[i] = static_cast<char>(bytes[i]);
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        s[i] = static_cast<char>(bytes[i]);
+    }
     return boost::json::parse(s);
 }
 
@@ -356,8 +392,8 @@ namespace ca_state_machine_detail {
     -> std::vector<std::byte> {
     boost::json::object obj;
     obj["type"] = static_cast<int>(ca_command_type::bootstrap_ca);
-    obj["root_cert_pem"] = std::move(root_cert_pem);
-    obj["encrypted_ca_key_pem"] = std::move(encrypted_ca_key_pem);
+    obj["root_cert_pem"] = root_cert_pem;
+    obj["encrypted_ca_key_pem"] = encrypted_ca_key_pem;
     return ca_state_machine_detail::bytes_from_json(obj);
 }
 
@@ -479,11 +515,14 @@ public:
         obj["encrypted_ca_key_pem"] = _encrypted_ca_key_pem;
         obj["root_cert_pem"] = _root_cert_pem;
         boost::json::array ledger_arr;
-        for (const auto& e : _ledger)
+        for (const auto& e : _ledger) {
             ledger_arr.push_back(ca_state_machine_detail::ledger_entry_to_json(e));
+        }
         obj["ledger"] = ledger_arr;
         boost::json::array rpc_tls_ready_arr;
-        for (auto id : _rpc_tls_ready) rpc_tls_ready_arr.push_back(id);
+        for (auto id : _rpc_tls_ready) {
+            rpc_tls_ready_arr.push_back(id);
+        }
         obj["rpc_tls_ready"] = rpc_tls_ready_arr;
         return ca_state_machine_detail::bytes_from_json(obj);
     }

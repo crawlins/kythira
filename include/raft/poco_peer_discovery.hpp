@@ -274,7 +274,7 @@ private:
     }
 
     void on_service_resolved(const void*, const BrowserArgs& args) {
-        if (!_browse_out) {
+        if (_browse_out == nullptr) {
             return;
         }
         const auto& svc = args.service;

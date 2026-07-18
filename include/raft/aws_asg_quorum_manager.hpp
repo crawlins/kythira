@@ -480,8 +480,8 @@ private:
         return std::nullopt;
     }
 
-    auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
-                      const std::map<std::string, bool>& live_map) const
+    [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
+                                    const std::map<std::string, bool>& live_map) const
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         std::vector<NodeId> unreachable;
         std::size_t live_count = 0;

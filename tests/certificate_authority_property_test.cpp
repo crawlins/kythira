@@ -19,28 +19,36 @@ namespace {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
 
 struct crl_deleter {
     void operator()(X509_CRL* c) const {
-        if (c != nullptr) X509_CRL_free(c);
+        if (c != nullptr) {
+            X509_CRL_free(c);
+        }
     }
 };
 using crl_ptr = std::unique_ptr<X509_CRL, crl_deleter>;
 
 struct store_deleter {
     void operator()(X509_STORE* s) const {
-        if (s != nullptr) X509_STORE_free(s);
+        if (s != nullptr) {
+            X509_STORE_free(s);
+        }
     }
 };
 using store_ptr = std::unique_ptr<X509_STORE, store_deleter>;
 
 struct ctx_deleter {
     void operator()(X509_STORE_CTX* c) const {
-        if (c != nullptr) X509_STORE_CTX_free(c);
+        if (c != nullptr) {
+            X509_STORE_CTX_free(c);
+        }
     }
 };
 using ctx_ptr = std::unique_ptr<X509_STORE_CTX, ctx_deleter>;
@@ -223,7 +231,7 @@ BOOST_AUTO_TEST_CASE(sign_csr_rejects_tampered_csr, *boost::unit_test::timeout(3
     // Flip a byte inside the base64 body (skip the PEM header/footer lines) so
     // the CSR either fails to parse or fails its embedded self-signature check.
     auto first_newline = csr.csr_pem.find('\n');
-    auto pos = csr.csr_pem.find_first_not_of("\n", first_newline);
+    auto pos = csr.csr_pem.find_first_not_of('\n', first_newline);
     std::string tampered = csr.csr_pem;
     tampered[pos] = (tampered[pos] == 'A') ? 'B' : 'A';
 

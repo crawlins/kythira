@@ -143,8 +143,8 @@ private:
     // Builds a DELETE-specific-RR-compatible RR: owner/type/rdata are always
     // set so that deletion removes only this node's entry from a shared RRset
     // (RFC 2136 §2.5.4), never the whole RRset.
-    RrPtr make_rr(const std::string& owner, const std::string& type_str, const std::string& rdata,
-                  bool add) const {
+    [[nodiscard]] RrPtr make_rr(const std::string& owner, const std::string& type_str,
+                                const std::string& rdata, bool add) const {
         const uint32_t ttl = add ? _cfg.ttl : 0;
         const std::string rr_text =
             owner + " " + std::to_string(ttl) + " IN " + type_str + " " + rdata;
@@ -153,12 +153,12 @@ private:
         return RrPtr{raw};
     }
 
-    RrPtr make_ptr(const std::string& instance_name, bool add) const {
+    [[nodiscard]] RrPtr make_ptr(const std::string& instance_name, bool add) const {
         return make_rr(_cfg.query.service_name, "PTR", instance_name, add);
     }
 
-    RrPtr make_srv(const std::string& owner, const std::string& host, uint16_t port,
-                   bool add) const {
+    [[nodiscard]] RrPtr make_srv(const std::string& owner, const std::string& host, uint16_t port,
+                                 bool add) const {
         const std::string rdata = std::to_string(_cfg.srv_priority) + " " +
                                   std::to_string(_cfg.srv_weight) + " " + std::to_string(port) +
                                   " " + host;
@@ -168,8 +168,9 @@ private:
     // Builds the cluster-zone UPDATE packet (PTR + instance SRV + cluster-level SRV).
     // Takes the instance/host/port explicitly rather than reading member state so
     // it can be called from register_node() before registration state is committed.
-    PktPtr build_cluster_update(const std::string& instance_name, const std::string& host,
-                                uint16_t port, bool add) const {
+    [[nodiscard]] PktPtr build_cluster_update(const std::string& instance_name,
+                                              const std::string& host, uint16_t port,
+                                              bool add) const {
         std::vector<RrPtr> rrs;
         rrs.push_back(make_ptr(instance_name, add));
         rrs.push_back(make_srv(instance_name, host, port, add));
@@ -178,13 +179,14 @@ private:
     }
 
     // Builds the domain-zone UPDATE packet (domain-level SRV only).
-    PktPtr build_domain_update(const std::string& host, uint16_t port, bool add) const {
+    [[nodiscard]] PktPtr build_domain_update(const std::string& host, uint16_t port,
+                                             bool add) const {
         std::vector<RrPtr> rrs;
         rrs.push_back(make_srv(_cfg.domain_service_name, host, port, add));
         return build_update(_cfg.domain_zone, std::move(rrs));
     }
 
-    PktPtr build_update(const std::string& zone, std::vector<RrPtr> rrs) const {
+    [[nodiscard]] PktPtr build_update(const std::string& zone, std::vector<RrPtr> rrs) const {
         RdfPtr zone_rdf{ldns_dname_new_frm_str(zone.c_str())};
         if (!zone_rdf) {
             throw std::runtime_error("rfc6763_ldns_peer_discovery: invalid zone name");
@@ -212,7 +214,7 @@ private:
         update_list.release();
         additional_list.release();
 
-        if (!raw_pkt) {
+        if (raw_pkt == nullptr) {
             throw std::runtime_error("rfc6763_ldns_peer_discovery: failed to build UPDATE packet");
         }
         PktPtr pkt{raw_pkt};
@@ -221,7 +223,7 @@ private:
         return pkt;
     }
 
-    ResPtr make_resolver() const {
+    [[nodiscard]] ResPtr make_resolver() const {
         ResPtr res{ldns_resolver_new()};
         if (!res) {
             return nullptr;
@@ -232,7 +234,7 @@ private:
         if (ldns_str2rdf_a(&ns_rdf, _cfg.query.server.c_str()) != LDNS_STATUS_OK) {
             ldns_str2rdf_aaaa(&ns_rdf, _cfg.query.server.c_str());
         }
-        if (ns_rdf) {
+        if (ns_rdf != nullptr) {
             ldns_resolver_push_nameserver(res.get(), ns_rdf);
             ldns_rdf_deep_free(ns_rdf);
         }
@@ -265,7 +267,7 @@ private:
         ldns_status st = ldns_resolver_send_pkt(&raw_answer, res.get(), pkt.get());
         PktPtr answer{raw_answer};
 
-        if (st != LDNS_STATUS_OK || !raw_answer) {
+        if (st != LDNS_STATUS_OK || (raw_answer == nullptr)) {
             throw std::runtime_error(std::string("rfc6763_ldns_peer_discovery: send failed: ") +
                                      ldns_get_errorstr_by_id(st));
         }

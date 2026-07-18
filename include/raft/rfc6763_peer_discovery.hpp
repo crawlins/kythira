@@ -65,7 +65,7 @@ public:
             if (ldns_str2rdf_a(&ns_rdf, _cfg.server.c_str()) != LDNS_STATUS_OK) {
                 ldns_str2rdf_aaaa(&ns_rdf, _cfg.server.c_str());
             }
-            if (ns_rdf) {
+            if (ns_rdf != nullptr) {
                 ldns_resolver_push_nameserver(res.get(), ns_rdf);
                 ldns_rdf_deep_free(ns_rdf);
             }
@@ -100,25 +100,25 @@ public:
         }
 
         ldns_rr_list* answer = ldns_pkt_answer(pkt.get());
-        if (!answer) {
+        if (answer == nullptr) {
             return kythira::FutureFactory::makeFuture(std::move(results));
         }
 
         std::size_t count = ldns_rr_list_rr_count(answer);
         for (std::size_t i = 0; i < count; ++i) {
             ldns_rr* rr = ldns_rr_list_rr(answer, i);
-            if (!rr || ldns_rr_get_type(rr) != LDNS_RR_TYPE_SRV) {
+            if ((rr == nullptr) || ldns_rr_get_type(rr) != LDNS_RR_TYPE_SRV) {
                 continue;
             }
             // SRV rdata layout: priority(0), weight(1), port(2), target(3).
             ldns_rdf* port_rdf = ldns_rr_rdf(rr, 2);
             ldns_rdf* target_rdf = ldns_rr_rdf(rr, 3);
-            if (!port_rdf || !target_rdf) {
+            if ((port_rdf == nullptr) || (target_rdf == nullptr)) {
                 continue;
             }
             uint16_t port = ldns_rdf2native_int16(port_rdf);
             char* target_cstr = ldns_rdf2str(target_rdf);
-            if (!target_cstr) {
+            if (target_cstr == nullptr) {
                 continue;
             }
             std::string target{target_cstr};

@@ -33,7 +33,9 @@ static std::uint16_t find_free_port() {
 // Send one newline-terminated command and read the integer reply.
 static int send_cmd(std::uint16_t port, const std::string& cmd) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -999;
+    if (fd < 0) {
+        return -999;
+    }
     sockaddr_in a{};
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
@@ -48,7 +50,9 @@ static int send_cmd(std::uint16_t port, const std::string& cmd) {
     char buf[32]{};
     int n = ::recv(fd, buf, sizeof(buf) - 1, 0);
     ::close(fd);
-    if (n <= 0) return -999;
+    if (n <= 0) {
+        return -999;
+    }
     return std::stoi(std::string(buf, static_cast<std::size_t>(n)));
 }
 

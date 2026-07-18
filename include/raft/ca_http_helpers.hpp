@@ -33,7 +33,9 @@ namespace raft::testing {
 namespace ca_http_helpers_detail {
 struct x509_deleter {
     void operator()(X509* c) const noexcept {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 }  // namespace ca_http_helpers_detail
@@ -49,17 +51,23 @@ inline auto pem_material_to_json(const pem_material& mat) -> boost::json::object
 
 inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_signing_options {
     csr_signing_options opts;
-    if (auto* v = obj.if_contains("dns_names"); v && v->is_array()) {
-        for (const auto& e : v->as_array()) opts.dns_names.push_back(std::string(e.as_string()));
+    if (const auto* v = obj.if_contains("dns_names"); (v != nullptr) && v->is_array()) {
+        for (const auto& e : v->as_array()) {
+            opts.dns_names.push_back(std::string(e.as_string()));
+        }
     }
-    if (auto* v = obj.if_contains("ip_addresses"); v && v->is_array()) {
-        for (const auto& e : v->as_array()) opts.ip_addresses.push_back(std::string(e.as_string()));
+    if (const auto* v = obj.if_contains("ip_addresses"); (v != nullptr) && v->is_array()) {
+        for (const auto& e : v->as_array()) {
+            opts.ip_addresses.push_back(std::string(e.as_string()));
+        }
     }
-    if (auto* v = obj.if_contains("server_auth"); v && v->is_bool())
+    if (const auto* v = obj.if_contains("server_auth"); (v != nullptr) && v->is_bool()) {
         opts.server_auth = v->as_bool();
-    if (auto* v = obj.if_contains("client_auth"); v && v->is_bool())
+    }
+    if (const auto* v = obj.if_contains("client_auth"); (v != nullptr) && v->is_bool()) {
         opts.client_auth = v->as_bool();
-    if (auto* v = obj.if_contains("validity_days"); v && v->is_number()) {
+    }
+    if (const auto* v = obj.if_contains("validity_days"); (v != nullptr) && v->is_number()) {
         opts.validity = std::chrono::hours(24 * v->to_number<int>());
     }
     return opts;
@@ -78,7 +86,9 @@ inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_sig
     std::ostringstream out;
     out << std::hex << std::uppercase;
     for (unsigned int i = 0; i < digest_len; ++i) {
-        if (i > 0) out << ':';
+        if (i > 0) {
+            out << ':';
+        }
         out.width(2);
         out.fill('0');
         out << static_cast<unsigned int>(digest[i]);
@@ -96,11 +106,15 @@ inline auto parse_csr_signing_options(const boost::json::object& obj) -> csr_sig
 [[nodiscard]] inline auto root_cert_from_pem_bundle(const std::string& pem_bundle)
     -> x509_ptr_generic {
     BIO* bio = BIO_new_mem_buf(pem_bundle.data(), static_cast<int>(pem_bundle.size()));
-    if (bio == nullptr) throw std::runtime_error("ca_http_helpers: BIO_new_mem_buf failed");
+    if (bio == nullptr) {
+        throw std::runtime_error("ca_http_helpers: BIO_new_mem_buf failed");
+    }
     std::vector<x509_ptr_generic> certs;
     while (true) {
         X509* c = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-        if (c == nullptr) break;
+        if (c == nullptr) {
+            break;
+        }
         certs.emplace_back(c);
     }
     BIO_free(bio);
@@ -148,7 +162,7 @@ inline auto options_from_presented_cert(X509* cert) -> csr_signing_options {
         GENERAL_NAMES_free(san_ext);
     }
 
-    bool has_eku = X509_get_extension_flags(cert) & EXFLAG_XKUSAGE;
+    bool has_eku = (X509_get_extension_flags(cert) & EXFLAG_XKUSAGE) != 0u;
     if (has_eku) {
         std::uint32_t xkusage = X509_get_extended_key_usage(cert);
         opts.server_auth = (xkusage & XKU_SSL_SERVER) != 0;
@@ -165,7 +179,9 @@ inline auto cert_chains_to_root(X509* cert, const std::string& root_pem) -> bool
     BIO* bio = BIO_new_mem_buf(root_pem.data(), static_cast<int>(root_pem.size()));
     X509* root = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (root == nullptr) return false;
+    if (root == nullptr) {
+        return false;
+    }
 
     X509_STORE* store = X509_STORE_new();
     X509_STORE_add_cert(store, root);

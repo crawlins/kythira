@@ -62,7 +62,7 @@ public:
     }
 
     /// @brief Returns an empty peer list immediately.
-    auto find_peers(std::chrono::milliseconds) const
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
         -> kythira::Future<std::vector<peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(std::vector<peer_info<NodeId, Address>>{});
     }
@@ -98,7 +98,7 @@ public:
     }
 
     /// @brief Returns a copy of the full fixed peer list.
-    auto find_peers(std::chrono::milliseconds) const
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
         -> kythira::Future<std::vector<peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(std::vector<peer_info<NodeId, Address>>(_peers));
     }

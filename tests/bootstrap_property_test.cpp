@@ -44,7 +44,7 @@ public:
         return kythira::FutureFactory::makeFuture();
     }
 
-    auto find_peers(std::chrono::milliseconds) const
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
         -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>(_peers));

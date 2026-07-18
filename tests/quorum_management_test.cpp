@@ -69,13 +69,17 @@ BOOST_AUTO_TEST_CASE(assess_quorum_per_group_breakdown, *boost::unit_test::timeo
 
     const auto* az_a = [&]() -> const kythira::placement_group_health<std::uint64_t, std::string>* {
         for (const auto& g : health.groups) {
-            if (g.group_id == "az-a") return &g;
+            if (g.group_id == "az-a") {
+                return &g;
+            }
         }
         return nullptr;
     }();
     const auto* az_b = [&]() -> const kythira::placement_group_health<std::uint64_t, std::string>* {
         for (const auto& g : health.groups) {
-            if (g.group_id == "az-b") return &g;
+            if (g.group_id == "az-b") {
+                return &g;
+            }
         }
         return nullptr;
     }();

@@ -66,14 +66,14 @@ auto validate_certificate_file(const std::string& cert_path) -> void {
 
     // Create BIO from certificate content
     BIO* bio = BIO_new_mem_buf(cert_content.c_str(), static_cast<int>(cert_content.length()));
-    if (!bio) {
+    if (bio == nullptr) {
         throw kythira::ssl_configuration_error(
             std::format("Failed to create BIO for certificate: {}", cert_path));
     }
 
     // Try to load as PEM first
     X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
-    if (!cert) {
+    if (cert == nullptr) {
         // Reset BIO and try DER format
         BIO_reset(bio);
         cert = d2i_X509_bio(bio, nullptr);
@@ -81,7 +81,7 @@ auto validate_certificate_file(const std::string& cert_path) -> void {
 
     BIO_free(bio);
 
-    if (!cert) {
+    if (cert == nullptr) {
         unsigned long err = ERR_get_error();
         char err_buf[256];
         ERR_error_string_n(err, err_buf, sizeof(err_buf));
@@ -132,7 +132,7 @@ auto validate_private_key_file(const std::string& key_path) -> void {
 
     // Create BIO from key content
     BIO* bio = BIO_new_mem_buf(key_content.c_str(), static_cast<int>(key_content.length()));
-    if (!bio) {
+    if (bio == nullptr) {
         throw kythira::ssl_configuration_error(
             std::format("Failed to create BIO for private key: {}", key_path));
     }
@@ -141,7 +141,7 @@ auto validate_private_key_file(const std::string& key_path) -> void {
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
 
-    if (!pkey) {
+    if (pkey == nullptr) {
         unsigned long err = ERR_get_error();
         char err_buf[256];
         ERR_error_string_n(err, err_buf, sizeof(err_buf));
@@ -166,13 +166,13 @@ auto validate_certificate_key_pair(const std::string& cert_path, const std::stri
 
     BIO* cert_bio = BIO_new_mem_buf(cert_content.c_str(), static_cast<int>(cert_content.length()));
     X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
-    if (!cert) {
+    if (cert == nullptr) {
         BIO_reset(cert_bio);
         cert = d2i_X509_bio(cert_bio, nullptr);
     }
     BIO_free(cert_bio);
 
-    if (!cert) {
+    if (cert == nullptr) {
         throw kythira::certificate_validation_error(
             std::format("Failed to load certificate for key pair validation: {}", cert_path));
     }
@@ -187,7 +187,7 @@ auto validate_certificate_key_pair(const std::string& cert_path, const std::stri
     EVP_PKEY* pkey = PEM_read_bio_PrivateKey(key_bio, nullptr, nullptr, nullptr);
     BIO_free(key_bio);
 
-    if (!pkey) {
+    if (pkey == nullptr) {
         X509_free(cert);
         throw kythira::certificate_validation_error(
             std::format("Failed to load private key for key pair validation: {}", key_path));
@@ -195,7 +195,7 @@ auto validate_certificate_key_pair(const std::string& cert_path, const std::stri
 
     // Verify that the private key matches the certificate
     EVP_PKEY* cert_pkey = X509_get_pubkey(cert);
-    if (!cert_pkey) {
+    if (cert_pkey == nullptr) {
         EVP_PKEY_free(pkey);
         X509_free(cert);
         throw kythira::certificate_validation_error(
@@ -235,20 +235,20 @@ auto validate_certificate_chain(const std::string& cert_path, const std::string&
 
     BIO* cert_bio = BIO_new_mem_buf(cert_content.c_str(), static_cast<int>(cert_content.length()));
     X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
-    if (!cert) {
+    if (cert == nullptr) {
         BIO_reset(cert_bio);
         cert = d2i_X509_bio(cert_bio, nullptr);
     }
     BIO_free(cert_bio);
 
-    if (!cert) {
+    if (cert == nullptr) {
         throw kythira::certificate_validation_error(
             std::format("Failed to load certificate for chain validation: {}", cert_path));
     }
 
     // Create certificate store
     X509_STORE* store = X509_STORE_new();
-    if (!store) {
+    if (store == nullptr) {
         X509_free(cert);
         throw kythira::certificate_validation_error("Failed to create certificate store");
     }
@@ -262,13 +262,13 @@ auto validate_certificate_chain(const std::string& cert_path, const std::string&
 
         BIO* ca_bio = BIO_new_mem_buf(ca_content.c_str(), static_cast<int>(ca_content.length()));
         X509* ca_cert = PEM_read_bio_X509(ca_bio, nullptr, nullptr, nullptr);
-        if (!ca_cert) {
+        if (ca_cert == nullptr) {
             BIO_reset(ca_bio);
             ca_cert = d2i_X509_bio(ca_bio, nullptr);
         }
         BIO_free(ca_bio);
 
-        if (!ca_cert) {
+        if (ca_cert == nullptr) {
             X509_STORE_free(store);
             X509_free(cert);
             throw kythira::certificate_validation_error(
@@ -295,7 +295,7 @@ auto validate_certificate_chain(const std::string& cert_path, const std::string&
 
     // Create certificate store context for validation
     X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-    if (!ctx) {
+    if (ctx == nullptr) {
         X509_STORE_free(store);
         X509_free(cert);
         throw kythira::certificate_validation_error("Failed to create certificate store context");
@@ -348,13 +348,13 @@ auto check_certificate_expiration(const std::string& cert_path) -> void {
 
     BIO* cert_bio = BIO_new_mem_buf(cert_content.c_str(), static_cast<int>(cert_content.length()));
     X509* cert = PEM_read_bio_X509(cert_bio, nullptr, nullptr, nullptr);
-    if (!cert) {
+    if (cert == nullptr) {
         BIO_reset(cert_bio);
         cert = d2i_X509_bio(cert_bio, nullptr);
     }
     BIO_free(cert_bio);
 
-    if (!cert) {
+    if (cert == nullptr) {
         throw kythira::certificate_validation_error(
             std::format("Failed to load certificate for expiration check: {}", cert_path));
     }
@@ -389,7 +389,9 @@ auto check_certificate_expiration(const std::string& cert_path) -> void {
 
 // Helper to convert ASN1_TIME to time_t
 auto ASN1_TIME_to_time_t(ASN1_TIME* asn1_time) -> time_t {
-    if (!asn1_time) return 0;
+    if (asn1_time == nullptr) {
+        return 0;
+    }
 
     // Use OpenSSL's ASN1_TIME_to_tm function if available (OpenSSL 1.1.1+)
     struct tm tm_time;
@@ -406,10 +408,14 @@ auto ASN1_TIME_to_time_t(ASN1_TIME* asn1_time) -> time_t {
 
     if (asn1_time->type == V_ASN1_UTCTIME) {
         // YYMMDDHHMMSSZ format
-        if (len != 13) return 0;
+        if (len != 13) {
+            return 0;
+        }
 
         int year = (time_str[0] - '0') * 10 + (time_str[1] - '0');
-        if (year < 50) year += 100;  // Y2K handling: 00-49 = 2000-2049, 50-99 = 1950-1999
+        if (year < 50) {
+            year += 100;  // Y2K handling: 00-49 = 2000-2049, 50-99 = 1950-1999
+        }
         tm_time.tm_year = year;
 
         tm_time.tm_mon = (time_str[2] - '0') * 10 + (time_str[3] - '0') - 1;
@@ -419,7 +425,9 @@ auto ASN1_TIME_to_time_t(ASN1_TIME* asn1_time) -> time_t {
         tm_time.tm_sec = (time_str[10] - '0') * 10 + (time_str[11] - '0');
     } else if (asn1_time->type == V_ASN1_GENERALIZEDTIME) {
         // YYYYMMDDHHMMSSZ format
-        if (len != 15) return 0;
+        if (len != 15) {
+            return 0;
+        }
 
         tm_time.tm_year = (time_str[0] - '0') * 1000 + (time_str[1] - '0') * 100 +
                           (time_str[2] - '0') * 10 + (time_str[3] - '0') - 1900;
@@ -442,7 +450,7 @@ auto validate_cipher_suites(const std::string& cipher_suites) -> void {
 
     // Create a temporary SSL context to validate cipher suites
     SSL_CTX* ctx = SSL_CTX_new(TLS_method());
-    if (!ctx) {
+    if (ctx == nullptr) {
         throw kythira::ssl_context_error(
             "Failed to create SSL context for cipher suite validation");
     }
@@ -461,10 +469,18 @@ auto validate_cipher_suites(const std::string& cipher_suites) -> void {
 }
 
 auto validate_tls_version(const std::string& version) -> int {
-    if (version == "TLSv1.0") return TLS1_VERSION;
-    if (version == "TLSv1.1") return TLS1_1_VERSION;
-    if (version == "TLSv1.2") return TLS1_2_VERSION;
-    if (version == "TLSv1.3") return TLS1_3_VERSION;
+    if (version == "TLSv1.0") {
+        return TLS1_VERSION;
+    }
+    if (version == "TLSv1.1") {
+        return TLS1_1_VERSION;
+    }
+    if (version == "TLSv1.2") {
+        return TLS1_2_VERSION;
+    }
+    if (version == "TLSv1.3") {
+        return TLS1_3_VERSION;
+    }
 
     throw kythira::ssl_configuration_error(std::format("Unsupported TLS version: {}", version));
 }
@@ -495,7 +511,7 @@ auto validate_tls_version_range(const std::string& min_version, const std::strin
 auto configure_ssl_context(SSL_CTX* ctx, const std::string& cipher_suites,
                            const std::string& min_tls_version, const std::string& max_tls_version)
     -> void {
-    if (!ctx) {
+    if (ctx == nullptr) {
         throw kythira::ssl_context_error("Cannot configure null SSL context");
     }
 
@@ -535,13 +551,13 @@ auto configure_ssl_context(SSL_CTX* ctx, const std::string& cipher_suites,
 }
 
 auto verify_client_certificate(X509* client_cert, X509_STORE* ca_store) -> bool {
-    if (!client_cert || !ca_store) {
+    if ((client_cert == nullptr) || (ca_store == nullptr)) {
         return false;
     }
 
     // Create certificate store context for validation
     X509_STORE_CTX* ctx = X509_STORE_CTX_new();
-    if (!ctx) {
+    if (ctx == nullptr) {
         return false;
     }
 
@@ -560,19 +576,19 @@ auto verify_client_certificate(X509* client_cert, X509_STORE* ca_store) -> bool 
 }
 
 auto extract_client_certificate_info(X509* client_cert) -> std::string {
-    if (!client_cert) {
+    if (client_cert == nullptr) {
         return "No client certificate";
     }
 
     // Extract subject name
     X509_NAME* subject = X509_get_subject_name(client_cert);
-    if (!subject) {
+    if (subject == nullptr) {
         return "Invalid client certificate subject";
     }
 
     // Convert subject name to string
     BIO* bio = BIO_new(BIO_s_mem());
-    if (!bio) {
+    if (bio == nullptr) {
         return "Failed to create BIO for subject";
     }
 
@@ -585,7 +601,7 @@ auto extract_client_certificate_info(X509* client_cert) -> std::string {
     long subject_len = BIO_get_mem_data(bio, &subject_str);
 
     std::string result;
-    if (subject_str && subject_len > 0) {
+    if ((subject_str != nullptr) && subject_len > 0) {
         result = std::string(subject_str, subject_len);
     } else {
         result = "Empty subject name";
@@ -794,13 +810,13 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_client<Types>::configure_ssl_client(httplib::Client* client) -> void {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-    if (!client) {
+    if (client == nullptr) {
         throw kythira::ssl_configuration_error("Cannot configure SSL on null client");
     }
 
     // Set CA certificate path for server verification
     if (!_config.ca_cert_path.empty()) {
-        client->set_ca_cert_path(_config.ca_cert_path.c_str());
+        client->set_ca_cert_path(_config.ca_cert_path);
     }
 
     // Enable/disable certificate verification

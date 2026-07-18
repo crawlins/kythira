@@ -290,7 +290,9 @@ BOOST_AUTO_TEST_CASE(dot_local_validation_succeeds_on_an_mdns_capable_network,
     hints.ai_family = AF_UNSPEC;
     addrinfo* resolved = nullptr;
     int rc = getaddrinfo(local_identifier.c_str(), nullptr, &hints, &resolved);
-    if (resolved != nullptr) freeaddrinfo(resolved);
+    if (resolved != nullptr) {
+        freeaddrinfo(resolved);
+    }
     if (rc != 0) {
         BOOST_TEST_MESSAGE(
             "skipping: " << local_identifier

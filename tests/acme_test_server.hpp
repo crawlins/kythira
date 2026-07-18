@@ -58,12 +58,16 @@ namespace acme_test_server_detail {
     std::mt19937_64 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
     std::vector<unsigned char> bytes(16);
-    for (auto& b : bytes) b = static_cast<unsigned char>(dist(gen));
+    for (auto& b : bytes) {
+        b = static_cast<unsigned char>(dist(gen));
+    }
     return acme_jws::base64url_encode(bytes);
 }
 
 [[nodiscard]] inline auto ends_with(const std::string& value, const std::string& suffix) -> bool {
-    if (suffix.size() > value.size()) return false;
+    if (suffix.size() > value.size()) {
+        return false;
+    }
     return std::equal(suffix.rbegin(), suffix.rend(), value.rbegin());
 }
 
@@ -85,19 +89,27 @@ inline auto mdns_capability_override() -> std::optional<bool>& {
 // actually configured.
 [[nodiscard]] inline auto nsswitch_has_mdns_module() -> bool {
     std::ifstream f("/etc/nsswitch.conf");
-    if (!f.is_open()) return false;  // can't determine -> fail closed (report unavailable)
+    if (!f.is_open()) {
+        return false;  // can't determine -> fail closed (report unavailable)
+    }
     std::string line;
     while (std::getline(f, line)) {
         auto first = line.find_first_not_of(" \t");
-        if (first == std::string::npos) continue;
-        if (line.compare(first, 6, "hosts:") != 0) continue;
+        if (first == std::string::npos) {
+            continue;
+        }
+        if (line.compare(first, 6, "hosts:") != 0) {
+            continue;
+        }
         return line.find("mdns") != std::string::npos;
     }
     return false;
 }
 
 [[nodiscard]] inline auto mdns_capability_available() -> bool {
-    if (mdns_capability_override().has_value()) return *mdns_capability_override();
+    if (mdns_capability_override().has_value()) {
+        return *mdns_capability_override();
+    }
     return nsswitch_has_mdns_module();
 }
 
@@ -138,9 +150,10 @@ class acme_test_server {
 public:
     using options = acme_test_server_options;
 
-    explicit acme_test_server(options opts = {}) : _opts(std::move(opts)) {
+    explicit acme_test_server(options opts = {})
+        : _opts(std::move(opts)), _actual_port(_server.bind_to_any_port(_opts.bind_address)) {
         setup_routes();
-        _actual_port = _server.bind_to_any_port(_opts.bind_address);
+
         if (_actual_port <= 0) {
             throw std::runtime_error("acme_test_server: failed to bind to " + _opts.bind_address);
         }
@@ -154,7 +167,9 @@ public:
 
     ~acme_test_server() {
         _server.stop();
-        if (_server_thread.joinable()) _server_thread.join();
+        if (_server_thread.joinable()) {
+            _server_thread.join();
+        }
     }
 
     acme_test_server(const acme_test_server&) = delete;
@@ -182,9 +197,13 @@ public:
         std::optional<std::string> result;
         for (const auto& [id, authz] : _authorizations) {
             (void)id;
-            if (std::string(authz.identifier.at("value").as_string()) != identifier_value) continue;
+            if (std::string(authz.identifier.at("value").as_string()) != identifier_value) {
+                continue;
+            }
             for (const auto& c : authz.challenges) {
-                if (c.type == challenge_type) result = c.status;
+                if (c.type == challenge_type) {
+                    result = c.status;
+                }
             }
         }
         return result;
@@ -205,9 +224,13 @@ public:
         std::optional<std::string> result;
         for (const auto& [id, authz] : _authorizations) {
             (void)id;
-            if (std::string(authz.identifier.at("value").as_string()) != identifier_value) continue;
+            if (std::string(authz.identifier.at("value").as_string()) != identifier_value) {
+                continue;
+            }
             for (const auto& c : authz.challenges) {
-                if (c.type == challenge_type) result = c.error;
+                if (c.type == challenge_type) {
+                    result = c.error;
+                }
             }
         }
         return result;
@@ -411,7 +434,9 @@ private:
         boost::json::object obj;
         obj["status"] = order.status;
         boost::json::array ids;
-        for (const auto& i : order.identifiers) ids.push_back(i);
+        for (const auto& i : order.identifiers) {
+            ids.push_back(i);
+        }
         obj["identifiers"] = ids;
         boost::json::array authzs;
         for (const auto& id : order.authorization_ids) {
@@ -430,14 +455,22 @@ private:
     // invalid, otherwise left as "pending"/"processing"/"valid" (the latter
     // only ever set by finalize()).
     auto recompute_order_status(order_record& order) -> void {
-        if (order.status == "valid") return;
+        if (order.status == "valid") {
+            return;
+        }
         bool any_invalid = false;
         bool all_valid = true;
         for (const auto& authz_id : order.authorization_ids) {
             auto it = _authorizations.find(authz_id);
-            if (it == _authorizations.end()) continue;
-            if (it->second.status == "invalid") any_invalid = true;
-            if (it->second.status != "valid") all_valid = false;
+            if (it == _authorizations.end()) {
+                continue;
+            }
+            if (it->second.status == "invalid") {
+                any_invalid = true;
+            }
+            if (it->second.status != "valid") {
+                all_valid = false;
+            }
         }
         if (any_invalid) {
             order.status = "invalid";
@@ -463,7 +496,9 @@ private:
                                           const challenge_record& challenge) -> validation_result {
         bool skip = false;
         fiu_do_on("raft/acme/test_server/skip_challenge_validation", skip = true;);
-        if (skip) return {true, std::nullopt};
+        if (skip) {
+            return {true, std::nullopt};
+        }
 
         std::string identifier_value = std::string(authz.identifier.at("value").as_string());
         std::string expected_key_authorization =
@@ -488,10 +523,14 @@ private:
             client.set_connection_timeout(5, 0);
             client.set_read_timeout(5, 0);
             auto res = client.Get("/.well-known/acme-challenge/" + challenge.token);
-            if (!res || res->status != 200) return {false, std::nullopt};
+            if (!res || res->status != 200) {
+                return {false, std::nullopt};
+            }
             // Trim trailing whitespace/newlines the responder may have added.
             std::string body = res->body;
-            while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) body.pop_back();
+            while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) {
+                body.pop_back();
+            }
             return {body == expected_key_authorization, std::nullopt};
         }
 
@@ -506,38 +545,51 @@ private:
             }());
 
             ldns_resolver* res = nullptr;
-            if (ldns_resolver_new_frm_file(&res, nullptr) != LDNS_STATUS_OK || res == nullptr)
+            if (ldns_resolver_new_frm_file(&res, nullptr) != LDNS_STATUS_OK || res == nullptr) {
                 return {false, std::nullopt};
+            }
             std::unique_ptr<ldns_resolver, void (*)(ldns_resolver*)> res_guard{res,
                                                                                ldns_resolver_free};
 
             ldns_rdf* qname_rdf = ldns_dname_new_frm_str(qname.c_str());
-            if (qname_rdf == nullptr) return {false, std::nullopt};
+            if (qname_rdf == nullptr) {
+                return {false, std::nullopt};
+            }
             ldns_pkt* pkt =
                 ldns_resolver_query(res, qname_rdf, LDNS_RR_TYPE_TXT, LDNS_RR_CLASS_IN, LDNS_RD);
             ldns_rdf_deep_free(qname_rdf);
-            if (pkt == nullptr) return {false, std::nullopt};
+            if (pkt == nullptr) {
+                return {false, std::nullopt};
+            }
             std::unique_ptr<ldns_pkt, void (*)(ldns_pkt*)> pkt_guard{pkt, ldns_pkt_free};
 
             ldns_rr_list* answers =
                 ldns_pkt_rr_list_by_type(pkt, LDNS_RR_TYPE_TXT, LDNS_SECTION_ANSWER);
-            if (answers == nullptr) return {false, std::nullopt};
+            if (answers == nullptr) {
+                return {false, std::nullopt};
+            }
             std::unique_ptr<ldns_rr_list, void (*)(ldns_rr_list*)> answers_guard{
                 answers, ldns_rr_list_deep_free};
 
             for (std::size_t i = 0; i < ldns_rr_list_rr_count(answers); ++i) {
                 ldns_rr* rr = ldns_rr_list_rr(answers, i);
                 ldns_rdf* rdf = ldns_rr_rdf(rr, 0);
-                if (rdf == nullptr) continue;
+                if (rdf == nullptr) {
+                    continue;
+                }
                 char* str = ldns_rdf2str(rdf);
-                if (str == nullptr) continue;
+                if (str == nullptr) {
+                    continue;
+                }
                 std::string txt_value(str);
                 free(str);  // NOLINT(cppcoreguidelines-no-malloc) — ldns allocates with malloc
                 // ldns_rdf2str wraps TXT strings in quotes.
                 if (!txt_value.empty() && txt_value.front() == '"' && txt_value.back() == '"') {
                     txt_value = txt_value.substr(1, txt_value.size() - 2);
                 }
-                if (txt_value == expected_digest) return {true, std::nullopt};
+                if (txt_value == expected_digest) {
+                    return {true, std::nullopt};
+                }
             }
             return {false, std::nullopt};
 #else
@@ -699,7 +751,9 @@ private:
                                            "unknown authorization");
                     }
                     for (auto& c : authz_it->second.challenges) {
-                        if (c.type == challenge_type) challenge_ptr = &c;
+                        if (c.type == challenge_type) {
+                            challenge_ptr = &c;
+                        }
                     }
                     if (challenge_ptr == nullptr) {
                         throw acme_problem("urn:ietf:params:acme:error:malformed", 404,
@@ -712,7 +766,9 @@ private:
                 _server_thumbprint_for_test_only = thumbprint;
                 challenge_record challenge_snapshot;
                 for (const auto& c : authz_copy.challenges) {
-                    if (c.type == challenge_type) challenge_snapshot = c;
+                    if (c.type == challenge_type) {
+                        challenge_snapshot = c;
+                    }
                 }
                 auto result = validate_challenge(authz_copy, challenge_snapshot);
                 bool valid = result.valid;

@@ -147,7 +147,9 @@ BOOST_AUTO_TEST_CASE(test_binary_command_survives_reload, *boost::unit_test::tim
     TempDir d;
     // All 256 byte values including null bytes — exercises the base64 codec end-to-end
     std::vector<std::byte> all_bytes(256);
-    for (int i = 0; i < 256; ++i) all_bytes[i] = static_cast<std::byte>(i);
+    for (int i = 0; i < 256; ++i) {
+        all_bytes[i] = static_cast<std::byte>(i);
+    }
     {
         engine_t eng(d.path);
         eng.append_log_entry(make_entry(1, 1, all_bytes));
@@ -161,8 +163,9 @@ BOOST_AUTO_TEST_CASE(test_binary_command_survives_reload, *boost::unit_test::tim
 BOOST_AUTO_TEST_CASE(test_log_entries_range, *boost::unit_test::timeout(10)) {
     TempDir d;
     engine_t eng(d.path);
-    for (std::uint64_t i = 1; i <= 5; ++i)
+    for (std::uint64_t i = 1; i <= 5; ++i) {
         eng.append_log_entry(make_entry(1, i, {static_cast<std::byte>(i)}));
+    }
     auto r = eng.get_log_entries(2, 4);
     BOOST_REQUIRE_EQUAL(r.size(), 3u);
     BOOST_TEST(r[0].index() == 2u);
@@ -173,7 +176,9 @@ BOOST_AUTO_TEST_CASE(test_log_entries_range, *boost::unit_test::timeout(10)) {
 BOOST_AUTO_TEST_CASE(test_truncate_log, *boost::unit_test::timeout(10)) {
     TempDir d;
     engine_t eng(d.path);
-    for (std::uint64_t i = 1; i <= 5; ++i) eng.append_log_entry(make_entry(1, i));
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        eng.append_log_entry(make_entry(1, i));
+    }
     eng.truncate_log(3);
     BOOST_TEST(eng.get_last_log_index() == 2u);
     BOOST_TEST(!eng.get_log_entry(3).has_value());
@@ -186,7 +191,9 @@ BOOST_AUTO_TEST_CASE(test_truncate_survives_reload, *boost::unit_test::timeout(1
     TempDir d;
     {
         engine_t eng(d.path);
-        for (std::uint64_t i = 1; i <= 5; ++i) eng.append_log_entry(make_entry(1, i));
+        for (std::uint64_t i = 1; i <= 5; ++i) {
+            eng.append_log_entry(make_entry(1, i));
+        }
         eng.truncate_log(3);
     }
     engine_t eng2(d.path);
@@ -198,7 +205,9 @@ BOOST_AUTO_TEST_CASE(test_truncate_survives_reload, *boost::unit_test::timeout(1
 BOOST_AUTO_TEST_CASE(test_delete_log_entries_before, *boost::unit_test::timeout(10)) {
     TempDir d;
     engine_t eng(d.path);
-    for (std::uint64_t i = 1; i <= 5; ++i) eng.append_log_entry(make_entry(1, i));
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        eng.append_log_entry(make_entry(1, i));
+    }
     eng.delete_log_entries_before(3);
     BOOST_TEST(!eng.get_log_entry(1).has_value());
     BOOST_TEST(!eng.get_log_entry(2).has_value());
@@ -210,7 +219,9 @@ BOOST_AUTO_TEST_CASE(test_delete_before_survives_reload, *boost::unit_test::time
     TempDir d;
     {
         engine_t eng(d.path);
-        for (std::uint64_t i = 1; i <= 5; ++i) eng.append_log_entry(make_entry(1, i));
+        for (std::uint64_t i = 1; i <= 5; ++i) {
+            eng.append_log_entry(make_entry(1, i));
+        }
         eng.delete_log_entries_before(4);
     }
     engine_t eng2(d.path);

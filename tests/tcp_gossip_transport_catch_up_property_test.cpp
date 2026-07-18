@@ -42,7 +42,7 @@ public:
     auto register_node(NodeId, Address) -> kythira::Future<void> {
         return kythira::FutureFactory::makeFuture();
     }
-    auto find_peers(std::chrono::milliseconds) const
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
         -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
@@ -108,7 +108,9 @@ template<typename Pred>
 bool wait_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{10000}) {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > deadline) return false;
+        if (std::chrono::steady_clock::now() - start > deadline) {
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds{20});
     }
     return true;

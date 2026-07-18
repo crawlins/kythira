@@ -90,7 +90,7 @@ public:
         }
 
         ldns_rr_list* ptr_answer = ldns_pkt_answer(ptr_pkt.get());
-        if (!ptr_answer) {
+        if (ptr_answer == nullptr) {
             return kythira::FutureFactory::makeFuture(std::move(results));
         }
 
@@ -99,17 +99,17 @@ public:
 
         for (std::size_t i = 0; i < n_ptr; ++i) {
             ldns_rr* ptr_rr = ldns_rr_list_rr(ptr_answer, i);
-            if (!ptr_rr || ldns_rr_get_type(ptr_rr) != LDNS_RR_TYPE_PTR) {
+            if ((ptr_rr == nullptr) || ldns_rr_get_type(ptr_rr) != LDNS_RR_TYPE_PTR) {
                 continue;
             }
             ldns_rdf* inst_rdf = ldns_rr_rdf(ptr_rr, 0);
-            if (!inst_rdf) {
+            if (inst_rdf == nullptr) {
                 continue;
             }
 
             // Extract node_id = label before first dot in instance name
             char* inst_cstr = ldns_rdf2str(inst_rdf);
-            if (!inst_cstr) {
+            if (inst_cstr == nullptr) {
                 continue;
             }
             const std::string instance{inst_cstr};
@@ -145,23 +145,23 @@ public:
                 continue;
             }
             ldns_rr_list* srv_answer = ldns_pkt_answer(srv_pkt.get());
-            if (!srv_answer) {
+            if (srv_answer == nullptr) {
                 continue;
             }
             const std::size_t n_srv = ldns_rr_list_rr_count(srv_answer);
             for (std::size_t j = 0; j < n_srv; ++j) {
                 ldns_rr* srv_rr = ldns_rr_list_rr(srv_answer, j);
-                if (!srv_rr || ldns_rr_get_type(srv_rr) != LDNS_RR_TYPE_SRV) {
+                if ((srv_rr == nullptr) || ldns_rr_get_type(srv_rr) != LDNS_RR_TYPE_SRV) {
                     continue;
                 }
                 ldns_rdf* port_rdf = ldns_rr_rdf(srv_rr, 2);
                 ldns_rdf* target_rdf = ldns_rr_rdf(srv_rr, 3);
-                if (!port_rdf || !target_rdf) {
+                if ((port_rdf == nullptr) || (target_rdf == nullptr)) {
                     continue;
                 }
                 const uint16_t srv_port = ldns_rdf2native_int16(port_rdf);
                 char* target_cstr = ldns_rdf2str(target_rdf);
-                if (!target_cstr) {
+                if (target_cstr == nullptr) {
                     continue;
                 }
                 std::string target{target_cstr};
@@ -212,7 +212,7 @@ private:
             .count();
     }
 
-    int64_t fresh_until_epoch() const {
+    [[nodiscard]] int64_t fresh_until_epoch() const {
         return epoch_seconds_now() + _cfg.freshness_interval.count();
     }
 
@@ -220,8 +220,8 @@ private:
         return RdfPtr{ldns_dname_new_frm_str(name.c_str())};
     }
 
-    ResPtr make_resolver(std::chrono::milliseconds timeout = std::chrono::milliseconds{
-                             5000}) const {
+    [[nodiscard]] ResPtr make_resolver(
+        std::chrono::milliseconds timeout = std::chrono::milliseconds{5000}) const {
         ResPtr res{ldns_resolver_new()};
         if (!res) {
             return nullptr;
@@ -232,7 +232,7 @@ private:
         if (ldns_str2rdf_a(&ns_rdf, _cfg.server.c_str()) != LDNS_STATUS_OK) {
             ldns_str2rdf_aaaa(&ns_rdf, _cfg.server.c_str());
         }
-        if (ns_rdf) {
+        if (ns_rdf != nullptr) {
             ldns_resolver_push_nameserver(res.get(), ns_rdf);
             ldns_rdf_deep_free(ns_rdf);
         }
@@ -257,21 +257,21 @@ private:
 
     // Parses "\"fresh_until=<epoch>\"" from a TXT RR list; returns 0 if absent.
     static int64_t parse_fresh_until(ldns_rr_list* list) {
-        if (!list) {
+        if (list == nullptr) {
             return 0;
         }
         const std::size_t n = ldns_rr_list_rr_count(list);
         for (std::size_t i = 0; i < n; ++i) {
             ldns_rr* rr = ldns_rr_list_rr(list, i);
-            if (!rr || ldns_rr_get_type(rr) != LDNS_RR_TYPE_TXT) {
+            if ((rr == nullptr) || ldns_rr_get_type(rr) != LDNS_RR_TYPE_TXT) {
                 continue;
             }
             ldns_rdf* rdata = ldns_rr_rdf(rr, 0);
-            if (!rdata) {
+            if (rdata == nullptr) {
                 continue;
             }
             char* s = ldns_rdf2str(rdata);
-            if (!s) {
+            if (s == nullptr) {
                 continue;
             }
             std::string txt{s};
@@ -328,7 +328,7 @@ private:
         update_list.release();
         additional_list.release();
 
-        if (!raw_pkt) {
+        if (raw_pkt == nullptr) {
             throw std::runtime_error("rfc2136_dns_sd_discovery: failed to build UPDATE packet");
         }
         PktPtr pkt{raw_pkt};
@@ -343,7 +343,7 @@ private:
         const ldns_status st = ldns_resolver_send_pkt(&raw_answer, res.get(), pkt.get());
         PktPtr answer{raw_answer};
 
-        if (st != LDNS_STATUS_OK || !raw_answer) {
+        if (st != LDNS_STATUS_OK || (raw_answer == nullptr)) {
             throw std::runtime_error(std::string("rfc2136_dns_sd_discovery: send failed: ") +
                                      ldns_get_errorstr_by_id(st));
         }
@@ -354,7 +354,7 @@ private:
     }
 
     // Builds a PTR add RR: browse_name → instance_name
-    RrPtr make_ptr_add() const {
+    [[nodiscard]] RrPtr make_ptr_add() const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         const std::string rr_text = browse + " " + std::to_string(_cfg.ttl) + " IN PTR " + instance;
@@ -366,7 +366,7 @@ private:
     }
 
     // Builds a PTR delete RR (specific rdata delete): browse_name → instance_name
-    RrPtr make_ptr_del() const {
+    [[nodiscard]] RrPtr make_ptr_del() const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         const std::string rr_text = browse + " 0 IN PTR " + instance;
@@ -378,7 +378,7 @@ private:
     }
 
     // Builds an SRV add RR: instance_name → target:port
-    RrPtr make_srv_add() const {
+    [[nodiscard]] RrPtr make_srv_add() const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         // Parse "hostname:port" from self_addr
@@ -396,7 +396,7 @@ private:
     }
 
     // Builds an SRV rrset-delete RR (class=ANY, TTL=0, no rdata)
-    RrPtr make_srv_del() const {
+    [[nodiscard]] RrPtr make_srv_del() const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         RrPtr rr{ldns_rr_new()};
@@ -408,7 +408,7 @@ private:
     }
 
     // Builds a TXT add RR with freshness: instance_name → "fresh_until=<epoch>"
-    RrPtr make_txt_add(int64_t fresh_until) const {
+    [[nodiscard]] RrPtr make_txt_add(int64_t fresh_until) const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         const std::string rr_text = instance + " " + std::to_string(_cfg.ttl) +
@@ -421,7 +421,7 @@ private:
     }
 
     // Builds a TXT rrset-delete RR (class=ANY, TTL=0, no rdata)
-    RrPtr make_txt_del() const {
+    [[nodiscard]] RrPtr make_txt_del() const {
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         const std::string instance = _self_node_id + "." + browse;
         RrPtr rr{ldns_rr_new()};

@@ -71,7 +71,9 @@ namespace detail {
 // common test-fixture practice.
 inline auto find_free_port(const std::string& host) -> int {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) throw std::runtime_error("ca_test_fixture: socket() failed");
+    if (fd < 0) {
+        throw std::runtime_error("ca_test_fixture: socket() failed");
+    }
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = 0;
@@ -211,10 +213,14 @@ protected:
         boost::json::object body;
         body["csr_pem"] = csr.csr_pem;
         boost::json::array dns_arr;
-        for (const auto& d : opts.dns_names) dns_arr.push_back(boost::json::string(d));
+        for (const auto& d : opts.dns_names) {
+            dns_arr.push_back(boost::json::string(d));
+        }
         body["dns_names"] = dns_arr;
         boost::json::array ip_arr;
-        for (const auto& ip : opts.ip_addresses) ip_arr.push_back(boost::json::string(ip));
+        for (const auto& ip : opts.ip_addresses) {
+            ip_arr.push_back(boost::json::string(ip));
+        }
         body["ip_addresses"] = ip_arr;
         body["server_auth"] = opts.server_auth;
         body["client_auth"] = opts.client_auth;
@@ -264,7 +270,9 @@ protected:
         }
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
-        for (auto& s : argv_strs) argv.push_back(s.data());
+        for (auto& s : argv_strs) {
+            argv.push_back(s.data());
+        }
         argv.push_back(nullptr);
 
         pid_t pid = 0;

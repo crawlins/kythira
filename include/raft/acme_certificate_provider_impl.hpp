@@ -40,8 +40,9 @@ struct split_url_result {
 
 [[nodiscard]] inline auto split_url(const std::string& url) -> split_url_result {
     auto scheme_end = url.find("://");
-    if (scheme_end == std::string::npos)
+    if (scheme_end == std::string::npos) {
         throw std::invalid_argument("acme_certificate_provider: malformed URL: " + url);
+    }
     auto path_start = url.find('/', scheme_end + 3);
     if (path_start == std::string::npos) {
         return {url, "/"};
@@ -63,12 +64,14 @@ struct split_url_result {
 
 [[nodiscard]] inline auto require_header(const httplib::Result& res, const std::string& name)
     -> std::string {
-    if (!res)
+    if (!res) {
         throw std::runtime_error("acme_certificate_provider: request failed: " +
                                  httplib::to_string(res.error()));
+    }
     auto v = res->get_header_value(name);
-    if (v.empty())
+    if (v.empty()) {
         throw std::runtime_error("acme_certificate_provider: response missing " + name + " header");
+    }
     return v;
 }
 
@@ -77,13 +80,16 @@ struct split_url_result {
     BIO* bio = BIO_new_mem_buf(csr_pem.data(), static_cast<int>(csr_pem.size()));
     X509_REQ* req = PEM_read_bio_X509_REQ(bio, nullptr, nullptr, nullptr);
     BIO_free(bio);
-    if (req == nullptr)
+    if (req == nullptr) {
         throw std::invalid_argument("acme_certificate_provider: unparseable CSR PEM");
+    }
     std::unique_ptr<X509_REQ, void (*)(X509_REQ*)> guard{req, X509_REQ_free};
 
     unsigned char* der = nullptr;
     int len = i2d_X509_REQ(req, &der);
-    if (len < 0) throw std::runtime_error("acme_certificate_provider: i2d_X509_REQ failed");
+    if (len < 0) {
+        throw std::runtime_error("acme_certificate_provider: i2d_X509_REQ failed");
+    }
     std::vector<unsigned char> out(der, der + len);
     OPENSSL_free(der);
     return out;
@@ -97,9 +103,13 @@ struct split_url_result {
     std::size_t pos = 0;
     while (true) {
         auto begin = bundle.find("-----BEGIN CERTIFICATE-----", pos);
-        if (begin == std::string::npos) break;
+        if (begin == std::string::npos) {
+            break;
+        }
         auto end = bundle.find("-----END CERTIFICATE-----", begin);
-        if (end == std::string::npos) break;
+        if (end == std::string::npos) {
+            break;
+        }
         end += std::string("-----END CERTIFICATE-----").size();
         blocks.push_back(bundle.substr(begin, end - begin) + "\n");
         pos = end;
@@ -149,7 +159,9 @@ public:
 
     ~http01_responder() {
         _server.stop();
-        if (_thread.joinable()) _thread.join();
+        if (_thread.joinable()) {
+            _thread.join();
+        }
     }
 
     http01_responder(const http01_responder&) = delete;
@@ -179,8 +191,9 @@ private:
 inline void send_rfc2136_txt_update(const acme_dns01_config& cfg, const std::string& owner_name,
                                     const std::string& txt_value, bool is_delete) {
     ldns_resolver* raw_res = ldns_resolver_new();
-    if (raw_res == nullptr)
+    if (raw_res == nullptr) {
         throw std::runtime_error("acme_certificate_provider: ldns_resolver_new failed");
+    }
     std::unique_ptr<ldns_resolver, void (*)(ldns_resolver*)> res{raw_res, ldns_resolver_free};
 
     ldns_resolver_set_port(res.get(), cfg.port);
@@ -201,19 +214,22 @@ inline void send_rfc2136_txt_update(const acme_dns01_config& cfg, const std::str
     }
 
     ldns_rdf* zone_rdf = ldns_dname_new_frm_str(cfg.zone.c_str());
-    if (zone_rdf == nullptr)
+    if (zone_rdf == nullptr) {
         throw std::runtime_error("acme_certificate_provider: invalid DNS zone: " + cfg.zone);
+    }
     std::unique_ptr<ldns_rdf, void (*)(ldns_rdf*)> zone_guard{zone_rdf, ldns_rdf_deep_free};
 
     ldns_rdf* owner_rdf = ldns_dname_new_frm_str(owner_name.c_str());
-    if (owner_rdf == nullptr)
+    if (owner_rdf == nullptr) {
         throw std::runtime_error("acme_certificate_provider: invalid owner name: " + owner_name);
+    }
     std::unique_ptr<ldns_rdf, void (*)(ldns_rdf*)> owner_guard{owner_rdf, ldns_rdf_deep_free};
 
     ldns_rr_list* update_list = ldns_rr_list_new();
     ldns_rr* rr = ldns_rr_new_frm_type(LDNS_RR_TYPE_TXT);
-    if (rr == nullptr)
+    if (rr == nullptr) {
         throw std::runtime_error("acme_certificate_provider: ldns_rr_new_frm_type failed");
+    }
     ldns_rr_set_owner(rr, ldns_rdf_clone(owner_rdf));
     ldns_rr_set_ttl(rr, is_delete ? 0 : cfg.ttl);
     ldns_rr_set_type(rr, LDNS_RR_TYPE_TXT);
@@ -233,8 +249,9 @@ inline void send_rfc2136_txt_update(const acme_dns01_config& cfg, const std::str
     ldns_rr_list* additional_list = ldns_rr_list_new();
     ldns_pkt* raw_pkt = ldns_update_pkt_new(ldns_rdf_clone(zone_rdf), LDNS_RR_CLASS_IN, prereq_list,
                                             update_list, additional_list);
-    if (raw_pkt == nullptr)
+    if (raw_pkt == nullptr) {
         throw std::runtime_error("acme_certificate_provider: ldns_update_pkt_new failed");
+    }
     std::unique_ptr<ldns_pkt, void (*)(ldns_pkt*)> pkt{raw_pkt, ldns_pkt_free};
 
     ldns_pkt_set_opcode(pkt.get(), LDNS_PACKET_UPDATE);
@@ -260,9 +277,10 @@ inline void send_rfc2136_txt_update(const acme_dns01_config& cfg, const std::str
 class dns01_responder {
 public:
     dns01_responder(acme_dns01_config cfg, std::string identifier, std::string digest_base64url)
-        : _cfg(std::move(cfg)), _owner_name("_acme-challenge." + identifier + ".") {
+        : _cfg(std::move(cfg)),
+          _owner_name("_acme-challenge." + identifier + "."),
+          _published(true) {
         send_rfc2136_txt_update(_cfg, _owner_name, digest_base64url, /*is_delete=*/false);
-        _published = true;
     }
 
     ~dns01_responder() {
@@ -377,8 +395,12 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
                                          std::to_string(res->status) + ": " + detail);
             }
             std::string body = res->body;
-            if (out_res != nullptr) *out_res = std::move(res);
-            if (body.empty()) return boost::json::object{};
+            if (out_res != nullptr) {
+                *out_res = std::move(res);
+            }
+            if (body.empty()) {
+                return boost::json::object{};
+            }
             return boost::json::parse(body);
         };
 
@@ -388,7 +410,9 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
             payload["termsOfServiceAgreed"] = true;
             if (!_config.contact.empty()) {
                 boost::json::array contacts;
-                for (const auto& c : _config.contact) contacts.push_back(boost::json::string(c));
+                for (const auto& c : _config.contact) {
+                    contacts.push_back(boost::json::string(c));
+                }
                 payload["contact"] = contacts;
             }
             httplib::Result res;
@@ -432,8 +456,9 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
         std::string finalize_url = std::string(order_obj.at("finalize").as_string());
 
         std::vector<std::string> authz_urls;
-        for (const auto& a : order_obj.at("authorizations").as_array())
+        for (const auto& a : order_obj.at("authorizations").as_array()) {
             authz_urls.emplace_back(a.as_string());
+        }
 
         // ── Per-identifier challenge completion ──────────────────────────────
         auto poll_until =
@@ -445,7 +470,9 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
                 auto obj = body.as_object();
                 std::string status = std::string(obj.at(status_field).as_string());
                 for (const char* terminal : terminal_states) {
-                    if (status == terminal) return obj;
+                    if (status == terminal) {
+                        return obj;
+                    }
                 }
                 if (std::chrono::steady_clock::now() >= deadline) {
                     throw std::runtime_error("acme_certificate_provider: timed out polling " + url +

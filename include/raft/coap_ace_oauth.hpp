@@ -31,9 +31,15 @@ inline auto hex_decode(const std::string& hex) -> std::vector<std::byte> {
         throw coap_credential_bootstrap_error("ace-oauth", "odd-length hex field in AS response");
     }
     auto nibble = [](char c) -> int {
-        if (c >= '0' && c <= '9') return c - '0';
-        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= '0' && c <= '9') {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f') {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F') {
+            return c - 'A' + 10;
+        }
         throw coap_credential_bootstrap_error("ace-oauth",
                                               "non-hex character in AS response field");
     };
@@ -109,7 +115,7 @@ inline auto run_ace_token_exchange(const ace_oauth_config& config)
     const auto& obj = parsed.as_object();
 
     auto require_string = [&](const char* key) -> std::string {
-        auto it = obj.find(key);
+        const auto* it = obj.find(key);
         if (it == obj.end() || !it->value().is_string()) {
             throw coap_credential_bootstrap_error(
                 "ace-oauth", std::string("AS response missing required field '") + key + "'");
@@ -128,10 +134,10 @@ inline auto run_ace_token_exchange(const ace_oauth_config& config)
     creds.sender_id = detail::hex_decode(require_string("sender_id_hex"));
     creds.recipient_id = detail::hex_decode(require_string("recipient_id_hex"));
     creds.master_secret = detail::hex_decode(require_string("master_secret_hex"));
-    if (auto it = obj.find("master_salt_hex"); it != obj.end() && it->value().is_string()) {
+    if (const auto* it = obj.find("master_salt_hex"); it != obj.end() && it->value().is_string()) {
         creds.master_salt = detail::hex_decode(std::string(it->value().as_string()));
     }
-    if (auto it = obj.find("aead_algorithm"); it != obj.end() && it->value().is_string()) {
+    if (const auto* it = obj.find("aead_algorithm"); it != obj.end() && it->value().is_string()) {
         creds.aead_algorithm = std::string(it->value().as_string());
     }
     creds.bootstrap_method = oscore_bootstrap::static_provisioned;

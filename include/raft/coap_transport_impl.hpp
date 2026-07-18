@@ -1549,9 +1549,9 @@ auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void
     std::lock_guard<std::mutex> lock(_mutex);
 
     // Find the pending message with this message ID
-    for (auto it = _pending_requests.begin(); it != _pending_requests.end();
-         ++it) {  // NOLINT(modernize-loop-convert)
-        if (it->second->message_id == message_id && it->second->is_confirmable) {
+    for (auto& _pending_request : _pending_requests) {  // NOLINT(modernize-loop-convert)
+        if (_pending_request.second->message_id == message_id &&
+            _pending_request.second->is_confirmable) {
             // Message was acknowledged, no need to retransmit
             // The actual response will come separately
             break;

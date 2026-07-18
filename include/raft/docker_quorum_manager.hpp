@@ -100,7 +100,7 @@ public:
             for (const auto& np : cluster) {
                 auto name = container_name(np.node_id);
                 auto path = "/containers/" + name + "/json";
-                auto res = cli->Get(path.c_str());
+                auto res = cli->Get(path);
 
                 bool is_live = false;
                 if (res && res->status == 200) {
@@ -197,7 +197,7 @@ public:
 
             auto serialized = boost::json::serialize(body);
             auto create_path = "/containers/create?name=" + name;
-            auto create_res = cli->Post(create_path.c_str(), serialized, "application/json");
+            auto create_res = cli->Post(create_path, serialized, "application/json");
 
             if (!create_res || create_res->status < 200 || create_res->status >= 300) {
                 auto msg =
@@ -211,7 +211,7 @@ public:
             }
 
             auto start_path = "/containers/" + name + "/start";
-            auto start_res = cli->Post(start_path.c_str(), "", "application/json");
+            auto start_res = cli->Post(start_path, "", "application/json");
 
             if (!start_res || (start_res->status != 204 && start_res->status != 200)) {
                 auto msg =
@@ -241,7 +241,7 @@ public:
             auto cli = make_client();
             auto name = container_name(node);
             auto path = "/containers/" + name + "?force=true";
-            auto res = cli->Delete(path.c_str());
+            auto res = cli->Delete(path);
 
             if (res && res->status == 404) {
                 // Idempotent — container already gone (Req 18 AC 17)
@@ -350,34 +350,39 @@ private:
         // URL-encode curly braces
         std::string encoded;
         for (char c : filter) {
-            if (c == '{')
+            if (c == '{') {
                 encoded += "%7B";
-            else if (c == '}')
+            } else if (c == '}') {
                 encoded += "%7D";
-            else if (c == '"')
+            } else if (c == '"') {
                 encoded += "%22";
-            else if (c == ':')
+            } else if (c == ':') {
                 encoded += "%3A";
-            else if (c == '[')
+            } else if (c == '[') {
                 encoded += "%5B";
-            else if (c == ']')
+            } else if (c == ']') {
                 encoded += "%5D";
-            else if (c == '=')
+            } else if (c == '=') {
                 encoded += "%3D";
-            else
+            } else {
                 encoded += c;
+            }
         }
         auto path = "/containers/json?filters=" + encoded;
-        auto res = cli.Get(path.c_str());
+        auto res = cli.Get(path);
 
         NodeId max_id{};
         if (res && res->status == 200) {
             auto jv = boost::json::parse(res->body);
             for (const auto& ct : jv.as_array()) {
                 const auto& obj = ct.as_object();
-                if (!obj.contains("Labels")) continue;
+                if (!obj.contains("Labels")) {
+                    continue;
+                }
                 const auto& labels = obj.at("Labels").as_object();
-                if (!labels.contains("kythira.node_id")) continue;
+                if (!labels.contains("kythira.node_id")) {
+                    continue;
+                }
                 auto id_str = std::string(labels.at("kythira.node_id").as_string());
                 NodeId id{};
                 if constexpr (std::is_same_v<NodeId, std::string>) {
@@ -385,13 +390,17 @@ private:
                 } else {
                     id = static_cast<NodeId>(std::stoull(id_str));
                 }
-                if (id > max_id) max_id = id;
+                if (id > max_id) {
+                    max_id = id;
+                }
             }
         }
 
         // If no containers, start at 1; otherwise increment highest
         if constexpr (std::is_same_v<NodeId, std::string>) {
-            if (max_id.empty()) return "1";
+            if (max_id.empty()) {
+                return "1";
+            }
             return std::to_string(std::stoull(max_id) + 1);
         } else {
             return max_id + NodeId{1};
@@ -401,19 +410,27 @@ private:
     // Best-effort cleanup of a partially-created container
     auto try_remove(httplib::Client& cli, const std::string& name) const -> void {
         try {
-            cli.Delete(("/containers/" + name + "?force=true").c_str());
+            cli.Delete("/containers/" + name + "?force=true");
         } catch (...) {
         }
     }
 
     // Compute quorum_status from live and total counts
     static auto compute_status(std::size_t live, std::size_t total) -> quorum_status {
-        if (total == 0) return quorum_status::healthy;
+        if (total == 0) {
+            return quorum_status::healthy;
+        }
         std::size_t majority = total / 2 + 1;
-        if (live < majority) return quorum_status::lost;
-        if (live == majority) return quorum_status::critical;
+        if (live < majority) {
+            return quorum_status::lost;
+        }
+        if (live == majority) {
+            return quorum_status::critical;
+        }
         // live > majority
-        if (live < total) return quorum_status::degraded;
+        if (live < total) {
+            return quorum_status::degraded;
+        }
         return quorum_status::healthy;
     }
 

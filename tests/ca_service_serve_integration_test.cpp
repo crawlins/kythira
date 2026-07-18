@@ -31,15 +31,15 @@
 #define CA_SERVICE_PATH "ca_service"
 #endif
 
-extern char** environ;
-
 using namespace raft::testing;
 
 namespace {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
@@ -73,14 +73,15 @@ struct ca_service_process {
     int port{0};
     std::string token{"test-token-12345"};
 
-    ca_service_process() {
-        port = find_free_port();
+    ca_service_process() : port(find_free_port()) {
         std::string bind_arg = "127.0.0.1:" + std::to_string(port);
 
         std::vector<std::string> argv_strs = {
             CA_SERVICE_PATH, "--serve", bind_arg, "--provider", "local", "--auth-token", token};
         std::vector<char*> argv;
-        for (auto& s : argv_strs) argv.push_back(s.data());
+        for (auto& s : argv_strs) {
+            argv.push_back(s.data());
+        }
         argv.push_back(nullptr);
 
         int rc = posix_spawn(&pid, CA_SERVICE_PATH, nullptr, nullptr, argv.data(), environ);
@@ -128,14 +129,13 @@ struct tls_ca_service_process {
     certificate_authority listener_ca;
     std::unique_ptr<temp_cert_files> listener_files;
 
-    tls_ca_service_process() {
+    tls_ca_service_process() : port(find_free_port()) {
         leaf_certificate_options opts;
         opts.subject.common_name = "ca-service-listener";
         opts.dns_names = {"localhost"};
         opts.ip_addresses = {"127.0.0.1"};
         listener_files = std::make_unique<temp_cert_files>(listener_ca.issue(opts));
 
-        port = find_free_port();
         std::string bind_arg = "127.0.0.1:" + std::to_string(port);
 
         std::vector<std::string> argv_strs = {CA_SERVICE_PATH,
@@ -150,7 +150,9 @@ struct tls_ca_service_process {
                                               "--tls-key",
                                               listener_files->key_path()};
         std::vector<char*> argv;
-        for (auto& s : argv_strs) argv.push_back(s.data());
+        for (auto& s : argv_strs) {
+            argv.push_back(s.data());
+        }
         argv.push_back(nullptr);
 
         int rc = posix_spawn(&pid, CA_SERVICE_PATH, nullptr, nullptr, argv.data(), environ);

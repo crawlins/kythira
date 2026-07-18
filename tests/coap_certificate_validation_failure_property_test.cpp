@@ -73,7 +73,9 @@ auto corrupt_cert_body(std::string cert, std::mt19937& rng, std::size_t corrupti
     }
     std::size_t body_start = begin_pos + kBegin.size();
     std::size_t body_len = end_pos - body_start;
-    if (body_len == 0) return cert;
+    if (body_len == 0) {
+        return cert;
+    }
 
     static constexpr char kInvalidChars[] = {'@', '#', '$', '%', '^', '&', '*', '(', ')', '!', '~'};
     std::uniform_int_distribution<std::size_t> pos_dist(body_start, body_start + body_len - 1);

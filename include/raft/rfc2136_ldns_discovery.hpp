@@ -111,7 +111,7 @@ private:
             if (ldns_str2rdf_a(&ns_rdf, _cfg.query.server.c_str()) != LDNS_STATUS_OK) {
                 ldns_str2rdf_aaaa(&ns_rdf, _cfg.query.server.c_str());
             }
-            if (ns_rdf) {
+            if (ns_rdf != nullptr) {
                 ldns_resolver_push_nameserver(res.get(), ns_rdf);
                 ldns_rdf_deep_free(ns_rdf);
             }
@@ -156,7 +156,7 @@ private:
             ldns_rdf* addr_rdf = nullptr;
             ldns_status st = is_ipv4 ? ldns_str2rdf_a(&addr_rdf, addr.c_str())
                                      : ldns_str2rdf_aaaa(&addr_rdf, addr.c_str());
-            if (st != LDNS_STATUS_OK || !addr_rdf) {
+            if (st != LDNS_STATUS_OK || (addr_rdf == nullptr)) {
                 throw std::runtime_error("rfc2136_ldns_discovery: invalid address: " + addr);
             }
             ldns_rr_push_rdf(rr.get(), addr_rdf);
@@ -176,7 +176,7 @@ private:
         update_list.release();
         additional_list.release();
 
-        if (!raw_pkt) {
+        if (raw_pkt == nullptr) {
             throw std::runtime_error("rfc2136_ldns_discovery: failed to build UPDATE packet");
         }
         std::unique_ptr<ldns_pkt, PktDeleter> pkt{raw_pkt};
@@ -192,7 +192,7 @@ private:
         {
             ldns_pkt* raw_answer = nullptr;
             ldns_status st = ldns_resolver_send_pkt(&raw_answer, res.get(), pkt.get());
-            if (st != LDNS_STATUS_OK || !raw_answer) {
+            if (st != LDNS_STATUS_OK || (raw_answer == nullptr)) {
                 throw std::runtime_error(std::string("rfc2136_ldns_discovery: send failed: ") +
                                          ldns_get_errorstr_by_id(st));
             }

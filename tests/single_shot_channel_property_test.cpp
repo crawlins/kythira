@@ -129,7 +129,9 @@ BOOST_AUTO_TEST_CASE(property_concurrent_fulfillment_exactly_one_wins,
                 }
             });
         }
-        for (auto& thread : threads) thread.join();
+        for (auto& thread : threads) {
+            thread.join();
+        }
 
         BOOST_CHECK_EQUAL(successes.load(), 1);
         BOOST_CHECK_EQUAL(failures.load(), contenders - 1);

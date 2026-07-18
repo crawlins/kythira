@@ -104,10 +104,10 @@ struct LocalstackFixture {
         uuid = "kythira-ls-" + std::to_string(tc.p_id);
 
         // Ensure DefaultAWSCredentialsProviderChain finds credentials for LocalStack.
-        if (!getenv("AWS_ACCESS_KEY_ID")) {
+        if (getenv("AWS_ACCESS_KEY_ID") == nullptr) {
             setenv("AWS_ACCESS_KEY_ID", "test", 1);
         }
-        if (!getenv("AWS_SECRET_ACCESS_KEY")) {
+        if (getenv("AWS_SECRET_ACCESS_KEY") == nullptr) {
             setenv("AWS_SECRET_ACCESS_KEY", "test", 1);
         }
 

@@ -515,8 +515,8 @@ private:
     }
 
     /// Builds a quorum_health from cluster membership and a live/dead map keyed by node_id_str.
-    auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
-                      const std::map<std::string, bool>& live_map) const
+    [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
+                                    const std::map<std::string, bool>& live_map) const
         -> kythira::Future<quorum_health<NodeId, std::string>> {
         std::vector<NodeId> unreachable;
         std::size_t live_count = 0;
@@ -625,7 +625,8 @@ private:
     }
 
     /// Substitutes {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} placeholders in user_data_template.
-    auto render_user_data(const NodeId& nid, const std::string& az) const -> std::string {
+    [[nodiscard]] auto render_user_data(const NodeId& nid, const std::string& az) const
+        -> std::string {
         std::string result = _cfg.user_data_template;
         auto replace_all = [&](const std::string& from, const std::string& to) {
             std::size_t pos = 0;
