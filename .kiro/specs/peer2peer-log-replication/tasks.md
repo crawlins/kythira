@@ -1,8 +1,48 @@
 # Implementation Plan — Peer-to-Peer Log Replication (Gossip Catch-Up)
 
-## Status: Not Started
+## Status: Complete — 21/21 tasks per `doc/CHANGELOG.md`'s July 11–12, 2026
+entry ("21 tasks across 4 phases complete")
 
-**Last Updated**: July 10, 2026
+**Last Updated**: July 18, 2026 (tracking doc corrected; implementation
+itself landed earlier alongside `.kiro/specs/peer2peer-gossip-transport/` in
+the same effort — see `doc/TODO.md`'s Protocol Completeness entry and
+`doc/CHANGELOG.md`'s July 11–12, 2026 entry. This tracking document was
+simply never updated to reflect that.)
+
+Verified directly against the real implementation for tasks 1–17 and 20:
+`include/raft/peer2peer_replication.hpp` (concept, `no_op_`/`static_`
+implementations), `fetch_log_entries_request`/`response` in `types.hpp`,
+`_has_peer2peer_replicator_type`/`_peer2peer_replicator_type_traits`,
+the four new `raft_configuration` fields, `network_client_with_log_fetch`/
+`network_server_with_log_fetch` in `network.hpp` plus their
+`simulator_network` wiring, `peer2peer_replicator_type` wiring into
+`node_config<Types>`/`node<Types>`, the
+`append_entries_with_consistency_check()` extraction,
+`cluster_members()`/`sync_peer2peer_membership()`, and
+`handle_fetch_log_entries()`/`maybe_gossip_progress()`/
+`maybe_catch_up_from_peer()` in `raft.hpp` are all present, along with the
+metrics named in task 15. `tests/peer2peer_replication_unit_test.cpp` and
+`tests/peer2peer_catch_up_property_test.cpp` cover tasks 16, 17, and 20.
+
+One real deviation from this plan worth flagging: tasks 18, 19, and 21
+called for five separately-named property-test files
+(`peer2peer_catch_up_new_node_property_test.cpp`,
+`..._partition_reconnect_property_test.cpp`,
+`..._stale_source_safety_property_test.cpp`,
+`..._membership_sync_property_test.cpp`, plus task 17's own file). The
+actual implementation consolidated these into the two files above rather
+than five separate ones (matching `doc/CHANGELOG.md`'s own description of
+"6 new test files" total across both this spec and the gossip-transport
+spec together). `remove_server_revokes_catch_up_eligibility_immediately`
+and `static_replicator_excludes_non_members_even_if_digest_lingers` cover
+task 21's remove/lingering-digest requirements; this review did not find a
+test independently verifying task 21's add-server/learner-exclusion/
+joint-consensus-union requirements or tasks 18/19's specific
+partition-reconnect and stale-source scenarios under separately-named
+tests — their safety properties are plausibly covered indirectly (task 13's
+catch-up path reuses task 9's already-safety-tested consistency-check
+logic; `no_op_default_reaches_leadership_and_commits` exercises general
+equivalence), but that inference wasn't independently confirmed here.
 
 ## Overview
 
@@ -67,7 +107,7 @@ maintained configuration (Requirement 11).
 
 ## Phase 1: Concept, Types, and Configuration (Tasks 1–7)
 
-- [ ] 1. Add `peer2peer_replicator` concept and `no_op_peer2peer_replicator`
+- [x] 1. Add `peer2peer_replicator` concept and `no_op_peer2peer_replicator`
   - New file `include/raft/peer2peer_replication.hpp`, structured like
     `include/raft/peer_discovery.hpp`
   - `peer2peer_replicator<P, NodeId, Address, LogIndex>` concept requiring
@@ -84,7 +124,7 @@ maintained configuration (Requirement 11).
   - Verify: `cmake --build build` compiles the new header standalone
   - _Requirements: 1.1, 1.2, 1.3_
 
-- [ ] 2. Add `static_peer2peer_replicator` reference implementation
+- [x] 2. Add `static_peer2peer_replicator` reference implementation
   - Same file as Task 1
   - Backed by a `std::shared_ptr<folly::Synchronized<std::unordered_map<NodeId,
     progress_digest>>>` shared across every node instance in a test cluster,
@@ -102,7 +142,7 @@ maintained configuration (Requirement 11).
     stops being offered even though its digest is still in the shared table
   - _Requirements: 9.1, 11.4_
 
-- [ ] 3. Add `fetch_log_entries_request`/`fetch_log_entries_response` to
+- [x] 3. Add `fetch_log_entries_request`/`fetch_log_entries_response` to
       `types.hpp`
   - `fetch_log_entries_request<NodeId, TermId, LogIndex>`:
     `requester_id`, `from_index`, `to_index`
@@ -114,7 +154,7 @@ maintained configuration (Requirement 11).
     construct-then-read-all-accessors unit test
   - _Requirements: 5.1_
 
-- [ ] 4. Add `_has_peer2peer_replicator_type<T>` /
+- [x] 4. Add `_has_peer2peer_replicator_type<T>` /
       `_peer2peer_replicator_type_traits<T, NodeId, Address, LogIndex, bool>`
   - `types.hpp`, immediately alongside where `_has_bootstrap_types`/
     `_bootstrap_type_traits` live
@@ -128,7 +168,7 @@ maintained configuration (Requirement 11).
     no-op type; another bundle that does declare one resolves to that type
   - _Requirements: 2.1, 2.2_
 
-- [ ] 5. Add new `raft_configuration` fields
+- [x] 5. Add new `raft_configuration` fields
   - `_progress_gossip_interval` (default 500ms), `_catch_up_gap_threshold`
     (default 50), `_catch_up_fetch_max_entries` (default 500),
     `_catch_up_fetch_timeout` (default 5000ms) — private member plus
@@ -138,7 +178,7 @@ maintained configuration (Requirement 11).
     specified here
   - _Requirements: 8.1, 8.2_
 
-- [ ] 6. Add `network_client_with_log_fetch`/`network_server_with_log_fetch`
+- [x] 6. Add `network_client_with_log_fetch`/`network_server_with_log_fetch`
       to `network.hpp`
   - Mirrors `network_client_with_cluster_join`/
     `network_server_with_cluster_join` exactly — optional, NOT required by
@@ -152,7 +192,7 @@ maintained configuration (Requirement 11).
     unmodified (no regression in existing `static_assert`s)
   - _Requirements: 5.2_
 
-- [ ] 7. Add log-fetch support to `simulator_network_client`/`server`
+- [x] 7. Add log-fetch support to `simulator_network_client`/`server`
   - `include/raft/simulator_network.hpp` — needed so property tests
     (Phase 3) can exercise the full catch-up path without a real transport
   - `send_fetch_log_entries` routes to the target's registered handler
@@ -167,7 +207,7 @@ maintained configuration (Requirement 11).
 
 ## Phase 2: `node<Types>` Wiring, Consistency-Check Extraction, and Membership Sync (Tasks 8–10)
 
-- [ ] 8. Wire `peer2peer_replicator_type` into `node_config<Types>`/`node<Types>`
+- [x] 8. Wire `peer2peer_replicator_type` into `node_config<Types>`/`node<Types>`
   - `node_config<Types>`: add `peer2peer_replicator_type peer2peer_replicator{}`
     optional field (resolved via Task 4's trait), after the existing
     `quorum_manager` field
@@ -181,7 +221,7 @@ maintained configuration (Requirement 11).
     break anything already compiling)
   - _Requirements: 2.3, 2.4_
 
-- [ ] 9. Extract `append_entries_with_consistency_check()` from
+- [x] 9. Extract `append_entries_with_consistency_check()` from
       `handle_append_entries()`
   - `raft.hpp` — move Rules 3–4 (prevLogIndex/prevLogTerm consistency check,
     conflict detection, truncation, append) out of `handle_append_entries()`
@@ -197,7 +237,7 @@ maintained configuration (Requirement 11).
     passes unmodified after the extraction, byte-for-byte same outcomes
   - _Requirements: 6.1_
 
-- [ ] 10. Implement `cluster_members()` and wire membership synchronization
+- [x] 10. Implement `cluster_members()` and wire membership synchronization
   - `raft.hpp` — `cluster_members() const -> std::vector<node_id_type>`:
     `_configuration.nodes()` unioned with `_configuration.old_nodes().value()`
     when `_configuration.is_joint_consensus()` is true; never includes
@@ -224,7 +264,7 @@ maintained configuration (Requirement 11).
 
 ## Phase 3: Catch-Up Logic (Tasks 11–15)
 
-- [ ] 11. Implement `handle_fetch_log_entries()` (responder side)
+- [x] 11. Implement `handle_fetch_log_entries()` (responder side)
   - `raft.hpp` — WHEN this node has an entry at `request.from_index()`,
     respond `available = true` with `prev_log_term` (the term at
     `from_index - 1`, or `0` if `from_index == 1`) and entries up to
@@ -239,7 +279,7 @@ maintained configuration (Requirement 11).
     confirm `available = false`
   - _Requirements: 5.4, 5.5_
 
-- [ ] 12. Implement `maybe_gossip_progress()`
+- [x] 12. Implement `maybe_gossip_progress()`
   - `raft.hpp` — calls `_peer2peer_replicator.advertise_progress(_node_id,
     self_address, _current_term, get_last_log_index())`, gated by
     `_config.progress_gossip_interval()` so it doesn't fire every
@@ -252,7 +292,7 @@ maintained configuration (Requirement 11).
     interval a second time is a no-op (no duplicate advertisement burst)
   - _Requirements: 3.1, 3.2, 3.3_
 
-- [ ] 13. Implement `maybe_catch_up_from_peer()`
+- [x] 13. Implement `maybe_catch_up_from_peer()`
   - `raft.hpp` — computes the catch-up gap (highest known
     `last_log_index` from any progress digest minus `get_last_log_index()`);
     WHEN it exceeds `_config.catch_up_gap_threshold()` AND no fetch is
@@ -272,7 +312,7 @@ maintained configuration (Requirement 11).
     test confirms a leader never triggers this for itself
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 6.2, 6.3, 7.1, 7.2_
 
-- [ ] 14. Wire `maybe_gossip_progress()`/`maybe_catch_up_from_peer()` into the
+- [x] 14. Wire `maybe_gossip_progress()`/`maybe_catch_up_from_peer()` into the
       maintenance-thread tick
   - `raft.hpp` — same tick loop already calling
     `check_heartbeat_timeout()`/`check_election_timeout()`
@@ -281,7 +321,7 @@ maintained configuration (Requirement 11).
     existing heartbeat/election timing
   - _Requirements: 3.1, 4.1_
 
-- [ ] 15. Add metrics and logging
+- [x] 15. Add metrics and logging
   - `raft_peer_catch_up_attempt`/`raft_peer_catch_up_success` metrics
     (dimensioned by `node_id`, `source_peer`), following the existing
     `_metrics.set_metric_name(...)`/`add_dimension(...)`/`add_one()`/`emit()`
@@ -299,7 +339,7 @@ maintained configuration (Requirement 11).
 
 ## Phase 4: Tests (Tasks 16–21)
 
-- [ ] 16. Unit tests for concept, no-op/static implementations, and the
+- [x] 16. Unit tests for concept, no-op/static implementations, and the
       consistency-check extraction
   - `tests/peer2peer_replication_unit_test.cpp` (new file): concept
     satisfaction (`static_assert`), `no_op_peer2peer_replicator` always
@@ -310,7 +350,7 @@ maintained configuration (Requirement 11).
   - Verify: `ctest -R peer2peer_replication_unit_test` passes
   - _Requirements: 1.3, 9.1_
 
-- [ ] 17. Property test: new node catches up via a peer, not the leader
+- [x] 17. Property test: new node catches up via a peer, not the leader
   - `tests/peer2peer_catch_up_new_node_property_test.cpp` (new file) — using
     the network simulator with `static_peer2peer_replicator` shared across
     all nodes
@@ -347,7 +387,7 @@ maintained configuration (Requirement 11).
     intervention required
   - _Requirements: 6.4, 6.5_
 
-- [ ] 20. Full regression and no-op-default equivalence
+- [x] 20. Full regression and no-op-default equivalence
   - Run `ctest --output-on-failure` — confirm 0 failures across the entire
     existing suite with zero modifications to any pre-existing `Types`
     bundle or test file (Requirement 2.5)

@@ -1,8 +1,25 @@
 # Implementation Plan — AWS Quorum Managers
 
-## Status: Not Started
+## Status: Complete — all 7 tasks
 
-**Last Updated**: June 25, 2026
+**Last Updated**: July 18, 2026 (tracking doc corrected; implementation itself
+landed earlier — see `doc/TODO.md`'s Cloud Provider Support "AWS" entry and
+`doc/CHANGELOG.md`'s July 7–8, 2026 entry, commit
+`feat(raft): add AWS EC2 and ASG quorum manager implementations`. This
+tracking document was simply never updated to reflect that, the same issue
+`doc/CHANGELOG.md`'s July 9–10, 2026 entry found and fixed for
+`membership-change`.)
+
+Verified directly against the real implementation: `include/raft/aws_ec2_quorum_manager.hpp`,
+`include/raft/aws_asg_quorum_manager.hpp`, and `include/raft/aws_client_config.hpp` all
+exist with the config structs and manager classes this plan calls for, and
+`tests/aws_quorum_manager_unit_test.cpp`/`aws_quorum_manager_localstack_test.cpp`/
+`aws_quorum_manager_real_ec2_test.cpp` implement the three test tiers below,
+including task 7's AZ-outage/heartbeat-replacement/quarantine scenarios. One
+real naming deviation from this plan: the implementation prefixed both
+manager classes and their header files with `aws_` (`aws_ec2_quorum_manager`,
+`aws_asg_quorum_manager`) rather than this plan's bare `ec2_quorum_manager`/
+`asg_quorum_manager` — functionally equivalent, no scope change.
 
 ## Overview
 
@@ -55,7 +72,7 @@ Reference implementations to study before starting:
 
 ## Tasks
 
-- [ ] 1. Add `aws-sdk-cpp` CMake detection and `aws_client_config`
+- [x] 1. Add `aws-sdk-cpp` CMake detection and `aws_client_config`
   - In `CMakeLists.txt` (root), add:
     ```cmake
     find_package(AWSSDK COMPONENTS ec2 autoscaling iam s3 sts QUIET)
@@ -88,7 +105,7 @@ Reference implementations to study before starting:
   - Verify: `cmake --build build` succeeds with and without `aws-sdk-cpp` present
   - _Requirements: 1.1–1.4, 2.1–2.3_
 
-- [ ] 2. Define config structs and placement group types
+- [x] 2. Define config structs and placement group types
   - Add `ec2_spot_interruption_behavior` enum, `ec2_spot_options` struct,
     `ec2_placement_group_strategy` enum, and `ec2_placement_group_config` struct
     to `include/raft/aws_ec2_quorum_manager.hpp` (inside `#ifdef KYTHIRA_HAS_AWS_SDK`):
@@ -125,7 +142,7 @@ Reference implementations to study before starting:
   - Verify: headers compile cleanly with and without SDK present
   - _Requirements: 3.1, 3.2, 10.1, 10.2, 17.1–17.3, 18.1–18.3_
 
-- [ ] 3. Implement `ec2_quorum_manager`
+- [x] 3. Implement `ec2_quorum_manager`
   - Create `include/raft/ec2_quorum_manager.hpp` with the full class body inside
     `#ifdef KYTHIRA_HAS_AWS_SDK`:
 
@@ -220,7 +237,7 @@ Reference implementations to study before starting:
   - _Requirements: 3.2, 4.1–4.5, 5.1–5.4, 6.1–6.8, 7.1–7.9, 8.1–8.6, 9.1–9.2,
     15.1–15.3, 15.7, 17.4–17.7, 18.4–18.6, 19.2–19.3_
 
-- [ ] 4. Implement `asg_quorum_manager`
+- [x] 4. Implement `asg_quorum_manager`
   - Create `include/raft/asg_quorum_manager.hpp` with full class body inside
     `#ifdef KYTHIRA_HAS_AWS_SDK`:
 
@@ -276,7 +293,7 @@ Reference implementations to study before starting:
   - _Requirements: 10.1–10.2, 11.1–11.5, 12.1–12.6, 13.1–13.6, 14.1–14.4, 15.4–15.6,
     15.8, 19.4_
 
-- [ ] 5. Unit tests
+- [x] 5. Unit tests
   - Create `tests/aws_quorum_manager_unit_test.cpp`
   - Register in `tests/CMakeLists.txt` as `aws-quorum-manager-unit-tests`,
     guarded by `if (KYTHIRA_HAS_AWS_SDK)`, with labels `unit;aws;quorum_manager`
@@ -350,7 +367,7 @@ Reference implementations to study before starting:
     tests pass without modification
   - _Requirements: 16.1–16.7, 15.7–15.8, 17.8, 18.9_
 
-- [ ] 6. LocalStack integration tests
+- [x] 6. LocalStack integration tests
   - Create `tests/aws_quorum_manager_localstack_test.cpp` guarded by
     `#ifdef KYTHIRA_AWS_LOCALSTACK_TESTS`
   - Register in `tests/CMakeLists.txt` as `aws-quorum-manager-localstack-tests`
@@ -398,7 +415,7 @@ Reference implementations to study before starting:
     but is not registered in CTest
   - _Requirements: 16.8–16.14_
 
-- [ ] 7. Real-AWS EC2 integration tests
+- [x] 7. Real-AWS EC2 integration tests
   - Create `tests/aws_quorum_manager_real_ec2_test.cpp` guarded by
     `#ifdef KYTHIRA_AWS_REAL_EC2_TESTS`
   - Register in `tests/CMakeLists.txt` as `aws-quorum-manager-real-ec2-tests`

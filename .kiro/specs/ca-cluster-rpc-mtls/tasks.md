@@ -1,8 +1,21 @@
 # Implementation Plan — CA Cluster RPC mTLS
 
-## Status: Not Started
+## Status: Complete — all 13 tasks (checkboxes below were already correct;
+only this header was stale)
 
-**Last Updated**: July 9, 2026
+**Last Updated**: July 18, 2026 (tracking doc corrected; implementation
+itself landed earlier — see `doc/TODO.md`'s Certificate Management entry and
+`doc/CHANGELOG.md`'s July 14, 2026 entry, which also documents 4 real
+concurrency bugs plus a CI-only deadlock found and fixed during
+implementation. This tracking document's own task checkboxes were already
+all marked `[x]`; only the top-level `## Status:` line had never been
+updated to match.)
+
+Verified directly: `include/raft/tls_tcp_rpc.hpp` and all four listed test
+files (`tests/tls_tcp_rpc_unit_test.cpp`,
+`tests/tls_tcp_rpc_integration_test.cpp`,
+`tests/ca_cluster_node_rpc_tls_test.cpp`,
+`tests/ca_cluster_node_rpc_tls_restart_test.cpp`) exist.
 
 ## Overview
 
