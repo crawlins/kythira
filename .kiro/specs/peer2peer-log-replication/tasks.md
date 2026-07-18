@@ -1,13 +1,13 @@
 # Implementation Plan — Peer-to-Peer Log Replication (Gossip Catch-Up)
 
-## Status: Complete — 21/21 tasks per `doc/CHANGELOG.md`'s July 11–12, 2026
-entry ("21 tasks across 4 phases complete")
+## Status: Complete — 21/21 tasks
 
-**Last Updated**: July 18, 2026 (tracking doc corrected; implementation
-itself landed earlier alongside `.kiro/specs/peer2peer-gossip-transport/` in
-the same effort — see `doc/TODO.md`'s Protocol Completeness entry and
-`doc/CHANGELOG.md`'s July 11–12, 2026 entry. This tracking document was
-simply never updated to reflect that.)
+**Last Updated**: July 18, 2026 (implementation for tasks 1–17 and 20
+landed earlier alongside `.kiro/specs/peer2peer-gossip-transport/` — see
+`doc/TODO.md`'s Protocol Completeness entry and `doc/CHANGELOG.md`'s
+July 11–12, 2026 entry; this tracking document simply hadn't been updated
+to reflect that. Tasks 18, 19, and 21 had never actually been implemented
+until this pass — see below.)
 
 Verified directly against the real implementation for tasks 1–17 and 20:
 `include/raft/peer2peer_replication.hpp` (concept, `no_op_`/`static_`
@@ -24,25 +24,49 @@ the four new `raft_configuration` fields, `network_client_with_log_fetch`/
 metrics named in task 15. `tests/peer2peer_replication_unit_test.cpp` and
 `tests/peer2peer_catch_up_property_test.cpp` cover tasks 16, 17, and 20.
 
-One real deviation from this plan worth flagging: tasks 18, 19, and 21
-called for five separately-named property-test files
-(`peer2peer_catch_up_new_node_property_test.cpp`,
-`..._partition_reconnect_property_test.cpp`,
-`..._stale_source_safety_property_test.cpp`,
-`..._membership_sync_property_test.cpp`, plus task 17's own file). The
-actual implementation consolidated these into the two files above rather
-than five separate ones (matching `doc/CHANGELOG.md`'s own description of
-"6 new test files" total across both this spec and the gossip-transport
-spec together). `remove_server_revokes_catch_up_eligibility_immediately`
-and `static_replicator_excludes_non_members_even_if_digest_lingers` cover
-task 21's remove/lingering-digest requirements; this review did not find a
-test independently verifying task 21's add-server/learner-exclusion/
-joint-consensus-union requirements or tasks 18/19's specific
-partition-reconnect and stale-source scenarios under separately-named
-tests — their safety properties are plausibly covered indirectly (task 13's
-catch-up path reuses task 9's already-safety-tested consistency-check
-logic; `no_op_default_reaches_leadership_and_commits` exercises general
-equivalence), but that inference wasn't independently confirmed here.
+Tasks 18, 19, and 21 (partition-reconnect, stale-source safety, and
+membership-sync property tests) were genuinely missing — not covered
+indirectly, contrary to what an earlier pass through this file guessed —
+and have now been implemented:
+
+- Task 18: `tests/peer2peer_catch_up_partition_reconnect_property_test.cpp`
+  — a real dynamic partition (`NetworkSimulator::remove_edge`, not just a
+  static asymmetric topology), healed by reconnecting the isolated
+  follower to a peer only, never the leader.
+- Task 19: `tests/peer2peer_catch_up_stale_source_safety_property_test.cpp`
+  — uses 5 real nodes rather than 3: simulating an "abandoned term" by
+  pure network manipulation of a 3-node cluster is impossible without
+  violating Raft's own Election Safety property (a node with a longer log,
+  even an uncommitted tail it fetched via peer-to-peer, always outranks a
+  shorter-log competitor in any subsequent election — see the file's own
+  header comment for the full argument). With 5 nodes, 3 untouched
+  followers can form a real majority on their own once the polluted pair
+  is isolated, electing a new leader in a higher term that then correctly
+  truncates/replaces the stale entry on both polluted nodes via ordinary
+  AppendEntries.
+- Task 21: `tests/peer2peer_catch_up_membership_sync_property_test.cpp` —
+  three real behavioral tests: immediate add-server eligibility, the
+  C_old/C_new union keeping a departing node eligible while its removal
+  is still mid-flight (proven by a fetch that can only succeed *because*
+  of the union — see the file's own comment), and learner exclusion
+  (asymmetric-topology non-convergence, mirroring task 17's own
+  technique). Requirement 11.1's literal "simultaneous add and remove"
+  wording is not achievable through the public API — `add_server()`/
+  `remove_server()` each change only one side, and a second call while one
+  is in flight is rejected — so this file tests each half of the union
+  separately instead; see the file's own header comment for the full
+  scoping rationale.
+
+All three new files hit real, non-obvious bugs during authoring that are
+worth knowing about before writing similar tests in this codebase:
+`submit_command()` calls `replicate_to_followers()` synchronously as part
+of the call itself, not only on the next heartbeat tick, so "append
+locally without replicating" requires having no reachable followers *at
+the moment of the call*, not just skipping the next heartbeat; and
+`NetworkSimulator` routes multi-hop, so removing a direct edge between two
+nodes does not isolate them if any other connected node can relay between
+them — a true partition requires removing every path, not just the direct
+edge.
 
 ## Overview
 
@@ -362,7 +386,7 @@ maintained configuration (Requirement 11).
     (demonstrating the leader did comparatively little of the catch-up work)
   - _Requirements: 9.3_
 
-- [ ] 18. Property test: partition-reconnect catch-up via a peer
+- [x] 18. Property test: partition-reconnect catch-up via a peer
   - `tests/peer2peer_catch_up_partition_reconnect_property_test.cpp` (new
     file)
   - Start a 3-node cluster, partition one follower away long enough for the
@@ -373,7 +397,7 @@ maintained configuration (Requirement 11).
     trips the leader alone would need
   - _Requirements: 9.3_
 
-- [ ] 19. Safety property test: stale/incorrect source peer still converges
+- [x] 19. Safety property test: stale/incorrect source peer still converges
       correctly
   - `tests/peer2peer_catch_up_stale_source_safety_property_test.cpp` (new
     file) — the direct test of design.md's Property 3
@@ -398,7 +422,7 @@ maintained configuration (Requirement 11).
     (Requirement 1.4/4.4/Property 1 in design.md)
   - _Requirements: 2.5, 7.3_
 
-- [ ] 21. Property test: membership synchronization (Property 6)
+- [x] 21. Property test: membership synchronization (Property 6)
   - `tests/peer2peer_catch_up_membership_sync_property_test.cpp` (new file)
   - Using the network simulator and `static_peer2peer_replicator`: drive an
     `add_server()` on a running cluster and confirm the new node becomes

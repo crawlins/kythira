@@ -303,6 +303,12 @@ add_raft_completion_test(node_recovery_unit_test node_recovery_unit_test.cpp)
 # Peer-to-peer log replication (gossip catch-up) — .kiro/specs/peer2peer-log-replication/
 add_raft_completion_test(peer2peer_replication_unit_test peer2peer_replication_unit_test.cpp)
 add_raft_completion_test(peer2peer_catch_up_property_test peer2peer_catch_up_property_test.cpp)
+add_raft_completion_test(peer2peer_catch_up_partition_reconnect_property_test
+                         peer2peer_catch_up_partition_reconnect_property_test.cpp)
+add_raft_completion_test(peer2peer_catch_up_stale_source_safety_property_test
+                         peer2peer_catch_up_stale_source_safety_property_test.cpp)
+add_raft_completion_test(peer2peer_catch_up_membership_sync_property_test
+                         peer2peer_catch_up_membership_sync_property_test.cpp)
 
 # Peer-to-peer gossip transport (real TCP) — .kiro/specs/peer2peer-gossip-transport/
 add_raft_completion_test(tcp_gossip_transport_merge_unit_test tcp_gossip_transport_merge_unit_test.cpp)
