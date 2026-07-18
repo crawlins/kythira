@@ -1,8 +1,37 @@
 # Implementation Plan — Peer-to-Peer Gossip Transport
 
-## Status: Not Started
+## Status: Complete — 14/14 tasks per `doc/CHANGELOG.md`'s July 11–12, 2026
+entry ("14 tasks across 4 phases complete")
 
-**Last Updated**: July 10, 2026
+**Last Updated**: July 18, 2026 (tracking doc corrected; implementation
+itself landed earlier alongside `.kiro/specs/peer2peer-log-replication/` in
+the same effort — see `doc/TODO.md`'s Protocol Completeness entry and
+`doc/CHANGELOG.md`'s July 11–12, 2026 entry. This tracking document was
+simply never updated to reflect that.)
+
+Verified directly against the real implementation — every symbol and, for
+the test tasks, every literally-named test case in this plan was found:
+`gossip_digest`/`gossip_exchange_message`/`encode_gossip_message`/
+`decode_gossip_message`/`tcp_gossip_config`/the listener+accept-loop/
+`merge()`/`prune_expired()`/`exchange_with()`/`update_membership()`/
+`eligible_peers()`/the gossip thread/`tcp_gossip_peer2peer_replicator` all
+exist in `include/raft/tcp_gossip_transport.hpp`, and:
+- `tests/tcp_gossip_transport_merge_unit_test.cpp` has
+  `merge_higher_term_wins`, `merge_equal_term_higher_index_wins`,
+  `merge_lower_term_loses`, `merge_not_yet_present_always_added`,
+  `prune_expired_removes_only_past_fresh_until`,
+  `eligible_peers_intersection`,
+  `find_catch_up_source_excludes_self_and_non_members` (tasks 9–10)
+- `tests/tcp_gossip_transport_wire_unit_test.cpp` has
+  `encode_decode_round_trip_multiple_digests`,
+  `encode_decode_empty_digests`, `decode_malformed_payload_throws`
+  (task 1/10's wire round trip, split into its own file)
+- `tests/tcp_gossip_transport_integration_test.cpp` has
+  `gossip_round_trip_propagates_advertised_progress` (task 11)
+- `tests/tcp_gossip_transport_catch_up_property_test.cpp` has
+  `joining_node_catches_up_via_real_gossip_transport` (task 12),
+  `silent_node_digest_expires_after_freshness_interval` (task 13),
+  `removed_member_immediately_ineligible_despite_lingering_digest` (task 14)
 
 ## Overview
 
@@ -73,7 +102,7 @@ static configuration supplies address resolution only.
 
 ## Phase 1: Wire Types and Configuration (Tasks 1–2)
 
-- [ ] 1. Add `gossip_digest` and `gossip_exchange_message` wire types
+- [x] 1. Add `gossip_digest` and `gossip_exchange_message` wire types
   - New file `include/raft/tcp_gossip_transport.hpp`
   - `gossip_digest<NodeId, Address, LogIndex>`: `node_id`, `address`
     (this peer's Raft RPC address, per Requirement 7.1 — not the gossip
@@ -90,7 +119,7 @@ static configuration supplies address resolution only.
     digests through encode then decode, confirms exact equality
   - _Requirements: 5.1, 5.2_
 
-- [ ] 2. Add `tcp_gossip_config`
+- [x] 2. Add `tcp_gossip_config`
   - Same file as Task 1
   - `address_book` (`std::vector<peer_info<NodeId, Address>>` — address
     resolution only, deliberately NOT a membership statement, Requirement
@@ -106,7 +135,7 @@ static configuration supplies address resolution only.
 
 ## Phase 2: Transport Internals (Tasks 3–4)
 
-- [ ] 3. Implement the TCP listener and accept loop
+- [x] 3. Implement the TCP listener and accept loop
   - Same file — `start_listener()`/`stop_listener()`/`accept_loop()`,
     reusing `tcp_detail::connect_to`/`frame_send`/`frame_recv`/
     `bytes_to_str`/`str_to_bytes` from `tcp_rpc.hpp` for framing, exactly
@@ -124,7 +153,7 @@ static configuration supplies address resolution only.
     confirms the connection is closed without hanging or crashing
   - _Requirements: 3.1, 3.2, 5.3, 5.4_
 
-- [ ] 4. Implement `merge()` and `prune_expired()`
+- [x] 4. Implement `merge()` and `prune_expired()`
   - Same file — `merge(incoming)`: for each digest, replace the local
     entry for that `node_id` iff `(incoming.term, incoming.last_log_index)`
     is lexicographically greater than the existing entry's, or add it if
@@ -140,7 +169,7 @@ static configuration supplies address resolution only.
 
 ## Phase 3: Membership, Gossip Rounds, and Public API (Tasks 5–8)
 
-- [ ] 5. Implement `exchange_with()` (client-side push-pull)
+- [x] 5. Implement `exchange_with()` (client-side push-pull)
   - Same file — connects to the given peer's Raft-RPC-derived `host:port`
     (split from `Address`), sends this node's current table snapshot as a
     `gossip_exchange_request`, receives the peer's table as a
@@ -156,7 +185,7 @@ static configuration supplies address resolution only.
     throwing
   - _Requirements: 5.1, 5.2, 5.3, 8.1, 8.3_
 
-- [ ] 6. Implement `update_membership()` and `eligible_peers()`
+- [x] 6. Implement `update_membership()` and `eligible_peers()`
   - Same file — `update_membership(member_ids)`: replaces
     `_active_members` (a `folly::Synchronized<std::unordered_set<NodeId>>`,
     empty until the first call, Requirement 2.2) and resolves immediately
@@ -171,7 +200,7 @@ static configuration supplies address resolution only.
     `address_book` entry for a non-member
   - _Requirements: 1.4, 2.2, 2.3_
 
-- [ ] 7. Implement the background gossip thread
+- [x] 7. Implement the background gossip thread
   - Same file — `start_gossip_thread()`/`stop_gossip_thread()`/
     `gossip_loop()`, mirroring `rfc2136_dns_sd_discovery`'s
     `start_fresher()`/`stop_fresher()`/`fresher_loop()` shape exactly
@@ -191,7 +220,7 @@ static configuration supplies address resolution only.
     call
   - _Requirements: 4.1, 4.2, 4.3_
 
-- [ ] 8. Implement `tcp_gossip_peer2peer_replicator`'s public API
+- [x] 8. Implement `tcp_gossip_peer2peer_replicator`'s public API
   - Same file — constructor (starts listener then gossip thread; throws if
     the listener fails to bind, Requirement 4.4), destructor (stops gossip
     thread then listener), `advertise_progress()` (updates own table entry
@@ -213,7 +242,7 @@ static configuration supplies address resolution only.
 
 ## Phase 4: Tests (Tasks 9–14)
 
-- [ ] 9. Unit tests: merge and prune logic
+- [x] 9. Unit tests: merge and prune logic
   - `tests/tcp_gossip_transport_merge_unit_test.cpp` (new file) — pure
     logic, no network I/O: higher-term wins, equal-term-higher-index wins,
     lower-term/index loses, not-yet-present always added; pruning removes
@@ -221,7 +250,7 @@ static configuration supplies address resolution only.
   - Verify: `ctest -R tcp_gossip_transport_merge_unit_test` passes
   - _Requirements: 6.1, 6.2, 6.3_
 
-- [ ] 10. Unit tests: eligible-peers intersection, fanout selection, and
+- [x] 10. Unit tests: eligible-peers intersection, fanout selection, and
        wire encode/decode
   - Same file or a sibling — `eligible_peers()`'s intersection correctness
     (Task 6's verify step promoted to a permanent regression test); fanout
@@ -234,7 +263,7 @@ static configuration supplies address resolution only.
   - Verify: `ctest` passes
   - _Requirements: 2.3, 4.2, 5.1, 5.2_
 
-- [ ] 11. Integration test: real TCP, single process, multiple instances
+- [x] 11. Integration test: real TCP, single process, multiple instances
   - `tests/tcp_gossip_transport_integration_test.cpp` (new file) —
     the explicit anti-flakiness test from Requirement 10.2: several
     `tcp_gossip_peer2peer_replicator` instances constructed **in this one
@@ -246,7 +275,7 @@ static configuration supplies address resolution only.
     `gossip_round_interval`s
   - _Requirements: 10.2_
 
-- [ ] 12. End-to-end property test: mixed transport
+- [x] 12. End-to-end property test: mixed transport
   - `tests/tcp_gossip_transport_catch_up_property_test.cpp` (new file) —
     a multi-node `node<Types>` cluster using
     `simulator_network_client`/`server` for Raft RPCs but real
@@ -262,7 +291,7 @@ static configuration supplies address resolution only.
     Requirement 11) — this test does not call it directly.
   - _Requirements: 10.3_
 
-- [ ] 13. Freshness expiry test
+- [x] 13. Freshness expiry test
   - Same file as Task 12, or a sibling — one instance stops calling
     `advertise_progress` (simulating a crash) while others continue
     gossiping normally
@@ -271,7 +300,7 @@ static configuration supplies address resolution only.
     `find_catch_up_source` no longer offers it as a source afterward
   - _Requirements: 10.4_
 
-- [ ] 14. Membership-removal test (design.md Property 4)
+- [x] 14. Membership-removal test (design.md Property 4)
   - Same file as Task 12, or a sibling — using the mixed-transport setup
     from Task 12, drive a `remove_server()` on the cluster
   - Assert: the removed node stops being offered by `find_catch_up_source`
