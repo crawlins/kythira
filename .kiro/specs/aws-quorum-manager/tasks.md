@@ -15,17 +15,18 @@ Verified directly against the real implementation: `include/raft/aws_ec2_quorum_
 exist with the config structs and manager classes this plan calls for, and
 `tests/aws_quorum_manager_unit_test.cpp`/`aws_quorum_manager_localstack_test.cpp`/
 `aws_quorum_manager_real_ec2_test.cpp` implement the three test tiers below,
-including task 7's AZ-outage/heartbeat-replacement/quarantine scenarios. One
-real naming deviation from this plan: the implementation prefixed both
-manager classes and their header files with `aws_` (`aws_ec2_quorum_manager`,
-`aws_asg_quorum_manager`) rather than this plan's bare `ec2_quorum_manager`/
-`asg_quorum_manager` — functionally equivalent, no scope change.
+including task 7's AZ-outage/heartbeat-replacement/quarantine scenarios.
+(This plan's task text below previously used the bare `ec2_quorum_manager`/
+`asg_quorum_manager` names instead of the `aws_`-prefixed names the
+implementation actually uses — matching `requirements.md`/`design.md`, which
+already used the `aws_`-prefixed names throughout. Updated in place so the
+plan matches reality and the rest of this spec directory consistently.)
 
 ## Overview
 
 Implement two AWS-based `quorum_manager` classes:
-- `ec2_quorum_manager` — direct EC2 instance management (primary)
-- `asg_quorum_manager` — Auto Scaling Group management (production-grade)
+- `aws_ec2_quorum_manager` — direct EC2 instance management (primary)
+- `aws_asg_quorum_manager` — Auto Scaling Group management (production-grade)
 
 Both satisfy the `quorum_manager` concept from `include/raft/quorum_management.hpp`.
 The implementations are header-only, gated behind `KYTHIRA_HAS_AWS_SDK`, and use
@@ -49,12 +50,12 @@ Reference implementations to study before starting:
     {
       "wave": 2,
       "tasks": [3],
-      "description": "ec2_quorum_manager — no dependency on asg_quorum_manager"
+      "description": "aws_ec2_quorum_manager — no dependency on aws_asg_quorum_manager"
     },
     {
       "wave": 3,
       "tasks": [4],
-      "description": "asg_quorum_manager — shares helpers with ec2 but is independent"
+      "description": "aws_asg_quorum_manager — shares helpers with ec2 but is independent"
     },
     {
       "wave": 4,
@@ -142,8 +143,8 @@ Reference implementations to study before starting:
   - Verify: headers compile cleanly with and without SDK present
   - _Requirements: 3.1, 3.2, 10.1, 10.2, 17.1–17.3, 18.1–18.3_
 
-- [x] 3. Implement `ec2_quorum_manager`
-  - Create `include/raft/ec2_quorum_manager.hpp` with the full class body inside
+- [x] 3. Implement `aws_ec2_quorum_manager`
+  - Create `include/raft/aws_ec2_quorum_manager.hpp` with the full class body inside
     `#ifdef KYTHIRA_HAS_AWS_SDK`:
 
   **Constructor** (Req 3.2, 4.4):
@@ -228,7 +229,7 @@ Reference implementations to study before starting:
   **`static_assert`** (Req 4.1):
   - Add at bottom of file (inside SDK guard):
     ```cpp
-    static_assert(quorum_manager<ec2_quorum_manager<std::uint64_t, std::string>,
+    static_assert(quorum_manager<aws_ec2_quorum_manager<std::uint64_t, std::string>,
                                  std::uint64_t, std::string, std::string>);
     ```
 
@@ -237,8 +238,8 @@ Reference implementations to study before starting:
   - _Requirements: 3.2, 4.1–4.5, 5.1–5.4, 6.1–6.8, 7.1–7.9, 8.1–8.6, 9.1–9.2,
     15.1–15.3, 15.7, 17.4–17.7, 18.4–18.6, 19.2–19.3_
 
-- [x] 4. Implement `asg_quorum_manager`
-  - Create `include/raft/asg_quorum_manager.hpp` with full class body inside
+- [x] 4. Implement `aws_asg_quorum_manager`
+  - Create `include/raft/aws_asg_quorum_manager.hpp` with full class body inside
     `#ifdef KYTHIRA_HAS_AWS_SDK`:
 
   **Constructor** (Req 10.2, 11.3–11.4):
@@ -250,7 +251,7 @@ Reference implementations to study before starting:
   **Private helpers**:
   - Copy `node_id_str`, `next_node_id` (uses `_ec2`), `find_ec2_id` (uses
     `_ec2`), `apply_tags` (uses `_ec2`), `compute_quorum_status` — same
-    implementations as in `ec2_quorum_manager`
+    implementations as in `aws_ec2_quorum_manager`
 
   **`assess_quorum`** (Req 12.1–12.6, design.md sequence):
   - `fiu_do_on("raft/aws/asg/describe_asgs", throw ...;)`
@@ -285,7 +286,7 @@ Reference implementations to study before starting:
 
   **`static_assert`**:
   ```cpp
-  static_assert(quorum_manager<asg_quorum_manager<std::uint64_t, std::string>,
+  static_assert(quorum_manager<aws_asg_quorum_manager<std::uint64_t, std::string>,
                                std::uint64_t, std::string, std::string>);
   ```
 
@@ -303,9 +304,9 @@ Reference implementations to study before starting:
     **Concept satisfaction** (Req 16.1):
     - `concept_ec2_satisfied`: static_assert already in header; this test is a
       compile-time check that passes trivially at runtime (just instantiate the type)
-    - `concept_asg_satisfied`: same for `asg_quorum_manager`
+    - `concept_asg_satisfied`: same for `aws_asg_quorum_manager`
 
-    **`ec2_quorum_manager` construction validation** (Req 16.3–16.4):
+    **`aws_ec2_quorum_manager` construction validation** (Req 16.3–16.4):
     - `ec2_empty_cluster_name_throws`: construct with `cluster_name = ""` → verify
       `std::invalid_argument`
     - `ec2_empty_image_id_throws`: construct with `image_id = ""` → verify
@@ -314,18 +315,18 @@ Reference implementations to study before starting:
     - `ec2_missing_subnet_for_topology_group_throws`: topology with group `"us-east-1a"`
       but empty `subnet_by_group` → verify `std::invalid_argument`
 
-    **`asg_quorum_manager` construction validation** (Req 16.5):
+    **`aws_asg_quorum_manager` construction validation** (Req 16.5):
     - `asg_empty_cluster_name_throws`
     - `asg_empty_asg_by_group_throws`
     - `asg_missing_asg_for_topology_group_throws`
 
     **Unknown-group provision futures** (Req 16.6):
     - `ec2_provision_unknown_group_returns_exceptional_future`: construct valid
-      `ec2_quorum_manager` (no SDK calls in ctor), call
+      `aws_ec2_quorum_manager` (no SDK calls in ctor), call
       `provision_node("unknown-az", nullopt)`, verify the returned Future is
       exceptional with an `std::invalid_argument`
     - `asg_provision_unknown_group_returns_exceptional_future`: same for
-      `asg_quorum_manager`
+      `aws_asg_quorum_manager`
 
     **Placement group config** (Req 17.8):
     - `placement_group_partition_config_valid`: construct
@@ -568,7 +569,7 @@ Reference implementations to study before starting:
   call `provision_node`. The quorum management spec (Requirements 14.3–14.4)
   prevents this: the leader tracks pending provisions and does not call
   `provision_node` again for a slot while a prior call is in-flight. A single
-  `ec2_quorum_manager` instance is therefore never called concurrently for the
+  `aws_ec2_quorum_manager` instance is therefore never called concurrently for the
   same slot. No locking is required.
 
 - `user_data_template` is the primary mechanism for starting kythira on a new
