@@ -34,6 +34,36 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
 ---
 
+## Pending Specifications
+
+The table above tracks the original 8 major feature areas; `.kiro/specs/`
+has since grown to 34 per-feature spec directories, most now complete (see
+`doc/CHANGELOG.md` for their individual completion entries). The specs
+below are the ones that are not, split into two tables since they're
+different kinds of "not done": genuinely never started (only a design/
+requirements doc exists, zero implementation commits) versus a real,
+ongoing partial state (some tasks done, specific ones outstanding) — kept
+separate rather than folded into one list so each entry's actual status is
+unambiguous at a glance.
+
+### Not Started
+
+| Spec | What it would do |
+|------|-------|
+| [`ccache-adoption`](../.kiro/specs/ccache-adoption/) | Wire ccache into the CMake build and every CI job that compiles project code, persisting the cache directory across runs |
+| [`chaos-node-host-build`](../.kiro/specs/chaos-node-host-build/) | Rewrite `docker/chaos_node/Dockerfile` to a runtime-only stage packaging a host-built binary, instead of trying (and failing) to compile folly inside Docker — see the "Minor Enhancements" entry below for the failure this fixes |
+| [`discovery-nodes-host-build`](../.kiro/specs/discovery-nodes-host-build/) | Extend the same host-build-plus-staging pattern to `poco_discovery_node`, `dns_discovery_node`, and `dns_sd_discovery_node` |
+| [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
+
+### Partially Implemented
+
+| Spec | Status |
+|------|-------|
+| [`arm64-ci-verification`](../.kiro/specs/arm64-ci-verification/) | 12/13 tasks — Task 10 (building/smoke-testing each Docker image natively on arm64 hardware) was blocked on landing on `main` before `workflow_dispatch` could target it; now that it has, the first real run is still outstanding |
+| [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
+
+---
+
 ## Remaining Work (All Optional)
 
 ### Build Tooling
