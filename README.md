@@ -20,7 +20,7 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
   [Peer-to-Peer Log Replication & Gossip Transport](#peer-to-peer-log-replication--gossip-transport)
 
 ### Advanced Features
-- **Async Operations** using generic future concepts (Folly, std::future, custom)
+- **Async Operations** using generic future concepts (Folly, stdexec)
 - **Commit Waiting** with timeout and cancellation support
 - **Exponential Backoff Retry** with jitter for network operations
 - **Timeout Classification** for intelligent error handling
@@ -456,18 +456,21 @@ server.start();
 
 ### Generic Future Support
 
-Kythira uses C++23 concepts to support multiple future implementations:
+Kythira uses C++20 concepts (`include/concepts/future.hpp`) to keep `node<Types>`
+and the transport/state-machine layers backend-neutral: any future/promise type
+satisfying `kythira::future`/`future_continuation`/`future_transformable` can plug
+in as a `Types` bundle's future implementation, not just Folly. Two backends
+actually do this today — Folly (the default) and `stdexec` (opt-in via
+`KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`, see
+[stdexec Future Backend (Optional)](#stdexec-future-backend-optional) below).
 
-```cpp
-// Works with Folly futures
-using folly_node = kythira::node<folly::Future, /* ... */>;
-
-// Works with std::future
-using std_node = kythira::node<std::future, /* ... */>;
-
-// Works with custom futures
-using custom_node = kythira::node<my_future, /* ... */>;
-```
+**`std::future` does not satisfy these concepts** — it has no `isReady()` and no
+`wait(milliseconds) -> bool` overload (only a no-arg `wait()` and a
+`wait_for(duration) -> future_status`), so it cannot be used as a `Types` bundle's
+future type. `tests/complete_conversion_validation_property_test.cpp` and
+`tests/future_usage_consistency_property_test.cpp` enforce that `std::future`
+never reappears as a substitute for `kythira::Future` in production, test, or
+example code.
 
 ### Pluggable Components
 
