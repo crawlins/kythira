@@ -522,7 +522,7 @@ valgrind --tool=massif ./your_raft_application
 |---------------|-------|----------|
 | "transport_types concept not satisfied" | Missing or invalid type members | Ensure all required types are defined correctly |
 | "rpc_serializer concept not satisfied" | Invalid serializer type | Use compliant serializer implementation |
-| "future concept not satisfied" | Invalid future template | Use compliant future type (folly::Future, std::future, etc.) |
+| "future concept not satisfied" | Invalid future template | Use a compliant future type (`folly::Future`, `kythira::stdexec_backend::Future`) — `std::future` does not satisfy `kythira::future` (no `isReady()`, no `wait(milliseconds) -> bool`) and cannot be used here |
 | "Template instantiation failed" | Type compatibility issues | Check type compatibility and concept requirements |
 
 ## Performance Tuning Tips
