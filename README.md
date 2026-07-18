@@ -484,7 +484,7 @@ All major components are pluggable via template parameters:
 
 ### Test Status
 
-See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis and [doc/TODO.md](doc/TODO.md) for full task-by-task project status.
+See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis, [doc/TODO.md](doc/TODO.md) for full task-by-task project status, and [doc/CHANGELOG.md](doc/CHANGELOG.md) for a dated history of what changed and why.
 
 **Summary**:
 - **Total Tests**: 378 (registered in CTest)
@@ -1256,7 +1256,8 @@ The implementation has been tested with multiple transport layers:
   the default and is unaffected either way
 ✅ **Testing**: 100% pass rate (385 tests), comprehensive property/integration/chaos testing
 
-See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status.
+See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
+[`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
 
 ### What's In Progress
 
