@@ -58,7 +58,8 @@ static std::vector<std::string> peer_ids(const DnsSdNode& n, int browse_ms = 300
         return {};
     }
     std::vector<std::string> ids;
-    for (const auto& item : json::parse(res->body).as_array()) {
+    const json::value parsed = json::parse(res->body);
+    for (const auto& item : parsed.as_array()) {
         ids.emplace_back(item.as_object().at("id").as_string());
     }
     return ids;

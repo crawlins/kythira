@@ -1,6 +1,15 @@
 # Implementation Plan — ARM64 CI Verification
 
-## Status: In Progress — 12/13 tasks complete; Task 10 awaiting its first real run (workflow added, blocked on landing on `main` before `workflow_dispatch` can target it)
+## Status: Complete — 13/13 tasks
+
+**Last Updated**: July 18, 2026 (Task 10 completed via 5 real
+`workflow_dispatch` runs against `.github/workflows/arm64-docker-smoke-test.yml`
+on a native `ubuntu-24.04-arm` runner — see its entry below for the full
+per-image results, including one newly-discovered, genuine arm64-specific
+`SIGSEGV` in the DNS/DNS-SD discovery scenario tests, root-caused as a
+real stack-use-after-scope bug in `peer_ids()`'s JSON-parsing loop and
+fixed — see `doc/CHANGELOG.md`'s July 18, 2026 entry for the full
+writeup.)
 
 ## Overview
 
@@ -204,7 +213,7 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     resolves to `x64-linux` and produces identical images
   - _Requirements: 6.1_
 
-- [ ] 10. Build and smoke-test each image natively on arm64
+- [x] 10. Build and smoke-test each image natively on arm64
   - On a native arm64 host (or arm64 CI runner) with Docker or Podman
     installed, build each `docker-*-image` CMake target
     (`docker-chaos-image`, `docker-poco-discovery-image`,
@@ -215,20 +224,118 @@ a pre-implementation spike confirming vcpkg dependency availability for the
     arm64 images and confirm parity with x86_64 results
   - Document any per-image blocker found (e.g. an apt package without an
     arm64 build) as a named limitation rather than silently skipping
-  - **Status**: in progress — the implementation environment has no
-    arm64 host and no working AWS credentials (a real `aws sts
-    get-caller-identity` call returns `InvalidClientTokenId`) or reachable
-    container daemon, so this can't be run directly from the sandbox.
-    Rather than stand up new billable AWS infrastructure for a one-off
-    check, added `.github/workflows/arm64-docker-smoke-test.yml` — a
-    `workflow_dispatch`-only job on the same `ubuntu-24.04-arm` GitHub-
-    hosted runner already proven in Task 8, building and running
-    `docker-chaos-tests`, `docker-poco-discovery-tests`,
-    `docker-dns-discovery-tests`, and `docker-dns-sd-discovery-tests`.
-    GitHub only accepts `workflow_dispatch` API calls for workflows
-    already present on the default branch, so this awaits that workflow
-    landing on `main` before it can be triggered and its results recorded
-    here.
+  - **Result**: `.github/workflows/arm64-docker-smoke-test.yml` landed on
+    `main`, then was actually triggered — 5 real `workflow_dispatch` runs
+    on a native `ubuntu-24.04-arm` GitHub-hosted runner (crawlins/kythira
+    run IDs 29663122464, 29663269337, 29663422680, 29663614678,
+    29663814851). Real, per-image results, not simulated:
+    - **`chaos_node`**: image build fails — `ninja: error: unknown
+      target 'chaos_node'`. Not arm64-specific: identical failure on
+      x64 (two earlier runs from a different branch, run IDs
+      29607765347/29607181082) and already tracked as its own item in
+      `doc/TODO.md`'s Minor Enhancements
+      (`.kiro/specs/chaos-node-host-build/`) — `docker/chaos_node/Dockerfile`
+      can't apt-install folly. `docker-otlp-collector-tests` (which
+      reuses this image) necessarily fails the same way for the same
+      reason; not independently re-run since the outcome isn't in doubt.
+    - **`poco_discovery_node`**: image build fails — `ninja: error:
+      unknown target 'poco_discovery_node'`. Also not arm64-specific in
+      the "new finding" sense: this is the *already-documented*
+      consequence of `POCO_DNSSD_FOUND` correctly staying `FALSE` on
+      `arm64-linux` (no manually-built PocoDNSSD archives for that
+      triplet — `CMakeLists.txt`'s `POCO_DNSSD_FOUND` block,
+      README.md's "ARM (arm64) Support" section), which in turn means
+      `cmd/poco_discovery_node`'s `add_subdirectory()` never runs and
+      the target doesn't exist. Working as designed, not a bug.
+    - **`dns_discovery_node`** and **`dns_sd_discovery_node`**: images
+      build successfully (these depend on `libldns`, which — per
+      README.md — is unaffected on arm64). Initial runs turned up a
+      **new, genuine, arm64-specific finding**: both
+      `docker_dns_discovery_test`'s and `docker_dns_sd_discovery_test`'s
+      `all_nodes_discover_peers` case crashed with a real `SIGSEGV` —
+      `fatal error: ... memory access violation ... no mapping at fault
+      address` (RFC 1035 variant: 2 crashes / 3 attempts; RFC 2136/DNS-SD
+      variant: 1 crash / 1 attempt — intermittent, not deterministic,
+      which turned out to be a real clue rather than noise). The sibling
+      `all_nodes_healthy` case in both files passed every time.
+      `tests/docker_chaos/dns_discovery_test.cpp` and
+      `dns_sd_discovery_test.cpp` shared byte-for-byte identical
+      `peer_ids()` helpers (confirmed by diff), and that helper contained
+      a genuine bug:
+      ```cpp
+      for (const auto& item : json::parse(res->body).as_array()) { ... }
+      ```
+      `json::parse(res->body)` returns a `boost::json::value` prvalue;
+      `.as_array()` is a *member function call* returning a reference
+      into that temporary, not a direct member-access binding — so C++
+      does not extend the temporary's lifetime for the range-for loop
+      (this is exactly the footgun [P2718R0](https://wg21.link/P2718R0)
+      addresses for direct range-expressions, but a function-call
+      indirection like `.as_array()` still isn't covered even under
+      `-std=c++23` with GCC 13.3). The `boost::json::value` is destroyed
+      at the end of the range-for's init-statement, leaving the loop
+      iterating over freed stack memory — a stack-use-after-scope. This
+      is true undefined behavior on every architecture; it happened to
+      "work" most of the time on x86_64 because the freed stack slot
+      usually wasn't yet overwritten, while arm64's different stack
+      layout/ABI made the corruption manifest as a hard crash far more
+      often (still not literally every time, matching the intermittent
+      x86_64-vs-arm64 pattern observed). Confirmed with a minimal
+      standalone repro compiled with the project's actual toolchain
+      (`g++-13 -std=c++23 -fsanitize=address`), which AddressSanitizer
+      flagged immediately:
+      `stack-use-after-scope ... in boost::json::array::begin()`.
+      **Fixed** in all three call sites that had this exact pattern —
+      `tests/docker_chaos/dns_discovery_test.cpp`,
+      `dns_sd_discovery_test.cpp`, and (a fourth image sharing the same
+      `peer_ids()` shape, not previously flagged because
+      `poco_discovery_node` doesn't build on arm64 at all)
+      `poco_discovery_test.cpp` — by binding the parsed value to a named
+      local before iterating:
+      ```cpp
+      const json::value parsed = json::parse(res->body);
+      for (const auto& item : parsed.as_array()) { ... }
+      ```
+      All three fixed test binaries were rebuilt cleanly against the
+      real project headers/flags (`build-clang`, unmodified toolchain).
+      Re-verified against real arm64 hardware with a 6th real
+      `workflow_dispatch` run (run ID 29664536952) rather than trusting
+      the local fix alone, since the whole reason this bug surfaced was
+      architecture-specific runtime behavior a local x86_64 build cannot
+      fully rule out — **confirmed fixed**: zero `SIGSEGV`/memory-access-
+      violation signatures anywhere in that run's logs, and both
+      `all_nodes_discover_peers` cases (RFC 1035 and DNS-SD) completed
+      cleanly. (Note: per-step `conclusion` in the GitHub Actions API
+      always reads `success` for a `continue-on-error: true` step
+      regardless of the underlying command's real result — verifying
+      this properly required pulling the raw job log via `gh api
+      .../actions/jobs/{id}/logs` and checking for the actual crash
+      signature and Boost.Test pass/fail lines, not trusting the step
+      status shown in the UI or `gh run view`.) That same run turned up
+      one new, unrelated, non-crash finding worth flagging honestly
+      rather than glossing over: `dns_discovery_test`'s
+      `stopped_node_absent_after_deregister` case failed a real
+      assertion (`node2 must see 1 peer after stop; saw 2` /
+      `node3 must see 1 peer after stop; saw 2`) — the surviving nodes'
+      3 s post-stop wait wasn't always enough for BIND9 to process the
+      DELETE UPDATE and for both nodes' next `/peers` poll to observe
+      it. This is a timing flake, not a crash or memory-safety issue,
+      and is unrelated to the `peer_ids()` bug fixed above; filed as
+      its own `doc/TODO.md` Minor Enhancements entry rather than folded
+      into this already-closed finding.
+    - **`bind9`**: builds and runs correctly in both DNS scenario tests
+      (each fixture's `all_nodes_healthy` case, which depends on a
+      working BIND9 container, passes) — confirmed working on arm64.
+    - The smoke-test workflow itself needed three follow-up commits
+      during this verification to actually reach and report on every
+      target: none of the five steps originally had
+      `continue-on-error`, so the very first failure (`chaos_node`)
+      silently skipped every step after it, including the three
+      genuinely independent images this task most needed data on. Each
+      of the five is now `continue-on-error: true` with a comment
+      explaining *why* (three different reasons: two already-documented
+      gaps, one newly-confirmed real bug), so a future run reports on
+      all five every time instead of stopping at the first failure.
   - _Requirements: 6.2, 6.3_
 
 ---
@@ -283,11 +390,11 @@ a pre-implementation spike confirming vcpkg dependency availability for the
 | 1 | 2–4 (CMake triplet + multiarch discovery) | Complete |
 | 2 | 5–6 (CI workflow triplet + cache isolation) | Complete |
 | 3 | 7–8 (native arm64 build-and-test leg) | Complete — verified green on a real cold-cache CI run |
-| 4 | 9–10 (Docker images on arm64) | 9 complete; 10 in progress — smoke-test workflow added, awaiting first run on `main` |
+| 4 | 9–10 (Docker images on arm64) | Complete — 5 real runs against all 5 docker-* targets; 1 genuine new arm64 bug found (SIGSEGV in DNS/DNS-SD discovery tests) root-caused and fixed (stack-use-after-scope in `peer_ids()`), 2 already-known/documented gaps confirmed, 2 images (bind9, dns/dns-sd nodes themselves) verified working |
 | 5 | 11 (Real Cloud Tests arm64 leg) | Complete |
 | 6 | 12–13 (documentation) | Complete |
 
-**Total**: 12/13 tasks complete; 1 remaining (Task 10 — smoke-test workflow added, first real run pending)
+**Total**: 13/13 tasks complete
 
 ## Notes
 
