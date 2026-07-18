@@ -94,9 +94,9 @@ public:
     auto configure_session(coap_context_t* ctx) -> void override {
 #ifdef LIBCOAP_AVAILABLE
         if (_role == coap_security_role::client) {
-            if (!coap_context_set_psk(ctx, _creds.identity.c_str(),
-                                      reinterpret_cast<const uint8_t*>(_creds.key.data()),
-                                      _creds.key.size())) {
+            if (coap_context_set_psk(ctx, _creds.identity.c_str(),
+                                     reinterpret_cast<const uint8_t*>(_creds.key.data()),
+                                     _creds.key.size()) == 0) {
                 throw coap_security_error("Failed to configure DTLS PSK context");
             }
         } else {
@@ -109,7 +109,7 @@ public:
             spsk_config.psk_info.key.length = _creds.key.size();
             spsk_config.validate_id_call_back = &dtls_psk_provider::validate_id_callback;
             spsk_config.id_call_back_arg = this;
-            if (!coap_context_set_psk2(ctx, &spsk_config)) {
+            if (coap_context_set_psk2(ctx, &spsk_config) == 0) {
                 throw coap_security_error("Failed to configure server DTLS PSK context");
             }
         }
@@ -202,7 +202,7 @@ public:
             pki_config.validate_cn_call_back = &dtls_pki_provider::validate_cn;
             pki_config.cn_call_back_arg = this;
         }
-        if (!coap_context_set_pki(ctx, &pki_config)) {
+        if (coap_context_set_pki(ctx, &pki_config) == 0) {
             throw coap_security_error("Failed to configure DTLS PKI context");
         }
 #else
@@ -242,15 +242,15 @@ public:
         }
         const uint8_t* cert_data = asn1_public_cert;
         X509* cert = d2i_X509(nullptr, &cert_data, static_cast<long>(asn1_length));
-        if (!cert) {
+        if (cert == nullptr) {
             return 0;
         }
         BIO* bio = BIO_new(BIO_s_mem());
-        if (!bio) {
+        if (bio == nullptr) {
             X509_free(cert);
             return 0;
         }
-        if (!PEM_write_bio_X509(bio, cert)) {
+        if (PEM_write_bio_X509(bio, cert) == 0) {
             X509_free(cert);
             BIO_free(bio);
             return 0;
@@ -303,7 +303,7 @@ public:
         pki_config.pki_key.key.pem_buf.private_key_len = _creds.private_key.size();
         pki_config.validate_cn_call_back = &dtls_rpk_provider::validate_peer_key;
         pki_config.cn_call_back_arg = this;
-        if (!coap_context_set_pki(ctx, &pki_config)) {
+        if (coap_context_set_pki(ctx, &pki_config) == 0) {
             throw coap_security_error("Failed to configure DTLS RPK context");
         }
 #else
@@ -337,7 +337,9 @@ public:
     // machinery as dtls_pki_provider (Property 4).
     [[nodiscard]] auto is_trusted_peer_key(const std::vector<std::byte>& peer_key) const -> bool {
         for (const auto& trusted : _creds.trusted_peer_keys) {
-            if (trusted == peer_key) return true;
+            if (trusted == peer_key) {
+                return true;
+            }
         }
         return false;
     }
@@ -381,7 +383,7 @@ public:
         check_capability();
         if (_role == coap_security_role::server) {
             auto* conf = build_oscore_conf();
-            if (!coap_context_oscore_server(ctx, conf)) {
+            if (coap_context_oscore_server(ctx, conf) == 0) {
                 throw coap_security_error("Failed to configure OSCORE server context");
             }
         }
@@ -426,10 +428,10 @@ public:
         // or the eventual free() corrupts the heap.
         coap_bin_const_t* rid = coap_new_bin_const(
             reinterpret_cast<const uint8_t*>(recipient_id.data()), recipient_id.size());
-        if (!rid) {
+        if (rid == nullptr) {
             throw coap_security_error("Failed to allocate OSCORE recipient ID");
         }
-        if (!coap_new_oscore_recipient(ctx, rid)) {
+        if (coap_new_oscore_recipient(ctx, rid) == 0) {
             throw coap_security_error("Failed to add OSCORE recipient");
         }
 #else
@@ -445,7 +447,7 @@ public:
 private:
 #ifdef LIBCOAP_AVAILABLE
     static auto check_capability() -> void {
-        if (!coap_oscore_is_supported()) {
+        if (coap_oscore_is_supported() == 0) {
             throw coap_unsupported_security_mode_error(coap_auth_mode::oscore,
                                                        "OSCORE not compiled into linked libcoap");
         }
@@ -477,7 +479,7 @@ private:
         conf_mem.s = reinterpret_cast<const uint8_t*>(text.c_str());
         conf_mem.length = text.size();
         auto* conf = coap_new_oscore_conf(conf_mem, nullptr, nullptr, 0);
-        if (!conf) {
+        if (conf == nullptr) {
             throw coap_security_error("Failed to parse OSCORE configuration");
         }
         return conf;

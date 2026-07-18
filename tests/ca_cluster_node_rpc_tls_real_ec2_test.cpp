@@ -159,13 +159,16 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
         addr.sin_family = AF_INET;
         addr.sin_port = htons(22);
         inet_pton(AF_INET, public_ip.c_str(), &addr.sin_addr);
-        if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) break;
+        if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            break;
+        }
         ::close(sock);
         sock = -1;
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
-    if (sock < 0)
+    if (sock < 0) {
         throw std::runtime_error("ssh_execute: could not connect to " + public_ip + ":22 in time");
+    }
 
     LIBSSH2_SESSION* session = libssh2_session_init();
     BOOST_REQUIRE(session != nullptr);
@@ -573,7 +576,9 @@ auto wait_healthy(const std::string& public_ip, const std::string& private_key_p
                                "curl -sf -o /dev/null -w '%{http_code}' "
                                "http://localhost:8443/healthz",
                                std::chrono::seconds(15));
-        if (out == "200") return true;
+        if (out == "200") {
+            return true;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
     return false;
@@ -592,7 +597,9 @@ auto find_leader_ip(const std::vector<std::string>& public_ips, const std::strin
                             "-H 'Authorization: Bearer " +
                                 std::string(TEST_AUTH_TOKEN) + "' http://localhost:8443/v1/root-ca",
                             std::chrono::seconds(15));
-            if (out == "200") return ip;
+            if (out == "200") {
+                return ip;
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
@@ -612,7 +619,9 @@ auto try_issue_certificate(const std::vector<std::string>& public_ips,
                            const std::string& private_key_pem, std::chrono::seconds timeout)
     -> bool {
     auto leader_ip = find_leader_ip(public_ips, private_key_pem, timeout);
-    if (!leader_ip.has_value()) return false;
+    if (!leader_ip.has_value()) {
+        return false;
+    }
 
     leaf_certificate_options opts;
     opts.subject.common_name = "rpc-tls-real-ec2-test-client";
@@ -668,7 +677,9 @@ void delete_bootstrap_credential(const std::string& public_ip, const std::string
 auto build_peers_arg(const std::vector<std::string>& public_ips) -> std::string {
     std::ostringstream peers;
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
-        if (i > 0) peers << ",";
+        if (i > 0) {
+            peers << ",";
+        }
         peers << (i + 1) << ":" << public_ips[i] << ":7000@http://" << public_ips[i] << ":8443";
     }
     return peers.str();

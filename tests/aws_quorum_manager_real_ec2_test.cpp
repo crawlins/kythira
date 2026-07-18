@@ -112,7 +112,7 @@ BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 // Returns env var value or empty string.
 auto env(const char* name) -> std::string {
     const char* v = std::getenv(name);
-    return v ? std::string(v) : std::string{};
+    return (v != nullptr) ? std::string(v) : std::string{};
 }
 
 auto make_tag(const std::string& k, const std::string& v) -> Aws::EC2::Model::Tag {
@@ -427,7 +427,7 @@ struct RealEc2Fixture : signal_cleanup_target {
             if (out.IsSuccess()) {
                 std::string latest_date;
                 for (const auto& img : out.GetResult().GetImages()) {
-                    std::string d(img.GetCreationDate());
+                    const std::string& d(img.GetCreationDate());
                     if (d > latest_date) {
                         latest_date = d;
                         ami_id = std::string(img.GetImageId());

@@ -1052,7 +1052,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     std::vector<node_placement<node_id_type, placement_group_id_type>> cluster;
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        if (_state != kythira::server_state::leader) return;
+        if (_state != kythira::server_state::leader) {
+            {
+                return;
+            }
+        }
         cluster = build_quorum_cluster_vector();
     }
 
@@ -1068,7 +1072,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
     {
         std::lock_guard<std::mutex> lock(_mutex);
         _last_quorum_check = std::chrono::steady_clock::now();
-        if (_state != kythira::server_state::leader) return;
+        if (_state != kythira::server_state::leader) {
+            {
+                return;
+            }
+        }
     }
 
     // Req 14.2 — never provision on quorum loss
@@ -1091,7 +1099,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                 }
             }
             std::size_t live = grp_health.live_count;
-            if (live >= target) continue;
+            if (live >= target) {
+                {
+                    continue;
+                }
+            }
 
             std::size_t deficit = target - live;
 
@@ -1104,7 +1116,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                     pending = pit->second;
                 }
             }
-            if (pending >= deficit) continue;
+            if (pending >= deficit) {
+                {
+                    continue;
+                }
+            }
             std::size_t to_provision = deficit - pending;
 
             // Learner placement-capacity policy (.kiro/specs/non-voting-nodes/,
@@ -1183,7 +1199,11 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                     // Req 14.6 — clear the pending slot on failure
                     std::lock_guard<std::mutex> lock(_mutex);
                     auto& cnt = _pending_provisions[grp_health.group_id];
-                    if (cnt > 0) --cnt;
+                    if (cnt > 0) {
+                        {
+                            --cnt;
+                        }
+                    }
                 }
             }
         }
@@ -1707,7 +1727,11 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
 
         pending_heartbeats.reserve(_configuration.nodes().size() - 1);
         for (const auto& follower_id : _configuration.nodes()) {
-            if (follower_id == _node_id) continue;
+            if (follower_id == _node_id) {
+                {
+                    continue;
+                }
+            }
 
             auto next_idx = _next_index[follower_id];
             log_index_type prev_log_index = next_idx - 1;
@@ -3948,7 +3972,11 @@ auto node<Types>::start_election() -> void {
             // Joint-consensus-aware quorum check.
             // Self counts as a vote in every configuration it belongs to.
             auto has_vote_from = [&](const node_id_type& n) -> bool {
-                if (n == _node_id) return true;
+                if (n == _node_id) {
+                    {
+                        return true;
+                    }
+                }
                 for (const auto& r : results) {
                     if (r.hasValue() && r.value().first == n && r.value().second.vote_granted()) {
                         return true;
@@ -3959,12 +3987,16 @@ auto node<Types>::start_election() -> void {
             auto has_quorum = [&](const std::vector<node_id_type>& cfg) -> bool {
                 std::size_t cnt = 0;
                 for (const auto& n : cfg) {
-                    if (has_vote_from(n)) cnt++;
+                    if (has_vote_from(n)) {
+                        {
+                            cnt++;
+                        }
+                    }
                 }
                 return cnt * 2 > cfg.size();
             };
 
-            bool won;
+            bool won = false;
             if (snap_c_old.has_value()) {
                 won = has_quorum(snap_c_new) && has_quorum(*snap_c_old);
             } else {
@@ -4772,7 +4804,7 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                                      {"from_index", std::to_string(from_index)},
                                      {"to_index", std::to_string(to_index)}});
 
-                auto stop_flag2 = stop_flag;
+                const auto& stop_flag2 = stop_flag;
                 this->_network_client
                     .send_fetch_log_entries(node_id_to_u64(source.node_id), request, timeout)
                     .thenTry([this, stop_flag2, from_index, source](auto resp_try) {

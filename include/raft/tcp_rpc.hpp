@@ -34,7 +34,9 @@ inline auto write_all(int fd, const void* buf, std::size_t n) -> bool {
     const auto* p = static_cast<const char*>(buf);
     while (n > 0) {
         ssize_t w = ::write(fd, p, n);
-        if (w <= 0) return false;
+        if (w <= 0) {
+            return false;
+        }
         p += w;
         n -= static_cast<std::size_t>(w);
     }
@@ -45,7 +47,9 @@ inline auto read_all(int fd, void* buf, std::size_t n) -> bool {
     auto* p = static_cast<char*>(buf);
     while (n > 0) {
         ssize_t r = ::read(fd, p, n);
-        if (r <= 0) return false;
+        if (r <= 0) {
+            return false;
+        }
         p += r;
         n -= static_cast<std::size_t>(r);
     }
@@ -59,11 +63,17 @@ inline auto frame_send(int fd, std::string_view payload) -> bool {
 
 inline auto frame_recv(int fd) -> std::optional<std::string> {
     std::uint32_t net_len{};
-    if (!read_all(fd, &net_len, 4)) return std::nullopt;
+    if (!read_all(fd, &net_len, 4)) {
+        return std::nullopt;
+    }
     std::uint32_t len = ntohl(net_len);
-    if (len == 0 || len > 64u * 1024u * 1024u) return std::nullopt;
+    if (len == 0 || len > 64u * 1024u * 1024u) {
+        return std::nullopt;
+    }
     std::string buf(len, '\0');
-    if (!read_all(fd, buf.data(), len)) return std::nullopt;
+    if (!read_all(fd, buf.data(), len)) {
+        return std::nullopt;
+    }
     return buf;
 }
 
@@ -75,7 +85,9 @@ inline auto connect_to(const std::string& host, std::uint16_t port,
     hints.ai_socktype = SOCK_STREAM;
 
     addrinfo* res{};
-    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) return -1;
+    if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+        return -1;
+    }
 
     int fd = ::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (fd < 0) {
@@ -101,26 +113,37 @@ inline auto connect_to(const std::string& host, std::uint16_t port,
 // Extract "type" field value from a JSON string without full parsing.
 inline auto extract_type_field(const std::string& json) -> std::string {
     auto pos = json.find("\"type\"");
-    if (pos == std::string::npos) return {};
+    if (pos == std::string::npos) {
+        return {};
+    }
     auto colon = json.find(':', pos + 6);
-    if (colon == std::string::npos) return {};
+    if (colon == std::string::npos) {
+        return {};
+    }
     auto q1 = json.find('"', colon + 1);
-    if (q1 == std::string::npos) return {};
+    if (q1 == std::string::npos) {
+        return {};
+    }
     auto q2 = json.find('"', q1 + 1);
-    if (q2 == std::string::npos) return {};
+    if (q2 == std::string::npos) {
+        return {};
+    }
     return json.substr(q1 + 1, q2 - q1 - 1);
 }
 
 inline auto str_to_bytes(const std::string& s) -> std::vector<std::byte> {
     std::vector<std::byte> v(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i)
+    for (std::size_t i = 0; i < s.size(); ++i) {
         v[i] = static_cast<std::byte>(static_cast<unsigned char>(s[i]));
+    }
     return v;
 }
 
 inline auto bytes_to_str(const std::vector<std::byte>& b) -> std::string {
     std::string s(b.size(), '\0');
-    for (std::size_t i = 0; i < b.size(); ++i) s[i] = static_cast<char>(b[i]);
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        s[i] = static_cast<char>(b[i]);
+    }
     return s;
 }
 
@@ -139,7 +162,9 @@ public:
     auto lookup(NodeId id) const -> std::optional<std::pair<std::string, std::uint16_t>> {
         std::lock_guard lock(_mu);
         auto it = _peers.find(id);
-        if (it == _peers.end()) return std::nullopt;
+        if (it == _peers.end()) {
+            return std::nullopt;
+        }
         return it->second;
     }
 
@@ -197,31 +222,37 @@ private:
     auto call(std::uint64_t target, const std::vector<std::byte>& payload,
               std::chrono::milliseconds timeout, Deser deser) -> Future<Resp> {
         auto peer = _peers.lookup(target);
-        if (!peer)
+        if (!peer) {
             return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tcp_rpc_client: unknown peer " + std::to_string(target))));
+        }
 
         int fd = tcp_detail::connect_to(peer->first, peer->second, timeout);
-        if (fd < 0)
+        if (fd < 0) {
             return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tcp_rpc_client: connect failed to " + peer->first + ":" +
                                   std::to_string(peer->second))));
+        }
 
         struct Guard {
             int fd;
             ~Guard() {
-                if (fd >= 0) ::close(fd);
+                if (fd >= 0) {
+                    ::close(fd);
+                }
             }
         } g{fd};
 
-        if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload)))
+        if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
             return FutureFactory::makeExceptionalFuture<Resp>(
                 std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
+        }
 
         auto resp = tcp_detail::frame_recv(fd);
-        if (!resp)
+        if (!resp) {
             return FutureFactory::makeExceptionalFuture<Resp>(
                 std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
+        }
 
         try {
             return FutureFactory::makeReadyFuture(deser(tcp_detail::str_to_bytes(*resp)));
@@ -273,7 +304,9 @@ public:
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
 
     void start() {
-        if (_running.exchange(true)) return;
+        if (_running.exchange(true)) {
+            return;
+        }
 
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
@@ -300,13 +333,17 @@ public:
     }
 
     void stop() {
-        if (!_running.exchange(false)) return;
+        if (!_running.exchange(false)) {
+            return;
+        }
         int fd = _listen_fd.exchange(-1);
         if (fd >= 0) {
             ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
-        if (_accept_thread.joinable()) _accept_thread.join();
+        if (_accept_thread.joinable()) {
+            _accept_thread.join();
+        }
     }
 
     [[nodiscard]] bool is_running() const noexcept { return _running.load(); }
@@ -315,7 +352,9 @@ private:
     void accept_loop() {
         while (_running) {
             int client = ::accept(_listen_fd.load(), nullptr, nullptr);
-            if (client < 0) break;
+            if (client < 0) {
+                break;
+            }
             std::thread([this, client] {
                 handle(client);
                 ::close(client);
@@ -325,21 +364,24 @@ private:
 
     void handle(int fd) {
         auto data = tcp_detail::frame_recv(fd);
-        if (!data) return;
+        if (!data) {
+            return;
+        }
 
         std::string type = tcp_detail::extract_type_field(*data);
         auto bytes = tcp_detail::str_to_bytes(*data);
 
         try {
             std::vector<std::byte> resp;
-            if (type == "request_vote_request" && _rv)
+            if (type == "request_vote_request" && _rv) {
                 resp = _ser.serialize(_rv(_ser.deserialize_request_vote_request(bytes)));
-            else if (type == "append_entries_request" && _ae)
+            } else if (type == "append_entries_request" && _ae) {
                 resp = _ser.serialize(_ae(_ser.deserialize_append_entries_request(bytes)));
-            else if (type == "install_snapshot_request" && _is)
+            } else if (type == "install_snapshot_request" && _is) {
                 resp = _ser.serialize(_is(_ser.deserialize_install_snapshot_request(bytes)));
-            else
+            } else {
                 return;
+            }
             tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(resp));
         } catch (...) {
         }

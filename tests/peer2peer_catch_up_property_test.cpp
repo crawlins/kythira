@@ -40,7 +40,7 @@ public:
     auto register_node(NodeId, Address) -> kythira::Future<void> {
         return kythira::FutureFactory::makeFuture();
     }
-    auto find_peers(std::chrono::milliseconds) const
+    [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
         -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
@@ -161,7 +161,9 @@ template<typename Pred>
 bool wait_until(Pred pred, std::chrono::milliseconds deadline = std::chrono::milliseconds{8000}) {
     auto start = std::chrono::steady_clock::now();
     while (!pred()) {
-        if (std::chrono::steady_clock::now() - start > deadline) return false;
+        if (std::chrono::steady_clock::now() - start > deadline) {
+            return false;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds{15});
     }
     return true;
@@ -326,7 +328,9 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
     network_simulator::NetworkEdge edge{};
     for (auto from : {"1", "2", "3"}) {
         for (auto to : {"1", "2", "3"}) {
-            if (std::string(from) != std::string(to)) sim.add_edge(from, to, edge);
+            if (std::string(from) != std::string(to)) {
+                sim.add_edge(from, to, edge);
+            }
         }
     }
 

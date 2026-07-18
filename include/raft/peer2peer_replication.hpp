@@ -82,7 +82,7 @@ public:
     /// @brief Always resolves `std::nullopt` — this alone guarantees zero
     /// behavioral change when a `Types` bundle does not declare a real
     /// `peer2peer_replicator_type`.
-    auto find_catch_up_source(LogIndex, LogIndex, std::chrono::milliseconds) const
+    [[nodiscard]] auto find_catch_up_source(LogIndex, LogIndex, std::chrono::milliseconds) const
         -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
         return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
     }
@@ -141,7 +141,9 @@ public:
         auto members = _member_ids.rlock();
         auto locked = _table->rlock();
         for (const auto& [id, digest] : *locked) {
-            if (!members->contains(id)) continue;
+            if (!members->contains(id)) {
+                continue;
+            }
             if (digest.last_log_index >= from_index) {
                 return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{
                     peer_info<NodeId, Address>{id, digest.address}});

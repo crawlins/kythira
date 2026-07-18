@@ -26,21 +26,24 @@ inline CmdResult real_exec(const std::vector<std::string>& argv) {
     for (const auto& arg : argv) {
         cmd += '\'';
         for (char c : arg) {
-            if (c == '\'')
+            if (c == '\'') {
                 cmd += "'\\''";
-            else
+            } else {
                 cmd += c;
+            }
         }
         cmd += "' ";
     }
     cmd += "2>&1";
 
     std::FILE* fp = ::popen(cmd.c_str(), "r");
-    if (!fp) return {-1, "popen failed"};
+    if (fp == nullptr) {
+        return {-1, "popen failed"};
+    }
 
     std::string output;
     std::array<char, 256> buf{};
-    while (std::fgets(buf.data(), static_cast<int>(buf.size()), fp)) {
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), fp) != nullptr) {
         output += buf.data();
     }
     int status = ::pclose(fp);

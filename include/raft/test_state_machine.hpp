@@ -109,7 +109,7 @@ public:
     // Get the current state of the state machine for snapshot creation
     // Format: [num_entries (8 bytes)][entry1_key_len (4 bytes)][entry1_key][entry1_val_len (4
     // bytes)][entry1_val]...
-    auto get_state() const -> std::vector<std::byte> {
+    [[nodiscard]] auto get_state() const -> std::vector<std::byte> {
         std::vector<std::byte> state;
 
         // Write number of entries

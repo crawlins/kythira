@@ -38,7 +38,9 @@ namespace raft::testing::detail {
 
 template<typename T, void (*Deleter)(T*)> struct openssl_deleter {
     void operator()(T* p) const noexcept {
-        if (p != nullptr) Deleter(p);
+        if (p != nullptr) {
+            Deleter(p);
+        }
     }
 };
 
@@ -61,7 +63,9 @@ using x509_extension_ptr =
     while ((code = ERR_get_error()) != 0) {
         char buf[256];
         ERR_error_string_n(code, buf, sizeof(buf));
-        if (!first) out << "; ";
+        if (!first) {
+            out << "; ";
+        }
         out << buf;
         first = false;
     }
@@ -75,7 +79,9 @@ using x509_extension_ptr =
 
 inline auto make_bio() -> bio_ptr {
     auto* bio = BIO_new(BIO_s_mem());
-    if (bio == nullptr) throw_openssl_error("BIO_new failed");
+    if (bio == nullptr) {
+        throw_openssl_error("BIO_new failed");
+    }
     return bio_ptr{bio};
 }
 
@@ -87,7 +93,9 @@ inline auto bio_to_string(BIO* bio) -> std::string {
 
 [[nodiscard]] inline auto serialize_cert(X509* cert) -> std::string {
     auto bio = make_bio();
-    if (PEM_write_bio_X509(bio.get(), cert) != 1) throw_openssl_error("PEM_write_bio_X509 failed");
+    if (PEM_write_bio_X509(bio.get(), cert) != 1) {
+        throw_openssl_error("PEM_write_bio_X509 failed");
+    }
     return bio_to_string(bio.get());
 }
 
@@ -101,8 +109,9 @@ inline auto bio_to_string(BIO* bio) -> std::string {
 
 [[nodiscard]] inline auto serialize_crl(X509_CRL* crl) -> std::string {
     auto bio = make_bio();
-    if (PEM_write_bio_X509_CRL(bio.get(), crl) != 1)
+    if (PEM_write_bio_X509_CRL(bio.get(), crl) != 1) {
         throw_openssl_error("PEM_write_bio_X509_CRL failed");
+    }
     return bio_to_string(bio.get());
 }
 
@@ -112,27 +121,37 @@ inline auto bio_to_string(BIO* bio) -> std::string {
 
 [[nodiscard]] inline auto generate_rsa_key(int bits) -> evp_pkey_ptr {
     evp_pkey_ctx_ptr ctx{EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr)};
-    if (!ctx) throw_openssl_error("EVP_PKEY_CTX_new_id(RSA) failed");
-    if (EVP_PKEY_keygen_init(ctx.get()) != 1)
+    if (!ctx) {
+        throw_openssl_error("EVP_PKEY_CTX_new_id(RSA) failed");
+    }
+    if (EVP_PKEY_keygen_init(ctx.get()) != 1) {
         throw_openssl_error("EVP_PKEY_keygen_init(RSA) failed");
+    }
     if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx.get(), bits) != 1) {
         throw_openssl_error("EVP_PKEY_CTX_set_rsa_keygen_bits failed");
     }
     EVP_PKEY* raw = nullptr;
-    if (EVP_PKEY_keygen(ctx.get(), &raw) != 1) throw_openssl_error("EVP_PKEY_keygen(RSA) failed");
+    if (EVP_PKEY_keygen(ctx.get(), &raw) != 1) {
+        throw_openssl_error("EVP_PKEY_keygen(RSA) failed");
+    }
     return evp_pkey_ptr{raw};
 }
 
 [[nodiscard]] inline auto generate_ec_key(int nid) -> evp_pkey_ptr {
     evp_pkey_ctx_ptr ctx{EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr)};
-    if (!ctx) throw_openssl_error("EVP_PKEY_CTX_new_id(EC) failed");
-    if (EVP_PKEY_keygen_init(ctx.get()) != 1)
+    if (!ctx) {
+        throw_openssl_error("EVP_PKEY_CTX_new_id(EC) failed");
+    }
+    if (EVP_PKEY_keygen_init(ctx.get()) != 1) {
         throw_openssl_error("EVP_PKEY_keygen_init(EC) failed");
+    }
     if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx.get(), nid) != 1) {
         throw_openssl_error("EVP_PKEY_CTX_set_ec_paramgen_curve_nid failed");
     }
     EVP_PKEY* raw = nullptr;
-    if (EVP_PKEY_keygen(ctx.get(), &raw) != 1) throw_openssl_error("EVP_PKEY_keygen(EC) failed");
+    if (EVP_PKEY_keygen(ctx.get(), &raw) != 1) {
+        throw_openssl_error("EVP_PKEY_keygen(EC) failed");
+    }
     return evp_pkey_ptr{raw};
 }
 
@@ -156,7 +175,9 @@ inline auto bio_to_string(BIO* bio) -> std::string {
 
 inline void set_name(X509_NAME* name, const distinguished_name& dn) {
     auto add = [&](const char* field, const std::string& value) {
-        if (value.empty()) return;
+        if (value.empty()) {
+            return;
+        }
         if (X509_NAME_add_entry_by_txt(name, field, MBSTRING_ASC,
                                        reinterpret_cast<const unsigned char*>(value.c_str()), -1,
                                        -1, 0) != 1) {
@@ -197,10 +218,13 @@ inline void set_validity_window(X509* cert, std::chrono::system_clock::time_poin
 
 inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::string& value) {
     X509_EXTENSION* raw = X509V3_EXT_conf_nid(nullptr, ctx, nid, value.c_str());
-    if (raw == nullptr)
+    if (raw == nullptr) {
         throw_openssl_error("X509V3_EXT_conf_nid failed for extension " + std::to_string(nid));
+    }
     x509_extension_ptr ext{raw};
-    if (X509_add_ext(cert, ext.get(), -1) != 1) throw_openssl_error("X509_add_ext failed");
+    if (X509_add_ext(cert, ext.get(), -1) != 1) {
+        throw_openssl_error("X509_add_ext failed");
+    }
 }
 
 [[nodiscard]] inline auto build_san_value(const std::vector<std::string>& dns_names,
@@ -209,12 +233,18 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
     std::ostringstream out;
     bool first = true;
     auto append = [&](const char* prefix, const std::string& v) {
-        if (!first) out << ',';
+        if (!first) {
+            out << ',';
+        }
         out << prefix << v;
         first = false;
     };
-    for (const auto& d : dns_names) append("DNS:", d);
-    for (const auto& ip : ip_addresses) append("IP:", ip);
+    for (const auto& d : dns_names) {
+        append("DNS:", d);
+    }
+    for (const auto& ip : ip_addresses) {
+        append("IP:", ip);
+    }
     return out.str();
 }
 
@@ -238,12 +268,17 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
     }
 
     x509_ptr cert{X509_new()};
-    if (!cert) throw_openssl_error("X509_new failed");
-    if (X509_set_version(cert.get(), 2) != 1) throw_openssl_error("X509_set_version failed");  // v3
+    if (!cert) {
+        throw_openssl_error("X509_new failed");
+    }
+    if (X509_set_version(cert.get(), 2) != 1) {
+        throw_openssl_error("X509_set_version failed");  // v3
+    }
 
     ASN1_INTEGER* serial_asn1 = X509_get_serialNumber(cert.get());
-    if (ASN1_INTEGER_set_uint64(serial_asn1, serial) != 1)
+    if (ASN1_INTEGER_set_uint64(serial_asn1, serial) != 1) {
         throw_openssl_error("ASN1_INTEGER_set_uint64 failed");
+    }
 
     set_validity_window(cert.get(), not_before, not_after);
 
@@ -254,7 +289,9 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
         throw_openssl_error("X509_set_issuer_name failed");
     }
 
-    if (X509_set_pubkey(cert.get(), pubkey) != 1) throw_openssl_error("X509_set_pubkey failed");
+    if (X509_set_pubkey(cert.get(), pubkey) != 1) {
+        throw_openssl_error("X509_set_pubkey failed");
+    }
 
     X509V3_CTX ctx;
     X509V3_set_ctx_nodb(&ctx);
@@ -269,19 +306,28 @@ inline void add_extension(X509* cert, X509V3_CTX* ctx, int nid, const std::strin
         eku += "serverAuth,";
     }
     if (client_auth) {
-        if (!server_auth) key_usage += "digitalSignature,";
+        if (!server_auth) {
+            key_usage += "digitalSignature,";
+        }
         eku += "clientAuth,";
     }
-    if (!key_usage.empty() && key_usage.back() == ',') key_usage.pop_back();
-    if (!eku.empty() && eku.back() == ',') eku.pop_back();
+    if (!key_usage.empty() && key_usage.back() == ',') {
+        key_usage.pop_back();
+    }
+    if (!eku.empty() && eku.back() == ',') {
+        eku.pop_back();
+    }
     add_extension(cert.get(), &ctx, NID_key_usage, key_usage);
-    if (!eku.empty()) add_extension(cert.get(), &ctx, NID_ext_key_usage, eku);
+    if (!eku.empty()) {
+        add_extension(cert.get(), &ctx, NID_ext_key_usage, eku);
+    }
 
     add_extension(cert.get(), &ctx, NID_subject_key_identifier, "hash");
     add_extension(cert.get(), &ctx, NID_subject_alt_name, build_san_value(dns_names, ip_addresses));
 
-    if (X509_sign(cert.get(), issuer_key, EVP_sha256()) == 0)
+    if (X509_sign(cert.get(), issuer_key, EVP_sha256()) == 0) {
         throw_openssl_error("X509_sign(leaf) failed");
+    }
     return cert;
 }
 
@@ -313,9 +359,12 @@ struct certificate_authority::impl {
         ca_key = detail::generate_key(options.algorithm);
 
         ca_cert.reset(X509_new());
-        if (!ca_cert) detail::throw_openssl_error("X509_new(root) failed");
-        if (X509_set_version(ca_cert.get(), 2) != 1)
+        if (!ca_cert) {
+            detail::throw_openssl_error("X509_new(root) failed");
+        }
+        if (X509_set_version(ca_cert.get(), 2) != 1) {
             detail::throw_openssl_error("X509_set_version(root) failed");
+        }
 
         ASN1_INTEGER* serial_asn1 = X509_get_serialNumber(ca_cert.get());
         if (ASN1_INTEGER_set_uint64(serial_asn1, next_serial()) != 1) {
@@ -479,16 +528,21 @@ struct certificate_authority::impl {
         std::lock_guard<std::mutex> lock(mutex);
 
         detail::x509_crl_ptr crl{X509_CRL_new()};
-        if (!crl) detail::throw_openssl_error("X509_CRL_new failed");
-        if (X509_CRL_set_version(crl.get(), 1) != 1)
+        if (!crl) {
+            detail::throw_openssl_error("X509_CRL_new failed");
+        }
+        if (X509_CRL_set_version(crl.get(), 1) != 1) {
             detail::throw_openssl_error("X509_CRL_set_version failed");
+        }
         if (X509_CRL_set_issuer_name(crl.get(), X509_get_subject_name(ca_cert.get())) != 1) {
             detail::throw_openssl_error("X509_CRL_set_issuer_name failed");
         }
 
         for (const auto& [serial, revoked_at] : revoked) {
             X509_REVOKED* rev = X509_REVOKED_new();
-            if (rev == nullptr) detail::throw_openssl_error("X509_REVOKED_new failed");
+            if (rev == nullptr) {
+                detail::throw_openssl_error("X509_REVOKED_new failed");
+            }
             ASN1_INTEGER* serial_asn1 = ASN1_INTEGER_new();
             ASN1_INTEGER_set_uint64(serial_asn1, serial);
             X509_REVOKED_set_serialNumber(rev, serial_asn1);

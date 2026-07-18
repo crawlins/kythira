@@ -94,7 +94,7 @@ public:
 
     // Returns the container name for the given initial node ID
     // (nodes 1-3 that started with the compose file).
-    std::string container_name(int initial_node_id) const {
+    [[nodiscard]] std::string container_name(int initial_node_id) const {
         return _cluster_name + "-chaos-" + std::to_string(initial_node_id);
     }
 
@@ -133,7 +133,7 @@ public:
                 auto s = n.status();
                 if (s["role"].as_string() == "leader") {
                     std::int64_t term = s["term"].as_int64();
-                    if (term_leaders.count(term)) {
+                    if (term_leaders.contains(term) != 0u) {
                         throw std::runtime_error(
                             "split brain: nodes " + std::to_string(term_leaders[term]) + " and " +
                             std::to_string(id) + " both claim leadership in term " +
@@ -149,7 +149,7 @@ public:
         }
     }
 
-    const std::string& cluster_name() const { return _cluster_name; }
+    [[nodiscard]] const std::string& cluster_name() const { return _cluster_name; }
 
 private:
     std::string _cluster_name;
@@ -159,7 +159,7 @@ private:
 
     static std::string default_quorum_compose_file() {
         const char* env = std::getenv("KYTHIRA_QUORUM_COMPOSE_FILE");
-        if (env && *env) {
+        if ((env != nullptr) && (*env != 0)) {
             return env;
         }
         return "docker/docker-compose.quorum.yml";
@@ -209,7 +209,7 @@ private:
     void _teardown() {
         // Req 19 AC 12 — force-remove all containers for this cluster name
         try {
-            auto rt = os::container_runtime();
+            const auto& rt = os::container_runtime();
             // List all container IDs for this cluster
             auto res =
                 _exec({rt, "ps", "-aq", "--filter", "label=kythira.cluster=" + _cluster_name});

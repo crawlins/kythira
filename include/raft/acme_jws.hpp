@@ -31,7 +31,9 @@ namespace raft::testing::acme_jws {
 
 template<typename T, void (*Deleter)(T*)> struct openssl_deleter {
     void operator()(T* p) const noexcept {
-        if (p != nullptr) Deleter(p);
+        if (p != nullptr) {
+            Deleter(p);
+        }
     }
 };
 using evp_pkey_ptr = std::unique_ptr<EVP_PKEY, openssl_deleter<EVP_PKEY, EVP_PKEY_free>>;
@@ -48,7 +50,9 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
     while ((code = ERR_get_error()) != 0) {
         char buf[256];
         ERR_error_string_n(code, buf, sizeof(buf));
-        if (!first) out << "; ";
+        if (!first) {
+            out << "; ";
+        }
         out << buf;
         first = false;
     }
@@ -69,12 +73,15 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
                               static_cast<int>(in.size()));
     out.resize(static_cast<std::size_t>(len));
     for (auto& c : out) {
-        if (c == '+')
+        if (c == '+') {
             c = '-';
-        else if (c == '/')
+        } else if (c == '/') {
             c = '_';
+        }
     }
-    while (!out.empty() && out.back() == '=') out.pop_back();
+    while (!out.empty() && out.back() == '=') {
+        out.pop_back();
+    }
     return out;
 }
 
@@ -85,20 +92,27 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
 [[nodiscard]] inline auto base64url_decode(std::string_view in) -> std::vector<unsigned char> {
     std::string padded(in);
     for (auto& c : padded) {
-        if (c == '-')
+        if (c == '-') {
             c = '+';
-        else if (c == '_')
+        } else if (c == '_') {
             c = '/';
+        }
     }
-    while (padded.size() % 4 != 0) padded.push_back('=');
+    while (padded.size() % 4 != 0) {
+        padded.push_back('=');
+    }
     std::vector<unsigned char> out(padded.size() / 4 * 3 + 1);
     int len = EVP_DecodeBlock(out.data(), reinterpret_cast<const unsigned char*>(padded.data()),
                               static_cast<int>(padded.size()));
-    if (len < 0) throw std::invalid_argument("acme_jws: invalid base64url input");
+    if (len < 0) {
+        throw std::invalid_argument("acme_jws: invalid base64url input");
+    }
     // EVP_DecodeBlock always outputs a multiple of 3 bytes, over-counting for
     // the padding we just added back — trim by however many '=' we added.
     std::size_t added_padding = 0;
-    for (auto it = padded.rbegin(); it != padded.rend() && *it == '='; ++it) ++added_padding;
+    for (auto it = padded.rbegin(); it != padded.rend() && *it == '='; ++it) {
+        ++added_padding;
+    }
     out.resize(static_cast<std::size_t>(len) - added_padding);
     return out;
 }
@@ -114,21 +128,27 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
 
 [[nodiscard]] inline auto generate_p256_key() -> evp_pkey_ptr {
     evp_pkey_ctx_ptr ctx{EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr)};
-    if (!ctx) throw_openssl_error("acme_jws: EVP_PKEY_CTX_new_id failed");
-    if (EVP_PKEY_keygen_init(ctx.get()) <= 0)
+    if (!ctx) {
+        throw_openssl_error("acme_jws: EVP_PKEY_CTX_new_id failed");
+    }
+    if (EVP_PKEY_keygen_init(ctx.get()) <= 0) {
         throw_openssl_error("acme_jws: EVP_PKEY_keygen_init failed");
+    }
     if (EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx.get(), NID_X9_62_prime256v1) <= 0) {
         throw_openssl_error("acme_jws: set curve failed");
     }
     EVP_PKEY* raw = nullptr;
-    if (EVP_PKEY_keygen(ctx.get(), &raw) <= 0)
+    if (EVP_PKEY_keygen(ctx.get(), &raw) <= 0) {
         throw_openssl_error("acme_jws: EVP_PKEY_keygen failed");
+    }
     return evp_pkey_ptr{raw};
 }
 
 [[nodiscard]] inline auto serialize_key(EVP_PKEY* key) -> std::string {
     bio_ptr bio{BIO_new(BIO_s_mem())};
-    if (!bio) throw_openssl_error("acme_jws: BIO_new failed");
+    if (!bio) {
+        throw_openssl_error("acme_jws: BIO_new failed");
+    }
     if (PEM_write_bio_PrivateKey(bio.get(), key, nullptr, nullptr, 0, nullptr, nullptr) != 1) {
         throw_openssl_error("acme_jws: PEM_write_bio_PrivateKey failed");
     }
@@ -140,7 +160,9 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
 [[nodiscard]] inline auto load_private_key(const std::string& pem) -> evp_pkey_ptr {
     bio_ptr bio{BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()))};
     evp_pkey_ptr key{PEM_read_bio_PrivateKey(bio.get(), nullptr, nullptr, nullptr)};
-    if (!key) throw_openssl_error("acme_jws: failed to parse account key PEM");
+    if (!key) {
+        throw_openssl_error("acme_jws: failed to parse account key PEM");
+    }
     return key;
 }
 
@@ -148,7 +170,9 @@ using bn_ptr = std::unique_ptr<BIGNUM, openssl_deleter<BIGNUM, BN_free>>;
 // bytes, base64url-encoded — the "x"/"y" members of an EC JWK (RFC 7518 §6.2).
 inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_out) -> void {
     EC_KEY* ec_key = EVP_PKEY_get1_EC_KEY(key);
-    if (ec_key == nullptr) throw std::invalid_argument("acme_jws: key is not an EC key");
+    if (ec_key == nullptr) {
+        throw std::invalid_argument("acme_jws: key is not an EC key");
+    }
     struct ec_key_guard {
         EC_KEY* k;
         ~ec_key_guard() { EC_KEY_free(k); }
@@ -158,17 +182,21 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     const EC_POINT* point = EC_KEY_get0_public_key(ec_key);
     bn_ptr x{BN_new()};
     bn_ptr y{BN_new()};
-    if (!x || !y) throw_openssl_error("acme_jws: BN_new failed");
+    if (!x || !y) {
+        throw_openssl_error("acme_jws: BN_new failed");
+    }
     if (EC_POINT_get_affine_coordinates(group, point, x.get(), y.get(), nullptr) != 1) {
         throw_openssl_error("acme_jws: EC_POINT_get_affine_coordinates failed");
     }
 
     constexpr int k_coord_len = 32;  // P-256
     std::vector<unsigned char> xb(k_coord_len), yb(k_coord_len);
-    if (BN_bn2binpad(x.get(), xb.data(), k_coord_len) < 0)
+    if (BN_bn2binpad(x.get(), xb.data(), k_coord_len) < 0) {
         throw_openssl_error("acme_jws: BN_bn2binpad(x) failed");
-    if (BN_bn2binpad(y.get(), yb.data(), k_coord_len) < 0)
+    }
+    if (BN_bn2binpad(y.get(), yb.data(), k_coord_len) < 0) {
         throw_openssl_error("acme_jws: BN_bn2binpad(y) failed");
+    }
     x_out = base64url_encode(xb);
     y_out = base64url_encode(yb);
 }
@@ -194,7 +222,9 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     auto y = base64url_decode(jwk.at("y").as_string());
 
     EC_KEY* ec_key = EC_KEY_new_by_curve_name(NID_X9_62_prime256v1);
-    if (ec_key == nullptr) throw_openssl_error("acme_jws: EC_KEY_new_by_curve_name failed");
+    if (ec_key == nullptr) {
+        throw_openssl_error("acme_jws: EC_KEY_new_by_curve_name failed");
+    }
     struct ec_key_guard {
         EC_KEY* k;
         ~ec_key_guard() { EC_KEY_free(k); }
@@ -202,13 +232,17 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
 
     bn_ptr bx{BN_bin2bn(x.data(), static_cast<int>(x.size()), nullptr)};
     bn_ptr by{BN_bin2bn(y.data(), static_cast<int>(y.size()), nullptr)};
-    if (!bx || !by) throw_openssl_error("acme_jws: BN_bin2bn failed");
+    if (!bx || !by) {
+        throw_openssl_error("acme_jws: BN_bin2bn failed");
+    }
     if (EC_KEY_set_public_key_affine_coordinates(ec_key, bx.get(), by.get()) != 1) {
         throw_openssl_error("acme_jws: EC_KEY_set_public_key_affine_coordinates failed");
     }
 
     evp_pkey_ptr pkey{EVP_PKEY_new()};
-    if (!pkey) throw_openssl_error("acme_jws: EVP_PKEY_new failed");
+    if (!pkey) {
+        throw_openssl_error("acme_jws: EVP_PKEY_new failed");
+    }
     if (EVP_PKEY_set1_EC_KEY(pkey.get(), ec_key) != 1) {
         throw_openssl_error("acme_jws: EVP_PKEY_set1_EC_KEY failed");
     }
@@ -240,7 +274,9 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     const unsigned char* p = der.data();
     ecdsa_sig_ptr sig{
         d2i_ECDSA_SIG(nullptr, &p, static_cast<long>(der.size()))};  // NOLINT(google-runtime-int)
-    if (!sig) throw_openssl_error("acme_jws: d2i_ECDSA_SIG failed");
+    if (!sig) {
+        throw_openssl_error("acme_jws: d2i_ECDSA_SIG failed");
+    }
 
     const BIGNUM* r = nullptr;
     const BIGNUM* s = nullptr;
@@ -248,8 +284,9 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
 
     constexpr int k_coord_len = 32;
     std::vector<unsigned char> raw(2 * k_coord_len, 0);
-    if (BN_bn2binpad(r, raw.data(), k_coord_len) < 0)
+    if (BN_bn2binpad(r, raw.data(), k_coord_len) < 0) {
         throw_openssl_error("acme_jws: BN_bn2binpad(r) failed");
+    }
     if (BN_bn2binpad(s, raw.data() + k_coord_len, k_coord_len) < 0) {
         throw_openssl_error("acme_jws: BN_bn2binpad(s) failed");
     }
@@ -259,24 +296,32 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
 [[nodiscard]] inline auto raw_to_der_ecdsa_signature(const std::vector<unsigned char>& raw)
     -> std::vector<unsigned char> {
     constexpr int k_coord_len = 32;
-    if (raw.size() != 2 * k_coord_len)
+    if (raw.size() != 2 * k_coord_len) {
         throw std::invalid_argument("acme_jws: malformed ES256 signature length");
+    }
 
     bn_ptr r{BN_bin2bn(raw.data(), k_coord_len, nullptr)};
     bn_ptr s{BN_bin2bn(raw.data() + k_coord_len, k_coord_len, nullptr)};
-    if (!r || !s) throw_openssl_error("acme_jws: BN_bin2bn failed");
+    if (!r || !s) {
+        throw_openssl_error("acme_jws: BN_bin2bn failed");
+    }
 
     ecdsa_sig_ptr sig{ECDSA_SIG_new()};
-    if (!sig) throw_openssl_error("acme_jws: ECDSA_SIG_new failed");
+    if (!sig) {
+        throw_openssl_error("acme_jws: ECDSA_SIG_new failed");
+    }
     // ECDSA_SIG_set0 takes ownership of r/s on success.
-    if (ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1)
+    if (ECDSA_SIG_set0(sig.get(), r.get(), s.get()) != 1) {
         throw_openssl_error("acme_jws: ECDSA_SIG_set0 failed");
+    }
     r.release();
     s.release();
 
     unsigned char* der = nullptr;
     int len = i2d_ECDSA_SIG(sig.get(), &der);
-    if (len < 0) throw_openssl_error("acme_jws: i2d_ECDSA_SIG failed");
+    if (len < 0) {
+        throw_openssl_error("acme_jws: i2d_ECDSA_SIG failed");
+    }
     std::vector<unsigned char> out(der, der + len);
     OPENSSL_free(der);
     return out;
@@ -294,7 +339,9 @@ inline auto ec_xy_base64url(EVP_PKEY* key, std::string& x_out, std::string& y_ou
     std::string signing_input = header_b64 + "." + payload_b64;
 
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-    if (mdctx == nullptr) throw_openssl_error("acme_jws: EVP_MD_CTX_new failed");
+    if (mdctx == nullptr) {
+        throw_openssl_error("acme_jws: EVP_MD_CTX_new failed");
+    }
     struct mdctx_guard {
         EVP_MD_CTX* c;
         ~mdctx_guard() { EVP_MD_CTX_free(c); }
@@ -352,7 +399,9 @@ struct verified_jws {
     auto der_sig = raw_to_der_ecdsa_signature(raw_sig);
 
     EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-    if (mdctx == nullptr) throw_openssl_error("acme_jws: EVP_MD_CTX_new failed");
+    if (mdctx == nullptr) {
+        throw_openssl_error("acme_jws: EVP_MD_CTX_new failed");
+    }
     struct mdctx_guard {
         EVP_MD_CTX* c;
         ~mdctx_guard() { EVP_MD_CTX_free(c); }

@@ -450,7 +450,9 @@ private:
         struct Guard {
             int fd;
             ~Guard() {
-                if (fd >= 0) ::close(fd);
+                if (fd >= 0) {
+                    ::close(fd);
+                }
             }
         } guard{fd};
 

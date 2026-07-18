@@ -103,8 +103,12 @@ struct three_az_fixture {
     std::string sg_id;
 
     three_az_fixture() {
-        if (!getenv("AWS_ACCESS_KEY_ID")) setenv("AWS_ACCESS_KEY_ID", "test", 1);
-        if (!getenv("AWS_SECRET_ACCESS_KEY")) setenv("AWS_SECRET_ACCESS_KEY", "test", 1);
+        if (getenv("AWS_ACCESS_KEY_ID") == nullptr) {
+            setenv("AWS_ACCESS_KEY_ID", "test", 1);
+        }
+        if (getenv("AWS_SECRET_ACCESS_KEY") == nullptr) {
+            setenv("AWS_SECRET_ACCESS_KEY", "test", 1);
+        }
 
         Aws::Auth::AWSCredentials creds{"test", "test"};
         auto cli_cfg = make_client_cfg();
@@ -201,7 +205,9 @@ BOOST_FIXTURE_TEST_CASE(three_az_topology_provisions_one_node_per_az, three_az_f
 
     // One node landed in each AZ group — no AZ was skipped or double-booked.
     std::map<std::string, int> count_by_group;
-    for (const auto& p : cluster) count_by_group[p.group_id]++;
+    for (const auto& p : cluster) {
+        count_by_group[p.group_id]++;
+    }
     BOOST_TEST(count_by_group.size() == 3u);
     for (const auto& [az, count] : count_by_group) {
         BOOST_TEST_MESSAGE("group " << az << ": " << count << " node(s)");

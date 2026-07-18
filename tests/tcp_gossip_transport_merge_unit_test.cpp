@@ -103,7 +103,9 @@ BOOST_AUTO_TEST_CASE(eligible_peers_intersection) {
     auto eligible = r.eligible_peers();
     BOOST_REQUIRE_EQUAL(eligible.size(), 2u);
     std::vector<std::uint64_t> ids;
-    for (const auto& p : eligible) ids.push_back(p.node_id);
+    for (const auto& p : eligible) {
+        ids.push_back(p.node_id);
+    }
     std::sort(ids.begin(), ids.end());
     BOOST_CHECK_EQUAL(ids[0], 1u);
     BOOST_CHECK_EQUAL(ids[1], 2u);

@@ -46,15 +46,17 @@ static docker_chaos::HttpResult healthy_get(const std::string&) {
 }
 
 static docker_chaos::HttpResult follower_get(const std::string& url) {
-    if (url.find("/status") != std::string::npos)
+    if (url.find("/status") != std::string::npos) {
         return {200,
                 R"({"node_id":1,"role":"follower","term":1,"commit_index":0,"last_applied":0})"};
+    }
     return {200, R"({"status":"running"})"};
 }
 
 static docker_chaos::HttpResult leader_get(const std::string& url) {
-    if (url.find("/status") != std::string::npos)
+    if (url.find("/status") != std::string::npos) {
         return {200, R"({"node_id":1,"role":"leader","term":2,"commit_index":5,"last_applied":5})"};
+    }
     return {200, R"({"status":"running"})"};
 }
 
@@ -114,13 +116,15 @@ BOOST_AUTO_TEST_CASE(wait_for_leader_returns_leader_node) {
     MockExec exec;
     // Node 1 is the leader, others are followers
     auto mixed_get = [](const std::string& url) -> docker_chaos::HttpResult {
-        if (url.find(":8081") != std::string::npos && url.find("/status") != std::string::npos)
+        if (url.find(":8081") != std::string::npos && url.find("/status") != std::string::npos) {
             return {200,
                     R"({"node_id":1,"role":"leader","term":2,"commit_index":0,"last_applied":0})"};
-        if (url.find("/status") != std::string::npos)
+        }
+        if (url.find("/status") != std::string::npos) {
             return {
                 200,
                 R"({"node_id":2,"role":"follower","term":2,"commit_index":0,"last_applied":0})"};
+        }
         return {200, R"({"status":"running"})"};
     };
 

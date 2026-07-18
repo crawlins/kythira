@@ -45,8 +45,6 @@
 #define CA_CLUSTER_NODE_PATH "ca_cluster_node"
 #endif
 
-extern char** environ;
-
 using namespace raft::testing;
 
 namespace {
@@ -68,7 +66,9 @@ auto find_free_port() -> int {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
@@ -134,11 +134,15 @@ struct cluster_node_process {
             argv_strs.emplace_back("--peers");
             argv_strs.push_back(peers_arg);
         }
-        if (bootstrap) argv_strs.emplace_back("--bootstrap-ca");
+        if (bootstrap) {
+            argv_strs.emplace_back("--bootstrap-ca");
+        }
 
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
-        for (auto& s : argv_strs) argv.push_back(s.data());
+        for (auto& s : argv_strs) {
+            argv.push_back(s.data());
+        }
         argv.push_back(nullptr);
 
         int rc = posix_spawn(&pid, CA_CLUSTER_NODE_PATH, nullptr, nullptr, argv.data(), environ);
@@ -182,7 +186,9 @@ auto wait_healthy(int http_port, std::chrono::seconds timeout) -> bool {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         auto res = c.Get("/healthz");
-        if (res && res->status == 200) return true;
+        if (res && res->status == 200) {
+            return true;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return false;
@@ -198,7 +204,9 @@ auto wait_all_healthy(const std::vector<std::unique_ptr<cluster_node_process>>& 
     while (std::chrono::steady_clock::now() < deadline) {
         bool all_healthy = true;
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (healthy[i]) continue;
+            if (healthy[i]) {
+                continue;
+            }
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
             c.set_read_timeout(10, 0);
@@ -209,7 +217,9 @@ auto wait_all_healthy(const std::vector<std::unique_ptr<cluster_node_process>>& 
                 all_healthy = false;
             }
         }
-        if (all_healthy) return true;
+        if (all_healthy) {
+            return true;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return std::all_of(healthy.begin(), healthy.end(), [](bool h) { return h; });
@@ -228,7 +238,9 @@ auto find_leader(const std::vector<std::unique_ptr<cluster_node_process>>& nodes
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (!nodes[i]->is_running()) continue;
+            if (!nodes[i]->is_running()) {
+                continue;
+            }
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
             c.set_read_timeout(10, 0);
@@ -258,7 +270,9 @@ auto post_with_retry_on_not_ready(httplib::Client& client, const std::string& pa
     httplib::Result res;
     do {
         res = client.Post(path, headers, body, "application/json");
-        if (res && res->status != 503 && res->status != 502) return res;
+        if (res && res->status != 503 && res->status != 502) {
+            return res;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     } while (std::chrono::steady_clock::now() < deadline);
     return res;
@@ -291,7 +305,9 @@ struct three_node_cluster {
 
         std::ostringstream peers;
         for (std::size_t i = 0; i < infos.size(); ++i) {
-            if (i > 0) peers << ",";
+            if (i > 0) {
+                peers << ",";
+            }
             peers << infos[i].id << ":127.0.0.1:" << infos[i].rpc_port
                   << "@http://127.0.0.1:" << infos[i].http_port;
         }
@@ -311,7 +327,9 @@ struct three_node_cluster {
                 infos[i].id, infos[i].rpc_port, infos[i].http_port,
                 tmp_root + "/node" + std::to_string(infos[i].id), unseal_key_file, k_auth_token,
                 peers_arg, /*bootstrap=*/i == 0));
-            if (i == 0) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            if (i == 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
         }
 
         BOOST_REQUIRE_MESSAGE(wait_all_healthy(nodes, std::chrono::seconds(60)),
@@ -319,12 +337,14 @@ struct three_node_cluster {
     }
 
     ~three_node_cluster() {
-        for (auto& n : nodes) n->stop();
+        for (auto& n : nodes) {
+            n->stop();
+        }
         std::error_code ec;
         std::filesystem::remove_all(tmp_root, ec);
     }
 
-    auto auth_headers() const -> httplib::Headers {
+    [[nodiscard]] auto auth_headers() const -> httplib::Headers {
         return {{"Authorization", "Bearer " + std::string(k_auth_token)}};
     }
 };
@@ -401,7 +421,9 @@ BOOST_AUTO_TEST_CASE(bootstrap_convergence_redirect_and_property_16,
                                                      "BEGIN RSA PRIVATE KEY"};
     for (auto& node : cluster.nodes) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(node->data_dir)) {
-            if (!entry.is_regular_file()) continue;
+            if (!entry.is_regular_file()) {
+                continue;
+            }
             std::ifstream f(entry.path(), std::ios::binary);
             std::string content((std::istreambuf_iterator<char>(f)),
                                 std::istreambuf_iterator<char>());

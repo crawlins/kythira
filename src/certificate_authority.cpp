@@ -90,9 +90,12 @@ auto generate_key_and_csr(leaf_certificate_options options) -> csr_material {
     auto subject_name = detail::build_name(options.subject);
 
     detail::x509_req_ptr req{X509_REQ_new()};
-    if (!req) detail::throw_openssl_error("X509_REQ_new failed");
-    if (X509_REQ_set_version(req.get(), 0) != 1)
+    if (!req) {
+        detail::throw_openssl_error("X509_REQ_new failed");
+    }
+    if (X509_REQ_set_version(req.get(), 0) != 1) {
         detail::throw_openssl_error("X509_REQ_set_version failed");
+    }
     if (X509_REQ_set_subject_name(req.get(), subject_name.get()) != 1) {
         detail::throw_openssl_error("X509_REQ_set_subject_name failed");
     }
@@ -106,13 +109,17 @@ auto generate_key_and_csr(leaf_certificate_options options) -> csr_material {
     X509_EXTENSION* san_ext = X509V3_EXT_conf_nid(
         nullptr, &ctx, NID_subject_alt_name,
         detail::build_san_value(options.dns_names, options.ip_addresses).c_str());
-    if (san_ext == nullptr) detail::throw_openssl_error("X509V3_EXT_conf_nid(SAN) failed");
+    if (san_ext == nullptr) {
+        detail::throw_openssl_error("X509V3_EXT_conf_nid(SAN) failed");
+    }
 
     STACK_OF(X509_EXTENSION)* exts = sk_X509_EXTENSION_new_null();
     sk_X509_EXTENSION_push(exts, san_ext);
     bool added = X509_REQ_add_extensions(req.get(), exts) == 1;
     sk_X509_EXTENSION_pop_free(exts, X509_EXTENSION_free);
-    if (!added) detail::throw_openssl_error("X509_REQ_add_extensions failed");
+    if (!added) {
+        detail::throw_openssl_error("X509_REQ_add_extensions failed");
+    }
 
     if (X509_REQ_sign(req.get(), key.get(), EVP_sha256()) == 0) {
         detail::throw_openssl_error("X509_REQ_sign failed");
@@ -138,9 +145,10 @@ namespace {
 auto write_file(const std::filesystem::path& path, const std::string& content, bool restrict_perms)
     -> std::string {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
+    if (!out) {
         throw std::filesystem::filesystem_error("temp_cert_files: cannot open file for writing",
                                                 path, std::make_error_code(std::errc::io_error));
+    }
     out.write(content.data(), static_cast<std::streamsize>(content.size()));
     out.close();
     if (restrict_perms) {
@@ -210,8 +218,12 @@ auto temp_cert_files::replace_atomically(const pem_material& material) -> void {
         replace_file_atomically(chain_target, material.chain_pem, /*restrict_perms=*/false);
         _chain_path = chain_target.string();
     }
-    if (_cert_path.empty()) _cert_path = (dir / "cert.pem").string();
-    if (_key_path.empty()) _key_path = (dir / "key.pem").string();
+    if (_cert_path.empty()) {
+        _cert_path = (dir / "cert.pem").string();
+    }
+    if (_key_path.empty()) {
+        _key_path = (dir / "key.pem").string();
+    }
 }
 
 }  // namespace raft::testing

@@ -43,7 +43,9 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
                 break;
             }
         }
-        if (maj_leader) break;
+        if (maj_leader != nullptr) {
+            break;
+        }
         std::this_thread::sleep_for(200ms);
     }
     BOOST_REQUIRE_MESSAGE(maj_leader != nullptr,
@@ -78,7 +80,9 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
                                                 std::to_string(committed_idx));
         } catch (const std::runtime_error& e) {
             // Re-throw split-brain violations; swallow transient unreachability.
-            if (std::string(e.what()).find("split brain") != std::string::npos) throw;
+            if (std::string(e.what()).find("split brain") != std::string::npos) {
+                throw;
+            }
         } catch (...) {
         }
     }

@@ -47,14 +47,18 @@ namespace ca_bootstrap_detail {
     std::string out;
     out.reserve(fp.size());
     for (char c : fp) {
-        if (c == ':') continue;
+        if (c == ':') {
+            continue;
+        }
         out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     }
     return out;
 }
 
 [[nodiscard]] inline auto is_well_formed_sha256_hex(const std::string& normalized) -> bool {
-    if (normalized.size() != 64) return false;
+    if (normalized.size() != 64) {
+        return false;
+    }
     return std::all_of(normalized.begin(), normalized.end(),
                        [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
@@ -133,9 +137,13 @@ namespace ca_bootstrap_detail {
     bool saw_chain = false;
     client.set_server_certificate_verifier([&](SSL* ssl) -> httplib::SSLVerifierResponse {
         auto* chain = SSL_get_peer_cert_chain(ssl);
-        if (chain == nullptr) return httplib::SSLVerifierResponse::CertificateRejected;
+        if (chain == nullptr) {
+            return httplib::SSLVerifierResponse::CertificateRejected;
+        }
         X509* root = ca_bootstrap_detail::root_of_chain(chain);
-        if (root == nullptr) return httplib::SSLVerifierResponse::CertificateRejected;
+        if (root == nullptr) {
+            return httplib::SSLVerifierResponse::CertificateRejected;
+        }
         saw_chain = true;
         try {
             observed_fingerprint = ca_bootstrap_detail::sha256_fingerprint_hex_bare(root);
@@ -148,7 +156,9 @@ namespace ca_bootstrap_detail {
     });
 
     httplib::Headers headers;
-    if (!auth_token.empty()) headers = {{"Authorization", "Bearer " + auth_token}};
+    if (!auth_token.empty()) {
+        headers = {{"Authorization", "Bearer " + auth_token}};
+    }
 
     auto res = client.Get("/v1/root-ca", headers);
     if (!res) {

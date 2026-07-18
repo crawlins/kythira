@@ -54,7 +54,7 @@ struct MockDockerServer {
 
     // Convenience: serve /containers/{name}/json with a given status string
     void serve_container_state(const std::string& name, const std::string& status_str) {
-        server.Get(("/containers/kythira-test-cluster-" + name + "/json").c_str(),
+        server.Get("/containers/kythira-test-cluster-" + name + "/json",
                    [status_str](const httplib::Request&, httplib::Response& res) {
                        res.set_content(R"({"State":{"Status":")" + status_str + R"("}})",
                                        "application/json");
@@ -174,7 +174,9 @@ BOOST_FIXTURE_TEST_CASE(assess_quorum_degraded_for_five_node_cluster, MockDocker
     serve_container_state("5", "exited");
 
     Cluster cluster;
-    for (uint64_t i = 1; i <= 5; ++i) cluster.push_back({i, "default"});
+    for (uint64_t i = 1; i <= 5; ++i) {
+        cluster.push_back({i, "default"});
+    }
     auto h = mgr.assess_quorum(cluster).get();
 
     BOOST_CHECK_EQUAL(h.status, quorum_status::degraded);

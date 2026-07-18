@@ -34,7 +34,9 @@ static const std::vector<DnsSdNode> k_nodes{
 
 static std::string compose_file() {
     const char* env = std::getenv("KYTHIRA_DNS_SD_DISCOVERY_COMPOSE_FILE");
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return "docker/dns-sd-discovery-compose.yml";
 }
 
@@ -52,7 +54,9 @@ static std::vector<std::string> peer_ids(const DnsSdNode& n, int browse_ms = 300
     cli.set_read_timeout(browse_ms / 1000 + 5);
     const std::string path = "/peers?timeout_ms=" + std::to_string(browse_ms);
     auto res = cli.Get(path);
-    if (!res || res->status != 200) return {};
+    if (!res || res->status != 200) {
+        return {};
+    }
     std::vector<std::string> ids;
     for (const auto& item : json::parse(res->body).as_array()) {
         ids.emplace_back(item.as_object().at("id").as_string());
@@ -64,7 +68,9 @@ static bool wait_all_healthy(std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         bool all = std::ranges::all_of(k_nodes, is_healthy);
-        if (all) return true;
+        if (all) {
+            return true;
+        }
         std::this_thread::sleep_for(500ms);
     }
     return false;
@@ -114,7 +120,9 @@ BOOST_FIXTURE_TEST_CASE(all_nodes_discover_peers, DnsSdFixture, *boost::unit_tes
     for (const auto& querying : k_nodes) {
         auto peers = peer_ids(querying, 3000);
         for (const auto& expected : k_nodes) {
-            if (expected.id == querying.id) continue;
+            if (expected.id == querying.id) {
+                continue;
+            }
             bool found = std::ranges::find(peers, expected.id) != peers.end();
             BOOST_TEST(found, "node " + querying.id + " did not discover peer " + expected.id);
         }

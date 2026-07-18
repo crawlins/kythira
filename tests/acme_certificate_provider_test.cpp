@@ -20,7 +20,9 @@ namespace {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
@@ -195,7 +197,9 @@ BOOST_AUTO_TEST_CASE(finalize_before_ready_rejected_with_order_not_ready,
         auto res = client.Post(path, boost::json::serialize(flattened), "application/json");
         if (res && res->status < 300 && !kid.has_value()) {
             auto loc = res->get_header_value("Location");
-            if (!loc.empty() && url.find("/new-account") != std::string::npos) kid = loc;
+            if (!loc.empty() && url.find("/new-account") != std::string::npos) {
+                kid = loc;
+            }
         }
         return res;
     };

@@ -177,7 +177,9 @@ BOOST_AUTO_TEST_CASE(collect_all_concurrent_fulfillment, *boost::unit_test::time
         });
     }
     auto results = std::move(FutureCollector::collectAll(std::move(futures))).get();
-    for (auto& thread : threads) thread.join();
+    for (auto& thread : threads) {
+        thread.join();
+    }
     BOOST_REQUIRE_EQUAL(results.size(), n);
     for (std::size_t i = 0; i < n; ++i) {
         BOOST_REQUIRE(results[i].hasValue());

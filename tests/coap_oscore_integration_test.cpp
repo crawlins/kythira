@@ -54,7 +54,9 @@ auto register_echo_resource(coap_context_t* ctx) -> void {
                                       std::size_t len = 0;
                                       coap_get_data(request, &len, &data);
                                       coap_pdu_set_code(response, COAP_RESPONSE_CODE_CHANGED);
-                                      if (len > 0) coap_add_data(response, len, data);
+                                      if (len > 0) {
+                                          coap_add_data(response, len, data);
+                                      }
                                   });
     coap_add_resource(ctx, resource);
 }
@@ -81,9 +83,9 @@ struct oscore_server {
     std::thread io_thread;
 
     explicit oscore_server(oscore_credentials creds)
-        : provider(std::move(creds), coap_security_role::server) {
+        : ctx(coap_new_context(nullptr)), provider(std::move(creds), coap_security_role::server) {
         coap_startup();
-        ctx = coap_new_context(nullptr);
+
         BOOST_REQUIRE(ctx != nullptr);
         provider.configure_session(ctx);
         register_echo_resource(ctx);
@@ -99,8 +101,12 @@ struct oscore_server {
 
     ~oscore_server() {
         running.store(false);
-        if (io_thread.joinable()) io_thread.join();
-        if (ctx) coap_free_context(ctx);
+        if (io_thread.joinable()) {
+            io_thread.join();
+        }
+        if (ctx != nullptr) {
+            coap_free_context(ctx);
+        }
     }
 };
 

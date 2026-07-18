@@ -66,19 +66,19 @@ struct BilledResource {
         }
     }
 
-    auto hours() const -> double {
+    [[nodiscard]] auto hours() const -> double {
         auto e = stop.value_or(std::chrono::steady_clock::now());
         return std::chrono::duration<double>(e - start).count() / 3600.0;
     }
-    auto minutes() const -> double { return hours() * 60.0; }
-    auto cost_usd() const -> double { return hours() * hourly_rate; }
+    [[nodiscard]] auto minutes() const -> double { return hours() * 60.0; }
+    [[nodiscard]] auto cost_usd() const -> double { return hours() * hourly_rate; }
 };
 
 struct TestCostReport {
     std::string test_name;
     std::vector<BilledResource> resources;
 
-    auto total_usd() const -> double {
+    [[nodiscard]] auto total_usd() const -> double {
         double t = 0.0;
         for (const auto& r : resources) {
             t += r.cost_usd();
@@ -86,7 +86,7 @@ struct TestCostReport {
         return t;
     }
 
-    auto format() const -> std::string {
+    [[nodiscard]] auto format() const -> std::string {
         std::ostringstream oss;
         oss << std::fixed;
         oss << "\n[aws-cost] " << test_name << "\n";

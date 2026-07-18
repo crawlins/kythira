@@ -144,13 +144,16 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
         addr.sin_family = AF_INET;
         addr.sin_port = htons(22);
         inet_pton(AF_INET, public_ip.c_str(), &addr.sin_addr);
-        if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) break;
+        if (::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            break;
+        }
         ::close(sock);
         sock = -1;
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
-    if (sock < 0)
+    if (sock < 0) {
         throw std::runtime_error("ssh_execute: could not connect to " + public_ip + ":22 in time");
+    }
 
     LIBSSH2_SESSION* session = libssh2_session_init();
     BOOST_REQUIRE(session != nullptr);
@@ -470,8 +473,9 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         BOOST_REQUIRE(out.IsSuccess());
         std::string public_ip;
         for (const auto& res : out.GetResult().GetReservations()) {
-            for (const auto& inst : res.GetInstances())
+            for (const auto& inst : res.GetInstances()) {
                 public_ip = std::string(inst.GetPublicIpAddress());
+            }
         }
         BOOST_REQUIRE_MESSAGE(!public_ip.empty(),
                               "no public IP found for private IP " + private_ip);
@@ -482,7 +486,9 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     // list and start ca_cluster_node on each instance over SSH.
     std::ostringstream peers;
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
-        if (i > 0) peers << ",";
+        if (i > 0) {
+            peers << ",";
+        }
         // start_node_command() below passes no --tls-cert/--tls-key, so
         // ca_cluster_node's client-facing listener falls back to plain
         // HTTP (with its own "running without TLS" warning) — the peers
@@ -518,7 +524,9 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
                 break;
             }
         }
-        if (leader_ip.empty()) std::this_thread::sleep_for(std::chrono::seconds(10));
+        if (leader_ip.empty()) {
+            std::this_thread::sleep_for(std::chrono::seconds(10));
+        }
     }
     BOOST_REQUIRE_MESSAGE(!leader_ip.empty(),
                           "no ca_cluster_node leader became reachable within the timeout");

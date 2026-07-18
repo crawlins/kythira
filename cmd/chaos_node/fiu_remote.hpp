@@ -46,7 +46,9 @@ public:
     fiu_tcp_rc& operator=(const fiu_tcp_rc&) = delete;
 
     void start() {
-        if (_running.exchange(true)) return;
+        if (_running.exchange(true)) {
+            return;
+        }
 
         int fd = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd < 0) {
@@ -73,20 +75,26 @@ public:
     }
 
     void stop() {
-        if (!_running.exchange(false)) return;
+        if (!_running.exchange(false)) {
+            return;
+        }
         int fd = _listen_fd.exchange(-1);
         if (fd >= 0) {
             ::shutdown(fd, SHUT_RDWR);
             ::close(fd);
         }
-        if (_thread.joinable()) _thread.join();
+        if (_thread.joinable()) {
+            _thread.join();
+        }
     }
 
 private:
     void accept_loop() {
         while (_running) {
             int client = ::accept(_listen_fd.load(), nullptr, nullptr);
-            if (client < 0) break;
+            if (client < 0) {
+                break;
+            }
             std::thread([this, client] {
                 handle_client(client);
                 ::close(client);
@@ -96,7 +104,7 @@ private:
 
     void handle_client(int fd) {
         std::string buf;
-        char c;
+        char c = 0;
         while (::recv(fd, &c, 1, 0) == 1) {
             if (c == '\n') {
                 if (!buf.empty()) {
@@ -123,10 +131,11 @@ private:
                 continue;
             }
             auto eq = tok.find('=');
-            if (eq != std::string::npos)
+            if (eq != std::string::npos) {
                 kv.emplace(tok.substr(0, eq), tok.substr(eq + 1));
-            else
+            } else {
                 kv.emplace(tok, "");
+            }
         }
         return kv;
     }
@@ -139,7 +148,9 @@ private:
 
         if (cmd == "disable_all") {
             std::lock_guard lk(_names_mu);
-            for (const auto& n : _enabled_names) ::fiu_disable(n.c_str());
+            for (const auto& n : _enabled_names) {
+                ::fiu_disable(n.c_str());
+            }
             _enabled_names.clear();
             rc = 0;
 
@@ -158,15 +169,18 @@ private:
             if (name_it != kv.end() && !name_it->second.empty()) {
                 const std::string& name = name_it->second;
                 int failnum = 1;
-                if (auto it = kv.find("failnum"); it != kv.end()) failnum = std::stoi(it->second);
+                if (auto it = kv.find("failnum"); it != kv.end()) {
+                    failnum = std::stoi(it->second);
+                }
 
                 if (cmd == "enable") {
-                    unsigned flags = kv.count("one") ? FIU_ONETIME : 0;
+                    unsigned flags = (kv.contains("one") != 0u) ? FIU_ONETIME : 0;
                     rc = ::fiu_enable(name.c_str(), failnum, nullptr, flags);
                 } else {
                     float prob = 1.0f;
-                    if (auto it = kv.find("probability"); it != kv.end())
+                    if (auto it = kv.find("probability"); it != kv.end()) {
                         prob = std::stof(it->second);
+                    }
                     rc = ::fiu_enable_random(name.c_str(), failnum, nullptr, 0, prob);
                 }
 

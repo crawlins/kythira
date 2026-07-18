@@ -24,7 +24,9 @@ namespace {
 
 struct x509_deleter {
     void operator()(X509* c) const {
-        if (c != nullptr) X509_free(c);
+        if (c != nullptr) {
+            X509_free(c);
+        }
     }
 };
 using x509_ptr = std::unique_ptr<X509, x509_deleter>;
@@ -38,7 +40,9 @@ auto load_cert(const std::string& pem) -> x509_ptr {
 
 auto extension_value(X509* cert, int nid) -> std::string {
     int idx = X509_get_ext_by_NID(cert, nid, -1);
-    if (idx < 0) return "";
+    if (idx < 0) {
+        return "";
+    }
     X509_EXTENSION* ext = X509_get_ext(cert, idx);
     BIO* bio = BIO_new(BIO_s_mem());
     X509V3_EXT_print(bio, ext, 0, 0);

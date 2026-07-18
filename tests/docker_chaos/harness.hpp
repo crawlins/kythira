@@ -55,7 +55,9 @@ inline std::pair<std::string, int> split_host_port(const std::string& url) {
     auto slash = rest.find('/');
     auto host_port = (slash == std::string::npos) ? rest : rest.substr(0, slash);
     auto colon = host_port.rfind(':');
-    if (colon == std::string::npos) return {host_port, 80};
+    if (colon == std::string::npos) {
+        return {host_port, 80};
+    }
     return {host_port.substr(0, colon), std::stoi(host_port.substr(colon + 1))};
 }
 
@@ -74,7 +76,9 @@ inline HttpResult real_http_get(const std::string& url) {
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
     auto res = cli.Get(detail::path_of(url));
-    if (!res) return {0, "connection failed"};
+    if (!res) {
+        return {0, "connection failed"};
+    }
     return {res->status, res->body};
 }
 
@@ -84,7 +88,9 @@ inline HttpResult real_http_post(const std::string& url, const std::string& body
     cli.set_connection_timeout(2);
     cli.set_read_timeout(10);
     auto res = cli.Post(detail::path_of(url), body, "application/json");
-    if (!res) return {0, "connection failed"};
+    if (!res) {
+        return {0, "connection failed"};
+    }
     return {res->status, res->body};
 }
 
@@ -109,7 +115,9 @@ inline boost::json::object parse_command_response(const HttpResult& r) {
 }
 
 inline boost::json::object parse_log_entry(const HttpResult& r) {
-    if (r.status == 404) throw std::out_of_range("log index out of range");
+    if (r.status == 404) {
+        throw std::out_of_range("log index out of range");
+    }
     if (r.status != 200) {
         throw std::runtime_error("GET /log returned HTTP " + std::to_string(r.status));
     }
@@ -151,8 +159,8 @@ public:
           _fiu_port(fiu_port),
           _container(std::move(container)) {}
 
-    int id() const { return _node_id; }
-    const std::string& container() const { return _container; }
+    [[nodiscard]] int id() const { return _node_id; }
+    [[nodiscard]] const std::string& container() const { return _container; }
 
     // ── Status queries ─────────────────────────────────────────────────────
 
@@ -186,7 +194,9 @@ public:
 
     std::string container_ip() {
         auto out = os::checked_exec(_exec, os::container_ip_cmd(_container));
-        while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) out.pop_back();
+        while (!out.empty() && (std::isspace(static_cast<unsigned char>(out.back())) != 0)) {
+            out.pop_back();
+        }
         return out;
     }
 
@@ -231,10 +241,14 @@ public:
     void restart(bool wait = true,
                  std::chrono::milliseconds health_timeout = std::chrono::seconds{15}) {
         os::checked_exec(_exec, os::docker_start_cmd(_container));
-        if (!wait) return;
+        if (!wait) {
+            return;
+        }
         auto deadline = std::chrono::steady_clock::now() + health_timeout;
         while (std::chrono::steady_clock::now() < deadline) {
-            if (is_healthy()) return;
+            if (is_healthy()) {
+                return;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds{500});
         }
         throw std::runtime_error("node " + std::to_string(_node_id) +
@@ -242,7 +256,7 @@ public:
     }
 
 private:
-    std::string http_url(const std::string& path) const {
+    [[nodiscard]] std::string http_url(const std::string& path) const {
         return "http://localhost:" + std::to_string(_http_port) + path;
     }
 
@@ -290,7 +304,9 @@ public:
         auto deadline = std::chrono::steady_clock::now() + _startup_timeout;
         for (auto& [id, node] : _nodes) {
             while (std::chrono::steady_clock::now() < deadline) {
-                if (node.is_healthy()) break;
+                if (node.is_healthy()) {
+                    break;
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds{500});
             }
             if (!node.is_healthy()) {
@@ -313,7 +329,9 @@ public:
     std::vector<ChaosNode*> all_nodes() {
         std::vector<ChaosNode*> result;
         result.reserve(_nodes.size());
-        for (auto& [id, n] : _nodes) result.push_back(&n);
+        for (auto& [id, n] : _nodes) {
+            result.push_back(&n);
+        }
         return result;
     }
 
@@ -321,7 +339,9 @@ public:
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
             for (auto& [id, n] : _nodes) {
-                if (n.is_leader()) return n;
+                if (n.is_leader()) {
+                    return n;
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
         }
@@ -335,7 +355,7 @@ public:
                 auto s = n.status();
                 if (s["role"].as_string() == "leader") {
                     std::int64_t term = s["term"].as_int64();
-                    if (term_leaders.count(term)) {
+                    if (term_leaders.contains(term) != 0u) {
                         throw std::runtime_error(
                             "split brain: nodes " + std::to_string(term_leaders[term]) + " and " +
                             std::to_string(id) + " both claim leadership in term " +
@@ -357,7 +377,9 @@ public:
         std::vector<std::string> lines;
         std::istringstream ss(out.out);
         std::string line;
-        while (std::getline(ss, line)) lines.push_back(std::move(line));
+        while (std::getline(ss, line)) {
+            lines.push_back(std::move(line));
+        }
         return lines;
     }
 
@@ -366,7 +388,9 @@ public:
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline) {
             for (const auto& line : log_lines(node_id)) {
-                if (line.find(pattern) != std::string::npos) return;
+                if (line.find(pattern) != std::string::npos) {
+                    return;
+                }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
         }
@@ -387,7 +411,9 @@ private:
 
 inline std::string default_compose_file() {
     const char* env = std::getenv("KYTHIRA_COMPOSE_FILE");
-    if (env && *env) return env;
+    if ((env != nullptr) && (*env != 0)) {
+        return env;
+    }
     return "docker/docker-compose.yml";
 }
 

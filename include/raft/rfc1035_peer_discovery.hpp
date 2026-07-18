@@ -61,7 +61,7 @@ public:
             if (ldns_str2rdf_a(&ns_rdf, _cfg.server.c_str()) != LDNS_STATUS_OK) {
                 ldns_str2rdf_aaaa(&ns_rdf, _cfg.server.c_str());
             }
-            if (ns_rdf) {
+            if (ns_rdf != nullptr) {
                 ldns_resolver_push_nameserver(res.get(), ns_rdf);
                 ldns_rdf_deep_free(ns_rdf);
             }
@@ -100,22 +100,22 @@ public:
             }
 
             ldns_rr_list* answer = ldns_pkt_answer(pkt.get());
-            if (!answer) {
+            if (answer == nullptr) {
                 continue;
             }
 
             std::size_t count = ldns_rr_list_rr_count(answer);
             for (std::size_t i = 0; i < count; ++i) {
                 ldns_rr* rr = ldns_rr_list_rr(answer, i);
-                if (!rr) {
+                if (rr == nullptr) {
                     continue;
                 }
                 ldns_rdf* rdata = ldns_rr_rdf(rr, 0);
-                if (!rdata) {
+                if (rdata == nullptr) {
                     continue;
                 }
                 char* ip_cstr = ldns_rdf2str(rdata);
-                if (!ip_cstr) {
+                if (ip_cstr == nullptr) {
                     continue;
                 }
                 std::string ip{ip_cstr};

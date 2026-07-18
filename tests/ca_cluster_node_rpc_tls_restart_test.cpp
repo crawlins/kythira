@@ -143,7 +143,9 @@ struct rpc_tls_node_process {
             argv_strs.emplace_back("--peers");
             argv_strs.push_back(peers_arg);
         }
-        if (bootstrap) argv_strs.emplace_back("--bootstrap-ca");
+        if (bootstrap) {
+            argv_strs.emplace_back("--bootstrap-ca");
+        }
         if (bootstrap_cert_path.has_value()) {
             argv_strs.emplace_back("--rpc-tls-cert");
             argv_strs.push_back(*bootstrap_cert_path);
@@ -153,7 +155,9 @@ struct rpc_tls_node_process {
 
         std::vector<char*> argv;
         argv.reserve(argv_strs.size() + 1);
-        for (auto& s : argv_strs) argv.push_back(s.data());
+        for (auto& s : argv_strs) {
+            argv.push_back(s.data());
+        }
         argv.push_back(nullptr);
 
         int rc = posix_spawn(&pid, CA_CLUSTER_NODE_PATH, nullptr, nullptr, argv.data(), environ);
@@ -193,7 +197,9 @@ auto wait_healthy(int http_port, std::chrono::seconds timeout) -> bool {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         auto res = c.Get("/healthz");
-        if (res && res->status == 200) return true;
+        if (res && res->status == 200) {
+            return true;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     return false;
@@ -205,12 +211,16 @@ auto find_leader_index(const std::vector<std::unique_ptr<rpc_tls_node_process>>&
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         for (std::size_t i = 0; i < nodes.size(); ++i) {
-            if (!nodes[i]->is_running()) continue;
+            if (!nodes[i]->is_running()) {
+                continue;
+            }
             httplib::Client c("127.0.0.1", nodes[i]->http_port);
             c.set_connection_timeout(1, 0);
             c.set_read_timeout(10, 0);
             auto res = c.Get("/v1/root-ca", {{"Authorization", "Bearer " + auth_token}});
-            if (res && res->status == 200 && !res->body.empty()) return i;
+            if (res && res->status == 200 && !res->body.empty()) {
+                return i;
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
@@ -224,7 +234,9 @@ auto post_with_retry_on_not_ready(httplib::Client& client, const std::string& pa
     httplib::Result res;
     do {
         res = client.Post(path, headers, body, "application/json");
-        if (res && res->status != 503 && res->status != 502) return res;
+        if (res && res->status != 503 && res->status != 502) {
+            return res;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     } while (std::chrono::steady_clock::now() < deadline);
     return res;
@@ -233,7 +245,9 @@ auto post_with_retry_on_not_ready(httplib::Client& client, const std::string& pa
 auto try_issue_certificate(const std::vector<std::unique_ptr<rpc_tls_node_process>>& nodes,
                            const std::string& auth_token, std::chrono::seconds timeout) -> bool {
     auto leader_index = find_leader_index(nodes, auth_token, timeout);
-    if (!leader_index.has_value()) return false;
+    if (!leader_index.has_value()) {
+        return false;
+    }
 
     leaf_certificate_options opts;
     opts.subject.common_name = "rpc-tls-restart-test-client";
@@ -285,7 +299,9 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
 
     std::ostringstream peers;
     for (std::size_t i = 0; i < infos.size(); ++i) {
-        if (i > 0) peers << ",";
+        if (i > 0) {
+            peers << ",";
+        }
         peers << infos[i].id << ":127.0.0.1:" << infos[i].rpc_port
               << "@http://127.0.0.1:" << infos[i].http_port;
     }
@@ -380,7 +396,9 @@ BOOST_AUTO_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
         try_issue_certificate(nodes, k_auth_token, std::chrono::seconds(60)),
         "certificate issuance failed after restarting a node without the bootstrap credential");
 
-    for (auto& n : nodes) n->stop();
+    for (auto& n : nodes) {
+        n->stop();
+    }
     std::error_code ec;
     std::filesystem::remove_all(tmp_root, ec);
 }
