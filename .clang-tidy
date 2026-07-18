@@ -115,6 +115,13 @@ WarningsAsErrors: "*"
 ExtraArgs: [-Wno-deprecated-declarations, -Wno-unused-local-typedef, -Wno-unused-const-variable, -Wno-unused-result]
 
 CheckOptions:
+  # Require braces around every if/else/for/while/do body, including
+  # single-statement ones — ShortStatementLines: 0 disables the "short
+  # statement" exemption that would otherwise let a one-line loop/branch
+  # body skip braces. This is already clang-tidy's default; pinned here
+  # explicitly so the intent survives a future clang-tidy default change.
+  - key:   readability-braces-around-statements.ShortStatementLines
+    value: "0"
   # Don't warn on trivially-copyable moves (common with small value types).
   - key:   performance-move-const-arg.CheckTriviallyCopyableMove
     value: "false"
