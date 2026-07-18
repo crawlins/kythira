@@ -59,7 +59,6 @@ unambiguous at a glance.
 
 | Spec | Status |
 |------|-------|
-| [`arm64-ci-verification`](../.kiro/specs/arm64-ci-verification/) | 12/13 tasks — Task 10 (building/smoke-testing each Docker image natively on arm64 hardware) was blocked on landing on `main` before `workflow_dispatch` could target it; now that it has, the first real run is still outstanding |
 | [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
 
 ---
@@ -474,6 +473,23 @@ as the Cloud Provider Support requirement above.
   end to end — its own code and CMake wiring are otherwise complete (see
   `.kiro/specs/otlp-telemetry-backend/tasks.md` Task 11), just never
   actually run in CI yet.
+- [ ] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` is a
+  timing flake on arm64** — found while re-verifying the
+  `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via
+  a real `arm64-docker-smoke-test.yml` `workflow_dispatch` run (run ID
+  29664536952). After `docker stop`-ing node1, the test waits 3 s then
+  asserts the two survivors' `/peers` no longer lists it; this run saw
+  both survivors still report 2 peers instead of 1, i.e. BIND9 hadn't
+  finished processing node1's DDNS `DELETE` UPDATE (sent from the
+  `rfc2136_ldns_discovery` destructor on `SIGTERM`) within that window.
+  Not a crash or memory-safety issue — a real assertion failure caused
+  by a fixed wait not being generous enough on this runner. Not
+  reproduced on x86_64 CI so far; may be a genuine arm64 timing
+  difference (slower container teardown/DNS propagation on the
+  `ubuntu-24.04-arm` runner) or ordinary flakiness that just happened to
+  land on this run. Needs a few repeat runs to characterize before
+  deciding between a longer fixed wait and a poll-with-timeout rewrite
+  (mirroring `wait_all_healthy`'s pattern) — not fixed yet.
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

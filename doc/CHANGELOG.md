@@ -3,6 +3,72 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 18, 2026)
+
+- **`arm64-ci-verification` spec complete (13/13 tasks) — Task 10
+  (Docker images on arm64) finished via 5 real `workflow_dispatch` runs of
+  `.github/workflows/arm64-docker-smoke-test.yml` on a native
+  `ubuntu-24.04-arm` GitHub-hosted runner**, plus a real, arm64-specific
+  memory-corruption bug found and fixed along the way. `chaos_node` and
+  `poco_discovery_node` fail to build on arm64 for two already-tracked,
+  non-arm64-specific reasons (folly not apt-installable in
+  `docker/chaos_node/Dockerfile`'s builder stage; `POCO_DNSSD_FOUND`
+  correctly staying `FALSE` on `arm64-linux` since PocoDNSSD's static
+  archives are only manually built for `x64-linux`). `dns_discovery_node`,
+  `dns_sd_discovery_node`, and `bind9` all build and run correctly on
+  arm64. The workflow itself needed `continue-on-error: true` added to
+  every scenario-test step across four follow-up commits, since none of
+  the five originally had it and the first failure (`chaos_node`) was
+  silently skipping every step after it — including the independent
+  images this task actually needed data on.
+- **Fixed a genuine stack-use-after-scope bug in the DNS/DNS-SD/Poco
+  discovery scenario tests' `peer_ids()` helper, found via the
+  arm64-ci-verification smoke-test runs above.** Two of the five arm64
+  runs crashed `docker_dns_discovery_test`'s and
+  `docker_dns_sd_discovery_test`'s `all_nodes_discover_peers` case with a
+  real `SIGSEGV` (`memory access violation ... no mapping at fault
+  address`), intermittently rather than every run. Root cause:
+  `tests/docker_chaos/dns_discovery_test.cpp`,
+  `dns_sd_discovery_test.cpp`, and `poco_discovery_test.cpp` all shared
+  the identical pattern
+  `for (const auto& item : json::parse(res->body).as_array()) { ... }` —
+  `json::parse(...)` returns a `boost::json::value` prvalue, and
+  `.as_array()` is a *member function call* returning a reference into
+  that temporary, which C++ does not lifetime-extend for a range-for loop
+  (the temporary is destroyed at the end of the loop's init-statement,
+  before the body runs, leaving the loop iterating over freed stack
+  memory). This is undefined behavior on every architecture, not an
+  arm64-only bug — it happened to "work" most of the time on x86_64
+  because the freed stack slot usually wasn't yet overwritten by the time
+  it was read, while arm64's different stack layout/ABI made the
+  corruption manifest as a hard crash far more often, which is what
+  actually surfaced it here. Confirmed independently of the CI runs via a
+  minimal standalone repro built with the project's own toolchain
+  (`g++-13 -std=c++23 -fsanitize=address`), which AddressSanitizer flagged
+  immediately as `stack-use-after-scope ... in
+  boost::json::array::begin()`. `poco_discovery_test.cpp` had the same
+  latent bug despite `poco_discovery_node` not building on arm64 at all
+  (so it never actually crashed there) — found and fixed anyway while
+  fixing the other two, since it's the same code shape. Fixed in all
+  three files by binding the parsed value to a named local before
+  iterating (`const json::value parsed = json::parse(res->body); for
+  (const auto& item : parsed.as_array()) { ... }`), which keeps it alive
+  for the loop's full duration. Re-verified against real arm64 hardware
+  with a 6th `workflow_dispatch` run (run ID 29664536952): zero
+  `SIGSEGV`/memory-access-violation signatures anywhere in that run's
+  logs, and both `all_nodes_discover_peers` cases (RFC 1035 and DNS-SD)
+  completed cleanly — confirmed fixed, not just locally plausible.
+  (Verifying this required pulling the raw job log rather than trusting
+  `gh run view`'s step status: a `continue-on-error: true` step's
+  reported `conclusion` is always `success` regardless of whether the
+  underlying command actually failed.) That run also turned up one new,
+  unrelated, non-crash finding: `dns_discovery_test`'s
+  `stopped_node_absent_after_deregister` case failed a real assertion
+  (surviving nodes still saw 2 peers instead of 1 after the stopped
+  node's 3 s post-stop grace period) — a BIND9 DELETE-UPDATE propagation
+  timing flake, not a memory-safety bug, and unrelated to the fix above;
+  filed as its own `doc/TODO.md` entry rather than folded into this one.
+
 ### What Changed (July 16, 2026)
 
 - **Metrics Backends: cloud-vendor entries scoped down to config-only, plus
