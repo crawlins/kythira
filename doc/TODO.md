@@ -51,7 +51,6 @@ unambiguous at a glance.
 | Spec | What it would do |
 |------|-------|
 | [`ccache-adoption`](../.kiro/specs/ccache-adoption/) | Wire ccache into the CMake build and every CI job that compiles project code, persisting the cache directory across runs |
-| [`chaos-node-host-build`](../.kiro/specs/chaos-node-host-build/) | Rewrite `docker/chaos_node/Dockerfile` to a runtime-only stage packaging a host-built binary, instead of trying (and failing) to compile folly inside Docker — see the "Minor Enhancements" entry below for the failure this fixes |
 | [`discovery-nodes-host-build`](../.kiro/specs/discovery-nodes-host-build/) | Extend the same host-build-plus-staging pattern to `poco_discovery_node`, `dns_discovery_node`, and `dns_sd_discovery_node` |
 | [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
 
@@ -60,6 +59,7 @@ unambiguous at a glance.
 | Spec | Status |
 |------|-------|
 | [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
+| [`chaos-node-host-build`](../.kiro/specs/chaos-node-host-build/) | 5/5 tasks nominally done — the actual "Dockerfile can't build chaos_node" bug is fixed and verified on real arm64 hardware, plus 2 more genuine bugs found and fixed along the way (see the "Minor Enhancements" entry below), but the spec's own Requirement 6 (full 7-scenario-test suite green) isn't fully met: a 3rd, deeper finding (leader re-election after `docker kill` timing out) blocks 4 of 7 scenario-test files from ever being reached |
 
 ---
 
@@ -441,38 +441,15 @@ as the Cloud Provider Support requirement above.
   scenario tests; Podman runtime support and rootless Podman compatibility;
   25 original tasks + 5 expansion tasks complete;
   spec at `.kiro/specs/docker-chaos/`
-- [ ] **`docker/chaos_node/Dockerfile` can't actually build `chaos_node`** —
-  discovered while validating `.kiro/specs/otlp-telemetry-backend/`'s
-  `docker-otlp-collector-tests` via a manual `arm64-docker-smoke-test.yml`
-  dispatch: that workflow's `docker-chaos-image` build step fails with
-  `ninja: error: unknown target 'chaos_node'`. Root cause: the top-level
-  `CMakeLists.txt` only adds `cmd/chaos_node` (and therefore defines the
-  `chaos_node` target at all) when `folly_FOUND AND Boost_FOUND AND
-  httplib_FOUND`, but `docker/chaos_node/Dockerfile`'s builder stage only
-  `apt-get install`s Boost/OpenSSL/libfiu — never folly, and no
-  `libfolly-dev`-equivalent apt package exists to add. This isn't a loose
-  CMake gate that can just be relaxed: `tcp_raft_types` (what `chaos_node`
-  uses) hardcodes `kythira::Future`/`Promise`/`Try`
-  (`include/raft/future.hpp`), which unconditionally `#include`s real
-  folly headers — it doesn't go through the project's already-existing
-  pluggable `future_default` backend alias (which does support a
-  folly-free `stdexec` backend elsewhere). So `chaos_node` is genuinely,
-  currently folly-dependent, and the only real fix is bootstrapping
-  vcpkg (+ folly, a slow from-source build with its own large dependency
-  chain: fmt, glog, gflags, double-conversion, libevent, etc.) inside the
-  Dockerfile's builder stage — a real Dockerfile rewrite, not a one-line
-  guard fix, and one that would slow down every `docker-chaos-image`
-  build (the shared dependency of every `docker_chaos` scenario test, not
-  just the OTLP one). Likely broken since folly became a hard
-  `chaos_node` requirement — i.e. probably never worked via this exact
-  path, on `main` or otherwise; `arm64-docker-smoke-test.yml` failed for
-  unrelated reasons (stale `CMakeCache.txt`, then a separate pre-existing
-  `httplib::httplib`-without-`httplib_FOUND`-guard bug already fixed
-  in `.kiro/specs/otlp-telemetry-backend/`'s PR) before ever reaching
-  this one. Also blocks fully validating `docker-otlp-collector-tests`
-  end to end — its own code and CMake wiring are otherwise complete (see
-  `.kiro/specs/otlp-telemetry-backend/tasks.md` Task 11), just never
-  actually run in CI yet.
+- [x] **`docker/chaos_node/Dockerfile` couldn't actually build `chaos_node`**
+  — fixed via `.kiro/specs/chaos-node-host-build/`: `chaos_node` is now
+  built once on the host (the project's real, vcpkg-based CMake
+  configuration, same as `ci.yml`) and `docker/chaos_node/Dockerfile`
+  packages the already-built binary into a single runtime-only stage —
+  no in-container compiler/CMake/folly-apt-install attempt left to
+  fail. Confirmed on real arm64 hardware: `docker-chaos-image` now
+  builds and tags `kythira-chaos-node:dev` successfully. Also unblocks
+  `docker-otlp-collector-tests`, which reuses this image.
 - [ ] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` is a
   timing flake on arm64** — found while re-verifying the
   `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via
@@ -490,6 +467,40 @@ as the Cloud Provider Support requirement above.
   land on this run. Needs a few repeat runs to characterize before
   deciding between a longer fixed wait and a poll-with-timeout rewrite
   (mirroring `wait_all_healthy`'s pattern) — not fixed yet.
+- [ ] **`chaos_node` scenario tests: leader re-election after `docker
+  kill` can time out** — found while verifying the fix above (real
+  `arm64-docker-smoke-test.yml` runs, `.kiro/specs/chaos-node-host-build/`
+  Task 5). Getting `chaos_node`'s image to build and start for the
+  first time ever surfaced two other genuine, previously-hidden bugs
+  along the way (both fixed, see that spec's Task 5 writeup for
+  details: `/command`'s wire format didn't match
+  `test_key_value_state_machine::apply()`'s parser; `fiu_rc_tcp`'s
+  client used `inet_pton()`, which never resolves the hostname
+  `"localhost"` it's actually called with). After those two fixes,
+  `docker_chaos_smoke_test`, `docker_chaos_election_recovery_test`,
+  and `docker_chaos_crash_recovery_test`'s `follower_crash_and_catch_up`
+  case all pass cleanly — but `crash_recovery_test`'s
+  `leader_crash_and_reelection` case fails with `"no leader elected
+  within timeout"` after `docker kill`-ing the leader. Leading
+  hypothesis, not yet confirmed: `include/raft/tcp_rpc.hpp`'s
+  `connect_to()` sets `SO_SNDTIMEO`/`SO_RCVTIMEO`, but those don't
+  bound the blocking `connect()` syscall itself on Linux — a
+  `RequestVote` RPC to a peer whose container was just killed could
+  block far longer than the configured 100ms `rpc_timeout` waiting on
+  the kernel's own TCP SYN retry timeout, compounded by `raft.hpp`'s
+  `vote_retry_policy` retrying that same slow failure. Not fixed:
+  confirming this needs more instrumentation than static reading
+  supports, and a real fix would touch `tcp_rpc.hpp`/`raft.hpp`
+  connection/retry logic used far beyond `chaos_node`, a much larger
+  blast radius than the two self-contained bugs already fixed here —
+  the same pragmatic stopping point as the arm64 `SIGSEGV` finding in
+  `.kiro/specs/arm64-ci-verification/`. Also blocks 4 of 7
+  `docker_chaos` scenario-test files
+  (`network_degradation_test.cpp`, `az_partition_test.cpp`,
+  `persistence_faults_test.cpp`, `safety_assertions_test.cpp`) from
+  ever being reached, since `docker-chaos-tests`' `&&`-chained
+  invocation stops at the first failure — their status against the
+  now-working image is unverified.
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---
