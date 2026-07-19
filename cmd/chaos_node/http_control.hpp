@@ -82,11 +82,24 @@ public:
             std::string key = extract_val(kpos);
             std::string value = extract_val(vpos);
 
-            std::string cmd_str = "PUT " + key + " " + value + "\n";
-            std::vector<std::byte> cmd(cmd_str.size());
-            for (std::size_t i = 0; i < cmd_str.size(); ++i) {
-                cmd[i] = static_cast<std::byte>(cmd_str[i]);
-            }
+            // test_key_value_state_machine::apply() (test_state_machine.hpp)
+            // expects [command_type:1][key_length:4][key][value_length:4]
+            // [value], not free-form text — must match its memcpy-based
+            // parser exactly, including native (little-endian on every
+            // platform this project targets) length encoding.
+            auto key_length = static_cast<std::uint32_t>(key.size());
+            auto value_length = static_cast<std::uint32_t>(value.size());
+            std::vector<std::byte> cmd;
+            cmd.reserve(1 + sizeof(key_length) + key.size() + sizeof(value_length) + value.size());
+            cmd.push_back(static_cast<std::byte>(1));  // command_type::put
+            const auto* key_length_bytes = reinterpret_cast<const std::byte*>(&key_length);
+            cmd.insert(cmd.end(), key_length_bytes, key_length_bytes + sizeof(key_length));
+            const auto* key_bytes = reinterpret_cast<const std::byte*>(key.data());
+            cmd.insert(cmd.end(), key_bytes, key_bytes + key.size());
+            const auto* value_length_bytes = reinterpret_cast<const std::byte*>(&value_length);
+            cmd.insert(cmd.end(), value_length_bytes, value_length_bytes + sizeof(value_length));
+            const auto* value_bytes = reinterpret_cast<const std::byte*>(value.data());
+            cmd.insert(cmd.end(), value_bytes, value_bytes + value.size());
 
             try {
                 auto fut = _node.submit_command(cmd, std::chrono::seconds{5});
