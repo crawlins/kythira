@@ -9,8 +9,11 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -80,7 +83,23 @@ inline auto frame_recv(int fd) -> std::optional<std::string> {
     return buf;
 }
 
-// Open a blocking TCP connection with SO_SNDTIMEO/SO_RCVTIMEO set.
+// Open a TCP connection whose connect() phase is actually bounded by
+// `timeout`, then leave the socket blocking (with SO_SNDTIMEO/SO_RCVTIMEO
+// set) for the send()/recv() calls that follow.
+//
+// SO_SNDTIMEO/SO_RCVTIMEO do NOT bound the blocking connect() syscall
+// itself on Linux — they only apply to send/recv on an already-connected
+// socket. A plain blocking connect() to a host that's stopped responding
+// entirely (e.g. a docker kill'd peer, once its address is no longer
+// answering ARP/has no route) can block for however long the kernel's own
+// TCP SYN retry timeout takes — often several seconds, far longer than
+// this project's ~100ms RPC timeouts — regardless of what those socket
+// options are set to. That, combined with node<Types>::replicate_to_followers()
+// retrying every peer (including one that's permanently gone) on every
+// heartbeat tick, can otherwise pile up many long-blocked connect() calls
+// over time. Using a non-blocking connect + select()-with-timeout for just
+// the connect phase makes this function's own `timeout` parameter an
+// actual, enforced upper bound instead of a documented-but-unenforced one.
 inline auto connect_to(const std::string& host, std::uint16_t port,
                        std::chrono::milliseconds timeout) -> int {
     addrinfo hints{};
@@ -98,18 +117,41 @@ inline auto connect_to(const std::string& host, std::uint16_t port,
         return -1;
     }
 
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    int rc = ::connect(fd, res->ai_addr, res->ai_addrlen);
+    ::freeaddrinfo(res);
+
+    if (rc != 0 && errno != EINPROGRESS) {
+        ::close(fd);
+        return -1;
+    }
+
+    if (rc != 0) {  // EINPROGRESS: wait for the socket to become writable, bounded by `timeout`.
+        pollfd pfd{.fd = fd, .events = POLLOUT, .revents = 0};
+        int poll_rc = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+        if (poll_rc <= 0) {  // timed out or poll() itself failed
+            ::close(fd);
+            return -1;
+        }
+        int so_error = 0;
+        socklen_t so_error_len = sizeof(so_error);
+        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &so_error_len) != 0 ||
+            so_error != 0) {
+            ::close(fd);
+            return -1;
+        }
+    }
+
+    ::fcntl(fd, F_SETFL, flags);  // restore blocking mode for send()/recv()
+
     timeval tv{};
     tv.tv_sec = static_cast<long>(timeout.count() / 1000);
     tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (::connect(fd, res->ai_addr, res->ai_addrlen) != 0) {
-        ::freeaddrinfo(res);
-        ::close(fd);
-        return -1;
-    }
-    ::freeaddrinfo(res);
     return fd;
 }
 
