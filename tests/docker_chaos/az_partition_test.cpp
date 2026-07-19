@@ -18,26 +18,50 @@ BOOST_FIXTURE_TEST_CASE(majority_partition_continues_progress, ChaosFixture,
     auto& n1 = cluster.node(1);
     auto& n2 = cluster.node(2);
     auto& n3 = cluster.node(3);
-    cluster.wait_for_leader(10s);
+    auto& pre_partition_leader = cluster.wait_for_leader(10s);
+    BOOST_TEST_MESSAGE("pre-partition leader: node " + std::to_string(pre_partition_leader.id()));
 
     std::string ip1 = n1.container_ip();
     std::string ip2 = n2.container_ip();
     std::string ip3 = n3.container_ip();
+    BOOST_TEST_MESSAGE("ip1=" + ip1 + " ip2=" + ip2 + " ip3=" + ip3);
 
     // Bidirectional partition: isolate n3 from n1 and n2.
     n3.partition_from({ip1, ip2});
     n1.partition_from({ip3});
     n2.partition_from({ip3});
 
-    std::this_thread::sleep_for(k_election_max * 2);
-
-    // Majority must have a leader and be able to commit.
+    // Diagnostics: poll every 100ms instead of a single fixed sleep, and
+    // log every node's role/reachability each time — this test has failed
+    // on a real arm64 runner with "majority partition must have a leader"
+    // and the raw job log alone hasn't been enough to tell whether the
+    // majority never re-elects, elects but this loop somehow misses it, or
+    // something else (e.g. partition_from() itself not taking effect in
+    // time) is going on.
     ChaosNode* majority_leader = nullptr;
-    for (auto* n : {&n1, &n2}) {
-        if (n->is_leader()) {
-            majority_leader = n;
+    auto leader_deadline = std::chrono::steady_clock::now() + k_election_max * 2;
+    int attempt = 0;
+    while (std::chrono::steady_clock::now() < leader_deadline) {
+        for (auto* n : {&n1, &n2, &n3}) {
+            std::string role = "unreachable";
+            try {
+                role = n->status()["role"].as_string();
+            } catch (const std::exception& e) {
+                role = std::string("unreachable (") + e.what() + ")";
+            }
+            BOOST_TEST_MESSAGE("  attempt " + std::to_string(attempt) + " node " +
+                               std::to_string(n->id()) + ": " + role);
+        }
+        for (auto* n : {&n1, &n2}) {
+            if (n->is_leader()) {
+                majority_leader = n;
+            }
+        }
+        if (majority_leader != nullptr) {
             break;
         }
+        ++attempt;
+        std::this_thread::sleep_for(100ms);
     }
     BOOST_REQUIRE_MESSAGE(majority_leader != nullptr, "majority partition must have a leader");
 
