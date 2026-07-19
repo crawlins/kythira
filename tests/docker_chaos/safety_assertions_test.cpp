@@ -68,23 +68,57 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
     BOOST_REQUIRE_MESSAGE(maj_leader != nullptr,
                           "majority partition must have a leader for phase 2");
 
+    // Diagnostics: a real arm64 run showed all 3 nodes at commit_index=4
+    // by the final check below despite committed_idx having read 5 right
+    // here — that would mean a *committed* entry got lost/overwritten,
+    // which should be architecturally impossible (Election Safety requires
+    // a candidate's log to be at least as up-to-date as a majority of
+    // voters). Logging term/role/commit_index for all 3 nodes at every
+    // phase boundary pinpoints exactly when/how it happens instead of
+    // reasoning about it from the outside.
+    auto log_all_nodes = [&](const std::string& label) {
+        for (auto* n : {&n1, &n2, &n3}) {
+            try {
+                auto s = n->status();
+                std::string role(s["role"].as_string());
+                BOOST_TEST_MESSAGE(label + " node " + std::to_string(n->id()) + ": role=" + role +
+                                   " term=" + std::to_string(s["term"].as_int64()) +
+                                   " commit_index=" + std::to_string(s["commit_index"].as_int64()));
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE(label + " node " + std::to_string(n->id()) + ": unreachable (" +
+                                   e.what() + ")");
+            }
+        }
+    };
+
     for (int i = 0; i < 5; ++i) {
-        maj_leader->submit_command("safe" + std::to_string(i), "v" + std::to_string(i));
+        auto resp = maj_leader->submit_command("safe" + std::to_string(i), "v" + std::to_string(i));
+        if (!resp.contains("success")) {
+            BOOST_TEST_MESSAGE("submit_command " + std::to_string(i) +
+                               " failed: " + boost::json::serialize(resp));
+        }
     }
     auto committed_idx = maj_leader->status()["commit_index"].as_int64();
+    BOOST_TEST_MESSAGE("committed_idx after phase 2: " + std::to_string(committed_idx));
+    log_all_nodes("after-phase-2");
 
     // Phase 3: kill n2 — now only n1 is up, no quorum.
     n2.kill();
     std::this_thread::sleep_for(200ms);
+    log_all_nodes("after-phase-3-kill");
 
     // Phase 4: heal partition and restart n2.
     n1.unpartition();
     n3.unpartition();
     n2.restart(/*wait=*/true, 20s);
+    log_all_nodes("after-phase-4-heal-restart");
 
     // Phase 5: wait for the full cluster to stabilise.
-    cluster.wait_for_leader(k_election_max * 6);
+    auto& phase5_leader = cluster.wait_for_leader(k_election_max * 6);
+    BOOST_TEST_MESSAGE("phase-5 leader: node " + std::to_string(phase5_leader.id()));
+    log_all_nodes("phase-5-leader-found");
     std::this_thread::sleep_for(k_election_max);
+    log_all_nodes("after-phase-5-settle");
 
     cluster.assert_no_split_brain();
 
