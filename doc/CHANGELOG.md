@@ -3,6 +3,66 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 19, 2026)
+
+- **Fixed `docker/chaos_node/Dockerfile`'s long-standing inability to
+  build `chaos_node` at all, via `.kiro/specs/chaos-node-host-build/`
+  — plus two more genuine, previously-hidden bugs found and fixed
+  along the way once the image could finally build and start for the
+  first time.** The Dockerfile's builder stage tried to compile
+  `chaos_node` in-container from a small, hand-maintained `apt-get`
+  list that never included folly (not apt-installable on Ubuntu 24.04
+  at all), so `cmd/chaos_node`'s CMake target was never even defined
+  there — `ninja: error: unknown target 'chaos_node'` on every attempt.
+  Fixed by building `chaos_node` once on the host, using the project's
+  real, already-proven vcpkg-based CMake configuration (the same shape
+  `ci.yml` already uses), and collapsing the Dockerfile to a single
+  runtime-only stage that just packages the already-built binary —
+  `tests/docker_chaos/CMakeLists.txt`'s `docker-chaos-image` target now
+  depends on the `chaos_node` CMake target and stages
+  `$<TARGET_FILE:chaos_node>` before invoking `docker build`. Verified
+  on real arm64 hardware across 6 `workflow_dispatch` runs of
+  `arm64-docker-smoke-test.yml`: the image now builds and tags
+  `kythira-chaos-node:dev` successfully every time.
+- Getting a real `chaos_node` container to actually start for the
+  first time immediately surfaced two bugs that had simply never been
+  reachable before:
+  - `cmd/chaos_node/http_control.hpp`'s `/command` handler built its
+    command bytes as free-form text (`"PUT key value\n"`), but
+    `tcp_raft_types::state_machine_type`
+    (`test_key_value_state_machine`, `include/raft/test_state_machine.hpp`)
+    parses commands as a fixed binary layout —
+    `[command_type:1][key_length:4][key][value_length:4][value]`,
+    read via `memcpy` at fixed offsets — so every real command was
+    rejected with a nonsense "key length exceeds command size" error.
+    Fixed by building the actual expected byte layout.
+  - `tests/docker_chaos/fault_control.hpp`'s `send_fiu_cmd_raw()` used
+    `inet_pton()` to resolve its `host` argument, which only parses
+    numeric IPv4 literals and never resolves hostnames — but
+    `ChaosNode::enable_fault()` (`harness.hpp`) always calls it with
+    the literal string `"localhost"`, so any fault-injection test
+    using `fiu_rc_tcp` always failed with "bad host address:
+    localhost". Fixed by resolving via `getaddrinfo()` instead.
+  - Both bugs have existed since these files were written; nothing had
+    ever exercised these exact code paths end to end before, since
+    `chaos_node`'s Docker image could never build until this fix.
+- After both fixes, `docker_chaos_smoke_test`,
+  `docker_chaos_election_recovery_test`, and
+  `docker_chaos_crash_recovery_test`'s `follower_crash_and_catch_up`
+  case all pass cleanly on real arm64 hardware — but
+  `crash_recovery_test`'s `leader_crash_and_reelection` case still
+  fails ("no leader elected within timeout" after `docker kill`-ing
+  the leader), a third, deeper, **not yet fixed** finding (leading
+  hypothesis: `tcp_rpc.hpp`'s `connect_to()` doesn't actually bound
+  `connect()`'s own blocking time on Linux, so a `RequestVote` RPC to
+  a just-killed peer can block well past the configured 100ms
+  `rpc_timeout`) — deliberately not chased further in this pass, since
+  confirming and fixing it properly would touch core RPC/retry logic
+  used far beyond `chaos_node`. See `.kiro/specs/chaos-node-host-build/tasks.md`'s
+  Task 5 and `doc/TODO.md`'s Minor Enhancements for the full writeup;
+  4 of 7 `docker_chaos` scenario-test files remain unverified against
+  the now-working image as a result.
+
 ### What Changed (July 18, 2026)
 
 - **`arm64-ci-verification` spec complete (13/13 tasks) — Task 10

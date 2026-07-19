@@ -1,8 +1,13 @@
 # Implementation Plan — Chaos Node Host Build
 
-## Status: Not Started
+## Status: Core fix complete and verified (5/5 tasks) — full scenario-suite verification partial, one new finding filed separately
 
-**Last Updated**: July 17, 2026
+**Last Updated**: July 19, 2026 (Tasks 1-5 all done; Task 5's real
+`workflow_dispatch` verification confirms the actual "Dockerfile can't
+build chaos_node" bug is fixed, plus 2 more genuine, previously-hidden
+bugs found and fixed along the way — see Task 5's entry below for the
+full writeup, including one further, deeper finding that is not yet
+fixed.)
 
 ## Overview
 
@@ -95,7 +100,7 @@ manual dispatch that surfaced the original bug.
 
 ## Phase 4: Verification (Task 5)
 
-- [ ] 5. Manually dispatch `arm64-docker-smoke-test.yml` and confirm
+- [x] 5. Manually dispatch `arm64-docker-smoke-test.yml` and confirm
   - Trigger the workflow on the branch carrying Tasks 1-4.
   - Confirm the `docker-chaos-image` build step (inside `Run
     docker-chaos-tests`) succeeds — the host `chaos_node` compile, the
@@ -108,7 +113,74 @@ manual dispatch that surfaced the original bug.
   - If green, update `doc/TODO.md`'s Minor Enhancements entry for this bug
     (added while completing `.kiro/specs/otlp-telemetry-backend/`) from
     `[ ]` to `[x]`.
-  - _Requirements: 6.1, 6.2_
+  - **Result**: 6 real `workflow_dispatch` runs against a native
+    `ubuntu-24.04-arm` runner (crawlins/kythira run IDs 29666724866,
+    29666927474, 29667078679, 29667217602, 29667395910, 29667537136).
+    Requirements 1-5 (the actual "Dockerfile can't build chaos_node"
+    bug this spec exists to fix) are **confirmed fixed**: every run's
+    `docker-chaos-image` build step succeeds — host `chaos_node`
+    compile, staging copy, and `docker build` all complete, and the
+    image is tagged `kythira-chaos-node:dev` — where every run before
+    this spec failed at `ninja: error: unknown target 'chaos_node'`.
+    Requirement 6 (the full 7-scenario-test suite green) is **partially
+    met, not fully**: getting the image to actually build and start for
+    the first time ever surfaced two genuine, previously-undiscovered
+    bugs in code paths nothing had ever exercised end-to-end before,
+    both root-caused and fixed here:
+    - `docker_chaos_smoke_test` (`cluster_starts_elects_leader_accepts_command`)
+      failed with a `boost::json` "value is not boolean" error. Root
+      cause: `cmd/chaos_node/http_control.hpp`'s `/command` handler
+      built its command bytes as free-form text (`"PUT " + key + " " +
+      value + "\n"`), but `tcp_raft_types::state_machine_type`
+      (`test_key_value_state_machine`, `include/raft/test_state_machine.hpp`)
+      parses commands as a fixed binary layout —
+      `[command_type:1][key_length:4][key][value_length:4][value]`,
+      read via `memcpy` at fixed offsets. The text command decoded as
+      nonsense (`key_length` came out to ~1.9 billion), so every
+      command was rejected. Fixed by building the actual expected byte
+      layout. This bug has existed since these two files were written;
+      nothing ever POSTed a real `/command` request to a running
+      `chaos_node` before this spec's Task 5 runs.
+    - `docker_chaos_election_recovery_test`
+      (`election_after_fiu_network_isolation`) failed with `fiu: bad
+      host address: localhost`. Root cause:
+      `tests/docker_chaos/fault_control.hpp`'s `send_fiu_cmd_raw()`
+      used `inet_pton()` to turn its `host` argument into a
+      `sockaddr_in` — `inet_pton()` only parses numeric IPv4 literals,
+      never hostnames, so the literal string `"localhost"`
+      (`ChaosNode::enable_fault()`, `harness.hpp`) always failed here.
+      Fixed by resolving via `getaddrinfo()` instead, which handles
+      both numeric addresses and hostnames.
+    - After both fixes, `chaos_smoke_test`, `election_recovery_test`,
+      and `crash_recovery_test`'s `follower_crash_and_catch_up` case
+      all pass cleanly on real arm64 hardware. `crash_recovery_test`'s
+      `leader_crash_and_reelection` case then fails with `"no leader
+      elected within timeout"` after `docker kill`-ing the leader — a
+      third, different, likely-genuine finding, **not fixed**: the
+      leading hypothesis (not fully confirmed) is that
+      `include/raft/tcp_rpc.hpp`'s `connect_to()` sets
+      `SO_SNDTIMEO`/`SO_RCVTIMEO`, but those socket options do not
+      bound the blocking `connect()` syscall itself on Linux — a
+      `RequestVote` RPC to a peer whose container was just
+      `docker kill`ed could block far longer than the configured
+      100ms `rpc_timeout` while the kernel's own TCP SYN retry timeout
+      elapses, compounded by `raft.hpp`'s `vote_retry_policy` retrying
+      that same slow failure. Confirming this needs deeper
+      instrumentation than this session did (the same pragmatic
+      boundary as the `SIGSEGV` finding in
+      `.kiro/specs/arm64-ci-verification/`: root-caused as far as
+      static analysis reasonably supports, not chased further into
+      code — `tcp_rpc.hpp`/`raft.hpp`'s connection/retry logic — used
+      far beyond `chaos_node`, where a wrong fix has a much larger
+      blast radius than the two self-contained bugs above). The
+      remaining 3 scenario-test files
+      (`network_degradation_test.cpp`, `az_partition_test.cpp`,
+      `persistence_faults_test.cpp`, `safety_assertions_test.cpp`)
+      were never reached (`docker-chaos-tests`' `&&`-chained command
+      stops at the first failure) and remain unverified. Filed as a
+      new `doc/TODO.md` Minor Enhancements entry rather than silently
+      left off this list or claimed fixed.
+  - _Requirements: 6.1 (partially met — see above), 6.2_
 
 ## Notes
 
