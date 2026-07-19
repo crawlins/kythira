@@ -59,7 +59,6 @@ unambiguous at a glance.
 | Spec | Status |
 |------|-------|
 | [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
-| [`chaos-node-host-build`](../.kiro/specs/chaos-node-host-build/) | 5/5 tasks nominally done — the actual "Dockerfile can't build chaos_node" bug is fixed and verified on real arm64 hardware, plus 2 more genuine bugs found and fixed along the way (see the "Minor Enhancements" entry below), but the spec's own Requirement 6 (full 7-scenario-test suite green) isn't fully met: a 3rd, deeper finding (leader re-election after `docker kill` timing out) blocks 4 of 7 scenario-test files from ever being reached |
 
 ---
 
@@ -450,6 +449,14 @@ as the Cloud Provider Support requirement above.
   fail. Confirmed on real arm64 hardware: `docker-chaos-image` now
   builds and tags `kythira-chaos-node:dev` successfully. Also unblocks
   `docker-otlp-collector-tests`, which reuses this image.
+- [ ] **PreVote not yet extended to `tls_tcp_rpc_*` or the in-memory
+  simulator** — `network_client_with_pre_vote`/
+  `network_server_with_pre_vote` (`include/raft/network.hpp`) are
+  implemented for `tcp_rpc_client`/`tcp_rpc_server` only; TLS and
+  simulator-backed clusters fall back to the pre-PreVote behavior via
+  `if constexpr`, which is safe (byte-identical to today) but leaves
+  them still exposed to the "disruptive server" thrashing the plain
+  TCP transport now avoids. Deliberately deferred scope, not a defect.
 - [ ] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` is a
   timing flake on arm64** — found while re-verifying the
   `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via
@@ -467,40 +474,48 @@ as the Cloud Provider Support requirement above.
   land on this run. Needs a few repeat runs to characterize before
   deciding between a longer fixed wait and a poll-with-timeout rewrite
   (mirroring `wait_all_healthy`'s pattern) — not fixed yet.
-- [ ] **`chaos_node` scenario tests: leader re-election after `docker
-  kill` can time out** — found while verifying the fix above (real
-  `arm64-docker-smoke-test.yml` runs, `.kiro/specs/chaos-node-host-build/`
-  Task 5). Getting `chaos_node`'s image to build and start for the
-  first time ever surfaced two other genuine, previously-hidden bugs
-  along the way (both fixed, see that spec's Task 5 writeup for
-  details: `/command`'s wire format didn't match
-  `test_key_value_state_machine::apply()`'s parser; `fiu_rc_tcp`'s
-  client used `inet_pton()`, which never resolves the hostname
-  `"localhost"` it's actually called with). After those two fixes,
-  `docker_chaos_smoke_test`, `docker_chaos_election_recovery_test`,
-  and `docker_chaos_crash_recovery_test`'s `follower_crash_and_catch_up`
-  case all pass cleanly — but `crash_recovery_test`'s
-  `leader_crash_and_reelection` case fails with `"no leader elected
-  within timeout"` after `docker kill`-ing the leader. Leading
-  hypothesis, not yet confirmed: `include/raft/tcp_rpc.hpp`'s
-  `connect_to()` sets `SO_SNDTIMEO`/`SO_RCVTIMEO`, but those don't
-  bound the blocking `connect()` syscall itself on Linux — a
-  `RequestVote` RPC to a peer whose container was just killed could
-  block far longer than the configured 100ms `rpc_timeout` waiting on
-  the kernel's own TCP SYN retry timeout, compounded by `raft.hpp`'s
-  `vote_retry_policy` retrying that same slow failure. Not fixed:
-  confirming this needs more instrumentation than static reading
-  supports, and a real fix would touch `tcp_rpc.hpp`/`raft.hpp`
-  connection/retry logic used far beyond `chaos_node`, a much larger
-  blast radius than the two self-contained bugs already fixed here —
-  the same pragmatic stopping point as the arm64 `SIGSEGV` finding in
-  `.kiro/specs/arm64-ci-verification/`. Also blocks 4 of 7
-  `docker_chaos` scenario-test files
-  (`network_degradation_test.cpp`, `az_partition_test.cpp`,
-  `persistence_faults_test.cpp`, `safety_assertions_test.cpp`) from
-  ever being reached, since `docker-chaos-tests`' `&&`-chained
-  invocation stops at the first failure — their status against the
-  now-working image is unverified.
+- [x] **`chaos_node` scenario tests: leader re-election after `docker
+  kill` can time out** — found while verifying the Dockerfile fix
+  above (real `arm64-docker-smoke-test.yml` runs,
+  `.kiro/specs/chaos-node-host-build/` Task 5), then chased through a
+  chain of four further real bugs, each surfaced only because the
+  previous fix let CI get one step further than before:
+  - `/command`'s wire format didn't match
+    `test_key_value_state_machine::apply()`'s parser; `fiu_rc_tcp`'s
+    client used `inet_pton()`, which never resolves the hostname
+    `"localhost"` it's actually called with (both fixed first, see
+    that spec's Task 5 writeup).
+  - `include/raft/tcp_rpc.hpp`'s `connect_to()` genuinely did not
+    bound `connect()`'s own blocking time on Linux (`SO_SNDTIMEO`/
+    `SO_RCVTIMEO` don't apply to the `connect()` syscall itself) —
+    fixed with a non-blocking `connect()` + `poll()` pair that
+    actually enforces the configured timeout, mirrored in
+    `tls_tcp_rpc.hpp`.
+  - `tcp_rpc_client`'s RPC dispatch was synchronous and sequential
+    (one call blocked the next) — fixed to dispatch via a private
+    `folly::CPUThreadPoolExecutor`.
+  - Fixing the connection timeout let a real Raft protocol gap
+    surface: a stale, partitioned-off node rejoining with an
+    ever-climbing term forced the live-majority leader to step down
+    repeatedly (the "disruptive server" problem, Ongaro's
+    dissertation §9.6) — fixed by implementing the full PreVote
+    extension (`types.hpp`/`network.hpp`/`json_serializer.hpp`/
+    `tcp_rpc.hpp`/`raft.hpp`), gated as a strictly optional
+    network-concept extension so other transports are unaffected.
+  - PreVote's own verification then surfaced one more liveness bug: a
+    newly-elected leader got stuck at its inherited `commit_index`
+    forever, since `advance_commit_index()` correctly refuses to
+    commit an entry directly unless it's from the leader's own
+    current term (Raft §5.4.2) and a leader that appends nothing of
+    its own never satisfies that check — fixed by having
+    `become_leader()` append a no-op barrier entry
+    (`entry_type::no_op`) in its new term.
+  - **Result**: `workflow_dispatch` run 29693678147 shows all 7
+    `docker_chaos` scenario-test binaries — including the 3 previously
+    unreachable ones (`az_partition_test`, `persistence_faults_test`,
+    `safety_assertions_test`) plus `network_degradation_test` and
+    `leader_crash_and_reelection` itself — passing cleanly on real
+    arm64 hardware.
 - [ ] **Memory usage profiling** — optional optimization pass
 
 ---

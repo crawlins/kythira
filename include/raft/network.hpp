@@ -97,8 +97,8 @@ concept network_server_with_cluster_leave = requires(
 };
 
 // ============================================================================
-// Optional RequestPreVote extension (`.kiro/specs/raft-pre-vote/`) — NOT
-// required by the base network concepts so existing transports
+// Optional RequestPreVote extension (Raft "disruptive server" fix, Ongaro's
+// dissertation §9.6) — NOT required by the base network concepts so existing transports
 // (simulator_network_*, tls_tcp_rpc_*) are unaffected until each one opts
 // in. node<Types>::check_election_timeout() checks
 // network_client_with_pre_vote<network_client_type> via if constexpr and
