@@ -157,14 +157,36 @@ if(_RUNTIME_EXE)
         KYTHIRA_COMPOSE_COMMAND=${COMPOSE_COMMAND}
     )
 
-    add_custom_target(docker-chaos-image
-        COMMAND ${_RUNTIME_EXE} build
-                --file "${_CHAOS_DOCKERFILE}"
-                --tag kythira-chaos-node:dev
-                "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-chaos-node:dev image"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    )
+    # docker-chaos-image: stage the host-built chaos_node binary, then
+    # package it into a runtime-only image (.kiro/specs/chaos-node-host-build/).
+    # Guarded exactly like cmd/chaos_node's own inclusion at the top level
+    # (folly_FOUND AND Boost_FOUND AND httplib_FOUND) — chaos_node is defined
+    # later in configure-time processing order (cmd/chaos_node is added
+    # after tests/ at the top level) so `if(TARGET chaos_node)` isn't usable
+    # here; these FOUND variables are the same condition, evaluated the same
+    # way cmd/chaos_node/CMakeLists.txt's own guard already does.
+    if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+        add_custom_target(docker-chaos-image
+            DEPENDS chaos_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:chaos_node>"
+                    "${CMAKE_SOURCE_DIR}/docker/chaos_node/dist/chaos_node"
+            COMMAND ${_RUNTIME_EXE} build
+                    --file "${_CHAOS_DOCKERFILE}"
+                    --tag kythira-chaos-node:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging chaos_node binary and building kythira-chaos-node:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    else()
+        add_custom_target(docker-chaos-image
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "'docker-chaos-image' requires chaos_node to be buildable (folly + Boost + httplib)"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endif()
 
     add_custom_target(docker-poco-discovery-image
         COMMAND ${_RUNTIME_EXE} build
