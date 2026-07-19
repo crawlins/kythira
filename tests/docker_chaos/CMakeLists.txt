@@ -160,12 +160,16 @@ if(_RUNTIME_EXE)
     # docker-chaos-image: stage the host-built chaos_node binary, then
     # package it into a runtime-only image (.kiro/specs/chaos-node-host-build/).
     # Guarded exactly like cmd/chaos_node's own inclusion at the top level
-    # (folly_FOUND AND Boost_FOUND AND httplib_FOUND) — chaos_node is defined
-    # later in configure-time processing order (cmd/chaos_node is added
-    # after tests/ at the top level) so `if(TARGET chaos_node)` isn't usable
-    # here; these FOUND variables are the same condition, evaluated the same
-    # way cmd/chaos_node/CMakeLists.txt's own guard already does.
-    if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+    # (NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+    # — chaos_node is defined later in configure-time processing order
+    # (cmd/chaos_node is added after tests/ at the top level) so
+    # `if(TARGET chaos_node)` isn't usable here; this must match the top-level
+    # CMakeLists.txt guard exactly, including NOT ENABLE_COVERAGE, or a
+    # coverage build (which skips add_subdirectory(cmd/chaos_node) entirely)
+    # hits this branch with folly/Boost/httplib all found but no chaos_node
+    # target actually defined, failing CMake generate on
+    # `$<TARGET_FILE:chaos_node>` with "No target chaos_node".
+    if(NOT ENABLE_COVERAGE AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
         add_custom_target(docker-chaos-image
             DEPENDS chaos_node
             COMMAND ${CMAKE_COMMAND} -E make_directory
