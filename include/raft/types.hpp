@@ -223,6 +223,30 @@ concept request_vote_response_type = requires(const T& resp) {
     { resp.vote_granted() } -> std::convertible_to<bool>;
 };
 
+/// @brief Concept for a RequestPreVote RPC request message
+/// (`.kiro/specs/raft-pre-vote/` — optional, see `network_client_with_pre_vote`
+/// in `network.hpp`). Same shape as `request_vote_request_type`: a pre-vote
+/// candidate advertises the term it *would* use (current_term + 1) and its
+/// log position, without actually incrementing its own term yet.
+template<typename T, typename NodeId, typename TermId, typename LogIndex>
+concept request_pre_vote_request_type = requires(const T& req) {
+    requires node_id<NodeId>;
+    requires term_id<TermId>;
+    requires log_index<LogIndex>;
+    { req.term() } -> std::same_as<TermId>;
+    { req.candidate_id() } -> std::same_as<NodeId>;
+    { req.last_log_index() } -> std::same_as<LogIndex>;
+    { req.last_log_term() } -> std::same_as<TermId>;
+};
+
+/// @brief Concept for a RequestPreVote RPC response message.
+template<typename T, typename TermId>
+concept request_pre_vote_response_type = requires(const T& resp) {
+    requires term_id<TermId>;
+    { resp.term() } -> std::same_as<TermId>;
+    { resp.vote_granted() } -> std::convertible_to<bool>;
+};
+
 /// @brief Concept for an AppendEntries RPC request message.
 template<typename T, typename NodeId, typename TermId, typename LogIndex, typename LogEntry>
 concept append_entries_request_type = requires(const T& req) {
@@ -342,6 +366,39 @@ struct request_vote_request {
 template<typename TermId = std::uint64_t>
 requires term_id<TermId>
 struct request_vote_response {
+    TermId _term;
+    bool _vote_granted;
+
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto vote_granted() const -> bool { return _vote_granted; }
+};
+
+/// @brief Default RequestPreVote request. Same shape as `request_vote_request`
+/// — `term()` here is the term the candidate *would* use, not its actual
+/// current term.
+/// @tparam NodeId   Node identifier type; defaults to `uint64_t`.
+/// @tparam TermId   Term number type; defaults to `uint64_t`.
+/// @tparam LogIndex Log index type; defaults to `uint64_t`.
+template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+         typename LogIndex = std::uint64_t>
+requires node_id<NodeId> && term_id<TermId> && log_index<LogIndex>
+struct request_pre_vote_request {
+    TermId _term;
+    NodeId _candidate_id;
+    LogIndex _last_log_index;
+    TermId _last_log_term;
+
+    [[nodiscard]] auto term() const -> TermId { return _term; }
+    [[nodiscard]] auto candidate_id() const -> NodeId { return _candidate_id; }
+    [[nodiscard]] auto last_log_index() const -> LogIndex { return _last_log_index; }
+    [[nodiscard]] auto last_log_term() const -> TermId { return _last_log_term; }
+};
+
+/// @brief Default RequestPreVote response.
+/// @tparam TermId Term number type; defaults to `uint64_t`.
+template<typename TermId = std::uint64_t>
+requires term_id<TermId>
+struct request_pre_vote_response {
     TermId _term;
     bool _vote_granted;
 

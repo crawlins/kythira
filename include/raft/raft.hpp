@@ -144,6 +144,13 @@ public:
     using snapshot_type = typename Types::snapshot_type;
     using request_vote_request_type = typename Types::request_vote_request_type;
     using request_vote_response_type = typename Types::request_vote_response_type;
+    // Optional (`.kiro/specs/raft-pre-vote/`): a direct concrete type, not
+    // typename Types::request_pre_vote_request_type, so existing Types
+    // bundles that don't implement PreVote aren't required to define it
+    // (mirrors fetch_log_entries_request_type's own treatment above).
+    using request_pre_vote_request_type =
+        request_pre_vote_request<node_id_type, term_id_type, log_index_type>;
+    using request_pre_vote_response_type = request_pre_vote_response<term_id_type>;
     using append_entries_request_type = typename Types::append_entries_request_type;
     using append_entries_response_type = typename Types::append_entries_response_type;
     using install_snapshot_request_type = typename Types::install_snapshot_request_type;
@@ -550,10 +557,12 @@ private:
     // Error handlers for different RPC operations using generic future types
     using append_entries_error_handler_t = error_handler<append_entries_response_type>;
     using request_vote_error_handler_t = error_handler<request_vote_response_type>;
+    using request_pre_vote_error_handler_t = error_handler<request_pre_vote_response_type>;
     using install_snapshot_error_handler_t = error_handler<install_snapshot_response_type>;
 
     append_entries_error_handler_t _append_entries_error_handler;
     request_vote_error_handler_t _request_vote_error_handler;
+    request_pre_vote_error_handler_t _request_pre_vote_error_handler;
     install_snapshot_error_handler_t _install_snapshot_error_handler;
 
     // ========================================================================
@@ -581,6 +590,16 @@ private:
 
     // Last time a heartbeat was received (for followers) or sent (for leaders)
     std::chrono::steady_clock::time_point _last_heartbeat;
+
+    // Last time this node received a valid AppendEntries from a genuine
+    // leader — deliberately distinct from _last_heartbeat, which is also
+    // reset by this node's OWN candidacy/leadership transitions
+    // (become_candidate(), become_leader(), granting a vote) and would
+    // otherwise make handle_request_pre_vote()'s "have I heard from a
+    // leader recently" check (`.kiro/specs/raft-pre-vote/`) misfire against
+    // an ordinary split vote between two mutually-reachable candidates.
+    // Only handle_append_entries() updates this.
+    std::chrono::steady_clock::time_point _last_leader_contact;
 
     // Random number generator for election timeout randomization
     std::mt19937 _rng;
@@ -700,6 +719,12 @@ private:
     // RPC handlers
     [[nodiscard]] auto handle_request_vote(const request_vote_request_type& request)
         -> request_vote_response_type;
+    // Optional (`.kiro/specs/raft-pre-vote/`) — only instantiated (and so
+    // only needs network_client_type/network_server_type to support it) for
+    // Types bundles that actually call it; see start_pre_vote() and
+    // register_rpc_handlers()'s if constexpr guards.
+    [[nodiscard]] auto handle_request_pre_vote(const request_pre_vote_request_type& request)
+        -> request_pre_vote_response_type;
     [[nodiscard]] auto handle_append_entries(const append_entries_request_type& request)
         -> append_entries_response_type;
     [[nodiscard]] auto handle_install_snapshot(const install_snapshot_request_type& request)
@@ -718,6 +743,15 @@ private:
     auto become_follower(term_id_type new_term) -> void;
     auto become_candidate() -> void;
     auto start_election() -> void;
+    // Optional (`.kiro/specs/raft-pre-vote/`): called from
+    // check_election_timeout() instead of become_candidate()+start_election()
+    // when network_client_type supports PreVote. Broadcasts a trial round at
+    // term()+1 without mutating any of this node's own state; only escalates
+    // to a real become_candidate()+start_election() if a majority would
+    // actually grant the vote. Falls straight through to the existing
+    // become_candidate()+start_election() behavior, unchanged, for any
+    // Types bundle whose transport doesn't implement PreVote.
+    auto start_pre_vote() -> void;
     auto become_leader() -> void;
 
     // Log operations
@@ -895,6 +929,7 @@ node<Types>::node(node_config<Types> cfg)
       _election_timeout{cfg.config.election_timeout_min()},
       _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
+      _last_leader_contact{std::chrono::steady_clock::now()},
       _rng{std::random_device{}()},
       _self_address{std::move(cfg.self_address)},
       _peer_discovery{std::move(cfg.peer_discovery)},
@@ -2694,13 +2729,29 @@ auto node<Types>::check_election_timeout() -> void {
              {"state", _state == kythira::server_state::follower ? "follower" : "candidate"},
              {"term", std::to_string(_current_term)}});
 
-        become_candidate();
+        // `.kiro/specs/raft-pre-vote/`: Types bundles whose network_client_type
+        // supports PreVote run a trial round first (start_pre_vote() only
+        // escalates to become_candidate()+start_election() if it would
+        // actually win a majority) — this is what stops a node that's been
+        // isolated (or just restarted) from disrupting an otherwise-stable
+        // cluster with a term it climbed while cut off, without changing
+        // the RPC-level protocol any Types bundle that doesn't implement
+        // PreVote relies on. Any Types bundle whose transport doesn't
+        // support it (e.g. the in-memory simulator) falls through to
+        // exactly the same become_candidate()+start_election() sequence
+        // this function has always used.
+        if constexpr (network_client_with_pre_vote<network_client_type>) {
+            lock.unlock();
+            start_pre_vote();
+        } else {
+            become_candidate();
 
-        // Release the lock before start_election(): send_request_vote blocks on the
-        // simulator CV, so the future callbacks resolve inline on this same thread.
-        // The callbacks re-acquire _mutex, which would deadlock if we still held it.
-        lock.unlock();
-        start_election();
+            // Release the lock before start_election(): send_request_vote blocks on the
+            // simulator CV, so the future callbacks resolve inline on this same thread.
+            // The callbacks re-acquire _mutex, which would deadlock if we still held it.
+            lock.unlock();
+            start_election();
+        }
     }
 }
 
@@ -2873,6 +2924,15 @@ auto node<Types>::register_rpc_handlers() -> void {
         [this](const request_vote_request_type& request) -> request_vote_response_type {
             return this->handle_request_vote(request);
         });
+
+    // Register RequestPreVote handler if the network server supports it
+    // (`.kiro/specs/raft-pre-vote/`)
+    if constexpr (network_server_with_pre_vote<network_server_type>) {
+        _network_server.register_request_pre_vote_handler(
+            [this](const request_pre_vote_request_type& request) -> request_pre_vote_response_type {
+                return this->handle_request_pre_vote(request);
+            });
+    }
 
     // Register AppendEntries handler
     _network_server.register_append_entries_handler(
@@ -3051,6 +3111,84 @@ auto node<Types>::handle_request_vote(const request_vote_request_type& request)
 
 template<raft_types Types>
 
+// `.kiro/specs/raft-pre-vote/`: answers "if you called a real election right
+// now, would I vote for you?" without mutating any local state — no term
+// bump, no become_follower(), no _voted_for write, no persistence. Two
+// checks gate a grant, deliberately different from handle_request_vote()'s:
+//
+//   1. Leader-stickiness: if we've heard a valid AppendEntries from a
+//      genuine leader within the last election_timeout, refuse outright,
+//      regardless of the candidate's term or log. This is what stops an
+//      isolated node's climbed-while-cut-off term from disrupting an
+//      otherwise-stable majority once it reconnects — the isolated node's
+//      PreVote broadcasts never reach anyone (it's isolated), so it never
+//      wins a majority of pre-votes, so it never increments its real term
+//      at all. Uses _last_leader_contact, NOT _last_heartbeat/
+//      reset_election_timer() — the latter is also touched by this node's
+//      OWN candidacy/leadership transitions and granting a real vote, which
+//      would incorrectly suppress pre-vote grants during an ordinary split
+//      vote between two mutually-reachable candidates (neither of which has
+//      heard from any leader either, but that's not what this check is
+//      about).
+//   2. The same log-up-to-date comparison as handle_request_vote()'s Rule 4
+//      (candidate's last_log_term/last_log_index at least as current as
+//      ours) — this is what stops a genuinely-behind node (not just a
+//      recently-isolated one) from being able to disrupt progress even once
+//      the stickiness window has elapsed.
+auto node<Types>::handle_request_pre_vote(const request_pre_vote_request_type& request)
+    -> request_pre_vote_response_type {
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    if (is_learner()) {
+        return request_pre_vote_response_type{_current_term, false};
+    }
+
+    _logger.debug("Received RequestPreVote RPC",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"from_candidate", node_id_to_string(request.candidate_id())},
+                   {"request_term", std::to_string(request.term())},
+                   {"current_term", std::to_string(_current_term)}});
+
+    auto now = std::chrono::steady_clock::now();
+    auto since_leader_contact =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_leader_contact);
+    if (since_leader_contact < _election_timeout) {
+        _logger.debug("Denying pre-vote: heard from a leader recently",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())},
+                       {"since_leader_contact_ms", std::to_string(since_leader_contact.count())}});
+        return request_pre_vote_response_type{_current_term, false};
+    }
+
+    auto my_last_log_index = get_last_log_index();
+    auto my_last_log_term = get_last_log_term();
+
+    bool candidate_log_up_to_date = false;
+    if (request.last_log_term() > my_last_log_term) {
+        candidate_log_up_to_date = true;
+    } else if (request.last_log_term() == my_last_log_term) {
+        candidate_log_up_to_date = (request.last_log_index() >= my_last_log_index);
+    }
+
+    if (!candidate_log_up_to_date) {
+        _logger.debug("Denying pre-vote: candidate log not up-to-date",
+                      {{"node_id", node_id_to_string(_node_id)},
+                       {"candidate", node_id_to_string(request.candidate_id())},
+                       {"my_last_log_term", std::to_string(my_last_log_term)},
+                       {"my_last_log_index", std::to_string(my_last_log_index)},
+                       {"candidate_last_log_term", std::to_string(request.last_log_term())},
+                       {"candidate_last_log_index", std::to_string(request.last_log_index())}});
+        return request_pre_vote_response_type{_current_term, false};
+    }
+
+    _logger.debug("Granting pre-vote", {{"node_id", node_id_to_string(_node_id)},
+                                        {"candidate", node_id_to_string(request.candidate_id())}});
+
+    return request_pre_vote_response_type{_current_term, true};
+}
+
+template<raft_types Types>
+
 auto node<Types>::handle_append_entries(const append_entries_request_type& request)
     -> append_entries_response_type {
     std::lock_guard<std::mutex> lock(_mutex);
@@ -3107,6 +3245,13 @@ auto node<Types>::handle_append_entries(const append_entries_request_type& reque
 
     // Reset election timer on valid AppendEntries (§5.2)
     reset_election_timer();
+
+    // `.kiro/specs/raft-pre-vote/`: this is the ONLY place that updates
+    // _last_leader_contact — deliberately not shared with
+    // reset_election_timer(), which is also called from this node's own
+    // become_candidate()/become_leader()/vote-granting paths (see
+    // handle_request_pre_vote()'s comment for why that distinction matters).
+    _last_leader_contact = std::chrono::steady_clock::now();
 
     // Track the current leader for ClusterJoin redirect responses and notify
     // the reconnect thread that peer contact has been established.
@@ -4048,6 +4193,203 @@ auto node<Types>::start_election() -> void {
                                   {{"node_id", node_id_to_string(node_id)}});
                 }
             });
+}
+
+template<raft_types Types>
+
+// `.kiro/specs/raft-pre-vote/`. Only instantiated for Types bundles whose
+// network_client_type satisfies network_client_with_pre_vote — see
+// check_election_timeout()'s if constexpr, the sole caller. Structurally
+// mirrors start_election() closely (same peer/joint-consensus snapshot
+// logic, same collect_all_with_timeout usage, same quorum-counting
+// closures) but never mutates _current_term/_voted_for/persistence: only a
+// majority-granted outcome escalates to the real become_candidate()+
+// start_election(), which perform those mutations exactly as they did
+// before this feature existed.
+auto node<Types>::start_pre_vote() -> void {
+    // Called without _mutex held (mirrors start_election()'s own contract).
+    term_id_type prospective_term;
+    log_index_type snapshot_last_log_index;
+    term_id_type snapshot_last_log_term;
+    std::chrono::milliseconds snapshot_election_timeout;
+    std::vector<node_id_type> peer_ids;
+
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (_state == kythira::server_state::leader || is_learner()) {
+            return;  // race: became leader, or a learner — mirrors check_election_timeout()'s own
+                     // guards
+        }
+        // Reset the timer up front, regardless of this round's outcome —
+        // otherwise a pre-vote round that doesn't win a majority would
+        // leave elapsed >= _election_timeout still true, and the next
+        // external check_election_timeout() tick would immediately re-fire
+        // with no backoff at all.
+        reset_election_timer();
+        randomize_election_timeout();
+
+        prospective_term = _current_term + 1;
+        snapshot_last_log_index = get_last_log_index();
+        snapshot_last_log_term = get_last_log_term();
+        snapshot_election_timeout = _election_timeout;
+        for (const auto& peer_id : _configuration.nodes()) {
+            if (peer_id != _node_id) {
+                peer_ids.push_back(peer_id);
+            }
+        }
+        if (_configuration.is_joint_consensus() && _configuration.old_nodes()) {
+            for (const auto& peer_id : *_configuration.old_nodes()) {
+                if (peer_id != _node_id &&
+                    std::find(peer_ids.begin(), peer_ids.end(), peer_id) == peer_ids.end()) {
+                    peer_ids.push_back(peer_id);
+                }
+            }
+        }
+    }
+
+    // Single-node cluster: no one to pre-vote against — go straight to a
+    // real election (which itself becomes leader immediately when
+    // vote_futures is empty).
+    if (peer_ids.empty()) {
+        become_candidate();
+        start_election();
+        return;
+    }
+
+    _logger.debug("Starting pre-vote round",
+                  {{"node_id", node_id_to_string(_node_id)},
+                   {"prospective_term", std::to_string(prospective_term)}});
+
+    typename error_handler<request_pre_vote_response_type>::retry_policy pre_vote_retry_policy{
+        .initial_delay = std::chrono::milliseconds{100},
+        .max_delay = std::chrono::milliseconds{3000},
+        .backoff_multiplier = 2.0,
+        .jitter_factor = 0.1,
+        .max_attempts = 3};
+
+    using tagged_pre_vote_t = std::pair<node_id_type, request_pre_vote_response_type>;
+    std::vector<kythira::Future<tagged_pre_vote_t>> pre_vote_futures;
+    pre_vote_futures.reserve(peer_ids.size());
+
+    for (const auto& peer_id : peer_ids) {
+        request_pre_vote_request_type pre_vote_request{._term = prospective_term,
+                                                       ._candidate_id = _node_id,
+                                                       ._last_log_index = snapshot_last_log_index,
+                                                       ._last_log_term = snapshot_last_log_term};
+
+        auto tagged_future =
+            _request_pre_vote_error_handler
+                .execute_with_retry(
+                    "request_pre_vote",
+                    [this, peer_id, pre_vote_request,
+                     stop_flag = _stop_flag]() -> kythira::Future<request_pre_vote_response_type> {
+                        if (stop_flag->load(std::memory_order_acquire)) {
+                            return kythira::FutureFactory::makeExceptionalFuture<
+                                request_pre_vote_response_type>(std::runtime_error("node stopped"));
+                        }
+                        return _network_client.send_request_pre_vote(peer_id, pre_vote_request,
+                                                                     _config.rpc_timeout());
+                    },
+                    pre_vote_retry_policy)
+                .thenTry(
+                    [peer_id, stop_flag = _stop_flag](
+                        kythira::Try<request_pre_vote_response_type> result) -> tagged_pre_vote_t {
+                        if (stop_flag->load(std::memory_order_acquire)) {
+                            throw std::runtime_error("node stopped");
+                        }
+                        if (result.hasException()) {
+                            std::rethrow_exception(result.exception());
+                        }
+                        return {peer_id, result.value()};
+                    });
+
+        pre_vote_futures.push_back(std::move(tagged_future));
+    }
+
+    std::vector<node_id_type> snap_c_new;
+    std::optional<std::vector<node_id_type>> snap_c_old;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        snap_c_new = _configuration.nodes();
+        snap_c_old = _configuration.old_nodes();
+    }
+
+    auto node_id = _node_id;
+
+    raft_future_collector<tagged_pre_vote_t>::collect_all_with_timeout(std::move(pre_vote_futures),
+                                                                       snapshot_election_timeout)
+        .thenValue([this, node_id, snap_c_new = std::move(snap_c_new),
+                    snap_c_old = std::move(snap_c_old),
+                    stop_flag = _stop_flag](std::vector<kythira::Try<tagged_pre_vote_t>> results) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
+
+            // Joint-consensus-aware quorum check — identical shape to
+            // start_election()'s. Self counts as a pre-vote for itself in
+            // every configuration it belongs to.
+            auto has_vote_from = [&](const node_id_type& n) -> bool {
+                if (n == node_id) {
+                    return true;
+                }
+                for (const auto& r : results) {
+                    if (r.hasValue() && r.value().first == n && r.value().second.vote_granted()) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            auto has_quorum = [&](const std::vector<node_id_type>& cfg) -> bool {
+                std::size_t cnt = 0;
+                for (const auto& n : cfg) {
+                    if (has_vote_from(n)) {
+                        cnt++;
+                    }
+                }
+                return cnt * 2 > cfg.size();
+            };
+
+            bool won = snap_c_old.has_value() ? (has_quorum(snap_c_new) && has_quorum(*snap_c_old))
+                                              : has_quorum(snap_c_new);
+
+            if (!won) {
+                _logger.debug("Pre-vote round did not reach quorum, not starting a real election",
+                              {{"node_id", node_id_to_string(node_id)}});
+                return;
+            }
+
+            // Re-check state fresh under lock: time has passed since the
+            // snapshot above (real network I/O happened), so someone else
+            // may have already become leader, or we may have heard from
+            // one and stepped down.
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_state == kythira::server_state::leader) {
+                    return;
+                }
+            }
+
+            _logger.debug("Pre-vote round reached quorum, starting a real election",
+                          {{"node_id", node_id_to_string(node_id)}});
+            become_candidate();
+            start_election();
+        })
+        .thenError([this, node_id, stop_flag = _stop_flag](const std::exception_ptr& ex) {
+            if (stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
+            try {
+                std::rethrow_exception(ex);
+            } catch (const kythira::future_collection_exception& e) {
+                _logger.debug("Failed to collect pre-vote responses",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"operation", e.get_operation()},
+                               {"failed_count", std::to_string(e.get_failed_count())}});
+            } catch (...) {
+                _logger.debug("Unexpected error during pre-vote round",
+                              {{"node_id", node_id_to_string(node_id)}});
+            }
+        });
 }
 
 template<raft_types Types>
