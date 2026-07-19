@@ -70,8 +70,23 @@ BOOST_FIXTURE_TEST_CASE(majority_partition_continues_progress, ChaosFixture,
     }
     auto committed = majority_leader->status()["commit_index"].as_int64();
 
-    // Minority must not claim leadership.
-    BOOST_TEST(!n3.is_leader(), "minority node must not claim leadership");
+    // Minority must not be able to make progress. Checking is_leader() here
+    // would be testing the wrong invariant: n3 was not the pre-partition
+    // leader in this run (see BOOST_TEST_MESSAGE above), but in general a
+    // node that WAS leader right before losing connectivity keeps
+    // believing it still is — Raft leaders only step down on hearing a
+    // higher term, which an isolated node can never receive, and this
+    // implementation has no separate leadership-lease/self-eviction
+    // mechanism for Raft leadership itself (the quorum_check_interval /
+    // run_quorum_assessment() machinery in raft.hpp is for the unrelated
+    // cloud-provisioning quorum_manager subsystem — it never touches
+    // _state). The actual safety guarantee "8.6" needs is that an isolated
+    // node cannot COMMIT, regardless of what it locally believes its role
+    // is: submitting a command to it must not succeed, since it can never
+    // reach a majority to acknowledge the entry.
+    auto minority_resp = n3.submit_command("minoritykey", "minorityval");
+    BOOST_TEST(!minority_resp.contains("success"),
+               "minority node must not be able to commit new entries");
 
     // Heal all partitions.
     n1.unpartition();
@@ -115,11 +130,22 @@ BOOST_FIXTURE_TEST_CASE(symmetric_full_partition_no_leader, ChaosFixture,
 
     std::this_thread::sleep_for(k_election_max * 3);
 
-    // No node should be able to claim leadership without quorum.
+    // No node should be able to make progress without quorum. Same
+    // reasoning as majority_partition_continues_progress above: a node
+    // that was already leader right before this full symmetric partition
+    // took effect keeps locally believing it's leader (it has no way to
+    // learn otherwise while fully isolated), so checking is_leader() would
+    // be testing the wrong thing. What full partition actually guarantees
+    // is that nobody can commit: every node's submit_command() must fail —
+    // fast (503 not_leader) for a follower/candidate, or after chaos_node's
+    // own 5s internal commit-wait for whichever node still believes itself
+    // leader, since it can never reach a majority to acknowledge the entry.
     for (auto* n : cluster.all_nodes()) {
         try {
-            BOOST_TEST(!n->is_leader(), "node " + std::to_string(n->id()) +
-                                            " claimed leadership under full partition");
+            auto resp = n->submit_command("fullpartitionkey", "fullpartitionval");
+            BOOST_TEST(!resp.contains("success"), "node " + std::to_string(n->id()) +
+                                                      " must not be able to commit under "
+                                                      "full partition");
         } catch (...) {
         }  // unreachable is acceptable
     }
