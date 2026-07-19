@@ -65,6 +65,8 @@
 #include <raft/tcp_rpc.hpp>
 #include <raft/types.hpp>
 
+#include <folly/executors/CPUThreadPoolExecutor.h>
+
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -263,11 +265,27 @@ struct fd_guard {
 // identity — it just does so by mutating the shared SSL_CTX* in place
 // (mirroring tls_tcp_rpc_server's own reload_identity()) instead of
 // discarding and rebuilding one every time.
+//
+// Like tcp_rpc_client::call() (tcp_rpc.hpp), the actual connect/handshake/
+// send/recv sequence runs on a private thread pool rather than inline on
+// the calling thread — a node broadcasting RequestVote/AppendEntries to
+// multiple peers in a loop (node<Types>::start_election(),
+// replicate_to_followers()) needs to actually reach all of them
+// concurrently; a peer that's gone away can otherwise stall every
+// subsequent peer in that same broadcast round, since SO_SNDTIMEO/
+// SO_RCVTIMEO don't bound connect()'s own blocking time on Linux. A
+// private pool, not folly::getGlobalCPUExecutor(): the global CPU executor
+// aborts unless folly::init() ran first, which plain Boost.Test unit
+// tests exercising this class directly never do.
 class client_impl {
 public:
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
-    explicit client_impl(tls_tcp_rpc_config config) : _config(config) {
+    static constexpr std::size_t k_rpc_thread_pool_size = 8;
+
+    explicit client_impl(tls_tcp_rpc_config config)
+        : _config(config),
+          _executor(std::make_shared<folly::CPUThreadPoolExecutor>(k_rpc_thread_pool_size)) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_client_method());
         if (_ctx == nullptr) {
@@ -319,6 +337,10 @@ public:
                 network_exception("tls_tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
 
+        // SSL_new() and the trust-policy snapshot stay synchronous, still
+        // under _ctx_mu exactly as before — only the blocking network I/O
+        // that follows (connect/handshake/send/recv) moves to the
+        // background, since that's what a slow/dead peer stalls.
         SSL* raw_ssl = nullptr;
         tls_rpc_trust_policy policy_snapshot;
         {
@@ -330,51 +352,66 @@ public:
             return FutureFactory::makeExceptionalFuture<Resp>(
                 std::make_exception_ptr(network_exception("tls_tcp_rpc_client: SSL_new failed")));
         }
-        ssl_conn_guard sslg{raw_ssl};
 
-        int fd = tcp_detail::connect_to(peer->first, peer->second, timeout);
-        if (fd < 0) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
-                network_exception("tls_tcp_rpc_client: connect failed to " + peer->first + ":" +
-                                  std::to_string(peer->second))));
-        }
-        fd_guard fdg{fd};
+        Promise<Resp> promise;
+        auto future = promise.getFuture();
 
-        SSL_set_fd(raw_ssl, fd);
-        if (SSL_connect(raw_ssl) != 1) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
-                network_exception("tls_tcp_rpc_client: TLS handshake failed connecting to " +
-                                  peer->first + ":" + std::to_string(peer->second))));
-        }
+        std::string host = peer->first;
+        std::uint16_t port = peer->second;
 
-        X509* presented = SSL_get1_peer_certificate(raw_ssl);
-        bool trusted = policy_snapshot.accepts(presented);
-        if (presented != nullptr) {
-            X509_free(presented);
-        }
-        if (!trusted) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
-                std::make_exception_ptr(network_exception(
-                    "tls_tcp_rpc_client: peer certificate rejected by trust policy: " +
-                    peer->first + ":" + std::to_string(peer->second))));
-        }
+        _executor->add([promise = std::move(promise), raw_ssl, host, port, payload, timeout,
+                        policy_snapshot, deser]() mutable {
+            ssl_conn_guard sslg{raw_ssl};
 
-        if (!frame_send(raw_ssl, tcp_detail::bytes_to_str(payload))) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
-                std::make_exception_ptr(network_exception("tls_tcp_rpc_client: send failed")));
-        }
+            int fd = tcp_detail::connect_to(host, port, timeout);
+            if (fd < 0) {
+                promise.setException(std::make_exception_ptr(network_exception(
+                    "tls_tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
+                return;
+            }
+            fd_guard fdg{fd};
 
-        auto resp = frame_recv(raw_ssl);
-        if (!resp) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
-                std::make_exception_ptr(network_exception("tls_tcp_rpc_client: recv failed")));
-        }
+            SSL_set_fd(raw_ssl, fd);
+            if (SSL_connect(raw_ssl) != 1) {
+                promise.setException(std::make_exception_ptr(
+                    network_exception("tls_tcp_rpc_client: TLS handshake failed connecting to " +
+                                      host + ":" + std::to_string(port))));
+                return;
+            }
 
-        try {
-            return FutureFactory::makeReadyFuture(deser(tcp_detail::str_to_bytes(*resp)));
-        } catch (...) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::current_exception());
-        }
+            X509* presented = SSL_get1_peer_certificate(raw_ssl);
+            bool trusted = policy_snapshot.accepts(presented);
+            if (presented != nullptr) {
+                X509_free(presented);
+            }
+            if (!trusted) {
+                promise.setException(std::make_exception_ptr(network_exception(
+                    "tls_tcp_rpc_client: peer certificate rejected by trust policy: " + host + ":" +
+                    std::to_string(port))));
+                return;
+            }
+
+            if (!frame_send(raw_ssl, tcp_detail::bytes_to_str(payload))) {
+                promise.setException(
+                    std::make_exception_ptr(network_exception("tls_tcp_rpc_client: send failed")));
+                return;
+            }
+
+            auto resp = frame_recv(raw_ssl);
+            if (!resp) {
+                promise.setException(
+                    std::make_exception_ptr(network_exception("tls_tcp_rpc_client: recv failed")));
+                return;
+            }
+
+            try {
+                promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
+            } catch (...) {
+                promise.setException(std::current_exception());
+            }
+        });
+
+        return future;
     }
 
 private:
@@ -382,6 +419,7 @@ private:
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config.trust_policy
     tls_tcp_rpc_config _config;
+    std::shared_ptr<folly::CPUThreadPoolExecutor> _executor;
 };
 
 // ── server_impl (Requirement 1.1, 1.2) ──────────────────────────────────────
