@@ -4402,6 +4402,22 @@ auto node<Types>::become_leader() -> void {
 
     _state = kythira::server_state::leader;
 
+    // Raft §5.4.2: advance_commit_index() only ever counts an entry toward commit_index
+    // directly if entry.term() == _current_term (never a prior term's entry, even once a
+    // majority of nodes hold it — see advance_commit_index()'s "only commit entries from
+    // current term directly" rule). Without something of its own in the log, a new leader
+    // can replicate entries inherited from previous terms to every follower and still never
+    // advance commit_index. Appending a no-op barrier entry here, before next_index is
+    // computed below, gives the leader something in its own term to commit; once that
+    // commits, the same advance_commit_index() call pulls commit_index forward past the
+    // inherited entries too (the "commit index only ever moves forward" prefix property).
+    log_entry_type no_op_entry{._term = _current_term,
+                               ._index = get_last_log_index() + 1,
+                               ._command = {},
+                               ._type = entry_type::no_op};
+    append_log_entry(no_op_entry);
+    _persistence.append_log_entry(no_op_entry);
+
     // Initialize leader-specific state
     auto last_log_idx = get_last_log_index();
     auto init_peer = [&](const node_id_type& peer_id) {
@@ -5373,6 +5389,18 @@ auto node<Types>::apply_committed_entries() -> void {
         }
 
         auto& entry = entry_opt.value();
+
+        // No-op barrier entries (Raft §5.4.2) are NOT applied to the state machine; their
+        // sole purpose is to occupy a slot in the leader's own term so that
+        // advance_commit_index()'s "only commit entries from current term directly" rule
+        // has something to commit, which then pulls commit_index forward past any entries
+        // inherited from previous terms.
+        if (entry.type() == entry_type::no_op) {
+            _commit_waiter.notify_committed_and_applied(next_index);
+            _last_applied = next_index;
+            entries_applied_in_batch++;
+            continue;
+        }
 
         // Configuration entries are NOT applied to the state machine; they advance the
         // configuration change protocol instead.

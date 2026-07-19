@@ -66,8 +66,12 @@ inline auto operator<<(std::ostream& os, server_state state) -> std::ostream& {
 
 /// @brief Discriminant distinguishing normal state-machine entries from configuration entries.
 enum class entry_type : std::uint8_t {
-    normal = 0,        ///< Application command to be applied to the state machine.
-    configuration = 1  ///< Joint-consensus or final cluster-configuration record.
+    normal = 0,         ///< Application command to be applied to the state machine.
+    configuration = 1,  ///< Joint-consensus or final cluster-configuration record.
+    no_op = 2           ///< Leadership-change barrier entry (Raft §5.4.2); never applied
+                        ///< to the state machine, exists only to let a new leader commit
+                        ///< something in its own term so commit_index can advance past
+                        ///< entries inherited from previous terms.
 };
 
 /// @brief Concept for a log entry: carries term, index, command bytes, and entry type.
