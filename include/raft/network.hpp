@@ -97,6 +97,35 @@ concept network_server_with_cluster_leave = requires(
 };
 
 // ============================================================================
+// Optional RequestPreVote extension (`.kiro/specs/raft-pre-vote/`) — NOT
+// required by the base network concepts so existing transports
+// (simulator_network_*, tls_tcp_rpc_*) are unaffected until each one opts
+// in. node<Types>::check_election_timeout() checks
+// network_client_with_pre_vote<network_client_type> via if constexpr and
+// falls back to going straight to a real election (today's behavior,
+// byte-for-byte) for any Types bundle whose transport doesn't implement it.
+// ============================================================================
+
+// Satisfied by a network_client that can send RequestPreVote RPCs.
+template<typename C>
+concept network_client_with_pre_vote =
+    requires(C client, std::uint64_t target, const kythira::request_pre_vote_request<>& pvr,
+             std::chrono::milliseconds timeout) {
+        {
+            client.send_request_pre_vote(target, pvr, timeout)
+        } -> std::same_as<kythira::Future<kythira::request_pre_vote_response<>>>;
+    };
+
+// Satisfied by a network_server that can register a RequestPreVote handler.
+template<typename S>
+concept network_server_with_pre_vote = requires(
+    S server,
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        handler) {
+    { server.register_request_pre_vote_handler(handler) } -> std::same_as<void>;
+};
+
+// ============================================================================
 // Optional peer-to-peer catch-up extension (.kiro/specs/peer2peer-log-replication/,
 // Requirement 5.2) — NOT required by the base network concepts so existing
 // transports (simulator_network_*, tcp_rpc_*, tls_tcp_rpc_*) are unaffected

@@ -41,6 +41,32 @@ public:
         return json_to_bytes(boost::json::serialize(obj));
     }
 
+    // Serialize RequestPreVote Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    [[nodiscard]] auto serialize(
+        const request_pre_vote_request<NodeId, TermId, LogIndex>& req) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "request_pre_vote_request";
+        obj["term"] = req.term();
+        obj["candidate_id"] = req.candidate_id();
+        obj["last_log_index"] = req.last_log_index();
+        obj["last_log_term"] = req.last_log_term();
+
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
+    // Serialize RequestPreVote Response
+    template<typename TermId = std::uint64_t>
+    [[nodiscard]] auto serialize(const request_pre_vote_response<TermId>& resp) const -> Data {
+        boost::json::object obj;
+        obj["type"] = "request_pre_vote_response";
+        obj["term"] = resp.term();
+        obj["vote_granted"] = resp.vote_granted();
+
+        return json_to_bytes(boost::json::serialize(obj));
+    }
+
     // Serialize AppendEntries Request
     template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
              typename LogIndex = std::uint64_t, typename LogEntry = log_entry<TermId, LogIndex>>
@@ -155,6 +181,50 @@ public:
         }
 
         request_vote_response<TermId> resp;
+        resp._term = static_cast<TermId>(obj["term"].as_int64());
+        resp._vote_granted = obj["vote_granted"].as_bool();
+
+        return resp;
+    }
+
+    // Deserialize RequestPreVote Request
+    template<typename NodeId = std::uint64_t, typename TermId = std::uint64_t,
+             typename LogIndex = std::uint64_t>
+    [[nodiscard]] auto deserialize_request_pre_vote_request(const Data& data) const
+        -> request_pre_vote_request<NodeId, TermId, LogIndex> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "request_pre_vote_request") {
+            throw serialization_exception("Invalid message type for request_pre_vote_request");
+        }
+
+        request_pre_vote_request<NodeId, TermId, LogIndex> req;
+        req._term = static_cast<TermId>(obj["term"].as_int64());
+        req._last_log_index = static_cast<LogIndex>(obj["last_log_index"].as_int64());
+        req._last_log_term = static_cast<TermId>(obj["last_log_term"].as_int64());
+
+        if constexpr (std::same_as<NodeId, std::string>) {
+            req._candidate_id = std::string(obj["candidate_id"].as_string());
+        } else {
+            req._candidate_id = static_cast<NodeId>(obj["candidate_id"].as_int64());
+        }
+
+        return req;
+    }
+
+    // Deserialize RequestPreVote Response
+    template<typename TermId = std::uint64_t>
+    [[nodiscard]] auto deserialize_request_pre_vote_response(const Data& data) const
+        -> request_pre_vote_response<TermId> {
+        auto json_str = bytes_to_string(data);
+        auto obj = boost::json::parse(json_str).as_object();
+
+        if (obj["type"].as_string() != "request_pre_vote_response") {
+            throw serialization_exception("Invalid message type for request_pre_vote_response");
+        }
+
+        request_pre_vote_response<TermId> resp;
         resp._term = static_cast<TermId>(obj["term"].as_int64());
         resp._vote_granted = obj["vote_granted"].as_bool();
 
@@ -521,6 +591,10 @@ public:
             return deserialize_request_vote_request(data);
         } else if constexpr (std::same_as<T, request_vote_response<>>) {
             return deserialize_request_vote_response(data);
+        } else if constexpr (std::same_as<T, request_pre_vote_request<>>) {
+            return deserialize_request_pre_vote_request(data);
+        } else if constexpr (std::same_as<T, request_pre_vote_response<>>) {
+            return deserialize_request_pre_vote_response(data);
         } else if constexpr (std::same_as<T, append_entries_request<>>) {
             return deserialize_append_entries_request(data);
         } else if constexpr (std::same_as<T, append_entries_response<>>) {
