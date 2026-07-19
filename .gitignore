@@ -42,6 +42,10 @@ doc/html/
 doc/latex/
 doxygen-output/
 
+# Host-built binary staged for docker/chaos_node/Dockerfile
+# (.kiro/specs/chaos-node-host-build/) — not source, not committed.
+docker/chaos_node/dist/
+
 # OS files
 .DS_Store
 Thumbs.db
