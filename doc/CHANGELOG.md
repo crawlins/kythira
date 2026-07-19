@@ -5,6 +5,51 @@ current list of outstanding work, see [TODO.md](TODO.md).
 
 ### What Changed (July 19, 2026)
 
+- **Chased `chaos_node` scenario tests' `leader_crash_and_reelection`
+  timeout through a chain of four further real bugs, ending in a full
+  PreVote implementation and a Raft leadership-change liveness fix —
+  all 7 `docker_chaos` scenario tests now pass cleanly on real arm64
+  hardware.** Bounding `include/raft/tcp_rpc.hpp`'s `connect_to()`
+  (non-blocking `connect()` + `poll()`, since `SO_SNDTIMEO`/
+  `SO_RCVTIMEO` don't bound the `connect()` syscall itself on Linux)
+  and moving `tcp_rpc_client`'s RPC dispatch off a synchronous,
+  sequential path onto a private `folly::CPUThreadPoolExecutor` (both
+  mirrored in `tls_tcp_rpc.hpp`) let CI progress far enough to reveal a
+  real Raft protocol gap: a stale, partitioned-off node rejoining with
+  an ever-climbing term forced the live-majority leader to step down
+  repeatedly (the "disruptive server" problem, Ongaro's dissertation
+  §9.6, observed as term 8→13 thrashing in one run). Fixed by
+  implementing the full PreVote extension across
+  `include/raft/types.hpp`, `network.hpp`, `json_serializer.hpp`,
+  `tcp_rpc.hpp`, and `raft.hpp`, gated as a strictly optional
+  network-concept extension
+  (`network_client_with_pre_vote`/`network_server_with_pre_vote`,
+  following this codebase's existing `_with_cluster_join`-style
+  pattern) so transports that don't implement it — the in-memory
+  simulator, `tls_tcp_rpc` — keep today's behavior unchanged. Verified
+  on real arm64 hardware: term stayed flat at 2 throughout a scenario
+  that previously thrashed 8→13. That same verification run then
+  surfaced one more, final liveness bug: after a clean leadership
+  change, the new leader got stuck at its inherited `commit_index`
+  forever, because `advance_commit_index()` (`raft.hpp`) correctly
+  refuses to commit an entry directly unless it is from the leader's
+  own current term (Raft §5.4.2, a genuine safety requirement, not a
+  bug) — and a leader that never appends anything of its own never
+  satisfies that check. Fixed by having `become_leader()` append a
+  no-op barrier entry in its new term, using a new
+  `entry_type::no_op` discriminant (`types.hpp`) that
+  `apply_committed_entries()` skips the same way it already skips
+  `entry_type::configuration` entries, so the test state machine
+  (which throws on an empty command) is never touched. Final
+  verification (`workflow_dispatch` run 29693678147) shows all 7
+  `docker_chaos` scenario-test binaries — `smoke_test`,
+  `election_recovery_test`, `crash_recovery_test` (including
+  `leader_crash_and_reelection` itself), `network_degradation_test`,
+  `az_partition_test`, `persistence_faults_test`, and
+  `safety_assertions_test` — passing cleanly, with
+  `az_partition_test`'s own log showing all 3 nodes converging to the
+  same `commit_index` after catchup where one had previously been
+  stuck forever.
 - **Fixed `docker/chaos_node/Dockerfile`'s long-standing inability to
   build `chaos_node` at all, via `.kiro/specs/chaos-node-host-build/`
   — plus two more genuine, previously-hidden bugs found and fixed

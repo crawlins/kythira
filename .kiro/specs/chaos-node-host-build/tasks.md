@@ -1,13 +1,15 @@
 # Implementation Plan — Chaos Node Host Build
 
-## Status: Core fix complete and verified (5/5 tasks) — full scenario-suite verification partial, one new finding filed separately
+## Status: Core fix complete and verified (5/5 tasks) — full scenario-suite verification COMPLETE, all 7 scenario tests pass
 
-**Last Updated**: July 19, 2026 (Tasks 1-5 all done; Task 5's real
-`workflow_dispatch` verification confirms the actual "Dockerfile can't
-build chaos_node" bug is fixed, plus 2 more genuine, previously-hidden
-bugs found and fixed along the way — see Task 5's entry below for the
-full writeup, including one further, deeper finding that is not yet
-fixed.)
+**Last Updated**: July 19, 2026 (Tasks 1-5 all done. Task 5's real
+`workflow_dispatch` verification confirms the "Dockerfile can't build
+chaos_node" bug is fixed. Getting a real image to build and start for
+the first time surfaced a chain of further, genuine, previously-hidden
+bugs, all now root-caused and fixed — see Task 5's entry below for the
+full writeup. The final `workflow_dispatch` run (29693678147) shows
+all 7 `docker_chaos` scenario-test binaries passing cleanly, including
+the three that were never reachable before this session.)
 
 ## Overview
 
@@ -180,7 +182,70 @@ manual dispatch that surfaced the original bug.
       stops at the first failure) and remain unverified. Filed as a
       new `doc/TODO.md` Minor Enhancements entry rather than silently
       left off this list or claimed fixed.
-  - _Requirements: 6.1 (partially met — see above), 6.2_
+  - **Follow-up (same session)**: chasing the `leader_crash_and_reelection`
+    timeout down turned into a further chain of genuine bugs, each
+    found only because the previous fix let real CI runs get one step
+    further than before:
+    - `include/raft/tcp_rpc.hpp`'s `connect_to()` confirmed not to
+      bound `connect()`'s own blocking time on Linux (`SO_SNDTIMEO`/
+      `SO_RCVTIMEO` don't apply to `connect()`) — fixed with a
+      non-blocking `connect()` + `poll()` pair that actually enforces
+      the timeout; same fix mirrored in `tls_tcp_rpc.hpp`.
+    - `tcp_rpc_client`/`client_impl`'s synchronous, sequential RPC
+      dispatch (one call blocks the next) replaced with dispatch via a
+      private `folly::CPUThreadPoolExecutor` (not
+      `folly::getGlobalCPUExecutor()`, which requires `folly::init()`
+      and crashed plain unit tests).
+    - A split-brain-detection exception in `harness.hpp` was being
+      caught and rethrown by the same generic `catch
+      (std::runtime_error&)` used for ordinary retryable failures;
+      given its own `split_brain_detected` type so it always
+      propagates.
+    - `az_partition_test.cpp`'s `majority_partition_continues_progress`
+      had both a too-tight timing budget and an assertion checking
+      `is_leader()` instead of actually submitting a command through
+      the (supposed) minority — fixed to check `submit_command()`
+      failure directly, which is what the test actually intends to
+      prove.
+    - Fixing the timing let a real, previously-masked Raft protocol
+      gap surface: a stale, partitioned-off node was rejoining with an
+      ever-climbing term (observed 8→13 in one run) via `RequestVote`,
+      forcing the real leader to step down repeatedly even though it
+      had a live majority — the classic "disruptive server" problem
+      (Ongaro's dissertation §9.6). Fixed by implementing the full
+      PreVote extension across `types.hpp`/`network.hpp`/
+      `json_serializer.hpp`/`tcp_rpc.hpp`/`raft.hpp`, gated as a
+      strictly optional network-concept extension
+      (`network_client_with_pre_vote`/`network_server_with_pre_vote`,
+      following this codebase's existing `_with_cluster_join`-style
+      pattern) so transports that don't implement it fall back to
+      today's behavior unchanged. Verified via a real arm64 run: term
+      stayed flat at 2 throughout a scenario that previously thrashed
+      8→13.
+    - PreVote's own verification run then surfaced one more, final
+      liveness bug: after a clean leadership change, the new leader
+      got permanently stuck at its inherited `commit_index` and never
+      advanced, because `advance_commit_index()` correctly refuses to
+      commit an entry directly unless it's from the leader's own
+      current term (Raft §5.4.2) — and a leader that never appends
+      anything of its own never satisfies that check. Fixed by having
+      `become_leader()` append a no-op barrier entry in its new term
+      (new `entry_type::no_op` discriminant, skipped by
+      `apply_committed_entries()` the same way `entry_type::configuration`
+      already is), which the commit-index logic can commit directly
+      and which then pulls every inherited entry along with it.
+    - **Final result**: `workflow_dispatch` run 29693678147 shows all
+      7 `docker_chaos` scenario-test binaries — including
+      `az_partition_test` and `safety_assertions_test` — passing
+      cleanly (`*** No errors detected`), with `az_partition_test`'s
+      own log showing all 3 nodes converging to the same
+      `commit_index` after catchup. `docker-poco-discovery-tests`,
+      `docker-dns-discovery-tests`, and `docker-otlp-collector-tests`
+      failures in that same run are unrelated pre-existing issues
+      (Poco DNSSD arm64 build gap, the BIND9 DELETE-propagation
+      timing flake, and an OTel Collector container health-check
+      timeout) — not caused by, or fixed by, this spec's work.
+  - _Requirements: 6.1 (fully met), 6.2_
 
 ## Notes
 
