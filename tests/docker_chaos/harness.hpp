@@ -340,7 +340,18 @@ public:
         while (std::chrono::steady_clock::now() < deadline) {
             for (auto& [id, n] : _nodes) {
                 if (n.is_leader()) {
-                    return n;
+                    // A node can win an election and then immediately lose
+                    // leadership again — most visibly right after a cold
+                    // cluster start, where every node's election timer fires
+                    // close together (ELECTION_TIMEOUT_MIN/MAX_MS is only
+                    // 150-300ms in docker-compose.yml). Re-check after
+                    // roughly one heartbeat interval so callers get a node
+                    // that is actually still leader by the time they act on
+                    // it, not one caught mid-election-churn.
+                    std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                    if (n.is_leader()) {
+                        return n;
+                    }
                 }
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
