@@ -28,24 +28,44 @@ BOOST_FIXTURE_TEST_CASE(tc_netem_packet_loss, ChaosFixture, *boost::unit_test::t
     follower->apply_tc_netem("30%");
     std::this_thread::sleep_for(100ms);
 
+    // Diagnostics: this test has failed on a real arm64 runner with
+    // "cluster commit_index did not reach 10 after netem cleared", and
+    // none of the 10 submit_command() responses below were being checked
+    // — if even one silently failed (e.g. a transient "not_leader" or
+    // chaos_node's 5s internal commit-wait timing out), commit_index would
+    // permanently fall short of 10 with no visibility into why.
+    int successes = 0;
     for (int i = 0; i < 10; ++i) {
-        leader.submit_command("losskey" + std::to_string(i), "lossval" + std::to_string(i));
+        auto resp =
+            leader.submit_command("losskey" + std::to_string(i), "lossval" + std::to_string(i));
+        bool ok = resp.contains("success");
+        if (ok) {
+            ++successes;
+        } else {
+            BOOST_TEST_MESSAGE("submit_command " + std::to_string(i) +
+                               " failed: " + boost::json::serialize(resp));
+        }
     }
+    BOOST_TEST_MESSAGE(std::to_string(successes) + "/10 submit_command calls reported success");
 
     follower->clear_tc_netem();
 
     auto deadline = std::chrono::steady_clock::now() + k_heartbeat * 10 + 5s;
     bool all_committed = false;
+    std::int64_t last_seen_commit_index = -1;
     while (std::chrono::steady_clock::now() < deadline) {
         try {
-            if (leader.status()["commit_index"].as_int64() >= 10) {
+            last_seen_commit_index = leader.status()["commit_index"].as_int64();
+            if (last_seen_commit_index >= 10) {
                 all_committed = true;
                 break;
             }
-        } catch (...) {
+        } catch (const std::exception& e) {
+            BOOST_TEST_MESSAGE(std::string("leader.status() failed: ") + e.what());
         }
         std::this_thread::sleep_for(200ms);
     }
+    BOOST_TEST_MESSAGE("final commit_index seen: " + std::to_string(last_seen_commit_index));
     BOOST_TEST(all_committed, "cluster commit_index did not reach 10 after netem cleared");
     cluster.assert_no_split_brain();
 }
