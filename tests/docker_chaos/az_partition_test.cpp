@@ -104,10 +104,33 @@ BOOST_FIXTURE_TEST_CASE(majority_partition_continues_progress, ChaosFixture,
 
     std::this_thread::sleep_for(k_election_max * 2);
 
-    // n3 must catch up.
+    // n3 must catch up. Diagnostics: two consecutive real arm64 runs both
+    // failed here with "node 3 did not catch up after partition healed"
+    // despite a generous 10s budget — logging n1/n2/n3's
+    // role/term/commit_index each attempt tests whether n3's term climbed
+    // disruptively high while isolated (repeated failed candidacies,
+    // classic Raft "disruptive server" scenario — this implementation has
+    // no PreVote phase, confirmed by grep) and is now preventing the
+    // cluster from stabilizing long enough to actually replicate to it.
     auto deadline = std::chrono::steady_clock::now() + 10s;
     bool caught_up = false;
+    int catchup_attempt = 0;
     while (std::chrono::steady_clock::now() < deadline) {
+        for (auto* n : {&n1, &n2, &n3}) {
+            try {
+                auto s = n->status();
+                std::string role(s["role"].as_string());
+                BOOST_TEST_MESSAGE("  catchup attempt " + std::to_string(catchup_attempt) +
+                                   " node " + std::to_string(n->id()) + ": role=" + role +
+                                   " term=" + std::to_string(s["term"].as_int64()) +
+                                   " commit_index=" + std::to_string(s["commit_index"].as_int64()));
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE("  catchup attempt " + std::to_string(catchup_attempt) +
+                                   " node " + std::to_string(n->id()) + ": unreachable (" +
+                                   e.what() + ")");
+            }
+        }
+        ++catchup_attempt;
         try {
             if (n3.status()["commit_index"].as_int64() >= committed) {
                 caught_up = true;
