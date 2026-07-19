@@ -34,9 +34,25 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
     std::this_thread::sleep_for(k_election_max * 2);
 
     // Phase 2: commit 5 commands on the majority (n1 or n2).
+    // Diagnostics: this test has failed on a real arm64 runner with
+    // "majority partition must have a leader for phase 2" despite a
+    // generous 5s budget (already well past what az_partition_test needed
+    // for an ordinary split vote) — logging every node's role each attempt
+    // gives real evidence instead of guessing at a second cause blind.
     ChaosNode* maj_leader = nullptr;
     auto deadline = std::chrono::steady_clock::now() + 5s;
+    int attempt = 0;
     while (std::chrono::steady_clock::now() < deadline) {
+        for (auto* n : {&n1, &n2, &n3}) {
+            std::string role = "unreachable";
+            try {
+                role = n->status()["role"].as_string();
+            } catch (const std::exception& e) {
+                role = std::string("unreachable (") + e.what() + ")";
+            }
+            BOOST_TEST_MESSAGE("  attempt " + std::to_string(attempt) + " node " +
+                               std::to_string(n->id()) + ": " + role);
+        }
         for (auto* n : {&n1, &n2}) {
             if (n->is_leader()) {
                 maj_leader = n;
@@ -46,6 +62,7 @@ BOOST_FIXTURE_TEST_CASE(no_log_divergence_under_combined_faults, ChaosFixture,
         if (maj_leader != nullptr) {
             break;
         }
+        ++attempt;
         std::this_thread::sleep_for(200ms);
     }
     BOOST_REQUIRE_MESSAGE(maj_leader != nullptr,
