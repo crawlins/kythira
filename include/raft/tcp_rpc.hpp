@@ -6,6 +6,8 @@
 #include <raft/network.hpp>
 #include <raft/types.hpp>
 
+#include <folly/executors/CPUThreadPoolExecutor.h>
+
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -16,6 +18,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -178,14 +181,41 @@ private:
 // ── tcp_rpc_client ────────────────────────────────────────────────────────────
 //
 // Satisfies kythira::network_client.
-// Makes one blocking TCP connection per RPC call; wraps the result in a
-// pre-resolved kythira::Future.
+// Makes one blocking TCP connection per RPC call, dispatched onto a small
+// private thread pool so the calling thread gets a genuinely pending
+// kythira::Future back immediately — callers that broadcast to multiple
+// peers in a loop (node<Types>::start_election(),
+// node<Types>::replicate_to_followers()) get real concurrent dispatch
+// instead of stalling on peer N+1 until peer N's connect()-through-recv()
+// (and its own retry_policy's up-to-3 attempts) fully finishes. This
+// matters most for a peer that has gone away entirely (e.g. a killed
+// process/container): SO_SNDTIMEO/SO_RCVTIMEO (set in connect_to()) do not
+// bound the blocking connect() syscall itself on Linux, so reaching a dead
+// peer can take far longer than the configured RPC timeout — with the old
+// synchronous-inline call(), that alone was enough to blow through an
+// election's whole timeout budget before a live peer was ever contacted.
+//
+// Deliberately a private, directly-constructed folly::CPUThreadPoolExecutor
+// rather than folly::getGlobalCPUExecutor(): the global CPU executor is a
+// registration-gated Folly singleton that aborts ("requested before
+// registrationComplete()") unless folly::init() ran first, which only
+// chaos_node's main.cpp (and other real binaries) does — every plain
+// Boost.Test unit test that exercises tcp_rpc_client directly (e.g.
+// tcp_rpc_unit_test) does not, and would crash on the first RPC.
 
 class tcp_rpc_client {
 public:
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
 
-    tcp_rpc_client() = default;
+    // RPC dispatch is network-I/O-bound, not CPU-bound, so a small fixed
+    // pool is deliberately plenty even for clusters larger than this
+    // project's typical 3-7 node scenario tests — it only needs to cover
+    // "number of peers contacted in one broadcast round" worth of
+    // concurrently in-flight blocking connect()/send()/recv() sequences.
+    static constexpr std::size_t k_rpc_thread_pool_size = 8;
+
+    tcp_rpc_client()
+        : _executor(std::make_shared<folly::CPUThreadPoolExecutor>(k_rpc_thread_pool_size)) {}
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
@@ -227,42 +257,66 @@ private:
                 network_exception("tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
 
-        int fd = tcp_detail::connect_to(peer->first, peer->second, timeout);
-        if (fd < 0) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
-                network_exception("tcp_rpc_client: connect failed to " + peer->first + ":" +
-                                  std::to_string(peer->second))));
-        }
+        // Dispatched onto the global CPU executor rather than run inline —
+        // see the class comment above for why: this is what lets a caller
+        // broadcasting to multiple peers in a loop move on to the next peer
+        // immediately instead of blocking on this one's full
+        // connect()-through-recv() sequence.
+        Promise<Resp> promise;
+        auto future = promise.getFuture();
 
-        struct Guard {
-            int fd;
-            ~Guard() {
-                if (fd >= 0) {
-                    ::close(fd);
+        // Captured by value: `payload` is a reference to the caller's
+        // temporary (e.g. _ser.serialize(req)), which does not outlive this
+        // function; copying now, before dispatch, is required for the
+        // background task to see valid data. `host`/`port` are similarly
+        // copied out of `peer` (a pointer into _peers' storage) up front.
+        std::string host = peer->first;
+        std::uint16_t port = peer->second;
+
+        _executor->add(
+            [promise = std::move(promise), host, port, payload, timeout, deser]() mutable {
+                int fd = tcp_detail::connect_to(host, port, timeout);
+                if (fd < 0) {
+                    promise.setException(std::make_exception_ptr(network_exception(
+                        "tcp_rpc_client: connect failed to " + host + ":" + std::to_string(port))));
+                    return;
                 }
-            }
-        } g{fd};
 
-        if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
-                std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
-        }
+                struct Guard {
+                    int fd;
+                    ~Guard() {
+                        if (fd >= 0) {
+                            ::close(fd);
+                        }
+                    }
+                } g{fd};
 
-        auto resp = tcp_detail::frame_recv(fd);
-        if (!resp) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
-                std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
-        }
+                if (!tcp_detail::frame_send(fd, tcp_detail::bytes_to_str(payload))) {
+                    promise.setException(
+                        std::make_exception_ptr(network_exception("tcp_rpc_client: send failed")));
+                    return;
+                }
 
-        try {
-            return FutureFactory::makeReadyFuture(deser(tcp_detail::str_to_bytes(*resp)));
-        } catch (...) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::current_exception());
-        }
+                auto resp = tcp_detail::frame_recv(fd);
+                if (!resp) {
+                    promise.setException(
+                        std::make_exception_ptr(network_exception("tcp_rpc_client: recv failed")));
+                    return;
+                }
+
+                try {
+                    promise.setValue(deser(tcp_detail::str_to_bytes(*resp)));
+                } catch (...) {
+                    promise.setException(std::current_exception());
+                }
+            });
+
+        return future;
     }
 
     tcp_detail::peer_registry<std::uint64_t> _peers;
     serializer_t _ser;
+    std::shared_ptr<folly::CPUThreadPoolExecutor> _executor;
 };
 
 // ── tcp_rpc_server ────────────────────────────────────────────────────────────
