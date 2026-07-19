@@ -38,8 +38,17 @@ BOOST_FIXTURE_TEST_CASE(majority_partition_continues_progress, ChaosFixture,
     // majority never re-elects, elects but this loop somehow misses it, or
     // something else (e.g. partition_from() itself not taking effect in
     // time) is going on.
+    // k_election_max * 6, not * 2: a real run showed n1 and n2 both
+    // becoming candidates in sequence without either winning within the
+    // shorter window — an ordinary Raft split vote (both self-vote in
+    // their own term, neither can grant the other a vote in that same
+    // term, so it takes a second full-timeout round with fresh randomized
+    // backoff to resolve) — not a bug. crash_recovery_test.cpp and this
+    // file's own symmetric_full_partition_no_leader already budget
+    // k_election_max * 6 for the equivalent single-election-after-disruption
+    // wait; this loop just hadn't matched that.
     ChaosNode* majority_leader = nullptr;
-    auto leader_deadline = std::chrono::steady_clock::now() + k_election_max * 2;
+    auto leader_deadline = std::chrono::steady_clock::now() + k_election_max * 6;
     int attempt = 0;
     while (std::chrono::steady_clock::now() < leader_deadline) {
         for (auto* n : {&n1, &n2, &n3}) {
