@@ -21,6 +21,18 @@ namespace docker_chaos {
 
 using namespace std::chrono_literals;
 
+// Dedicated type for ChaosCluster::assert_no_split_brain()'s own detection
+// throw, distinct from the plain std::runtime_error an unreachable node's
+// status()/parse_status() (harness.hpp) throws — assert_no_split_brain()
+// needs to propagate the former (a real safety violation) while swallowing
+// the latter (an expected, benign "node is deliberately dead right now",
+// e.g. right after a chaos test's own kill()/stop() call). Both being
+// plain std::runtime_error made that impossible to distinguish by type
+// alone.
+struct split_brain_detected : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 // ── Port layout — mirrors docker-compose.yml ──────────────────────────────────
 
 struct NodePorts {
@@ -367,17 +379,25 @@ public:
                 if (s["role"].as_string() == "leader") {
                     std::int64_t term = s["term"].as_int64();
                     if (term_leaders.contains(term) != 0u) {
-                        throw std::runtime_error(
+                        throw split_brain_detected(
                             "split brain: nodes " + std::to_string(term_leaders[term]) + " and " +
                             std::to_string(id) + " both claim leadership in term " +
                             std::to_string(term));
                     }
                     term_leaders[term] = id;
                 }
-            } catch (const std::runtime_error&) {
+            } catch (const split_brain_detected&) {
                 throw;
             } catch (...) {
-                // Node temporarily unreachable — not a safety violation.
+                // Node temporarily unreachable (e.g. deliberately killed by
+                // the calling test moments earlier) — not a safety
+                // violation. Was `catch (const std::runtime_error&) {
+                // throw; }`, which mis-propagated status()/parse_status()'s
+                // own plain std::runtime_error("GET /status returned HTTP
+                // 0") for an unreachable node as if it were this function's
+                // split-brain detection — the two throws were
+                // indistinguishable by type alone before
+                // split_brain_detected existed.
             }
         }
     }
