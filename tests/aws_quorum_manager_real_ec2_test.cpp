@@ -1223,11 +1223,26 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteInternetGateway(del);
         }
 
-        // m: delete VPC.
+        // m: delete VPC. Retried with a bounded poll: AWS's own dependency
+        // resolution after NAT gateway/ENI teardown (step f above) can lag
+        // well past when DescribeNatGateways first reports "deleted" — a
+        // single fire-and-forget DeleteVpc call was observed failing with
+        // DependencyViolation minutes after every visible dependency
+        // (subnets, route tables, security groups, IGW) was already gone,
+        // leaving an empty VPC shell orphaned with nothing left inside it
+        // to explain the failure. Several real leaked VPCs found and
+        // manually cleaned up during .kiro/specs/ci-real-cloud-tests/
+        // Task 12's real-AWS verification traced back to exactly this gap.
         if (!vpc_id.empty()) {
-            Aws::EC2::Model::DeleteVpcRequest d;
-            d.SetVpcId(vpc_id);
-            ec2->DeleteVpc(d);
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};
+            while (std::chrono::steady_clock::now() < deadline) {
+                Aws::EC2::Model::DeleteVpcRequest d;
+                d.SetVpcId(vpc_id);
+                if (ec2->DeleteVpc(d).IsSuccess()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{15});
+            }
         }
 
         // Finalise all billing timers, emit per-test cost, and record in global summary.
