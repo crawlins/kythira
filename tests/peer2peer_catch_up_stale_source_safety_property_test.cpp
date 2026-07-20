@@ -148,16 +148,6 @@ kythira::raft_configuration make_fast_config() {
     return cfg;
 }
 
-// Never elects on its own within the test window — used for nodes 4 and 5
-// so node 3 is deterministically the one to campaign for the replacement
-// election, rather than racing three simultaneous candidates.
-kythira::raft_configuration make_dormant_config() {
-    kythira::raft_configuration cfg = make_fast_config();
-    cfg._election_timeout_min = std::chrono::minutes{10};
-    cfg._election_timeout_max = std::chrono::minutes{10} + std::chrono::milliseconds{1};
-    return cfg;
-}
-
 }  // namespace
 
 BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
@@ -183,7 +173,6 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     }
 
     auto cfg = make_fast_config();
-    auto cfg_dormant = make_dormant_config();
 
     auto make_node = [&](std::uint64_t id, auto net, const kythira::raft_configuration& c) {
         return test_node{id,
@@ -202,8 +191,18 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     auto node1 = make_node(1, net1, cfg);
     auto node2 = make_node(2, net2, cfg);
     auto node3 = make_node(3, net3, cfg);
-    auto node4 = make_node(4, net4, cfg_dormant);
-    auto node5 = make_node(5, net5, cfg_dormant);
+    // node4/node5 never have check_election_timeout() called on them
+    // anywhere in this test, so they can never spontaneously campaign
+    // regardless of configured timeout — an artificially long "dormant"
+    // election_timeout was previously used here defensively, but that same
+    // value also governs handle_request_pre_vote()'s leader-stickiness
+    // window (include/raft/raft.hpp), and an effectively-infinite one meant
+    // node4/node5 could never grant node3's later, legitimate pre-vote
+    // either, once PreVote reached this transport. Plain cfg avoids the
+    // conflation entirely since nothing here ever exercises the "dormant"
+    // behavior it existed for.
+    auto node4 = make_node(4, net4, cfg);
+    auto node5 = make_node(5, net5, cfg);
 
     for (auto* n : {&node1, &node2, &node3, &node4, &node5}) {
         n->set_cluster_configuration({1, 2, 3, 4, 5});
