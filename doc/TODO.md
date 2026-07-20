@@ -58,7 +58,6 @@ unambiguous at a glance.
 | Spec | Status |
 |------|-------|
 | [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
-| [`ccache-adoption`](../.kiro/specs/ccache-adoption/) | 6/7 tasks — CMake auto-detection, isolation check, docs, and all three CI jobs' cache wiring implemented and merged July 15, 2026 (PR #52); Task 7 (recording real Build-step timing from two post-merge CI runs to confirm the measured ~59% speedup actually materializes, not just "looks wired up") never picked up — `tasks.md` itself was stale until this pass, showing 0/7 despite the code being done |
 
 ---
 
