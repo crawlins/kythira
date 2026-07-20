@@ -3,6 +3,36 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 20, 2026)
+
+- **Audited `.kiro/specs/ccache-adoption/tasks.md` against the actual
+  codebase (it claimed 0/7 tasks done when 6/7 were implemented and
+  merged 5 days earlier via PR #52), then finished the one genuinely
+  outstanding task — and that task's own real-world re-measurement
+  caught a live bug: ccache had been providing zero benefit on every
+  CI run since July 15.** Task 7 exists specifically to catch the
+  failure mode where caching "looks wired up" (correct key scheme,
+  correct step ordering) but never actually restores or saves
+  anything — and it did exactly that. Run 1 (PR #79) showed a 35m32s
+  Build step despite `ccache: enabled` at configure time, with
+  `Restore ccache` missing every fallback key and `Save ccache` failing
+  with `Path Validation Error: ... do(es) not exist`. Root cause:
+  ccache ≥4.0 changed its default cache directory from `~/.ccache` to
+  the XDG Base Directory location (`~/.cache/ccache`), which the
+  original spec's design (`~/.ccache` assumed as ccache's own default,
+  true for 3.x, not for the 4.9.1 this CI installs) never accounted
+  for — every restore/save step was watching a directory ccache never
+  wrote to. Fixed by setting `CCACHE_DIR: /home/runner/.ccache`
+  explicitly at the job level in `ci.yml` (`build-and-test`,
+  `coverage`) and `real-cloud-tests.yml` (`aws`), and correcting the
+  same wrong assumption in `DEPENDENCIES.md`. Verified end-to-end
+  across three real CI runs on the same PR: Run 2 (post-fix) showed
+  `Save ccache` succeeding for the first time (23m16s, still cold —
+  establishing the first valid entry), and Run 3 restored that exact
+  entry via the `restore-keys` prefix fallback and completed in
+  14m18s — the first run to demonstrate a genuine warm-cache speedup
+  from this mechanism in CI, closing out `ccache-adoption` at 7/7.
+
 ### What Changed (July 19, 2026)
 
 - **Chased `chaos_node` scenario tests' `leader_crash_and_reelection`

@@ -308,12 +308,24 @@ Run 2 confirmed the fix — Run 3 (this commit) is the final re-measurement.
     NOT yet demonstrate the actual warm-cache speedup — it only
     establishes the first valid entry under the corrected path. A third
     push is needed to restore from what Run 2 just saved.
-  - **Run 3** (same PR, this tasks.md-only follow-up commit, pushed to
-    re-trigger CI): expected to hit `Cache not found for input keys` on
-    the exact `.../79/merge-<new-run-id>` key but restore from the
-    `ccache-Linux-X64-clang++-18-79/merge-` prefix fallback (Run 2's key
-    shares that prefix), giving the first genuine warm-cache Build-step
-    timing. See below for the actual result once available.
+  - **Run 3** (same PR, commit `4e5e42f`, run 29775028383, `clang++-18`/x64
+    leg, job 88462239953): the genuine warm-cache confirmation. `Restore
+    ccache` missed the exact key (`.../79/merge-29775028383`) but hit the
+    `ccache-Linux-X64-clang++-18-79/merge-` prefix fallback, restoring
+    `Cache restored from key: ccache-Linux-X64-clang++-18-79/merge-29772789404`
+    — Run 2's own saved entry (~46MB) — proving the fallback chain works
+    end-to-end, not just the exact-match path. Build step took **14m18s**
+    (20:11:28–20:25:46 UTC), down from Run 2's 23m16s and Run 1's 35m32s,
+    and comfortably beating PR #49's original 29m07s *cold* baseline —
+    the first run to actually demonstrate a real speedup from this
+    mechanism in CI. `Save ccache` succeeded again afterward (new key
+    `.../79/merge-29775028383`, `if: always()` keeping the chain going
+    for the next run). This is a single-source-tree, mostly-unchanged
+    incremental rebuild rather than PR #49's from-scratch benchmark, so
+    the two numbers aren't directly comparable 1:1 — but the qualitative
+    result Requirement 7 asks for (does the CI-wired mechanism actually
+    restore and speed up a real run, not just look wired up) is now
+    conclusively yes, resolving exactly the failure mode Run 1 caught.
   - _Requirements: 7.1, 7.2, 7.3_
 
 ## Notes
