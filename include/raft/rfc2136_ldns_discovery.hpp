@@ -162,19 +162,22 @@ private:
         ldns_rr_set_owner(rr.get(), ldns_rdf_clone(owner_rdf.get()));
         ldns_rr_set_ttl(rr.get(), is_delete ? 0 : _cfg.ttl);
         ldns_rr_set_type(rr.get(), rr_type);
-        // RFC 2136 §2.5.2 "Delete An RRset": CLASS must be ANY, with TTL 0
-        // and empty RDATA (the is_delete branch below never pushes RDATA) —
-        // ldns_rr_new_frm_type() otherwise defaults to CLASS IN, which is
-        // correct for an add but makes a delete request malformed (class
-        // IN + empty RDATA + TTL 0 doesn't match any of RFC 2136's three
-        // valid update-record shapes). A compliant server, e.g. BIND9,
-        // correctly rejects that with a non-NOERROR rcode — previously
-        // silently swallowed by this class's destructor, so the failure was
-        // both real and completely invisible until deregistration logging
-        // was added.
-        ldns_rr_set_class(rr.get(), is_delete ? LDNS_RR_CLASS_ANY : LDNS_RR_CLASS_IN);
+        // RFC 2136 §2.5.4 "Delete An RR From An RRset": CLASS must be NONE,
+        // TTL 0, with the RDATA of the exact RR to remove — NOT §2.5.2
+        // "Delete An RRset" (CLASS ANY, empty RDATA), which deletes every
+        // record at that owner name regardless of value. shared_name is one
+        // DNS name shared by every node in the cluster (a round-robin-style
+        // RRset with one A/AAAA record per node), so an RRset-wide delete
+        // would silently wipe out every *other* node's registration too,
+        // not just this node's own record, the first time any single node
+        // deregistered — confirmed on real arm64 CI: after this exact bug
+        // (CLASS ANY) briefly replaced the original one (missing CLASS
+        // entirely, which defaulted to IN and made BIND9 reject the delete
+        // outright), the survivors' peer count went from a stuck "2" to an
+        // immediate "0", not the correct "1".
+        ldns_rr_set_class(rr.get(), is_delete ? LDNS_RR_CLASS_NONE : LDNS_RR_CLASS_IN);
 
-        if (!is_delete) {
+        {
             ldns_rdf* addr_rdf = nullptr;
             ldns_status st = is_ipv4 ? ldns_str2rdf_a(&addr_rdf, addr.c_str())
                                      : ldns_str2rdf_aaaa(&addr_rdf, addr.c_str());
