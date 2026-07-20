@@ -81,6 +81,23 @@ static bool wait_all_healthy(std::chrono::milliseconds timeout) {
     return false;
 }
 
+// Polls peer_count() until it reaches `expected` or `timeout` elapses,
+// returning the last-observed count either way (mirrors wait_all_healthy()'s
+// poll-with-timeout shape) — a fixed sleep before a single check is
+// inherently racy against BIND9's own DDNS DELETE-UPDATE processing time,
+// which varies with runner load (observed as a real, non-reproducible-on-
+// x86_64 assertion failure on arm64 CI).
+static std::size_t wait_peer_count(const DnsNode& n, std::size_t expected,
+                                   std::chrono::milliseconds timeout, int browse_ms = 3000) {
+    auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::size_t last = peer_count(n, browse_ms);
+    while (last != expected && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(500ms);
+        last = peer_count(n, browse_ms);
+    }
+    return last;
+}
+
 // ── Fixture ───────────────────────────────────────────────────────────────────
 
 struct DnsFixture {
@@ -148,12 +165,12 @@ BOOST_FIXTURE_TEST_CASE(stopped_node_absent_after_deregister, DnsFixture,
     docker_chaos::os::checked_exec(docker_chaos::os::real_exec,
                                    docker_chaos::os::docker_stop_cmd(k_nodes[0].container, 15));
 
-    // Give BIND9 a moment to process the DELETE and the surviving nodes to
-    // pick up the change on their next /peers call.
-    std::this_thread::sleep_for(3s);
-
+    // Poll rather than sleep-then-check-once: BIND9's own DDNS DELETE-UPDATE
+    // processing time varies with runner load, and a fixed wait long enough
+    // for a fast host can still be too short on a slower one (observed as a
+    // real, intermittent assertion failure on arm64 CI — see doc/TODO.md).
     for (const auto& survivor : {k_nodes[1], k_nodes[2]}) {
-        std::size_t count = peer_count(survivor, 3000);
+        std::size_t count = wait_peer_count(survivor, 1u, 20s, 3000);
         BOOST_TEST(count == 1u,
                    survivor.id + " must see 1 peer after stop; saw " + std::to_string(count));
     }
