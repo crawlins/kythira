@@ -449,6 +449,38 @@ as the Cloud Provider Support requirement above.
   fail. Confirmed on real arm64 hardware: `docker-chaos-image` now
   builds and tags `kythira-chaos-node:dev` successfully. Also unblocks
   `docker-otlp-collector-tests`, which reuses this image.
+- [x] **`poco_peer_discovery_unit_test` / `poco_discovery_node` couldn't
+  actually build** — `poco_peer_discovery_unit_test` showed as
+  `***Not Run` in `ctest` rather than a real pass/fail, which turned
+  out to be masking two stacked bugs. First, its object file and
+  executable were stale 0-byte artifacts left by an interrupted build
+  days earlier, silently never rebuilt since (Ninja's mtime tracking
+  never noticed). Forcing a genuinely clean rebuild surfaced the real
+  compile error: a malformed computed `#include` —
+  `boost/mpl/aux_/preprocessed/(gcc/or.hpp)`, literal parentheses
+  included. Root cause: `POCO_DNSSD_INCLUDE_DIRS` pointed at the
+  *source tree's* `vcpkg_installed/.../include` (where Poco/DNSSD's
+  manually-built headers actually live, since DNSSD isn't a real vcpkg
+  port), which also contains a full, independently-extracted second
+  copy of every other vcpkg package — including an older, unpatched
+  `boost/mpl`/`boost/config` whose parenthesized computed-include
+  macros (`#define BOOST_SLIST_HEADER (<ext/slist>)` etc.) don't
+  survive `BOOST_PP_STRINGIZE` on Clang. The build tree's own
+  `vcpkg_installed/` (populated fresh per build) has the patched,
+  working version of the same files; exposing the source tree's copy
+  via an extra `-I` let the compiler pick up the broken one instead.
+  `cmd/poco_discovery_node/main.cpp` — the actual production binary,
+  not just this test — had the identical latent gap (never added a
+  Poco DNSSD include path at all, per an incorrect comment claiming
+  vcpkg's toolchain covered it automatically) and could not compile on
+  `main` either, masked the same stale-artifact way. Fixed by pointing
+  `POCO_DNSSD_INCLUDE_DIRS` at a build-tree shim directory containing
+  only a symlink to the `Poco/DNSSD` subtree specifically, never
+  exposing the rest of that directory (boost included) to any
+  consumer's search path. Verified: both targets build and link from a
+  genuinely clean rebuild; the test's 32 cases pass; full local `ctest`
+  (mirroring CI's exact filter) went from 379/380 to a clean 380/380.
+  PR #76.
 - [ ] **PreVote not yet extended to `tls_tcp_rpc_*` or the in-memory
   simulator** — `network_client_with_pre_vote`/
   `network_server_with_pre_vote` (`include/raft/network.hpp`) are
