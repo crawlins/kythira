@@ -8,6 +8,7 @@
 #include <raft/aws_ec2_quorum_manager.hpp>
 
 #include <aws/core/Aws.h>
+#include <aws/core/utils/UUID.h>
 #include <aws/ec2/EC2Client.h>
 #include <aws/ec2/model/AllocateAddressRequest.h>
 #include <aws/ec2/model/DescribeImagesRequest.h>
@@ -481,9 +482,19 @@ struct RealEc2Fixture : signal_cleanup_target {
             spot_price_bastion = ec2_hourly_rate(bastion_instance_type);
         }
 
-        // Deterministic UUID from test case ID.
-        const auto& tc = boost::unit_test::framework::current_test_case();
-        uuid = "kyt-" + std::to_string(tc.p_id);
+        // A test-case-ID-derived value is NOT sufficient here:
+        // boost::unit_test::framework::current_test_case().p_id is
+        // deterministic per test case identity, so two runs of this exact
+        // binary — including the x64 and arm64 CI matrix legs executing it
+        // concurrently on two separate runners — assign the identical value
+        // to the identical test case, and race for the same AWS resource
+        // names (observed directly: a real CI run's arm64 leg failed
+        // "CreateKeyPair: The keypair already exists" against a key pair
+        // the concurrently-running x64 leg had just created with the same
+        // deterministic name). Use a real random UUID instead so distinct
+        // invocations of the same test case never collide.
+        const Aws::String random_uuid = Aws::Utils::UUID::RandomUUID();
+        uuid = "kyt-" + std::string(random_uuid.c_str());
         az1 = region + "a";
         az2 = region + "b";
         az3 = region + "c";
