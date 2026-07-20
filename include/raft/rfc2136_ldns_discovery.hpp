@@ -162,6 +162,17 @@ private:
         ldns_rr_set_owner(rr.get(), ldns_rdf_clone(owner_rdf.get()));
         ldns_rr_set_ttl(rr.get(), is_delete ? 0 : _cfg.ttl);
         ldns_rr_set_type(rr.get(), rr_type);
+        // RFC 2136 §2.5.2 "Delete An RRset": CLASS must be ANY, with TTL 0
+        // and empty RDATA (the is_delete branch below never pushes RDATA) —
+        // ldns_rr_new_frm_type() otherwise defaults to CLASS IN, which is
+        // correct for an add but makes a delete request malformed (class
+        // IN + empty RDATA + TTL 0 doesn't match any of RFC 2136's three
+        // valid update-record shapes). A compliant server, e.g. BIND9,
+        // correctly rejects that with a non-NOERROR rcode — previously
+        // silently swallowed by this class's destructor, so the failure was
+        // both real and completely invisible until deregistration logging
+        // was added.
+        ldns_rr_set_class(rr.get(), is_delete ? LDNS_RR_CLASS_ANY : LDNS_RR_CLASS_IN);
 
         if (!is_delete) {
             ldns_rdf* addr_rdf = nullptr;
