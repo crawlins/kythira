@@ -318,7 +318,29 @@ if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
             "${AVAHI_CLIENT_LIB}"
             "${AVAHI_COMMON_LIB}"
         )
-        set(POCO_DNSSD_INCLUDE_DIRS "${_poco_dnssd_inc}")
+        # Don't expose the whole manually-populated vcpkg_installed/.../include
+        # root as an include path: it also contains a full, independently-
+        # extracted copy of every other vcpkg package (boost included) that can
+        # genuinely diverge from the build tree's own vcpkg_installed/ copy —
+        # observed concretely as an unpatched, pre-fix boost/mpl (and
+        # boost/config) whose parenthesized computed-include macros
+        # (`#define BOOST_SLIST_HEADER (<ext/slist>)` etc.) don't survive
+        # BOOST_PP_STRINGIZE on Clang, producing a literal malformed path like
+        # `boost/mpl/aux_/preprocessed/(gcc/or.hpp)`. Any target that also
+        # #includes <boost/test/unit_test.hpp> (i.e. any Boost.Test-based unit
+        # test — this Poco DNSSD one is the only current example) would pick up
+        # that broken copy instead of the correct, already-on-the-search-path
+        # build-tree one. A shim directory containing only a symlink to the
+        # manually-built Poco/DNSSD subtree gets consumers exactly the headers
+        # they need without ever exposing this dir's boost/ (or anything else)
+        # to the compiler.
+        set(_poco_dnssd_shim "${CMAKE_BINARY_DIR}/poco_dnssd_include_shim")
+        file(MAKE_DIRECTORY "${_poco_dnssd_shim}/Poco")
+        if(NOT EXISTS "${_poco_dnssd_shim}/Poco/DNSSD")
+            file(CREATE_LINK "${_poco_dnssd_inc}/Poco/DNSSD" "${_poco_dnssd_shim}/Poco/DNSSD"
+                 SYMBOLIC)
+        endif()
+        set(POCO_DNSSD_INCLUDE_DIRS "${_poco_dnssd_shim}")
         message(STATUS "Poco DNSSD found in vcpkg tree (manually built)")
     else()
         message(STATUS "Poco DNSSD: avahi libs not found — poco_peer_discovery disabled")
@@ -344,8 +366,20 @@ endif()
 
 if(POCO_DNSSD_FOUND)
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_POCO_DNSSD)
-    # vcpkg toolchain already adds vcpkg_installed/.../include to the compiler
-    # search path, so no explicit target_include_directories is needed.
+    # vcpkg's toolchain already adds the build tree's own vcpkg_installed/.../include
+    # to every target's search path, which covers ordinary vcpkg-managed Poco
+    # headers (Foundation, Net, ...) automatically. It does NOT cover
+    # Poco/DNSSD specifically — those headers are manually built and placed
+    # only in the source tree's vcpkg_installed/ (see above), never
+    # replicated into the build tree's copy vcpkg itself manages. Anything
+    # that #includes <Poco/DNSSD/...> directly (poco_discovery_node,
+    # poco_peer_discovery_unit_test) must add ${POCO_DNSSD_INCLUDE_DIRS}
+    # itself; not added here because network_simulator's own headers don't
+    # need it, and propagating it INTERFACE would leak the source tree's
+    # vcpkg_installed/.../include root (with its own independently-extracted,
+    # potentially-diverged copy of every other vcpkg package) to every
+    # consumer — see POCO_DNSSD_INCLUDE_DIRS's own shim-directory comment
+    # above for the concrete bug that caused.
     target_link_libraries(network_simulator INTERFACE ${POCO_DNSSD_LIBRARIES})
 else()
     message(STATUS "Poco DNSSD not found — poco_peer_discovery disabled")
