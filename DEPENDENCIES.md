@@ -112,10 +112,15 @@ This document lists the dependencies required to build and use the network simul
   # macOS (Homebrew)
   brew install ccache
   ```
-- **Notes**: No `CCACHE_DIR`/`--max-size` configuration is required for local use —
-  ccache's own defaults (`~/.ccache`, 5 GB) apply. CI uses smaller, explicit `--max-size`
-  values scoped to each job's own disk budget (`.kiro/specs/ccache-adoption/`); that
-  sizing is CI-only and not relevant to local use.
+- **Notes**: No `--max-size` configuration is required for local use — ccache's own
+  5 GB default applies. Its own *default cache directory* is `~/.cache/ccache`
+  (ccache ≥4.0 follows the XDG Base Directory spec; older `~/.ccache`-based
+  documentation you may find online is for ccache 3.x) — CI explicitly sets
+  `CCACHE_DIR=~/.ccache` to keep its `actions/cache` step's tracked path simple
+  and predictable, but a local install needs no such override and can just use
+  its real default. CI also uses smaller, explicit `--max-size` values scoped to
+  each job's own disk budget (`.kiro/specs/ccache-adoption/`); that sizing is
+  CI-only and not relevant to local use.
 
 ### Property-Based Testing Library
 - **RapidCheck** or similar C++ property-based testing framework

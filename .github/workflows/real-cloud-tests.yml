@@ -102,6 +102,12 @@ jobs:
       BUNDLE_EC2_QUORUM: ${{ (github.event.inputs.aws_bundle_ec2_quorum == 'true') || (github.event.inputs.aws_bundle_ec2_quorum == null && vars.REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER: ${{ (github.event.inputs.aws_bundle_ca_cluster == 'true') || (github.event.inputs.aws_bundle_ca_cluster == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED == 'true') }}
       BUNDLE_CA_CLUSTER_RPC_TLS: ${{ (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == 'true') || (github.event.inputs.aws_bundle_ca_cluster_rpc_tls == null && vars.REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED == 'true') }}
+      # ccache >=4.0 defaults to ~/.cache/ccache, not ~/.ccache — without
+      # this, the Restore/Save ccache steps below (path: ~/.ccache) never
+      # see what ccache actually wrote. See ci.yml's build-and-test job for
+      # the same fix and .kiro/specs/ccache-adoption/ Task 7 for how this
+      # was found (every restore silently missed, Save failed outright).
+      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout
