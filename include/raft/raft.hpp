@@ -596,10 +596,16 @@ private:
     // reset by this node's OWN candidacy/leadership transitions
     // (become_candidate(), become_leader(), granting a vote) and would
     // otherwise make handle_request_pre_vote()'s "have I heard from a
-    // leader recently" check (`.kiro/specs/raft-pre-vote/`) misfire against
-    // an ordinary split vote between two mutually-reachable candidates.
-    // Only handle_append_entries() updates this.
-    std::chrono::steady_clock::time_point _last_leader_contact;
+    // leader recently" check misfire against an ordinary split vote
+    // between two mutually-reachable candidates. std::nullopt means
+    // "never contacted by a leader" — deliberately NOT approximated by a
+    // backdated time_point: the stickiness comparison is against
+    // whatever _election_timeout is randomized to at check time (up to
+    // election_timeout_max), so any fixed backdate amount fixed at
+    // construction can still fall short and false-deny a cluster's very
+    // first election. Only handle_append_entries() sets a value; nothing
+    // ever resets it back to nullopt.
+    std::optional<std::chrono::steady_clock::time_point> _last_leader_contact;
 
     // Random number generator for election timeout randomization
     std::mt19937 _rng;
@@ -929,7 +935,7 @@ node<Types>::node(node_config<Types> cfg)
       _election_timeout{cfg.config.election_timeout_min()},
       _heartbeat_interval{cfg.config.heartbeat_interval()},
       _last_heartbeat{std::chrono::steady_clock::now()},
-      _last_leader_contact{std::chrono::steady_clock::now()},
+      _last_leader_contact{std::nullopt},
       _rng{std::random_device{}()},
       _self_address{std::move(cfg.self_address)},
       _peer_discovery{std::move(cfg.peer_discovery)},
@@ -3149,15 +3155,18 @@ auto node<Types>::handle_request_pre_vote(const request_pre_vote_request_type& r
                    {"request_term", std::to_string(request.term())},
                    {"current_term", std::to_string(_current_term)}});
 
-    auto now = std::chrono::steady_clock::now();
-    auto since_leader_contact =
-        std::chrono::duration_cast<std::chrono::milliseconds>(now - _last_leader_contact);
-    if (since_leader_contact < _election_timeout) {
-        _logger.debug("Denying pre-vote: heard from a leader recently",
-                      {{"node_id", node_id_to_string(_node_id)},
-                       {"candidate", node_id_to_string(request.candidate_id())},
-                       {"since_leader_contact_ms", std::to_string(since_leader_contact.count())}});
-        return request_pre_vote_response_type{_current_term, false};
+    if (_last_leader_contact.has_value()) {
+        auto now = std::chrono::steady_clock::now();
+        auto since_leader_contact =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - *_last_leader_contact);
+        if (since_leader_contact < _election_timeout) {
+            _logger.debug(
+                "Denying pre-vote: heard from a leader recently",
+                {{"node_id", node_id_to_string(_node_id)},
+                 {"candidate", node_id_to_string(request.candidate_id())},
+                 {"since_leader_contact_ms", std::to_string(since_leader_contact.count())}});
+            return request_pre_vote_response_type{_current_term, false};
+        }
     }
 
     auto my_last_log_index = get_last_log_index();

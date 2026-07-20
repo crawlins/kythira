@@ -305,10 +305,17 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
     } catch (...) {
     }
     pump_node3_heartbeats(10);
-    BOOST_REQUIRE(wait_until([&] { return node4.debug_state().log.size() >= poisoned_index; }));
-    BOOST_CHECK(node3.debug_state().log[poisoned_index - 1].command() == corrected_command);
+    // node3's own become_leader() appends a no-op barrier entry (Raft
+    // §5.4.2) before corrected_command is ever submitted, so it lands at
+    // exactly the log slot node1's poisoned entry occupies — same
+    // position, higher term, which is the direct safety-property proof: a
+    // higher-term leader's own entry supersedes a stale entry at that slot
+    // before any client command lands. corrected_command itself lands one
+    // slot further, right after the no-op — hence poisoned_index + 1 here.
+    BOOST_REQUIRE(wait_until([&] { return node4.debug_state().log.size() >= poisoned_index + 1; }));
     BOOST_CHECK_GT(node3.debug_state().log[poisoned_index - 1].term(),
                    node1.debug_state().log[poisoned_index - 1].term());
+    BOOST_CHECK(node3.debug_state().log[poisoned_index].command() == corrected_command);
 
     // Heal: reconnect node1 and node2 to the (now higher-term) real cluster.
     for (auto id : {"1", "2"}) {
@@ -320,17 +327,18 @@ BOOST_AUTO_TEST_CASE(stale_peer_fetched_entry_superseded_by_higher_term_leader,
 
     // Safety property under test: ordinary heartbeats from the new,
     // higher-term leader must detect the term conflict at poisoned_index
-    // and truncate/replace it on both node1 and node2 — no crash, no
-    // exception, no stuck state, no operator intervention.
+    // and truncate/replace it (with its own no-op barrier entry, then
+    // corrected_command right after) on both node1 and node2 — no crash,
+    // no exception, no stuck state, no operator intervention.
     BOOST_REQUIRE(wait_until(
         [&] {
             node1.check_election_timeout();
             node2.check_election_timeout();
             node3.check_heartbeat_timeout();
-            return node1.debug_state().log.size() >= poisoned_index &&
-                   node1.debug_state().log[poisoned_index - 1].command() == corrected_command &&
-                   node2.debug_state().log.size() >= poisoned_index &&
-                   node2.debug_state().log[poisoned_index - 1].command() == corrected_command;
+            return node1.debug_state().log.size() >= poisoned_index + 1 &&
+                   node1.debug_state().log[poisoned_index].command() == corrected_command &&
+                   node2.debug_state().log.size() >= poisoned_index + 1 &&
+                   node2.debug_state().log[poisoned_index].command() == corrected_command;
         },
         std::chrono::milliseconds{6000}));
 
