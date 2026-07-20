@@ -89,13 +89,34 @@ static bool wait_all_healthy(std::chrono::milliseconds timeout) {
 // x86_64 assertion failure on arm64 CI).
 static std::size_t wait_peer_count(const DnsNode& n, std::size_t expected,
                                    std::chrono::milliseconds timeout, int browse_ms = 3000) {
-    auto deadline = std::chrono::steady_clock::now() + timeout;
-    std::size_t last = peer_count(n, browse_ms);
-    while (last != expected && std::chrono::steady_clock::now() < deadline) {
+    auto start = std::chrono::steady_clock::now();
+    auto deadline = start + timeout;
+    auto ids = peer_ids(n, browse_ms);
+    BOOST_TEST_MESSAGE(n.id + " poll t=0ms: " + std::to_string(ids.size()) + " peers [" + [&] {
+        std::string s;
+        for (auto& id : ids) {
+            s += id + " ";
+        }
+        return s;
+    }() + "]");
+    while (ids.size() != expected && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(500ms);
-        last = peer_count(n, browse_ms);
+        ids = peer_ids(n, browse_ms);
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - start)
+                              .count();
+        BOOST_TEST_MESSAGE(n.id + " poll t=" + std::to_string(elapsed_ms) +
+                           "ms: " + std::to_string(ids.size()) + " peers [" +
+                           [&] {
+                               std::string s;
+                               for (auto& id : ids) {
+                                   s += id + " ";
+                               }
+                               return s;
+                           }() +
+                           "]");
     }
-    return last;
+    return ids.size();
 }
 
 // ── Fixture ───────────────────────────────────────────────────────────────────
@@ -162,8 +183,17 @@ BOOST_FIXTURE_TEST_CASE(stopped_node_absent_after_deregister, DnsFixture,
 
     // docker stop sends SIGTERM; the node binary catches it, lets the
     // rfc2136_ldns_discovery destructor send a DELETE UPDATE, then exits.
+    // Timed: if this takes close to the 15s grace period, docker likely had
+    // to SIGKILL rather than seeing a clean exit, which would mean the
+    // destructor (and its DELETE UPDATE) never ran at all.
+    auto stop_start = std::chrono::steady_clock::now();
     docker_chaos::os::checked_exec(docker_chaos::os::real_exec,
                                    docker_chaos::os::docker_stop_cmd(k_nodes[0].container, 15));
+    auto stop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - stop_start)
+                       .count();
+    BOOST_TEST_MESSAGE("docker stop " + k_nodes[0].container + " took " + std::to_string(stop_ms) +
+                       "ms");
 
     // Poll rather than sleep-then-check-once: BIND9's own DDNS DELETE-UPDATE
     // processing time varies with runner load, and a fixed wait long enough
