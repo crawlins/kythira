@@ -114,6 +114,59 @@ public:
             });
     }
 
+    // Send RequestPreVote RPC — satisfies kythira::network_client_with_pre_vote
+    // (include/raft/network.hpp).
+    auto send_request_pre_vote(std::uint64_t target, const kythira::request_pre_vote_request<>& req,
+                               std::chrono::milliseconds timeout)
+        -> kythira::Future<kythira::request_pre_vote_response<>> {
+        fiu_do_on("raft/network/send_request_pre_vote",
+                  return kythira::FutureFactory::makeExceptionalFuture<
+                      kythira::request_pre_vote_response<>>(std::make_exception_ptr(
+                      kythira::network_exception("chaos: send_request_pre_vote"))););
+        // Serialize the request
+        auto data = _serializer.serialize(req);
+
+        // Convert to byte vector for network transmission
+        std::vector<std::byte> payload(data.begin(), data.end());
+
+        // Convert target node ID to address
+        address_type target_addr;
+        if constexpr (std::is_same_v<address_type, std::string>) {
+            target_addr = std::to_string(target);
+        } else {
+            target_addr = static_cast<address_type>(target);
+        }
+
+        // Create message
+        typename NetworkTypes::message_type msg(_node->address(),
+                                                0,  // Source port (connectionless)
+                                                target_addr, _rpc_port, std::move(payload));
+
+        // Send message and wait for response - now with proper future flattening
+        return _node->send(std::move(msg), timeout)
+            .thenValue([this, timeout](bool success) {
+                if (!success) {
+                    throw kythira::network_exception("Failed to send RequestPreVote RPC");
+                }
+
+                // Wait for response - return the future directly (will be flattened)
+                return _node->receive(timeout);
+            })
+            .thenValue([this](typename NetworkTypes::message_type response_msg)
+                           -> kythira::request_pre_vote_response<> {
+                // Deserialize response
+                auto response_payload = response_msg.payload();
+                Data response_data;
+                if constexpr (requires { response_data.resize(0); }) {
+                    response_data.resize(response_payload.size());
+                    std::copy(response_payload.begin(), response_payload.end(),
+                              response_data.begin());
+                }
+
+                return _serializer.template deserialize_request_pre_vote_response<>(response_data);
+            });
+    }
+
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
     auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
@@ -347,6 +400,7 @@ public:
           _running(other._running.load()),
           _server_thread(std::move(other._server_thread)),
           _request_vote_handler(std::move(other._request_vote_handler)),
+          _pre_vote_handler(std::move(other._pre_vote_handler)),
           _append_entries_handler(std::move(other._append_entries_handler)),
           _install_snapshot_handler(std::move(other._install_snapshot_handler)),
           _cluster_join_handler(std::move(other._cluster_join_handler)),
@@ -365,6 +419,7 @@ public:
             _running = other._running.load();
             _server_thread = std::move(other._server_thread);
             _request_vote_handler = std::move(other._request_vote_handler);
+            _pre_vote_handler = std::move(other._pre_vote_handler);
             _append_entries_handler = std::move(other._append_entries_handler);
             _install_snapshot_handler = std::move(other._install_snapshot_handler);
             _cluster_join_handler = std::move(other._cluster_join_handler);
@@ -387,6 +442,15 @@ public:
             handler) -> void {
         std::unique_lock lock(_mutex);
         _request_vote_handler = std::move(handler);
+    }
+
+    // Register RequestPreVote handler — satisfies
+    // kythira::network_server_with_pre_vote (include/raft/network.hpp).
+    auto register_request_pre_vote_handler(std::function<kythira::request_pre_vote_response<>(
+                                               const kythira::request_pre_vote_request<>&)>
+                                               handler) -> void {
+        std::unique_lock lock(_mutex);
+        _pre_vote_handler = std::move(handler);
     }
 
     // Register AppendEntries handler
@@ -475,6 +539,8 @@ private:
     // RPC handlers
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
+    std::function<kythira::request_pre_vote_response<>(const kythira::request_pre_vote_request<>&)>
+        _pre_vote_handler;
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
         _append_entries_handler;
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
@@ -538,6 +604,21 @@ private:
                 return;
             } catch (...) {  // NOLINT(bugprone-empty-catch)
                 // Not a RequestVote request
+            }
+
+            // Try RequestPreVote
+            try {
+                auto request =
+                    _serializer.template deserialize_request_pre_vote_request<>(request_data);
+
+                std::shared_lock lock(_mutex);
+                if (_pre_vote_handler) {
+                    auto response = _pre_vote_handler(request);
+                    send_response(msg.source_address(), response);
+                }
+                return;
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a RequestPreVote request
             }
 
             // Try AppendEntries
@@ -660,6 +741,16 @@ static_assert(kythira::network_server<simulator_network_server<
                   TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
                   std::vector<std::byte>>>,
               "simulator_network_server must satisfy the network_server concept");
+
+// Verify the optional PreVote extension (include/raft/network.hpp)
+static_assert(kythira::network_client_with_pre_vote<simulator_network_client<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_client must satisfy network_client_with_pre_vote");
+static_assert(kythira::network_server_with_pre_vote<simulator_network_server<
+                  TestNetworkTypes, kythira::json_rpc_serializer<std::vector<std::byte>>,
+                  std::vector<std::byte>>>,
+              "simulator_network_server must satisfy network_server_with_pre_vote");
 
 // Verify the optional bootstrap-extension concepts
 static_assert(kythira::network_client_with_cluster_join<simulator_network_client<

@@ -481,14 +481,56 @@ as the Cloud Provider Support requirement above.
   genuinely clean rebuild; the test's 32 cases pass; full local `ctest`
   (mirroring CI's exact filter) went from 379/380 to a clean 380/380.
   PR #76.
-- [ ] **PreVote not yet extended to `tls_tcp_rpc_*` or the in-memory
+- [x] **PreVote extended to `tls_tcp_rpc_*` and the in-memory
   simulator** — `network_client_with_pre_vote`/
-  `network_server_with_pre_vote` (`include/raft/network.hpp`) are
-  implemented for `tcp_rpc_client`/`tcp_rpc_server` only; TLS and
-  simulator-backed clusters fall back to the pre-PreVote behavior via
-  `if constexpr`, which is safe (byte-identical to today) but leaves
-  them still exposed to the "disruptive server" thrashing the plain
-  TCP transport now avoids. Deliberately deferred scope, not a defect.
+  `network_server_with_pre_vote` (`include/raft/network.hpp`) were
+  previously implemented for `tcp_rpc_client`/`tcp_rpc_server` only;
+  TLS-backed (`ca_cluster_node`) and simulator-backed clusters fell
+  back to the pre-PreVote behavior via `if constexpr`. Extended to
+  both: `tls_tcp_rpc.hpp`'s `server_impl` gained a `pv_fn`/
+  `register_request_pre_vote_handler()`/dispatch branch mirroring its
+  existing RequestVote handling, and the public `tls_tcp_rpc_client`/
+  `tls_tcp_rpc_server` handles gained `send_request_pre_vote()`/
+  `register_request_pre_vote_handler()` wrappers around
+  `client_impl::call()`'s existing generic template (no transport-level
+  change needed there). `simulator_network.hpp`'s client/server got the
+  same treatment, including the server's try-each-deserializer dispatch
+  loop. Confirmed genuinely exercised, not just concept-satisfying:
+  `ca_cluster_node_rpc_tls_restart_test`'s log shows real
+  `Starting pre-vote round` / `Granting pre-vote` traffic over the mTLS
+  transport.
+
+  Extending PreVote to the simulator surfaced one real, previously-latent
+  bug: `peer2peer_catch_up_stale_source_safety_property_test.cpp`
+  gave nodes 4/5 an artificially long (~10 minute) "dormant"
+  `election_timeout` purely to stop them from spontaneously campaigning
+  — but `handle_request_pre_vote()`'s leader-stickiness check
+  (`raft.hpp`) also keys off that same per-node `_election_timeout`,
+  so an effectively-infinite dormant value meant those nodes could
+  never grant node 3's later, legitimate pre-vote either, once the
+  simulator started actually enforcing PreVote (test previously fell
+  back to real elections, which don't have this check). Fixed by
+  switching nodes 4/5 to the test's normal fast config — safe because
+  neither node ever has its own `check_election_timeout()` called
+  anywhere in this file, so the dormant trick was never actually needed
+  for its stated purpose here, only harmful once PreVote reached this
+  transport. Four other test files share the identical
+  `make_dormant_config()` pattern
+  (`peer2peer_catch_up_membership_sync_property_test.cpp`,
+  `peer2peer_catch_up_partition_reconnect_property_test.cpp`,
+  `peer2peer_catch_up_property_test.cpp`,
+  `tcp_gossip_transport_catch_up_property_test.cpp`) but *do* drive
+  their "dormant" node's timer directly, relying on the timeout gap for
+  deterministic race-losing — each verified to pass reliably as-is (3
+  runs each) since none currently ask a recently-contacted dormant node
+  to grant a pre-vote to a new candidate, but they carry the same
+  latent design tension and could need the same fix if a future change
+  to any of those scenarios introduces that interaction.
+
+  Verified: full local `ctest` (CI's exact filter,
+  `--repeat until-pass:3`) 380/380 passing; the newly-fixed test alone
+  run 5× and each of the four still-passing sibling files run 3× each
+  to confirm reliability, not just a lucky single pass.
 - [ ] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` is a
   timing flake on arm64** — found while re-verifying the
   `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via

@@ -431,6 +431,7 @@ private:
 class server_impl {
 public:
     using rv_fn = std::function<request_vote_response<>(const request_vote_request<>&)>;
+    using pv_fn = std::function<request_pre_vote_response<>(const request_pre_vote_request<>&)>;
     using ae_fn = std::function<append_entries_response<>(const append_entries_request<>&)>;
     using is_fn = std::function<install_snapshot_response<>(const install_snapshot_request<>&)>;
     using serializer_t = json_rpc_serializer<std::vector<std::byte>>;
@@ -466,6 +467,8 @@ public:
     auto operator=(server_impl&&) -> server_impl& = delete;
 
     void register_request_vote_handler(rv_fn h) { _rv = std::move(h); }
+    // Satisfies kythira::network_server_with_pre_vote (include/raft/network.hpp).
+    void register_request_pre_vote_handler(pv_fn h) { _pv = std::move(h); }
     void register_append_entries_handler(ae_fn h) { _ae = std::move(h); }
     void register_install_snapshot_handler(is_fn h) { _is = std::move(h); }
 
@@ -610,6 +613,8 @@ private:
             std::vector<std::byte> resp;
             if (type == "request_vote_request" && _rv) {
                 resp = _ser.serialize(_rv(_ser.deserialize_request_vote_request(bytes)));
+            } else if (type == "request_pre_vote_request" && _pv) {
+                resp = _ser.serialize(_pv(_ser.deserialize_request_pre_vote_request(bytes)));
             } else if (type == "append_entries_request" && _ae) {
                 resp = _ser.serialize(_ae(_ser.deserialize_append_entries_request(bytes)));
             } else if (type == "install_snapshot_request" && _is) {
@@ -632,6 +637,7 @@ private:
     tls_tcp_rpc_config _config;
 
     rv_fn _rv;
+    pv_fn _pv;
     ae_fn _ae;
     is_fn _is;
     serializer_t _ser;
@@ -669,6 +675,16 @@ public:
             });
     }
 
+    // Satisfies kythira::network_client_with_pre_vote (include/raft/network.hpp).
+    auto send_request_pre_vote(std::uint64_t target, const request_pre_vote_request<>& req,
+                               std::chrono::milliseconds timeout)
+        -> Future<request_pre_vote_response<>> {
+        return _impl->call<request_pre_vote_response<>>(
+            target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
+                return _ser.deserialize_request_pre_vote_response(d);
+            });
+    }
+
     auto send_append_entries(std::uint64_t target, const append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
         -> Future<append_entries_response<>> {
@@ -700,6 +716,9 @@ public:
     void register_request_vote_handler(tls_detail::server_impl::rv_fn h) {
         _impl->register_request_vote_handler(std::move(h));
     }
+    void register_request_pre_vote_handler(tls_detail::server_impl::pv_fn h) {
+        _impl->register_request_pre_vote_handler(std::move(h));
+    }
     void register_append_entries_handler(tls_detail::server_impl::ae_fn h) {
         _impl->register_append_entries_handler(std::move(h));
     }
@@ -729,6 +748,10 @@ static_assert(kythira::network_client<tls_tcp_rpc_client>,
               "tls_tcp_rpc_client must satisfy network_client");
 static_assert(kythira::network_server<tls_tcp_rpc_server>,
               "tls_tcp_rpc_server must satisfy network_server");
+static_assert(kythira::network_client_with_pre_vote<tls_tcp_rpc_client>,
+              "tls_tcp_rpc_client must satisfy network_client_with_pre_vote");
+static_assert(kythira::network_server_with_pre_vote<tls_tcp_rpc_server>,
+              "tls_tcp_rpc_server must satisfy network_server_with_pre_vote");
 
 }  // namespace kythira
 
