@@ -21,6 +21,17 @@ jobs:
     name: Build & Test (${{ matrix.compiler }}, ${{ matrix.arch_label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
+    # ccache >=4.0 defaults to the XDG cache dir (~/.cache/ccache), not
+    # ~/.ccache — without this, ccache silently caches to a directory the
+    # Restore/Save ccache steps below (path: ~/.ccache) never see, so every
+    # run is cold and Save fails outright ("Path(s) ... do(es) not exist").
+    # /home/runner is a fixed, documented property of GitHub-hosted
+    # ubuntu-24.04/ubuntu-24.04-arm runners — matches what `~` resolves to
+    # in the cache steps' own `path:` field. Found via .kiro/specs/ccache-adoption/
+    # Task 7's real re-measurement (see tasks.md) after every prior run
+    # silently missed on every restore-keys prefix, including the broadest.
+    env:
+      CCACHE_DIR: /home/runner/.ccache
 
     strategy:
       fail-fast: false
@@ -224,6 +235,11 @@ jobs:
     name: Coverage (clang++-18)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    # See build-and-test's identical env block above — ccache >=4.0 defaults
+    # to ~/.cache/ccache, not ~/.ccache, so without this the Restore/Save
+    # ccache steps below never see what ccache actually wrote.
+    env:
+      CCACHE_DIR: /home/runner/.ccache
 
     steps:
       - name: Checkout

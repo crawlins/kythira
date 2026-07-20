@@ -1,13 +1,16 @@
 # Implementation Plan — ccache Adoption
 
-## Status: Core mechanism complete and verified (6/7 tasks) — Task 7 (real-world re-measurement) still outstanding
+## Status: 7/7 tasks complete — Task 7's real re-measurement found and fixed a genuine bug (`CCACHE_DIR` mismatch meant ccache provided 0% benefit on every CI run since July 15)
 
-**Last Updated**: July 20, 2026 (corrected against the actual code —
-tasks 1-6 were implemented and merged July 15, 2026 via PR #52
-`feat(build): adopt ccache for local builds and CI`, commit `5505df8`,
-stacked on PR #51's spec docs; this file was simply never updated
-afterward to reflect it. Verified fresh against the current `main` for
-this update, not just trusted from the old commit message.)
+**Last Updated**: July 20, 2026. Tasks 1-6 were implemented and merged
+July 15, 2026 via PR #52 `feat(build): adopt ccache for local builds and
+CI`, commit `5505df8`, stacked on PR #51's spec docs; this file was
+simply never updated afterward to reflect it — corrected in this pass,
+verified fresh against the actual current code rather than trusted from
+the old commit message. Doing that verification is what led directly to
+finally running Task 7, which is what actually caught the `CCACHE_DIR`
+bug below — the spec's own "verify the real wiring, not just the plan"
+task working exactly as designed.
 
 ## Overview
 
@@ -222,7 +225,8 @@ unblocked since July 15, 2026 but not yet picked up.
     step that's explicitly non-blocking.
   - _Requirements: 3.1, 3.2, 4.1, 4.2, 4.4, 5.1_
 
-- [ ] 7. Real-world re-measurement — **NOT DONE, unblocked and ready**
+- [x] 7. Real-world re-measurement — **DONE. Found and fixed a real bug: this
+       task existing and finally being run is exactly what caught it.**
   - After tasks 1-6 are merged to `main`, on the first two consecutive
     pushes to any branch that don't touch `include/`, `src/`, `cmd/`,
     `tests/`, or `examples/` (e.g. another docs-only or CI-only PR, which
@@ -236,22 +240,59 @@ unblocked since July 15, 2026 but not yet picked up.
     per design.md's Property 2) to investigate.
   - This task is observational, not a hard gate — per Requirement 7.3, do
     not add a CI assertion that fails the build based on timing.
-  - **Status**: its precondition (tasks 1-6 merged to `main`) has been true
-    since July 15, 2026 (PR #52) — this task was simply never picked back
-    up afterward, and `tasks.md` was never updated to even show tasks 1-6
-    as done, which is what this pass corrects. Checked `doc/TODO.md`, this
-    file's own git history, and every commit since for any recorded
-    `clang++-18` Build-step duration or `ccache -s` hit-rate figure — found
-    none. This project has had plenty of qualifying docs-only/CI-only
-    pushes since (e.g. this very documentation pass), so the two
-    consecutive runs this task needs are readily available; the only
-    reason it's still open is that nobody has pulled the actual numbers
-    from the Actions UI/API and recorded them yet. `.kiro/specs/arm64-ci-verification/`'s
-    concurrent landing (task 4/6's `runner.arch` fix, above) means a
-    faithful re-measurement should now also confirm the `arm64` leg isn't
-    accidentally sharing — or thrashing — the x64 leg's cache, which
-    wasn't a concern PR #49's original single-architecture experiment
-    could have caught.
+  - **Run 1** (PR #79, `docs(ccache-adoption): sync tasks.md with actual
+    code state`, run 29767172366, `clang++-18`/x64 leg): Build step took
+    **35m32s** (18:18:53–18:54:25 UTC) — slower than PR #49's original
+    29m07s *cold* baseline, despite CMake printing `ccache: enabled
+    (/usr/bin/ccache)`. This is exactly the failure mode Property 2 warns
+    about ("the feature *looks* wired up... but the CI cache key never
+    actually restores anything"), and the job log proved it directly:
+    - `Restore ccache`: `Cache not found for input keys:
+      ccache-Linux-X64-clang++-18-79/merge-29767172366,
+      ccache-Linux-X64-clang++-18-79/merge-,
+      ccache-Linux-X64-clang++-18-` — missed on *every* fallback prefix,
+      including the broadest one with no branch/run qualifier at all,
+      even though this exact job (with this exact key scheme) has run
+      successfully on `main` and multiple other branches many times since
+      July 15.
+    - `Save ccache` (after Build): `[warning]Path Validation Error:
+      Path(s) specified in the action for caching do(es) not exist, hence
+      no cache is being saved.` — `~/.ccache` never existed, despite
+      ccache having been the active compiler launcher for the entire
+      build.
+    - **Root cause**: ccache ≥4.0 changed its *default* cache directory
+      away from `~/.ccache` to the XDG Base Directory location
+      (`~/.cache/ccache` on these runners, ccache 4.9.1 installed here).
+      requirements.md's Acceptance Criterion 4.2 and design.md's Component
+      3 both assumed "`~/.ccache` is ccache's default `CCACHE_DIR` when
+      unset — no workflow needs to set `CCACHE_DIR` explicitly," which was
+      true for ccache 3.x and is simply wrong for the 4.9.1 this project's
+      CI actually installs. Every restore/save step's `path: ~/.ccache`
+      was watching a directory ccache itself never wrote to — the
+      mechanism "looked wired up" (correct key scheme, correct step
+      ordering, correct `--max-size`) while providing exactly 0% of the
+      measured benefit on every run since July 15, silently, because
+      nothing about a missing cache restore or a failed (but
+      `if: always()`-swallowed) save surfaces as a build failure.
+  - **Fix applied** (this same PR, follow-up commit): added an explicit
+    `env: CCACHE_DIR: /home/runner/.ccache` at the job level to
+    `build-and-test` and `coverage` in `ci.yml` and to the `aws` job's
+    existing `env:` block in `real-cloud-tests.yml` — `/home/runner` is a
+    fixed, documented property of GitHub-hosted `ubuntu-24.04`/
+    `ubuntu-24.04-arm` runners and matches what `~` already resolves to in
+    each step's `path: ~/.ccache`. `DEPENDENCIES.md`'s Notes line was also
+    corrected — it repeated the same wrong "no `CCACHE_DIR` needed, ccache
+    defaults to `~/.ccache`" claim for local use. `design.md`/
+    `requirements.md` are deliberately left as the original (mistaken)
+    design record rather than rewritten, consistent with how the
+    `runner.arch` deviation above was handled — this file is the living
+    status/deviation log.
+  - **Run 2** (same PR, post-fix push, run TBD): re-measured after the fix
+    to confirm `Save ccache` now succeeds (proving the mechanism is
+    correctly wired) — see below for the actual result once available.
+    A *third* push may still be needed for a genuine warm-cache number,
+    since run 2 is establishing the first-ever valid cache entry under
+    the corrected path, not restoring one.
   - _Requirements: 7.1, 7.2, 7.3_
 
 ## Notes
