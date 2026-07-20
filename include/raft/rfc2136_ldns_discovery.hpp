@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -40,9 +41,19 @@ public:
     explicit rfc2136_ldns_discovery(config cfg) : _cfg(std::move(cfg)), _rfc1035{_cfg.query} {}
 
     ~rfc2136_ldns_discovery() {
+        // Deliberately never lets deregistration failure escape a destructor
+        // (or abort a normal shutdown), but a real failure here — the DELETE
+        // UPDATE that's supposed to remove this node's A/AAAA record —
+        // previously vanished with zero trace anywhere, making it
+        // indistinguishable from success. Logged to stderr (visible via
+        // `docker logs` for the containerized peer-discovery binaries) so a
+        // real failure is at least observable, not just silently wrong.
         try {
             deregister_self();
+        } catch (const std::exception& e) {
+            std::cerr << "rfc2136_ldns_discovery: deregistration failed: " << e.what() << "\n";
         } catch (...) {
+            std::cerr << "rfc2136_ldns_discovery: deregistration failed: unknown exception\n";
         }
     }
 
