@@ -195,6 +195,21 @@ BOOST_FIXTURE_TEST_CASE(stopped_node_absent_after_deregister, DnsFixture,
     BOOST_TEST_MESSAGE("docker stop " + k_nodes[0].container + " took " + std::to_string(stop_ms) +
                        "ms");
 
+    // Dump node1's own stdout/stderr: a fast, clean exit only proves the
+    // process returned from main() promptly, not that deregister_self()'s
+    // send_update() actually succeeded — its destructor wraps everything in
+    // catch (...) {}, so a real UPDATE failure (TSIG, network, malformed
+    // packet, teardown-order race) would be silently swallowed with no
+    // other signal anywhere.
+    try {
+        auto logs = docker_chaos::os::checked_exec(
+            docker_chaos::os::real_exec, docker_chaos::os::docker_logs_cmd(k_nodes[0].container));
+        BOOST_TEST_MESSAGE(k_nodes[0].container + " logs after stop:\n" + logs);
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE(std::string("failed to fetch ") + k_nodes[0].container +
+                           " logs: " + e.what());
+    }
+
     // Poll rather than sleep-then-check-once: BIND9's own DDNS DELETE-UPDATE
     // processing time varies with runner load, and a fixed wait long enough
     // for a fast host can still be too short on a slower one (observed as a
