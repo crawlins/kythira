@@ -531,30 +531,49 @@ as the Cloud Provider Support requirement above.
   `--repeat until-pass:3`) 380/380 passing; the newly-fixed test alone
   run 5× and each of the four still-passing sibling files run 3× each
   to confirm reliability, not just a lucky single pass.
-- [ ] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` is a
-  timing flake on arm64** — found while re-verifying the
-  `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via
-  a real `arm64-docker-smoke-test.yml` `workflow_dispatch` run (run ID
-  29664536952). After `docker stop`-ing node1, the test waited a fixed
-  3 s then asserted the two survivors' `/peers` no longer lists it; that
-  run saw both survivors still report 2 peers instead of 1, i.e. BIND9
-  hadn't finished processing node1's DDNS `DELETE` UPDATE (sent from the
-  `rfc2136_ldns_discovery` destructor on `SIGTERM`) within that window —
-  not a crash or memory-safety issue, a real assertion failure caused by
-  a fixed wait not being generous enough on this runner, not reproduced
-  on x86_64 CI. Fixed (code change made, real-arm64-CI verification of
-  *this specific fix* still pending — see below) by rewriting the fixed
-  sleep-then-check-once into a poll-with-timeout, mirroring
-  `wait_all_healthy()`'s existing shape exactly: a new
-  `wait_peer_count(node, expected, timeout)` helper polls `peer_count()`
-  every 500 ms for up to 20 s (test's own `boost::unit_test::timeout` is
-  90 s, comfortable headroom for both survivors sequentially) instead of
-  a single check after one fixed wait. `dns_sd_discovery_test.cpp`'s
-  analogous `dead_node_absent_after_freshness_expiry` case was checked
-  and does *not* share this problem — it already polls-via-generous-fixed-
-  margin (25 s wait against a 20 s TXT freshness interval, a different
-  mechanism than BIND9 DDNS DELETE propagation), not a fixed-then-check
-  pattern racing an unbounded external process.
+- [x] **`dns_discovery_test`'s `stopped_node_absent_after_deregister` was
+  never actually a timing flake** — first suspected as one (found while
+  re-verifying the `peer_ids()` `SIGSEGV` fix, see the July 18, 2026
+  changelog entry, via a real `arm64-docker-smoke-test.yml`
+  `workflow_dispatch` run, ID 29664536952: after `docker stop`-ing
+  node1, a fixed 3 s wait then a single `/peers` check on the survivors
+  saw 2 peers instead of 1). A poll-with-timeout rewrite (20 s via a new
+  `wait_peer_count()` helper, mirroring the file's existing
+  `wait_all_healthy()` shape) is a real improvement on its own merits
+  regardless, but re-verifying *that specific fix* on real arm64
+  hardware showed the exact same symptom even after the full 20 s —
+  proof this was never about BIND9 being slow. Diagnostics (peer-ID
+  trajectory logging, timing the `docker stop` call itself, dumping
+  node1's own container logs, and finally logging the previously
+  bare-`catch (...) {}`-swallowed deregistration exception) traced it
+  through two wrong turns to the actual bug, all in
+  `include/raft/rfc2136_ldns_discovery.hpp`'s `send_update()`:
+  - The per-RR `CLASS` field was never explicitly set, defaulting to
+    `IN` (correct for an add, which is why registration always worked)
+    but making a delete request malformed — `CLASS IN` + empty RDATA +
+    `TTL 0` matches none of RFC 2136's three valid update-record
+    shapes. BIND9 correctly rejected it with a non-`NOERROR` rcode,
+    previously invisible since nothing logged the caught exception.
+  - Fixing that to `CLASS ANY` (RFC 2136 §2.5.2 "Delete An RRset") let
+    the DELETE succeed, but with the wrong scope: `shared_name` is one
+    DNS name shared by all three nodes (a round-robin RRset, one A
+    record per node), and an RRset-wide delete wiped out *every*
+    node's registration, not just node1's — survivors' peer counts
+    went from a stuck 2 to an immediate but still-wrong 0.
+  - The actual fix: RFC 2136 §2.5.4 "Delete An RR From An RRset" —
+    `CLASS NONE`, `TTL 0`, RDATA set to the exact value being removed
+    (previously skipped entirely for deletes, only ever pushed for
+    adds). Confirmed on real arm64 hardware (run 29758502129): both
+    survivors report the correct peer count *immediately* (`t=0ms`),
+    no polling delay needed at all, `*** No errors detected`.
+  Also fixed as a permanent (not just diagnostic) improvement:
+  `rfc2136_ldns_discovery`'s destructor now logs a caught deregistration
+  exception to stderr instead of silently swallowing it — this exact
+  class of failure was completely invisible in production, not just in
+  this test, before that. `dns_sd_discovery_test.cpp`'s analogous
+  `dead_node_absent_after_freshness_expiry` case was checked and
+  doesn't share any of this — different mechanism entirely (local TTL/
+  freshness-timestamp comparison, no DNS UPDATE involved).
 - [x] **`chaos_node` scenario tests: leader re-election after `docker
   kill` can time out** — found while verifying the Dockerfile fix
   above (real `arm64-docker-smoke-test.yml` runs,
