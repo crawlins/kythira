@@ -147,5 +147,11 @@ int main(int argc, char** argv) {
 
     std::cout << "[dns_node] HTTP listening on :" << http_port << "\n";
     srv.listen("0.0.0.0", http_port);
+    // Printed here (after listen() returns from on_signal()'s srv.stop(),
+    // before `discovery` destructs below) so a real shutdown failure can be
+    // distinguished from "the signal was never delivered/handled at all" —
+    // the latter would mean this line, and everything after it including
+    // discovery's deregistering destructor, never runs.
+    std::cout << "[dns_node] shutting down, deregistering\n";
     return 0;
 }
