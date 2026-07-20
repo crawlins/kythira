@@ -61,8 +61,9 @@ Reference material to read before starting:
 }
 ```
 
-Waves 1-3 (tasks 1-6) are complete and merged. Wave 4 (task 7) has been
-unblocked since July 15, 2026 but not yet picked up.
+Waves 1-3 (tasks 1-6) are complete and merged. Wave 4 (task 7) is complete:
+Run 1 found the `CCACHE_DIR` bug, the fix is merged into this same PR, and
+Run 2 confirmed the fix — Run 3 (this commit) is the final re-measurement.
 
 ## Tasks
 
@@ -287,12 +288,32 @@ unblocked since July 15, 2026 but not yet picked up.
     design record rather than rewritten, consistent with how the
     `runner.arch` deviation above was handled — this file is the living
     status/deviation log.
-  - **Run 2** (same PR, post-fix push, run TBD): re-measured after the fix
-    to confirm `Save ccache` now succeeds (proving the mechanism is
-    correctly wired) — see below for the actual result once available.
-    A *third* push may still be needed for a genuine warm-cache number,
-    since run 2 is establishing the first-ever valid cache entry under
-    the corrected path, not restoring one.
+  - **Run 2** (same PR, post-fix commit `e903edb`, run 29772789404,
+    `clang++-18`/x64 leg, job 88454822422): confirmed the fix works.
+    `Restore ccache` reported `Cache not found for input keys:
+    ccache-Linux-X64-clang++-18-79/merge-29772789404,
+    ccache-Linux-X64-clang++-18-79/merge-, ccache-Linux-X64-clang++-18-`
+    — a genuine, *expected* miss, since nothing had ever been saved to
+    the corrected `/home/runner/.ccache` path before this run. `Save
+    ccache` (after Build) reported `Cache saved with key:
+    ccache-Linux-X64-clang++-18-79/merge-29772789404` (~48MB, no more
+    `Path Validation Error`) — proving the mechanism is now correctly
+    wired end-to-end. Build step took **23m16s** (19:38:46–20:02:02 UTC)
+    — faster than Run 1's 35m32s and than PR #49's 29m07s cold baseline,
+    which is a bit of a surprising result for what should be a fully
+    cold compile (no prior cache entry existed to restore from); most
+    likely explanation is ordinary CI runner/host variance between runs
+    rather than any residual caching effect, since the restore step
+    unambiguously reported a miss on every fallback key. This run does
+    NOT yet demonstrate the actual warm-cache speedup — it only
+    establishes the first valid entry under the corrected path. A third
+    push is needed to restore from what Run 2 just saved.
+  - **Run 3** (same PR, this tasks.md-only follow-up commit, pushed to
+    re-trigger CI): expected to hit `Cache not found for input keys` on
+    the exact `.../79/merge-<new-run-id>` key but restore from the
+    `ccache-Linux-X64-clang++-18-79/merge-` prefix fallback (Run 2's key
+    shares that prefix), giving the first genuine warm-cache Build-step
+    timing. See below for the actual result once available.
   - _Requirements: 7.1, 7.2, 7.3_
 
 ## Notes
