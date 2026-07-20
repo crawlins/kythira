@@ -535,19 +535,26 @@ as the Cloud Provider Support requirement above.
   timing flake on arm64** — found while re-verifying the
   `peer_ids()` `SIGSEGV` fix (see the July 18, 2026 changelog entry) via
   a real `arm64-docker-smoke-test.yml` `workflow_dispatch` run (run ID
-  29664536952). After `docker stop`-ing node1, the test waits 3 s then
-  asserts the two survivors' `/peers` no longer lists it; this run saw
-  both survivors still report 2 peers instead of 1, i.e. BIND9 hadn't
-  finished processing node1's DDNS `DELETE` UPDATE (sent from the
-  `rfc2136_ldns_discovery` destructor on `SIGTERM`) within that window.
-  Not a crash or memory-safety issue — a real assertion failure caused
-  by a fixed wait not being generous enough on this runner. Not
-  reproduced on x86_64 CI so far; may be a genuine arm64 timing
-  difference (slower container teardown/DNS propagation on the
-  `ubuntu-24.04-arm` runner) or ordinary flakiness that just happened to
-  land on this run. Needs a few repeat runs to characterize before
-  deciding between a longer fixed wait and a poll-with-timeout rewrite
-  (mirroring `wait_all_healthy`'s pattern) — not fixed yet.
+  29664536952). After `docker stop`-ing node1, the test waited a fixed
+  3 s then asserted the two survivors' `/peers` no longer lists it; that
+  run saw both survivors still report 2 peers instead of 1, i.e. BIND9
+  hadn't finished processing node1's DDNS `DELETE` UPDATE (sent from the
+  `rfc2136_ldns_discovery` destructor on `SIGTERM`) within that window —
+  not a crash or memory-safety issue, a real assertion failure caused by
+  a fixed wait not being generous enough on this runner, not reproduced
+  on x86_64 CI. Fixed (code change made, real-arm64-CI verification of
+  *this specific fix* still pending — see below) by rewriting the fixed
+  sleep-then-check-once into a poll-with-timeout, mirroring
+  `wait_all_healthy()`'s existing shape exactly: a new
+  `wait_peer_count(node, expected, timeout)` helper polls `peer_count()`
+  every 500 ms for up to 20 s (test's own `boost::unit_test::timeout` is
+  90 s, comfortable headroom for both survivors sequentially) instead of
+  a single check after one fixed wait. `dns_sd_discovery_test.cpp`'s
+  analogous `dead_node_absent_after_freshness_expiry` case was checked
+  and does *not* share this problem — it already polls-via-generous-fixed-
+  margin (25 s wait against a 20 s TXT freshness interval, a different
+  mechanism than BIND9 DDNS DELETE propagation), not a fixed-then-check
+  pattern racing an unbounded external process.
 - [x] **`chaos_node` scenario tests: leader re-election after `docker
   kill` can time out** — found while verifying the Dockerfile fix
   above (real `arm64-docker-smoke-test.yml` runs,
