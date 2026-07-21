@@ -70,6 +70,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -602,15 +603,22 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         }
     }
     if (leader_ip.empty()) {
+        // std::cerr, not BOOST_TEST_MESSAGE: this project's real-ec2 tests
+        // run under Boost.Test's default log level, which does not print
+        // message-level output at all — confirmed empirically when an
+        // earlier BOOST_TEST_MESSAGE version of this same diagnostic
+        // produced zero output in a real CI run. stderr always shows up
+        // under ctest --output-on-failure regardless of Boost.Test's own
+        // log-level filtering.
         for (const auto& ip : public_ips) {
             try {
                 auto log = ssh_execute(ip, private_key_pem,
                                        "sudo cat /var/log/ca_cluster_node.log 2>&1; echo; "
                                        "echo '--- ps ---'; ps aux | grep ca_cluster_node",
                                        std::chrono::seconds(30));
-                BOOST_TEST_MESSAGE("=== " << ip << " ca_cluster_node.log ===\n" << log);
+                std::cerr << "=== " << ip << " ca_cluster_node.log ===\n" << log << "\n";
             } catch (const std::exception& e) {
-                BOOST_TEST_MESSAGE("=== " << ip << ": could not fetch log: " << e.what());
+                std::cerr << "=== " << ip << ": could not fetch log: " << e.what() << "\n";
             }
         }
     }
