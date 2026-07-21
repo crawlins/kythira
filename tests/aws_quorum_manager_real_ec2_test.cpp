@@ -1043,8 +1043,18 @@ struct RealEc2Fixture : signal_cleanup_target {
         Aws::EC2::Model::ReplaceNetworkAclAssociationRequest replace;
         replace.SetAssociationId(az3_original_nacl_assoc_id);
         replace.SetNetworkAclId(default_nacl_id);
-        ec2->ReplaceNetworkAclAssociation(replace);
-        az3_original_nacl_assoc_id.clear();
+        // Only clear the tracking ID on success. If this fails (transient
+        // API error, stale association ID, ...), the AZ3 subnet stays
+        // associated with the custom deny-all NACL; leaving the ID set lets
+        // teardown()'s own restore_az3_nacl() call retry it instead of
+        // silently treating a failed restore as done. An un-restored
+        // association blocks the deny-all NACL's own deletion below, which
+        // in turn blocks the whole VPC's deletion — observed leaking VPCs
+        // during .kiro/specs/ci-real-cloud-tests/ Task 12's real-AWS
+        // verification, traced to exactly this.
+        if (ec2->ReplaceNetworkAclAssociation(replace).IsSuccess()) {
+            az3_original_nacl_assoc_id.clear();
+        }
     }
 
     // Terminates all cluster instances (best-effort).
@@ -1109,11 +1119,21 @@ struct RealEc2Fixture : signal_cleanup_target {
             ec2->DeleteKeyPair(req);
         }
 
-        // d: restore NACL association → delete deny-all NACL.
+        // d: restore NACL association → delete deny-all NACL. Retried: if
+        // restore_az3_nacl() above only just took effect, the association
+        // can still briefly show as active (API eventual consistency),
+        // which blocks this delete and, transitively, the VPC's delete
+        // below.
         if (!deny_all_nacl_id.empty()) {
-            Aws::EC2::Model::DeleteNetworkAclRequest req;
-            req.SetNetworkAclId(deny_all_nacl_id);
-            ec2->DeleteNetworkAcl(req);
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+            while (std::chrono::steady_clock::now() < deadline) {
+                Aws::EC2::Model::DeleteNetworkAclRequest req;
+                req.SetNetworkAclId(deny_all_nacl_id);
+                if (ec2->DeleteNetworkAcl(req).IsSuccess()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{5});
+            }
         }
 
         // e: delete quarantine SG (must come after instances terminated).
