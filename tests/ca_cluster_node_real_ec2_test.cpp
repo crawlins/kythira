@@ -601,6 +601,19 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
             std::this_thread::sleep_for(std::chrono::seconds(10));
         }
     }
+    if (leader_ip.empty()) {
+        for (const auto& ip : public_ips) {
+            try {
+                auto log = ssh_execute(ip, private_key_pem,
+                                       "sudo cat /var/log/ca_cluster_node.log 2>&1; echo; "
+                                       "echo '--- ps ---'; ps aux | grep ca_cluster_node",
+                                       std::chrono::seconds(30));
+                BOOST_TEST_MESSAGE("=== " << ip << " ca_cluster_node.log ===\n" << log);
+            } catch (const std::exception& e) {
+                BOOST_TEST_MESSAGE("=== " << ip << ": could not fetch log: " << e.what());
+            }
+        }
+    }
     BOOST_REQUIRE_MESSAGE(!leader_ip.empty(),
                           "no ca_cluster_node leader became reachable within the timeout");
     BOOST_TEST_MESSAGE("leader reachable at " << leader_ip);
