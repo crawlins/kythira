@@ -97,6 +97,9 @@ struct aws_ec2_quorum_manager_config {
     std::vector<std::string> security_group_ids;
     /// IAM instance-profile name attached to each instance. Empty = no profile.
     std::string iam_instance_profile;
+    /// EC2 key pair name attached to each instance for SSH access. Empty = no key pair
+    /// (the default — most deployments manage nodes without direct SSH access).
+    std::string key_name;
     /// EC2 user-data template. Supports {NODE_ID}, {NODE_PORT}, {CLUSTER}, {AZ} substitutions.
     std::string user_data_template;
     /// Additional EC2 tags applied alongside the standard kythira:* tags.
@@ -290,6 +293,9 @@ public:
                 Aws::EC2::Model::IamInstanceProfileSpecification iam_spec;
                 iam_spec.SetName(_cfg.iam_instance_profile);
                 run_req.SetIamInstanceProfile(iam_spec);
+            }
+            if (!_cfg.key_name.empty()) {
+                run_req.SetKeyName(_cfg.key_name);
             }
             if (auto pit = _cfg.placement_by_group.find(target_group);
                 pit != _cfg.placement_by_group.end() && !pit->second.name.empty()) {
