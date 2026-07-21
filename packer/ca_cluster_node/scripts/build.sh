@@ -66,14 +66,20 @@ PACKER_VARS=(
     -var "git_sha=${GIT_SHA}"
 )
 
+# Pointed at TEMPLATE_DIR (not the single ca_cluster_node.pkr.hcl file):
+# Packer's HCL2 loader only reads the exact file it's given when that file
+# is passed directly, so variables.pkr.hcl's declarations in the same
+# directory were never being loaded - every -var above failed real runs
+# with "Undefined -var variable ... place this block in one of your .pkr
+# files, such as variables.pkr.hcl", the block it was already in.
 echo "[build] packer init"
-packer init "${TEMPLATE_DIR}/ca_cluster_node.pkr.hcl"
+packer init "${TEMPLATE_DIR}"
 
 echo "[build] packer validate"
-packer validate "${PACKER_VARS[@]}" "${TEMPLATE_DIR}/ca_cluster_node.pkr.hcl"
+packer validate "${PACKER_VARS[@]}" "${TEMPLATE_DIR}"
 
 echo "[build] packer build"
-packer build "${PACKER_VARS[@]}" "${TEMPLATE_DIR}/ca_cluster_node.pkr.hcl"
+packer build "${PACKER_VARS[@]}" "${TEMPLATE_DIR}"
 
 AMI_ID="$(python3 -c "
 import json
