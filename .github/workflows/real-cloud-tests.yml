@@ -373,6 +373,47 @@ jobs:
           echo "::error::Packer install failed after 3 attempts" >&2
           exit 1
 
+      # extract-binary.sh's Docker build (invoked by "Build AMI" below)
+      # COPYs this entire checkout into the build context, and
+      # docker/ca_cluster_node/Dockerfile's cmake configure step expects
+      # vcpkg_installed/<triplet> to already be populated there
+      # (-DCMAKE_PREFIX_PATH=/src/vcpkg_installed/$TRIPLET) - it never runs
+      # vcpkg itself. Without this, folly_FOUND/httplib_FOUND are false
+      # (CMakeLists.txt lines ~512-518), cmd/ca_cluster_node is never
+      # add_subdirectory'd, and the Docker build fails "ninja: error:
+      # unknown target 'ca_cluster_node'" - this bundle had never actually
+      # built on a fresh runner before Task 12's real verification caught
+      # it. Same triplet/feature set as ci.yml's/this workflow's own aws
+      # job, keyed on matrix.arch rather than runner.arch since Packer's
+      # arch naming (amd64/arm64) is already unambiguous here.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            echo "value=arm64-linux" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ matrix.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
       - name: Build AMI
         run: |
           packer/ca_cluster_node/scripts/build.sh \
