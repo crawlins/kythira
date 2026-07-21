@@ -263,13 +263,46 @@ jobs:
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^aws_quorum_manager_real_ec2_test$' --output-on-failure
 
+      # Both ca-cluster-node bundles need a pre-built AMI with
+      # /usr/local/bin/ca_cluster_node already installed (they SSH in and
+      # start the binary directly - unlike ec2-quorum-manager, which only
+      # needs a generic AMI). The ami-build job below produces exactly this,
+      # tagged kythira:component=ca-cluster-node / kythira:arch, but is its
+      # own independent, rarely-run bundle (it creates a new AMI + snapshot
+      # every invocation, so it isn't run automatically alongside these
+      # tests) - resolve the latest one already built rather than depending
+      # on ami-build having just run in this same workflow invocation.
+      - name: Resolve ca_cluster_node AMI ID
+        if: ${{ env.BUNDLE_CA_CLUSTER == 'true' || env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
+        id: resolve-ca-cluster-ami
+        run: |
+          if [ "${{ runner.arch }}" = "ARM64" ]; then
+            ARCH=arm64
+          else
+            ARCH=amd64
+          fi
+          AMI_ID=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=tag:kythira:component,Values=ca-cluster-node" "Name=tag:kythira:arch,Values=${ARCH}" \
+            --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
+            --output text)
+          if [ -z "${AMI_ID}" ] || [ "${AMI_ID}" = "None" ]; then
+            echo "::error::No kythira:component=ca-cluster-node AMI found for architecture ${ARCH}. Run the ami-build bundle at least once first (aws_bundle_ami_build workflow_dispatch input, or REAL_CLOUD_TESTS_AWS_AMI_BUILD_ENABLED)." >&2
+            exit 1
+          fi
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+
       - name: Run ca-cluster-node bundle
         if: ${{ env.BUNDLE_CA_CLUSTER == 'true' }}
+        env:
+          KYTHIRA_EC2_TEST_AMI: ${{ steps.resolve-ca-cluster-ami.outputs.ami_id }}
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_real_ec2_test$' --output-on-failure
 
       - name: Run ca-cluster-node-rpc-tls bundle
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
+        env:
+          KYTHIRA_EC2_TEST_AMI: ${{ steps.resolve-ca-cluster-ami.outputs.ami_id }}
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_rpc_tls_real_ec2_test$' --output-on-failure
 
