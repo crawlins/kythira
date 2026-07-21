@@ -574,7 +574,15 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
 
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0);
-        ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
+        auto start_out = ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
+        // Diagnostic: the start command's own output was previously
+        // discarded entirely. If the shell never even got to set up the
+        // > file 2>&1 redirect (e.g. a parse issue with the multi-line
+        // command string), whatever it printed would only ever be visible
+        // here, on the ssh channel itself, not in the log file.
+        std::cerr << "=== start node " << (i + 1) << " (" << public_ips[i]
+                  << ") ssh_execute output ===\n"
+                  << start_out << "\n";
     }
 
     // Wait for the cluster to bootstrap and elect a leader, then confirm it
