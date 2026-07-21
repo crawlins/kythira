@@ -57,6 +57,7 @@
 #include <aws/ec2/model/ModifySubnetAttributeRequest.h>
 #include <aws/ec2/model/ReleaseAddressRequest.h>
 #include <aws/ec2/model/AssociateRouteTableRequest.h>
+#include <aws/ec2/model/TerminateInstancesRequest.h>
 #include <aws/sts/STSClient.h>
 #include <aws/sts/model/GetCallerIdentityRequest.h>
 
@@ -159,9 +160,11 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     BOOST_REQUIRE(session != nullptr);
     BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
 
-    int rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
-                                                   private_key_pem.data(), private_key_pem.size(),
-                                                   nullptr);
+    // "ubuntu", not "ec2-user": the AMI this test SSHes into is Packer-built
+    // from Ubuntu 24.04 (packer/ca_cluster_node/ca_cluster_node.pkr.hcl),
+    // not Amazon Linux - ec2-user is Amazon Linux's default SSH user.
+    int rc = libssh2_userauth_publickey_frommemory(
+        session, "ubuntu", 6, nullptr, 0, private_key_pem.data(), private_key_pem.size(), nullptr);
     BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
 
     LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
@@ -331,6 +334,46 @@ struct three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup
         kythira::testing::aws_real_ec2::g_active_aws_fixture.store(nullptr,
                                                                    std::memory_order_release);
 
+        // The test body provisions its 3 cluster nodes via
+        // aws_ec2_quorum_manager::provision_node(), which has no matching
+        // teardown-time cleanup of its own (the manager never tracks or
+        // terminates what it provisions - that's the caller's job via
+        // decommission_node(), which this test never calls). Without this,
+        // every run - pass or fail - leaked 3 real running EC2 instances
+        // forever, which in turn made the subnet/VPC deletes below fail
+        // silently too (a VPC with running instances inside it can't be
+        // deleted). Querying by vpc_id here means this doesn't need the
+        // test body to track instance IDs itself.
+        if (!vpc_id.empty()) {
+            Aws::EC2::Model::DescribeInstancesRequest desc;
+            Aws::EC2::Model::Filter vpc_filter;
+            vpc_filter.SetName("vpc-id");
+            vpc_filter.AddValues(vpc_id);
+            desc.AddFilters(vpc_filter);
+            Aws::EC2::Model::Filter state_filter;
+            state_filter.SetName("instance-state-name");
+            state_filter.AddValues("pending");
+            state_filter.AddValues("running");
+            state_filter.AddValues("stopping");
+            state_filter.AddValues("stopped");
+            desc.AddFilters(state_filter);
+            auto desc_out = ec2->DescribeInstances(desc);
+            if (desc_out.IsSuccess()) {
+                Aws::EC2::Model::TerminateInstancesRequest term;
+                bool any = false;
+                for (const auto& res : desc_out.GetResult().GetReservations()) {
+                    for (const auto& inst : res.GetInstances()) {
+                        term.AddInstanceIds(inst.GetInstanceId());
+                        any = true;
+                    }
+                }
+                if (any) {
+                    ec2->TerminateInstances(term);
+                    std::this_thread::sleep_for(std::chrono::seconds{30});
+                }
+            }
+        }
+
         if (!key_name.empty()) {
             Aws::EC2::Model::DeleteKeyPairRequest req;
             req.SetKeyName(key_name);
@@ -361,10 +404,20 @@ struct three_az_network_fixture : kythira::testing::aws_real_ec2::signal_cleanup
             req.SetInternetGatewayId(igw_id);
             ec2->DeleteInternetGateway(req);
         }
+        // Retried: AWS's own dependency resolution after ENI teardown can
+        // lag past when everything above already reports gone. See
+        // aws_quorum_manager_real_ec2_test.cpp's identical fix for the full
+        // rationale (found via the same real-AWS leaked-VPC investigation).
         if (!vpc_id.empty()) {
-            Aws::EC2::Model::DeleteVpcRequest req;
-            req.SetVpcId(vpc_id);
-            ec2->DeleteVpc(req);
+            auto vpc_deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};
+            while (std::chrono::steady_clock::now() < vpc_deadline) {
+                Aws::EC2::Model::DeleteVpcRequest req;
+                req.SetVpcId(vpc_id);
+                if (ec2->DeleteVpc(req).IsSuccess()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{15});
+            }
         }
 
         for (auto& r : cost_report.resources) {
@@ -436,6 +489,12 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
+    // own architecture (resolved by CI to the build host's arch) or
+    // RunInstances rejects the request outright.
+#if defined(__aarch64__) || defined(__arm64__)
+    cfg.instance_type = "t4g.micro";
+#endif
     cfg.user_data_template = make_user_data();  // installs the unseal key only; see its own comment
     for (const auto& [az, subnet_id] : subnet_by_az) {
         cfg.topology.groups.push_back({.group_id = az, .target_count = 1});
