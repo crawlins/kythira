@@ -1401,7 +1401,10 @@ BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::t
     // For simplicity, just verify maintain_quorum didn't throw.
 }
 
-BOOST_AUTO_TEST_CASE(nine_node_full_cluster_healthy, *boost::unit_test::timeout(1200)) {
+// 1500s (was 1200s): teardown()'s DeleteVpc/DeleteNetworkAcl retries can now
+// add up to ~5.5 minutes on top of each case's own real work, which pushed
+// two of these four 9-node/3-AZ cases past the old 1200s cap on real CI runs.
+BOOST_AUTO_TEST_CASE(nine_node_full_cluster_healthy, *boost::unit_test::timeout(1500)) {
     kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& az : {"AZ1", "AZ2", "AZ3"}) {
@@ -1422,7 +1425,7 @@ BOOST_AUTO_TEST_CASE(nine_node_full_cluster_healthy, *boost::unit_test::timeout(
     }
 }
 
-BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::timeout(1200)) {
+BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::timeout(1500)) {
     // Provision 9 nodes (3 per AZ), then:
     // - AZ3: terminate all 3 (simulates AZ outage)
     // - AZ2: terminate 1 (simulates rolling hardware failure)
@@ -1459,7 +1462,7 @@ BOOST_AUTO_TEST_CASE(az_outage_during_rolling_deployment, *boost::unit_test::tim
     BOOST_CHECK_NO_THROW(mgr.maintain_quorum(cluster).get());
 }
 
-BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::timeout(1200)) {
+BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::timeout(1500)) {
     // Second manager uses an invalid subnet for AZ3 so RunInstances fails.
     // AZ3 terminate + AZ2 termination.
     // maintain_quorum (broken mgr): AZ3 provisions fail (logged), AZ2 provision succeeds.
@@ -1506,7 +1509,7 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
                 health.status == kythira::quorum_status::critical);
 }
 
-BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_test::timeout(1200)) {
+BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_test::timeout(1500)) {
     // Apply deny-all NACL to AZ3 subnet (blocks data plane) then terminate AZ3.
     // maintain_quorum provisions replacement AZ3 instances — RunInstances succeeds
     // through the EC2 control plane even though AZ3's data plane is blocked.
