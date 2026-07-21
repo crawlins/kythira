@@ -608,8 +608,15 @@ auto make_rpc_tls_user_data(const rpc_tls_three_az_network_fixture& fx) -> std::
 // was originally tuned against.
 auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, bool bootstrap,
                         bool use_rpc_tls_flags) -> std::string {
+    // sudo: make_rpc_tls_user_data()'s script runs as root (cloud-init) and
+    // leaves /etc/ca_cluster_node/unseal.key and the RPC TLS bootstrap
+    // cert/key at mode 600 (root-only) — this command runs over SSH as
+    // "ubuntu" (see ssh_execute()), which can't read any of them without
+    // this, causing ca_cluster_node to fail immediately and silently. See
+    // ca_cluster_node_real_ec2_test.cpp's identical fix for the full
+    // rationale (found via the same real-AWS investigation).
     std::ostringstream cmd;
-    cmd << "nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
+    cmd << "sudo nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN

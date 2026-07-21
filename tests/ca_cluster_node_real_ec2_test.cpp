@@ -462,8 +462,16 @@ auto make_user_data() -> std::string {
 
 auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, bool bootstrap)
     -> std::string {
+    // sudo: make_user_data()'s script runs as root (cloud-init) and leaves
+    // /etc/ca_cluster_node/unseal.key at mode 600 (root-only) and
+    // /var/lib/ca_cluster_node owned by root — this command runs over SSH
+    // as "ubuntu" (see ssh_execute()), which can neither read the unseal
+    // key nor write the data dir without it, causing ca_cluster_node to
+    // fail immediately and silently (stderr goes to a log file on the
+    // instance the test never inspects) — the leader-election poll below
+    // then just spins until its own timeout with no indication why.
     std::ostringstream cmd;
-    cmd << "nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
+    cmd << "sudo nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN
