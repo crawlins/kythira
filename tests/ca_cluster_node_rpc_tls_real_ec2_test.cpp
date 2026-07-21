@@ -174,9 +174,11 @@ auto ssh_execute(const std::string& public_ip, const std::string& private_key_pe
     BOOST_REQUIRE(session != nullptr);
     BOOST_REQUIRE_GE(libssh2_session_handshake(session, sock), 0);
 
-    int rc = libssh2_userauth_publickey_frommemory(session, "ec2-user", 8, nullptr, 0,
-                                                   private_key_pem.data(), private_key_pem.size(),
-                                                   nullptr);
+    // "ubuntu", not "ec2-user": the AMI this test SSHes into is Packer-built
+    // from Ubuntu 24.04 (packer/ca_cluster_node/ca_cluster_node.pkr.hcl),
+    // not Amazon Linux - ec2-user is Amazon Linux's default SSH user.
+    int rc = libssh2_userauth_publickey_frommemory(
+        session, "ubuntu", 6, nullptr, 0, private_key_pem.data(), private_key_pem.size(), nullptr);
     BOOST_REQUIRE_MESSAGE(rc == 0, "SSH auth failed, rc=" + std::to_string(rc));
 
     LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
@@ -357,15 +359,61 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         kythira::testing::aws_real_ec2::g_active_aws_fixture.store(nullptr,
                                                                    std::memory_order_release);
 
+        // Same gap as ca_cluster_node_real_ec2_test.cpp: aws_ec2_quorum_manager
+        // never tracks or terminates what it provisions, and none of this
+        // file's 4 test cases call decommission_node() either - every run
+        // leaked all its cluster nodes (and blocked the subnet/VPC deletes
+        // below, since a VPC with running instances inside can't be
+        // deleted) until now. Queried by vpc_id so the test bodies don't
+        // need to track instance IDs themselves.
+        if (!vpc_id.empty()) {
+            Aws::EC2::Model::DescribeInstancesRequest desc;
+            Aws::EC2::Model::Filter vpc_filter;
+            vpc_filter.SetName("vpc-id");
+            vpc_filter.AddValues(vpc_id);
+            desc.AddFilters(vpc_filter);
+            Aws::EC2::Model::Filter state_filter;
+            state_filter.SetName("instance-state-name");
+            state_filter.AddValues("pending");
+            state_filter.AddValues("running");
+            state_filter.AddValues("stopping");
+            state_filter.AddValues("stopped");
+            desc.AddFilters(state_filter);
+            auto desc_out = ec2->DescribeInstances(desc);
+            if (desc_out.IsSuccess()) {
+                Aws::EC2::Model::TerminateInstancesRequest term;
+                bool any = false;
+                for (const auto& res : desc_out.GetResult().GetReservations()) {
+                    for (const auto& inst : res.GetInstances()) {
+                        term.AddInstanceIds(inst.GetInstanceId());
+                        any = true;
+                    }
+                }
+                if (any) {
+                    ec2->TerminateInstances(term);
+                    std::this_thread::sleep_for(std::chrono::seconds{30});
+                }
+            }
+        }
+
         // Restore any AZ still isolated before deleting the NACL itself.
         for (const auto& [az, assoc_id] : original_nacl_assoc_by_az) {
             (void)assoc_id;
             restore_az(az);
         }
+        // Retried: an association that only just cleared (from restore_az()
+        // above, or ordinary API eventual consistency) can briefly still
+        // block this delete.
         if (!deny_all_nacl_id.empty()) {
-            Aws::EC2::Model::DeleteNetworkAclRequest req;
-            req.SetNetworkAclId(deny_all_nacl_id);
-            ec2->DeleteNetworkAcl(req);
+            auto nacl_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+            while (std::chrono::steady_clock::now() < nacl_deadline) {
+                Aws::EC2::Model::DeleteNetworkAclRequest req;
+                req.SetNetworkAclId(deny_all_nacl_id);
+                if (ec2->DeleteNetworkAcl(req).IsSuccess()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{5});
+            }
         }
 
         if (!key_name.empty()) {
@@ -398,10 +446,20 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
             req.SetInternetGatewayId(igw_id);
             ec2->DeleteInternetGateway(req);
         }
+        // Retried: AWS's own dependency resolution after ENI teardown can
+        // lag past when everything above already reports gone. See
+        // aws_quorum_manager_real_ec2_test.cpp's identical fix for the full
+        // rationale (found via the same real-AWS leaked-VPC investigation).
         if (!vpc_id.empty()) {
-            Aws::EC2::Model::DeleteVpcRequest req;
-            req.SetVpcId(vpc_id);
-            ec2->DeleteVpc(req);
+            auto vpc_deadline = std::chrono::steady_clock::now() + std::chrono::minutes{5};
+            while (std::chrono::steady_clock::now() < vpc_deadline) {
+                Aws::EC2::Model::DeleteVpcRequest req;
+                req.SetVpcId(vpc_id);
+                if (ec2->DeleteVpc(req).IsSuccess()) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::seconds{15});
+            }
         }
 
         for (auto& r : cost_report.resources) {
@@ -509,8 +567,15 @@ struct rpc_tls_three_az_network_fixture : kythira::testing::aws_real_ec2::signal
         Aws::EC2::Model::ReplaceNetworkAclAssociationRequest replace;
         replace.SetAssociationId(it->second);
         replace.SetNetworkAclId(default_nacl_id);
-        ec2->ReplaceNetworkAclAssociation(replace);
-        original_nacl_assoc_by_az.erase(it);
+        // Only erase the tracking entry on success - same rationale as
+        // aws_quorum_manager_real_ec2_test.cpp's restore_az3_nacl() fix: a
+        // failed restore left unerased means teardown()'s deny_all_nacl_id
+        // deletion below still has this fix's chance to retry via a
+        // subsequent call, instead of silently treating a failed restore as
+        // done and leaving the NACL association-blocked and undeletable.
+        if (ec2->ReplaceNetworkAclAssociation(replace).IsSuccess()) {
+            original_nacl_assoc_by_az.erase(it);
+        }
     }
 };
 
@@ -702,6 +767,12 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
+    // own architecture (resolved by CI to the build host's arch) or
+    // RunInstances rejects the request outright.
+#if defined(__aarch64__) || defined(__arm64__)
+    cfg.instance_type = "t4g.micro";
+#endif
     cfg.user_data_template = make_rpc_tls_user_data(*this);
     for (const auto& [az, subnet_id] : subnet_by_az) {
         cfg.topology.groups.push_back({.group_id = az, .target_count = 1});
@@ -781,6 +852,12 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
+    // own architecture (resolved by CI to the build host's arch) or
+    // RunInstances rejects the request outright.
+#if defined(__aarch64__) || defined(__arm64__)
+    cfg.instance_type = "t4g.micro";
+#endif
     cfg.user_data_template = make_rpc_tls_user_data(*this);
     std::vector<std::string> azs;
     for (const auto& [az, subnet_id] : subnet_by_az) {
@@ -861,6 +938,12 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
+    // own architecture (resolved by CI to the build host's arch) or
+    // RunInstances rejects the request outright.
+#if defined(__aarch64__) || defined(__arm64__)
+    cfg.instance_type = "t4g.micro";
+#endif
     cfg.user_data_template = make_rpc_tls_user_data(*this);
     std::vector<std::string> azs;
     for (const auto& [az, subnet_id] : subnet_by_az) {
@@ -943,6 +1026,12 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
+    // own architecture (resolved by CI to the build host's arch) or
+    // RunInstances rejects the request outright.
+#if defined(__aarch64__) || defined(__arm64__)
+    cfg.instance_type = "t4g.micro";
+#endif
     cfg.user_data_template = make_rpc_tls_user_data(*this);
     std::vector<std::string> azs;
     for (const auto& [az, subnet_id] : subnet_by_az) {
