@@ -1509,7 +1509,13 @@ BOOST_AUTO_TEST_CASE(az_outage_provision_fails_in_broken_az, *boost::unit_test::
                 health.status == kythira::quorum_status::critical);
 }
 
-BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_test::timeout(1500)) {
+// 2400s: this case alone hit the SIGALRM timeout on two separate real CI
+// runs at 1500s (both times during fixture teardown, per the checkpoint
+// log), while its three 1500s-timeout siblings above never have. Its own
+// scenario work (deliberately breaking AZ3's networking, then confirming
+// new-instance-launch behavior specifically there) runs closer to the cap
+// than the others even before teardown's own retries are added on top.
+BOOST_AUTO_TEST_CASE(az_outage_instances_launch_but_cannot_join, *boost::unit_test::timeout(2400)) {
     // Apply deny-all NACL to AZ3 subnet (blocks data plane) then terminate AZ3.
     // maintain_quorum provisions replacement AZ3 instances — RunInstances succeeds
     // through the EC2 control plane even though AZ3's data plane is blocked.
