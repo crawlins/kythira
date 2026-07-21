@@ -489,6 +489,12 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     cfg.node_port = 7000;
     cfg.aws.region = region();
     cfg.security_group_ids = {sg_id};
+    // Without this, RunInstances never attaches this fixture's own key pair
+    // (key_name/private_key_pem below) to any provisioned node, so every
+    // SSH auth attempt against a manager-provisioned node fails
+    // unconditionally regardless of username - the key material this test
+    // holds was never placed on the instance in the first place.
+    cfg.key_name = key_name;
     // instance_type defaults to "t3.micro" (x86_64) - must match the AMI's
     // own architecture (resolved by CI to the build host's arch) or
     // RunInstances rejects the request outright.
