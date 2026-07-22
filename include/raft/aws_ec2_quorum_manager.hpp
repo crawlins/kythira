@@ -20,7 +20,9 @@
 #include <aws/ec2/model/SpotMarketOptions.h>
 #include <aws/ec2/model/Tag.h>
 #include <aws/ec2/model/TerminateInstancesRequest.h>
+#include <aws/core/utils/Array.h>
 #include <aws/core/utils/HashingUtils.h>
+#include <aws/core/utils/base64/Base64.h>
 
 #include <algorithm>
 #include <chrono>
@@ -297,6 +299,32 @@ public:
             if (!_cfg.key_name.empty()) {
                 run_req.SetKeyName(_cfg.key_name);
             }
+            if (!_cfg.user_data_template.empty()) {
+                // render_user_data() needs the post-launch instance-derived
+                // NodeId for {NODE_ID}, which doesn't exist yet at this
+                // point - substitute only what's already known
+                // ({NODE_PORT}, {CLUSTER}, {AZ}) and set it directly.
+                // Templates using {NODE_ID} are a known limitation; none of
+                // this project's current callers use it. Previously this
+                // was entirely unset (the two no-op comment blocks further
+                // down are what's left of that), so user_data_template
+                // silently never reached any instance regardless of
+                // whether it needed substitution at all.
+                std::string rendered = _cfg.user_data_template;
+                auto replace_all = [&](const std::string& from, const std::string& to) {
+                    std::size_t pos = 0;
+                    while ((pos = rendered.find(from, pos)) != std::string::npos) {
+                        rendered.replace(pos, from.size(), to);
+                        pos += to.size();
+                    }
+                };
+                replace_all("{NODE_PORT}", std::to_string(_cfg.node_port));
+                replace_all("{CLUSTER}", _cfg.cluster_name);
+                replace_all("{AZ}", target_group);
+                Aws::Utils::ByteBuffer user_data_bytes(
+                    reinterpret_cast<const unsigned char*>(rendered.data()), rendered.size());
+                run_req.SetUserData(Aws::Utils::Base64::Base64().Encode(user_data_bytes));
+            }
             if (auto pit = _cfg.placement_by_group.find(target_group);
                 pit != _cfg.placement_by_group.end() && !pit->second.name.empty()) {
                 Aws::EC2::Model::Placement placement;
@@ -334,11 +362,6 @@ public:
 
             // Node identity is the numeric value of the EC2 instance ID.
             NodeId new_id = ec2_id_to_node_id(ec2_id);
-
-            if (!_cfg.user_data_template.empty()) {
-                // user_data was set before RunInstances; rendered via separate pass here
-                // for tag-based placeholders (node_id is now known).
-            }
 
             std::string market_tag = _cfg.spot_options ? "spot" : "on-demand";
             apply_tags(ec2_id, new_id, target_group, market_tag);
@@ -378,14 +401,6 @@ public:
                 term.AddInstanceIds(ec2_id);
                 _ec2->TerminateInstances(term);
                 throw std::runtime_error("ec2 provision timeout for " + ec2_id);
-            }
-
-            if (!_cfg.user_data_template.empty()) {
-                // UserData was already encoded and passed at RunInstances time;
-                // placeholder rendering must happen before RunInstances. Since
-                // new_id is now known, callers that need {NODE_ID} substitution
-                // should use render_user_data and set UserData before this call.
-                // This path is intentionally a no-op here.
             }
 
             Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
