@@ -471,8 +471,16 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     // fail immediately and silently (stderr goes to a log file on the
     // instance the test never inspects) — the leader-election poll below
     // then just spins until its own timeout with no indication why.
+    // setsid, not just nohup+disown: the started process produced zero
+    // output and never even created its log file on a real run - nohup
+    // only makes the process ignore SIGHUP, but doesn't remove it from the
+    // SSH channel's own session/process group, which sshd can still tear
+    // down as a unit when the channel closes (which happens almost
+    // immediately here, since the invoking shell has nothing left to do
+    // once it backgrounds the job). setsid fully detaches into a brand
+    // new session, immune to that regardless of what sshd does on close.
     std::ostringstream cmd;
-    cmd << "sudo nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
+    cmd << "sudo setsid nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN

@@ -615,8 +615,13 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     // this, causing ca_cluster_node to fail immediately and silently. See
     // ca_cluster_node_real_ec2_test.cpp's identical fix for the full
     // rationale (found via the same real-AWS investigation).
+    // setsid too: see ca_cluster_node_real_ec2_test.cpp's identical fix -
+    // nohup alone doesn't remove the process from the SSH channel's own
+    // session/process group, which sshd can tear down as a unit when the
+    // channel closes (which happens almost immediately once the invoking
+    // shell backgrounds the job and has nothing left to do).
     std::ostringstream cmd;
-    cmd << "sudo nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
+    cmd << "sudo setsid nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN
