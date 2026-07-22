@@ -1288,23 +1288,20 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     // maintenance thread's existing retry behavior is what's under test
     // here, distinct from restarted_node_rejoins_without_bootstrap_credential's
     // restart path.
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(3);
-    bool rejoined = false;
-    while (std::chrono::steady_clock::now() < deadline) {
-        auto out =
-            ssh_execute(public_ips[2], private_key_pem,
-                        "curl -sf -o /dev/null -w '%{http_code}' "
-                        "-H 'Authorization: Bearer " +
-                            std::string(TEST_AUTH_TOKEN) + "' http://localhost:8443/v1/root-ca",
-                        std::chrono::seconds(15));
-        if (out == "200") {
-            rejoined = true;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-    }
+    //
+    // /healthz, not /v1/root-ca: find_leader_ip() above documents that a 200
+    // from /v1/root-ca specifically means "is currently leader" -
+    // require_leader_or_redirect() in main.cpp returns 308/503 for a
+    // non-leader on that endpoint. Nodes 1/2 stayed the majority through the
+    // whole isolation window, so one of them is almost certainly still
+    // leader once node 3 rejoins - node 3 legitimately never gets to 200 on
+    // /v1/root-ca as a healthy follower, which is what actually caused the
+    // real failure this comment replaces. What this check needs is "is the
+    // process back up and serving", which is exactly what wait_healthy()
+    // polls elsewhere in this file.
+    bool rejoined = wait_healthy(public_ips[2], private_key_pem, std::chrono::minutes(3));
     BOOST_REQUIRE_MESSAGE(rejoined,
-                          "previously-isolated node's own /v1/root-ca never became reachable "
+                          "previously-isolated node's own /healthz never became reachable "
                           "again after restoring its network");
 
     for (const auto& p : cluster) {
