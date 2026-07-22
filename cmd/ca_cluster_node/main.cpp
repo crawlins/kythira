@@ -277,6 +277,24 @@ auto split_host_port(const std::string& url) -> std::pair<std::string, int> {
 // regardless of whatever state this node's or the leader's RPC-TLS
 // transport is currently in. Mirrors the same leader/follower split
 // acquire_rpc_peer_certificate() below already uses for CSR signing.
+// Best-effort GET of one address's own /v1/root-ca. Used both for the
+// Raft-known leader (the common case) and for the blind per-peer fallback
+// below - a non-leader peer just answers 308/503 (require_leader_or_
+// redirect()) or refuses the connection outright, which this treats
+// identically to "not this one, try the next".
+[[nodiscard]] inline auto try_fetch_root_cert_pem_from(const std::string& http_address,
+                                                       const std::string& auth_token)
+    -> std::optional<std::string> {
+    auto [host, port] = split_host_port(http_address);
+    httplib::Client client(host, port);
+    client.enable_server_certificate_verification(false);
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(10, 0);
+    auto res = client.Get("/v1/root-ca", {{"Authorization", "Bearer " + auth_token}});
+    if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
+    return res->body;
+}
+
 template<typename Types>
 auto fetch_root_cert_pem(kythira::node<Types>& raft_node,
                          const ca_cluster_node::ca_cluster_node_config& cfg)
@@ -291,19 +309,44 @@ auto fetch_root_cert_pem(kythira::node<Types>& raft_node,
         }
     }
 
-    auto leader_id = raft_node.known_leader();
-    if (!leader_id.has_value()) return std::nullopt;
-    auto leader_http = cfg.http_address_for(*leader_id);
-    if (!leader_http.has_value()) return std::nullopt;
+    // Prefer the Raft-learned leader when known - one HTTP call, same as
+    // this function's original (leader-only) behavior.
+    if (auto leader_id = raft_node.known_leader(); leader_id.has_value()) {
+        if (auto leader_http = cfg.http_address_for(*leader_id); leader_http.has_value()) {
+            if (auto pem = try_fetch_root_cert_pem_from(*leader_http, cfg.auth_token)) {
+                return pem;
+            }
+        }
+    }
 
-    auto [host, port] = split_host_port(*leader_http);
-    httplib::Client client(host, port);
-    client.enable_server_certificate_verification(false);
-    client.set_connection_timeout(5, 0);
-    client.set_read_timeout(10, 0);
-    auto res = client.Get("/v1/root-ca", {{"Authorization", "Bearer " + cfg.auth_token}});
-    if (!res || res->status != 200 || res->body.empty()) return std::nullopt;
-    return res->body;
+    // Fall back to asking every configured peer directly by its static
+    // client-facing address, not only whichever leader this node has
+    // learned via Raft RPC. known_leader() can stay permanently empty for
+    // a node that hasn't yet widened its own RPC-TLS accept policy (see
+    // maybe_widen_rpc_trust_policy()): once any peer switches its
+    // PRESENTED identity to a CA-issued cert (maybe_acquire_rpc_identity,
+    // after k_identity_acquire_grace), a not-yet-widened node rejects that
+    // peer's connections in both directions - including the leader's own
+    // AppendEntries, which is how known_leader() would normally get
+    // populated in the first place. That is a real deadlock on real AWS
+    // infrastructure (observed: a node's data directory staying completely
+    // empty - no persisted Raft term/voted_for, let alone a peer cert -
+    // while its log filled with "peer certificate rejected by trust
+    // policy" against every peer, indefinitely), not merely a slow
+    // convergence. Every peer's client-facing HTTP API is a separate
+    // transport and trust boundary from RPC TLS (bearer-token
+    // authenticated, TLS verification deliberately disabled - see
+    // acquire_rpc_peer_certificate()'s own comment) and keeps working
+    // regardless of RPC-TLS state, so trying each configured peer's
+    // address directly breaks the deadlock: only the actual leader answers
+    // 200, every other peer answers 308/503 or refuses the connection and
+    // is simply skipped.
+    for (const auto& p : cfg.peers) {
+        if (auto pem = try_fetch_root_cert_pem_from(p.http_address, cfg.auth_token)) {
+            return pem;
+        }
+    }
+    return std::nullopt;
 }
 
 // Requirement 5.1: obtains a signed certificate for this node's own RPC
