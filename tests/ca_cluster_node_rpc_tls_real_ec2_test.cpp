@@ -1092,6 +1092,28 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
             std::this_thread::sleep_for(std::chrono::seconds(5));
         }
     }
+    if (!peer_cert_present) {
+        // Diagnostic: two prior real runs failed here identically even
+        // after bumping this to a 2-minute poll, so the wait itself isn't
+        // the problem - dump real state instead of tuning the timeout
+        // further. std::cerr, not BOOST_TEST_MESSAGE: this project's
+        // real-ec2 tests run under Boost.Test's default log level, which
+        // doesn't print message-level output at all.
+        for (const auto& ip : public_ips) {
+            try {
+                auto dump = ssh_execute(
+                    ip, private_key_pem,
+                    "echo '--- /var/lib/ca_cluster_node ---'; sudo ls -la /var/lib/ca_cluster_node "
+                    "2>&1; echo '--- /etc/ca_cluster_node ---'; sudo ls -la /etc/ca_cluster_node "
+                    "2>&1; echo '--- log tail (cutover/cert/peer) ---'; sudo grep -i "
+                    "'cutover\\|peer.cert\\|trust' /tmp/ca_cluster_node.log 2>&1 | tail -50",
+                    std::chrono::seconds(30));
+                std::cerr << "=== " << ip << " state ===\n" << dump << "\n";
+            } catch (const std::exception& e) {
+                std::cerr << "=== " << ip << ": could not fetch state: " << e.what() << "\n";
+            }
+        }
+    }
     BOOST_REQUIRE_MESSAGE(peer_cert_present,
                           "target node's persisted peer certificate not found before restart");
 
@@ -1211,9 +1233,37 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     // elsewhere in this investigation needing more slack than a
     // reasonable-sounding default assumes.
     std::vector<std::string> surviving_ips{public_ips[0], public_ips[1]};
-    BOOST_REQUIRE_MESSAGE(
-        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4)),
-        "certificate issuance failed using only the two non-isolated nodes");
+    bool first_issuance_ok =
+        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4));
+    if (!first_issuance_ok) {
+        // Diagnostic: bumping this from 2 to 4 minutes (previous commit)
+        // didn't help at all on a real run, meaning this isn't a timing
+        // problem - dump real state (each survivor's own root-ca status
+        // code, and log tails) instead of guessing further. std::cerr, not
+        // BOOST_TEST_MESSAGE: see the other diagnostic in this file for
+        // why.
+        for (const auto& ip : surviving_ips) {
+            try {
+                auto status = ssh_execute(ip, private_key_pem,
+                                          "curl -s -o /dev/null -w '%{http_code}' -D - "
+                                          "-H 'Authorization: Bearer " +
+                                              std::string(TEST_AUTH_TOKEN) +
+                                              "' http://localhost:8443/v1/root-ca 2>&1",
+                                          std::chrono::seconds(15));
+                auto log_tail = ssh_execute(ip, private_key_pem,
+                                            "sudo grep -i 'leader\\|election\\|redirect' "
+                                            "/tmp/ca_cluster_node.log 2>&1 | tail -30",
+                                            std::chrono::seconds(15));
+                std::cerr << "=== " << ip << " /v1/root-ca headers ===\n"
+                          << status << "\n=== " << ip << " recent leader/election log ===\n"
+                          << log_tail << "\n";
+            } catch (const std::exception& e) {
+                std::cerr << "=== " << ip << ": could not fetch state: " << e.what() << "\n";
+            }
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(first_issuance_ok,
+                          "certificate issuance failed using only the two non-isolated nodes");
     // Issue a second one to confirm the majority stays healthy, not just
     // survives one lucky attempt.
     BOOST_REQUIRE_MESSAGE(
