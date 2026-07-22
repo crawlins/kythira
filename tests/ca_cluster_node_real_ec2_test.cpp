@@ -580,6 +580,19 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     }
     std::string peers_arg = peers.str();
 
+    // Diagnostic: confirm basic SSH command execution and sudo both work at
+    // all in this environment before trying anything backgrounded, since
+    // the actual start command has produced zero output on every real run
+    // so far - ruling out a more fundamental issue before continuing to
+    // treat this as strictly a backgrounding/detachment problem.
+    {
+        auto probe = ssh_execute(public_ips[0], private_key_pem,
+                                 "whoami; echo '---'; sudo whoami; echo '---'; "
+                                 "echo hello > /tmp/probe.txt 2>&1; cat /tmp/probe.txt",
+                                 std::chrono::minutes(3));
+        std::cerr << "=== probe on " << public_ips[0] << " ===\n" << probe << "\n";
+    }
+
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0);
         auto start_out = ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
