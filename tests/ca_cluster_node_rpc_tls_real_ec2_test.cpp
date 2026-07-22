@@ -612,14 +612,14 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     // leaves /etc/ca_cluster_node/unseal.key and the RPC TLS bootstrap
     // cert/key at mode 600 (root-only) — this command runs over SSH as
     // "ubuntu" (see ssh_execute()), which can't read any of them without
-    // this, causing ca_cluster_node to fail immediately and silently. See
+    // this.
+    //
+    // Log target is /tmp, not /var/log, and setsid: see
     // ca_cluster_node_real_ec2_test.cpp's identical fix for the full
-    // rationale (found via the same real-AWS investigation).
-    // setsid too: see ca_cluster_node_real_ec2_test.cpp's identical fix -
-    // nohup alone doesn't remove the process from the SSH channel's own
-    // session/process group, which sshd can tear down as a unit when the
-    // channel closes (which happens almost immediately once the invoking
-    // shell backgrounds the job and has nothing left to do).
+    // rationale (found via the same real-AWS investigation) - in short,
+    // the outer "ubuntu" shell opens the redirect target before sudo ever
+    // runs, and ubuntu can't write to /var/log, so the whole command line
+    // silently never ran at all.
     std::ostringstream cmd;
     cmd << "sudo setsid nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
@@ -632,7 +632,7 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
         cmd << " --rpc-tls-cert /etc/ca_cluster_node/rpc_bootstrap.crt"
             << " --rpc-tls-key /etc/ca_cluster_node/rpc_bootstrap.key";
     }
-    cmd << " > /var/log/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
+    cmd << " > /tmp/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
     return cmd.str();
 }
 
