@@ -595,7 +595,17 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         // the boot-finished stage completes.
         ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
                     std::chrono::minutes(3));
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0);
+        // --bootstrap-ca on every node, not just node 1: main.cpp's
+        // maybe_bootstrap() only does real work on whichever node
+        // is_leader() returns true for, and is idempotent afterward
+        // (checks has_root_material() before submitting) - Raft guarantees
+        // at most one leader at a time, so this can't double-bootstrap.
+        // Flagging only node 1 assumed it would win the election, which
+        // Raft's own randomized election timeout does not guarantee -
+        // observed directly on a real run: node 2 won, node 1 (the only
+        // flagged node) never became leader, and the CA was never created
+        // at all, so /v1/root-ca never started responding.
+        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
 
