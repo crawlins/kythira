@@ -986,8 +986,15 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
 // Requirement 4 (Property 5): a fully-cutover node restarts with neither
 // --rpc-tls-cert nor --rpc-tls-key, relying solely on its persisted peer
 // certificate under --data-dir, and rejoins successfully.
+// 1800s (was 1700s): the peer-cert-file check below was changed from a
+// single instant check to a 2-minute poll (a real run showed the target
+// node's own cutover can still be in progress even after the
+// cluster-wide wait_issuance_capable() milestone). Checked against the
+// binary's overall ctest TIMEOUT (9000s): 2*1700 + 1800 + 2000 = 7200s
+// (with network_isolation_during_cutover_recovers's own bump), still
+// under the outer limit.
 BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
-                        rpc_tls_three_az_network_fixture, *boost::unit_test::timeout(1700)) {
+                        rpc_tls_three_az_network_fixture, *boost::unit_test::timeout(1800)) {
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
@@ -1063,13 +1070,29 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     // Target the third node (index 2) — confirm its persisted peer
     // certificate exists before proceeding, proving cutover actually
     // happened for it, not merely that the cluster as a whole is healthy.
+    // wait_issuance_capable() above only proves *some* node can serve a
+    // request - it says nothing about this specific node's own cutover,
+    // which can lag behind the cluster-wide milestone. Poll instead of a
+    // single check immediately afterward (observed failing on a real run
+    // otherwise).
     const std::string& target_ip = public_ips[2];
-    auto peer_cert_check =
-        ssh_execute(target_ip, private_key_pem,
-                    "test -f /var/lib/ca_cluster_node/rpc_peer_cert.pem && echo present || echo "
-                    "missing",
-                    std::chrono::seconds(30));
-    BOOST_REQUIRE_MESSAGE(peer_cert_check.find("present") != std::string::npos,
+    bool peer_cert_present = false;
+    {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto peer_cert_check = ssh_execute(
+                target_ip, private_key_pem,
+                "test -f /var/lib/ca_cluster_node/rpc_peer_cert.pem && echo present || echo "
+                "missing",
+                std::chrono::seconds(30));
+            if (peer_cert_check.find("present") != std::string::npos) {
+                peer_cert_present = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(peer_cert_present,
                           "target node's persisted peer certificate not found before restart");
 
     stop_node_process(target_ip, private_key_pem);
@@ -1096,8 +1119,14 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
 // keep issuing certificates, then restores the subnet and confirms the
 // isolated node rejoins on its own — no process restart — once
 // connectivity returns.
+// 2000s (was 1700s): the post-isolation issuance checks below were bumped
+// from 2 to 4 minutes each (a real run showed 2 minutes isn't always
+// enough for the survivors' own Raft re-election, if the isolated node
+// happened to be leader) - checked against the binary's overall ctest
+// TIMEOUT (9000s, tests/CMakeLists.txt): 3*1700 + 2000 = 7100s, still
+// under the outer limit.
 BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three_az_network_fixture,
-                        *boost::unit_test::timeout(1700)) {
+                        *boost::unit_test::timeout(2000)) {
     std::string ami = env("KYTHIRA_EC2_TEST_AMI");
 
     kythira::aws_ec2_quorum_manager_config cfg;
@@ -1175,14 +1204,20 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     const std::string& isolated_az = azs[2];
     isolate_az(isolated_az);
 
+    // 4 minutes, not 2: if the isolated node happened to be leader at the
+    // moment of isolation, the survivors need a real Raft re-election
+    // before either can serve issuance again - observed failing on a real
+    // run with the 2-minute window, consistent with real AWS/Raft timing
+    // elsewhere in this investigation needing more slack than a
+    // reasonable-sounding default assumes.
     std::vector<std::string> surviving_ips{public_ips[0], public_ips[1]};
     BOOST_REQUIRE_MESSAGE(
-        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(2)),
+        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4)),
         "certificate issuance failed using only the two non-isolated nodes");
     // Issue a second one to confirm the majority stays healthy, not just
     // survives one lucky attempt.
     BOOST_REQUIRE_MESSAGE(
-        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(2)),
+        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4)),
         "certificate issuance failed on a second attempt during isolation");
 
     restore_az(isolated_az);
