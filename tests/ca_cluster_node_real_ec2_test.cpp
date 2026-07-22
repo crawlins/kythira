@@ -591,6 +591,21 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
                                  "echo hello > /tmp/probe.txt 2>&1; cat /tmp/probe.txt",
                                  std::chrono::minutes(3));
         std::cerr << "=== probe on " << public_ips[0] << " ===\n" << probe << "\n";
+
+        // Isolate the backgrounding mechanism itself from sudo and from
+        // ca_cluster_node's own behavior: background a plain sleep, no
+        // sudo, then check on it from a second, separate SSH connection a
+        // moment later.
+        auto bg_out =
+            ssh_execute(public_ips[0], private_key_pem,
+                        "setsid nohup sleep 60 > /tmp/sleep.log 2>&1 < /dev/null &\ndisown\n",
+                        std::chrono::minutes(3));
+        std::cerr << "=== backgrounding probe launch output ===\n" << bg_out << "\n";
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        auto bg_check = ssh_execute(public_ips[0], private_key_pem, "ps aux | grep '[s]leep 60'",
+                                    std::chrono::minutes(3));
+        std::cerr << "=== backgrounding probe check (should show sleep 60) ===\n"
+                  << bg_check << "\n";
     }
 
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
