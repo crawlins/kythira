@@ -183,6 +183,28 @@ inline void aws_signal_cleanup_handler(int sig) {
     raise(sig);
 }
 
+// SIGABRT/SIGSEGV/SIGBUS, not just the "polite" termination signals
+// (SIGTERM/SIGINT/SIGHUP/SIGQUIT): a real-EC2 run that crashes - an
+// uncaught exception reaching std::terminate() (default handler calls
+// abort(), raising SIGABRT), a failed assert(), a segfault in a
+// dependency (libssh2, the AWS SDK's own OpenSSL usage) - previously hit
+// none of the signals this handler covered and skipped teardown()
+// entirely, leaking whatever VPC/instances/NACLs that run had already
+// provisioned exactly like an uncaught ctest TIMEOUT kill would (SIGTERM,
+// already covered, but a genuine crash is a distinct failure mode with
+// the same leak consequence). Calling teardown() - AWS SDK network calls,
+// heap allocation, mutex-protected containers - from a signal handler is
+// not strictly async-signal-safe, and is riskiest for SIGSEGV/SIGBUS
+// specifically, since those indicate the process's memory may already be
+// corrupted; this is a deliberate, accepted trade-off for a test-cleanup
+// path, not production service code: best case, the AWS resources this
+// run owns get torn down before the process dies anyway; worst case,
+// teardown() itself faults or hangs, which is no worse than today's
+// unconditional leak. SA_RESETHAND (below) already makes that worst case
+// safe - the disposition resets to default the moment this handler is
+// invoked, so a second fault of the same signal during teardown() falls
+// straight through to the kernel's default action instead of recursing
+// into this handler again.
 inline void install_aws_signal_handlers() {
     struct sigaction sa{};
     sa.sa_handler = aws_signal_cleanup_handler;
@@ -190,7 +212,7 @@ inline void install_aws_signal_handlers() {
     // SA_RESETHAND: restore default after first invocation so nested signals
     // are not swallowed if teardown itself faults.
     sa.sa_flags = SA_RESETHAND;
-    for (int sig : {SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGPIPE}) {
+    for (int sig : {SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGPIPE, SIGABRT, SIGSEGV, SIGBUS}) {
         sigaction(sig, &sa, nullptr);
     }
 }
