@@ -1080,9 +1080,21 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
     {
         auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
         while (std::chrono::steady_clock::now() < deadline) {
+            // sudo: /var/lib/ca_cluster_node is drwxr-x--- owned by
+            // ca-cluster-node:ca-cluster-node - the "ubuntu" SSH user has
+            // no traversal permission into it at all, so an unprivileged
+            // `test -f` here fails with the same non-zero exit code
+            // whether the file exists or not, always landing on "missing"
+            // regardless of real state. This was the actual bug all
+            // along - the previous two commits' polling/timeout increases
+            // couldn't have helped, since this check was permission-denied
+            // from the very first attempt every single time, confirmed by
+            // a real run's diagnostic dump showing the file genuinely
+            // present via `sudo ls -la` while this exact check still
+            // reported "missing" moments earlier.
             auto peer_cert_check = ssh_execute(
                 target_ip, private_key_pem,
-                "test -f /var/lib/ca_cluster_node/rpc_peer_cert.pem && echo present || echo "
+                "sudo test -f /var/lib/ca_cluster_node/rpc_peer_cert.pem && echo present || echo "
                 "missing",
                 std::chrono::seconds(30));
             if (peer_cert_check.find("present") != std::string::npos) {
