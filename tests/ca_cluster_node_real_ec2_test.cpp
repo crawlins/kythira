@@ -467,25 +467,28 @@ auto start_node_command(std::uint64_t node_id, const std::string& peers_arg, boo
     // /etc/ca_cluster_node/unseal.key at mode 600 (root-only) and
     // /var/lib/ca_cluster_node owned by root — this command runs over SSH
     // as "ubuntu" (see ssh_execute()), which can neither read the unseal
-    // key nor write the data dir without it, causing ca_cluster_node to
-    // fail immediately and silently (stderr goes to a log file on the
-    // instance the test never inspects) — the leader-election poll below
-    // then just spins until its own timeout with no indication why.
-    // setsid, not just nohup+disown: the started process produced zero
-    // output and never even created its log file on a real run - nohup
-    // only makes the process ignore SIGHUP, but doesn't remove it from the
-    // SSH channel's own session/process group, which sshd can still tear
-    // down as a unit when the channel closes (which happens almost
-    // immediately here, since the invoking shell has nothing left to do
-    // once it backgrounds the job). setsid fully detaches into a brand
-    // new session, immune to that regardless of what sshd does on close.
+    // key nor write the data dir without it.
+    //
+    // Log target is /tmp, not /var/log: found via a real-AWS isolation
+    // investigation (three separate probes: plain backgrounding, sudo +
+    // backgrounding, and finally this exact redirect target) that
+    // /var/log/ca_cluster_node.log was the actual problem all along. Shell
+    // redirects are opened by the *invoking* shell before it execs
+    // anything — here that's the outer "ubuntu" shell, before sudo ever
+    // runs — and ubuntu has no write permission in /var/log. That open
+    // failed silently (its error went to a stream ssh_execute() never
+    // reads), so the entire command line — sudo, setsid, nohup, and
+    // ca_cluster_node itself — never ran at all. setsid was added during
+    // the same investigation and is harmless but turned out not to be the
+    // actual fix; kept anyway since it costs nothing and is still the
+    // more correct way to fully detach a backgrounded process over SSH.
     std::ostringstream cmd;
     cmd << "sudo setsid nohup /usr/local/bin/ca_cluster_node --node-id " << node_id
         << " --rpc-port 7000 --http-port 8443 --data-dir /var/lib/ca_cluster_node"
         << " --unseal-key-file /etc/ca_cluster_node/unseal.key"
         << " --peers " << peers_arg << " --auth-token " << TEST_AUTH_TOKEN
         << (bootstrap ? " --bootstrap-ca" : "")
-        << " > /var/log/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
+        << " > /tmp/ca_cluster_node.log 2>&1 < /dev/null &\ndisown\n";
     return cmd.str();
 }
 
@@ -580,60 +583,9 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     }
     std::string peers_arg = peers.str();
 
-    // Diagnostic: confirm basic SSH command execution and sudo both work at
-    // all in this environment before trying anything backgrounded, since
-    // the actual start command has produced zero output on every real run
-    // so far - ruling out a more fundamental issue before continuing to
-    // treat this as strictly a backgrounding/detachment problem.
-    {
-        auto probe = ssh_execute(public_ips[0], private_key_pem,
-                                 "whoami; echo '---'; sudo whoami; echo '---'; "
-                                 "echo hello > /tmp/probe.txt 2>&1; cat /tmp/probe.txt",
-                                 std::chrono::minutes(3));
-        std::cerr << "=== probe on " << public_ips[0] << " ===\n" << probe << "\n";
-
-        // Isolate the backgrounding mechanism itself from sudo and from
-        // ca_cluster_node's own behavior: background a plain sleep, no
-        // sudo, then check on it from a second, separate SSH connection a
-        // moment later.
-        auto bg_out =
-            ssh_execute(public_ips[0], private_key_pem,
-                        "setsid nohup sleep 60 > /tmp/sleep.log 2>&1 < /dev/null &\ndisown\n",
-                        std::chrono::minutes(3));
-        std::cerr << "=== backgrounding probe launch output ===\n" << bg_out << "\n";
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        auto bg_check = ssh_execute(public_ips[0], private_key_pem, "ps aux | grep '[s]leep 60'",
-                                    std::chrono::minutes(3));
-        std::cerr << "=== backgrounding probe check (should show sleep 60) ===\n"
-                  << bg_check << "\n";
-
-        // Same as above, but with sudo added - the actual start_node_command()
-        // combination that has never survived. sleep survives fine without
-        // sudo, so this isolates whether sudo specifically is what breaks
-        // when combined with backgrounding.
-        auto bg_out2 =
-            ssh_execute(public_ips[0], private_key_pem,
-                        "sudo setsid nohup sleep 61 > /tmp/sleep2.log 2>&1 < /dev/null &\ndisown\n",
-                        std::chrono::minutes(3));
-        std::cerr << "=== sudo backgrounding probe launch output ===\n" << bg_out2 << "\n";
-        std::this_thread::sleep_for(std::chrono::seconds(3));
-        auto bg_check2 = ssh_execute(public_ips[0], private_key_pem, "ps aux | grep '[s]leep 61'",
-                                     std::chrono::minutes(3));
-        std::cerr << "=== sudo backgrounding probe check (should show sleep 61) ===\n"
-                  << bg_check2 << "\n";
-    }
-
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0);
-        auto start_out = ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
-        // Diagnostic: the start command's own output was previously
-        // discarded entirely. If the shell never even got to set up the
-        // > file 2>&1 redirect (e.g. a parse issue with the multi-line
-        // command string), whatever it printed would only ever be visible
-        // here, on the ssh channel itself, not in the log file.
-        std::cerr << "=== start node " << (i + 1) << " (" << public_ips[i]
-                  << ") ssh_execute output ===\n"
-                  << start_out << "\n";
+        ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
 
     // Wait for the cluster to bootstrap and elect a leader, then confirm it
@@ -672,7 +624,7 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
         for (const auto& ip : public_ips) {
             try {
                 auto log = ssh_execute(ip, private_key_pem,
-                                       "sudo cat /var/log/ca_cluster_node.log 2>&1; echo; "
+                                       "sudo cat /tmp/ca_cluster_node.log 2>&1; echo; "
                                        "echo '--- ps ---'; ps aux | grep ca_cluster_node",
                                        std::chrono::seconds(30));
                 std::cerr << "=== " << ip << " ca_cluster_node.log ===\n" << log << "\n";
