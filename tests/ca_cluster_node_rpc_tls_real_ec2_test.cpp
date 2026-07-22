@@ -821,7 +821,16 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
         // of three, non-deterministically, tracing back to this race).
         ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
                     std::chrono::minutes(3));
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
+        // --bootstrap-ca on every node started in this loop, not just node
+        // 1: see ca_cluster_node_real_ec2_test.cpp's identical fix for the
+        // full rationale - main.cpp's maybe_bootstrap() only does real
+        // work on whichever node is_leader() returns true for and is
+        // idempotent afterward, so this can't double-bootstrap regardless
+        // of which node actually wins the (randomized) election. Node 3's
+        // separate staggered-join start below correctly stays
+        // bootstrap=false - by the time it joins, the CA already exists
+        // via replication from whichever of these two/three nodes won.
+        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
@@ -927,7 +936,16 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
         // of three, non-deterministically, tracing back to this race).
         ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
                     std::chrono::minutes(3));
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
+        // --bootstrap-ca on every node started in this loop, not just node
+        // 1: see ca_cluster_node_real_ec2_test.cpp's identical fix for the
+        // full rationale - main.cpp's maybe_bootstrap() only does real
+        // work on whichever node is_leader() returns true for and is
+        // idempotent afterward, so this can't double-bootstrap regardless
+        // of which node actually wins the (randomized) election. Node 3's
+        // separate staggered-join start below correctly stays
+        // bootstrap=false - by the time it joins, the CA already exists
+        // via replication from whichever of these two/three nodes won.
+        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
@@ -1020,7 +1038,16 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
         // of three, non-deterministically, tracing back to this race).
         ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
                     std::chrono::minutes(3));
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
+        // --bootstrap-ca on every node started in this loop, not just node
+        // 1: see ca_cluster_node_real_ec2_test.cpp's identical fix for the
+        // full rationale - main.cpp's maybe_bootstrap() only does real
+        // work on whichever node is_leader() returns true for and is
+        // idempotent afterward, so this can't double-bootstrap regardless
+        // of which node actually wins the (randomized) election. Node 3's
+        // separate staggered-join start below correctly stays
+        // bootstrap=false - by the time it joins, the CA already exists
+        // via replication from whichever of these two/three nodes won.
+        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
@@ -1121,7 +1148,16 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
         // of three, non-deterministically, tracing back to this race).
         ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
                     std::chrono::minutes(3));
-        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
+        // --bootstrap-ca on every node started in this loop, not just node
+        // 1: see ca_cluster_node_real_ec2_test.cpp's identical fix for the
+        // full rationale - main.cpp's maybe_bootstrap() only does real
+        // work on whichever node is_leader() returns true for and is
+        // idempotent afterward, so this can't double-bootstrap regardless
+        // of which node actually wins the (randomized) election. Node 3's
+        // separate staggered-join start below correctly stays
+        // bootstrap=false - by the time it joins, the CA already exists
+        // via replication from whichever of these two/three nodes won.
+        auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/true,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
