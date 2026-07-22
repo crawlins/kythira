@@ -606,6 +606,21 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
                                     std::chrono::minutes(3));
         std::cerr << "=== backgrounding probe check (should show sleep 60) ===\n"
                   << bg_check << "\n";
+
+        // Same as above, but with sudo added - the actual start_node_command()
+        // combination that has never survived. sleep survives fine without
+        // sudo, so this isolates whether sudo specifically is what breaks
+        // when combined with backgrounding.
+        auto bg_out2 =
+            ssh_execute(public_ips[0], private_key_pem,
+                        "sudo setsid nohup sleep 61 > /tmp/sleep2.log 2>&1 < /dev/null &\ndisown\n",
+                        std::chrono::minutes(3));
+        std::cerr << "=== sudo backgrounding probe launch output ===\n" << bg_out2 << "\n";
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        auto bg_check2 = ssh_execute(public_ips[0], private_key_pem, "ps aux | grep '[s]leep 61'",
+                                     std::chrono::minutes(3));
+        std::cerr << "=== sudo backgrounding probe check (should show sleep 61) ===\n"
+                  << bg_check2 << "\n";
     }
 
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
