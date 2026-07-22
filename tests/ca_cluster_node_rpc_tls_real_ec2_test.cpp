@@ -814,6 +814,13 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
 
     std::string peers_arg = build_peers_arg(public_ips);
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        // "running" only means the VM has booted, not that user-data has
+        // finished - see ca_cluster_node_real_ec2_test.cpp's identical fix
+        // for the full rationale (found via the same real-AWS
+        // investigation: an unseal-key-file open failure on one node out
+        // of three, non-deterministically, tracing back to this race).
+        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                    std::chrono::minutes(3));
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
@@ -913,6 +920,13 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
     // maintenance/Raft-irrelevant boot already happened) but its
     // ca_cluster_node process has not.
     for (std::size_t i = 0; i < 2; ++i) {
+        // "running" only means the VM has booted, not that user-data has
+        // finished - see ca_cluster_node_real_ec2_test.cpp's identical fix
+        // for the full rationale (found via the same real-AWS
+        // investigation: an unseal-key-file open failure on one node out
+        // of three, non-deterministically, tracing back to this race).
+        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                    std::chrono::minutes(3));
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
@@ -928,6 +942,8 @@ BOOST_FIXTURE_TEST_CASE(staggered_third_node_join_maintains_connectivity,
         "certificate issuance failed with only 2 of 3 nodes up");
 
     // Now start the third, staggered node.
+    ssh_execute(public_ips[2], private_key_pem, "sudo cloud-init status --wait",
+                std::chrono::minutes(3));
     auto cmd3 = start_node_command(3, peers_arg, /*bootstrap=*/false, /*use_rpc_tls_flags=*/true);
     ssh_execute(public_ips[2], private_key_pem, cmd3, std::chrono::minutes(3));
     BOOST_REQUIRE_MESSAGE(wait_healthy(public_ips[2], private_key_pem, std::chrono::minutes(3)),
@@ -997,6 +1013,13 @@ BOOST_FIXTURE_TEST_CASE(restarted_node_rejoins_without_bootstrap_credential,
 
     std::string peers_arg = build_peers_arg(public_ips);
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        // "running" only means the VM has booted, not that user-data has
+        // finished - see ca_cluster_node_real_ec2_test.cpp's identical fix
+        // for the full rationale (found via the same real-AWS
+        // investigation: an unseal-key-file open failure on one node out
+        // of three, non-deterministically, tracing back to this race).
+        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                    std::chrono::minutes(3));
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
@@ -1091,6 +1114,13 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
 
     std::string peers_arg = build_peers_arg(public_ips);
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        // "running" only means the VM has booted, not that user-data has
+        // finished - see ca_cluster_node_real_ec2_test.cpp's identical fix
+        // for the full rationale (found via the same real-AWS
+        // investigation: an unseal-key-file open failure on one node out
+        // of three, non-deterministically, tracing back to this race).
+        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                    std::chrono::minutes(3));
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0,
                                       /*use_rpc_tls_flags=*/true);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));

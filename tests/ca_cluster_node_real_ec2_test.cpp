@@ -584,6 +584,17 @@ BOOST_FIXTURE_TEST_CASE(three_real_ec2_nodes_form_working_ca_cluster, three_az_n
     std::string peers_arg = peers.str();
 
     for (std::size_t i = 0; i < public_ips.size(); ++i) {
+        // "running" only means the VM has booted, not that user-data has
+        // finished - cloud-init's final stage (which runs
+        // make_user_data()'s script, creating the unseal key file) can
+        // still be in progress after SSH is already accepting connections.
+        // Observed directly on a real run: node 3 hit "cannot open
+        // --unseal-key-file" while nodes 1/2 happened to have already
+        // finished by the time they were started - a genuine race, not
+        // reproducible every time. cloud-init status --wait blocks until
+        // the boot-finished stage completes.
+        ssh_execute(public_ips[i], private_key_pem, "sudo cloud-init status --wait",
+                    std::chrono::minutes(3));
         auto cmd = start_node_command(i + 1, peers_arg, /*bootstrap=*/i == 0);
         ssh_execute(public_ips[i], private_key_pem, cmd, std::chrono::minutes(3));
     }
