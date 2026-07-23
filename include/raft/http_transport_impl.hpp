@@ -13,7 +13,6 @@
 #include <folly/Future.h>
 #else
 #include <network_simulator/types.hpp>
-#include <future>
 #endif
 
 // OpenSSL includes for certificate validation (when available)

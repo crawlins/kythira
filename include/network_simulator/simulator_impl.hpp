@@ -19,11 +19,6 @@
 #include <folly/futures/Future.h>
 #endif
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#endif
-#include <thread>
-
 namespace network_simulator {
 
 // Helper function to convert address to string
