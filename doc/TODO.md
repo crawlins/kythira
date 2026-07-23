@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 18, 2026
+**Last Updated**: July 23, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -55,9 +55,8 @@ unambiguous at a glance.
 
 ### Partially Implemented
 
-| Spec | Status |
-|------|-------|
-| [`ci-real-cloud-tests`](../.kiro/specs/ci-real-cloud-tests/) | 11/12 tasks — Task 12 (exercising every `workflow_dispatch` toggle combination end-to-end against real AWS, one bundle at a time plus master/AWS-off states) not yet exercised |
+None currently — `ci-real-cloud-tests` (the last entry here) reached
+12/12 on July 23, 2026; see `doc/CHANGELOG.md` for that day's entry.
 
 ---
 

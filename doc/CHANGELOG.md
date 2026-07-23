@@ -3,6 +3,54 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 23, 2026)
+
+- **Completed `ci-real-cloud-tests` Task 12 — the full `workflow_dispatch`
+  toggle matrix exercised end-to-end against real AWS — closing the spec
+  out at 12/12. Along the way, real EC2 instances under real network
+  behavior surfaced two genuine, previously-undetected application bugs
+  that no local/Docker test could have caught, both fixed and merged via
+  PR #90.** The matrix itself: master/AWS enable toggles, each bundle run
+  alone against real AWS, `AWS_CI_ROLE_ARN` unset with AWS enabled
+  (confirmed Requirement 7.1's fail-closed message verbatim, failing in
+  ~12s before any credential step), and the `ec2-quorum-manager`
+  permission-revocation check (Property 2) — dropped the bundle from the
+  live CI role's policy, confirmed a real `Client.UnauthorizedOperation`
+  on `ec2:AllocateAddress` via CloudTrail (not a stale credential or an
+  unrelated failure), then restored the full policy. The two application
+  bugs: (1) `cmd/ca_cluster_node/main.cpp`'s RPC-TLS cutover had a
+  circular dependency — a node's root-discovery path only asked
+  `raft_node.known_leader()`, which itself only gets populated by
+  receiving Raft RPC traffic over the very transport whose accept policy
+  stays too narrow to receive that traffic until root discovery already
+  succeeded — a genuine, permanent deadlock (not slow convergence) once
+  any peer switched its presented identity to a CA-issued cert first;
+  reproduced as a node's entire data directory staying empty
+  indefinitely, fixed by falling back to querying every configured
+  peer's static client-facing address directly, a separate transport/
+  trust boundary from RPC-TLS. (2) `include/raft/raft.hpp`'s
+  `node<Types>::read_state()` already computed the correct majority
+  threshold but collected heartbeat responses via a helper that always
+  waits for every follower's future to individually settle before
+  checking the count, so one network-partitioned follower (real AWS NACL
+  DENY: silent packet drop, no RST) made every linearizable read pay
+  that follower's full per-RPC timeout regardless of how fast the actual
+  majority responded; reproduced as a healthy leader's own `/v1/root-ca`
+  answering 503 throughout an AZ isolation window despite continuously
+  replicating to its one reachable follower. Fixed by adding
+  `raft_future_collector<T>::collect_n_successes_with_timeout()`
+  (`include/raft/future_collector.hpp`) — resolves the instant quorum is
+  reached instead of waiting on a peer that can no longer change the
+  outcome — validated against all 15 existing local tests covering
+  `read_state`/heartbeat/future-collection semantics plus one new
+  dedicated test before being treated as safe, since this is core Raft
+  consensus code shared by every `Types` instantiation in the codebase.
+  Also extended the real-EC2 test suite's crash-cleanup signal handler
+  (`tests/aws_real_ec2_test_support.hpp`) to cover `SIGABRT`/`SIGSEGV`/
+  `SIGBUS`, not just the polite termination signals — a crash previously
+  skipped teardown entirely and leaked that run's AWS resources exactly
+  like an unhandled kill would.
+
 ### What Changed (July 20, 2026)
 
 - **Audited `.kiro/specs/ccache-adoption/tasks.md` against the actual
