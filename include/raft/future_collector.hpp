@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 
 namespace kythira {
 
@@ -125,6 +127,105 @@ public:
         }
 
         return kythira::FutureCollector::collectAll(std::move(timed_futures));
+    }
+
+    /**
+     * @brief Collect futures, resolving as soon as `required_successes` have
+     * succeeded — unlike collect_all_with_timeout/collect_majority (both of
+     * which internally wait for every future to individually settle before
+     * checking whether enough succeeded, via collectAll), this resolves the
+     * instant enough successes are in, without waiting on the rest.
+     *
+     * This matters when one or more of the input futures can legitimately
+     * take a very long time to settle (e.g. a TCP connect attempt against a
+     * network-partitioned peer, which can take up to its own per-future
+     * timeout to fail even after a network drop): collect_all_with_timeout
+     * would make every caller wait for that slow future's full timeout even
+     * though a quorum of the OTHER futures already succeeded. This is
+     * exactly what made node<Types>::read_state() (raft.hpp) take up to its
+     * full command timeout for every linearizable read while any single
+     * follower was partitioned, even though only a majority of followers
+     * were ever required to ack.
+     *
+     * Resolves early with the successful results once `required_successes`
+     * is reached; fails early once reaching `required_successes` becomes
+     * mathematically impossible (too many of the remaining futures have
+     * already failed); otherwise resolves once every future has settled
+     * within `timeout`, whichever of the three happens first. The returned
+     * vector's order reflects completion order, not input order (unlike
+     * collect_all_with_timeout) — callers that need a specific successful
+     * response should identify it from the value itself (e.g. a response's
+     * own follower_id field), not by index.
+     *
+     * @param futures Vector of futures to collect from
+     * @param required_successes Number of successful results needed
+     * @param timeout Per-future timeout (via Future::within)
+     * @return Future containing the first `required_successes` successful
+     * results, or a future_collection_exception if that count becomes
+     * unreachable
+     */
+    static auto collect_n_successes_with_timeout(std::vector<kythira::Future<T>> futures,
+                                                 std::size_t required_successes,
+                                                 std::chrono::milliseconds timeout)
+        -> kythira::Future<std::vector<T>> {
+        if (required_successes == 0) {
+            return kythira::FutureFactory::makeFuture(std::vector<T>{});
+        }
+        if (futures.empty() || required_successes > futures.size()) {
+            return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
+                kythira::future_collection_exception("collect_n_successes_with_timeout", 0));
+        }
+
+        struct shared_state {
+            std::mutex mu;
+            std::vector<T> successes;
+            std::size_t remaining;
+            bool settled{false};
+            kythira::Promise<std::vector<T>> promise;
+        };
+        auto state = std::make_shared<shared_state>();
+        state->remaining = futures.size();
+        auto result_future = state->promise.getFuture();
+
+        for (auto& f : futures) {
+            std::move(f).within(timeout).thenTry([state,
+                                                  required_successes](kythira::Try<T> result) {
+                bool fulfill_success = false;
+                bool fulfill_failure = false;
+                std::vector<T> successes_copy;
+                {
+                    std::lock_guard<std::mutex> lock(state->mu);
+                    if (state->settled) {
+                        return;
+                    }
+                    state->remaining--;
+                    if (result.hasValue()) {
+                        state->successes.push_back(std::move(result).value());
+                    }
+                    if (state->successes.size() >= required_successes) {
+                        state->settled = true;
+                        fulfill_success = true;
+                        successes_copy = state->successes;
+                    } else if (state->successes.size() + state->remaining < required_successes) {
+                        state->settled = true;
+                        fulfill_failure = true;
+                    }
+                }
+                // setValue/setException run outside the lock - state->mu
+                // only needs to protect the shared counters/vector above,
+                // and `settled` (checked-then-set under the lock before
+                // either branch runs) guarantees exactly one of these
+                // fires across every future's callback.
+                if (fulfill_success) {
+                    state->promise.setValue(std::move(successes_copy));
+                } else if (fulfill_failure) {
+                    state->promise.setException(
+                        std::make_exception_ptr(kythira::future_collection_exception(
+                            "collect_n_successes_with_timeout", 0)));
+                }
+            });
+        }
+        return result_future;
     }
 
     /**

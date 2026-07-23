@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_collector.hpp>
 #include <concepts/future.hpp>
 #include <exception>
 #include <string>
@@ -13,8 +14,10 @@
 #include <thread>
 #include <random>
 #include <algorithm>
+#include <memory>
 #include <folly/Unit.h>
 #include <folly/ExceptionWrapper.h>
+#include <folly/init/Init.h>
 
 using namespace kythira;
 
@@ -27,6 +30,27 @@ constexpr std::size_t max_collection_size = 10;
 constexpr std::chrono::milliseconds short_timeout{100};
 constexpr std::chrono::milliseconds long_timeout{1000};
 }
+
+// collect_n_successes_with_timeout_test below is the first test in this file
+// to call Future::within() on a not-yet-completed future (make_delayed_future
+// et al.) - every existing test here only ever wraps already-fulfilled
+// futures, for which within() apparently never touches Folly's global
+// Timekeeper singleton. A real pending timeout does need it, and this file's
+// Boost.Test-generated main() never calls folly::init(), so without this
+// fixture the process aborts: "Singleton folly::Timekeeper ... requested
+// before registrationComplete() call" - confirmed by reproducing it locally
+// before adding this, matching the same fixture already used for the same
+// reason in raft_concurrent_read_efficiency_property_test.cpp.
+struct GlobalFixture {
+    GlobalFixture() {
+        int argc = 1;
+        char* argv[] = {const_cast<char*>("test"), nullptr};
+        char** argv_ptr = argv;
+        folly::init(&argc, &argv_ptr);
+    }
+};
+
+BOOST_GLOBAL_FIXTURE(GlobalFixture);
 
 /**
  * **Feature: folly-concept-wrappers, Property 5: Collection Operations**
@@ -455,6 +479,134 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
         BOOST_TEST_MESSAGE("Void future collections work correctly");
     }
+}
+
+namespace {
+// Resolves after `delay` on a background thread - used below to simulate a
+// slow/partitioned peer without actually needing a network.
+template<typename T>
+auto make_delayed_future(T value, std::chrono::milliseconds delay) -> Future<T> {
+    auto promise = std::make_shared<Promise<T>>();
+    auto future = promise->getFuture();
+    std::thread([promise, value = std::move(value), delay]() mutable {
+        std::this_thread::sleep_for(delay);
+        promise->setValue(std::move(value));
+    }).detach();
+    return future;
+}
+
+auto make_delayed_failed_future(std::chrono::milliseconds delay, std::string message)
+    -> Future<int> {
+    auto promise = std::make_shared<Promise<int>>();
+    auto future = promise->getFuture();
+    std::thread([promise, delay, message = std::move(message)]() mutable {
+        std::this_thread::sleep_for(delay);
+        promise->setException(std::make_exception_ptr(std::runtime_error(message)));
+    }).detach();
+    return future;
+}
+}  // namespace
+
+/**
+ * Test raft_future_collector<T>::collect_n_successes_with_timeout - added
+ * alongside node<Types>::read_state()'s switch to it (raft.hpp) after a real
+ * multi-AZ EC2 run showed every linearizable read on the leader stalling for
+ * the full command timeout while a single follower was network-partitioned,
+ * even though a majority of followers (the one reachable one, plus the
+ * leader's own implicit vote) was already available. The prior primitives
+ * (collect_all_with_timeout, collect_majority) both go through collectAll
+ * internally and therefore always wait for every future to individually
+ * settle before checking the count, regardless of how early the needed
+ * count is actually reached - this covers the specific behavior that fixes.
+ */
+BOOST_AUTO_TEST_CASE(collect_n_successes_with_timeout_test, *boost::unit_test::timeout(30)) {
+    // Basic correctness: exactly required_successes successful values, drawn
+    // from whichever futures actually succeeded.
+    {
+        std::vector<Future<int>> futures;
+        futures.push_back(FutureFactory::makeFuture(1));
+        futures.push_back(FutureFactory::makeFuture(2));
+        futures.push_back(FutureFactory::makeFuture(3));
+
+        auto result = raft_future_collector<int>::collect_n_successes_with_timeout(
+                          std::move(futures), 2, long_timeout)
+                          .get();
+        BOOST_CHECK_EQUAL(result.size(), 2u);
+    }
+
+    // Early resolution: 2 of 3 futures succeed near-instantly, the third is
+    // deliberately slow. Only 2 successes are required (majority of 3), so
+    // this must resolve in well under the slow future's own delay - the
+    // exact behavior a partitioned Raft follower's hung connect attempt
+    // needs from the leader's read_state() heartbeat collection.
+    {
+        constexpr auto slow_delay = std::chrono::milliseconds(2000);
+        std::vector<Future<int>> futures;
+        futures.push_back(FutureFactory::makeFuture(10));
+        futures.push_back(FutureFactory::makeFuture(20));
+        futures.push_back(make_delayed_future(30, slow_delay));
+
+        auto start = std::chrono::steady_clock::now();
+        auto result = raft_future_collector<int>::collect_n_successes_with_timeout(
+                          std::move(futures), 2, std::chrono::milliseconds(10000))
+                          .get();
+        auto elapsed = std::chrono::steady_clock::now() - start;
+
+        BOOST_CHECK_EQUAL(result.size(), 2u);
+        BOOST_CHECK_MESSAGE(
+            elapsed < slow_delay / 2,
+            "expected early resolution well before the slow future's own "
+            "delay; took "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << "ms");
+    }
+
+    // Early failure: requiring all 3 successes, one future fails
+    // immediately and the other two are slow. Success is already
+    // mathematically impossible the instant the fast failure lands (0
+    // successes + 2 still-pending < 3 required), so this must throw well
+    // before the slow futures' own delay - not silently wait out the full
+    // timeout only to fail once everything has settled.
+    {
+        constexpr auto slow_delay = std::chrono::milliseconds(2000);
+        std::vector<Future<int>> futures;
+        futures.push_back(FutureFactory::makeExceptionalFuture<int>(folly::exception_wrapper(
+            std::runtime_error("collect_n_successes_with_timeout_test: immediate failure"))));
+        futures.push_back(make_delayed_future(40, slow_delay));
+        futures.push_back(make_delayed_future(50, slow_delay));
+
+        auto start = std::chrono::steady_clock::now();
+        auto collected = raft_future_collector<int>::collect_n_successes_with_timeout(
+            std::move(futures), 3, std::chrono::milliseconds(10000));
+        BOOST_CHECK_THROW(collected.get(), std::exception);
+        auto elapsed = std::chrono::steady_clock::now() - start;
+
+        BOOST_CHECK_MESSAGE(
+            elapsed < slow_delay / 2,
+            "expected early failure well before the slow futures' own delay; "
+            "took "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count() << "ms");
+    }
+
+    // Timeout still applies when required_successes is never reached and
+    // nothing ever definitively fails (a hung, never-settling future -
+    // there's no earlier point at which "impossible" could be detected, so
+    // this must fall back to the per-future timeout like the other
+    // primitives).
+    {
+        std::vector<Future<int>> futures;
+        futures.push_back(make_delayed_future(60, std::chrono::milliseconds(500)));
+        auto promise = std::make_shared<Promise<int>>();
+        futures.push_back(promise->getFuture());  // never settles
+
+        BOOST_CHECK_THROW(raft_future_collector<int>::collect_n_successes_with_timeout(
+                              std::move(futures), 2, short_timeout)
+                              .get(),
+                          std::exception);
+    }
+
+    BOOST_TEST_MESSAGE(
+        "collect_n_successes_with_timeout resolves early on majority and on "
+        "provable impossibility, and still respects its timeout otherwise");
 }
 
 /**
