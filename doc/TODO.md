@@ -91,10 +91,25 @@ None currently — `ci-real-cloud-tests` (the last entry here) reached
   found and fixed a real GCC 13 `-O2`/`-O3` miscompilation of
   `exec::any_sender`'s small-buffer-optimized move constructor along the
   way (`-fno-strict-aliasing` for GCC builds, `clang++-18` unaffected)
-- [ ] **Remove unused includes** — `#include <future>` in
-  `http_transport_impl.hpp`, duplicate folly includes in `simulator_impl.hpp`
-- [ ] **Folly CMake detection** — improve `find_package` logic so builds
-  gracefully degrade when Folly is absent
+- [x] **Remove unused includes** — `http_transport_impl.hpp`'s own
+  `#include <future>` was provably redundant (it includes
+  `raft/http_transport.hpp` first, which already includes `<future>`
+  unconditionally); `simulator_impl.hpp` had two genuine literal
+  duplicates (`#ifdef FOLLY_FUTURES_AVAILABLE #include <folly/futures/
+  Future.h> #endif` appeared twice back to back, `#include <thread>`
+  appeared twice). Verified by building representative consumers of
+  both headers.
+- [x] **Folly CMake detection** — confirmed by actually building with
+  Folly hidden (`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON`) that
+  `certificate_authority`, all of `examples/`, and the overwhelming
+  majority of `tests/` transitively require Folly via
+  `include/raft/future.hpp` (no `#ifdef` of its own) but weren't gated
+  on `folly_FOUND`, so a Folly-absent configure looked fine (just a
+  mild warning) until the build itself died deep inside a confusing
+  `GLOG_EXPORT` error with no indication Folly was the real cause. All
+  three now gated at the top level; full build with Folly hidden
+  completes cleanly (exit 0) instead of failing catastrophically; no
+  regression in the normal (Folly present) configuration
 
 ### New Transport Implementations
 

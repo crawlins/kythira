@@ -3,6 +3,55 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 23, 2026, continued)
+
+- **Fixed Folly CMake detection so builds actually degrade gracefully when
+  Folly is absent, instead of only appearing to.** Confirmed by actually
+  building with Folly hidden (`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON`, the
+  same technique `scripts/verify-optional-dependency-isolation.sh` already
+  uses for `stdexec`) rather than just reading the CMake logic: configure
+  succeeded with only a mild warning, but the build then died deep inside
+  `certificate_authority.cpp`'s `#include` chain with a `GLOG_EXPORT`
+  "unknown type name" error from `glog/flags.h` — no indication anywhere
+  that the real cause was `include/raft/future.hpp` wrapping Folly types
+  with no `#ifdef` of its own. `certificate_authority` was gated only on
+  `TARGET OpenSSL::SSL`, `examples/` was added completely unconditionally
+  (confirmed all ~20 example targets transitively need Folly), and
+  `tests/` was gated only on `Boost_FOUND` (confirmed the overwhelming
+  majority of the 391+ registered tests transitively need it too, even
+  ones nominally about the `stdexec`-only backend). All three now gated on
+  `folly_FOUND` at the point each is added; a full build with Folly hidden
+  now completes cleanly (exit 0) instead of failing catastrophically, with
+  no regression in the normal configuration.
+- **Removed redundant/duplicate includes**: `http_transport_impl.hpp`'s own
+  `#include <future>` was provably redundant (`raft/http_transport.hpp`,
+  included first, already includes it unconditionally);
+  `simulator_impl.hpp` had the entire `#ifdef FOLLY_FUTURES_AVAILABLE
+  #include <folly/futures/Future.h> #endif` block duplicated back to back,
+  plus a duplicate `#include <thread>`.
+- **Added `.kiro/specs/boost-future-backend/` (requirements/design/tasks,
+  spec only — no implementation yet).** Plans a third `kythira::Future`/
+  `Promise`/`Try`/`Executor` implementation backed by `boost::thread`'s
+  extended future API (`then()`/`when_all`/`when_any`, gated behind
+  `BOOST_THREAD_VERSION>=4`), alongside the existing Folly (default) and
+  `stdexec` backends. `boost-thread`/`boost-asio` are already required
+  dependencies of this project for unrelated reasons and are not currently
+  used for `boost::future`/`boost::promise` at all. Follows
+  `.kiro/specs/stdexec-future-backend/`'s exact structural precedent, but
+  is structurally simpler in one specific way documented up front:
+  `boost::promise::set_value()`/`set_exception()` are already push-model
+  (the same shape as `folly::Promise`), so — unlike `stdexec`'s pull model
+  — no hand-rolled single-shot-channel bridge is needed; `Promise<T>` is a
+  near-direct wrap. The real new risks are different in kind:
+  `BOOST_THREAD_VERSION` is a project-wide ABI hazard if two translation
+  units disagree (solved by making it one `INTERFACE` compile definition,
+  mirroring how `KYTHIRA_HAS_STDEXEC` is already applied); `then()`'s
+  callback receives the completed future itself, not the unwrapped value,
+  and does not auto-flatten a `Future<U>`-returning callback; and
+  Boost.Thread has no `when_n` or timed-continuation primitive, so
+  `collectN`/`delay`/`within` are built on `when_any`-style repeated
+  selection and a small shared `boost::asio` timer service respectively.
+
 ### What Changed (July 23, 2026)
 
 - **Completed `ci-real-cloud-tests` Task 12 — the full `workflow_dispatch`
