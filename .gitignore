@@ -42,9 +42,13 @@ doc/html/
 doc/latex/
 doxygen-output/
 
-# Host-built binary staged for docker/chaos_node/Dockerfile
-# (.kiro/specs/chaos-node-host-build/) — not source, not committed.
+# Host-built binaries staged for docker/*/Dockerfile
+# (.kiro/specs/chaos-node-host-build/, .kiro/specs/discovery-nodes-host-build/)
+# — not source, not committed.
 docker/chaos_node/dist/
+docker/poco_discovery_node/dist/
+docker/dns_discovery_node/dist/
+docker/dns_sd_discovery_node/dist/
 
 # OS files
 .DS_Store
