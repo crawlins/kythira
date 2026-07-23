@@ -52,6 +52,7 @@ unambiguous at a glance.
 |------|-------|
 | [`discovery-nodes-host-build`](../.kiro/specs/discovery-nodes-host-build/) | Extend the same host-build-plus-staging pattern to `poco_discovery_node`, `dns_discovery_node`, and `dns_sd_discovery_node` |
 | [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
+| [`boost-future-backend`](../.kiro/specs/boost-future-backend/) | A third `Future`/`Promise`/`Try`/`Executor` implementation backed by `boost::thread`'s extended future API (`then()`/`when_all`/`when_any`), alongside the existing Folly (default) and `stdexec` backends |
 
 ### Partially Implemented
 
