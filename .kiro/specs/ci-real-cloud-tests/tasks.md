@@ -1,6 +1,6 @@
 # Implementation Plan — CI Real Cloud Tests
 
-## Status: In Progress — Tasks 1-11 complete; Task 12 (full end-to-end workflow_dispatch matrix) not yet exercised
+## Status: Complete — all 12 tasks verified end-to-end against a real AWS account (827617851594)
 
 **Last Updated**: July 15, 2026
 
@@ -277,25 +277,78 @@ of those providers has a real-cloud test suite yet.
 
 ## Phase 8: End-to-End Verification (Task 12)
 
-- [ ] 12. Exercise every toggle combination via `workflow_dispatch`
+- [x] 12. Exercise every toggle combination via `workflow_dispatch`
   - Master off (job list shows nothing ran); AWS off with master on (AWS
     job skipped); all AWS bundles off (AWS job runs, no `ctest` step
     executes, `configure-aws-credentials` step still runs since
-    Requirement 1.3 gates test execution, not credential acquisition,
-    confirm this matches design intent or tighten Requirement 1.3's
-    wording if credential acquisition should also be skipped when no
-    bundle is enabled); one bundle on at a time (three runs, one per
-    bundle, each passing against real AWS — the `ec2-quorum-manager` run
-    is the end-to-end confirmation that `iam:PassRole` alone, with no
-    IAM-write permission, is sufficient to launch instances with the
-    static node profile attached); `AWS_CI_ROLE_ARN` unset with AWS
-    enabled (confirms Requirement 7.1's fail-closed message, not a
-    downstream credential-step error); task 7's bundle-removal re-run
-    repeated once more here against the actual `AWS_CI_ROLE_ARN` the
-    workflow uses, confirming a subsequent workflow run with
-    `ec2-quorum-manager` re-disabled genuinely can no longer launch an
-    instance with any instance profile attached (Property 2, end-to-end).
+    Requirement 1.3 gates test execution, not credential acquisition —
+    confirmed this matches design intent: credential acquisition is cheap
+    and gating it separately would add complexity for no real benefit);
+    one bundle on at a time (three runs, one per bundle, each eventually
+    passing against real AWS on both x64 and arm64 — the
+    `ec2-quorum-manager` run is the end-to-end confirmation that
+    `iam:PassRole` alone, with no IAM-write permission, is sufficient to
+    launch instances with the static node profile attached);
+    `AWS_CI_ROLE_ARN` unset with AWS enabled (confirmed Requirement 7.1's
+    fail-closed message verbatim — "REAL_CLOUD_TESTS_AWS_ENABLED is true
+    but the AWS_CI_ROLE_ARN repository variable is unset" — failing in
+    ~12s on both legs, well before any credential step, then restored the
+    variable); task 7's bundle-removal re-run repeated once more here
+    against the live `AWS_CI_ROLE_ARN` the workflow actually uses
+    (`provision-oidc-role.sh --bundles ca-cluster-node,ca-cluster-node-
+    rpc-tls,ami-build`, dropping `ec2-quorum-manager`), confirming via
+    CloudTrail a genuine `Client.UnauthorizedOperation` on
+    `ec2:AllocateAddress` — not a stale/cached credential or an unrelated
+    failure — then restored the full four-bundle policy and verified
+    `ec2:AllocateAddress` was back in the role's policy document
+    (Property 2, end-to-end).
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 7.1, 7.2, Testing Strategy_
+  - **Findings**: exercising the `ca-cluster-node` and
+    `ca-cluster-node-rpc-tls` bundles against real EC2 instances (not
+    just the local in-memory/Docker test suites) surfaced a substantial
+    number of real, previously-undetected bugs — this task's entire
+    point. None were speculative; each was root-caused from direct
+    evidence (SSH-based state dumps, CloudTrail, real log output) before
+    being fixed, per this project's standing practice of not guessing at
+    real-infrastructure failures. Infra/CI-side (VPC/NAT/NACL lifecycle
+    lag, missing IAM permissions for Packer, missing AMI resolution
+    wiring, a stale-AMI testing-process gap where re-running the RPC-TLS
+    bundle without first re-running `ami-build` silently tested
+    yesterday's binary) are covered by their own merged PRs (#80-90) and
+    commit history. The two most significant application-level findings,
+    both real production bugs unrelated to test infrastructure:
+    - `cmd/ca_cluster_node/main.cpp`'s RPC-TLS cutover: a node's own
+      root-discovery path (`fetch_root_cert_pem`) only ever asked
+      `raft_node.known_leader()`, which itself only gets populated by
+      receiving Raft RPC traffic over the very same RPC-TLS transport
+      whose accept policy stays too narrow to receive that traffic until
+      root discovery already succeeded — circular, and a genuine,
+      permanent deadlock (not a slow convergence) once any peer switched
+      its presented identity to a CA-issued cert before this node
+      finished widening its own accept policy. Reproduced on real EC2
+      as a node's entire data directory staying empty indefinitely.
+      Fixed by falling back to querying every configured peer's static
+      client-facing address directly (a separate transport/trust
+      boundary from RPC-TLS) when the Raft-learned leader is unknown.
+    - `include/raft/raft.hpp`'s `node<Types>::read_state()`: already
+      computed the correct majority-quorum threshold, but collected
+      heartbeat responses via `collect_all_with_timeout`, which always
+      waits for every follower's future to individually settle before
+      checking the count — so a single network-partitioned follower
+      (real AWS NACL DENY behavior: silent packet drop, no RST) made
+      every linearizable read pay that follower's full per-RPC timeout
+      regardless of how fast the actually-required majority responded.
+      Reproduced on real EC2 as a healthy leader's own `/v1/root-ca`
+      answering 503 throughout an AZ isolation window despite
+      continuously, successfully replicating to its one reachable
+      follower. Fixed by adding
+      `raft_future_collector<T>::collect_n_successes_with_timeout()`
+      (`include/raft/future_collector.hpp`) and switching `read_state()`
+      to it; this is core Raft consensus code used by every `Types`
+      instantiation in the codebase, so validated against all 15
+      existing local tests covering read_state/heartbeat/future-
+      collection semantics plus one new dedicated test of the primitive
+      itself before being treated as safe.
 
 ## Notes
 
@@ -319,5 +372,6 @@ of those providers has a real-cloud test suite yet.
   Tasks 5 and 7 were completed against a real AWS account
   (827617851594) on 2026-07-15; task 12 (exercising the full
   `workflow_dispatch` toggle matrix, including a real `ctest` pass
-  against launched EC2 instances) has not yet been run and remains the
-  one outstanding item before this spec is fully verified end-to-end.
+  against launched EC2 instances) was completed against the same
+  account on 2026-07-23. All twelve tasks are now verified end-to-end;
+  this spec is complete.
