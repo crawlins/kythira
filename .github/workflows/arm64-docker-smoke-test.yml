@@ -40,7 +40,9 @@ jobs:
             g++-13 \
             cmake \
             ninja-build \
-            libfiu-dev
+            libfiu-dev \
+            libavahi-client-dev \
+            libldns-dev
 
       - name: Verify a container runtime is available
         run: |

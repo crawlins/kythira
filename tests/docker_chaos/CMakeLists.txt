@@ -192,14 +192,35 @@ if(_RUNTIME_EXE)
         )
     endif()
 
-    add_custom_target(docker-poco-discovery-image
-        COMMAND ${_RUNTIME_EXE} build
-                --file "${_POCO_DISCOVERY_DOCKERFILE}"
-                --tag kythira-poco-discovery:dev
-                "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-poco-discovery:dev image"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    )
+    # docker-poco-discovery-image: stage the host-built poco_discovery_node
+    # binary, then package it into a runtime-only image
+    # (.kiro/specs/discovery-nodes-host-build/). Guarded exactly like
+    # cmd/poco_discovery_node's own inclusion at the top level, for the same
+    # `if(TARGET ...)`-isn't-usable-here reason docker-chaos-image's own
+    # comment above documents (cmd/poco_discovery_node is also added after
+    # tests/ at the top level).
+    if(POCO_DNSSD_FOUND AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+        add_custom_target(docker-poco-discovery-image
+            DEPENDS poco_discovery_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:poco_discovery_node>"
+                    "${CMAKE_SOURCE_DIR}/docker/poco_discovery_node/dist/poco_discovery_node"
+            COMMAND ${_RUNTIME_EXE} build
+                    --file "${_POCO_DISCOVERY_DOCKERFILE}"
+                    --tag kythira-poco-discovery:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging poco_discovery_node binary and building kythira-poco-discovery:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    else()
+        add_custom_target(docker-poco-discovery-image
+            COMMAND ${CMAKE_COMMAND} -E echo
+                    "'docker-poco-discovery-image' requires poco_discovery_node to be buildable (Poco DNSSD + folly + Boost + httplib)"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endif()
 
     add_custom_target(docker-chaos-tests
         COMMAND ${CMAKE_COMMAND} -E env
@@ -274,23 +295,49 @@ if(_RUNTIME_EXE)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     )
 
-    add_custom_target(docker-dns-discovery-image
-        COMMAND ${_RUNTIME_EXE} build
-                --file "${_DNS_DISCOVERY_DOCKERFILE}"
-                --tag kythira-dns-discovery:dev
-                "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-dns-discovery:dev image"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    )
-
-    add_custom_target(docker-dns-sd-discovery-image
-        COMMAND ${_RUNTIME_EXE} build
-                --file "${_DNS_SD_DISCOVERY_DOCKERFILE}"
-                --tag kythira-dns-sd-discovery:dev
-                "${CMAKE_SOURCE_DIR}"
-        COMMENT "Building kythira-dns-sd-discovery:dev image"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    )
+    # docker-dns-discovery-image / docker-dns-sd-discovery-image: stage each
+    # host-built binary, then package into a runtime-only image
+    # (.kiro/specs/discovery-nodes-host-build/) — same shape and rationale as
+    # docker-poco-discovery-image above, guarded on cmd/dns_discovery_node's
+    # and cmd/dns_sd_discovery_node's own condition.
+    if(LIBLDNS_FOUND AND folly_FOUND AND httplib_FOUND)
+        add_custom_target(docker-dns-discovery-image
+            DEPENDS dns_discovery_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/dns_discovery_node/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:dns_discovery_node>"
+                    "${CMAKE_SOURCE_DIR}/docker/dns_discovery_node/dist/dns_discovery_node"
+            COMMAND ${_RUNTIME_EXE} build
+                    --file "${_DNS_DISCOVERY_DOCKERFILE}"
+                    --tag kythira-dns-discovery:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging dns_discovery_node binary and building kythira-dns-discovery:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+        add_custom_target(docker-dns-sd-discovery-image
+            DEPENDS dns_sd_discovery_node
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                    "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/dist"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "$<TARGET_FILE:dns_sd_discovery_node>"
+                    "${CMAKE_SOURCE_DIR}/docker/dns_sd_discovery_node/dist/dns_sd_discovery_node"
+            COMMAND ${_RUNTIME_EXE} build
+                    --file "${_DNS_SD_DISCOVERY_DOCKERFILE}"
+                    --tag kythira-dns-sd-discovery:dev
+                    "${CMAKE_SOURCE_DIR}"
+            COMMENT "Staging dns_sd_discovery_node binary and building kythira-dns-sd-discovery:dev image"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
+    else()
+        foreach(_t docker-dns-discovery-image docker-dns-sd-discovery-image)
+            add_custom_target(${_t}
+                COMMAND ${CMAKE_COMMAND} -E echo
+                        "'${_t}' requires the relevant node to be buildable (libldns + folly + httplib)"
+                COMMAND ${CMAKE_COMMAND} -E false
+            )
+        endforeach()
+    endif()
 
     add_custom_target(docker-dns-discovery-tests
         COMMAND ${CMAKE_COMMAND} -E env
