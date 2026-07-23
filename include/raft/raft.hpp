@@ -1823,28 +1823,27 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     // for a cluster of (heartbeat_futures.size() + 1) total nodes, true majority is
     // (N/2)+1 including the leader's own vote, so followers needed = (N/2)+1-1 = N/2,
     // i.e. (heartbeat_futures.size() + 1) / 2 with integer division.
+    //
+    // collect_n_successes_with_timeout, not collect_all_with_timeout: the latter
+    // (via collectAll) waits for every heartbeat future to individually settle
+    // before checking whether enough acked, even once required_follower_acks has
+    // already been reached — so a single partitioned follower whose connect
+    // attempt takes its full per-future timeout to fail (real behavior against an
+    // AWS NACL DENY rule, which silently drops packets rather than sending a
+    // fast RST) made every linearizable read pay that full timeout regardless of
+    // how quickly the actually-required followers responded. Confirmed on a real
+    // multi-AZ EC2 run: an otherwise-healthy leader's own /v1/root-ca read
+    // stayed unavailable for the entire isolation window even though a live
+    // majority (leader + one follower) was available throughout.
+    // collect_n_successes_with_timeout resolves the instant required_follower_
+    // acks successes are in, without waiting on a partitioned follower at all.
     const std::size_t required_follower_acks = (heartbeat_futures.size() + 1) / 2;
-    return kythira::raft_future_collector<append_entries_response_type>::collect_all_with_timeout(
-               std::move(heartbeat_futures), timeout)
-        .thenValue([this, current_term, node_id, start_time, required_follower_acks](
-                       std::vector<kythira::Try<append_entries_response_type>> try_responses)
-                       -> std::vector<append_entries_response_type> {
-            std::vector<append_entries_response_type> responses;
-            responses.reserve(try_responses.size());
-            for (auto& try_response : try_responses) {
-                if (try_response.hasValue()) {
-                    responses.push_back(std::move(try_response.value()));
-                }
-            }
-            if (responses.size() < required_follower_acks) {
-                throw kythira::future_collection_exception("read_state_heartbeat_quorum",
-                                                           try_responses.size() - responses.size());
-            }
-            return responses;
-        })
-        .thenValue(
-            [this, current_term, node_id, start_time](
-                std::vector<append_entries_response_type> responses) -> std::vector<std::byte> {
+    return kythira::raft_future_collector<append_entries_response_type>::
+        collect_n_successes_with_timeout(std::move(heartbeat_futures), required_follower_acks,
+                                         timeout)
+            .thenValue([this, current_term, node_id,
+                        start_time](std::vector<append_entries_response_type> responses)
+                           -> std::vector<std::byte> {
                 std::lock_guard<std::mutex> lock(_mutex);
 
                 _logger.debug("Received majority heartbeat responses",
@@ -1950,31 +1949,31 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                     throw;
                 }
             })
-        .thenError([this, node_id,
-                    start_time](const folly::exception_wrapper& ew) -> std::vector<std::byte> {
-            std::lock_guard<std::mutex> lock(_mutex);
+            .thenError([this, node_id,
+                        start_time](const folly::exception_wrapper& ew) -> std::vector<std::byte> {
+                std::lock_guard<std::mutex> lock(_mutex);
 
-            auto end_time = std::chrono::steady_clock::now();
-            auto duration =
-                std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                auto end_time = std::chrono::steady_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
-            _logger.error("Read request failed",
-                          {{"node_id", node_id_to_string(node_id)},
-                           {"error", ew.what().toStdString()},
-                           {"duration_ms", std::to_string(duration.count())}});
+                _logger.error("Read request failed",
+                              {{"node_id", node_id_to_string(node_id)},
+                               {"error", ew.what().toStdString()},
+                               {"duration_ms", std::to_string(duration.count())}});
 
-            _metrics.set_metric_name("raft_read_request_failed");
-            _metrics.add_dimension("node_id", node_id_to_string(node_id));
-            _metrics.add_dimension("reason", "heartbeat_collection_failed");
-            _metrics.add_one();
-            _metrics.emit();
+                _metrics.set_metric_name("raft_read_request_failed");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("reason", "heartbeat_collection_failed");
+                _metrics.add_one();
+                _metrics.emit();
 
-            // Re-throw the exception
-            ew.throw_exception();
+                // Re-throw the exception
+                ew.throw_exception();
 
-            // This line is unreachable but needed for compilation
-            return std::vector<std::byte>{};
-        });
+                // This line is unreachable but needed for compilation
+                return std::vector<std::byte>{};
+            });
 }
 
 template<raft_types Types>
