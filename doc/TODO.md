@@ -50,14 +50,14 @@ unambiguous at a glance.
 
 | Spec | What it would do |
 |------|-------|
-| [`discovery-nodes-host-build`](../.kiro/specs/discovery-nodes-host-build/) | Extend the same host-build-plus-staging pattern to `poco_discovery_node`, `dns_discovery_node`, and `dns_sd_discovery_node` |
 | [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
 | [`boost-future-backend`](../.kiro/specs/boost-future-backend/) | A third `Future`/`Promise`/`Try`/`Executor` implementation backed by `boost::thread`'s extended future API (`then()`/`when_all`/`when_any`), alongside the existing Folly (default) and `stdexec` backends |
 
 ### Partially Implemented
 
-None currently — `ci-real-cloud-tests` (the last entry here) reached
-12/12 on July 23, 2026; see `doc/CHANGELOG.md` for that day's entry.
+None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
+(the last two entries here) both reached full completion on July 23,
+2026; see `doc/CHANGELOG.md` for that day's entries.
 
 ---
 
