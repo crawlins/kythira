@@ -51,6 +51,29 @@ current list of outstanding work, see [TODO.md](TODO.md).
   skipped teardown entirely and leaked that run's AWS resources exactly
   like an unhandled kill would.
 
+- **Completed `discovery-nodes-host-build` (6/6 tasks), extending
+  `chaos-node-host-build`'s "host build, Docker just packages" pattern to
+  `poco_discovery_node`, `dns_discovery_node`, and `dns_sd_discovery_node`
+  — PR #91.** Each `docker-*-discovery-image` CMake target now stages the
+  host-built binary (`DEPENDS` on its own target + `make_directory`/`copy`
+  before the existing `docker build` command) guarded on the exact same
+  `FOUND`-variable condition each target's own `cmd/.../CMakeLists.txt`
+  gates its `add_executable()` on, and each Dockerfile collapsed to a
+  single runtime-only stage — no compiler, CMake, or `-dev` package left
+  in any of the three images. Closed a real parity gap first:
+  `libavahi-client-dev`/`libldns-dev` were never installed by any host
+  build (only inside each Dockerfile's own now-removed builder stage), so
+  all three targets were silently skipped everywhere — confirmed by each
+  target's own `cmd/.../CMakeLists.txt` "skipped (requires ...)"
+  diagnostic — until both packages were added to
+  `arm64-docker-smoke-test.yml`'s dependency step alongside the
+  `libfiu-dev` the prior spec already added there. Verified end-to-end via
+  a real dispatch of that workflow (run 30006127341): `docker-poco-
+  discovery-tests`, `docker-dns-discovery-tests`, and `docker-dns-sd-
+  discovery-tests` all passed on real arm64 hardware — each target's host
+  build, staging copy, `docker build`, and full scenario-test suite
+  against real containers over a real network.
+
 ### What Changed (July 20, 2026)
 
 - **Audited `.kiro/specs/ccache-adoption/tasks.md` against the actual

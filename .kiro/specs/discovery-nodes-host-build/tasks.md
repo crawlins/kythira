@@ -1,8 +1,8 @@
 # Implementation Plan — Discovery Nodes Host Build
 
-## Status: Not Started
+## Status: Complete (6/6 tasks) — verified via a real `arm64-docker-smoke-test.yml` dispatch
 
-**Last Updated**: July 17, 2026
+**Last Updated**: July 23, 2026
 
 ## Overview
 
@@ -47,74 +47,61 @@ build.
 
 ## Phase 1: Staging Plumbing (Task 1)
 
-- [ ] 1. Add staging directories and ignore them
-  - Create `docker/poco_discovery_node/dist/`, `docker/dns_discovery_node/dist/`,
-    `docker/dns_sd_discovery_node/dist/` (empty is fine — the staging copy
-    commands create them at build time too).
-  - `.gitignore`: extend the comment block `.kiro/specs/chaos-node-host-build/`
-    added for `docker/chaos_node/dist/` to cover all three new paths
-    (design.md's Component 3 shows the combined form).
+- [x] 1. Add staging directories and ignore them
+  - Directories not pre-created (empty dirs aren't tracked by git anyway) —
+    each `make_directory` staging `COMMAND` creates its own at build time,
+    confirmed working end to end by Task 6's dispatch.
+  - `.gitignore`: extended the existing `docker/chaos_node/dist/` comment
+    block to cover all three new paths in one combined block, per
+    design.md's Component 3.
   - _Requirements: 1.3_
 
 ## Phase 2: CI Parity Fix (Task 2)
 
-- [ ] 2. Add `libavahi-client-dev` and `libldns-dev` to
+- [x] 2. Add `libavahi-client-dev` and `libldns-dev` to
       `arm64-docker-smoke-test.yml`
-  - `.github/workflows/arm64-docker-smoke-test.yml`: add both packages to
-    the "Install system dependencies" step, alongside the `libfiu-dev`
-    `.kiro/specs/chaos-node-host-build/` already adds there.
-  - Done before Phase 3's tasks so that, once this workflow next runs
-    (Task 6), `POCO_DNSSD_FOUND`/`LIBLDNS_FOUND` are true and Phase 3's
-    CMake guards actually take the "build" branch, not the "unavailable"
-    fallback.
+  - Added both packages to the "Install system dependencies" step,
+    alongside the existing `libfiu-dev`.
   - _Requirements: 3.1_
 
 ## Phase 3: Build/Package Rewrites (Tasks 3-5)
 
-- [ ] 3. `poco_discovery_node`: CMake wiring + Dockerfile rewrite
-  - `tests/docker_chaos/CMakeLists.txt`: replace the existing unconditional
-    `docker-poco-discovery-image` target with the
+- [x] 3. `poco_discovery_node`: CMake wiring + Dockerfile rewrite
+  - `tests/docker_chaos/CMakeLists.txt`: `docker-poco-discovery-image` now
     `if(POCO_DNSSD_FOUND AND folly_FOUND AND Boost_FOUND AND httplib_FOUND)`
-    / `else()` pair from design.md's Component 1 — `DEPENDS
-    poco_discovery_node`, staging `make_directory`/`copy` commands before
-    the existing `docker build` command, "target unavailable" fallback.
-  - `docker/poco_discovery_node/Dockerfile`: rewrite to the single
-    runtime-only stage from design.md's Component 2 — no builder stage, no
-    compiler/CMake/`libavahi-client-dev`; `COPY
-    docker/poco_discovery_node/dist/poco_discovery_node
-    /usr/local/bin/poco_discovery_node`; `entrypoint.sh` handling and
-    `HEALTHCHECK` unchanged.
+    gated, `DEPENDS poco_discovery_node` + staging `make_directory`/`copy`
+    before the existing `docker build` command; `else()` keeps the
+    "unavailable" echo+false fallback.
+  - `docker/poco_discovery_node/Dockerfile`: single runtime-only stage;
+    `entrypoint.sh` handling and `HEALTHCHECK` unchanged.
   - _Requirements: 1.1, 1.2, 2.1, 2.2, 4.1_
 
-- [ ] 4. `dns_discovery_node`: CMake wiring + Dockerfile rewrite
-  - `tests/docker_chaos/CMakeLists.txt`: same shape as Task 3, for
-    `docker-dns-discovery-image` / `dns_discovery_node`, guarded on
-    `if(LIBLDNS_FOUND AND folly_FOUND AND httplib_FOUND)` (combined with
-    Task 5's target in one `if`/`else` per design.md's Component 1, since
-    both share the same guard condition).
-  - `docker/dns_discovery_node/Dockerfile`: rewrite to single stage; no
-    `entrypoint.sh` (this image `ENTRYPOINT`s directly at the binary today
-    — unchanged).
+- [x] 4. `dns_discovery_node`: CMake wiring + Dockerfile rewrite
+  - Same shape as Task 3, guarded on
+    `if(LIBLDNS_FOUND AND folly_FOUND AND httplib_FOUND)`, combined with
+    Task 5's target in one `if`/`else` since both share the guard.
+  - `docker/dns_discovery_node/Dockerfile`: single runtime-only stage; no
+    `entrypoint.sh` (unchanged — `ENTRYPOINT`s directly at the binary).
   - _Requirements: 1.1, 1.2, 2.1, 2.2, 4.1_
 
-- [ ] 5. `dns_sd_discovery_node`: CMake wiring + Dockerfile rewrite
+- [x] 5. `dns_sd_discovery_node`: CMake wiring + Dockerfile rewrite
   - Identical shape to Task 4, for `docker-dns-sd-discovery-image` /
     `dns_sd_discovery_node`.
   - _Requirements: 1.1, 1.2, 2.1, 2.2, 4.1_
 
 ## Phase 4: Verification (Task 6)
 
-- [ ] 6. Manually dispatch `arm64-docker-smoke-test.yml` and confirm
-  - Trigger the workflow on the branch carrying Tasks 1-5 (and, if not
-    already merged, `.kiro/specs/chaos-node-host-build/`'s own changes —
-    both land in the same workflow file).
-  - Confirm `Run docker-poco-discovery-tests`, `Run
-    docker-dns-discovery-tests`, and `Run docker-dns-sd-discovery-tests`
-    all succeed — each image's host build, staging copy, `docker build`,
-    and full scenario-test suite.
-  - If green, update `doc/TODO.md` to note this follow-up complete
-    alongside the entry `.kiro/specs/chaos-node-host-build/` will already
-    have updated.
+- [x] 6. Manually dispatch `arm64-docker-smoke-test.yml` and confirm
+  - Dispatched on `feat/discovery-nodes-host-build` (PR #91) on
+    2026-07-23: run
+    [30006127341](https://github.com/crawlins/kythira/actions/runs/30006127341)
+    completed successfully. `Run docker-poco-discovery-tests
+    (poco_discovery_node image)`, `Run docker-dns-discovery-tests (bind9 +
+    dns_discovery_node images)`, and `Run docker-dns-sd-discovery-tests
+    (bind9 + dns_sd_discovery_node images)` all passed — each target's
+    host build, staging copy, `docker build`, and full scenario-test suite
+    against real arm64 hardware.
+  - `doc/TODO.md` updated alongside this.
   - _Requirements: 5.1, 5.2_
 
 ## Notes
