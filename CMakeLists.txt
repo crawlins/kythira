@@ -106,7 +106,24 @@ find_package(lakers CONFIG QUIET)
 find_package(stdexec CONFIG QUIET)
 
 if(NOT folly_FOUND)
-    message(WARNING "folly not found. Full implementation will require folly library.")
+    # include/raft/future.hpp (kythira::Future/Promise/Try, the default
+    # backend every other backend coexists alongside — see
+    # .kiro/specs/stdexec-future-backend/ and
+    # .kiro/specs/boost-future-backend/) includes Folly headers
+    # unconditionally, with no #ifdef of its own. Nearly everything in this
+    # project transitively depends on it: the Raft core, both HTTP/CoAP
+    # transports, certificate_authority/ca_service/ca_cluster_node (all
+    # gated on folly_FOUND accordingly), and most of the test suite. This
+    # is not a partial-implementation warning — it means most targets will
+    # not be defined at all, cleanly skipped via each one's own folly_FOUND
+    # guard, rather than a hard configure failure.
+    message(WARNING
+        "folly not found — most targets will be unavailable (Raft core, "
+        "HTTP/CoAP transports, certificate_authority/ca_service/"
+        "ca_cluster_node, and most of the test suite all require it "
+        "transitively via include/raft/future.hpp). Only Folly-independent "
+        "targets will be configured. See vcpkg.json / DEPENDENCIES.md."
+    )
 endif()
 
 if(NOT stdexec_FOUND)
@@ -416,7 +433,18 @@ else()
 endif()
 
 # ── certificate_authority (CA testing/provisioning framework) ────────────────
-if(TARGET OpenSSL::SSL)
+# folly_FOUND, not just TARGET OpenSSL::SSL: certificate_provider.hpp's
+# kythira::Future usage (via include/raft/future.hpp) pulls in Folly
+# unconditionally — that #include has no #ifdef guard of its own, unlike the
+# stdexec/boost backends, which only exist behind their own *_FOUND checks.
+# Without this, a folly-not-found configure still attempted this target and
+# failed deep inside src/certificate_authority.cpp's #include chain with a
+# `GLOG_EXPORT` "unknown type name" error from glog/flags.h — a real,
+# confirmed failure (reproduced via `-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON`,
+# the same isolation technique
+# scripts/verify-optional-dependency-isolation.sh already uses for stdexec)
+# that gives no hint the actual problem is a missing Folly dependency.
+if(TARGET OpenSSL::SSL AND folly_FOUND)
     add_library(certificate_authority STATIC src/certificate_authority.cpp)
     target_include_directories(certificate_authority PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -430,8 +458,10 @@ if(TARGET OpenSSL::SSL)
     target_compile_definitions(certificate_authority PUBLIC KYTHIRA_HAS_OPENSSL)
     target_compile_features(certificate_authority PUBLIC cxx_std_23)
     message(STATUS "certificate_authority target: enabled")
-else()
+elseif(NOT TARGET OpenSSL::SSL)
     message(STATUS "OpenSSL not found — certificate_authority target disabled")
+else()
+    message(STATUS "folly not found — certificate_authority target disabled (requires Folly via raft/future.hpp)")
 endif()
 
 # ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────
@@ -517,8 +547,23 @@ if(NOT ENABLE_COVERAGE)
         endif()
     endif()
 endif()
-if(Boost_FOUND)
+# folly_FOUND, not just Boost_FOUND: confirmed by direct build attempt
+# (-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON) that the overwhelming majority of
+# this project's 391+ registered tests transitively require Folly (every
+# kythira::Future/Promise/Try use is Folly-backed regardless of which
+# backend a given test is actually about — even stdexec-only test files
+# still transitively reach include/raft/future.hpp through shared project
+# headers) and fail the same GLOG_EXPORT compile error the
+# certificate_authority/examples guards above document. tests/CMakeLists.txt
+# already does its own finer-grained per-target gating in specific places
+# (e.g. the discovery-node docker image targets, each on their own FOUND
+# variable) - this guard only prevents attempting the whole subdirectory
+# when Folly, tests/CMakeLists.txt's own single largest transitive
+# dependency, is absent.
+if(Boost_FOUND AND folly_FOUND)
     add_subdirectory(tests)
+elseif(Boost_FOUND)
+    message(STATUS "folly not found — tests/ disabled (391+ registered tests overwhelmingly require it transitively)")
 endif()
 if(NOT ENABLE_COVERAGE)
     if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
@@ -530,7 +575,17 @@ if(NOT ENABLE_COVERAGE)
         add_subdirectory(cmd/dns_sd_discovery_node)
     endif()
 endif()
-add_subdirectory(examples)
+# folly_FOUND: confirmed by direct build attempt (-DCMAKE_DISABLE_FIND_
+# PACKAGE_folly=ON) that every example target transitively requires Folly
+# (via network_simulator's own headers, which reach include/raft/future.hpp
+# through several paths) and fails the same confusing GLOG_EXPORT compile
+# error the certificate_authority guard above documents — not a partial
+# gap affecting only some examples.
+if(folly_FOUND)
+    add_subdirectory(examples)
+else()
+    message(STATUS "folly not found — examples/ targets disabled (all transitively require Folly)")
+endif()
 
 # Installation rules
 install(TARGETS network_simulator
