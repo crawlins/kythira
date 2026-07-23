@@ -738,6 +738,38 @@ auto wait_issuance_capable(const std::vector<std::string>& public_ips,
     return false;
 }
 
+// Dumps each node's own /v1/root-ca status/headers and recent
+// leader/election/redirect log lines to std::cerr (not BOOST_TEST_MESSAGE -
+// this project's real-ec2 tests run under Boost.Test's default log level,
+// which doesn't print message-level output at all). Factored out once three
+// separate BOOST_REQUIRE_MESSAGE failure paths in this file all needed the
+// identical dump to actually diagnose a real run rather than guess at a
+// timing tweak that may not even be the real problem - see this file's git
+// history for two rounds of the latter that didn't help.
+void dump_cluster_diagnostic_state(const std::vector<std::string>& ips,
+                                   const std::string& private_key_pem) {
+    for (const auto& ip : ips) {
+        try {
+            auto status = ssh_execute(ip, private_key_pem,
+                                      "curl -s -o /dev/null -w '%{http_code}' -D - "
+                                      "-H 'Authorization: Bearer " +
+                                          std::string(TEST_AUTH_TOKEN) +
+                                          "' http://localhost:8443/v1/root-ca 2>&1",
+                                      std::chrono::seconds(15));
+            auto log_tail = ssh_execute(ip, private_key_pem,
+                                        "sudo grep -i 'leader\\|election\\|redirect\\|trust\\|"
+                                        "cutover\\|peer.cert' /tmp/ca_cluster_node.log 2>&1 | "
+                                        "tail -30",
+                                        std::chrono::seconds(15));
+            std::cerr << "=== " << ip << " /v1/root-ca headers ===\n"
+                      << status << "\n=== " << ip << " recent leader/election/trust log ===\n"
+                      << log_tail << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "=== " << ip << ": could not fetch state: " << e.what() << "\n";
+        }
+    }
+}
+
 // Deletes the bootstrap credential's cert/key on `public_ip` — the
 // property this whole spec exists to prove: the cluster keeps operating
 // normally once these files are gone, provided cutover already finalized.
@@ -840,9 +872,13 @@ BOOST_FIXTURE_TEST_CASE(bootstrap_and_cutover_survives_bootstrap_credential_dele
                               "node at " << ip << " never became healthy");
     }
 
-    BOOST_REQUIRE_MESSAGE(
-        try_issue_certificate(public_ips, private_key_pem, std::chrono::minutes(3)),
-        "certificate issuance failed before bootstrap credential deletion");
+    bool initial_issuance_ok =
+        try_issue_certificate(public_ips, private_key_pem, std::chrono::minutes(3));
+    if (!initial_issuance_ok) {
+        dump_cluster_diagnostic_state(public_ips, private_key_pem);
+    }
+    BOOST_REQUIRE_MESSAGE(initial_issuance_ok,
+                          "certificate issuance failed before bootstrap credential deletion");
 
     // Give the cluster time to fully converge (all three rpc_tls_ready,
     // cutover finalized) before deleting the credential — no direct API for
@@ -1247,40 +1283,27 @@ BOOST_FIXTURE_TEST_CASE(network_isolation_during_cutover_recovers, rpc_tls_three
     std::vector<std::string> surviving_ips{public_ips[0], public_ips[1]};
     bool first_issuance_ok =
         try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4));
+    // Diagnostic: bumping this from 2 to 4 minutes (an earlier commit)
+    // didn't help at all on a real run, meaning this isn't a timing
+    // problem - dump real state (each survivor's own root-ca status code
+    // and log tails) instead of guessing further.
     if (!first_issuance_ok) {
-        // Diagnostic: bumping this from 2 to 4 minutes (previous commit)
-        // didn't help at all on a real run, meaning this isn't a timing
-        // problem - dump real state (each survivor's own root-ca status
-        // code, and log tails) instead of guessing further. std::cerr, not
-        // BOOST_TEST_MESSAGE: see the other diagnostic in this file for
-        // why.
-        for (const auto& ip : surviving_ips) {
-            try {
-                auto status = ssh_execute(ip, private_key_pem,
-                                          "curl -s -o /dev/null -w '%{http_code}' -D - "
-                                          "-H 'Authorization: Bearer " +
-                                              std::string(TEST_AUTH_TOKEN) +
-                                              "' http://localhost:8443/v1/root-ca 2>&1",
-                                          std::chrono::seconds(15));
-                auto log_tail = ssh_execute(ip, private_key_pem,
-                                            "sudo grep -i 'leader\\|election\\|redirect' "
-                                            "/tmp/ca_cluster_node.log 2>&1 | tail -30",
-                                            std::chrono::seconds(15));
-                std::cerr << "=== " << ip << " /v1/root-ca headers ===\n"
-                          << status << "\n=== " << ip << " recent leader/election log ===\n"
-                          << log_tail << "\n";
-            } catch (const std::exception& e) {
-                std::cerr << "=== " << ip << ": could not fetch state: " << e.what() << "\n";
-            }
-        }
+        dump_cluster_diagnostic_state(surviving_ips, private_key_pem);
     }
     BOOST_REQUIRE_MESSAGE(first_issuance_ok,
                           "certificate issuance failed using only the two non-isolated nodes");
     // Issue a second one to confirm the majority stays healthy, not just
-    // survives one lucky attempt.
-    BOOST_REQUIRE_MESSAGE(
-        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4)),
-        "certificate issuance failed on a second attempt during isolation");
+    // survives one lucky attempt. Reproduced failing here on a real run
+    // even after the first attempt above succeeded - same diagnostic dump,
+    // since a fresh run's evidence is worth more than reusing the first
+    // check's (already-stale) state.
+    bool second_issuance_ok =
+        try_issue_certificate(surviving_ips, private_key_pem, std::chrono::minutes(4));
+    if (!second_issuance_ok) {
+        dump_cluster_diagnostic_state(surviving_ips, private_key_pem);
+    }
+    BOOST_REQUIRE_MESSAGE(second_issuance_ok,
+                          "certificate issuance failed on a second attempt during isolation");
 
     restore_az(isolated_az);
 
