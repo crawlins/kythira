@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE membership_change_leave_rpc_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -32,12 +33,12 @@ public:
     preset_peer_discovery() = default;
     explicit preset_peer_discovery(std::vector<kythira::peer_info<NodeId, Address>> peers)
         : _peers(std::move(peers)) {}
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>(_peers));
     }
 
@@ -46,9 +47,9 @@ private:
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -284,7 +285,8 @@ BOOST_AUTO_TEST_CASE(cluster_operable_after_leave_rpc, *boost::unit_test::timeou
     bool cmd_applied = false;
     std::move(cmd_fut)
         .thenValue([&](std::vector<std::byte>) { cmd_applied = true; })
-        .thenError([&](const std::exception_ptr&) {});
+        .thenError([&](const std::exception_ptr&) {})
+        .detach();
 
     for (int i = 0; i < 15; ++i) {
         node1.check_heartbeat_timeout();

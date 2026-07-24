@@ -163,11 +163,11 @@ BOOST_AUTO_TEST_CASE(test_simple_future_concept, *boost::unit_test::timeout(15))
     // Test basic functionality
     SimpleFuture<int> fut(42);
     BOOST_TEST(fut.isReady());
-    BOOST_TEST(fut.get() == 42);
+    BOOST_TEST(std::move(fut).get() == 42);
 
     // Test then() chaining
     auto fut2 = fut.then([](int x) { return x * 2; });
-    BOOST_TEST(fut2.get() == 84);
+    BOOST_TEST(std::move(fut2).get() == 84);
 }
 
 // Test Message concept satisfaction

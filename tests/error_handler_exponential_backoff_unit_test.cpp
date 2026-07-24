@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 #include <folly/init/Init.h>
 #include <raft/error_handler.hpp>
+#include <raft/future_default.hpp>
 #include <chrono>
 #include <thread>
 #include <iostream>
@@ -54,11 +55,11 @@ BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, *boost::unit_test::ti
     std::size_t attempt_count = 0;
     std::vector<std::chrono::milliseconds> observed_delays;
 
-    auto operation = [&attempt_count]() -> Future<int> {
+    auto operation = [&attempt_count]() -> future_default<int> {
         attempt_count++;
         // Always fail to trigger retry
-        return FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("Test failure for retry"));
+        return future_factory_default::makeExceptionalFuture<int>(
+            std::make_exception_ptr(std::runtime_error("Test failure for retry")));
     };
 
     // Measure time for retries
@@ -66,7 +67,7 @@ BOOST_AUTO_TEST_CASE(test_exponential_backoff_calculation, *boost::unit_test::ti
 
     try {
         auto result = handler.execute_with_retry("test_operation", operation);
-        result.get();  // This should throw after all retries
+        std::move(result).get();  // This should throw after all retries
         BOOST_FAIL("Expected exception after retries");
     } catch (const std::exception& e) {
         // Expected - all retries exhausted
@@ -121,16 +122,17 @@ BOOST_AUTO_TEST_CASE(test_delay_capping, *boost::unit_test::timeout(30)) {
 
     std::size_t attempt_count = 0;
 
-    auto operation = [&attempt_count]() -> Future<int> {
+    auto operation = [&attempt_count]() -> future_default<int> {
         attempt_count++;
-        return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
+        return future_factory_default::makeExceptionalFuture<int>(
+            std::make_exception_ptr(std::runtime_error("Test failure")));
     };
 
     auto start_time = std::chrono::steady_clock::now();
 
     try {
         auto result = handler.execute_with_retry("test_capping", operation);
-        result.get();
+        std::move(result).get();
         BOOST_FAIL("Expected exception");
     } catch (const std::exception&) {
         // Expected
@@ -174,16 +176,17 @@ BOOST_AUTO_TEST_CASE(test_jitter_application, *boost::unit_test::timeout(30)) {
     for (int run = 0; run < 5; ++run) {
         std::size_t attempt_count = 0;
 
-        auto operation = [&attempt_count]() -> Future<int> {
+        auto operation = [&attempt_count]() -> future_default<int> {
             attempt_count++;
-            return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
+            return future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("Test failure")));
         };
 
         auto start_time = std::chrono::steady_clock::now();
 
         try {
             auto result = handler.execute_with_retry("test_jitter", operation);
-            result.get();
+            std::move(result).get();
         } catch (const std::exception&) {
             // Expected
         }
@@ -233,15 +236,16 @@ BOOST_AUTO_TEST_CASE(test_delays_actually_applied, *boost::unit_test::timeout(30
     std::size_t attempt_count = 0;
     std::vector<std::chrono::steady_clock::time_point> attempt_times;
 
-    auto operation = [&attempt_count, &attempt_times]() -> Future<int> {
+    auto operation = [&attempt_count, &attempt_times]() -> future_default<int> {
         attempt_times.push_back(std::chrono::steady_clock::now());
         attempt_count++;
-        return FutureFactory::makeExceptionalFuture<int>(std::runtime_error("Test failure"));
+        return future_factory_default::makeExceptionalFuture<int>(
+            std::make_exception_ptr(std::runtime_error("Test failure")));
     };
 
     try {
         auto result = handler.execute_with_retry("test_applied", operation);
-        result.get();
+        std::move(result).get();
     } catch (const std::exception&) {
         // Expected
     }

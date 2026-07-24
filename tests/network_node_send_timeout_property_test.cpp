@@ -57,7 +57,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_timeout_property_test, *boost::unit_test:
         // Property: Send operation should return false when timeout expires
         // Note: In the current simplified implementation, timeout behavior
         // may not be fully implemented, so we test what we can
-        bool send_result = send_future.get();
+        bool send_result = std::move(send_future).get();
 
         // The result should be either true (accepted) or false (timeout/rejected)
         // This property validates that the timeout mechanism exists

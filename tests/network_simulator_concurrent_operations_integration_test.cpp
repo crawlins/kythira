@@ -265,7 +265,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
     // Collect all listeners
     std::vector<std::shared_ptr<DefaultNetworkTypes::listener_type>> listeners;
     for (auto& future : listener_futures) {
-        auto listener = future.get();
+        auto listener = std::move(future).get();
         BOOST_REQUIRE(listener != nullptr);
         BOOST_CHECK(listener->is_listening());
         listeners.push_back(listener);
@@ -349,7 +349,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
 
     // Collect client connections
     for (auto& future : connection_futures) {
-        auto connection = future.get();
+        auto connection = std::move(future).get();
         if (connection != nullptr) {
             client_connections.push_back(connection);
         }
@@ -357,7 +357,7 @@ BOOST_AUTO_TEST_CASE(concurrent_connection_oriented_operations, *boost::unit_tes
 
     // Collect server connections
     for (auto& future : accept_futures) {
-        auto connection = future.get();
+        auto connection = std::move(future).get();
         if (connection != nullptr) {
             server_connections.push_back(connection);
         }

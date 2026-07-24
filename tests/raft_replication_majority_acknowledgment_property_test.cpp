@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftReplicationMajorityAcknowledgmentPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -66,7 +67,8 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
                                                     << ", followers: " << follower_count);
 
         // Create futures representing replication acknowledgments from followers
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             replication_futures;
         replication_futures.reserve(follower_count);
 
@@ -90,7 +92,7 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
                     std::nullopt   // conflict_term
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 replication_futures.push_back(std::move(future));
             } else {
@@ -103,14 +105,14 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
                         log_index,        // conflict_index - indicates where conflict occurred
                         current_term - 1  // conflict_term
                     };
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     replication_futures.push_back(std::move(future));
                 } else {
                     // Timeout simulation
-                    auto future = kythira::FutureFactory::makeExceptionalFuture<
+                    auto future = kythira::future_factory_default::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                        std::runtime_error("Replication timeout"));
+                        std::make_exception_ptr(std::runtime_error("Replication timeout")));
                     replication_futures.push_back(std::move(future));
                 }
             }
@@ -177,7 +179,8 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
 
     // Test with empty futures vector
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             empty_futures;
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -189,11 +192,12 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
 
     // Test with single follower (majority of 1 is 1)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             single_future;
         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
             1, true, std::nullopt, std::nullopt};
-        single_future.push_back(kythira::FutureFactory::makeFuture(response));
+        single_future.push_back(kythira::future_factory_default::makeFuture(response));
 
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -207,13 +211,14 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
 
     // Test timeout behavior
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             slow_futures;
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
             // Create futures that take longer than the timeout
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(6000));  // Longer than test_timeout
             slow_futures.push_back(std::move(future));
         }
@@ -231,13 +236,14 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
     {
         const std::size_t all_followers = 4;
         const std::uint64_t target_index = 20;
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             all_success_futures;
 
         for (std::size_t i = 0; i < all_followers; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            all_success_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            all_success_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -258,7 +264,8 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
     {
         const std::size_t mixed_followers = 5;
         const std::uint64_t target_index = 15;
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             mixed_futures;
 
         // Create mix of successful and failed responses
@@ -272,7 +279,7 @@ BOOST_AUTO_TEST_CASE(raft_replication_majority_acknowledgment_property_test,
                 success ? std::nullopt
                         : std::make_optional(std::uint64_t{0})  // conflict_term only for failures
             };
-            mixed_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            mixed_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =

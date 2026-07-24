@@ -96,7 +96,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeo
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener);
         BOOST_REQUIRE(listener->is_listening());
@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeo
 
             for (std::size_t j = 0; j < max_connections_per_endpoint; ++j) {
                 auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 BOOST_REQUIRE(conn);
                 BOOST_REQUIRE(conn->is_open());
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeo
 
             // Test Case 2: Add one more connection to trigger eviction
             auto extra_conn_future = client->connect(server_addr, server_port, connection_timeout);
-            auto extra_conn = extra_conn_future.get();
+            auto extra_conn = std::move(extra_conn_future).get();
 
             BOOST_REQUIRE(extra_conn);
             BOOST_REQUIRE(extra_conn->is_open());
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeo
             // The first connection (oldest) should have been evicted
             // Create a new connection and verify pool still at capacity
             auto new_conn_future = client->connect(server_addr, server_port, connection_timeout);
-            auto new_conn = new_conn_future.get();
+            auto new_conn = std::move(new_conn_future).get();
 
             BOOST_REQUIRE(new_conn);
             BOOST_REQUIRE(new_conn->is_open());
@@ -189,7 +189,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_eviction, *boost::unit_test::timeo
             for (std::size_t j = 0; j < 5; ++j) {
                 auto test_conn_future =
                     client->connect(server_addr, server_port, connection_timeout);
-                auto test_conn = test_conn_future.get();
+                auto test_conn = std::move(test_conn_future).get();
 
                 BOOST_REQUIRE(test_conn);
                 BOOST_REQUIRE(test_conn->is_open());

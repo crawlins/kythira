@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE CoAP libcoap Integration Test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
@@ -13,7 +14,7 @@ using namespace kythira;
 
 // Test transport types using default_transport_types
 using test_transport_types =
-    kythira::default_transport_types<kythira::Future<kythira::request_vote_response<>>,
+    kythira::default_transport_types<kythira::future_default<kythira::request_vote_response<>>,
                                      kythira::json_rpc_serializer<std::vector<std::byte>>,
                                      kythira::noop_metrics, kythira::console_logger>;
 

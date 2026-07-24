@@ -10,6 +10,7 @@
 
 #define BOOST_TEST_MODULE RaftSnapshotPreservesStatePropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -47,9 +48,9 @@ constexpr std::size_t max_state_size = 10000;
 // Types for simulator-based testing
 struct test_raft_types {
     // Future types
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // Basic data types
     using node_id_type = std::uint64_t;

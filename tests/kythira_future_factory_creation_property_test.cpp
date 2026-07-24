@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <exception>
 #include <string>
@@ -34,47 +35,47 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
     // Test 1: makeFuture creates immediately ready futures with correct values
     {
         // Test with int
-        auto int_future = FutureFactory::makeFuture(test_value);
+        auto int_future = future_factory_default::makeFuture(test_value);
         BOOST_CHECK(int_future.isReady());
-        BOOST_CHECK_EQUAL(int_future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(int_future).get(), test_value);
 
         // Test with std::string
         std::string test_str = "hello world";
-        auto string_future = FutureFactory::makeFuture(test_str);
+        auto string_future = future_factory_default::makeFuture(test_str);
         BOOST_CHECK(string_future.isReady());
-        BOOST_CHECK_EQUAL(string_future.get(), test_str);
+        BOOST_CHECK_EQUAL(std::move(string_future).get(), test_str);
 
         // Test with double
-        auto double_future = FutureFactory::makeFuture(test_double);
+        auto double_future = future_factory_default::makeFuture(test_double);
         BOOST_CHECK(double_future.isReady());
-        BOOST_CHECK_EQUAL(double_future.get(), test_double);
+        BOOST_CHECK_EQUAL(std::move(double_future).get(), test_double);
 
         // Test with void
-        auto void_future = FutureFactory::makeFuture();
+        auto void_future = future_factory_default::makeFuture();
         BOOST_CHECK(void_future.isReady());
-        void_future.get();  // Should not throw
+        std::move(void_future).get();  // Should not throw
 
         BOOST_TEST_MESSAGE("makeFuture creates immediately ready futures with correct values");
     }
 
     // Test 2: makeExceptionalFuture creates immediately ready futures with correct exceptions
     {
-        auto ex = folly::exception_wrapper(std::runtime_error(test_string));
+        auto ex = std::make_exception_ptr(std::runtime_error(test_string));
 
         // Test with int
-        auto int_future = FutureFactory::makeExceptionalFuture<int>(ex);
+        auto int_future = future_factory_default::makeExceptionalFuture<int>(ex);
         BOOST_CHECK(int_future.isReady());
-        BOOST_CHECK_THROW(int_future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(int_future).get(), std::runtime_error);
 
         // Test with std::string
-        auto string_future = FutureFactory::makeExceptionalFuture<std::string>(ex);
+        auto string_future = future_factory_default::makeExceptionalFuture<std::string>(ex);
         BOOST_CHECK(string_future.isReady());
-        BOOST_CHECK_THROW(string_future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(string_future).get(), std::runtime_error);
 
         // Test with void
-        auto void_future = FutureFactory::makeExceptionalFuture<void>(ex);
+        auto void_future = future_factory_default::makeExceptionalFuture<void>(ex);
         BOOST_CHECK(void_future.isReady());
-        BOOST_CHECK_THROW(void_future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(void_future).get(), std::runtime_error);
 
         BOOST_TEST_MESSAGE(
             "makeExceptionalFuture creates immediately ready futures with correct exceptions");
@@ -83,14 +84,14 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
     // Test 3: makeReadyFuture creates immediately ready futures
     {
         // Test makeReadyFuture (void/Unit)
-        auto ready_future = FutureFactory::makeReadyFuture();
+        auto ready_future = future_factory_default::makeReadyFuture();
         BOOST_CHECK(ready_future.isReady());
-        ready_future.get();  // Should not throw
+        std::move(ready_future).get();  // Should not throw
 
         // Test makeReadyFuture with value
-        auto ready_int_future = FutureFactory::makeReadyFuture(test_value);
+        auto ready_int_future = future_factory_default::makeReadyFuture(test_value);
         BOOST_CHECK(ready_int_future.isReady());
-        BOOST_CHECK_EQUAL(ready_int_future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(ready_int_future).get(), test_value);
 
         BOOST_TEST_MESSAGE("makeReadyFuture creates immediately ready futures");
     }
@@ -107,34 +108,34 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
 
         // Test makeFuture with random int values
         {
-            auto future = FutureFactory::makeFuture(random_int);
+            auto future = future_factory_default::makeFuture(random_int);
             BOOST_CHECK(future.isReady());
-            BOOST_CHECK_EQUAL(future.get(), random_int);
+            BOOST_CHECK_EQUAL(std::move(future).get(), random_int);
         }
 
         // Test makeFuture with random double values
         {
-            auto future = FutureFactory::makeFuture(random_double);
+            auto future = future_factory_default::makeFuture(random_double);
             BOOST_CHECK(future.isReady());
-            BOOST_CHECK_EQUAL(future.get(), random_double);
+            BOOST_CHECK_EQUAL(std::move(future).get(), random_double);
         }
 
         // Test makeReadyFuture with random values
         {
-            auto future = FutureFactory::makeReadyFuture(random_int);
+            auto future = future_factory_default::makeReadyFuture(random_int);
             BOOST_CHECK(future.isReady());
-            BOOST_CHECK_EQUAL(future.get(), random_int);
+            BOOST_CHECK_EQUAL(std::move(future).get(), random_int);
         }
 
         // Test makeExceptionalFuture with different exception messages
         {
             std::string exception_msg = "test exception " + std::to_string(i);
-            auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-            auto future = FutureFactory::makeExceptionalFuture<int>(ex);
+            auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+            auto future = future_factory_default::makeExceptionalFuture<int>(ex);
             BOOST_CHECK(future.isReady());
 
             try {
-                future.get();
+                std::move(future).get();
                 BOOST_FAIL("Expected exception was not thrown");
             } catch (const std::runtime_error& e) {
                 std::string error_msg = e.what();
@@ -147,26 +148,27 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
     {
         // Test type deduction with const values
         const int const_value = test_value;
-        auto const_future = FutureFactory::makeFuture(const_value);
-        static_assert(std::is_same_v<decltype(const_future), Future<int>>,
+        auto const_future = future_factory_default::makeFuture(const_value);
+        static_assert(std::is_same_v<decltype(const_future), future_default<int>>,
                       "Type deduction should remove const");
         BOOST_CHECK(const_future.isReady());
-        BOOST_CHECK_EQUAL(const_future.get(), const_value);
+        BOOST_CHECK_EQUAL(std::move(const_future).get(), const_value);
 
         // Test type deduction with references
         int& ref_value = const_cast<int&>(const_value);
-        auto ref_future = FutureFactory::makeFuture(ref_value);
-        static_assert(std::is_same_v<decltype(ref_future), Future<int>>,
+        auto ref_future = future_factory_default::makeFuture(ref_value);
+        static_assert(std::is_same_v<decltype(ref_future), future_default<int>>,
                       "Type deduction should remove reference");
         BOOST_CHECK(ref_future.isReady());
-        BOOST_CHECK_EQUAL(ref_future.get(), ref_value);
+        BOOST_CHECK_EQUAL(std::move(ref_future).get(), ref_value);
 
         // Test with rvalue references
-        auto rvalue_future = FutureFactory::makeFuture(std::move(const_cast<int&>(const_value)));
-        static_assert(std::is_same_v<decltype(rvalue_future), Future<int>>,
+        auto rvalue_future =
+            future_factory_default::makeFuture(std::move(const_cast<int&>(const_value)));
+        static_assert(std::is_same_v<decltype(rvalue_future), future_default<int>>,
                       "Type deduction should handle rvalue references");
         BOOST_CHECK(rvalue_future.isReady());
-        BOOST_CHECK_EQUAL(rvalue_future.get(), const_value);
+        BOOST_CHECK_EQUAL(std::move(rvalue_future).get(), const_value);
 
         BOOST_TEST_MESSAGE("Type deduction and conversion handling work correctly");
     }
@@ -176,19 +178,19 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
         // Test move semantics with makeFuture
         std::string movable_string = "movable test string";
         std::string original_string = movable_string;
-        auto future = FutureFactory::makeFuture(std::move(movable_string));
+        auto future = future_factory_default::makeFuture(std::move(movable_string));
         BOOST_CHECK(future.isReady());
 
-        auto result = future.get();
+        auto result = std::move(future).get();
         BOOST_CHECK_EQUAL(result, original_string);
         // Note: movable_string may be empty after move, which is expected
 
         // Test move semantics with makeReadyFuture
         std::string another_movable = "another movable string";
         std::string another_original = another_movable;
-        auto ready_future = FutureFactory::makeReadyFuture(std::move(another_movable));
+        auto ready_future = future_factory_default::makeReadyFuture(std::move(another_movable));
         BOOST_CHECK(ready_future.isReady());
-        BOOST_CHECK_EQUAL(ready_future.get(), another_original);
+        BOOST_CHECK_EQUAL(std::move(ready_future).get(), another_original);
 
         BOOST_TEST_MESSAGE("Move semantics optimization works correctly");
     }
@@ -203,15 +205,15 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
             ex_ptr = std::current_exception();
         }
 
-        auto future = FutureFactory::makeExceptionalFuture<int>(ex_ptr);
+        auto future = future_factory_default::makeExceptionalFuture<int>(ex_ptr);
         BOOST_CHECK(future.isReady());
-        BOOST_CHECK_THROW(future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
 
         // Test with different exception types
-        auto logic_ex = folly::exception_wrapper(std::logic_error("logic error"));
-        auto logic_future = FutureFactory::makeExceptionalFuture<std::string>(logic_ex);
+        auto logic_ex = std::make_exception_ptr(std::logic_error("logic error"));
+        auto logic_future = future_factory_default::makeExceptionalFuture<std::string>(logic_ex);
         BOOST_CHECK(logic_future.isReady());
-        BOOST_CHECK_THROW(logic_future.get(), std::logic_error);
+        BOOST_CHECK_THROW(std::move(logic_future).get(), std::logic_error);
 
         BOOST_TEST_MESSAGE("Exception type conversion works correctly");
     }
@@ -228,15 +230,15 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
         };
 
         CustomType custom{test_value, "custom"};
-        auto custom_future = FutureFactory::makeFuture(custom);
+        auto custom_future = future_factory_default::makeFuture(custom);
         BOOST_CHECK(custom_future.isReady());
-        BOOST_CHECK(custom_future.get() == custom);
+        BOOST_CHECK(std::move(custom_future).get() == custom);
 
         // Test with custom type exception
-        auto custom_ex_future = FutureFactory::makeExceptionalFuture<CustomType>(
-            folly::exception_wrapper(std::runtime_error("custom error")));
+        auto custom_ex_future = future_factory_default::makeExceptionalFuture<CustomType>(
+            std::make_exception_ptr(std::runtime_error("custom error")));
         BOOST_CHECK(custom_ex_future.isReady());
-        BOOST_CHECK_THROW(custom_ex_future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(custom_ex_future).get(), std::runtime_error);
 
         BOOST_TEST_MESSAGE("Custom types work correctly");
     }
@@ -244,26 +246,35 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
     // Test 9: Void/Unit handling
     {
         // Test void makeFuture
-        auto void_future1 = FutureFactory::makeFuture();
-        static_assert(std::is_same_v<decltype(void_future1), Future<void>>,
-                      "makeFuture() should return Future<void>");
+        auto void_future1 = future_factory_default::makeFuture();
+        static_assert(std::is_same_v<decltype(void_future1), future_default<void>>,
+                      "makeFuture() should return future_default<void>");
         BOOST_CHECK(void_future1.isReady());
-        void_future1.get();  // Should not throw
+        std::move(void_future1).get();  // Should not throw
 
         // Test void makeReadyFuture
-        auto void_future2 = FutureFactory::makeReadyFuture();
-        static_assert(std::is_same_v<decltype(void_future2), Future<folly::Unit>>,
-                      "makeReadyFuture() should return Future<folly::Unit>");
+        auto void_future2 = future_factory_default::makeReadyFuture();
+        // The "unit" type backing makeReadyFuture()'s return value differs
+        // by backend (Folly's own factory returns folly::Unit specifically;
+        // boost/stdexec return the portable kythira::unit) - assert against
+        // whichever is actually correct for the active backend.
+#if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) || defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+        static_assert(std::is_same_v<decltype(void_future2), future_default<kythira::unit>>,
+                      "makeReadyFuture() should return future_default<kythira::unit>");
+#else
+        static_assert(std::is_same_v<decltype(void_future2), future_default<folly::Unit>>,
+                      "makeReadyFuture() should return future_default<folly::Unit>");
+#endif
         BOOST_CHECK(void_future2.isReady());
-        void_future2.get();  // Should not throw
+        std::move(void_future2).get();  // Should not throw
 
         // Test void makeExceptionalFuture
-        auto void_ex_future = FutureFactory::makeExceptionalFuture<void>(
-            folly::exception_wrapper(std::runtime_error("void error")));
-        static_assert(std::is_same_v<decltype(void_ex_future), Future<void>>,
-                      "makeExceptionalFuture<void> should return Future<void>");
+        auto void_ex_future = future_factory_default::makeExceptionalFuture<void>(
+            std::make_exception_ptr(std::runtime_error("void error")));
+        static_assert(std::is_same_v<decltype(void_ex_future), future_default<void>>,
+                      "makeExceptionalFuture<void> should return future_default<void>");
         BOOST_CHECK(void_ex_future.isReady());
-        BOOST_CHECK_THROW(void_ex_future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(void_ex_future).get(), std::runtime_error);
 
         BOOST_TEST_MESSAGE("Void/Unit handling works correctly");
     }
@@ -273,12 +284,12 @@ BOOST_AUTO_TEST_CASE(kythira_future_factory_creation_property_test,
         auto start_time = std::chrono::steady_clock::now();
 
         // Create multiple futures and verify they're all immediately ready
-        auto int_future = FutureFactory::makeFuture(42);
-        auto string_future = FutureFactory::makeFuture(std::string("test"));
-        auto void_future = FutureFactory::makeFuture();
-        auto ready_future = FutureFactory::makeReadyFuture(3.14);
-        auto ex_future = FutureFactory::makeExceptionalFuture<int>(
-            folly::exception_wrapper(std::runtime_error("test")));
+        auto int_future = future_factory_default::makeFuture(42);
+        auto string_future = future_factory_default::makeFuture(std::string("test"));
+        auto void_future = future_factory_default::makeFuture();
+        auto ready_future = future_factory_default::makeReadyFuture(3.14);
+        auto ex_future = future_factory_default::makeExceptionalFuture<int>(
+            std::make_exception_ptr(std::runtime_error("test")));
 
         auto end_time = std::chrono::steady_clock::now();
         auto duration =
@@ -305,42 +316,42 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, *boost::unit_test:
     // Test with empty string
     {
         std::string empty_str;
-        auto future = FutureFactory::makeFuture(empty_str);
+        auto future = future_factory_default::makeFuture(empty_str);
         BOOST_CHECK(future.isReady());
-        BOOST_CHECK(future.get().empty());
+        BOOST_CHECK(std::move(future).get().empty());
     }
 
     // Test with zero values
     {
-        auto zero_int_future = FutureFactory::makeFuture(0);
+        auto zero_int_future = future_factory_default::makeFuture(0);
         BOOST_CHECK(zero_int_future.isReady());
-        BOOST_CHECK_EQUAL(zero_int_future.get(), 0);
+        BOOST_CHECK_EQUAL(std::move(zero_int_future).get(), 0);
 
-        auto zero_double_future = FutureFactory::makeFuture(0.0);
+        auto zero_double_future = future_factory_default::makeFuture(0.0);
         BOOST_CHECK(zero_double_future.isReady());
-        BOOST_CHECK_EQUAL(zero_double_future.get(), 0.0);
+        BOOST_CHECK_EQUAL(std::move(zero_double_future).get(), 0.0);
     }
 
     // Test with negative values
     {
-        auto neg_int_future = FutureFactory::makeFuture(-42);
+        auto neg_int_future = future_factory_default::makeFuture(-42);
         BOOST_CHECK(neg_int_future.isReady());
-        BOOST_CHECK_EQUAL(neg_int_future.get(), -42);
+        BOOST_CHECK_EQUAL(std::move(neg_int_future).get(), -42);
 
-        auto neg_double_future = FutureFactory::makeFuture(-3.14);
+        auto neg_double_future = future_factory_default::makeFuture(-3.14);
         BOOST_CHECK(neg_double_future.isReady());
-        BOOST_CHECK_EQUAL(neg_double_future.get(), -3.14);
+        BOOST_CHECK_EQUAL(std::move(neg_double_future).get(), -3.14);
     }
 
     // Test with maximum/minimum values
     {
-        auto max_int_future = FutureFactory::makeFuture(std::numeric_limits<int>::max());
+        auto max_int_future = future_factory_default::makeFuture(std::numeric_limits<int>::max());
         BOOST_CHECK(max_int_future.isReady());
-        BOOST_CHECK_EQUAL(max_int_future.get(), std::numeric_limits<int>::max());
+        BOOST_CHECK_EQUAL(std::move(max_int_future).get(), std::numeric_limits<int>::max());
 
-        auto min_int_future = FutureFactory::makeFuture(std::numeric_limits<int>::min());
+        auto min_int_future = future_factory_default::makeFuture(std::numeric_limits<int>::min());
         BOOST_CHECK(min_int_future.isReady());
-        BOOST_CHECK_EQUAL(min_int_future.get(), std::numeric_limits<int>::min());
+        BOOST_CHECK_EQUAL(std::move(min_int_future).get(), std::numeric_limits<int>::min());
     }
 
     // Test with null exception_ptr
@@ -349,7 +360,7 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_edge_cases_test, *boost::unit_test:
         // Note: This might not work as expected with null exception_ptr
         // but we test to ensure it doesn't crash
         try {
-            auto future = FutureFactory::makeExceptionalFuture<int>(null_ex_ptr);
+            auto future = future_factory_default::makeExceptionalFuture<int>(null_ex_ptr);
             BOOST_CHECK(future.isReady());
             // The behavior with null exception_ptr is implementation-defined
         } catch (...) {
@@ -380,25 +391,25 @@ BOOST_AUTO_TEST_CASE(future_factory_creation_concurrent_test, *boost::unit_test:
                     int value = static_cast<int>(t * operations_per_thread + i);
 
                     // Test makeFuture
-                    auto future1 = FutureFactory::makeFuture(value);
-                    if (future1.isReady() && future1.get() == value) {
+                    auto future1 = future_factory_default::makeFuture(value);
+                    if (future1.isReady() && std::move(future1).get() == value) {
                         successful_operations++;
                     }
                     total_operations++;
 
                     // Test makeReadyFuture
-                    auto future2 = FutureFactory::makeReadyFuture(value);
-                    if (future2.isReady() && future2.get() == value) {
+                    auto future2 = future_factory_default::makeReadyFuture(value);
+                    if (future2.isReady() && std::move(future2).get() == value) {
                         successful_operations++;
                     }
                     total_operations++;
 
                     // Test makeExceptionalFuture
-                    auto ex = folly::exception_wrapper(std::runtime_error("concurrent test"));
-                    auto future3 = FutureFactory::makeExceptionalFuture<int>(ex);
+                    auto ex = std::make_exception_ptr(std::runtime_error("concurrent test"));
+                    auto future3 = future_factory_default::makeExceptionalFuture<int>(ex);
                     if (future3.isReady()) {
                         try {
-                            future3.get();
+                            std::move(future3).get();
                             // Should not reach here
                         } catch (const std::runtime_error&) {
                             successful_operations++;

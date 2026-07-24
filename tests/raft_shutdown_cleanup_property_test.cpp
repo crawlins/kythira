@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftShutdownCleanupPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/error_handler.hpp>
@@ -127,21 +128,21 @@ BOOST_AUTO_TEST_CASE(raft_shutdown_cleanup_property_test, *boost::unit_test::tim
             BOOST_TEST_MESSAGE("Test 2: Future collection shutdown cleanup");
 
             // Create multiple future collections to simulate different RPC operations
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 append_futures;
-            std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>>
+            std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
                 vote_futures;
 
             // Create long-running futures that would normally not complete
             for (std::size_t i = 0; i < future_count; ++i) {
                 // Create futures that will timeout (simulating network operations during shutdown)
-                auto append_promise = std::make_shared<kythira::Promise<
+                auto append_promise = std::make_shared<kythira::promise_default<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 append_futures.push_back(append_promise->getFuture().within(operation_timeout));
 
                 auto vote_promise = std::make_shared<
-                    kythira::Promise<kythira::request_vote_response<std::uint64_t>>>();
+                    kythira::promise_default<kythira::request_vote_response<std::uint64_t>>>();
                 vote_futures.push_back(vote_promise->getFuture().within(operation_timeout));
             }
 
@@ -200,8 +201,8 @@ BOOST_AUTO_TEST_CASE(raft_shutdown_cleanup_property_test, *boost::unit_test::tim
 
             // Create a scenario with multiple components that need cleanup
             kythira::commit_waiter<std::uint64_t> commit_waiter;
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 futures;
 
             std::atomic<std::size_t> total_cancelled{0};
@@ -223,7 +224,7 @@ BOOST_AUTO_TEST_CASE(raft_shutdown_cleanup_property_test, *boost::unit_test::tim
             // Add futures to collection
             const std::size_t combined_futures = future_count / 2;
             for (std::size_t i = 0; i < combined_futures; ++i) {
-                auto promise = std::make_shared<kythira::Promise<
+                auto promise = std::make_shared<kythira::promise_default<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 futures.push_back(promise->getFuture().within(operation_timeout));
             }
@@ -278,7 +279,8 @@ BOOST_AUTO_TEST_CASE(raft_shutdown_cleanup_property_test, *boost::unit_test::tim
     {
         BOOST_TEST_MESSAGE("Test 6: Shutdown with empty future collections");
 
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             empty_futures;
 
         // Verify collection is empty

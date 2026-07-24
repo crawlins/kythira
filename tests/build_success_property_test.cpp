@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE BuildSuccessPropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <concepts/future.hpp>
 #include <raft/network.hpp>
@@ -30,16 +31,16 @@ BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
     std::string error_message;
 
     try {
-        // Test 1: kythira::Future can be instantiated and used
+        // Test 1: kythira::future_default can be instantiated and used
         {
-            kythira::Future<int> future_int(42);
+            auto future_int = kythira::future_factory_default::makeFuture(42);
             BOOST_CHECK(future_int.isReady());
-            BOOST_CHECK_EQUAL(future_int.get(), 42);
+            BOOST_CHECK_EQUAL(std::move(future_int).get(), 42);
         }
 
         // Test 2: Future concept is properly defined and accessible
         {
-            static_assert(kythira::future<kythira::Future<int>, int>,
+            static_assert(kythira::future<kythira::future_default<int>, int>,
                           "kythira::Future should satisfy the future concept");
         }
 
@@ -47,11 +48,11 @@ BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
         {
             // This tests that the network concepts can be instantiated
             // with kythira::Future types without compilation errors
-            using TestFuture = kythira::Future<bool>;
+            using TestFuture = kythira::future_default<bool>;
 
             // Test that the future concept works with our future type
             static_assert(kythira::future<TestFuture, bool>,
-                          "kythira::Future<bool> should satisfy future concept");
+                          "kythira::future_default<bool> should satisfy future concept");
         }
 
         // Test 4: HTTP transport types can be instantiated
@@ -101,9 +102,10 @@ BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
             // doesn't cause compilation conflicts or missing symbols
 
             // Test that we can create futures of different types
-            kythira::Future<std::string> string_future(std::string("test"));
-            kythira::Future<std::vector<int>> vector_future(std::vector<int>{1, 2, 3});
-            kythira::Future<bool> bool_future(true);
+            auto string_future = kythira::future_factory_default::makeFuture(std::string("test"));
+            auto vector_future =
+                kythira::future_factory_default::makeFuture(std::vector<int>{1, 2, 3});
+            auto bool_future = kythira::future_factory_default::makeFuture(true);
 
             BOOST_CHECK(string_future.isReady());
             BOOST_CHECK(vector_future.isReady());
@@ -113,14 +115,14 @@ BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
         // Test 9: Exception handling works correctly
         {
             // Test that future exception handling compiles and works
-            auto exception_future =
-                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
+            auto exception_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("test error")));
 
             BOOST_CHECK(exception_future.isReady());
 
             bool caught_exception = false;
             try {
-                exception_future.get();
+                std::move(exception_future).get();
             } catch (const std::runtime_error& e) {
                 caught_exception = true;
                 BOOST_CHECK_EQUAL(std::string(e.what()), "test error");
@@ -132,10 +134,10 @@ BOOST_AUTO_TEST_CASE(property_build_success, *boost::unit_test::timeout(30)) {
         // Test 10: Template instantiation works for common patterns
         {
             // Test that common template patterns compile correctly
-            std::vector<kythira::Future<int>> futures;
-            futures.emplace_back(kythira::Future<int>(1));
-            futures.emplace_back(kythira::Future<int>(2));
-            futures.emplace_back(kythira::Future<int>(3));
+            std::vector<kythira::future_default<int>> futures;
+            futures.emplace_back(kythira::future_factory_default::makeFuture(1));
+            futures.emplace_back(kythira::future_factory_default::makeFuture(2));
+            futures.emplace_back(kythira::future_factory_default::makeFuture(3));
 
             BOOST_CHECK_EQUAL(futures.size(), 3);
 

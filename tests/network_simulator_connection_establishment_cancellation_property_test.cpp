@@ -96,7 +96,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation,
                 try {
                     // Try to connect without a listener (will hang waiting)
                     auto conn_future = client->connect(server_addr, server_port, long_timeout);
-                    auto conn = conn_future.get();
+                    auto conn = std::move(conn_future).get();
 
                     if (conn && conn->is_open()) {
                         connection_completed.store(true);
@@ -139,7 +139,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation,
                 try {
                     // Try to connect without a listener (will hang waiting)
                     auto conn_future = client->connect(server_addr, server_port, long_timeout);
-                    auto conn = conn_future.get();
+                    auto conn = std::move(conn_future).get();
 
                     if (conn && conn->is_open()) {
                         connection_completed.store(true);
@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_cancellation,
                 threads.emplace_back([&]() {
                     try {
                         auto conn_future = client->connect(server_addr, server_port, long_timeout);
-                        auto conn = conn_future.get();
+                        auto conn = std::move(conn_future).get();
 
                         if (conn && conn->is_open()) {
                             ++completed_connections;

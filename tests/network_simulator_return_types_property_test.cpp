@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE NetworkSimulatorReturnTypesPropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -42,17 +43,18 @@ BOOST_AUTO_TEST_CASE(property_network_simulator_return_types, *boost::unit_test:
     // Test that kythira::Future satisfies the future concept for network simulator operations
 
     // Test future concept for read operations (std::vector<std::byte>)
-    static_assert(kythira::future<kythira::Future<std::vector<std::byte>>, std::vector<std::byte>>,
-                  "kythira::Future<std::vector<std::byte>> should satisfy future concept");
+    static_assert(
+        kythira::future<kythira::future_default<std::vector<std::byte>>, std::vector<std::byte>>,
+        "kythira::future_default<std::vector<std::byte>> should satisfy future concept");
 
     // Test future concept for write operations (bool)
-    static_assert(kythira::future<kythira::Future<bool>, bool>,
-                  "kythira::Future<bool> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<bool>, bool>,
+                  "kythira::future_default<bool> should satisfy future concept");
 
     // Test future concept for listener operations (std::shared_ptr<T>)
     using TestSharedPtr = std::shared_ptr<int>;  // Use a simple type for testing
-    static_assert(kythira::future<kythira::Future<TestSharedPtr>, TestSharedPtr>,
-                  "kythira::Future<std::shared_ptr<T>> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<TestSharedPtr>, TestSharedPtr>,
+                  "kythira::future_default<std::shared_ptr<T>> should satisfy future concept");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds
 }
@@ -66,8 +68,9 @@ BOOST_AUTO_TEST_CASE(property_network_simulator_return_types, *boost::unit_test:
  */
 BOOST_AUTO_TEST_CASE(property_connection_read_return_types, *boost::unit_test::timeout(30)) {
     // Test that kythira::Future satisfies the future concept for read operations
-    static_assert(kythira::future<kythira::Future<std::vector<std::byte>>, std::vector<std::byte>>,
-                  "kythira::Future<std::vector<std::byte>> should satisfy future concept");
+    static_assert(
+        kythira::future<kythira::future_default<std::vector<std::byte>>, std::vector<std::byte>>,
+        "kythira::future_default<std::vector<std::byte>> should satisfy future concept");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds
 }
@@ -81,8 +84,8 @@ BOOST_AUTO_TEST_CASE(property_connection_read_return_types, *boost::unit_test::t
  */
 BOOST_AUTO_TEST_CASE(property_connection_write_return_types, *boost::unit_test::timeout(30)) {
     // Test that kythira::Future satisfies the future concept for write operations
-    static_assert(kythira::future<kythira::Future<bool>, bool>,
-                  "kythira::Future<bool> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<bool>, bool>,
+                  "kythira::future_default<bool> should satisfy future concept");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds
 }
@@ -100,8 +103,8 @@ BOOST_AUTO_TEST_CASE(property_listener_accept_return_types, *boost::unit_test::t
     // but we can test that the future concept works for shared_ptr types
 
     using TestSharedPtr = std::shared_ptr<int>;  // Use a simple type for testing
-    static_assert(kythira::future<kythira::Future<TestSharedPtr>, TestSharedPtr>,
-                  "kythira::Future<std::shared_ptr<T>> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<TestSharedPtr>, TestSharedPtr>,
+                  "kythira::future_default<std::shared_ptr<T>> should satisfy future concept");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds
 }
@@ -116,8 +119,8 @@ BOOST_AUTO_TEST_CASE(property_listener_accept_return_types, *boost::unit_test::t
 BOOST_AUTO_TEST_CASE(property_timeout_operation_support, *boost::unit_test::timeout(30)) {
     // Test that kythira::Future supports timeout operations correctly
 
-    // Test that kythira::Future has wait method with timeout
-    kythira::Future<int> test_future(42);
+    // Test that kythira::future_default has wait method with timeout
+    auto test_future = kythira::future_factory_default::makeFuture(42);
 
     // Test wait with timeout - should return true for ready future
     bool wait_result = test_future.wait(std::chrono::milliseconds{100});
@@ -125,20 +128,20 @@ BOOST_AUTO_TEST_CASE(property_timeout_operation_support, *boost::unit_test::time
 
     // Test that the future concept includes timeout support
     static_assert(
-        requires(kythira::Future<int> f) {
+        requires(kythira::future_default<int> f) {
             { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
         }, "kythira::Future should support wait with timeout");
 
     // Test that timeout operations work with different value types
     static_assert(
-        requires(kythira::Future<std::vector<std::byte>> f) {
+        requires(kythira::future_default<std::vector<std::byte>> f) {
             { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
-        }, "kythira::Future<std::vector<std::byte>> should support wait with timeout");
+        }, "kythira::future_default<std::vector<std::byte>> should support wait with timeout");
 
     static_assert(
-        requires(kythira::Future<bool> f) {
+        requires(kythira::future_default<bool> f) {
             { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
-        }, "kythira::Future<bool> should support wait with timeout");
+        }, "kythira::future_default<bool> should support wait with timeout");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds and runtime checks pass
 } /**
@@ -153,16 +156,17 @@ BOOST_AUTO_TEST_CASE(property_future_concept_constraints, *boost::unit_test::tim
     // Test that the future concept constraints are properly enforced
 
     // Test with kythira::Future
-    static_assert(kythira::future<kythira::Future<std::vector<std::byte>>, std::vector<std::byte>>,
-                  "kythira::Future<std::vector<std::byte>> should satisfy future concept");
+    static_assert(
+        kythira::future<kythira::future_default<std::vector<std::byte>>, std::vector<std::byte>>,
+        "kythira::future_default<std::vector<std::byte>> should satisfy future concept");
 
-    static_assert(kythira::future<kythira::Future<bool>, bool>,
-                  "kythira::Future<bool> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<bool>, bool>,
+                  "kythira::future_default<bool> should satisfy future concept");
 
     // Test with shared_ptr types
     using TestSharedPtr = std::shared_ptr<int>;
-    static_assert(kythira::future<kythira::Future<TestSharedPtr>, TestSharedPtr>,
-                  "kythira::Future<std::shared_ptr<T>> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<TestSharedPtr>, TestSharedPtr>,
+                  "kythira::future_default<std::shared_ptr<T>> should satisfy future concept");
 
     BOOST_TEST(true);  // Test passes if compilation succeeds
 }

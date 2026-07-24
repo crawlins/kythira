@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftHeartbeatRetryBackoffPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -71,7 +72,8 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
 
         // Create operation that fails a specific number of times then succeeds
         auto heartbeat_operation = [&attempt_count, failures_before_success, &attempt_times]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
@@ -85,9 +87,9 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                 std::mt19937 rng(rd());
                 std::uniform_int_distribution<std::size_t> msg_dist(0, failure_messages.size() - 1);
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error(failure_messages[msg_dist(rng)]));
+                    std::make_exception_ptr(std::runtime_error(failure_messages[msg_dist(rng)])));
             }  // Success case
             kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                 1,             // term
@@ -95,7 +97,7 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                 std::nullopt,  // conflict_term
                 std::nullopt   // conflict_index
             };
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -185,12 +187,13 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
         handler.set_retry_policy("heartbeat", strict_policy);
 
         std::atomic<int> attempt_count{0};
-        auto always_fail_operation = [&attempt_count]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto always_fail_operation =
+            [&attempt_count]() -> kythira::future_default<
+                                   kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             ++attempt_count;
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                std::runtime_error("Network timeout occurred"));
+                std::make_exception_ptr(std::runtime_error("Network timeout occurred")));
         };
 
         auto start_time = std::chrono::steady_clock::now();
@@ -230,11 +233,12 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
 
             std::atomic<int> attempt_count{0};
             auto error_operation = [&attempt_count, error_msg]()
-                -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+                -> kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
                 ++attempt_count;
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error(error_msg));
+                    std::make_exception_ptr(std::runtime_error(error_msg)));
             };
 
             try {
@@ -277,16 +281,17 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
         for (int run = 0; run < 5; ++run) {
             std::atomic<int> attempt_count{0};
             auto fail_twice_operation = [&attempt_count]()
-                -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+                -> kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
                 int current_attempt = ++attempt_count;
                 if (current_attempt <= 2) {
-                    return kythira::FutureFactory::makeExceptionalFuture<
+                    return kythira::future_factory_default::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                        std::runtime_error("Network timeout occurred"));
+                        std::make_exception_ptr(std::runtime_error("Network timeout occurred")));
                 }
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                return kythira::FutureFactory::makeFuture(response);
+                return kythira::future_factory_default::makeFuture(response);
             };
 
             auto start_time = std::chrono::steady_clock::now();

@@ -10,6 +10,7 @@
 
 #define BOOST_TEST_MODULE learner_promotion_capacity_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -49,8 +50,8 @@ struct adjustable_quorum_manager {
 
     auto assess_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        return kythira::future_factory_default::makeFuture(
             kythira::quorum_health<node_id_type, placement_group_id_type>{
                 .status = kythira::quorum_status::healthy,
                 .live_node_count = cluster.size(),
@@ -60,16 +61,17 @@ struct adjustable_quorum_manager {
             });
     }
     auto provision_node(placement_group_id_type, std::optional<node_id_type>)
-        -> kythira::Future<kythira::peer_info<node_id_type, address_type>> {
-        return kythira::FutureFactory::makeExceptionalFuture<
-            kythira::peer_info<node_id_type, address_type>>(std::runtime_error("not supported"));
+        -> kythira::future_default<kythira::peer_info<node_id_type, address_type>> {
+        return kythira::future_factory_default::makeExceptionalFuture<
+            kythira::peer_info<node_id_type, address_type>>(
+            std::make_exception_ptr(std::runtime_error("not supported")));
     }
-    auto decommission_node(const node_id_type&) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto decommission_node(const node_id_type&) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     auto maintain_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         return assess_quorum(cluster);
     }
     [[nodiscard]] auto topology() const -> kythira::desired_topology<placement_group_id_type> {
@@ -84,20 +86,20 @@ template<typename NodeId, typename Address> class preset_peer_discovery {
 public:
     using node_id_type = NodeId;
     using address_type = Address;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -180,7 +182,8 @@ void admit_learner(test_node& leader, std::uint64_t learner_id) {
     bool done = false, threw = false;
     std::move(fut)
         .thenValue([&](std::vector<std::byte>) { done = true; })
-        .thenError([&](const std::exception_ptr&) { threw = true; });
+        .thenError([&](const std::exception_ptr&) { threw = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return done || threw; }));
     BOOST_REQUIRE_MESSAGE(!threw, "learner admission unexpectedly failed");
 }
@@ -260,7 +263,8 @@ BOOST_AUTO_TEST_CASE(blocked_at_voting_target_despite_admitted_learner,
         .thenError([&](const std::exception_ptr& ex) {
             threw = true;
             caught = ex;
-        });
+        })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return threw; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_THROW(std::rethrow_exception(caught), kythira::voting_capacity_exceeded_exception);
     BOOST_CHECK_EQUAL(node1.get_cluster_size(), 1u);  // still just the original voter
@@ -332,7 +336,8 @@ BOOST_AUTO_TEST_CASE(allowed_below_voting_target, *boost::unit_test::timeout(20)
     bool done = false, threw = false;
     std::move(promote_fut)
         .thenValue([&](std::vector<std::byte>) { done = true; })
-        .thenError([&](const std::exception_ptr&) { threw = true; });
+        .thenError([&](const std::exception_ptr&) { threw = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return done || threw; }));
     BOOST_CHECK(!threw);
     BOOST_CHECK_EQUAL(node1.get_cluster_size(), 2u);  // grew: learner promoted to voter
@@ -408,7 +413,8 @@ BOOST_AUTO_TEST_CASE(fails_closed_when_group_removed, *boost::unit_test::timeout
         .thenError([&](const std::exception_ptr& ex) {
             threw = true;
             caught = ex;
-        });
+        })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return threw; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_THROW(std::rethrow_exception(caught), kythira::voting_capacity_exceeded_exception);
 

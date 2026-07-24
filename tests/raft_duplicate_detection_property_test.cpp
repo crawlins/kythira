@@ -10,6 +10,7 @@
 
 #define BOOST_TEST_MODULE RaftDuplicateDetectionPropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -46,9 +47,9 @@ constexpr std::chrono::milliseconds election_timeout_max{100};
 // Types for simulator-based testing
 struct test_raft_types {
     // Future types
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // Basic data types
     using node_id_type = std::uint64_t;
@@ -195,9 +196,7 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_REQUIRE(first_future.isReady());
-        BOOST_REQUIRE(!first_future.hasException());
-
-        auto first_response = first_future.value();
+        auto first_response = std::move(first_future).get();
 
         // Submit the same command with the same serial number (duplicate)
         auto second_future =
@@ -207,9 +206,7 @@ BOOST_AUTO_TEST_CASE(duplicate_requests_return_cached_response) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_REQUIRE(second_future.isReady());
-        BOOST_REQUIRE(!second_future.hasException());
-
-        auto second_response = second_future.value();
+        auto second_response = std::move(second_future).get();
 
         // Verify that both responses are identical (cached response)
         BOOST_CHECK_EQUAL(first_response.size(), second_response.size());
@@ -278,7 +275,7 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
             BOOST_REQUIRE(future.isReady());
-            BOOST_REQUIRE(!future.hasException());
+            BOOST_REQUIRE_NO_THROW(std::move(future).get());
         }
 
         // Now resubmit an old serial number (e.g., serial number 3)
@@ -290,7 +287,7 @@ BOOST_AUTO_TEST_CASE(old_serial_numbers_return_cached_response) {
 
         // Should succeed and return cached response
         BOOST_CHECK(retry_future.isReady());
-        BOOST_CHECK(!retry_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(retry_future).get());
 
         node.stop();
     }
@@ -356,7 +353,7 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
 
         // Should fail because serial number must start at 1
         BOOST_CHECK(future.isReady());
-        BOOST_CHECK(future.hasException());
+        BOOST_CHECK_THROW(std::move(future).get(), std::exception);
 
         // Now try with serial number 1 - should succeed
         auto valid_future =
@@ -365,7 +362,7 @@ BOOST_AUTO_TEST_CASE(new_client_sessions_start_with_serial_one) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_CHECK(valid_future.isReady());
-        BOOST_CHECK(!valid_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(valid_future).get());
 
         node.stop();
     }
@@ -428,7 +425,7 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_REQUIRE(first_future.isReady());
-        BOOST_REQUIRE(!first_future.hasException());
+        BOOST_REQUIRE_NO_THROW(std::move(first_future).get());
 
         // Try to skip to serial number 3 (should fail)
         auto skip_future =
@@ -438,7 +435,7 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
 
         // Should fail because we skipped serial number 2
         BOOST_CHECK(skip_future.isReady());
-        BOOST_CHECK(skip_future.hasException());
+        BOOST_CHECK_THROW(std::move(skip_future).get(), std::exception);
 
         // Now submit with serial number 2 (should succeed)
         auto valid_future =
@@ -447,7 +444,7 @@ BOOST_AUTO_TEST_CASE(serial_numbers_must_be_sequential) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_CHECK(valid_future.isReady());
-        BOOST_CHECK(!valid_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(valid_future).get());
 
         node.stop();
     }
@@ -511,7 +508,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_REQUIRE(client1_future1.isReady());
-        BOOST_REQUIRE(!client1_future1.hasException());
+        BOOST_REQUIRE_NO_THROW(std::move(client1_future1).get());
 
         // Client 2 should also be able to submit with serial 1 (independent session)
         auto client2_future1 = node.submit_command_with_session(client_2, 1, command, rpc_timeout);
@@ -519,7 +516,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_CHECK(client2_future1.isReady());
-        BOOST_CHECK(!client2_future1.hasException());
+        BOOST_CHECK_NO_THROW(std::move(client2_future1).get());
 
         // Client 1 submits with serial 2
         auto client1_future2 = node.submit_command_with_session(client_1, 2, command, rpc_timeout);
@@ -527,7 +524,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_CHECK(client1_future2.isReady());
-        BOOST_CHECK(!client1_future2.hasException());
+        BOOST_CHECK_NO_THROW(std::move(client1_future2).get());
 
         // Client 2 submits with serial 2
         auto client2_future2 = node.submit_command_with_session(client_2, 2, command, rpc_timeout);
@@ -535,7 +532,7 @@ BOOST_AUTO_TEST_CASE(different_clients_have_independent_sessions) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_CHECK(client2_future2.isReady());
-        BOOST_CHECK(!client2_future2.hasException());
+        BOOST_CHECK_NO_THROW(std::move(client2_future2).get());
 
         node.stop();
     }
@@ -599,9 +596,7 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
         BOOST_REQUIRE(first_future.isReady());
-        BOOST_REQUIRE(!first_future.hasException());
-
-        auto first_response = first_future.value();
+        auto first_response = std::move(first_future).get();
 
         // Retry multiple times with the same serial number
         constexpr std::size_t num_retries = 5;
@@ -612,9 +607,7 @@ BOOST_AUTO_TEST_CASE(multiple_retries_return_same_response) {
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
 
             BOOST_REQUIRE(retry_future.isReady());
-            BOOST_REQUIRE(!retry_future.hasException());
-
-            auto retry_response = retry_future.value();
+            auto retry_response = std::move(retry_future).get();
 
             // All retries should return the same response
             BOOST_CHECK_EQUAL(first_response.size(), retry_response.size());

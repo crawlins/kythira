@@ -1,5 +1,7 @@
 #pragma once
 
+#include <raft/future_default.hpp>
+
 // Shared type bundle for chaos tests.  All chaos test executables are compiled
 // with -DFIU_ENABLE, which activates the fiu_do_on() calls embedded in the
 // production headers (persistence.hpp, simulator_network.hpp,
@@ -29,9 +31,9 @@ namespace kythira::chaos {
 // Type bundle matching default_raft_types but using the simulator network.
 // When compiled with FIU_ENABLE the instrumented methods become live fault points.
 struct chaos_raft_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;

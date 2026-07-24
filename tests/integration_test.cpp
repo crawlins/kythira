@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE IntegrationTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <network_simulator/simulator.hpp>
 #include <network_simulator/types.hpp>
@@ -334,7 +335,7 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, *boost::unit_test::t
 
     // All senders send messages concurrently
     constexpr std::size_t messages_per_sender = 2;  // Reduced for simpler test
-    std::vector<kythira::Future<bool>> send_futures;
+    std::vector<kythira::future_default<bool>> send_futures;
 
     for (std::size_t sender_idx = 0; sender_idx < sender_count; ++sender_idx) {
         for (std::size_t msg_idx = 0; msg_idx < messages_per_sender; ++msg_idx) {
@@ -354,8 +355,9 @@ BOOST_AUTO_TEST_CASE(multiple_nodes_sending_simultaneously, *boost::unit_test::t
         }
     }
 
-    // Wait for all sends to complete using kythira::wait_for_all
-    auto all_results = kythira::wait_for_all(std::move(send_futures)).get();
+    // Wait for all sends to complete using kythira::future_collector_default::collectAll
+    auto all_results =
+        std::move(kythira::future_collector_default::collectAll(std::move(send_futures))).get();
 
     // Verify all sends succeeded
     for (const auto& result : all_results) {

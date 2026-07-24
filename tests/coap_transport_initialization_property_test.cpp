@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_transport_initialization_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
 #define BOOST_TEST_TIMEOUT 30
@@ -11,7 +12,7 @@
 
 // Use the correct transport types for testing
 using test_transport_types =
-    kythira::default_transport_types<kythira::Future<kythira::request_vote_response<>>,
+    kythira::default_transport_types<kythira::future_default<kythira::request_vote_response<>>,
                                      kythira::json_rpc_serializer<std::vector<std::byte>>,
                                      kythira::noop_metrics, kythira::console_logger>;
 

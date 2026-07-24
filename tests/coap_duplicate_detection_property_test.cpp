@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_duplicate_detection_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
 #define BOOST_TEST_TIMEOUT 30
@@ -33,9 +34,10 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T> using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::future_default<T>;
+    template<typename T> using promise_template = kythira::promise_default<T>;
 
-    using future_type = kythira::Future<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
 };
 
 BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)

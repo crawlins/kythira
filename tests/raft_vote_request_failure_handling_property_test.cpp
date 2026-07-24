@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftVoteRequestFailureHandlingPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -72,9 +73,9 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
         std::atomic<bool> vote_granted{false};
 
         // Create operation that simulates vote request with failures
-        auto vote_request_operation =
-            [&attempt_count, failures_before_success, &failure_modes_encountered,
-             &vote_granted]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto vote_request_operation = [&attempt_count, failures_before_success,
+                                       &failure_modes_encountered, &vote_granted]()
+            -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt <= failures_before_success) {
@@ -91,16 +92,16 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
                 auto selected_failure = failure_messages[msg_dist(rng)];
                 failure_modes_encountered.push_back(selected_failure);
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::request_vote_response<std::uint64_t>>(
-                    std::runtime_error(selected_failure));
+                    std::make_exception_ptr(std::runtime_error(selected_failure)));
             }  // Success case - vote granted
             vote_granted = true;
             kythira::request_vote_response<std::uint64_t> success_response{
                 5,    // term
                 true  // vote_granted
             };
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -183,8 +184,8 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto vote_rejection_operation =
-            [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto vote_rejection_operation = [&attempt_count]()
+            -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
@@ -193,12 +194,12 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
                     3,     // term
                     false  // vote_granted = false
                 };
-                return kythira::FutureFactory::makeFuture(rejection_response);
+                return kythira::future_factory_default::makeFuture(rejection_response);
             }
             BOOST_FAIL("Should not retry on vote rejection");
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::request_vote_response<std::uint64_t>>(
-                std::runtime_error("Unexpected retry"));
+                std::make_exception_ptr(std::runtime_error("Unexpected retry")));
         };
 
         try {
@@ -222,8 +223,8 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
         error_handler<kythira::request_vote_response<std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto higher_term_operation =
-            [&attempt_count]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto higher_term_operation = [&attempt_count]()
+            -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
@@ -232,12 +233,12 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
                     10,    // higher term
                     false  // vote_granted = false
                 };
-                return kythira::FutureFactory::makeFuture(higher_term_response);
+                return kythira::future_factory_default::makeFuture(higher_term_response);
             }
             BOOST_FAIL("Should not retry on higher term response");
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::request_vote_response<std::uint64_t>>(
-                std::runtime_error("Unexpected retry"));
+                std::make_exception_ptr(std::runtime_error("Unexpected retry")));
         };
 
         try {
@@ -276,12 +277,12 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
                                                           << should_retry << ")");
 
             std::atomic<int> attempt_count{0};
-            auto error_operation =
-                [&attempt_count,
-                 error_msg]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+            auto error_operation = [&attempt_count, error_msg]()
+                -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
                 ++attempt_count;
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::request_vote_response<std::uint64_t>>(std::runtime_error(error_msg));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(
+                    std::make_exception_ptr(std::runtime_error(error_msg)));
             };
 
             try {
@@ -332,19 +333,18 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
         std::vector<std::chrono::steady_clock::time_point> attempt_times;
         std::atomic<int> attempt_count{0};
 
-        auto timing_test_operation =
-            [&attempt_count,
-             &attempt_times]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+        auto timing_test_operation = [&attempt_count, &attempt_times]()
+            -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
             if (current_attempt < 3) {
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::request_vote_response<std::uint64_t>>(
-                    std::runtime_error("Network timeout during vote request"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::request_vote_response<std::uint64_t>>(std::make_exception_ptr(
+                    std::runtime_error("Network timeout during vote request")));
             }
             kythira::request_vote_response<std::uint64_t> success_response{4, true};
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         auto election_start = std::chrono::steady_clock::now();
@@ -403,39 +403,39 @@ BOOST_AUTO_TEST_CASE(raft_vote_request_failure_handling_property_test,
 
             std::atomic<int> attempt_count{0};
             auto vote_outcome_operation = [&attempt_count, outcome_desc, should_succeed]()
-                -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+                -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
                 int current_attempt = ++attempt_count;
 
                 if (outcome_desc == "Vote granted") {
                     kythira::request_vote_response<std::uint64_t> response{2, true};
-                    return kythira::FutureFactory::makeFuture(response);
+                    return kythira::future_factory_default::makeFuture(response);
                 }
                 if (outcome_desc == "Vote rejected - already voted") {
                     kythira::request_vote_response<std::uint64_t> response{2, false};
-                    return kythira::FutureFactory::makeFuture(response);
+                    return kythira::future_factory_default::makeFuture(response);
                 }
                 if (outcome_desc == "Vote rejected - higher term") {
                     kythira::request_vote_response<std::uint64_t> response{5, false};
-                    return kythira::FutureFactory::makeFuture(response);
+                    return kythira::future_factory_default::makeFuture(response);
                 }
                 if (outcome_desc == "Network timeout") {
-                    return kythira::FutureFactory::makeExceptionalFuture<
-                        kythira::request_vote_response<std::uint64_t>>(
-                        std::runtime_error("Network timeout during vote request"));
+                    return kythira::future_factory_default::makeExceptionalFuture<
+                        kythira::request_vote_response<std::uint64_t>>(std::make_exception_ptr(
+                        std::runtime_error("Network timeout during vote request")));
                 }
                 if (outcome_desc == "Vote granted after retry") {
                     if (current_attempt == 1) {
-                        return kythira::FutureFactory::makeExceptionalFuture<
-                            kythira::request_vote_response<std::uint64_t>>(
-                            std::runtime_error("Network timeout during vote request"));
+                        return kythira::future_factory_default::makeExceptionalFuture<
+                            kythira::request_vote_response<std::uint64_t>>(std::make_exception_ptr(
+                            std::runtime_error("Network timeout during vote request")));
                     }
                     kythira::request_vote_response<std::uint64_t> response{2, true};
-                    return kythira::FutureFactory::makeFuture(response);
+                    return kythira::future_factory_default::makeFuture(response);
                 }
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::request_vote_response<std::uint64_t>>(
-                    std::runtime_error("Unknown outcome"));
+                    std::make_exception_ptr(std::runtime_error("Unknown outcome")));
             };
 
             try {

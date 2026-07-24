@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_concept_conformance_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
 #define BOOST_TEST_TIMEOUT 30
@@ -24,7 +25,7 @@ using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 using test_metrics = kythira::noop_metrics;
 
 #ifdef LIBCOAP_AVAILABLE
-using future_type = kythira::Future<kythira::request_vote_response<>>;
+using future_type = kythira::future_default<kythira::request_vote_response<>>;
 using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics,
                                                     kythira::console_logger>;
 using test_client = kythira::coap_client<test_types>;

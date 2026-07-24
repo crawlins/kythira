@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftElectionVoteCollectionPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -64,7 +65,8 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
                                                     << ", voters: " << voter_count);
 
         // Create futures representing vote responses from other nodes
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> vote_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            vote_futures;
         vote_futures.reserve(voter_count);
 
         // Simulate different voting patterns
@@ -84,7 +86,7 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
                     true             // vote_granted
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 vote_futures.push_back(std::move(future));
             } else {
@@ -95,14 +97,14 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
                         candidate_term,  // term
                         false            // vote_granted
                     };
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     vote_futures.push_back(std::move(future));
                 } else {
                     // Timeout simulation
-                    auto future = kythira::FutureFactory::makeExceptionalFuture<
+                    auto future = kythira::future_factory_default::makeExceptionalFuture<
                         kythira::request_vote_response<std::uint64_t>>(
-                        std::runtime_error("Vote request timeout"));
+                        std::make_exception_ptr(std::runtime_error("Vote request timeout")));
                     vote_futures.push_back(std::move(future));
                 }
             }
@@ -162,7 +164,8 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
 
     // Test with empty futures vector
     {
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> empty_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            empty_futures;
         auto collection_future =
             raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
                 std::move(empty_futures), test_timeout);
@@ -173,9 +176,10 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
 
     // Test with single voter (majority of 1 is 1)
     {
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> single_future;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            single_future;
         kythira::request_vote_response<std::uint64_t> response{1, true};
-        single_future.push_back(kythira::FutureFactory::makeFuture(response));
+        single_future.push_back(kythira::future_factory_default::makeFuture(response));
 
         auto collection_future =
             raft_future_collector<kythira::request_vote_response<std::uint64_t>>::collect_majority(
@@ -189,11 +193,12 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
 
     // Test timeout behavior
     {
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> slow_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            slow_futures;
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::request_vote_response<std::uint64_t> response{1, true};
             // Create futures that take longer than the timeout
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(6000));  // Longer than test_timeout
             slow_futures.push_back(std::move(future));
         }
@@ -209,12 +214,12 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
     // Test unanimous vote scenario
     {
         const std::size_t unanimous_voters = 5;
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>>
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
             unanimous_futures;
 
         for (std::size_t i = 0; i < unanimous_voters; ++i) {
             kythira::request_vote_response<std::uint64_t> response{1, true};
-            unanimous_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            unanimous_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -234,13 +239,14 @@ BOOST_AUTO_TEST_CASE(raft_election_vote_collection_property_test, *boost::unit_t
     // Test split vote scenario
     {
         const std::size_t split_voters = 4;  // Even number for split
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> split_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            split_futures;
 
         // Half grant votes, half deny
         for (std::size_t i = 0; i < split_voters; ++i) {
             bool grant_vote = (i < split_voters / 2);
             kythira::request_vote_response<std::uint64_t> response{1, grant_vote};
-            split_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            split_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =

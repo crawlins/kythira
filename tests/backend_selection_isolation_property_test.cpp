@@ -1,5 +1,8 @@
 // **Feature: stdexec-future-backend, Property 15: Backend Selection
-// Isolation**
+// Isolation** (also validates .kiro/specs/boost-future-backend/
+// Requirements 8.4/8.6 — same property, extended to a third backend
+// rather than duplicated into a separate file, per that spec's own
+// Task 11 note to reuse this test rather than add a new one)
 // For the currently configured KYTHIRA_DEFAULT_FUTURE_BACKEND CMake
 // option, kythira::future_default<T> should resolve to exactly the
 // selected backend's Future<T> (folly by default), and any templated
@@ -10,8 +13,9 @@
 // The CMake option is fixed at configure time, so a single test binary
 // can only observe one setting; this file verifies internal consistency
 // (future_default<T> matches whichever backend KYTHIRA_FUTURE_BACKEND_
-// STDEXEC does or doesn't define, mirroring future_default.hpp's own
-// #if) rather than hardcoding an assumption about which one is active.
+// STDEXEC/KYTHIRA_FUTURE_BACKEND_BOOST does or doesn't define, mirroring
+// future_default.hpp's own #if) rather than hardcoding an assumption
+// about which one is active.
 // **Validates: Requirements 11.2, 11.5**
 #define BOOST_TEST_MODULE backend_selection_isolation_property_test
 #include <boost/test/unit_test.hpp>
@@ -50,10 +54,15 @@ BOOST_AUTO_TEST_CASE(future_default_resolves_to_the_configured_backend,
         std::is_same_v<kythira::future_default<int>, kythira::stdexec_backend::Future<int>>,
         "KYTHIRA_FUTURE_BACKEND_STDEXEC is defined, so future_default<int> must be "
         "stdexec_backend::Future<int>");
+#elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    static_assert(std::is_same_v<kythira::future_default<int>, kythira::boost_backend::Future<int>>,
+                  "KYTHIRA_FUTURE_BACKEND_BOOST is defined, so future_default<int> must be "
+                  "boost_backend::Future<int>");
 #else
-    static_assert(std::is_same_v<kythira::future_default<int>, kythira::Future<int>>,
-                  "KYTHIRA_FUTURE_BACKEND_STDEXEC is not defined, so future_default<int> must "
-                  "default to the Folly backend's Future<int>");
+    static_assert(
+        std::is_same_v<kythira::future_default<int>, kythira::Future<int>>,
+        "Neither KYTHIRA_FUTURE_BACKEND_STDEXEC nor KYTHIRA_FUTURE_BACKEND_BOOST is "
+        "defined, so future_default<int> must default to the Folly backend's Future<int>");
 #endif
     BOOST_TEST(true);
 }
@@ -66,6 +75,8 @@ BOOST_AUTO_TEST_CASE(generic_templated_code_accepts_future_default,
                      *boost::unit_test::timeout(10)) {
 #if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC)
     auto f = kythira::stdexec_backend::FutureFactory::makeFuture(7);
+#elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+    auto f = kythira::boost_backend::FutureFactory::makeFuture(7);
 #else
     auto f = kythira::FutureFactory::makeFuture(7);
 #endif

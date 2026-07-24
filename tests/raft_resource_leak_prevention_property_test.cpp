@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftResourceLeakPreventionPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/error_handler.hpp>
@@ -256,11 +257,11 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, *boost::unit_t
         {
             BOOST_TEST_MESSAGE("Test 2: Future collection resource cleanup");
 
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 collection_futures;
-            std::vector<std::shared_ptr<
-                kythira::Promise<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
+            std::vector<std::shared_ptr<kythira::promise_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
                 promises;
             std::vector<std::shared_ptr<TestResource>> future_resources;
 
@@ -275,7 +276,7 @@ BOOST_AUTO_TEST_CASE(raft_resource_leak_prevention_property_test, *boost::unit_t
                 auto resource = std::make_shared<TestResource>(res_size, &global_tracker);
                 future_resources.push_back(resource);
 
-                auto promise = std::make_shared<kythira::Promise<
+                auto promise = std::make_shared<kythira::promise_default<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 promises.push_back(promise);
 

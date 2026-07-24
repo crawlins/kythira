@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, *boost::unit_test::timeou
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener);
         BOOST_REQUIRE(listener->is_listening());
@@ -110,7 +110,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, *boost::unit_test::timeou
 
             for (std::size_t j = 0; j < num_connections; ++j) {
                 auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 BOOST_REQUIRE(conn);
                 BOOST_REQUIRE(conn->is_open());
@@ -158,7 +158,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, *boost::unit_test::timeou
             // Test Case 3: Add closed connections and verify cleanup
             for (std::size_t j = 0; j < num_connections; ++j) {
                 auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 BOOST_REQUIRE(conn);
                 BOOST_REQUIRE(conn->is_open());
@@ -213,7 +213,7 @@ BOOST_AUTO_TEST_CASE(property_connection_pool_cleanup, *boost::unit_test::timeou
                 fresh_connections;
             for (std::size_t j = 0; j < 3; ++j) {
                 auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 BOOST_REQUIRE(conn);
                 BOOST_REQUIRE(conn->is_open());

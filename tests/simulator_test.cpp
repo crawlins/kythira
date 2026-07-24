@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE SimulatorTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <network_simulator/network_simulator.hpp>
 
@@ -18,11 +19,11 @@ struct test_network_types {
     using node_type = network_simulator::NetworkNode<test_network_types>;
 
     // Future types using kythira::Future
-    using future_bool_type = kythira::Future<bool>;
-    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
-    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
-    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
-    using future_message_type = kythira::Future<message_type>;
+    using future_bool_type = kythira::future_default<bool>;
+    using future_bytes_type = kythira::future_default<std::vector<std::byte>>;
+    using future_connection_type = kythira::future_default<std::shared_ptr<connection_type>>;
+    using future_listener_type = kythira::future_default<std::shared_ptr<listener_type>>;
+    using future_message_type = kythira::future_default<message_type>;
 };
 
 // Type alias for the correct NetworkSimulator template instantiation

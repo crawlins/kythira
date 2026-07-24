@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, *boost::unit_test::time
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener);
         BOOST_REQUIRE(listener->is_listening());
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, *boost::unit_test::time
 
             // Test Case 1: Establish connection and verify tracking
             auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-            auto conn = conn_future.get();
+            auto conn = std::move(conn_future).get();
 
             BOOST_REQUIRE(conn);
             BOOST_REQUIRE(conn->is_open());
@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(property_connection_state_tracking, *boost::unit_test::time
 
             // Write data
             auto write_future = conn->write(test_data, connection_timeout);
-            auto write_result = write_future.get();
+            auto write_result = std::move(write_future).get();
 
             BOOST_REQUIRE(write_result);
 

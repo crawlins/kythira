@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_concurrent_processing_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
@@ -32,9 +33,10 @@ struct test_transport_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T> using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::future_default<T>;
+    template<typename T> using promise_template = kythira::promise_default<T>;
 
-    using future_type = kythira::Future<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
 };
 
 BOOST_AUTO_TEST_SUITE(coap_concurrent_processing_property_tests)
@@ -87,63 +89,64 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, *boost::unit_t
     server.start();
 
     // Launch concurrent requests
-    std::vector<kythira::Future<void>> request_futures;
+    std::vector<kythira::future_default<void>> request_futures;
     request_futures.reserve(test_concurrent_requests);
 
     for (std::size_t i = 0; i < test_concurrent_requests; ++i) {
-        request_futures.emplace_back(kythira::Future<void>(
-            folly::makeFuture()
-                .via(&folly::InlineExecutor::instance())
-                .thenValue([&, i](folly::Unit) {
-                    request_start_times[i] = std::chrono::steady_clock::now();
-                    requests_started.fetch_add(1);
+        // Was previously wrapped in folly::makeFuture().via(&folly::InlineExecutor::instance())
+        // .thenValue(...) - InlineExecutor runs synchronously (no actual deferral), so this
+        // synchronous body followed by an already-ready future preserves identical behavior
+        // and timing while staying backend-neutral.
+        request_start_times[i] = std::chrono::steady_clock::now();
+        requests_started.fetch_add(1);
 
-                    try {
-                        // Test concurrent slot acquisition - this may fail due to limits
-                        if (client.acquire_concurrent_slot()) {
-                            successful_acquisitions.fetch_add(1);
+        try {
+            // Test concurrent slot acquisition - this may fail due to limits
+            if (client.acquire_concurrent_slot()) {
+                successful_acquisitions.fetch_add(1);
 
-                            // Track concurrent activity
-                            auto current = concurrent_active.fetch_add(1) + 1;
+                // Track concurrent activity
+                auto current = concurrent_active.fetch_add(1) + 1;
 
-                            // Update peak concurrent requests
-                            std::size_t expected_peak = concurrent_peak.load();
-                            while (current > expected_peak &&
-                                   !concurrent_peak.compare_exchange_weak(expected_peak, current)) {
-                                // Retry if another thread updated the peak
-                            }
+                // Update peak concurrent requests
+                std::size_t expected_peak = concurrent_peak.load();
+                while (current > expected_peak &&
+                       !concurrent_peak.compare_exchange_weak(expected_peak, current)) {
+                    // Retry if another thread updated the peak
+                }
 
-                            // Simulate some work to allow concurrency measurement
-                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                // Simulate some work to allow concurrency measurement
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
-                            // Create request
-                            request_vote_request<> request{1, 1, 0, 0};
+                // Create request
+                request_vote_request<> request{1, 1, 0, 0};
 
-                            // Send request (this will fail in stub implementation, but we're
-                            // testing the concurrency control)
-                            auto future = client.send_request_vote(1, request, test_timeout);
+                // Send request (this will fail in stub implementation, but we're
+                // testing the concurrency control)
+                auto future = client.send_request_vote(1, request, test_timeout);
 
-                            // Release slot
-                            client.release_concurrent_slot();
+                // Release slot
+                client.release_concurrent_slot();
 
-                            // Decrement concurrent activity
-                            concurrent_active.fetch_sub(1);
-                        } else {
-                            failed_acquisitions.fetch_add(1);
-                        }
+                // Decrement concurrent activity
+                concurrent_active.fetch_sub(1);
+            } else {
+                failed_acquisitions.fetch_add(1);
+            }
 
-                        request_end_times[i] = std::chrono::steady_clock::now();
+            request_end_times[i] = std::chrono::steady_clock::now();
 
-                    } catch (const std::exception& e) {
-                        // Expected in stub implementation
-                        request_end_times[i] = std::chrono::steady_clock::now();
-                    }
-                })));
+        } catch (const std::exception& e) {
+            // Expected in stub implementation
+            request_end_times[i] = std::chrono::steady_clock::now();
+        }
+
+        request_futures.push_back(kythira::future_factory_default::makeFuture());
     }
 
     // Wait for all requests to complete
     for (auto& future : request_futures) {
-        future.get();
+        std::move(future).get();
     }
 
     auto end_time = std::chrono::steady_clock::now();
@@ -262,21 +265,23 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property, *boost::unit_
     constexpr std::size_t test_attempts = 100;
     std::atomic<std::size_t> successful_acquisitions{0};
 
-    std::vector<kythira::Future<void>> acquisition_futures;
+    std::vector<kythira::future_default<void>> acquisition_futures;
 
     for (std::size_t i = 0; i < test_attempts; ++i) {
-        acquisition_futures.emplace_back(kythira::Future<void>(
-            folly::makeFuture().via(&folly::InlineExecutor::instance()).thenValue([&](folly::Unit) {
-                if (client.acquire_concurrent_slot()) {
-                    successful_acquisitions.fetch_add(1);
-                    client.release_concurrent_slot();
-                }
-            })));
+        // Was previously wrapped in folly::makeFuture().via(&folly::InlineExecutor::instance())
+        // .thenValue(...) - InlineExecutor runs synchronously, so this synchronous body
+        // followed by an already-ready future preserves identical behavior while staying
+        // backend-neutral.
+        if (client.acquire_concurrent_slot()) {
+            successful_acquisitions.fetch_add(1);
+            client.release_concurrent_slot();
+        }
+        acquisition_futures.push_back(kythira::future_factory_default::makeFuture());
     }
 
     // Wait for all attempts
     for (auto& future : acquisition_futures) {
-        future.get();
+        std::move(future).get();
     }
 
     // Property: All acquisitions should succeed when concurrent processing is disabled

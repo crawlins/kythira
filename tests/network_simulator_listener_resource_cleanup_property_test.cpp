@@ -80,7 +80,7 @@ BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, *boost::unit_test::time
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         // Verify listener is active
         BOOST_REQUIRE(listener != nullptr);
@@ -101,7 +101,7 @@ BOOST_AUTO_TEST_CASE(property_listener_resource_cleanup, *boost::unit_test::time
 
         // Try to bind to the same port again - should succeed since port was released
         auto listener_future2 = server->bind(server_port);
-        auto listener2 = listener_future2.get();
+        auto listener2 = std::move(listener_future2).get();
 
         BOOST_REQUIRE(listener2 != nullptr);
         BOOST_REQUIRE(listener2->is_listening());
@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(property_listener_cleanup_on_reset, *boost::unit_test::time
         for (std::size_t j = 0; j < 3; ++j) {
             auto port = server_port + static_cast<unsigned short>(j);
             auto listener_future = server->bind(port);
-            auto listener = listener_future.get();
+            auto listener = std::move(listener_future).get();
 
             BOOST_REQUIRE(listener != nullptr);
             BOOST_REQUIRE(listener->is_listening());
@@ -239,21 +239,21 @@ BOOST_AUTO_TEST_CASE(property_pending_accept_cleanup, *boost::unit_test::timeout
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener != nullptr);
         BOOST_REQUIRE(listener->is_listening());
 
         // Establish a connection to create pending accept
         auto connect_future = client->connect(server_addr, server_port);
-        auto connection = connect_future.get();
+        auto connection = std::move(connect_future).get();
 
         BOOST_REQUIRE(connection != nullptr);
         BOOST_REQUIRE(connection->is_open());
 
         // Accept the connection
         auto accept_future = listener->accept();
-        auto server_connection = accept_future.get();
+        auto server_connection = std::move(accept_future).get();
 
         BOOST_REQUIRE(server_connection != nullptr);
         BOOST_REQUIRE(server_connection->is_open());

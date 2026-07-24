@@ -73,7 +73,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test,
 
         // The send should complete successfully (return true)
         BOOST_CHECK(send_future.isReady());
-        bool send_result = send_future.get();
+        bool send_result = std::move(send_future).get();
         BOOST_CHECK(send_result);
 
         // Receive operation should also work when simulator is started
@@ -84,7 +84,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test,
 
         // The receive should complete successfully
         BOOST_CHECK(receive_future.isReady());
-        auto received_msg = receive_future.get();
+        auto received_msg = std::move(receive_future).get();
 
         // Verify message content
         BOOST_CHECK_EQUAL(received_msg.source_address(), test_node_a);
@@ -110,7 +110,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test,
         // 1. Complete immediately with false (rejected)
         // 2. Timeout (not processed)
         if (send_future_after_stop.isReady()) {
-            bool result = send_future_after_stop.get();
+            bool result = std::move(send_future_after_stop).get();
             // If it completes, it should return false (rejected)
             BOOST_CHECK(!result);
         } else {
@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_lifecycle_control_property_test,
 
         // The send should complete successfully after restart
         BOOST_CHECK(send_future_after_restart.isReady());
-        bool restart_result = send_future_after_restart.get();
+        bool restart_result = std::move(send_future_after_restart).get();
         BOOST_CHECK(restart_result);
 
         // Clean up
@@ -178,7 +178,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, *boost::unit_test::ti
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
         BOOST_CHECK(send_future.isReady());
-        bool result = send_future.get();
+        bool result = std::move(send_future).get();
         BOOST_CHECK(result);
 
         // Stop simulator
@@ -197,7 +197,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_multiple_start_stop_cycles, *boost::unit_test::ti
 
         // Operation should either complete with false or timeout
         if (send_future_after_stop.isReady()) {
-            bool result_after_stop = send_future_after_stop.get();
+            bool result_after_stop = std::move(send_future_after_stop).get();
             BOOST_CHECK(!result_after_stop);
         }
         // If not ready, that's also acceptable (timeout behavior)
@@ -239,7 +239,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_concurrent_operations, *boost::unit_test::timeout
             std::this_thread::sleep_for(std::chrono::milliseconds(10 + i * 5));
 
             if (send_future.isReady()) {
-                results[i] = send_future.get();
+                results[i] = std::move(send_future).get();
             }
         });
     }
@@ -313,7 +313,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     BOOST_TEST_MESSAGE("Test send completed: " << (test_send.isReady() ? "ready" : "not ready"));
     if (test_send.isReady()) {
-        bool test_result = test_send.get();
+        bool test_result = std::move(test_send).get();
         BOOST_TEST_MESSAGE("Test send result: " << test_result);
         BOOST_REQUIRE(test_result); // Verify send worked, which means simulator is started
     }
@@ -325,7 +325,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     BOOST_CHECK(bind_future.isReady());
-    auto listener = bind_future.get();
+    auto listener = std::move(bind_future).get();
     BOOST_CHECK(listener != nullptr);
     BOOST_CHECK(listener->is_listening());
 
@@ -337,7 +337,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     std::this_thread::sleep_for(default_latency + std::chrono::milliseconds(50));
 
     BOOST_CHECK(connect_future.isReady());
-    auto connection = connect_future.get();
+    auto connection = std::move(connect_future).get();
     BOOST_CHECK(connection != nullptr);
     BOOST_CHECK(connection->is_open());
 
@@ -351,7 +351,7 @@ BOOST_AUTO_TEST_CASE(lifecycle_connection_operations, * boost::unit_test::timeou
     // Should either complete with null/exception or timeout
     if (bind_future_after_stop.isReady()) {
         try {
-            auto listener_after_stop = bind_future_after_stop.get();
+            auto listener_after_stop = std::move(bind_future_after_stop).get();
             // If it completes, it should return null or invalid listener
             if (listener_after_stop != nullptr) {
                 BOOST_CHECK(!listener_after_stop->is_listening());

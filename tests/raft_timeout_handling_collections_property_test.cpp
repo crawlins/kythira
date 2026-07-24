@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftTimeoutHandlingCollectionsPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -55,7 +56,8 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
                                            << " futures, majority needed: " << majority_count);
 
         // Create futures with different delay patterns
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             mixed_futures;
         mixed_futures.reserve(future_count);
 
@@ -72,7 +74,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
                 // Fast response - should complete before timeout
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 mixed_futures.push_back(std::move(future));
             } else if (delay_ms < medium_timeout.count()) {
@@ -80,7 +82,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
                 // Medium response - may or may not complete depending on timeout
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 mixed_futures.push_back(std::move(future));
             } else {
@@ -88,7 +90,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
                 // Very slow response - should timeout
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 mixed_futures.push_back(std::move(future));
             }
@@ -146,13 +148,14 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
     // Test 1: All futures timeout
     {
         BOOST_TEST_MESSAGE("Test 1: All futures timeout");
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             timeout_futures;
 
         for (std::size_t i = 0; i < 5; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(2000));  // Much longer than timeout
             timeout_futures.push_back(std::move(future));
         }
@@ -176,14 +179,15 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
     // Test 2: Mix of fast and slow responses
     {
         BOOST_TEST_MESSAGE("Test 2: Mix of fast and slow responses");
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             mixed_futures;
 
         // Add fast responses (should complete)
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(50));  // Fast
             mixed_futures.push_back(std::move(future));
         }
@@ -192,7 +196,7 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(2000));  // Slow
             mixed_futures.push_back(std::move(future));
         }
@@ -224,20 +228,20 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
         BOOST_TEST_MESSAGE("Test 3: Concurrent timeout handling");
 
         // Start multiple collection operations concurrently
-        std::vector<kythira::Future<
+        std::vector<kythira::future_default<
             std::vector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
             concurrent_collections;
 
         for (std::size_t collection = 0; collection < 3; ++collection) {
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 futures;
 
             for (std::size_t i = 0; i < 4; ++i) {
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
                 auto delay = (i < 2) ? 50 : 1500;  // Half fast, half slow
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay));
                 futures.push_back(std::move(future));
             }
@@ -278,14 +282,15 @@ BOOST_AUTO_TEST_CASE(raft_timeout_handling_collections_property_test,
     // Test 4: Timeout precision
     {
         BOOST_TEST_MESSAGE("Test 4: Timeout precision");
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             precise_futures;
 
         // Create futures that will definitely timeout
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(1000));  // Longer than timeout
             precise_futures.push_back(std::move(future));
         }

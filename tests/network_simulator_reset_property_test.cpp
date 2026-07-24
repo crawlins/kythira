@@ -123,7 +123,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, *boost::unit_test::t
 
                 if (bind_future.isReady()) {
                     try {
-                        auto listener = bind_future.get();
+                        auto listener = std::move(bind_future).get();
                         if (listener != nullptr && listener->is_listening()) {
                             listeners.push_back(listener);
                         }
@@ -148,7 +148,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, *boost::unit_test::t
 
                 if (connect_future.isReady()) {
                     try {
-                        auto connection = connect_future.get();
+                        auto connection = std::move(connect_future).get();
                         if (connection != nullptr && connection->is_open()) {
                             connections.push_back(connection);
                         }
@@ -266,7 +266,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, *boost::unit_test::t
         // of this reset property test.
         if (send_future.isReady()) {
             try {
-                bool result = send_future.get();
+                bool result = std::move(send_future).get();
                 // Send may succeed or fail, both are acceptable
                 // The key is that the simulator didn't crash
                 BOOST_TEST_MESSAGE("Send after reset: " << (result ? "succeeded" : "failed"));
@@ -279,7 +279,7 @@ BOOST_AUTO_TEST_CASE(network_simulator_reset_property_test, *boost::unit_test::t
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             if (send_future.isReady()) {
                 try {
-                    bool result = send_future.get();
+                    bool result = std::move(send_future).get();
                     BOOST_TEST_MESSAGE(
                         "Send after reset (delayed): " << (result ? "succeeded" : "failed"));
                 } catch (const std::exception& e) {
@@ -334,7 +334,7 @@ BOOST_AUTO_TEST_CASE(reset_during_active_operations, *boost::unit_test::timeout(
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
                 if (send_future.isReady()) {
-                    send_future.get();  // May succeed or fail, both are acceptable
+                    std::move(send_future).get();  // May succeed or fail, both are acceptable
                 }
             } catch (const std::exception&) {
                 // Operations may fail during reset, that's acceptable

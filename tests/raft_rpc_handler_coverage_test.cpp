@@ -21,6 +21,7 @@
 
 #define BOOST_TEST_MODULE raft_rpc_handler_coverage_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -46,9 +47,9 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
 
 struct test_raft_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;

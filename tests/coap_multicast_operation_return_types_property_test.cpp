@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_multicast_operation_return_types_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -24,7 +25,7 @@ BOOST_AUTO_TEST_CASE(property_multicast_operation_return_types, *boost::unit_tes
 
     // Verify that kythira::Future satisfies the future concept for multicast response type
     using multicast_response_type = std::vector<std::vector<std::byte>>;
-    using kythira_future_type = kythira::Future<multicast_response_type>;
+    using kythira_future_type = kythira::future_default<multicast_response_type>;
 
     static_assert(kythira::future<kythira_future_type, multicast_response_type>,
                   "kythira::Future should satisfy future concept for multicast response type");
@@ -32,13 +33,14 @@ BOOST_AUTO_TEST_CASE(property_multicast_operation_return_types, *boost::unit_tes
     // Test that the future concept is properly defined for the multicast response type
     static_assert(
         requires(kythira_future_type f) {
-            { f.get() } -> std::same_as<multicast_response_type>;
+            { std::move(f).get() } -> std::same_as<multicast_response_type>;
             { f.isReady() } -> std::convertible_to<bool>;
             { f.wait(std::chrono::milliseconds{}) } -> std::convertible_to<bool>;
-            f.then(std::declval<std::function<void(multicast_response_type)>>());
-            f.onError(std::declval<std::function<multicast_response_type(std::exception_ptr)>>());
+            f.thenValue(std::declval<std::function<void(multicast_response_type)>>());
+            f.thenError(std::declval<std::function<multicast_response_type(std::exception_ptr)>>());
         },
-        "kythira::Future should satisfy all future concept requirements for multicast responses");
+        "kythira::future_default should satisfy all future concept requirements for multicast "
+        "responses");
 
     BOOST_TEST_MESSAGE("CoAP multicast operation future concept validation passed");
     BOOST_TEST(true);
@@ -79,12 +81,14 @@ BOOST_AUTO_TEST_CASE(property_future_concept_genericity, *boost::unit_test::time
     using multiple_response_type = std::vector<std::vector<std::byte>>;
 
     // Test single response future
-    static_assert(kythira::future<kythira::Future<single_response_type>, single_response_type>,
-                  "Future concept should work with single response type");
+    static_assert(
+        kythira::future<kythira::future_default<single_response_type>, single_response_type>,
+        "Future concept should work with single response type");
 
     // Test multiple response future (multicast)
-    static_assert(kythira::future<kythira::Future<multiple_response_type>, multiple_response_type>,
-                  "Future concept should work with multiple response type");
+    static_assert(
+        kythira::future<kythira::future_default<multiple_response_type>, multiple_response_type>,
+        "Future concept should work with multiple response type");
 
     BOOST_TEST_MESSAGE("Future concept genericity validation passed");
     BOOST_TEST(true);

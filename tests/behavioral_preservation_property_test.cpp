@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE BehavioralPreservationPropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -37,10 +38,10 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             auto start_time = std::chrono::steady_clock::now();
 
             // Create a future that should be immediately ready
-            kythira::Future<int> immediate_future(42);
+            auto immediate_future = kythira::future_factory_default::makeFuture(42);
             BOOST_CHECK(immediate_future.isReady());
 
-            auto immediate_result = immediate_future.get();
+            auto immediate_result = std::move(immediate_future).get();
             BOOST_CHECK_EQUAL(immediate_result, 42);
 
             auto end_time = std::chrono::steady_clock::now();
@@ -58,15 +59,15 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             std::mutex order_mutex;
 
             // Create multiple futures and verify they maintain ordering
-            std::vector<kythira::Future<int>> futures;
+            std::vector<kythira::future_default<int>> futures;
 
             for (int i = 0; i < 5; ++i) {
-                futures.emplace_back(kythira::Future<int>(i));
+                futures.emplace_back(kythira::future_factory_default::makeFuture(i));
             }
 
             // Process futures in order
             for (size_t i = 0; i < futures.size(); ++i) {
-                auto result = futures[i].get();
+                auto result = std::move(futures[i]).get();
                 BOOST_CHECK_EQUAL(result, static_cast<int>(i));
 
                 std::lock_guard<std::mutex> lock(order_mutex);
@@ -83,14 +84,14 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
         // Verify that exception handling and error propagation work correctly
         {
             // Test exception propagation
-            auto exception_future =
-                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
+            auto exception_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("test error")));
 
             BOOST_CHECK(exception_future.isReady());
 
             bool caught_expected_exception = false;
             try {
-                exception_future.get();
+                std::move(exception_future).get();
                 BOOST_FAIL("Expected exception was not thrown");
             } catch (const std::runtime_error& e) {
                 caught_expected_exception = true;
@@ -119,11 +120,11 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
                         try {
                             // Create a future with thread-specific value
                             int value = t * operations_per_thread + i;
-                            kythira::Future<int> future(value);
+                            auto future = kythira::future_factory_default::makeFuture(value);
 
                             // Verify the future works correctly
                             BOOST_CHECK(future.isReady());
-                            auto result = future.get();
+                            auto result = std::move(future).get();
 
                             if (result == value) {
                                 success_count.fetch_add(1, std::memory_order_relaxed);
@@ -156,36 +157,37 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             std::vector<int> large_vector(large_size, 42);
 
             // Create future with large object
-            kythira::Future<std::vector<int>> large_future(std::move(large_vector));
+            auto large_future =
+                kythira::future_factory_default::makeFuture(std::move(large_vector));
             BOOST_CHECK(large_future.isReady());
 
-            auto result = large_future.get();
+            auto result = std::move(large_future).get();
             BOOST_CHECK_EQUAL(result.size(), large_size);
             BOOST_CHECK_EQUAL(result[0], 42);
             BOOST_CHECK_EQUAL(result[large_size - 1], 42);
         }
 
         // Test 6: Future concept compliance behavior
-        // Verify that kythira::Future satisfies the future concept correctly
+        // Verify that kythira::future_default satisfies the future concept correctly
         {
-            static_assert(kythira::future<kythira::Future<int>, int>,
-                          "kythira::Future<int> should satisfy future concept");
+            static_assert(kythira::future<kythira::future_default<int>, int>,
+                          "kythira::future_default<int> should satisfy future concept");
 
-            static_assert(kythira::future<kythira::Future<std::string>, std::string>,
-                          "kythira::Future<std::string> should satisfy future concept");
+            static_assert(kythira::future<kythira::future_default<std::string>, std::string>,
+                          "kythira::future_default<std::string> should satisfy future concept");
 
             // Test concept methods work correctly
-            kythira::Future<bool> bool_future(true);
+            auto bool_future = kythira::future_factory_default::makeFuture(true);
 
             // Test isReady()
             BOOST_CHECK(bool_future.isReady());
 
             // Test get()
-            auto result = bool_future.get();
+            auto result = std::move(bool_future).get();
             BOOST_CHECK_EQUAL(result, true);
 
             // Test wait() with timeout
-            kythira::Future<int> int_future(123);
+            auto int_future = kythira::future_factory_default::makeFuture(123);
             bool wait_result = int_future.wait(std::chrono::milliseconds{100});
             BOOST_CHECK(wait_result);
         }
@@ -198,14 +200,15 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
                                                            "invalid_argument test"};
 
             for (const auto& message : exception_messages) {
-                auto exception_future = kythira::Future<std::string>(
-                    folly::exception_wrapper(std::runtime_error(message)));
+                auto exception_future =
+                    kythira::future_factory_default::makeExceptionalFuture<std::string>(
+                        std::make_exception_ptr(std::runtime_error(message)));
 
                 BOOST_CHECK(exception_future.isReady());
 
                 bool caught_exception = false;
                 try {
-                    exception_future.get();
+                    std::move(exception_future).get();
                 } catch (const std::runtime_error& e) {
                     caught_exception = true;
                     BOOST_CHECK_EQUAL(std::string(e.what()), message);
@@ -223,8 +226,8 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
 
             // Perform many future operations
             for (int i = 0; i < num_operations; ++i) {
-                kythira::Future<int> future(i);
-                auto result = future.get();
+                auto future = kythira::future_factory_default::makeFuture(i);
+                auto result = std::move(future).get();
                 BOOST_CHECK_EQUAL(result, i);
             }
 
@@ -246,12 +249,12 @@ BOOST_AUTO_TEST_CASE(property_behavioral_preservation, *boost::unit_test::timeou
             std::atomic<int> counter{0};
 
             // Create a future and verify synchronization
-            kythira::Future<int> sync_future(42);
+            auto sync_future = kythira::future_factory_default::makeFuture(42);
 
             std::thread worker([&]() {
                 // Wait for the future to be ready (it already is)
                 if (sync_future.isReady()) {
-                    auto result = sync_future.get();
+                    auto result = std::move(sync_future).get();
                     if (result == 42) {
                         counter.fetch_add(1, std::memory_order_release);
                     }

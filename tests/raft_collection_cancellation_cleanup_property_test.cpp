@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftCollectionCancellationCleanupPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -52,8 +53,8 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
 
         // Test 1: Cancellation via timeout
         {
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 long_futures;
             long_futures.reserve(future_count);
 
@@ -62,7 +63,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
                 const int delay_ms = delay_dist(gen) + 1000;  // Ensure longer than timeout
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 long_futures.push_back(std::move(future));
             }
@@ -92,8 +93,8 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
 
         // Test 2: Manual cancellation using cancel_collection
         {
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 manual_futures;
             manual_futures.reserve(future_count);
 
@@ -102,7 +103,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
                 const int delay_ms = delay_dist(gen);
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 manual_futures.push_back(std::move(future));
             }
@@ -125,7 +126,8 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
     {
         BOOST_TEST_MESSAGE("Test 3: Cancellation during active collection");
 
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             active_futures;
 
         // Mix of fast and slow futures
@@ -133,7 +135,7 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
             int delay = (i < 3) ? 50 : 1500;  // Half fast, half slow
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(delay));
             active_futures.push_back(std::move(future));
         }
@@ -173,14 +175,15 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
 
         // Create a large number of futures to test resource management
         const std::size_t large_count = 20;
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             resource_futures;
         resource_futures.reserve(large_count);
 
         for (std::size_t i = 0; i < large_count; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(2000));  // Long delay
             resource_futures.push_back(std::move(future));
         }
@@ -203,12 +206,13 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
         BOOST_TEST_MESSAGE("Test 5: Cancellation with different response types");
 
         // Test with request_vote_response
-        std::vector<kythira::Future<kythira::request_vote_response<std::uint64_t>>> vote_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<std::uint64_t>>>
+            vote_futures;
 
         for (std::size_t i = 0; i < 4; ++i) {
             kythira::request_vote_response<std::uint64_t> response{1, true};
-            auto future =
-                kythira::FutureFactory::makeFuture(response).delay(std::chrono::milliseconds(1000));
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
+                std::chrono::milliseconds(1000));
             vote_futures.push_back(std::move(future));
         }
 
@@ -223,20 +227,20 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
     {
         BOOST_TEST_MESSAGE("Test 6: Multiple concurrent cancellations");
 
-        std::vector<std::vector<
-            kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
+        std::vector<std::vector<kythira::future_default<
+            kythira::append_entries_response<std::uint64_t, std::uint64_t>>>>
             multiple_collections;
 
         // Create multiple collections
         for (std::size_t collection = 0; collection < 3; ++collection) {
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 futures;
 
             for (std::size_t i = 0; i < 5; ++i) {
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     1, true, std::nullopt, std::nullopt};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(1500));
                 futures.push_back(std::move(future));
             }
@@ -262,7 +266,8 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
         BOOST_TEST_MESSAGE("Test 7: Cancellation edge cases");
 
         // Test cancellation of empty collection
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             empty_futures;
         raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
             cancel_collection(empty_futures);
@@ -270,11 +275,12 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
         BOOST_TEST_MESSAGE("✓ Empty collection cancellation handled correctly");
 
         // Test cancellation of single future
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             single_future;
         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
             1, true, std::nullopt, std::nullopt};
-        single_future.push_back(kythira::FutureFactory::makeFuture(response));
+        single_future.push_back(kythira::future_factory_default::makeFuture(response));
 
         BOOST_CHECK_EQUAL(single_future.size(), 1);
         raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -288,13 +294,15 @@ BOOST_AUTO_TEST_CASE(raft_collection_cancellation_cleanup_property_test,
         BOOST_TEST_MESSAGE("Test 8: Cancellation of already completed operations");
 
         // Create futures that complete immediately
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             immediate_futures;
 
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 1, true, std::nullopt, std::nullopt};
-            auto future = kythira::FutureFactory::makeFuture(response);  // No delay - immediate
+            auto future =
+                kythira::future_factory_default::makeFuture(response);  // No delay - immediate
             immediate_futures.push_back(std::move(future));
         }
 

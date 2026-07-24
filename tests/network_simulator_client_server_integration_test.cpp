@@ -145,7 +145,7 @@ BOOST_AUTO_TEST_CASE(full_client_server_communication_lifecycle, *boost::unit_te
     auto accept_future = listener->accept(test_timeout);
 
     // Wait for both operations to complete
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
     auto server_connection = std::move(accept_future).get();
 
     // Verify both connections are established correctly
@@ -405,7 +405,7 @@ BOOST_AUTO_TEST_CASE(read_timeout_handling, *boost::unit_test::timeout(30)) {
     auto accept_future = listener->accept(test_timeout);
 
     // Wait for both operations to complete
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
     auto server_connection = std::move(accept_future).get();
 
     // Try to read with timeout but no data available
@@ -467,7 +467,7 @@ BOOST_AUTO_TEST_CASE(write_timeout_handling, *boost::unit_test::timeout(30)) {
     auto accept_future = listener->accept(test_timeout);
 
     // Wait for both operations to complete
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
     auto server_connection = std::move(accept_future).get();
 
     // Try to write with very short timeout
@@ -537,7 +537,7 @@ BOOST_AUTO_TEST_CASE(ephemeral_port_allocation, *boost::unit_test::timeout(30)) 
         auto accept_future = listener->accept(test_timeout);
 
         // Wait for both operations to complete
-        auto connection = connect_future.get();
+        auto connection = std::move(connect_future).get();
         auto server_connection = std::move(accept_future).get();
 
         BOOST_REQUIRE(connection != nullptr);
@@ -606,7 +606,7 @@ BOOST_AUTO_TEST_CASE(multiple_concurrent_connections, *boost::unit_test::timeout
         auto accept_future = listener->accept(test_timeout);
 
         // Wait for both operations to complete
-        auto client_connection = connect_future.get();
+        auto client_connection = std::move(connect_future).get();
         auto server_connection = std::move(accept_future).get();
 
         BOOST_REQUIRE(client_connection != nullptr);
@@ -688,7 +688,7 @@ BOOST_AUTO_TEST_CASE(connection_state_management, *boost::unit_test::timeout(30)
     auto accept_future = listener->accept(test_timeout);
 
     // Wait for both operations to complete
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
     auto server_connection = std::move(accept_future).get();
 
     // Verify connections are open

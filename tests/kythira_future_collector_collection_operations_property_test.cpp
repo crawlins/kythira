@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <concepts/future.hpp>
 #include <exception>
@@ -63,18 +64,18 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
                      *boost::unit_test::timeout(120)) {
     // Test 1: collectAll preserves order and waits for all futures
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
         std::vector<int> expected_values;
 
         // Create futures with known values in specific order
         for (std::size_t i = 0; i < 5; ++i) {
             int value = test_value_base + static_cast<int>(i);
             expected_values.push_back(value);
-            futures.push_back(FutureFactory::makeFuture(value));
+            futures.push_back(future_factory_default::makeFuture(value));
         }
 
-        auto all_result = FutureCollector::collectAll(std::move(futures));
-        auto results = all_result.get();
+        auto all_result = future_collector_default::collectAll(std::move(futures));
+        auto results = std::move(all_result).get();
 
         // Verify order preservation
         BOOST_CHECK_EQUAL(results.size(), expected_values.size());
@@ -88,23 +89,23 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
     // Test 2: collectAll handles mixed success/failure scenarios
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
         std::vector<bool> should_succeed = {true, false, true, false, true};
 
         for (std::size_t i = 0; i < should_succeed.size(); ++i) {
             if (should_succeed[i]) {
                 int value = test_value_base + static_cast<int>(i);
-                futures.push_back(FutureFactory::makeFuture(value));
+                futures.push_back(future_factory_default::makeFuture(value));
             } else {
                 std::string exception_msg =
                     std::string(test_exception_msg) + "_" + std::to_string(i);
-                auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-                futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+                auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+                futures.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
             }
         }
 
-        auto all_result = FutureCollector::collectAll(std::move(futures));
-        auto results = all_result.get();
+        auto all_result = future_collector_default::collectAll(std::move(futures));
+        auto results = std::move(all_result).get();
 
         // Verify that all results are present and in correct order
         BOOST_CHECK_EQUAL(results.size(), should_succeed.size());
@@ -122,21 +123,21 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
     // Test 3: collectAny returns first completed future with correct index
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
 
         // Create futures where we know which one will complete first
         futures.push_back(
-            FutureFactory::makeFuture(test_value_base));  // This should complete first
+            future_factory_default::makeFuture(test_value_base));  // This should complete first
         futures.push_back(
-            FutureFactory::makeFuture(test_value_base + 1));  // This should also be ready
+            future_factory_default::makeFuture(test_value_base + 1));  // This should also be ready
         futures.push_back(
-            FutureFactory::makeFuture(test_value_base + 2));  // This should also be ready
+            future_factory_default::makeFuture(test_value_base + 2));  // This should also be ready
 
-        auto any_result = FutureCollector::collectAny(std::move(futures));
-        auto result = any_result.get();
+        auto any_result = future_collector_default::collectAny(std::move(futures));
+        auto result = std::move(any_result).get();
 
         std::size_t index = std::get<0>(result);
-        Try<int> try_value = std::get<1>(result);
+        try_default<int> try_value = std::get<1>(result);
 
         // Since all futures are ready, any of them could be returned
         BOOST_CHECK(index < 3);
@@ -150,23 +151,24 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
     // Test 4: collectAnyWithoutException returns first successful future
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
 
         // Add some failed futures first
         for (std::size_t i = 0; i < 2; ++i) {
             std::string exception_msg = std::string(test_exception_msg) + "_" + std::to_string(i);
-            auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-            futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+            auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+            futures.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
         }
 
         // Add successful futures
         for (std::size_t i = 0; i < 3; ++i) {
             int value = test_value_base + static_cast<int>(i);
-            futures.push_back(FutureFactory::makeFuture(value));
+            futures.push_back(future_factory_default::makeFuture(value));
         }
 
-        auto any_success_result = FutureCollector::collectAnyWithoutException(std::move(futures));
-        auto result = any_success_result.get();
+        auto any_success_result =
+            future_collector_default::collectAnyWithoutException(std::move(futures));
+        auto result = std::move(any_success_result).get();
 
         std::size_t index = std::get<0>(result);
         int value = std::get<1>(result);
@@ -182,17 +184,17 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
     // Test 5: collectN returns exactly N futures with correct indices
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
 
         // Create more futures than we'll collect
         for (std::size_t i = 0; i < 7; ++i) {
             int value = test_value_base + static_cast<int>(i);
-            futures.push_back(FutureFactory::makeFuture(value));
+            futures.push_back(future_factory_default::makeFuture(value));
         }
 
         std::size_t n = 3;
-        auto n_result = FutureCollector::collectN(std::move(futures), n);
-        auto results = n_result.get();
+        auto n_result = future_collector_default::collectN(std::move(futures), n);
+        auto results = std::move(n_result).get();
 
         // Should return exactly N results
         BOOST_CHECK_EQUAL(results.size(), n);
@@ -201,7 +203,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         std::vector<std::size_t> returned_indices;
         for (const auto& result : results) {
             std::size_t index = std::get<0>(result);
-            Try<int> try_value = std::get<1>(result);
+            try_default<int> try_value = std::get<1>(result);
 
             BOOST_CHECK(index < 7);  // Should be valid index
             BOOST_CHECK(try_value.hasValue());
@@ -232,7 +234,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         double success_rate = success_rate_dist(gen);
 
         // Create random collection of futures
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
         std::vector<bool> should_succeed;
 
         for (std::size_t i = 0; i < collection_size; ++i) {
@@ -241,32 +243,32 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
             if (success) {
                 int value = test_value_base + static_cast<int>(iteration * 100 + i);
-                futures.push_back(FutureFactory::makeFuture(value));
+                futures.push_back(future_factory_default::makeFuture(value));
             } else {
                 std::string exception_msg =
                     "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
-                auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-                futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+                auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+                futures.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
             }
         }
 
         // Test collectAll with random collection
         {
-            std::vector<Future<int>> futures_copy;
+            std::vector<future_default<int>> futures_copy;
             for (std::size_t i = 0; i < collection_size; ++i) {
                 if (should_succeed[i]) {
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
-                    futures_copy.push_back(FutureFactory::makeFuture(value));
+                    futures_copy.push_back(future_factory_default::makeFuture(value));
                 } else {
                     std::string exception_msg =
                         "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
-                    auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-                    futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+                    auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+                    futures_copy.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
                 }
             }
 
-            auto all_result = FutureCollector::collectAll(std::move(futures_copy));
-            auto results = all_result.get();
+            auto all_result = future_collector_default::collectAll(std::move(futures_copy));
+            auto results = std::move(all_result).get();
 
             // Verify order and completeness
             BOOST_CHECK_EQUAL(results.size(), collection_size);
@@ -283,24 +285,24 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
 
         // Test collectAny with random collection
         {
-            std::vector<Future<int>> futures_copy;
+            std::vector<future_default<int>> futures_copy;
             for (std::size_t i = 0; i < collection_size; ++i) {
                 if (should_succeed[i]) {
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
-                    futures_copy.push_back(FutureFactory::makeFuture(value));
+                    futures_copy.push_back(future_factory_default::makeFuture(value));
                 } else {
                     std::string exception_msg =
                         "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
-                    auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-                    futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+                    auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+                    futures_copy.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
                 }
             }
 
-            auto any_result = FutureCollector::collectAny(std::move(futures_copy));
-            auto result = any_result.get();
+            auto any_result = future_collector_default::collectAny(std::move(futures_copy));
+            auto result = std::move(any_result).get();
 
             std::size_t index = std::get<0>(result);
-            Try<int> try_value = std::get<1>(result);
+            try_default<int> try_value = std::get<1>(result);
 
             // Verify index is valid
             BOOST_CHECK(index < collection_size);
@@ -319,21 +321,21 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
         if (collection_size >= 2) {
             std::size_t n = std::min(collection_size - 1, std::size_t(3));
 
-            std::vector<Future<int>> futures_copy;
+            std::vector<future_default<int>> futures_copy;
             for (std::size_t i = 0; i < collection_size; ++i) {
                 if (should_succeed[i]) {
                     int value = test_value_base + static_cast<int>(iteration * 100 + i);
-                    futures_copy.push_back(FutureFactory::makeFuture(value));
+                    futures_copy.push_back(future_factory_default::makeFuture(value));
                 } else {
                     std::string exception_msg =
                         "iteration_" + std::to_string(iteration) + "_index_" + std::to_string(i);
-                    auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-                    futures_copy.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+                    auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+                    futures_copy.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
                 }
             }
 
-            auto n_result = FutureCollector::collectN(std::move(futures_copy), n);
-            auto results = n_result.get();
+            auto n_result = future_collector_default::collectN(std::move(futures_copy), n);
+            auto results = std::move(n_result).get();
 
             // Verify exactly N results
             BOOST_CHECK_EQUAL(results.size(), n);
@@ -342,7 +344,7 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
             std::vector<std::size_t> indices;
             for (const auto& result : results) {
                 std::size_t index = std::get<0>(result);
-                Try<int> try_value = std::get<1>(result);
+                try_default<int> try_value = std::get<1>(result);
 
                 BOOST_CHECK(index < collection_size);
                 indices.push_back(index);
@@ -366,6 +368,15 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
     }
 
     // Test 7: Timeout handling with collectAllWithTimeout and collectAnyWithTimeout
+    //
+    // These two FutureCollector methods are Folly-specific: they're built on
+    // folly::Future::within(), which has no boost_backend/stdexec_backend
+    // equivalent, so kythira::FutureCollector never gained portable
+    // collectAllWithTimeout/collectAnyWithTimeout overloads (unlike
+    // raft_future_collector::collect_all_with_timeout/collect_any_with_timeout,
+    // which ARE portable and covered by future_default elsewhere in this
+    // file). This block intentionally stays on the raw Folly kythira::Future
+    // family rather than future_default.
     {
         // Test collectAllWithTimeout with immediate futures (should not timeout)
         std::vector<Future<int>> immediate_futures;
@@ -405,33 +416,33 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
     // Test 8: Error handling edge cases
     {
         // Test collectAnyWithoutException with all failed futures
-        std::vector<Future<int>> all_failed_futures;
+        std::vector<future_default<int>> all_failed_futures;
         for (std::size_t i = 0; i < 3; ++i) {
             std::string exception_msg = "all_failed_" + std::to_string(i);
-            auto ex = folly::exception_wrapper(std::runtime_error(exception_msg));
-            all_failed_futures.push_back(FutureFactory::makeExceptionalFuture<int>(ex));
+            auto ex = std::make_exception_ptr(std::runtime_error(exception_msg));
+            all_failed_futures.push_back(future_factory_default::makeExceptionalFuture<int>(ex));
         }
 
         auto all_failed_result =
-            FutureCollector::collectAnyWithoutException(std::move(all_failed_futures));
+            future_collector_default::collectAnyWithoutException(std::move(all_failed_futures));
 
         // This should throw since no futures succeed
-        BOOST_CHECK_THROW(all_failed_result.get(), std::exception);
+        BOOST_CHECK_THROW(std::move(all_failed_result).get(), std::exception);
 
         // Test collectN with n = collection_size (should return all)
-        std::vector<Future<int>> exact_size_futures;
+        std::vector<future_default<int>> exact_size_futures;
         for (std::size_t i = 0; i < 4; ++i) {
             int value = test_value_base + static_cast<int>(i);
-            exact_size_futures.push_back(FutureFactory::makeFuture(value));
+            exact_size_futures.push_back(future_factory_default::makeFuture(value));
         }
 
-        auto exact_n_result = FutureCollector::collectN(std::move(exact_size_futures), 4);
-        auto exact_results = exact_n_result.get();
+        auto exact_n_result = future_collector_default::collectN(std::move(exact_size_futures), 4);
+        auto exact_results = std::move(exact_n_result).get();
 
         BOOST_CHECK_EQUAL(exact_results.size(), 4);
         for (auto& exact_result : exact_results) {
             std::size_t index = std::get<0>(exact_result);
-            Try<int> try_value = std::get<1>(exact_result);
+            try_default<int> try_value = std::get<1>(exact_result);
 
             BOOST_CHECK(index < 4);
             BOOST_CHECK(try_value.hasValue());
@@ -443,37 +454,37 @@ BOOST_AUTO_TEST_CASE(kythira_future_collector_collection_operations_property_tes
     // Test 9: Void future collections
     {
         // Test collectAll with void futures
-        std::vector<Future<void>> void_futures;
-        void_futures.push_back(FutureFactory::makeFuture());
-        void_futures.push_back(FutureFactory::makeFuture());
+        std::vector<future_default<void>> void_futures;
+        void_futures.push_back(future_factory_default::makeFuture());
+        void_futures.push_back(future_factory_default::makeFuture());
 
-        auto void_all_result = FutureCollector::collectAll(std::move(void_futures));
-        auto void_results = void_all_result.get();
+        auto void_all_result = future_collector_default::collectAll(std::move(void_futures));
+        auto void_results = std::move(void_all_result).get();
 
         BOOST_CHECK_EQUAL(void_results.size(), 2);
         BOOST_CHECK(void_results[0].hasValue());
         BOOST_CHECK(void_results[1].hasValue());
 
         // Test collectAny with void futures
-        std::vector<Future<void>> void_futures2;
-        void_futures2.push_back(FutureFactory::makeFuture());
+        std::vector<future_default<void>> void_futures2;
+        void_futures2.push_back(future_factory_default::makeFuture());
 
-        auto void_any_result = FutureCollector::collectAny(std::move(void_futures2));
-        auto void_result = void_any_result.get();
+        auto void_any_result = future_collector_default::collectAny(std::move(void_futures2));
+        auto void_result = std::move(void_any_result).get();
 
         std::size_t index = std::get<0>(void_result);
-        Try<void> try_value = std::get<1>(void_result);
+        try_default<void> try_value = std::get<1>(void_result);
 
         BOOST_CHECK_EQUAL(index, 0);
         BOOST_CHECK(try_value.hasValue());
 
         // Test collectAnyWithoutException with void futures (returns just index)
-        std::vector<Future<void>> void_futures3;
-        void_futures3.push_back(FutureFactory::makeFuture());
+        std::vector<future_default<void>> void_futures3;
+        void_futures3.push_back(future_factory_default::makeFuture());
 
         auto void_any_success_result =
-            FutureCollector::collectAnyWithoutException(std::move(void_futures3));
-        auto void_index = void_any_success_result.get();
+            future_collector_default::collectAnyWithoutException(std::move(void_futures3));
+        auto void_index = std::move(void_any_success_result).get();
 
         BOOST_CHECK_EQUAL(void_index, 0);
 
@@ -485,8 +496,8 @@ namespace {
 // Resolves after `delay` on a background thread - used below to simulate a
 // slow/partitioned peer without actually needing a network.
 template<typename T>
-auto make_delayed_future(T value, std::chrono::milliseconds delay) -> Future<T> {
-    auto promise = std::make_shared<Promise<T>>();
+auto make_delayed_future(T value, std::chrono::milliseconds delay) -> future_default<T> {
+    auto promise = std::make_shared<promise_default<T>>();
     auto future = promise->getFuture();
     std::thread([promise, value = std::move(value), delay]() mutable {
         std::this_thread::sleep_for(delay);
@@ -496,8 +507,8 @@ auto make_delayed_future(T value, std::chrono::milliseconds delay) -> Future<T> 
 }
 
 auto make_delayed_failed_future(std::chrono::milliseconds delay, std::string message)
-    -> Future<int> {
-    auto promise = std::make_shared<Promise<int>>();
+    -> future_default<int> {
+    auto promise = std::make_shared<promise_default<int>>();
     auto future = promise->getFuture();
     std::thread([promise, delay, message = std::move(message)]() mutable {
         std::this_thread::sleep_for(delay);
@@ -523,10 +534,10 @@ BOOST_AUTO_TEST_CASE(collect_n_successes_with_timeout_test, *boost::unit_test::t
     // Basic correctness: exactly required_successes successful values, drawn
     // from whichever futures actually succeeded.
     {
-        std::vector<Future<int>> futures;
-        futures.push_back(FutureFactory::makeFuture(1));
-        futures.push_back(FutureFactory::makeFuture(2));
-        futures.push_back(FutureFactory::makeFuture(3));
+        std::vector<future_default<int>> futures;
+        futures.push_back(future_factory_default::makeFuture(1));
+        futures.push_back(future_factory_default::makeFuture(2));
+        futures.push_back(future_factory_default::makeFuture(3));
 
         auto result = raft_future_collector<int>::collect_n_successes_with_timeout(
                           std::move(futures), 2, long_timeout)
@@ -541,9 +552,9 @@ BOOST_AUTO_TEST_CASE(collect_n_successes_with_timeout_test, *boost::unit_test::t
     // needs from the leader's read_state() heartbeat collection.
     {
         constexpr auto slow_delay = std::chrono::milliseconds(2000);
-        std::vector<Future<int>> futures;
-        futures.push_back(FutureFactory::makeFuture(10));
-        futures.push_back(FutureFactory::makeFuture(20));
+        std::vector<future_default<int>> futures;
+        futures.push_back(future_factory_default::makeFuture(10));
+        futures.push_back(future_factory_default::makeFuture(20));
         futures.push_back(make_delayed_future(30, slow_delay));
 
         auto start = std::chrono::steady_clock::now();
@@ -568,16 +579,17 @@ BOOST_AUTO_TEST_CASE(collect_n_successes_with_timeout_test, *boost::unit_test::t
     // timeout only to fail once everything has settled.
     {
         constexpr auto slow_delay = std::chrono::milliseconds(2000);
-        std::vector<Future<int>> futures;
-        futures.push_back(FutureFactory::makeExceptionalFuture<int>(folly::exception_wrapper(
-            std::runtime_error("collect_n_successes_with_timeout_test: immediate failure"))));
+        std::vector<future_default<int>> futures;
+        futures.push_back(
+            future_factory_default::makeExceptionalFuture<int>(std::make_exception_ptr(
+                std::runtime_error("collect_n_successes_with_timeout_test: immediate failure"))));
         futures.push_back(make_delayed_future(40, slow_delay));
         futures.push_back(make_delayed_future(50, slow_delay));
 
         auto start = std::chrono::steady_clock::now();
         auto collected = raft_future_collector<int>::collect_n_successes_with_timeout(
             std::move(futures), 3, std::chrono::milliseconds(10000));
-        BOOST_CHECK_THROW(collected.get(), std::exception);
+        BOOST_CHECK_THROW(std::move(collected).get(), std::exception);
         auto elapsed = std::chrono::steady_clock::now() - start;
 
         BOOST_CHECK_MESSAGE(
@@ -593,9 +605,9 @@ BOOST_AUTO_TEST_CASE(collect_n_successes_with_timeout_test, *boost::unit_test::t
     // this must fall back to the per-future timeout like the other
     // primitives).
     {
-        std::vector<Future<int>> futures;
+        std::vector<future_default<int>> futures;
         futures.push_back(make_delayed_future(60, std::chrono::milliseconds(500)));
-        auto promise = std::make_shared<Promise<int>>();
+        auto promise = std::make_shared<promise_default<int>>();
         futures.push_back(promise->getFuture());  // never settles
 
         BOOST_CHECK_THROW(raft_future_collector<int>::collect_n_successes_with_timeout(
@@ -617,15 +629,15 @@ BOOST_AUTO_TEST_CASE(collection_operations_performance_test, *boost::unit_test::
 
     // Test collectAll with large collection
     {
-        std::vector<Future<int>> large_futures;
+        std::vector<future_default<int>> large_futures;
         for (std::size_t i = 0; i < large_collection_size; ++i) {
             int value = test_value_base + static_cast<int>(i);
-            large_futures.push_back(FutureFactory::makeFuture(value));
+            large_futures.push_back(future_factory_default::makeFuture(value));
         }
 
         auto start_time = std::chrono::steady_clock::now();
-        auto all_result = FutureCollector::collectAll(std::move(large_futures));
-        auto results = all_result.get();
+        auto all_result = future_collector_default::collectAll(std::move(large_futures));
+        auto results = std::move(all_result).get();
         auto end_time = std::chrono::steady_clock::now();
 
         auto duration =
@@ -643,16 +655,16 @@ BOOST_AUTO_TEST_CASE(collection_operations_performance_test, *boost::unit_test::
 
     // Test collectN with large collection
     {
-        std::vector<Future<int>> large_futures;
+        std::vector<future_default<int>> large_futures;
         for (std::size_t i = 0; i < large_collection_size; ++i) {
             int value = test_value_base + static_cast<int>(i);
-            large_futures.push_back(FutureFactory::makeFuture(value));
+            large_futures.push_back(future_factory_default::makeFuture(value));
         }
 
         std::size_t n = large_collection_size / 2;
         auto start_time = std::chrono::steady_clock::now();
-        auto n_result = FutureCollector::collectN(std::move(large_futures), n);
-        auto results = n_result.get();
+        auto n_result = future_collector_default::collectN(std::move(large_futures), n);
+        auto results = std::move(n_result).get();
         auto end_time = std::chrono::steady_clock::now();
 
         auto duration =
@@ -680,15 +692,15 @@ BOOST_AUTO_TEST_CASE(collection_operations_thread_safety_test, *boost::unit_test
             for (std::size_t op = 0; op < operations_per_thread; ++op) {
                 try {
                     // Create futures for this operation
-                    std::vector<Future<int>> futures;
+                    std::vector<future_default<int>> futures;
                     for (std::size_t i = 0; i < 5; ++i) {
                         int value = test_value_base + static_cast<int>(t * 1000 + op * 10 + i);
-                        futures.push_back(FutureFactory::makeFuture(value));
+                        futures.push_back(future_factory_default::makeFuture(value));
                     }
 
                     // Test collectAll
-                    auto all_result = FutureCollector::collectAll(std::move(futures));
-                    auto results = all_result.get();
+                    auto all_result = future_collector_default::collectAll(std::move(futures));
+                    auto results = std::move(all_result).get();
 
                     if (results.size() == 5) {
                         bool all_valid = true;
