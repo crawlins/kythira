@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 23, 2026
+**Last Updated**: July 24, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -51,7 +51,6 @@ unambiguous at a glance.
 | Spec | What it would do |
 |------|-------|
 | [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
-| [`boost-future-backend`](../.kiro/specs/boost-future-backend/) | A third `Future`/`Promise`/`Try`/`Executor` implementation backed by `boost::thread`'s extended future API (`then()`/`when_all`/`when_any`), alongside the existing Folly (default) and `stdexec` backends |
 
 ### Partially Implemented
 
@@ -85,12 +84,48 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
   default Folly one, for new code wanting direct access to `stdexec`
   schedulers/algorithms; `include/raft/future_stdexec.hpp`, backend
   selection via `KYTHIRA_DEFAULT_FUTURE_BACKEND` CMake option
-  (`include/raft/future_default.hpp`); no existing production call site
-  converted, Folly stays the default and required dependency regardless;
-  spec at `.kiro/specs/stdexec-future-backend/`; 52/52 tasks complete;
+  (`include/raft/future_default.hpp`); spec at
+  `.kiro/specs/stdexec-future-backend/`; 52/52 tasks complete;
   found and fixed a real GCC 13 `-O2`/`-O3` miscompilation of
   `exec::any_sender`'s small-buffer-optimized move constructor along the
-  way (`-fno-strict-aliasing` for GCC builds, `clang++-18` unaffected)
+  way (`-fno-strict-aliasing` for GCC builds, `clang++-18` unaffected).
+  **Update, July 24, 2026**: "no existing production call site converted"
+  above is now stale — see that day's `CHANGELOG.md` entry. Production Raft/
+  RPC code and the full test suite were converted to `future_default` and
+  now run cleanly under this backend end to end (373/373 `ctest`); the
+  conversion surfaced and fixed a real double-execution bug in this
+  backend's `thenTry` Future-returning overload and a widespread
+  discarded-continuation footgun (`kythira::Future<T>::detach()` added to
+  address it). Folly remains the default and a required dependency
+  regardless.
+- [x] **boost future backend** — a third, `boost::thread`-backed
+  `Future`/`Promise`/`Try`/`Executor` implementation alongside the default
+  Folly one and the `stdexec` one, for new code wanting the
+  `boost::asio`-backed timer primitives (`delay`/`within`) without pulling
+  in Folly's Timekeeper; `include/raft/future_boost.hpp` (guarded behind
+  `KYTHIRA_HAS_BOOST_FUTURE`), backend selection via
+  `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` CMake option
+  (`include/raft/future_default.hpp`); spec at
+  `.kiro/specs/boost-future-backend/`.
+  **Update, July 24, 2026**: "no existing production call site converted"
+  above is now stale — see stdexec's update note just above and that day's
+  `CHANGELOG.md` entry; the same conversion covered both backends together.
+  Also found and fixed two real bugs specific to this backend
+  (`collectAnyWithoutException<void>` and a `nullptr`-`exception_ptr`
+  crash in `set_exception_from_std`) and one missing overload
+  (`makeReadyFuture(T value)`). Folly remains the default and a required
+  dependency regardless. A Phase 0 spike (throwaway
+  compile against the real vendored Boost headers) found `BOOST_THREAD_
+  PROVIDES_EXECUTORS` is gated on `BOOST_THREAD_VERSION>=5`, not `>=4` as
+  originally assumed from source inspection alone — defined explicitly
+  alongside `BOOST_THREAD_VERSION=4` instead; also found `boost::
+  exception_ptr` is a distinct type from `std::exception_ptr` whose
+  implicit converting constructor compiles but silently breaks rethrow,
+  requiring a genuine catch-and-rethrow bridge at every exception boundary;
+  two property-test binaries (31 cases) plus an extended
+  `backend_non_interference_compile_fail_test.cpp` (now unconditional
+  rather than `stdexec_FOUND`-gated, since it needs to validate Folly-only,
+  boost-only, stdexec-only, and both-enabled configurations)
 - [x] **Remove unused includes** — `http_transport_impl.hpp`'s own
   `#include <future>` was provably redundant (it includes
   `raft/http_transport.hpp` first, which already includes `<future>`
