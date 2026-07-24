@@ -813,7 +813,7 @@ endif()
 if(_KYTHIRA_KCONFIG_OK)
     add_custom_target(menuconfig
         COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
-                ${Python3_EXECUTABLE} -m kconfiglib.menuconfig "${CMAKE_SOURCE_DIR}/Kconfig"
+                ${Python3_EXECUTABLE} -m menuconfig "${CMAKE_SOURCE_DIR}/Kconfig"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Interactive Kconfig menu -- writes ${CMAKE_BINARY_DIR}/.config"
         USES_TERMINAL
@@ -821,7 +821,7 @@ if(_KYTHIRA_KCONFIG_OK)
     )
     add_custom_target(guiconfig
         COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
-                ${Python3_EXECUTABLE} -m kconfiglib.guiconfig "${CMAKE_SOURCE_DIR}/Kconfig"
+                ${Python3_EXECUTABLE} -m guiconfig "${CMAKE_SOURCE_DIR}/Kconfig"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         COMMENT "Tkinter Kconfig menu -- writes ${CMAKE_BINARY_DIR}/.config"
         USES_TERMINAL
@@ -829,7 +829,7 @@ if(_KYTHIRA_KCONFIG_OK)
     )
     add_custom_target(savedefconfig
         COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
-                ${Python3_EXECUTABLE} -m kconfiglib.savedefconfig
+                ${Python3_EXECUTABLE} -m savedefconfig
                 --kconfig "${CMAKE_SOURCE_DIR}/Kconfig"
                 --out "${CMAKE_BINARY_DIR}/defconfig"
         COMMAND ${CMAKE_COMMAND} -E echo
