@@ -87,6 +87,32 @@ cmake --build .
 ctest
 ```
 
+The plain `cmake ..` above builds with every optional dependency it can find
+on your machine and silently skips whatever it can't — no extra setup
+required. If you want to choose which optional features (HTTP/CoAP TLS,
+EDHOC, DNS/Poco peer discovery, AWS SDK, etc.) get built instead of relying
+on auto-detection, or want a misconfigured build to fail loudly instead of
+silently disabling a feature, configure via Kconfig:
+
+```bash
+# One-time: install the Kconfig tooling (Python, no C toolchain needed)
+pip install -r scripts/kconfig/requirements.txt
+
+# Interactively choose a feature set, then configure from it
+cmake --build build --target menuconfig      # writes build/.config
+cmake -S . -B build -DKYTHIRA_KCONFIG=build/.config
+
+# ...or apply one of the checked-in defconfigs non-interactively
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/ci_full_defconfig   # every optional feature on
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/minimal_defconfig   # every optional feature off
+
+# Optional: fail configure instead of silently disabling a missing dependency
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/ci_full_defconfig -DKYTHIRA_KCONFIG_STRICT=ON
+```
+
+See [Build Configuration (Kconfig)](#build-configuration-kconfig) below for
+the full picture.
+
 ## Build Configuration (Kconfig)
 
 Kythira's optional-dependency matrix (OpenSSL, CoAP/HTTP transport TLS,
