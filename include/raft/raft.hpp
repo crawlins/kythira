@@ -15,6 +15,7 @@
 #include <concepts/future.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
@@ -545,9 +546,19 @@ private:
     using commit_waiter_t = kythira::commit_waiter<log_index_type>;
     commit_waiter_t _commit_waiter;
 
-    // Configuration synchronizer for safe configuration changes (always uses Future<bool>
-    // internally)
-    using config_synchronizer_t = kythira::configuration_synchronizer<node_id_type, log_index_type>;
+    // Configuration synchronizer for safe configuration changes. Its internal
+    // "did this phase commit" signal is bool-valued, distinct from
+    // future_type/promise_type above (which are std::vector<std::byte>-valued,
+    // matching RPC-serialized responses) - kythira::future_default<bool>/
+    // promise_default<bool> track whichever backend KYTHIRA_DEFAULT_FUTURE_BACKEND
+    // selects (the same global, compile-time choice future_type/promise_type
+    // above are expected to track too), keeping config_future.thenTry(...)'s
+    // result (raft.hpp's remove_server/add_server/add_learner) bridgeable to
+    // future_type without a Folly-vs-other-backend mismatch.
+    using config_synchronizer_t =
+        kythira::configuration_synchronizer<node_id_type, log_index_type,
+                                            kythira::future_default<bool>,
+                                            kythira::promise_default<bool>>;
     config_synchronizer_t _config_synchronizer;
 
     // ========================================================================
@@ -1196,8 +1207,14 @@ template<raft_types Types> auto node<Types>::run_quorum_assessment() -> void {
                              {{"node_id", node_id_to_string(_node_id)},
                               {"learner", node_id_to_string(*candidate)},
                               {"group", grp_health.group_id}});
-                auto promote_fut = promote_to_voter(*candidate);
-                (void)promote_fut;
+                // Fire-and-forget: detach() runs the future to completion in
+                // the background rather than just discarding it - under
+                // stdexec_backend, an actually-discarded (never .get()'d,
+                // never detach()'d) Future's composed continuation chain
+                // never starts at all (lazy senders), silently no-opping
+                // this promotion. Folly/boost are eager and don't need
+                // this, but detach() is a portable no-op there too.
+                promote_to_voter(*candidate).detach();
 
                 --remaining_to_provision;
             }
@@ -1702,7 +1719,8 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
 
             promise_type promise;
             auto future = promise.getFuture();
-            promise.setException(kythira::leadership_lost_exception(_current_term, _current_term));
+            promise.setException(std::make_exception_ptr(
+                kythira::leadership_lost_exception(_current_term, _current_term)));
             return future;
         }
 
@@ -1797,7 +1815,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
     }  // _mutex released — network I/O and the async callback below run without it
 
     // Send heartbeats to all followers and collect responses
-    std::vector<kythira::Future<append_entries_response_type>> heartbeat_futures;
+    std::vector<kythira::future_default<append_entries_response_type>> heartbeat_futures;
     heartbeat_futures.reserve(pending_heartbeats.size());
 
     for (auto& [follower_id, request] : pending_heartbeats) {
@@ -1950,16 +1968,25 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                 }
             })
             .thenError([this, node_id,
-                        start_time](const folly::exception_wrapper& ew) -> std::vector<std::byte> {
+                        start_time](std::exception_ptr ep) -> std::vector<std::byte> {
                 std::lock_guard<std::mutex> lock(_mutex);
 
                 auto end_time = std::chrono::steady_clock::now();
                 auto duration =
                     std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
 
+                std::string error_message;
+                try {
+                    std::rethrow_exception(ep);
+                } catch (const std::exception& e) {
+                    error_message = e.what();
+                } catch (...) {
+                    error_message = "unknown exception";
+                }
+
                 _logger.error("Read request failed",
                               {{"node_id", node_id_to_string(node_id)},
-                               {"error", ew.what().toStdString()},
+                               {"error", error_message},
                                {"duration_ms", std::to_string(duration.count())}});
 
                 _metrics.set_metric_name("raft_read_request_failed");
@@ -1969,7 +1996,7 @@ auto node<Types>::read_state(std::chrono::milliseconds timeout) -> future_type {
                 _metrics.emit();
 
                 // Re-throw the exception
-                ew.throw_exception();
+                std::rethrow_exception(ep);
 
                 // This line is unreachable but needed for compilation
                 return std::vector<std::byte>{};
@@ -2116,7 +2143,8 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Not leader - cannot add server"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Not leader - cannot add server")));
         return future;
     }
 
@@ -2128,7 +2156,8 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Configuration change already in progress"));
+        promise.setException(std::make_exception_ptr(
+            std::runtime_error("Configuration change already in progress")));
         return future;
     }
 
@@ -2140,7 +2169,8 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node already in configuration"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Node already in configuration")));
         return future;
     }
 
@@ -2152,7 +2182,7 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node validation failed"));
+        promise.setException(std::make_exception_ptr(std::runtime_error("Node validation failed")));
         return future;
     }
 
@@ -2255,7 +2285,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Not leader - cannot remove server"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Not leader - cannot remove server")));
         return future;
     }
 
@@ -2267,7 +2298,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Configuration change already in progress"));
+        promise.setException(std::make_exception_ptr(
+            std::runtime_error("Configuration change already in progress")));
         return future;
     }
 
@@ -2279,7 +2311,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node not in configuration"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Node not in configuration")));
         return future;
     }
 
@@ -2291,7 +2324,8 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Cannot remove last node from cluster"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Cannot remove last node from cluster")));
         return future;
     }
 
@@ -2404,7 +2438,8 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Not leader - cannot add learner"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Not leader - cannot add learner")));
         return future;
     }
 
@@ -2418,7 +2453,8 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node already in configuration"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Node already in configuration")));
         return future;
     }
 
@@ -2434,7 +2470,7 @@ auto node<Types>::add_learner(node_id_type new_node) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"new_node", node_id_to_string(new_node)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(learner_capacity_exceeded_exception());
+        promise.setException(std::make_exception_ptr(learner_capacity_exceeded_exception()));
         return future;
     }
 
@@ -2501,7 +2537,8 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Not leader - cannot remove learner"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Not leader - cannot remove learner")));
         return future;
     }
 
@@ -2514,7 +2551,8 @@ auto node<Types>::remove_learner(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node not a learner in configuration"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Node not a learner in configuration")));
         return future;
     }
 
@@ -2582,7 +2620,8 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Not leader - cannot promote to voter"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Not leader - cannot promote to voter")));
         return future;
     }
 
@@ -2592,7 +2631,8 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Configuration change already in progress"));
+        promise.setException(std::make_exception_ptr(
+            std::runtime_error("Configuration change already in progress")));
         return future;
     }
 
@@ -2605,7 +2645,8 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(std::runtime_error("Node is not a learner in configuration"));
+        promise.setException(
+            std::make_exception_ptr(std::runtime_error("Node is not a learner in configuration")));
         return future;
     }
 
@@ -2624,7 +2665,7 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
             {{"node_id", node_id_to_string(_node_id)}, {"learner", node_id_to_string(learner)}});
         promise_type promise;
         auto future = promise.getFuture();
-        promise.setException(voting_capacity_exceeded_exception());
+        promise.setException(std::make_exception_ptr(voting_capacity_exceeded_exception()));
         return future;
     }
 
@@ -3704,10 +3745,12 @@ template<raft_types Types>
 auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
     // Create a lambda that sends the heartbeat (AppendEntries with empty entries)
     auto send_heartbeat_operation =
-        [this, target, stop_flag = _stop_flag]() -> kythira::Future<append_entries_response_type> {
+        [this, target,
+         stop_flag = _stop_flag]() -> kythira::future_default<append_entries_response_type> {
         if (stop_flag->load(std::memory_order_acquire)) {
-            return kythira::FutureFactory::makeExceptionalFuture<append_entries_response_type>(
-                std::runtime_error("node stopped"));
+            return kythira::future_factory_default::makeExceptionalFuture<
+                append_entries_response_type>(
+                std::make_exception_ptr(std::runtime_error("node stopped")));
         }
         // Get next index for this follower
         auto next_idx = _next_index[target];
@@ -3722,8 +3765,9 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
                 prev_log_term = prev_entry->term();
             } else {
                 // Previous entry not in log (compacted) - return error
-                return kythira::FutureFactory::makeExceptionalFuture<append_entries_response_type>(
-                    std::runtime_error("Previous entry not in log, need snapshot"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    append_entries_response_type>(std::make_exception_ptr(
+                    std::runtime_error("Previous entry not in log, need snapshot")));
             }
         }
 
@@ -3755,8 +3799,8 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
         .execute_with_retry("heartbeat", send_heartbeat_operation,
                             std::nullopt  // Use default heartbeat retry policy
                             )
-        .thenTry([this, target, start_time,
-                  stop_flag = _stop_flag](kythira::Try<append_entries_response_type> try_response) {
+        .thenTry([this, target, start_time, stop_flag = _stop_flag](
+                     kythira::try_default<append_entries_response_type> try_response) {
             if (stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
@@ -3839,7 +3883,10 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
                               {{"node_id", node_id_to_string(_node_id)},
                                {"target", node_id_to_string(target)}});
             }
-        });
+        })
+        // detach() rather than a bare discard - see advertise_progress()'s
+        // call above for why.
+        .detach();
 }
 
 template<raft_types Types>
@@ -3983,7 +4030,7 @@ auto node<Types>::start_election() -> void {
     // Folly-executor callbacks with a dangling `this` — causing stack corruption
     // detected by clang's SSP.
     using tagged_vote_t = std::pair<node_id_type, request_vote_response_type>;
-    std::vector<kythira::Future<tagged_vote_t>> vote_futures;
+    std::vector<kythira::future_default<tagged_vote_t>> vote_futures;
     vote_futures.reserve(peer_ids.size());
 
     for (const auto& peer_id : peer_ids) {
@@ -3999,11 +4046,12 @@ auto node<Types>::start_election() -> void {
             _request_vote_error_handler
                 .execute_with_retry(
                     "request_vote",
-                    [this, peer_id, vote_request,
-                     stop_flag = _stop_flag]() -> kythira::Future<request_vote_response_type> {
+                    [this, peer_id, vote_request, stop_flag = _stop_flag]()
+                        -> kythira::future_default<request_vote_response_type> {
                         if (stop_flag->load(std::memory_order_acquire)) {
-                            return kythira::FutureFactory::makeExceptionalFuture<
-                                request_vote_response_type>(std::runtime_error("node stopped"));
+                            return kythira::future_factory_default::makeExceptionalFuture<
+                                request_vote_response_type>(
+                                std::make_exception_ptr(std::runtime_error("node stopped")));
                         }
 
                         _logger.debug(
@@ -4024,42 +4072,43 @@ auto node<Types>::start_election() -> void {
                                                                  _config.rpc_timeout());
                     },
                     vote_retry_policy)
-                .thenTry([this, peer_id, stop_flag = _stop_flag](
-                             kythira::Try<request_vote_response_type> result) -> tagged_vote_t {
-                    if (stop_flag->load(std::memory_order_acquire)) {
-                        throw std::runtime_error("node stopped");
-                    }
-                    if (result.hasException()) {
-                        _logger.warning("RequestVote RPC failed after retries",
-                                        {{"node_id", node_id_to_string(_node_id)},
-                                         {"peer_id", node_id_to_string(peer_id)}});
+                .thenTry(
+                    [this, peer_id, stop_flag = _stop_flag](
+                        kythira::try_default<request_vote_response_type> result) -> tagged_vote_t {
+                        if (stop_flag->load(std::memory_order_acquire)) {
+                            throw std::runtime_error("node stopped");
+                        }
+                        if (result.hasException()) {
+                            _logger.warning("RequestVote RPC failed after retries",
+                                            {{"node_id", node_id_to_string(_node_id)},
+                                             {"peer_id", node_id_to_string(peer_id)}});
 
-                        _metrics.set_metric_name("vote_request_failed");
+                            _metrics.set_metric_name("vote_request_failed");
+                            _metrics.add_dimension("node_id", node_id_to_string(_node_id));
+                            _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
+                            _metrics.add_one();
+                            _metrics.emit();
+
+                            std::rethrow_exception(result.exception());
+                        }
+
+                        auto response = result.value();
+                        _logger.debug("Received RequestVote response",
+                                      {{"node_id", node_id_to_string(_node_id)},
+                                       {"peer_id", node_id_to_string(peer_id)},
+                                       {"vote_granted", response.vote_granted() ? "true" : "false"},
+                                       {"response_term", std::to_string(response.term())}});
+
+                        _metrics.set_metric_name("vote_response_received");
                         _metrics.add_dimension("node_id", node_id_to_string(_node_id));
                         _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
+                        _metrics.add_dimension("vote_granted",
+                                               response.vote_granted() ? "true" : "false");
                         _metrics.add_one();
                         _metrics.emit();
 
-                        std::rethrow_exception(result.exception());
-                    }
-
-                    auto response = result.value();
-                    _logger.debug("Received RequestVote response",
-                                  {{"node_id", node_id_to_string(_node_id)},
-                                   {"peer_id", node_id_to_string(peer_id)},
-                                   {"vote_granted", response.vote_granted() ? "true" : "false"},
-                                   {"response_term", std::to_string(response.term())}});
-
-                    _metrics.set_metric_name("vote_response_received");
-                    _metrics.add_dimension("node_id", node_id_to_string(_node_id));
-                    _metrics.add_dimension("peer_id", node_id_to_string(peer_id));
-                    _metrics.add_dimension("vote_granted",
-                                           response.vote_granted() ? "true" : "false");
-                    _metrics.add_one();
-                    _metrics.emit();
-
-                    return {peer_id, response};
-                });
+                        return {peer_id, response};
+                    });
 
         vote_futures.push_back(std::move(tagged_future));
     }
@@ -4090,8 +4139,8 @@ auto node<Types>::start_election() -> void {
     raft_future_collector<tagged_vote_t>::collect_all_with_timeout(std::move(vote_futures),
                                                                    snapshot_election_timeout)
         .thenValue([this, current_term, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old = std::move(snap_c_old),
-                    stop_flag = _stop_flag](std::vector<kythira::Try<tagged_vote_t>> results) {
+                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag](
+                       std::vector<kythira::try_default<tagged_vote_t>> results) {
             if (stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
@@ -4200,7 +4249,12 @@ auto node<Types>::start_election() -> void {
                     _logger.error("Unexpected error during election",
                                   {{"node_id", node_id_to_string(node_id)}});
                 }
-            });
+            })
+        // detach() rather than a bare discard - see advertise_progress()'s
+        // call above for why. This is the election vote-outcome chain -
+        // without detach(), stdexec_backend would never run it at all and
+        // elections would never conclude.
+        .detach();
 }
 
 template<raft_types Types>
@@ -4276,7 +4330,7 @@ auto node<Types>::start_pre_vote() -> void {
         .max_attempts = 3};
 
     using tagged_pre_vote_t = std::pair<node_id_type, request_pre_vote_response_type>;
-    std::vector<kythira::Future<tagged_pre_vote_t>> pre_vote_futures;
+    std::vector<kythira::future_default<tagged_pre_vote_t>> pre_vote_futures;
     pre_vote_futures.reserve(peer_ids.size());
 
     for (const auto& peer_id : peer_ids) {
@@ -4289,27 +4343,28 @@ auto node<Types>::start_pre_vote() -> void {
             _request_pre_vote_error_handler
                 .execute_with_retry(
                     "request_pre_vote",
-                    [this, peer_id, pre_vote_request,
-                     stop_flag = _stop_flag]() -> kythira::Future<request_pre_vote_response_type> {
+                    [this, peer_id, pre_vote_request, stop_flag = _stop_flag]()
+                        -> kythira::future_default<request_pre_vote_response_type> {
                         if (stop_flag->load(std::memory_order_acquire)) {
-                            return kythira::FutureFactory::makeExceptionalFuture<
-                                request_pre_vote_response_type>(std::runtime_error("node stopped"));
+                            return kythira::future_factory_default::makeExceptionalFuture<
+                                request_pre_vote_response_type>(
+                                std::make_exception_ptr(std::runtime_error("node stopped")));
                         }
                         return _network_client.send_request_pre_vote(peer_id, pre_vote_request,
                                                                      _config.rpc_timeout());
                     },
                     pre_vote_retry_policy)
-                .thenTry(
-                    [peer_id, stop_flag = _stop_flag](
-                        kythira::Try<request_pre_vote_response_type> result) -> tagged_pre_vote_t {
-                        if (stop_flag->load(std::memory_order_acquire)) {
-                            throw std::runtime_error("node stopped");
-                        }
-                        if (result.hasException()) {
-                            std::rethrow_exception(result.exception());
-                        }
-                        return {peer_id, result.value()};
-                    });
+                .thenTry([peer_id, stop_flag = _stop_flag](
+                             kythira::try_default<request_pre_vote_response_type> result)
+                             -> tagged_pre_vote_t {
+                    if (stop_flag->load(std::memory_order_acquire)) {
+                        throw std::runtime_error("node stopped");
+                    }
+                    if (result.hasException()) {
+                        std::rethrow_exception(result.exception());
+                    }
+                    return {peer_id, result.value()};
+                });
 
         pre_vote_futures.push_back(std::move(tagged_future));
     }
@@ -4327,8 +4382,8 @@ auto node<Types>::start_pre_vote() -> void {
     raft_future_collector<tagged_pre_vote_t>::collect_all_with_timeout(std::move(pre_vote_futures),
                                                                        snapshot_election_timeout)
         .thenValue([this, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old = std::move(snap_c_old),
-                    stop_flag = _stop_flag](std::vector<kythira::Try<tagged_pre_vote_t>> results) {
+                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag](
+                       std::vector<kythira::try_default<tagged_pre_vote_t>> results) {
             if (stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
@@ -4397,7 +4452,11 @@ auto node<Types>::start_pre_vote() -> void {
                 _logger.debug("Unexpected error during pre-vote round",
                               {{"node_id", node_id_to_string(node_id)}});
             }
-        });
+        })
+        // detach() rather than a bare discard - see advertise_progress()'s
+        // call above for why. Mirrors start_election()'s own vote-outcome
+        // chain (see that function's detach() for the full rationale).
+        .detach();
 }
 
 template<raft_types Types>
@@ -4679,12 +4738,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
     try {
         // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-        auto rpc_operation = [this, target, request, timeout,
-                              stop_flag =
-                                  _stop_flag]() -> kythira::Future<append_entries_response_type> {
+        auto rpc_operation =
+            [this, target, request, timeout,
+             stop_flag = _stop_flag]() -> kythira::future_default<append_entries_response_type> {
             if (stop_flag->load(std::memory_order_acquire)) {
-                return kythira::FutureFactory::makeExceptionalFuture<append_entries_response_type>(
-                    std::runtime_error("node stopped"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    append_entries_response_type>(
+                    std::make_exception_ptr(std::runtime_error("node stopped")));
             }
             return _network_client.send_append_entries(target, request, timeout);
         };
@@ -4807,7 +4867,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
                     lock.unlock();
                     send_append_entries_to(target);
                 }
-            });
+            })
+            // detach() rather than a bare discard - see
+            // advertise_progress()'s call above for why. This is the
+            // AppendEntries response handler - without detach(),
+            // stdexec_backend would never advance next_index/match_index
+            // or the commit index at all.
+            .detach();
 
     } catch (const std::exception& e) {
         _logger.error("Exception sending AppendEntries", {{"node_id", node_id_to_string(_node_id)},
@@ -4889,8 +4955,9 @@ auto node<Types>::send_install_snapshot_to(node_id_type target) -> void {
 
         try {
             // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
-            auto rpc_operation = [this, target, request,
-                                  timeout]() -> kythira::Future<install_snapshot_response_type> {
+            auto rpc_operation =
+                [this, target, request,
+                 timeout]() -> kythira::future_default<install_snapshot_response_type> {
                 return _network_client.send_install_snapshot(target, request, timeout);
             };
 
@@ -5103,7 +5170,11 @@ auto node<Types>::maybe_gossip_progress() -> void {
                 this->_logger.debug("Failed to advertise progress via peer2peer_replicator",
                                     {{"node_id", node_id_to_string(this->_node_id)}});
             }
-        });
+        })
+        // detach() rather than a bare discard: under stdexec_backend a
+        // discarded Future never starts its composed continuation at all
+        // (lazy senders) - this thenTry callback would silently never run.
+        .detach();
 }
 
 template<raft_types Types>
@@ -5236,9 +5307,16 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                                 {{"node_id", node_id_to_string(this->_node_id)},
                                  {"source_peer", node_id_to_string(source.node_id)}});
                         }
-                    });
+                    })
+                    // detach() rather than a bare discard - see
+                    // advertise_progress()'s call above for why. This inner
+                    // chain is its own independent sender graph (the outer
+                    // thenTry's callback isn't itself Future-returning), so
+                    // it needs its own explicit detach() too.
+                    .detach();
             }
-        });
+        })
+        .detach();
 }
 
 template<raft_types Types>
@@ -6052,9 +6130,13 @@ auto node<Types>::handle_cluster_join(const cluster_join_request_type& req)
         // quorum-maintenance policy promotes it via promote_to_voter(). This avoids
         // the availability gap of a brand-new, empty node counting toward quorum
         // before it has replicated anything (.kiro/specs/non-voting-nodes/).
-        // We discard the future — the log-append side-effect already occurred.
-        auto fut = add_learner(req.joining_node_id());
-        (void)fut;
+        // We discard the future's *result* (the log-append side-effect
+        // already occurred) but still detach() it: under stdexec_backend
+        // an actually-discarded Future never starts its composed
+        // continuation chain at all (lazy senders) - detach() runs it to
+        // completion in the background instead. Folly/boost are eager and
+        // don't need this, but detach() is a portable no-op there too.
+        add_learner(req.joining_node_id()).detach();
         return cluster_join_response_type{true, std::nullopt};
     }
 
@@ -6077,9 +6159,10 @@ auto node<Types>::handle_cluster_leave(const cluster_leave_request_type& req)
     }
 
     if (is_leader_now) {
-        // Fire-and-forget: remove_server() acquires its own lock.
-        auto fut = remove_server(req.leaving_node_id());
-        (void)fut;
+        // Fire-and-forget: remove_server() acquires its own lock. detach()
+        // rather than a bare discard - see handle_cluster_join()'s
+        // add_learner() call above for why.
+        remove_server(req.leaving_node_id()).detach();
         return cluster_leave_response_type{true, std::nullopt};
     }
 

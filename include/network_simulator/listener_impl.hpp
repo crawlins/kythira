@@ -1,11 +1,7 @@
 #pragma once
 
 #include "listener.hpp"
-
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#include <folly/futures/Promise.h>
-#endif
+#include <raft/future_default.hpp>
 
 namespace network_simulator {
 
@@ -13,12 +9,7 @@ template<typename Types> auto Listener<Types>::accept() -> future_connection_typ
     std::unique_lock lock(_queue_mutex);
 
     if (!_listening.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            std::shared_ptr<connection_type>(nullptr));
-#else
-        return future_connection_type(nullptr);
-#endif
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<connection_type>{});
     }
 
     // If there's already a pending connection, return it immediately
@@ -26,11 +17,7 @@ template<typename Types> auto Listener<Types>::accept() -> future_connection_typ
         auto connection = _pending_connections.front();
         _pending_connections.pop();
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture(std::move(connection));
-#else
-        return future_connection_type(connection);
-#endif
+        return kythira::future_factory_default::makeFuture(connection);
     }
 
     // No pending connections - wait indefinitely using condition variable
@@ -39,33 +26,19 @@ template<typename Types> auto Listener<Types>::accept() -> future_connection_typ
 
     // Check if listener was closed while waiting
     if (!_listening.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            std::shared_ptr<connection_type>(nullptr));
-#else
-        return future_connection_type(nullptr);
-#endif
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<connection_type>{});
     }
 
     // Should have a connection now
     if (_pending_connections.empty()) {
         // This shouldn't happen, but handle it gracefully
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            std::shared_ptr<connection_type>(nullptr));
-#else
-        return future_connection_type(nullptr);
-#endif
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<connection_type>{});
     }
 
     auto connection = _pending_connections.front();
     _pending_connections.pop();
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture(std::move(connection));
-#else
-    return future_connection_type(connection);
-#endif
+    return kythira::future_factory_default::makeFuture(connection);
 }
 
 template<typename Types>
@@ -73,12 +46,7 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
     std::unique_lock lock(_queue_mutex);
 
     if (!_listening.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            std::shared_ptr<connection_type>(nullptr));
-#else
-        return future_connection_type(nullptr);
-#endif
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<connection_type>{});
     }
 
     // If there's already a pending connection, return it immediately
@@ -86,11 +54,7 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
         auto connection = _pending_connections.front();
         _pending_connections.pop();
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture(std::move(connection));
-#else
-        return future_connection_type(connection);
-#endif
+        return kythira::future_factory_default::makeFuture(connection);
     }
 
     // No pending connections - wait with timeout using condition variable
@@ -99,33 +63,20 @@ auto Listener<Types>::accept(std::chrono::milliseconds timeout) -> future_connec
 
     // Check if listener was closed while waiting
     if (!_listening.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            std::shared_ptr<connection_type>(nullptr));
-#else
-        return future_connection_type(nullptr);
-#endif
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<connection_type>{});
     }
 
     // Check if timeout occurred or no connection available
     if (!connection_available || _pending_connections.empty()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(TimeoutException()));
-#else
-        return future_connection_type(std::make_exception_ptr(TimeoutException()));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(std::make_exception_ptr(TimeoutException()));
     }
 
     // Get the connection
     auto connection = _pending_connections.front();
     _pending_connections.pop();
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture(std::move(connection));
-#else
-    return future_connection_type(connection);
-#endif
+    return kythira::future_factory_default::makeFuture(connection);
 }
 
 template<typename Types> auto Listener<Types>::close() -> void {

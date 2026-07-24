@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/types.hpp>
+#include <raft/future_default.hpp>
 #include <raft/coap_block_option.hpp>
 #include <raft/network.hpp>
 #include <raft/coap_exceptions.hpp>
@@ -158,12 +159,17 @@ struct simple_coap_transport_types {
     using logger_type = kythira::console_logger;
 };
 
-// Default transport types implementation (deprecated - use coap_transport_types instead)
-template<typename FutureType, typename RPC_Serializer, typename Metrics, typename Logger>
+// Default transport types implementation (deprecated - use coap_transport_types instead).
+// PromiseTemplate defaults to kythira::promise_default, matching every current caller's
+// FutureType (always kythira::future_default<...>) - callers instantiating this with a
+// non-kythira FutureType need to pass their own matching promise template explicitly.
+template<typename FutureType, typename RPC_Serializer, typename Metrics, typename Logger,
+         template<typename> class PromiseTemplate = kythira::promise_default>
 struct default_transport_types {
     template<typename T>
     using future_template = FutureType;  // Note: This assumes FutureType is a template-like wrapper
     using future_type = FutureType;
+    template<typename T> using promise_template = PromiseTemplate<T>;
     using serializer_type = RPC_Serializer;
     using metrics_type = Metrics;
     using logger_type = Logger;
@@ -343,6 +349,12 @@ requires kythira::transport_types<Types>
 class coap_client {
 public:
     template<typename T> using future_template = typename Types::template future_template<T>;
+    // Not required by kythira::transport_types (avoids a breaking change for
+    // existing Types implementations that don't need it) - only needed by
+    // coap_transport_impl.hpp's send_rpc() to construct a promise/future pair
+    // matching future_template<T>'s actual backend, instead of the
+    // hardcoded-Folly kythira::FutureFactory it used to fall back to.
+    template<typename T> using promise_template = typename Types::template promise_template<T>;
     using serializer_type = typename Types::serializer_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
@@ -554,6 +566,12 @@ requires kythira::transport_types<Types>
 class coap_server {
 public:
     template<typename T> using future_template = typename Types::template future_template<T>;
+    // Not required by kythira::transport_types (avoids a breaking change for
+    // existing Types implementations that don't need it) - only needed by
+    // coap_transport_impl.hpp's send_rpc() to construct a promise/future pair
+    // matching future_template<T>'s actual backend, instead of the
+    // hardcoded-Folly kythira::FutureFactory it used to fall back to.
+    template<typename T> using promise_template = typename Types::template promise_template<T>;
     using serializer_type = typename Types::serializer_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;

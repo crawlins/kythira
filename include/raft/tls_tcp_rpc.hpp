@@ -60,6 +60,7 @@
 #include <raft/ca_http_helpers.hpp>
 #include <raft/exceptions.hpp>
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
 #include <raft/tcp_rpc.hpp>
@@ -330,10 +331,10 @@ public:
 
     template<typename Resp, typename Deser>
     auto call(std::uint64_t target, const std::vector<std::byte>& payload,
-              std::chrono::milliseconds timeout, Deser deser) -> Future<Resp> {
+              std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
         auto peer = _peers.lookup(target);
         if (!peer) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
+            return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tls_tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
 
@@ -349,11 +350,11 @@ public:
             policy_snapshot = _config.trust_policy;
         }
         if (raw_ssl == nullptr) {
-            return FutureFactory::makeExceptionalFuture<Resp>(
+            return future_factory_default::makeExceptionalFuture<Resp>(
                 std::make_exception_ptr(network_exception("tls_tcp_rpc_client: SSL_new failed")));
         }
 
-        Promise<Resp> promise;
+        promise_default<Resp> promise;
         auto future = promise.getFuture();
 
         std::string host = peer->first;
@@ -668,7 +669,8 @@ public:
     }
 
     auto send_request_vote(std::uint64_t target, const request_vote_request<>& req,
-                           std::chrono::milliseconds timeout) -> Future<request_vote_response<>> {
+                           std::chrono::milliseconds timeout)
+        -> future_default<request_vote_response<>> {
         return _impl->call<request_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_vote_response(d);
@@ -678,7 +680,7 @@ public:
     // Satisfies kythira::network_client_with_pre_vote (include/raft/network.hpp).
     auto send_request_pre_vote(std::uint64_t target, const request_pre_vote_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> Future<request_pre_vote_response<>> {
+        -> future_default<request_pre_vote_response<>> {
         return _impl->call<request_pre_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_pre_vote_response(d);
@@ -687,7 +689,7 @@ public:
 
     auto send_append_entries(std::uint64_t target, const append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
-        -> Future<append_entries_response<>> {
+        -> future_default<append_entries_response<>> {
         return _impl->call<append_entries_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_append_entries_response(d);
@@ -696,7 +698,7 @@ public:
 
     auto send_install_snapshot(std::uint64_t target, const install_snapshot_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> Future<install_snapshot_response<>> {
+        -> future_default<install_snapshot_response<>> {
         return _impl->call<install_snapshot_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_install_snapshot_response(d);

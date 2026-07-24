@@ -1,6 +1,7 @@
 #pragma once
 
 #include "future.hpp"
+#include "future_default.hpp"
 #include "../raft/completion_exceptions.hpp"
 #include <vector>
 #include <chrono>
@@ -43,26 +44,27 @@ public:
      * @return Future containing vector of results from majority (may include failed responses)
      * @throws std::invalid_argument if futures vector is empty
      */
-    static auto collect_majority(std::vector<kythira::Future<T>> futures,
+    static auto collect_majority(std::vector<kythira::future_default<T>> futures,
                                  std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<T>> {
+        -> kythira::future_default<std::vector<T>> {
         if (futures.empty()) {
-            return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
-                kythira::future_collection_exception("collect_majority", 0));
+            return kythira::future_factory_default::makeExceptionalFuture<std::vector<T>>(
+                std::make_exception_ptr(
+                    kythira::future_collection_exception("collect_majority", 0)));
         }
 
         const std::size_t majority_count = (futures.size() / 2) + 1;
 
         // Add timeout to all futures
-        std::vector<kythira::Future<T>> timed_futures;
+        std::vector<kythira::future_default<T>> timed_futures;
         timed_futures.reserve(futures.size());
         for (auto& future : futures) {
             timed_futures.push_back(std::move(future).within(timeout));
         }
 
         // Collect all futures and then check if we have majority
-        return kythira::FutureCollector::collectAll(std::move(timed_futures))
-            .thenValue([majority_count](std::vector<kythira::Try<T>> results) {
+        return kythira::future_collector_default::collectAll(std::move(timed_futures))
+            .thenValue([majority_count](std::vector<kythira::try_default<T>> results) {
                 std::vector<T> completed_results;
                 completed_results.reserve(results.size());
                 std::size_t failed_count = 0;
@@ -112,21 +114,22 @@ public:
      * @param timeout Maximum time to wait for each future
      * @return Future containing vector of Try<T> results
      */
-    static auto collect_all_with_timeout(std::vector<kythira::Future<T>> futures,
+    static auto collect_all_with_timeout(std::vector<kythira::future_default<T>> futures,
                                          std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<kythira::Try<T>>> {
+        -> kythira::future_default<std::vector<kythira::try_default<T>>> {
         if (futures.empty()) {
-            return kythira::FutureFactory::makeFuture(std::vector<kythira::Try<T>>{});
+            return kythira::future_factory_default::makeFuture(
+                std::vector<kythira::try_default<T>>{});
         }
 
         // Add timeout to all futures
-        std::vector<kythira::Future<T>> timed_futures;
+        std::vector<kythira::future_default<T>> timed_futures;
         timed_futures.reserve(futures.size());
         for (auto& future : futures) {
             timed_futures.push_back(std::move(future).within(timeout));
         }
 
-        return kythira::FutureCollector::collectAll(std::move(timed_futures));
+        return kythira::future_collector_default::collectAll(std::move(timed_futures));
     }
 
     /**
@@ -164,16 +167,17 @@ public:
      * results, or a future_collection_exception if that count becomes
      * unreachable
      */
-    static auto collect_n_successes_with_timeout(std::vector<kythira::Future<T>> futures,
+    static auto collect_n_successes_with_timeout(std::vector<kythira::future_default<T>> futures,
                                                  std::size_t required_successes,
                                                  std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<T>> {
+        -> kythira::future_default<std::vector<T>> {
         if (required_successes == 0) {
-            return kythira::FutureFactory::makeFuture(std::vector<T>{});
+            return kythira::future_factory_default::makeFuture(std::vector<T>{});
         }
         if (futures.empty() || required_successes > futures.size()) {
-            return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
-                kythira::future_collection_exception("collect_n_successes_with_timeout", 0));
+            return kythira::future_factory_default::makeExceptionalFuture<std::vector<T>>(
+                std::make_exception_ptr(
+                    kythira::future_collection_exception("collect_n_successes_with_timeout", 0)));
         }
 
         struct shared_state {
@@ -181,49 +185,52 @@ public:
             std::vector<T> successes;
             std::size_t remaining;
             bool settled{false};
-            kythira::Promise<std::vector<T>> promise;
+            kythira::promise_default<std::vector<T>> promise;
         };
         auto state = std::make_shared<shared_state>();
         state->remaining = futures.size();
         auto result_future = state->promise.getFuture();
 
         for (auto& f : futures) {
-            std::move(f).within(timeout).thenTry([state,
-                                                  required_successes](kythira::Try<T> result) {
-                bool fulfill_success = false;
-                bool fulfill_failure = false;
-                std::vector<T> successes_copy;
-                {
-                    std::lock_guard<std::mutex> lock(state->mu);
-                    if (state->settled) {
-                        return;
+            std::move(f)
+                .within(timeout)
+                .thenTry([state, required_successes](kythira::try_default<T> result) {
+                    bool fulfill_success = false;
+                    bool fulfill_failure = false;
+                    std::vector<T> successes_copy;
+                    {
+                        std::lock_guard<std::mutex> lock(state->mu);
+                        if (state->settled) {
+                            return;
+                        }
+                        state->remaining--;
+                        if (result.hasValue()) {
+                            state->successes.push_back(std::move(result).value());
+                        }
+                        if (state->successes.size() >= required_successes) {
+                            state->settled = true;
+                            fulfill_success = true;
+                            successes_copy = state->successes;
+                        } else if (state->successes.size() + state->remaining <
+                                   required_successes) {
+                            state->settled = true;
+                            fulfill_failure = true;
+                        }
                     }
-                    state->remaining--;
-                    if (result.hasValue()) {
-                        state->successes.push_back(std::move(result).value());
+                    // setValue/setException run outside the lock - state->mu
+                    // only needs to protect the shared counters/vector above,
+                    // and `settled` (checked-then-set under the lock before
+                    // either branch runs) guarantees exactly one of these
+                    // fires across every future's callback.
+                    if (fulfill_success) {
+                        state->promise.setValue(std::move(successes_copy));
+                    } else if (fulfill_failure) {
+                        state->promise.setException(
+                            std::make_exception_ptr(kythira::future_collection_exception(
+                                "collect_n_successes_with_timeout", 0)));
                     }
-                    if (state->successes.size() >= required_successes) {
-                        state->settled = true;
-                        fulfill_success = true;
-                        successes_copy = state->successes;
-                    } else if (state->successes.size() + state->remaining < required_successes) {
-                        state->settled = true;
-                        fulfill_failure = true;
-                    }
-                }
-                // setValue/setException run outside the lock - state->mu
-                // only needs to protect the shared counters/vector above,
-                // and `settled` (checked-then-set under the lock before
-                // either branch runs) guarantees exactly one of these
-                // fires across every future's callback.
-                if (fulfill_success) {
-                    state->promise.setValue(std::move(successes_copy));
-                } else if (fulfill_failure) {
-                    state->promise.setException(
-                        std::make_exception_ptr(kythira::future_collection_exception(
-                            "collect_n_successes_with_timeout", 0)));
-                }
-            });
+                })
+                .detach();
         }
         return result_future;
     }
@@ -237,26 +244,29 @@ public:
      * @param timeout Maximum time to wait for any future
      * @return Future containing tuple of index and result from first completed future
      */
-    static auto collect_any_with_timeout(std::vector<kythira::Future<T>> futures,
+    static auto collect_any_with_timeout(std::vector<kythira::future_default<T>> futures,
                                          std::chrono::milliseconds timeout)
-        -> kythira::Future<std::tuple<std::size_t, T>> {
+        -> kythira::future_default<std::tuple<std::size_t, T>> {
         if (futures.empty()) {
-            return kythira::FutureFactory::makeExceptionalFuture<std::tuple<std::size_t, T>>(
-                kythira::future_collection_exception("collect_any_with_timeout", 0));
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::tuple<std::size_t, T>>(std::make_exception_ptr(
+                kythira::future_collection_exception("collect_any_with_timeout", 0)));
         }
 
         // Add timeout to all futures
-        std::vector<kythira::Future<T>> timed_futures;
+        std::vector<kythira::future_default<T>> timed_futures;
         timed_futures.reserve(futures.size());
         for (auto& future : futures) {
             timed_futures.push_back(std::move(future).within(timeout));
         }
 
         if constexpr (std::is_void_v<T>) {
-            return kythira::FutureCollector::collectAnyWithoutException(std::move(timed_futures))
+            return kythira::future_collector_default::collectAnyWithoutException(
+                       std::move(timed_futures))
                 .thenValue([](std::size_t index) { return std::make_tuple(index, T{}); });
         } else {
-            return kythira::FutureCollector::collectAnyWithoutException(std::move(timed_futures));
+            return kythira::future_collector_default::collectAnyWithoutException(
+                std::move(timed_futures));
         }
     }
 
@@ -268,7 +278,7 @@ public:
      *
      * @param futures Vector of futures to cancel
      */
-    static auto cancel_collection(std::vector<kythira::Future<T>>& futures) -> void {
+    static auto cancel_collection(std::vector<kythira::future_default<T>>& futures) -> void {
         // Note: folly::Future doesn't have direct cancellation support
         // This method is provided for interface completeness and future extensibility
         // In practice, cancellation is typically handled by the underlying operations
@@ -296,14 +306,14 @@ public:
         count      // Wait for specific count of futures
     };
 
-    static auto collect_with_strategy(std::vector<kythira::Future<T>> futures,
+    static auto collect_with_strategy(std::vector<kythira::future_default<T>> futures,
                                       collection_strategy strategy,
                                       std::chrono::milliseconds timeout, std::size_t count = 0)
-        -> kythira::Future<std::vector<T>> {
+        -> kythira::future_default<std::vector<T>> {
         switch (strategy) {
             case collection_strategy::all:
                 return collect_all_with_timeout(std::move(futures), timeout)
-                    .thenValue([](std::vector<kythira::Try<T>> results) {
+                    .thenValue([](std::vector<kythira::try_default<T>> results) {
                         std::vector<T> successful_results;
                         for (auto& try_result : results) {
                             if (try_result.hasValue()) {
@@ -333,34 +343,37 @@ public:
 
             case collection_strategy::count: {
                 if (count == 0 || count > futures.size()) {
-                    return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
-                        kythira::future_collection_exception("collect_with_strategy", 0));
+                    return kythira::future_factory_default::makeExceptionalFuture<std::vector<T>>(
+                        std::make_exception_ptr(
+                            kythira::future_collection_exception("collect_with_strategy", 0)));
                 }
 
                 // Add timeout to all futures
-                std::vector<kythira::Future<T>> timed_futures;
+                std::vector<kythira::future_default<T>> timed_futures;
                 timed_futures.reserve(futures.size());
                 for (auto& future : futures) {
                     timed_futures.push_back(std::move(future).within(timeout));
                 }
 
-                return kythira::FutureCollector::collectN(std::move(timed_futures), count)
-                    .thenValue([](std::vector<std::tuple<std::size_t, kythira::Try<T>>> results) {
-                        std::vector<T> successful_results;
-                        for (auto& [index, try_result] : results) {
-                            if (try_result.hasValue()) {
-                                if constexpr (!std::is_void_v<T>) {
-                                    successful_results.push_back(std::move(try_result.value()));
+                return kythira::future_collector_default::collectN(std::move(timed_futures), count)
+                    .thenValue(
+                        [](std::vector<std::tuple<std::size_t, kythira::try_default<T>>> results) {
+                            std::vector<T> successful_results;
+                            for (auto& [index, try_result] : results) {
+                                if (try_result.hasValue()) {
+                                    if constexpr (!std::is_void_v<T>) {
+                                        successful_results.push_back(std::move(try_result.value()));
+                                    }
                                 }
                             }
-                        }
-                        return successful_results;
-                    });
+                            return successful_results;
+                        });
             }
 
             default:
-                return kythira::FutureFactory::makeExceptionalFuture<std::vector<T>>(
-                    kythira::future_collection_exception("collect_with_strategy", 0));
+                return kythira::future_factory_default::makeExceptionalFuture<std::vector<T>>(
+                    std::make_exception_ptr(
+                        kythira::future_collection_exception("collect_with_strategy", 0)));
         }
     }
 };

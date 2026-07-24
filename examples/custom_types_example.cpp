@@ -11,6 +11,7 @@
 
 #include <network_simulator/network_simulator.hpp>
 #include <network_simulator/node.hpp>
+#include <raft/future_default.hpp>
 #include <network_simulator/connection.hpp>
 #include <network_simulator/listener.hpp>
 #include <network_simulator/types.hpp>
@@ -45,11 +46,11 @@ struct CustomNetworkTypes {
     using node_type = NetworkNode<CustomNetworkTypes>;
 
     // Future types - using kythira::Future
-    using future_bool_type = kythira::Future<bool>;
-    using future_message_type = kythira::Future<message_type>;
-    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
-    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
-    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
+    using future_bool_type = kythira::future_default<bool>;
+    using future_message_type = kythira::future_default<message_type>;
+    using future_connection_type = kythira::future_default<std::shared_ptr<connection_type>>;
+    using future_listener_type = kythira::future_default<std::shared_ptr<listener_type>>;
+    using future_bytes_type = kythira::future_default<std::vector<std::byte>>;
 };
 
 // Verify that our custom types satisfy the concept at compile time

@@ -34,9 +34,9 @@ constexpr std::chrono::milliseconds heartbeat_interval{50};
 // Define custom raft types for simulator-based examples
 struct simulator_raft_types {
     // Future types
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // Basic data types
     using node_id_type = std::uint64_t;

@@ -2,6 +2,7 @@
 
 #include <raft/fault_injection.hpp>
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/network.hpp>
 #include <raft/types.hpp>
 #include <raft/exceptions.hpp>
@@ -38,11 +39,11 @@ template<typename AddressType> struct raft_simulator_network_types {
     using node_type = network_simulator::NetworkNode<raft_simulator_network_types>;
 
     // Future types - each operation has its own specific future type
-    using future_bool_type = kythira::Future<bool>;
-    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
-    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
-    using future_message_type = kythira::Future<message_type>;
-    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
+    using future_bool_type = kythira::future_default<bool>;
+    using future_bytes_type = kythira::future_default<std::vector<std::byte>>;
+    using future_connection_type = kythira::future_default<std::shared_ptr<connection_type>>;
+    using future_message_type = kythira::future_default<message_type>;
+    using future_listener_type = kythira::future_default<std::shared_ptr<listener_type>>;
 };
 
 // Simulator network client implementation
@@ -65,11 +66,11 @@ public:
     // Send RequestVote RPC - returns Future<request_vote_response<>>
     auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& req,
                            std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::request_vote_response<>> {
-        fiu_do_on(
-            "raft/network/send_request_vote",
-            return kythira::FutureFactory::makeExceptionalFuture<kythira::request_vote_response<>>(
-                std::make_exception_ptr(kythira::network_exception("chaos: send_request_vote"))););
+        -> kythira::future_default<kythira::request_vote_response<>> {
+        fiu_do_on("raft/network/send_request_vote",
+                  return kythira::future_factory_default::makeExceptionalFuture<
+                      kythira::request_vote_response<>>(std::make_exception_ptr(
+                      kythira::network_exception("chaos: send_request_vote"))););
         // Serialize the request
         auto data = _serializer.serialize(req);
 
@@ -118,9 +119,9 @@ public:
     // (include/raft/network.hpp).
     auto send_request_pre_vote(std::uint64_t target, const kythira::request_pre_vote_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::request_pre_vote_response<>> {
+        -> kythira::future_default<kythira::request_pre_vote_response<>> {
         fiu_do_on("raft/network/send_request_pre_vote",
-                  return kythira::FutureFactory::makeExceptionalFuture<
+                  return kythira::future_factory_default::makeExceptionalFuture<
                       kythira::request_pre_vote_response<>>(std::make_exception_ptr(
                       kythira::network_exception("chaos: send_request_pre_vote"))););
         // Serialize the request
@@ -170,9 +171,9 @@ public:
     // Send AppendEntries RPC - returns Future<append_entries_response<>>
     auto send_append_entries(std::uint64_t target, const kythira::append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::append_entries_response<>> {
+        -> kythira::future_default<kythira::append_entries_response<>> {
         fiu_do_on("raft/network/send_append_entries",
-                  return kythira::FutureFactory::makeExceptionalFuture<
+                  return kythira::future_factory_default::makeExceptionalFuture<
                       kythira::append_entries_response<>>(std::make_exception_ptr(
                       kythira::network_exception("chaos: send_append_entries"))););
         // Serialize the request
@@ -221,9 +222,9 @@ public:
     // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
     auto send_install_snapshot(std::uint64_t target, const kythira::install_snapshot_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::install_snapshot_response<>> {
+        -> kythira::future_default<kythira::install_snapshot_response<>> {
         fiu_do_on("raft/network/send_install_snapshot",
-                  return kythira::FutureFactory::makeExceptionalFuture<
+                  return kythira::future_factory_default::makeExceptionalFuture<
                       kythira::install_snapshot_response<>>(std::make_exception_ptr(
                       kythira::network_exception("chaos: send_install_snapshot"))););
         // Serialize the request
@@ -273,7 +274,7 @@ public:
     auto send_cluster_join_request(const address_type& target,
                                    const kythira::cluster_join_request<>& req,
                                    std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::cluster_join_response<>> {
+        -> kythira::future_default<kythira::cluster_join_response<>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
@@ -303,7 +304,7 @@ public:
     auto send_cluster_leave_request(const address_type& target,
                                     const kythira::cluster_leave_request<>& req,
                                     std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::cluster_leave_response<>> {
+        -> kythira::future_default<kythira::cluster_leave_response<>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 
@@ -335,7 +336,7 @@ public:
     auto send_fetch_log_entries(std::uint64_t target,
                                 const kythira::fetch_log_entries_request<>& req,
                                 std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::fetch_log_entries_response<>> {
+        -> kythira::future_default<kythira::fetch_log_entries_response<>> {
         auto data = _serializer.serialize(req);
         std::vector<std::byte> payload(data.begin(), data.end());
 

@@ -43,7 +43,11 @@ concept port = requires(T p, T q) {
     { std::hash<T>{}(p) } -> std::convertible_to<std::size_t>;
 };
 
-// Future Concept - matches kythira::Future API
+// Future Concept - matches the generic kythira future surface (thenValue/
+// thenError), not Folly's legacy then()/onError() aliases - those don't
+// exist on the stdexec/boost backends (see .kiro/specs/stdexec-future-backend/,
+// .kiro/specs/boost-future-backend/), and kythira::future_default<T> may
+// resolve to either depending on KYTHIRA_DEFAULT_FUTURE_BACKEND.
 template<typename F, typename T>
 concept future =
     requires(F f, const F cf) {
@@ -53,9 +57,9 @@ concept future =
         // Must support timeout
         { f.wait(std::chrono::milliseconds{100}) } -> std::convertible_to<bool>;
 
-        // Must support error handling (legacy method name for compatibility)
+        // Must support error handling
         {
-            f.onError([](const std::exception_ptr&) {})
+            f.thenError([](std::exception_ptr) {})
         };
     } &&
     (
@@ -63,13 +67,13 @@ concept future =
         std::is_void_v<T> ? requires(F f) {
             { std::move(f).get() } -> std::same_as<void>;
             {
-                f.then([]() {})
+                f.thenValue([]() {})
             };
         } : requires(F f) {
             // Handle non-void case - get() returns T
             { std::move(f).get() } -> std::same_as<T>;
             {
-                f.then([](T val) { return val; })
+                f.thenValue([](T val) { return val; })
             };
         });
 

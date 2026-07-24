@@ -1,10 +1,7 @@
 #pragma once
 
 #include "connection.hpp"
-
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#endif
+#include <raft/future_default.hpp>
 
 namespace network_simulator {
 
@@ -12,23 +9,15 @@ template<typename Types> auto Connection<Types>::read() -> future_bytes_type {
     std::unique_lock lock(_buffer_mutex);
 
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::vector<std::byte>>(
-            folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bytes_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // If data is immediately available, return it
     if (!_read_buffer.empty()) {
         auto data = _read_buffer.front();
         _read_buffer.pop();
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture(std::move(data));
-#else
-        return future_bytes_type(std::move(data));
-#endif
+        return kythira::future_factory_default::makeFuture(std::move(data));
     }
 
     // No data available - wait indefinitely for data to arrive
@@ -36,31 +25,19 @@ template<typename Types> auto Connection<Types>::read() -> future_bytes_type {
 
     // Check if connection was closed while waiting
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::vector<std::byte>>(
-            folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bytes_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // Should have data now
     if (_read_buffer.empty()) {
         // This shouldn't happen, but handle it gracefully
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture(std::vector<std::byte>{});
-#else
-        return future_bytes_type(std::vector<std::byte>{});
-#endif
+        return kythira::future_factory_default::makeFuture(std::vector<std::byte>{});
     }
 
     auto data = _read_buffer.front();
     _read_buffer.pop();
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture(std::move(data));
-#else
-    return future_bytes_type(std::move(data));
-#endif
+    return kythira::future_factory_default::makeFuture(std::move(data));
 }
 
 template<typename Types>
@@ -68,12 +45,8 @@ auto Connection<Types>::read(std::chrono::milliseconds timeout) -> future_bytes_
     std::unique_lock lock(_buffer_mutex);
 
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::vector<std::byte>>(
-            folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bytes_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // Wait for data to become available with timeout
@@ -82,41 +55,26 @@ auto Connection<Types>::read(std::chrono::milliseconds timeout) -> future_bytes_
 
     // Check if connection was closed while waiting
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::vector<std::byte>>(
-            folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bytes_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // Check if timeout occurred
     if (!data_available || _read_buffer.empty()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::vector<std::byte>>(
-            folly::exception_wrapper(TimeoutException{}));
-#else
-        return future_bytes_type(std::make_exception_ptr(TimeoutException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<std::vector<std::byte>>(
+            std::make_exception_ptr(TimeoutException{}));
     }
 
     auto data = _read_buffer.front();
     _read_buffer.pop();
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture(std::move(data));
-#else
-    return future_bytes_type(std::move(data));
-#endif
+    return kythira::future_factory_default::makeFuture(std::move(data));
 }
 
 template<typename Types>
 auto Connection<Types>::write(std::vector<std::byte> data) -> future_bool_type {
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bool_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<bool>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // Route data through simulator using connection ID
@@ -127,11 +85,8 @@ template<typename Types>
 auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::milliseconds timeout)
     -> future_bool_type {
     if (!_open.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(folly::exception_wrapper(ConnectionClosedException{}));
-#else
-        return future_bool_type(std::make_exception_ptr(ConnectionClosedException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<bool>(
+            std::make_exception_ptr(ConnectionClosedException{}));
     }
 
     // For timeout version, we simulate timeout behavior by checking latency
@@ -142,19 +97,13 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
 
             // If the write latency is greater than timeout, throw TimeoutException
             if (write_latency > timeout) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-                return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
-#else
-                return future_bool_type(std::make_exception_ptr(TimeoutException{}));
-#endif
+                return kythira::future_factory_default::makeExceptionalFuture<bool>(
+                    std::make_exception_ptr(TimeoutException{}));
             }
         } catch (const NoRouteException&) {
             // No route exists, write would timeout
-#ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
-#else
-            return future_bool_type(std::make_exception_ptr(TimeoutException{}));
-#endif
+            return kythira::future_factory_default::makeExceptionalFuture<bool>(
+                std::make_exception_ptr(TimeoutException{}));
         }
     }
 
@@ -164,11 +113,8 @@ auto Connection<Types>::write(std::vector<std::byte> data, std::chrono::millisec
     // For very short timeouts, we might want to simulate timeout behavior
     if (timeout < std::chrono::milliseconds(10)) {
         // Very short timeout - simulate timeout for testing
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(folly::exception_wrapper(TimeoutException{}));
-#else
-        return future_bool_type(std::make_exception_ptr(TimeoutException{}));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<bool>(
+            std::make_exception_ptr(TimeoutException{}));
     }
 
     return future;

@@ -17,17 +17,17 @@ concept network_client =
         // Send RequestVote RPC - returns Future<request_vote_response<>>
         {
             client.send_request_vote(target, rvr, timeout)
-        } -> std::same_as<kythira::Future<kythira::request_vote_response<>>>;
+        } -> kythira::future<kythira::request_vote_response<>>;
 
         // Send AppendEntries RPC - returns Future<append_entries_response<>>
         {
             client.send_append_entries(target, aer, timeout)
-        } -> std::same_as<kythira::Future<kythira::append_entries_response<>>>;
+        } -> kythira::future<kythira::append_entries_response<>>;
 
         // Send InstallSnapshot RPC - returns Future<install_snapshot_response<>>
         {
             client.send_install_snapshot(target, isr, timeout)
-        } -> std::same_as<kythira::Future<kythira::install_snapshot_response<>>>;
+        } -> kythira::future<kythira::install_snapshot_response<>>;
     };
 
 // Network server concept - defines interface for receiving RPC requests
@@ -65,7 +65,7 @@ concept network_client_with_cluster_join =
              std::chrono::milliseconds timeout) {
         {
             client.send_cluster_join_request(addr, req, timeout)
-        } -> std::same_as<kythira::Future<kythira::cluster_join_response<>>>;
+        } -> kythira::future<kythira::cluster_join_response<>>;
     };
 
 // Satisfied by a network_server that can register a ClusterJoin handler.
@@ -84,7 +84,7 @@ concept network_client_with_cluster_leave =
              std::chrono::milliseconds timeout) {
         {
             client.send_cluster_leave_request(addr, req, timeout)
-        } -> std::same_as<kythira::Future<kythira::cluster_leave_response<>>>;
+        } -> kythira::future<kythira::cluster_leave_response<>>;
     };
 
 // Satisfied by a network_server that can register a ClusterLeave handler.
@@ -113,7 +113,7 @@ concept network_client_with_pre_vote =
              std::chrono::milliseconds timeout) {
         {
             client.send_request_pre_vote(target, pvr, timeout)
-        } -> std::same_as<kythira::Future<kythira::request_pre_vote_response<>>>;
+        } -> kythira::future<kythira::request_pre_vote_response<>>;
     };
 
 // Satisfied by a network_server that can register a RequestPreVote handler.
@@ -139,7 +139,7 @@ concept network_client_with_log_fetch =
              std::chrono::milliseconds timeout) {
         {
             client.send_fetch_log_entries(target, req, timeout)
-        } -> std::same_as<kythira::Future<kythira::fetch_log_entries_response<>>>;
+        } -> kythira::future<kythira::fetch_log_entries_response<>>;
     };
 
 // Satisfied by a network_server that can register a fetch_log_entries handler.

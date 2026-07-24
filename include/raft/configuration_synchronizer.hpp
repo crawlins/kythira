@@ -27,12 +27,12 @@ namespace kythira {
  * Raft safety properties.
  */
 template<typename NodeId = std::uint64_t, typename LogIndex = std::uint64_t,
-         typename FutureType = kythira::Future<bool>>
+         typename FutureType = kythira::Future<bool>, typename PromiseType = kythira::Promise<bool>>
 requires kythira::node_id<NodeId> && kythira::log_index<LogIndex>
 class configuration_synchronizer {
 public:
     using future_type = FutureType;
-    using promise_type = kythira::Promise<bool>;
+    using promise_type = PromiseType;
     using node_id_t = NodeId;
     using log_index_t = LogIndex;
 
@@ -79,9 +79,16 @@ public:
         std::lock_guard<std::mutex> lock(_mutex);
 
         if (_current_phase != config_change_phase::none) {
-            return kythira::FutureFactory::makeExceptionalFuture<bool>(
-                std::make_exception_ptr(configuration_change_exception(
-                    "start", "Configuration change already in progress")));
+            // Built via promise_type directly (not a FutureFactory type) so
+            // this class needs only future_type/promise_type as template
+            // parameters, not a third backend-specific factory type - the
+            // success path below already goes through promise_type the
+            // same way.
+            promise_type failure_promise;
+            auto failure_future = failure_promise.getFuture();
+            failure_promise.setException(std::make_exception_ptr(configuration_change_exception(
+                "start", "Configuration change already in progress")));
+            return failure_future;
         }
 
         _target_configuration = new_config;
@@ -156,7 +163,8 @@ public:
             std::string phase_name = (_current_phase == config_change_phase::joint_consensus)
                                          ? "joint_consensus"
                                          : "final_configuration";
-            _change_promise->setException(configuration_change_exception(phase_name, reason));
+            _change_promise->setException(
+                std::make_exception_ptr(configuration_change_exception(phase_name, reason)));
         }
 
         reset_state();
@@ -215,8 +223,8 @@ public:
                 std::string phase_name = (_current_phase == config_change_phase::joint_consensus)
                                              ? "joint_consensus"
                                              : "final_configuration";
-                _change_promise->setException(
-                    configuration_change_exception(phase_name, "Configuration change timed out"));
+                _change_promise->setException(std::make_exception_ptr(
+                    configuration_change_exception(phase_name, "Configuration change timed out")));
             }
 
             reset_state();

@@ -1,8 +1,8 @@
 #pragma once
 
 #include "future.hpp"
+#include "future_default.hpp"
 #include "types.hpp"
-#include <folly/Unit.h>
 #include <algorithm>
 #include <chrono>
 #include <functional>
@@ -165,7 +165,7 @@ public:
      * retry policy for the operation type. Handles errors according to their
      * classification and applies exponential backoff with jitter.
      *
-     * @tparam Operation Function type that returns kythira::Future<Result>
+     * @tparam Operation Function type that returns kythira::future_default<Result>
      * @param operation_name Name of the operation for policy lookup and logging
      * @param op Operation function to execute
      * @param custom_policy Optional custom retry policy (overrides configured policy)
@@ -174,12 +174,13 @@ public:
     template<typename Operation>
     auto execute_with_retry(const std::string& operation_name, Operation&& op,
                             const std::optional<retry_policy>& custom_policy = std::nullopt)
-        -> kythira::Future<Result> {
+        -> kythira::future_default<Result> {
         const auto& policy = custom_policy.value_or(get_retry_policy(operation_name));
 
         if (!policy.is_valid()) {
-            return kythira::FutureFactory::makeExceptionalFuture<Result>(
-                std::invalid_argument("Invalid retry policy for operation: " + operation_name));
+            return kythira::future_factory_default::makeExceptionalFuture<Result>(
+                std::make_exception_ptr(std::invalid_argument(
+                    "Invalid retry policy for operation: " + operation_name)));
         }
 
         return execute_with_retry_impl(operation_name, std::forward<Operation>(op), policy, 1);
@@ -500,14 +501,15 @@ private:
     template<typename Operation>
     auto execute_with_retry_impl(const std::string& operation_name, Operation&& op,
                                  const retry_policy& policy, std::size_t attempt)
-        -> kythira::Future<Result> {
+        -> kythira::future_default<Result> {
         return std::forward<Operation>(op)().thenTry([this, operation_name,
                                                       op = std::forward<Operation>(op), policy,
-                                                      attempt](kythira::Try<Result> result) mutable
-                                                         -> kythira::Future<Result> {
+                                                      attempt](kythira::try_default<Result>
+                                                                   result) mutable
+                                                         -> kythira::future_default<Result> {
             // If successful, return the result
             if (result.hasValue()) {
-                return kythira::FutureFactory::makeFuture(std::move(result).value());
+                return kythira::future_factory_default::makeFuture(std::move(result).value());
             }
 
             // Handle error case
@@ -529,13 +531,13 @@ private:
                               << operation_name
                               << "' - not retrying (likely a bug). Error: " << e.what()
                               << std::endl;
-                    return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
+                    return kythira::future_factory_default::makeExceptionalFuture<Result>(eptr);
                 }
 
                 // If we shouldn't retry this error type, or we've exhausted attempts, propagate
                 // error
                 if (!classification.should_retry || attempt >= policy.max_attempts) {
-                    return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
+                    return kythira::future_factory_default::makeExceptionalFuture<Result>(eptr);
                 }
 
                 // Determine retry strategy based on timeout classification
@@ -578,7 +580,8 @@ private:
 
                         case timeout_type::serialization_timeout:
                             // Serialization timeout: Don't retry (handled above)
-                            return kythira::FutureFactory::makeExceptionalFuture<Result>(eptr);
+                            return kythira::future_factory_default::makeExceptionalFuture<Result>(
+                                eptr);
 
                         case timeout_type::unknown_timeout:
                         default:
@@ -603,10 +606,10 @@ private:
                           << ". Error: " << classification.description << std::endl;
 
                 // Apply async delay and retry - no thread blocking!
-                return kythira::FutureFactory::makeFuture(folly::Unit{})
-                    .delay(delay)
-                    .thenTry([this, operation_name, op = std::move(op), policy, attempt](
-                                 const kythira::Try<void>&) mutable -> kythira::Future<Result> {
+                return kythira::future_factory_default::makeFuture().delay(delay).thenTry(
+                    [this, operation_name, op = std::move(op), policy,
+                     attempt](const kythira::try_default<void>&) mutable
+                        -> kythira::future_default<Result> {
                         // Retry by calling execute_with_retry_impl recursively
                         // This returns a Future, which will be automatically flattened
                         return execute_with_retry_impl(operation_name, std::move(op), policy,
@@ -614,13 +617,13 @@ private:
                     });
             } catch (...) {
                 // Unknown exception type, don't retry - propagate error
-                return kythira::FutureFactory::makeExceptionalFuture<Result>(
+                return kythira::future_factory_default::makeExceptionalFuture<Result>(
                     std::current_exception());
             }
 
             // Should never reach here
-            return kythira::FutureFactory::makeExceptionalFuture<Result>(
-                std::runtime_error("Unexpected error in retry logic"));
+            return kythira::future_factory_default::makeExceptionalFuture<Result>(
+                std::make_exception_ptr(std::runtime_error("Unexpected error in retry logic")));
         });
     }
 
