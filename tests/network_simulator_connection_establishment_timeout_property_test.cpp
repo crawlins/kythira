@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
                 // Try to connect with a timeout shorter than the network latency
                 // This should timeout because no listener is bound
                 auto conn_future = client->connect(server_addr, server_port, short_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 // If we get here, the connection succeeded when it should have timed out
                 ++failures;
@@ -147,7 +147,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
             auto server_port = static_cast<unsigned short>(base_port + 2);
             // Bind a listener on the server
             auto listener_future = server->bind(server_port);
-            auto listener = listener_future.get();
+            auto listener = std::move(listener_future).get();
 
             BOOST_REQUIRE(listener);
             BOOST_REQUIRE(listener->is_listening());
@@ -157,7 +157,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
             try {
                 // Try to connect with a timeout longer than the network latency
                 auto conn_future = client->connect(server_addr, server_port, long_timeout);
-                auto conn = conn_future.get();
+                auto conn = std::move(conn_future).get();
 
                 auto elapsed = std::chrono::steady_clock::now() - start_time;
 
@@ -203,7 +203,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
             auto server_port = static_cast<unsigned short>(base_port + 3);
             // Bind a listener on the server
             auto listener_future = server->bind(server_port);
-            auto listener = listener_future.get();
+            auto listener = std::move(listener_future).get();
 
             BOOST_REQUIRE(listener);
             BOOST_REQUIRE(listener->is_listening());
@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE(property_connection_establishment_timeout_handling,
                     try {
                         auto timeout = (j == 0) ? short_timeout : long_timeout;
                         auto conn_future = client->connect(server_addr, server_port, timeout);
-                        auto conn = conn_future.get();
+                        auto conn = std::move(conn_future).get();
 
                         if (conn && conn->is_open()) {
                             ++concurrent_successes;

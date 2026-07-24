@@ -39,7 +39,7 @@ BOOST_AUTO_TEST_CASE(network_node_receive_timeout_property_test, *boost::unit_te
         auto receive_future = node_b->receive(short_timeout);
 
         try {
-            auto received_msg = receive_future.get();
+            auto received_msg = std::move(receive_future).get();
 
             // Property: When no messages are available and timeout occurs,
             // the behavior should be consistent (either empty message or exception)

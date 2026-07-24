@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftFailedReadRejectionPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -70,8 +71,8 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
             // Scenario 1: Insufficient successful responses (network failures)
             BOOST_TEST_MESSAGE("Testing scenario: Insufficient successful responses");
 
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 heartbeat_futures;
             heartbeat_futures.reserve(follower_count);
 
@@ -92,7 +93,7 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
                     // Create successful response
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, true, i};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else {
@@ -101,14 +102,14 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
                         // Failed response (network issue)
                         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                             current_term, false, 0};
-                        auto future = kythira::FutureFactory::makeFuture(response).delay(
+                        auto future = kythira::future_factory_default::makeFuture(response).delay(
                             std::chrono::milliseconds(delay_ms));
                         heartbeat_futures.push_back(std::move(future));
                     } else {
                         // Timeout simulation
-                        auto future = kythira::FutureFactory::makeExceptionalFuture<
+                        auto future = kythira::future_factory_default::makeExceptionalFuture<
                             kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                            std::runtime_error("Heartbeat timeout"));
+                            std::make_exception_ptr(std::runtime_error("Heartbeat timeout")));
                         heartbeat_futures.push_back(std::move(future));
                     }
                 }
@@ -154,16 +155,16 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
             // Scenario 2: All timeout responses
             BOOST_TEST_MESSAGE("Testing scenario: All timeout responses");
 
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 timeout_futures;
             timeout_futures.reserve(follower_count);
 
             for (std::size_t i = 0; i < follower_count; ++i) {
                 // Create timeout simulation
-                auto future = kythira::FutureFactory::makeExceptionalFuture<
+                auto future = kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error("Network timeout"));
+                    std::make_exception_ptr(std::runtime_error("Network timeout")));
                 timeout_futures.push_back(std::move(future));
             }
 
@@ -187,8 +188,8 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
             // Scenario 3: Mixed failures with insufficient majority
             BOOST_TEST_MESSAGE("Testing scenario: Mixed failures with insufficient majority");
 
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 mixed_futures;
             mixed_futures.reserve(follower_count);
 
@@ -210,7 +211,7 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
                     successful_responses++;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, true, i};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     mixed_futures.push_back(std::move(future));
                 } else if (response_type == 1) {
@@ -218,15 +219,15 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
                     failed_responses++;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, false, 0};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     mixed_futures.push_back(std::move(future));
                 } else {
                     // Timeout response
                     timeout_responses++;
-                    auto future = kythira::FutureFactory::makeExceptionalFuture<
+                    auto future = kythira::future_factory_default::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                        std::runtime_error("Mixed failure timeout"));
+                        std::make_exception_ptr(std::runtime_error("Mixed failure timeout")));
                     mixed_futures.push_back(std::move(future));
                 }
             }
@@ -275,7 +276,8 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
 
     // Test with all failed responses (same term, but all failed)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             all_failed_futures;
         const std::uint64_t current_term = 12;
 
@@ -283,7 +285,7 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                 current_term, false, 0  // All failed
             };
-            all_failed_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            all_failed_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -307,13 +309,14 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
 
     // Test with very short timeout (should cause timeout failures)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             slow_futures;
 
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{1, true, i};
             // Create futures that take longer than the timeout
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(1000));  // 1 second delay
             slow_futures.push_back(std::move(future));
         }
@@ -335,7 +338,8 @@ BOOST_AUTO_TEST_CASE(raft_failed_read_rejection_property_test, *boost::unit_test
 
     // Test with empty futures (should fail immediately)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             empty_futures;
 
         auto collection_future =

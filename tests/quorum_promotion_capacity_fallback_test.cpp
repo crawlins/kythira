@@ -8,6 +8,7 @@
 
 #define BOOST_TEST_MODULE quorum_promotion_capacity_fallback_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -67,7 +68,7 @@ struct mock_quorum_manager {
 
     auto assess_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         auto health = *next_health;
         health.total_node_count = cluster.size();
         for (auto& g : health.groups) {
@@ -86,23 +87,23 @@ struct mock_quorum_manager {
         bool all_met = std::all_of(health.groups.begin(), health.groups.end(),
                                    [](const auto& g) { return g.live_count >= g.target_count; });
         health.status = all_met ? kythira::quorum_status::healthy : next_health->status;
-        return kythira::FutureFactory::makeFuture(health);
+        return kythira::future_factory_default::makeFuture(health);
     }
     auto provision_node(placement_group_id_type, std::optional<node_id_type>)
-        -> kythira::Future<kythira::peer_info<node_id_type, address_type>> {
+        -> kythira::future_default<kythira::peer_info<node_id_type, address_type>> {
         recorder->provision_calls.fetch_add(1, std::memory_order_relaxed);
         // No infrastructure to actually provision in this test; fail so the
         // leader's pending-provision bookkeeping clears itself.
-        return kythira::FutureFactory::makeExceptionalFuture<
+        return kythira::future_factory_default::makeExceptionalFuture<
             kythira::peer_info<node_id_type, address_type>>(
-            std::runtime_error("mock: provisioning not configured"));
+            std::make_exception_ptr(std::runtime_error("mock: provisioning not configured")));
     }
-    auto decommission_node(const node_id_type&) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto decommission_node(const node_id_type&) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     auto maintain_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         return assess_quorum(cluster);
     }
     [[nodiscard]] auto topology() const -> kythira::desired_topology<placement_group_id_type> {
@@ -117,20 +118,20 @@ template<typename NodeId, typename Address> class preset_peer_discovery {
 public:
     using node_id_type = NodeId;
     using address_type = Address;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -275,7 +276,8 @@ BOOST_AUTO_TEST_CASE(prefers_promotion_over_provisioning, *boost::unit_test::tim
     bool add_done = false;
     std::move(add_fut)
         .thenValue([&](std::vector<std::byte>) { add_done = true; })
-        .thenError([&](const std::exception_ptr&) { add_done = true; });
+        .thenError([&](const std::exception_ptr&) { add_done = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add_done; }));
 
     // Drive assessment cycles: the leader should promote node2 rather than provision.
@@ -404,7 +406,8 @@ BOOST_AUTO_TEST_CASE(falls_back_to_provisioning_when_blocked, *boost::unit_test:
     bool add_done = false;
     std::move(add_fut)
         .thenValue([&](std::vector<std::byte>) { add_done = true; })
-        .thenError([&](const std::exception_ptr&) { add_done = true; });
+        .thenError([&](const std::exception_ptr&) { add_done = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add_done; }));
 
     // Fill the group's remaining slot with a real voter via add_server() (no
@@ -418,7 +421,8 @@ BOOST_AUTO_TEST_CASE(falls_back_to_provisioning_when_blocked, *boost::unit_test:
     bool add3_done = false;
     std::move(add3_fut)
         .thenValue([&](std::vector<std::byte>) { add3_done = true; })
-        .thenError([&](const std::exception_ptr&) { add3_done = true; });
+        .thenError([&](const std::exception_ptr&) { add3_done = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add3_done; }));
     BOOST_REQUIRE_EQUAL(node1.get_cluster_size(), 2u);  // voters {1,3}, target now met
 

@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftSuccessfulReadStateReturnPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -74,7 +75,8 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
         BOOST_TEST_MESSAGE("Generated state machine state of size: " << state_size);
 
         // Create futures representing successful heartbeat responses
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             heartbeat_futures;
         heartbeat_futures.reserve(follower_count);
 
@@ -98,7 +100,7 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
                     i              // match_index (different for each follower)
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 heartbeat_futures.push_back(std::move(future));
             } else {
@@ -108,7 +110,7 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
                     false,         // failed (network issue, but not leadership loss)
                     0              // match_index
                 };
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 heartbeat_futures.push_back(std::move(future));
             }
@@ -194,7 +196,8 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
 
     // Test with guaranteed successful majority
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             success_futures;
         const std::uint64_t current_term = 10;
 
@@ -205,7 +208,7 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
                 true,          // success
                 i              // match_index
             };
-            success_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            success_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -231,7 +234,8 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
 
     // Test with mixed success/failure but sufficient majority
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             mixed_futures;
         const std::uint64_t current_term = 15;
 
@@ -241,12 +245,12 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
             // Successful response
             kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                 current_term, true, i};
-            mixed_futures.push_back(kythira::FutureFactory::makeFuture(success_response));
+            mixed_futures.push_back(kythira::future_factory_default::makeFuture(success_response));
 
             // Failed response (same term, just network issue)
             kythira::append_entries_response<std::uint64_t, std::uint64_t> fail_response{
                 current_term, false, 0};
-            mixed_futures.push_back(kythira::FutureFactory::makeFuture(fail_response));
+            mixed_futures.push_back(kythira::future_factory_default::makeFuture(fail_response));
         }
 
         auto collection_future =
@@ -273,10 +277,11 @@ BOOST_AUTO_TEST_CASE(raft_successful_read_state_return_property_test,
 
     // Test empty state return
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             single_future;
         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{1, true, 0};
-        single_future.push_back(kythira::FutureFactory::makeFuture(response));
+        single_future.push_back(kythira::future_factory_default::makeFuture(response));
 
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::

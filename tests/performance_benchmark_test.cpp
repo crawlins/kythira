@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE PerformanceBenchmarkTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -30,8 +31,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto start_time = std::chrono::high_resolution_clock::now();
 
         for (int i = 0; i < num_operations; ++i) {
-            kythira::Future<int> future(i);
-            auto result = future.get();
+            auto future = kythira::future_factory_default::makeFuture(i);
+            auto result = std::move(future).get();
             BOOST_CHECK_EQUAL(result, i);
         }
 
@@ -59,8 +60,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
 
         for (int i = 0; i < num_operations; ++i) {
             std::string test_string = "test_string_" + std::to_string(i);
-            kythira::Future<std::string> future(std::move(test_string));
-            auto result = future.get();
+            auto future = kythira::future_factory_default::makeFuture(std::move(test_string));
+            auto result = std::move(future).get();
             BOOST_CHECK(result.find("test_string_") == 0);
         }
 
@@ -88,8 +89,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
 
         for (int i = 0; i < num_operations; ++i) {
             std::vector<int> large_vector(vector_size, i);
-            kythira::Future<std::vector<int>> future(std::move(large_vector));
-            auto result = future.get();
+            auto future = kythira::future_factory_default::makeFuture(std::move(large_vector));
+            auto result = std::move(future).get();
             BOOST_CHECK_EQUAL(result.size(), vector_size);
             BOOST_CHECK_EQUAL(result[0], i);
         }
@@ -122,8 +123,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
             threads.emplace_back([&, t]() {
                 for (int i = 0; i < operations_per_thread; ++i) {
                     int value = t * operations_per_thread + i;
-                    kythira::Future<int> future(value);
-                    auto result = future.get();
+                    auto future = kythira::future_factory_default::makeFuture(value);
+                    auto result = std::move(future).get();
                     BOOST_CHECK_EQUAL(result, value);
                     total_operations.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -160,12 +161,12 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         auto start_time = std::chrono::high_resolution_clock::now();
 
         for (int i = 0; i < num_operations; ++i) {
-            auto exception_future =
-                kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
+            auto exception_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("test error")));
 
             bool caught_exception = false;
             try {
-                exception_future.get();
+                std::move(exception_future).get();
             } catch (const std::runtime_error&) {
                 caught_exception = true;
             }
@@ -200,8 +201,8 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
 
             for (int i = 0; i < num_operations; ++i) {
                 std::vector<int> test_vector(size, i);
-                kythira::Future<std::vector<int>> future(std::move(test_vector));
-                auto result = future.get();
+                auto future = kythira::future_factory_default::makeFuture(std::move(test_vector));
+                auto result = std::move(future).get();
                 BOOST_CHECK_EQUAL(result.size(), size);
             }
 
@@ -226,7 +227,7 @@ BOOST_AUTO_TEST_CASE(performance_benchmark_future_operations, *boost::unit_test:
         // Test isReady() performance
         auto start_time = std::chrono::high_resolution_clock::now();
 
-        kythira::Future<int> test_future(42);
+        auto test_future = kythira::future_factory_default::makeFuture(42);
         for (int i = 0; i < num_operations; ++i) {
             bool ready = test_future.isReady();
             BOOST_CHECK(ready);

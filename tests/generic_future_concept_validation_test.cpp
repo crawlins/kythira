@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE generic_future_concept_validation_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <concepts/future.hpp>
 #include <raft/network.hpp>
@@ -37,21 +38,21 @@ BOOST_AUTO_TEST_SUITE(generic_future_concept_validation_tests)
 BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types,
                      *boost::unit_test::timeout(120)) {
     // Test 1: Verify that kythira::Future satisfies the future concept for various types
-    static_assert(kythira::future<kythira::Future<int>, int>,
-                  "kythira::Future<int> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<std::string>, std::string>,
-                  "kythira::Future<std::string> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<void>, void>,
-                  "kythira::Future<void> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::request_vote_response<>>,
+    static_assert(kythira::future<kythira::future_default<int>, int>,
+                  "kythira::future_default<int> must satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<std::string>, std::string>,
+                  "kythira::future_default<std::string> must satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<void>, void>,
+                  "kythira::future_default<void> must satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<kythira::request_vote_response<>>,
                                   kythira::request_vote_response<>>,
-                  "kythira::Future<request_vote_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::append_entries_response<>>,
+                  "kythira::future_default<request_vote_response> must satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<kythira::append_entries_response<>>,
                                   kythira::append_entries_response<>>,
-                  "kythira::Future<append_entries_response> must satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::install_snapshot_response<>>,
+                  "kythira::future_default<append_entries_response> must satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<kythira::install_snapshot_response<>>,
                                   kythira::install_snapshot_response<>>,
-                  "kythira::Future<install_snapshot_response> must satisfy future concept");
+                  "kythira::future_default<install_snapshot_response> must satisfy future concept");
 
     // Test 2: Verify HTTP transport client template instantiation
     // Skip - HTTP transport uses Types parameter now, tested in dedicated HTTP tests
@@ -83,33 +84,32 @@ BOOST_AUTO_TEST_CASE(test_core_implementations_with_different_future_types,
 
         // Test basic future operations
         {
-            kythira::Future<int> future(random_value);
+            auto future = kythira::future_factory_default::makeFuture(random_value);
             BOOST_CHECK(future.isReady());
-            BOOST_CHECK_EQUAL(future.get(), random_value);
+            BOOST_CHECK_EQUAL(std::move(future).get(), random_value);
         }
 
         // Test future chaining
         {
-            kythira::Future<int> base_future(random_value);
-            auto chained = std::move(base_future).then([](int val) { return val * 2; });
-            BOOST_CHECK_EQUAL(chained.get(), random_value * 2);
+            auto base_future = kythira::future_factory_default::makeFuture(random_value);
+            auto chained = std::move(base_future).thenValue([](int val) { return val * 2; });
+            BOOST_CHECK_EQUAL(std::move(chained).get(), random_value * 2);
         }
 
         // Test timeout operations
         {
-            kythira::Future<int> timeout_future(random_value);
+            auto timeout_future = kythira::future_factory_default::makeFuture(random_value);
             BOOST_CHECK(timeout_future.wait(std::chrono::milliseconds(1)));
         }
 
         // Test error handling
         {
-            kythira::Future<int> error_future(
-                folly::exception_wrapper(std::runtime_error("test error")));
-            auto recovered =
-                std::move(error_future).onError([random_value](folly::exception_wrapper) {
-                    return random_value;
-                });
-            BOOST_CHECK_EQUAL(recovered.get(), random_value);
+            auto error_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("test error")));
+            auto recovered = std::move(error_future).thenError([random_value](std::exception_ptr) {
+                return random_value;
+            });
+            BOOST_CHECK_EQUAL(std::move(recovered).get(), random_value);
         }
     }
 }
@@ -138,23 +138,23 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, *boost::unit_test::ti
 
     // Test with various future types
     {
-        kythira::Future<int> int_future(42);
-        bool result = test_future_concept.template operator()<kythira::Future<int>, int>(
+        auto int_future = kythira::future_factory_default::makeFuture(42);
+        bool result = test_future_concept.template operator()<kythira::future_default<int>, int>(
             std::move(int_future));
         BOOST_CHECK(result);
     }
 
     {
-        kythira::Future<std::string> string_future(std::string("test"));
-        bool result =
-            test_future_concept.template operator()<kythira::Future<std::string>, std::string>(
-                std::move(string_future));
+        auto string_future = kythira::future_factory_default::makeFuture(std::string("test"));
+        bool result = test_future_concept
+                          .template operator()<kythira::future_default<std::string>, std::string>(
+                              std::move(string_future));
         BOOST_CHECK(result);
     }
 
     {
-        kythira::Future<void> void_future;
-        bool result = test_future_concept.template operator()<kythira::Future<void>, void>(
+        auto void_future = kythira::future_factory_default::makeFuture();
+        bool result = test_future_concept.template operator()<kythira::future_default<void>, void>(
             std::move(void_future));
         BOOST_CHECK(result);
     }
@@ -175,26 +175,28 @@ BOOST_AUTO_TEST_CASE(test_concept_constraints_enforcement, *boost::unit_test::ti
 
         // Test int futures
         {
-            kythira::Future<int> future(random_int);
-            bool result = test_future_concept.template operator()<kythira::Future<int>, int>(
-                std::move(future));
+            auto future = kythira::future_factory_default::makeFuture(random_int);
+            bool result =
+                test_future_concept.template operator()<kythira::future_default<int>, int>(
+                    std::move(future));
             BOOST_CHECK(result);
         }
 
         // Test double futures
         {
-            kythira::Future<double> future(random_double);
-            bool result = test_future_concept.template operator()<kythira::Future<double>, double>(
-                std::move(future));
+            auto future = kythira::future_factory_default::makeFuture(random_double);
+            bool result =
+                test_future_concept.template operator()<kythira::future_default<double>, double>(
+                    std::move(future));
             BOOST_CHECK(result);
         }
 
         // Test string futures
         {
-            kythira::Future<std::string> future(random_string);
+            auto future = kythira::future_factory_default::makeFuture(random_string);
             bool result =
-                test_future_concept.template operator()<kythira::Future<std::string>, std::string>(
-                    std::move(future));
+                test_future_concept.template
+                operator()<kythira::future_default<std::string>, std::string>(std::move(future));
             BOOST_CHECK(result);
         }
     }
@@ -236,9 +238,9 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
             // Use constructor instead of direct field access
             rv_response = kythira::request_vote_response<>(rng() % 1000, (rng() % 2) == 1);
 
-            kythira::Future<kythira::request_vote_response<>> future(rv_response);
+            auto future = kythira::future_factory_default::makeFuture(rv_response);
             BOOST_CHECK(future.isReady());
-            auto result = future.get();
+            auto result = std::move(future).get();
             BOOST_CHECK_EQUAL(result.term(), rv_response.term());
             BOOST_CHECK_EQUAL(result.vote_granted(), rv_response.vote_granted());
         }
@@ -248,9 +250,9 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
             // Use constructor instead of direct field access
             ae_response = kythira::append_entries_response<>(rng() % 1000, (rng() % 2) == 1);
 
-            kythira::Future<kythira::append_entries_response<>> future(ae_response);
+            auto future = kythira::future_factory_default::makeFuture(ae_response);
             BOOST_CHECK(future.isReady());
-            auto result = future.get();
+            auto result = std::move(future).get();
             BOOST_CHECK_EQUAL(result.term(), ae_response.term());
             BOOST_CHECK_EQUAL(result.success(), ae_response.success());
         }
@@ -260,9 +262,9 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
             // Use constructor instead of direct field access
             is_response = kythira::install_snapshot_response<>(rng() % 1000);
 
-            kythira::Future<kythira::install_snapshot_response<>> future(is_response);
+            auto future = kythira::future_factory_default::makeFuture(is_response);
             BOOST_CHECK(future.isReady());
-            auto result = future.get();
+            auto result = std::move(future).get();
             BOOST_CHECK_EQUAL(result.term(), is_response.term());
         }
     }
@@ -274,28 +276,29 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
         if (!future.isReady()) {
             future.wait(std::chrono::milliseconds(1000));
         }
-        return future.get();
+        return std::move(future).get();
     };
 
     // Test with different future types
     {
-        kythira::Future<int> int_future(42);
-        int result = process_any_future.template operator()<kythira::Future<int>, int>(
+        auto int_future = kythira::future_factory_default::makeFuture(42);
+        int result = process_any_future.template operator()<kythira::future_default<int>, int>(
             std::move(int_future));
         BOOST_CHECK_EQUAL(result, 42);
     }
 
     {
-        kythira::Future<std::string> string_future(std::string("test"));
+        auto string_future = kythira::future_factory_default::makeFuture(std::string("test"));
         std::string result =
-            process_any_future.template operator()<kythira::Future<std::string>, std::string>(
-                std::move(string_future));
+            process_any_future.template
+            operator()<kythira::future_default<std::string>, std::string>(std::move(string_future));
         BOOST_CHECK_EQUAL(result, "test");
     }
 
     {
-        kythira::Future<void> void_future;
-        process_any_future.template operator()<kythira::Future<void>, void>(std::move(void_future));
+        auto void_future = kythira::future_factory_default::makeFuture();
+        process_any_future.template operator()<kythira::future_default<void>, void>(
+            std::move(void_future));
         // If we reach here without throwing, the test passed
         BOOST_CHECK(true);
     }
@@ -304,38 +307,45 @@ BOOST_AUTO_TEST_CASE(test_template_instantiation_with_default_future,
 // Test that collective operations work with generic future types
 BOOST_AUTO_TEST_CASE(test_collective_operations_with_generic_futures,
                      *boost::unit_test::timeout(60)) {
-    // Test 1: Verify wait_for_all works with kythira::Future
+    // Test 1: Verify collectAll works with kythira::future_default
     {
-        std::vector<kythira::Future<int>> futures;
+        std::vector<kythira::future_default<int>> futures;
         for (int i = 0; i < 5; ++i) {
-            futures.emplace_back(i * 10);
+            futures.push_back(kythira::future_factory_default::makeFuture(i * 10));
         }
 
-        auto all_results = kythira::wait_for_all(std::move(futures));
-        BOOST_CHECK(all_results.isReady());
-
-        auto results = all_results.get();
+        // Not asserting isReady() immediately after the call: unlike
+        // Folly's collectAll (which resolves synchronously/inline for
+        // already-ready inputs), boost_backend's collectAll runs its
+        // boost::when_all(...).then(...) continuation asynchronously (no
+        // synchronous-if-ready guarantee in Boost.Thread's default launch
+        // policy), so there's a real window where the result isn't ready
+        // yet even though every input was. get() blocks until ready
+        // regardless, so it's the portable way to observe the result.
+        auto all_results = kythira::future_collector_default::collectAll(std::move(futures));
+        auto results = std::move(all_results).get();
         BOOST_CHECK_EQUAL(results.size(), 5);
 
         for (std::size_t i = 0; i < results.size(); ++i) {
-            BOOST_CHECK(results[i].has_value());
+            BOOST_CHECK(results[i].hasValue());
             BOOST_CHECK_EQUAL(results[i].value(), static_cast<int>(i * 10));
         }
     }
 
-    // Test 2: Verify wait_for_any works with kythira::Future
+    // Test 2: Verify collectAny works with kythira::future_default
     {
-        std::vector<kythira::Future<std::string>> futures;
-        futures.emplace_back(std::string("first"));
-        futures.emplace_back(std::string("second"));
-        futures.emplace_back(std::string("third"));
+        std::vector<kythira::future_default<std::string>> futures;
+        futures.push_back(kythira::future_factory_default::makeFuture(std::string("first")));
+        futures.push_back(kythira::future_factory_default::makeFuture(std::string("second")));
+        futures.push_back(kythira::future_factory_default::makeFuture(std::string("third")));
 
-        auto any_result = kythira::wait_for_any(std::move(futures));
-        BOOST_CHECK(any_result.isReady());
-
-        auto [index, result] = any_result.get();
+        // Not asserting isReady() immediately - see the collectAll comment
+        // above; the same asynchronous-continuation caveat applies to
+        // collectAny under boost_backend.
+        auto any_result = kythira::future_collector_default::collectAny(std::move(futures));
+        auto [index, result] = std::move(any_result).get();
         BOOST_CHECK(index < 3);
-        BOOST_CHECK(result.has_value());
+        BOOST_CHECK(result.hasValue());
 
         // The result should be one of our expected values
         std::string value = result.value();
@@ -351,41 +361,41 @@ BOOST_AUTO_TEST_CASE(test_collective_operations_with_generic_futures,
 
         // Test wait_for_all with random values
         {
-            std::vector<kythira::Future<int>> futures;
+            std::vector<kythira::future_default<int>> futures;
             std::vector<int> expected_values;
 
             for (std::size_t i = 0; i < num_futures; ++i) {
                 int value = static_cast<int>(rng() % 1000);
                 expected_values.push_back(value);
-                futures.emplace_back(value);
+                futures.push_back(kythira::future_factory_default::makeFuture(value));
             }
 
-            auto all_results = kythira::wait_for_all(std::move(futures));
-            auto results = all_results.get();
+            auto all_results = kythira::future_collector_default::collectAll(std::move(futures));
+            auto results = std::move(all_results).get();
 
             BOOST_CHECK_EQUAL(results.size(), expected_values.size());
             for (std::size_t i = 0; i < results.size(); ++i) {
-                BOOST_CHECK(results[i].has_value());
+                BOOST_CHECK(results[i].hasValue());
                 BOOST_CHECK_EQUAL(results[i].value(), expected_values[i]);
             }
         }
 
         // Test wait_for_any with random values
         {
-            std::vector<kythira::Future<double>> futures;
+            std::vector<kythira::future_default<double>> futures;
             std::vector<double> expected_values;
 
             for (std::size_t i = 0; i < num_futures; ++i) {
                 double value = static_cast<double>(rng() % 1000) / 100.0;
                 expected_values.push_back(value);
-                futures.emplace_back(value);
+                futures.push_back(kythira::future_factory_default::makeFuture(value));
             }
 
-            auto any_result = kythira::wait_for_any(std::move(futures));
-            auto [index, result] = any_result.get();
+            auto any_result = kythira::future_collector_default::collectAny(std::move(futures));
+            auto [index, result] = std::move(any_result).get();
 
             BOOST_CHECK(index < expected_values.size());
-            BOOST_CHECK(result.has_value());
+            BOOST_CHECK(result.hasValue());
             BOOST_CHECK_EQUAL(result.value(), expected_values[index]);
         }
     }

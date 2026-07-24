@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE http_transport_return_types_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
@@ -63,15 +64,16 @@ BOOST_AUTO_TEST_CASE(property_http_transport_template_design, *boost::unit_test:
     // rather than hardcoded folly::Future types
 
     // Verify that kythira::Future satisfies the future concept for each response type
-    static_assert(kythira::future<kythira::Future<kythira::request_vote_response<>>,
+    static_assert(kythira::future<kythira::future_default<kythira::request_vote_response<>>,
                                   kythira::request_vote_response<>>,
-                  "kythira::Future<request_vote_response> should satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::append_entries_response<>>,
+                  "kythira::future_default<request_vote_response> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<kythira::append_entries_response<>>,
                                   kythira::append_entries_response<>>,
-                  "kythira::Future<append_entries_response> should satisfy future concept");
-    static_assert(kythira::future<kythira::Future<kythira::install_snapshot_response<>>,
-                                  kythira::install_snapshot_response<>>,
-                  "kythira::Future<install_snapshot_response> should satisfy future concept");
+                  "kythira::future_default<append_entries_response> should satisfy future concept");
+    static_assert(
+        kythira::future<kythira::future_default<kythira::install_snapshot_response<>>,
+                        kythira::install_snapshot_response<>>,
+        "kythira::future_default<install_snapshot_response> should satisfy future concept");
 
     BOOST_TEST_MESSAGE("kythira::Future satisfies future concept for all response types");
     BOOST_TEST(true);

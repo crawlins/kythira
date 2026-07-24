@@ -54,7 +54,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_success_property_test, *boost::unit_test:
 
         // Property: Send operation should succeed (return true) for valid messages
         // when the network accepts them for transmission
-        bool send_result = send_future.get();
+        bool send_result = std::move(send_future).get();
         BOOST_CHECK(send_result == true);
     }
 

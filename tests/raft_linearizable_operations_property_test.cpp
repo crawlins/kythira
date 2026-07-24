@@ -11,6 +11,7 @@
 
 #define BOOST_TEST_MODULE RaftLinearizableOperationsPropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -48,9 +49,9 @@ constexpr std::chrono::milliseconds election_timeout_max{100};
 // Types for simulator-based testing
 struct test_raft_types {
     // Future types
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // Basic data types
     using node_id_type = std::uint64_t;
@@ -152,7 +153,7 @@ BOOST_AUTO_TEST_CASE(non_leader_rejects_reads) {
 
         // Verify read was rejected
         BOOST_CHECK(read_future.isReady());
-        BOOST_CHECK(read_future.hasException());
+        BOOST_CHECK_THROW(std::move(read_future).get(), std::exception);
 
         node.stop();
     }
@@ -214,7 +215,7 @@ BOOST_AUTO_TEST_CASE(leader_serves_reads_single_node) {
 
         // Verify read succeeded
         BOOST_CHECK(read_future.isReady());
-        BOOST_CHECK(!read_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(read_future).get());
 
         node.stop();
     }
@@ -270,7 +271,7 @@ BOOST_AUTO_TEST_CASE(reads_observe_writes_in_order) {
 
         // Submit some commands (writes)
         constexpr std::size_t num_writes = 5;
-        std::vector<kythira::Future<std::vector<std::byte>>> write_futures;
+        std::vector<kythira::future_default<std::vector<std::byte>>> write_futures;
 
         for (std::size_t i = 0; i < num_writes; ++i) {
             std::vector<std::byte> command(sizeof(std::size_t));
@@ -291,7 +292,7 @@ BOOST_AUTO_TEST_CASE(reads_observe_writes_in_order) {
 
         // Verify read succeeded
         BOOST_CHECK(read_future.isReady());
-        BOOST_CHECK(!read_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(read_future).get());
 
         node.stop();
     }
@@ -347,7 +348,7 @@ BOOST_AUTO_TEST_CASE(concurrent_reads_are_linearizable) {
 
         // Issue multiple concurrent reads
         constexpr std::size_t num_reads = 10;
-        std::vector<kythira::Future<std::vector<std::byte>>> read_futures;
+        std::vector<kythira::future_default<std::vector<std::byte>>> read_futures;
 
         for (std::size_t i = 0; i < num_reads; ++i) {
             auto future = node.read_state(rpc_timeout);
@@ -357,11 +358,19 @@ BOOST_AUTO_TEST_CASE(concurrent_reads_are_linearizable) {
         // Wait for all reads to complete
         std::this_thread::sleep_for(std::chrono::milliseconds{300});
 
-        // Verify all reads succeeded
+        // Verify all reads succeeded. hasException() is a Folly-only
+        // convenience not part of the generic future concept (absent from
+        // the stdexec/boost backends), so success is checked via get()
+        // instead - safe since isReady() already confirmed no blocking.
         std::size_t successful_reads = 0;
         for (auto& future : read_futures) {
-            if (future.isReady() && !future.hasException()) {
-                successful_reads++;
+            if (future.isReady()) {
+                try {
+                    std::move(future).get();
+                    successful_reads++;
+                } catch (...) {
+                    // failed read - not counted
+                }
             }
         }
 
@@ -438,7 +447,7 @@ BOOST_AUTO_TEST_CASE(read_after_write_observes_write) {
 
         // Verify read succeeded
         BOOST_CHECK(read_future.isReady());
-        BOOST_CHECK(!read_future.hasException());
+        BOOST_CHECK_NO_THROW(std::move(read_future).get());
 
         node.stop();
     }

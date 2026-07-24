@@ -16,6 +16,7 @@
 
 #define BOOST_TEST_MODULE learner_capacity_decoupling_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -45,20 +46,20 @@ template<typename NodeId, typename Address> class preset_peer_discovery {
 public:
     using node_id_type = NodeId;
     using address_type = Address;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -172,7 +173,8 @@ void drive_to_completion(test_node& leader, Fut fut, bool& done, bool& threw,
             if (caught) {
                 *caught = ex;
             }
-        });
+        })
+        .detach();
     for (int i = 0; i < 25 && !(done || threw); ++i) {
         leader.check_heartbeat_timeout();
         std::this_thread::sleep_for(std::chrono::milliseconds{30});

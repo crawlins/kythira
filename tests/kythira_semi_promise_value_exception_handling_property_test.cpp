@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <exception>
 #include <string>
@@ -35,7 +36,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
     // Test 1: Value setting with proper void/Unit handling for non-void types
     {
         // Test int type
-        SemiPromise<int> int_promise;
+        semi_promise_default<int> int_promise;
         BOOST_CHECK(!int_promise.isFulfilled());
 
         int_promise.setValue(test_value);
@@ -44,42 +45,42 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
         // Test that double fulfillment throws
         BOOST_CHECK_THROW(int_promise.setValue(456), std::logic_error);
         BOOST_CHECK_THROW(
-            int_promise.setException(folly::exception_wrapper(std::runtime_error("test"))),
+            int_promise.setException(std::make_exception_ptr(std::runtime_error("test"))),
             std::logic_error);
     }
 
     // Test 2: Value setting with void/Unit conversion for void type
     {
-        SemiPromise<void> void_promise;
+        semi_promise_default<void> void_promise;
         BOOST_CHECK(!void_promise.isFulfilled());
 
         // Should accept folly::Unit for void type
-        void_promise.setValue(folly::Unit{});
+        void_promise.setValue(kythira::unit{});
         BOOST_CHECK(void_promise.isFulfilled());
 
         // Test that double fulfillment throws
-        BOOST_CHECK_THROW(void_promise.setValue(folly::Unit{}), std::logic_error);
+        BOOST_CHECK_THROW(void_promise.setValue(kythira::unit{}), std::logic_error);
     }
 
     // Test 3: Exception setting with folly::exception_wrapper
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
         BOOST_CHECK(!promise.isFulfilled());
 
-        auto ex = folly::exception_wrapper(std::runtime_error(test_string));
+        auto ex = std::make_exception_ptr(std::runtime_error(test_string));
         promise.setException(ex);
         BOOST_CHECK(promise.isFulfilled());
 
         // Test that double fulfillment throws
         BOOST_CHECK_THROW(promise.setValue(123), std::logic_error);
         BOOST_CHECK_THROW(
-            promise.setException(folly::exception_wrapper(std::runtime_error("another"))),
+            promise.setException(std::make_exception_ptr(std::runtime_error("another"))),
             std::logic_error);
     }
 
     // Test 4: Exception setting with std::exception_ptr conversion
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
         BOOST_CHECK(!promise.isFulfilled());
 
         std::exception_ptr ep;
@@ -95,7 +96,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
     // Test 5: Move semantics for setValue
     {
-        SemiPromise<std::string> promise;
+        semi_promise_default<std::string> promise;
 
         std::string movable_string = "movable test string";
         std::string original_value = movable_string;
@@ -105,7 +106,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
         BOOST_CHECK(promise.isFulfilled());
 
         // Test with rvalue
-        SemiPromise<std::string> promise2;
+        semi_promise_default<std::string> promise2;
         promise2.setValue(std::string("rvalue string"));
         BOOST_CHECK(promise2.isFulfilled());
     }
@@ -119,7 +120,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test int value fulfillment
         {
-            SemiPromise<int> promise;
+            semi_promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             promise.setValue(random_int);
@@ -131,7 +132,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test double value fulfillment
         {
-            SemiPromise<double> promise;
+            semi_promise_default<double> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             promise.setValue(random_double);
@@ -140,7 +141,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test string value fulfillment with move semantics
         {
-            SemiPromise<std::string> promise;
+            semi_promise_default<std::string> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             std::string movable_string = random_string;
@@ -150,10 +151,10 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test void value fulfillment
         {
-            SemiPromise<void> promise;
+            semi_promise_default<void> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
-            promise.setValue(folly::Unit{});
+            promise.setValue(kythira::unit{});
             BOOST_CHECK(promise.isFulfilled());
         }
     }
@@ -164,23 +165,23 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test folly::exception_wrapper exception fulfillment
         {
-            SemiPromise<int> promise;
+            semi_promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
-            auto ex = folly::exception_wrapper(std::runtime_error(exception_message));
+            auto ex = std::make_exception_ptr(std::runtime_error(exception_message));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
 
             // Verify cannot fulfill again
             BOOST_CHECK_THROW(promise.setValue(123), std::logic_error);
             BOOST_CHECK_THROW(
-                promise.setException(folly::exception_wrapper(std::runtime_error("another"))),
+                promise.setException(std::make_exception_ptr(std::runtime_error("another"))),
                 std::logic_error);
         }
 
         // Test std::exception_ptr exception fulfillment
         {
-            SemiPromise<std::string> promise;
+            semi_promise_default<std::string> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             std::exception_ptr ep;
@@ -196,10 +197,10 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_value_exception_handling_property_test
 
         // Test void promise exception fulfillment
         {
-            SemiPromise<void> promise;
+            semi_promise_default<void> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
-            auto ex = folly::exception_wrapper(std::logic_error(exception_message));
+            auto ex = std::make_exception_ptr(std::logic_error(exception_message));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
         }
@@ -223,7 +224,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeo
     };
 
     {
-        SemiPromise<CustomType> promise;
+        semi_promise_default<CustomType> promise;
         CustomType test_obj(test_value, "test_name");
 
         promise.setValue(std::move(test_obj));
@@ -232,7 +233,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeo
 
     // Test 2: Pointer types
     {
-        SemiPromise<int*> promise;
+        semi_promise_default<int*> promise;
         int test_int = test_value;
 
         promise.setValue(&test_int);
@@ -241,7 +242,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeo
 
     // Test 3: Smart pointer types
     {
-        SemiPromise<std::unique_ptr<int>> promise;
+        semi_promise_default<std::unique_ptr<int>> promise;
         auto ptr = std::make_unique<int>(test_value);
 
         promise.setValue(std::move(ptr));
@@ -250,7 +251,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeo
 
     // Test 4: Container types
     {
-        SemiPromise<std::vector<int>> promise;
+        semi_promise_default<std::vector<int>> promise;
         std::vector<int> test_vector = {1, 2, 3, 4, 5};
 
         promise.setValue(std::move(test_vector));
@@ -264,25 +265,25 @@ BOOST_AUTO_TEST_CASE(semi_promise_type_conversion_test, *boost::unit_test::timeo
 BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::timeout(60)) {
     // Test 1: Different exception types with folly::exception_wrapper
     {
-        SemiPromise<int> promise1;
-        auto runtime_ex = folly::exception_wrapper(std::runtime_error(test_string));
+        semi_promise_default<int> promise1;
+        auto runtime_ex = std::make_exception_ptr(std::runtime_error(test_string));
         promise1.setException(runtime_ex);
         BOOST_CHECK(promise1.isFulfilled());
 
-        SemiPromise<int> promise2;
-        auto logic_ex = folly::exception_wrapper(std::logic_error(test_string));
+        semi_promise_default<int> promise2;
+        auto logic_ex = std::make_exception_ptr(std::logic_error(test_string));
         promise2.setException(logic_ex);
         BOOST_CHECK(promise2.isFulfilled());
 
-        SemiPromise<int> promise3;
-        auto invalid_arg_ex = folly::exception_wrapper(std::invalid_argument(test_string));
+        semi_promise_default<int> promise3;
+        auto invalid_arg_ex = std::make_exception_ptr(std::invalid_argument(test_string));
         promise3.setException(invalid_arg_ex);
         BOOST_CHECK(promise3.isFulfilled());
     }
 
     // Test 2: Different exception types with std::exception_ptr
     {
-        SemiPromise<int> promise1;
+        semi_promise_default<int> promise1;
         try {
             throw std::runtime_error(test_string);
         } catch (...) {
@@ -290,7 +291,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::
         }
         BOOST_CHECK(promise1.isFulfilled());
 
-        SemiPromise<int> promise2;
+        semi_promise_default<int> promise2;
         try {
             throw std::logic_error(test_string);
         } catch (...) {
@@ -298,7 +299,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::
         }
         BOOST_CHECK(promise2.isFulfilled());
 
-        SemiPromise<int> promise3;
+        semi_promise_default<int> promise3;
         try {
             throw std::invalid_argument(test_string);
         } catch (...) {
@@ -318,14 +319,14 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::
     };
 
     {
-        SemiPromise<int> promise;
-        auto custom_ex = folly::exception_wrapper(CustomException("custom exception"));
+        semi_promise_default<int> promise;
+        auto custom_ex = std::make_exception_ptr(CustomException("custom exception"));
         promise.setException(custom_ex);
         BOOST_CHECK(promise.isFulfilled());
     }
 
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
         try {
             throw CustomException("custom exception via ptr");
         } catch (...) {
@@ -341,7 +342,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_exception_conversion_test, *boost::unit_test::
 BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::timeout(60)) {
     // Test 1: Resource cleanup on value setting
     {
-        SemiPromise<std::unique_ptr<int>> promise;
+        semi_promise_default<std::unique_ptr<int>> promise;
         auto resource = std::make_unique<int>(test_value);
         int* raw_ptr = resource.get();
 
@@ -355,8 +356,8 @@ BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::t
 
     // Test 2: Resource cleanup on exception setting
     {
-        SemiPromise<std::unique_ptr<int>> promise;
-        auto ex = folly::exception_wrapper(std::runtime_error("resource test"));
+        semi_promise_default<std::unique_ptr<int>> promise;
+        auto ex = std::make_exception_ptr(std::runtime_error("resource test"));
 
         promise.setException(ex);
         BOOST_CHECK(promise.isFulfilled());
@@ -365,9 +366,9 @@ BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::t
     }
 
     // Test 3: Multiple promises with different resource types
-    std::vector<std::unique_ptr<SemiPromise<std::string>>> promises;
+    std::vector<std::unique_ptr<semi_promise_default<std::string>>> promises;
     for (int i = 0; i < 10; ++i) {
-        auto promise = std::make_unique<SemiPromise<std::string>>();
+        auto promise = std::make_unique<semi_promise_default<std::string>>();
         promise->setValue("resource_test_" + std::to_string(i));
         BOOST_CHECK(promise->isFulfilled());
         promises.push_back(std::move(promise));

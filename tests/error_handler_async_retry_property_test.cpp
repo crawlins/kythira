@@ -14,7 +14,7 @@
 #define BOOST_TEST_MODULE error_handler_async_retry_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/error_handler.hpp>
-#include <folly/executors/CPUThreadPoolExecutor.h>
+#include <raft/executor_default.hpp>
 #include <folly/init/Init.h>
 #include <chrono>
 #include <random>
@@ -61,7 +61,7 @@ BOOST_AUTO_TEST_SUITE(error_handler_async_retry_property_tests)
  * **Validates: Requirement 32.1**
  */
 BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, *boost::unit_test::timeout(90)) {
-    folly::CPUThreadPoolExecutor executor(4);
+    kythira::executor_default executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
@@ -79,20 +79,21 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, *boost::unit_test::timeou
         std::uniform_int_distribution<int> value_dist(1, 1000);
         int expected_value = value_dist(gen);
 
-        auto operation = [&attempt_count, expected_value]() -> Future<int> {
+        auto operation = [&attempt_count, expected_value]() -> future_default<int> {
             std::size_t current_attempt = ++attempt_count;
 
             // Fail first 2 attempts, succeed on 3rd
             if (current_attempt < 3) {
-                return FutureFactory::makeExceptionalFuture<int>(
-                    std::runtime_error("Temporary failure"));
+                return future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("Temporary failure")));
             }
 
-            return FutureFactory::makeFuture(expected_value);
+            return future_factory_default::makeFuture(expected_value);
         };
 
         // Execute with retry - should complete without blocking threads
-        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
+        auto result =
+            handler.execute_with_retry("test_operation", operation).via(executor.handle()).get();
 
         BOOST_CHECK_EQUAL(result, expected_value);
         BOOST_CHECK_EQUAL(attempt_count.load(), 3);
@@ -103,13 +104,13 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_future_delay, *boost::unit_test::timeou
  * Property 2: Async retry should use thenTry with Future-returning callbacks
  *
  * For any retry operation, the system should chain operations using thenTry with
- * callbacks that return Future<T>, enabling non-blocking async chains.
+ * callbacks that return future_default<T>, enabling non-blocking async chains.
  *
  * **Validates: Requirement 32.2**
  */
 BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks,
                      *boost::unit_test::timeout(90)) {
-    folly::CPUThreadPoolExecutor executor(4);
+    kythira::executor_default executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
@@ -126,7 +127,7 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks,
         std::vector<std::chrono::steady_clock::time_point> attempt_times;
         std::mutex times_mutex;
 
-        auto operation = [&attempt_count, &attempt_times, &times_mutex]() -> Future<int> {
+        auto operation = [&attempt_count, &attempt_times, &times_mutex]() -> future_default<int> {
             {
                 std::lock_guard<std::mutex> lock(times_mutex);
                 attempt_times.push_back(std::chrono::steady_clock::now());
@@ -136,14 +137,15 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks,
 
             // Fail first 3 attempts
             if (current_attempt < 4) {
-                return FutureFactory::makeExceptionalFuture<int>(
-                    std::runtime_error("Network timeout"));
+                return future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("Network timeout")));
             }
 
-            return FutureFactory::makeFuture(42);
+            return future_factory_default::makeFuture(42);
         };
 
-        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
+        auto result =
+            handler.execute_with_retry("test_operation", operation).via(executor.handle()).get();
 
         BOOST_CHECK_EQUAL(result, 42);
         BOOST_CHECK_EQUAL(attempt_count.load(), 4);
@@ -172,7 +174,7 @@ BOOST_AUTO_TEST_CASE(property_retry_uses_then_try_with_future_callbacks,
  */
 BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, *boost::unit_test::timeout(90)) {
     // Use a small thread pool to make blocking more obvious
-    folly::CPUThreadPoolExecutor executor(2);
+    kythira::executor_default executor(2);
 
     for (std::size_t i = 0; i < 10; ++i) {  // Fewer iterations for this expensive test
         error_handler<int> handler;
@@ -189,26 +191,26 @@ BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, *boost::unit_test
         std::atomic<std::size_t> other_work_count{0};
 
         // Operation that will retry
-        auto retry_operation = [&retry_attempt_count]() -> Future<int> {
+        auto retry_operation = [&retry_attempt_count]() -> future_default<int> {
             std::size_t current_attempt = ++retry_attempt_count;
 
             if (current_attempt < 3) {
-                return FutureFactory::makeExceptionalFuture<int>(
-                    std::runtime_error("Temporary failure"));
+                return future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("Temporary failure")));
             }
 
-            return FutureFactory::makeFuture(100);
+            return future_factory_default::makeFuture(100);
         };
 
         // Start retry operation
         auto retry_future =
-            handler.execute_with_retry("test_operation", retry_operation).via(&executor);
+            handler.execute_with_retry("test_operation", retry_operation).via(executor.handle());
 
         // Submit other work to the executor while retry is happening
-        std::vector<Future<int>> other_futures;
+        std::vector<future_default<int>> other_futures;
         for (int j = 0; j < 10; ++j) {
-            auto other_future = FutureFactory::makeFuture(folly::Unit{})
-                                    .via(&executor)
+            auto other_future = future_factory_default::makeFuture()
+                                    .via(executor.handle())
                                     .thenValue([&other_work_count, j]() {
                                         other_work_count++;
                                         return j;
@@ -243,7 +245,7 @@ BOOST_AUTO_TEST_CASE(property_no_threads_blocked_during_delay, *boost::unit_test
  */
 BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains,
                      *boost::unit_test::timeout(90)) {
-    folly::CPUThreadPoolExecutor executor(4);
+    kythira::executor_default executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
@@ -259,17 +261,19 @@ BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains,
         std::atomic<std::size_t> attempt_count{0};
         std::string error_message = "Persistent network failure " + std::to_string(i);
 
-        auto operation = [&attempt_count, error_message]() -> Future<int> {
+        auto operation = [&attempt_count, error_message]() -> future_default<int> {
             ++attempt_count;
 
             // Always fail
-            return FutureFactory::makeExceptionalFuture<int>(std::runtime_error(error_message));
+            return future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error(error_message)));
         };
 
         // Execute with retry - should throw after all attempts
         try {
-            auto result =
-                handler.execute_with_retry("test_operation", operation).via(&executor).get();
+            auto result = handler.execute_with_retry("test_operation", operation)
+                              .via(executor.handle())
+                              .get();
 
             BOOST_FAIL("Expected exception after exhausting retries");
         } catch (const std::runtime_error& e) {
@@ -291,7 +295,7 @@ BOOST_AUTO_TEST_CASE(property_exception_propagation_through_async_chains,
  * **Validates: Requirement 32.5**
  */
 BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, *boost::unit_test::timeout(90)) {
-    folly::CPUThreadPoolExecutor executor(4);
+    kythira::executor_default executor(4);
 
     for (std::size_t i = 0; i < num_property_iterations; ++i) {
         error_handler<int> handler;
@@ -308,21 +312,22 @@ BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, *boost::unit_test
         std::uniform_int_distribution<int> value_dist(1, 1000);
         int expected_value = value_dist(gen);
 
-        auto operation = [&attempt_count, expected_value]() -> Future<int> {
+        auto operation = [&attempt_count, expected_value]() -> future_default<int> {
             std::size_t current_attempt = ++attempt_count;
 
             if (current_attempt < 3) {
-                return FutureFactory::makeExceptionalFuture<int>(
-                    std::runtime_error("Temporary failure"));
+                return future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("Temporary failure")));
             }
 
-            return FutureFactory::makeFuture(expected_value);
+            return future_factory_default::makeFuture(expected_value);
         };
 
         // Measure time to get the future (should be immediate)
         auto start_time = std::chrono::steady_clock::now();
 
-        auto future = handler.execute_with_retry("test_operation", operation).via(&executor);
+        auto future =
+            handler.execute_with_retry("test_operation", operation).via(executor.handle());
 
         auto future_creation_time = std::chrono::steady_clock::now();
         auto creation_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -357,7 +362,7 @@ BOOST_AUTO_TEST_CASE(property_async_retry_returns_immediately, *boost::unit_test
  */
 BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays,
                      *boost::unit_test::timeout(90)) {
-    folly::CPUThreadPoolExecutor executor(4);
+    kythira::executor_default executor(4);
 
     for (std::size_t i = 0; i < 20; ++i) {  // Fewer iterations for timing-sensitive test
         error_handler<int> handler;
@@ -375,7 +380,7 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays,
         std::vector<std::chrono::steady_clock::time_point> attempt_times;
         std::mutex times_mutex;
 
-        auto operation = [&attempt_count, &attempt_times, &times_mutex]() -> Future<int> {
+        auto operation = [&attempt_count, &attempt_times, &times_mutex]() -> future_default<int> {
             {
                 std::lock_guard<std::mutex> lock(times_mutex);
                 attempt_times.push_back(std::chrono::steady_clock::now());
@@ -384,14 +389,15 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays,
             std::size_t current_attempt = ++attempt_count;
 
             if (current_attempt < 4) {
-                return FutureFactory::makeExceptionalFuture<int>(
-                    std::runtime_error("Temporary failure"));
+                return future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("Temporary failure")));
             }
 
-            return FutureFactory::makeFuture(42);
+            return future_factory_default::makeFuture(42);
         };
 
-        auto result = handler.execute_with_retry("test_operation", operation).via(&executor).get();
+        auto result =
+            handler.execute_with_retry("test_operation", operation).via(executor.handle()).get();
 
         BOOST_CHECK_EQUAL(result, 42);
         BOOST_REQUIRE_EQUAL(attempt_times.size(), 4);

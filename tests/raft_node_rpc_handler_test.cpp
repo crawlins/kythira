@@ -13,6 +13,7 @@
 
 #define BOOST_TEST_MODULE raft_node_rpc_handler_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -39,9 +40,9 @@ BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 namespace {
 
 struct test_raft_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -192,7 +193,7 @@ BOOST_AUTO_TEST_CASE(read_state_on_single_node_leader, *boost::unit_test::timeou
 
     // Single-node leader can serve reads immediately (no heartbeat round-trip needed)
     auto f = leader->read_state(std::chrono::milliseconds{500});
-    BOOST_CHECK_NO_THROW(f.get());
+    BOOST_CHECK_NO_THROW(std::move(f).get());
 
     leader->stop();
 }
@@ -207,11 +208,11 @@ BOOST_AUTO_TEST_CASE(read_state_after_committed_command, *boost::unit_test::time
     // Commit a command first
     auto cmd = make_put_cmd("hello", "world");
     auto cf = leader->submit_command(cmd, std::chrono::milliseconds{2000});
-    cf.get();
+    std::move(cf).get();
 
     // Now read back state — should reflect the committed entry
     auto rf = leader->read_state(std::chrono::milliseconds{500});
-    BOOST_CHECK_NO_THROW(rf.get());
+    BOOST_CHECK_NO_THROW(std::move(rf).get());
 
     leader->stop();
 }
@@ -308,7 +309,7 @@ BOOST_AUTO_TEST_CASE(check_heartbeat_cancels_timed_out_operation, *boost::unit_t
     // calls cancel_timed_out_operations internally.
     auto cmd = make_put_cmd("x", "y");
     auto f = leader->submit_command(cmd, std::chrono::milliseconds{2000});
-    f.get();  // ensure it committed
+    std::move(f).get();  // ensure it committed
 
     // Now trigger heartbeat check — exercises cancel_timed_out_operations code path
     // (count will be 0 since no ops are pending, but the path is still taken)
@@ -357,7 +358,7 @@ BOOST_AUTO_TEST_CASE(replicate_on_single_node_leader, *boost::unit_test::timeout
 
     // After replicate: commit a command too
     auto f = leader->submit_command(make_put_cmd("a", "b"), std::chrono::milliseconds{2000});
-    f.get();
+    std::move(f).get();
 
     BOOST_CHECK_NO_THROW(leader->replicate_to_followers());
 

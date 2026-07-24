@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE TestCodeFutureUsagePropertyTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -57,12 +58,13 @@ BOOST_AUTO_TEST_CASE(property_integration_tests_use_kythira_future,
                "Integration test should include raft/future.hpp");
 
     // Check that kythira::Future is used instead of folly::Future for collections
-    BOOST_TEST(content.find("std::vector<kythira::Future<bool>>") != std::string::npos,
+    BOOST_TEST(content.find("std::vector<kythira::future_default<bool>>") != std::string::npos,
                "Integration test should use kythira::Future in collections");
 
-    // Check that kythira::wait_for_all is used instead of folly::collectAll
-    BOOST_TEST(content.find("kythira::wait_for_all") != std::string::npos,
-               "Integration test should use kythira::wait_for_all");
+    // Check that kythira::future_collector_default::collectAll is used instead of
+    // folly::collectAll (or the Folly-only kythira::wait_for_all free function alias)
+    BOOST_TEST(content.find("kythira::future_collector_default::collectAll") != std::string::npos,
+               "Integration test should use kythira::future_collector_default::collectAll");
 
     // Verify no direct std::future usage remains
     std::regex std_future_regex(R"(\bstd::future\b)");
@@ -77,17 +79,18 @@ BOOST_AUTO_TEST_CASE(property_test_fixtures_use_consistent_future_types,
     // Test that test fixtures use consistent future types
 
     // Verify that kythira::Future satisfies the future concept for common test types
-    static_assert(kythira::future<kythira::Future<bool>, bool>,
-                  "kythira::Future<bool> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<bool>, bool>,
+                  "kythira::future_default<bool> should satisfy future concept");
 
-    static_assert(kythira::future<kythira::Future<std::vector<std::byte>>, std::vector<std::byte>>,
-                  "kythira::Future<std::vector<std::byte>> should satisfy future concept");
+    static_assert(
+        kythira::future<kythira::future_default<std::vector<std::byte>>, std::vector<std::byte>>,
+        "kythira::future_default<std::vector<std::byte>> should satisfy future concept");
 
-    static_assert(kythira::future<kythira::Future<void>, void>,
-                  "kythira::Future<void> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<void>, void>,
+                  "kythira::future_default<void> should satisfy future concept");
 
     // Test that kythira::Future is different from std::future and folly::Future
-    static_assert(!std::is_same_v<kythira::Future<bool>, std::future<bool>>,
+    static_assert(!std::is_same_v<kythira::future_default<bool>, std::future<bool>>,
                   "kythira::Future should be different from std::future");
 
     BOOST_TEST_MESSAGE("Test fixture future type consistency validation passed");
@@ -98,22 +101,23 @@ BOOST_AUTO_TEST_CASE(property_async_test_operations_use_kythira_future,
     // Test that async test operations use kythira::Future for synchronization
 
     // Create test futures to verify they work correctly in test context
-    auto immediate_future = kythira::Future<int>(42);
+    auto immediate_future = kythira::future_factory_default::makeFuture(42);
     BOOST_TEST(immediate_future.isReady());
-    BOOST_TEST(immediate_future.get() == 42);
+    BOOST_TEST(std::move(immediate_future).get() == 42);
 
-    auto exception_future =
-        kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test error")));
+    auto exception_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+        std::make_exception_ptr(std::runtime_error("test error")));
     BOOST_TEST(exception_future.isReady());
-    BOOST_CHECK_THROW(exception_future.get(), std::runtime_error);
+    BOOST_CHECK_THROW(std::move(exception_future).get(), std::runtime_error);
 
-    // Test that wait_for_all works with test futures
-    std::vector<kythira::Future<int>> test_futures;
-    test_futures.emplace_back(kythira::Future<int>(1));
-    test_futures.emplace_back(kythira::Future<int>(2));
-    test_futures.emplace_back(kythira::Future<int>(3));
+    // Test that future_collector_default::collectAll works with test futures
+    std::vector<kythira::future_default<int>> test_futures;
+    test_futures.push_back(kythira::future_factory_default::makeFuture(1));
+    test_futures.push_back(kythira::future_factory_default::makeFuture(2));
+    test_futures.push_back(kythira::future_factory_default::makeFuture(3));
 
-    auto results = kythira::wait_for_all(std::move(test_futures)).get();
+    auto results =
+        std::move(kythira::future_collector_default::collectAll(std::move(test_futures))).get();
     BOOST_TEST(results.size() == 3);
     BOOST_TEST(results[0].value() == 1);
     BOOST_TEST(results[1].value() == 2);
@@ -126,28 +130,28 @@ BOOST_AUTO_TEST_CASE(property_test_validation_uses_kythira_future, *boost::unit_
     // Test that test code validation uses kythira::Future for result verification
 
     // Test future chaining in test context
-    auto base_future = kythira::Future<int>(10);
+    auto base_future = kythira::future_factory_default::makeFuture(10);
 
     bool then_called = false;
-    base_future.then([&then_called](int value) {
+    auto chained_future = std::move(base_future).thenValue([&then_called](int value) {
         then_called = true;
         BOOST_TEST(value == 10);
     });
-
-    // Give the then callback time to execute
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::move(chained_future).get();
     BOOST_TEST(then_called);
 
     // Test error handling in test context
-    auto error_future = kythira::Future<int>(folly::exception_wrapper(std::runtime_error("test")));
+    auto error_future = kythira::future_factory_default::makeExceptionalFuture<int>(
+        std::make_exception_ptr(std::runtime_error("test")));
 
     bool error_handled = false;
-    auto recovered_future = error_future.onError([&error_handled](folly::exception_wrapper) -> int {
-        error_handled = true;
-        return -1;
-    });
+    auto recovered_future =
+        std::move(error_future).thenError([&error_handled](std::exception_ptr) -> int {
+            error_handled = true;
+            return -1;
+        });
 
-    BOOST_TEST(recovered_future.get() == -1);
+    BOOST_TEST(std::move(recovered_future).get() == -1);
     BOOST_TEST(error_handled);
 
     BOOST_TEST_MESSAGE("Test validation future usage validation passed");
@@ -161,15 +165,15 @@ BOOST_AUTO_TEST_CASE(property_no_direct_folly_future_in_test_interfaces,
     // Test code should use kythira::Future which provides a unified interface
 
     // Verify that kythira::Future is NOT the same as folly::Future
-    static_assert(!std::is_same_v<kythira::Future<int>, folly::Future<int>>,
+    static_assert(!std::is_same_v<kythira::future_default<int>, folly::Future<int>>,
                   "kythira::Future should be different from folly::Future");
 
     // Test that kythira::Future provides the expected interface for tests
-    auto test_future = kythira::Future<std::string>(std::string("test_value"));
+    auto test_future = kythira::future_factory_default::makeFuture(std::string("test_value"));
 
     // Test synchronous access
     BOOST_TEST(test_future.isReady());
-    BOOST_TEST(test_future.get() == "test_value");
+    BOOST_TEST(std::move(test_future).get() == "test_value");
 
     BOOST_TEST_MESSAGE("Test interface future usage validation passed");
 }

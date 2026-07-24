@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE http_client_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/http_transport.hpp>
 #include <raft/http_transport_impl.hpp>
@@ -24,7 +25,7 @@ BOOST_AUTO_TEST_SUITE(http_client_tests)
 
 // Test that cpp_httplib_client can be instantiated with valid types
 // Note: Templated transports don't directly satisfy network_client concept
-// because they return Types::future_template<T>, not kythira::Future<T>.
+// because they return Types::future_template<T>, not kythira::future_default<T>.
 // Concept satisfaction is verified at instantiation time when Types is concrete.
 BOOST_AUTO_TEST_CASE(test_client_type_instantiation, *boost::unit_test::timeout(30)) {
     using client_type = kythira::cpp_httplib_client<test_transport_types>;

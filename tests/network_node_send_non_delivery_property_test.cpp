@@ -55,7 +55,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, *boost::unit_
 
         // Send message
         auto send_future = node_a->send(std::move(msg));
-        bool send_result = send_future.get();
+        bool send_result = std::move(send_future).get();
 
         if (send_result) {
             successful_sends++;
@@ -63,7 +63,7 @@ BOOST_AUTO_TEST_CASE(network_node_send_non_delivery_property_test, *boost::unit_
             // Try to receive the message (non-blocking check)
             auto receive_future = node_b->receive();
             try {
-                auto received_msg = receive_future.get();
+                auto received_msg = std::move(receive_future).get();
                 // Check if we actually received a message (not empty)
                 if (!received_msg.payload().empty()) {
                     delivered_messages++;

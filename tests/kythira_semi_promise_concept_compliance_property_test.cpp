@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <exception>
 #include <string>
@@ -30,21 +31,22 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
                      *boost::unit_test::timeout(90)) {
     // Test 1: Static assertions for concept compliance
     {
-        // Test kythira::SemiPromise<int> satisfies semi_promise concept
-        static_assert(semi_promise<SemiPromise<int>, int>,
-                      "kythira::SemiPromise<int> must satisfy semi_promise concept");
+        // Test kythira::semi_promise_default<int> satisfies semi_promise concept
+        static_assert(semi_promise<semi_promise_default<int>, int>,
+                      "kythira::semi_promise_default<int> must satisfy semi_promise concept");
 
-        // Test kythira::SemiPromise<std::string> satisfies semi_promise concept
-        static_assert(semi_promise<SemiPromise<std::string>, std::string>,
-                      "kythira::SemiPromise<std::string> must satisfy semi_promise concept");
+        // Test kythira::semi_promise_default<std::string> satisfies semi_promise concept
+        static_assert(
+            semi_promise<semi_promise_default<std::string>, std::string>,
+            "kythira::semi_promise_default<std::string> must satisfy semi_promise concept");
 
-        // Test kythira::SemiPromise<double> satisfies semi_promise concept
-        static_assert(semi_promise<SemiPromise<double>, double>,
-                      "kythira::SemiPromise<double> must satisfy semi_promise concept");
+        // Test kythira::semi_promise_default<double> satisfies semi_promise concept
+        static_assert(semi_promise<semi_promise_default<double>, double>,
+                      "kythira::semi_promise_default<double> must satisfy semi_promise concept");
 
-        // Test kythira::SemiPromise<void> satisfies semi_promise concept
-        static_assert(semi_promise<SemiPromise<void>, void>,
-                      "kythira::SemiPromise<void> must satisfy semi_promise concept");
+        // Test kythira::semi_promise_default<void> satisfies semi_promise concept
+        static_assert(semi_promise<semi_promise_default<void>, void>,
+                      "kythira::semi_promise_default<void> must satisfy semi_promise concept");
 
         // Test kythira::SemiPromise with custom types
         struct CustomType {
@@ -52,19 +54,20 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
             std::string name;
         };
 
-        static_assert(semi_promise<SemiPromise<CustomType>, CustomType>,
-                      "kythira::SemiPromise<CustomType> must satisfy semi_promise concept");
+        static_assert(
+            semi_promise<semi_promise_default<CustomType>, CustomType>,
+            "kythira::semi_promise_default<CustomType> must satisfy semi_promise concept");
 
         // Test kythira::SemiPromise with pointer types
-        static_assert(semi_promise<SemiPromise<int*>, int*>,
-                      "kythira::SemiPromise<int*> must satisfy semi_promise concept");
+        static_assert(semi_promise<semi_promise_default<int*>, int*>,
+                      "kythira::semi_promise_default<int*> must satisfy semi_promise concept");
 
         BOOST_TEST_MESSAGE("All kythira::SemiPromise types satisfy semi_promise concept");
     }
 
     // Test 2: Runtime behavior verification for int type
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
 
         // Initially not fulfilled
         BOOST_CHECK(!promise.isFulfilled());
@@ -79,7 +82,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
 
     // Test 3: Runtime behavior verification for std::string type
     {
-        SemiPromise<std::string> promise;
+        semi_promise_default<std::string> promise;
 
         std::string test_str = "hello world";
         promise.setValue(test_str);
@@ -88,24 +91,24 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
 
     // Test 4: Runtime behavior verification for void type
     {
-        SemiPromise<void> promise;
+        semi_promise_default<void> promise;
 
         // Initially not fulfilled
         BOOST_CHECK(!promise.isFulfilled());
 
         // Set value (using folly::Unit for void)
-        promise.setValue(folly::Unit{});
+        promise.setValue(kythira::unit{});
         BOOST_CHECK(promise.isFulfilled());
 
         // Verify cannot fulfill again
-        BOOST_CHECK_THROW(promise.setValue(folly::Unit{}), std::logic_error);
+        BOOST_CHECK_THROW(promise.setValue(kythira::unit{}), std::logic_error);
     }
 
     // Test 5: Exception handling with folly::exception_wrapper
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
 
-        auto ex = folly::exception_wrapper(std::runtime_error(test_string));
+        auto ex = std::make_exception_ptr(std::runtime_error(test_string));
         promise.setException(ex);
 
         BOOST_CHECK(promise.isFulfilled());
@@ -116,7 +119,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
 
     // Test 6: Exception handling with std::exception_ptr
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
 
         try {
             throw std::runtime_error(test_string);
@@ -133,7 +136,7 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
 
         // Test value fulfillment
         {
-            SemiPromise<int> promise;
+            semi_promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             promise.setValue(random_value);
@@ -142,27 +145,27 @@ BOOST_AUTO_TEST_CASE(kythira_semi_promise_concept_compliance_property_test,
 
         // Test exception fulfillment with folly::exception_wrapper
         {
-            SemiPromise<int> promise;
+            semi_promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             auto ex =
-                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+                std::make_exception_ptr(std::runtime_error("test exception " + std::to_string(i)));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
         }
 
         // Test void promise
         {
-            SemiPromise<void> void_promise;
+            semi_promise_default<void> void_promise;
             BOOST_CHECK(!void_promise.isFulfilled());
 
-            void_promise.setValue(folly::Unit{});
+            void_promise.setValue(kythira::unit{});
             BOOST_CHECK(void_promise.isFulfilled());
         }
 
         // Test move semantics
         {
-            SemiPromise<std::string> string_promise;
+            semi_promise_default<std::string> string_promise;
             std::string movable_string = "movable test string " + std::to_string(i);
 
             string_promise.setValue(std::move(movable_string));
@@ -205,21 +208,21 @@ BOOST_AUTO_TEST_CASE(semi_promise_concept_rejection_test, *boost::unit_test::tim
  */
 BOOST_AUTO_TEST_CASE(semi_promise_move_only_test, *boost::unit_test::timeout(30)) {
     // Test that SemiPromise is move-only (cannot be copied)
-    static_assert(std::is_move_constructible_v<SemiPromise<int>>,
+    static_assert(std::is_move_constructible_v<semi_promise_default<int>>,
                   "SemiPromise should be move constructible");
-    static_assert(std::is_move_assignable_v<SemiPromise<int>>,
+    static_assert(std::is_move_assignable_v<semi_promise_default<int>>,
                   "SemiPromise should be move assignable");
-    static_assert(!std::is_copy_constructible_v<SemiPromise<int>>,
+    static_assert(!std::is_copy_constructible_v<semi_promise_default<int>>,
                   "SemiPromise should not be copy constructible");
-    static_assert(!std::is_copy_assignable_v<SemiPromise<int>>,
+    static_assert(!std::is_copy_assignable_v<semi_promise_default<int>>,
                   "SemiPromise should not be copy assignable");
 
     // Test move construction
-    SemiPromise<int> promise1;
-    SemiPromise<int> promise2 = std::move(promise1);
+    semi_promise_default<int> promise1;
+    semi_promise_default<int> promise2 = std::move(promise1);
 
     // Test move assignment
-    SemiPromise<int> promise3;
+    semi_promise_default<int> promise3;
     promise3 = std::move(promise2);
 
     BOOST_CHECK(!promise3.isFulfilled());
@@ -233,7 +236,7 @@ BOOST_AUTO_TEST_CASE(semi_promise_move_only_test, *boost::unit_test::timeout(30)
 BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::timeout(30)) {
     // Test that SemiPromise properly manages underlying folly::Promise
     {
-        SemiPromise<int> promise;
+        semi_promise_default<int> promise;
         BOOST_CHECK(!promise.isFulfilled());
 
         // Promise should be properly initialized and functional
@@ -243,17 +246,17 @@ BOOST_AUTO_TEST_CASE(semi_promise_resource_management_test, *boost::unit_test::t
 
     // Test with void type
     {
-        SemiPromise<void> void_promise;
+        semi_promise_default<void> void_promise;
         BOOST_CHECK(!void_promise.isFulfilled());
 
-        void_promise.setValue(folly::Unit{});
+        void_promise.setValue(kythira::unit{});
         BOOST_CHECK(void_promise.isFulfilled());
     }  // void_promise goes out of scope - should clean up properly
 
     // Test with exception
     {
-        SemiPromise<int> exception_promise;
-        exception_promise.setException(folly::exception_wrapper(std::runtime_error("test")));
+        semi_promise_default<int> exception_promise;
+        exception_promise.setException(std::make_exception_ptr(std::runtime_error("test")));
         BOOST_CHECK(exception_promise.isFulfilled());
     }  // exception_promise goes out of scope - should clean up properly
 }

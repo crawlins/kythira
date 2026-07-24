@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftTimeoutClassificationPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -183,7 +184,8 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, *boost::unit_tes
         std::atomic<int> attempt_count{0};
 
         auto timeout_retry_operation = [&attempt_count, &attempt_times]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
@@ -196,13 +198,13 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, *boost::unit_tes
                 std::mt19937 rng(rd());
                 std::uniform_int_distribution<std::size_t> error_dist(0, timeout_errors.size() - 1);
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error(timeout_errors[error_dist(rng)]));
+                    std::make_exception_ptr(std::runtime_error(timeout_errors[error_dist(rng)])));
             }
             kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                 1, true, std::nullopt, std::nullopt};
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         try {

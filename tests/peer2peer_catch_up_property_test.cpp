@@ -4,6 +4,7 @@
 // Testing Strategy.
 #define BOOST_TEST_MODULE peer2peer_catch_up_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -37,20 +38,20 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     preset_peer_discovery() = default;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -103,9 +104,9 @@ struct test_types {
 // declared at all — resolves to no_op_peer2peer_replicator via the fallback trait
 // (Requirement 20 / design.md Property 1: no-op-present vs never-declared parity).
 struct no_op_test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -394,7 +395,7 @@ BOOST_AUTO_TEST_CASE(remove_server_revokes_catch_up_eligibility_immediately,
 
     // Remove node 3 from the cluster.
     auto rm_fut = node1.remove_server(3);
-    for (int i = 0; i < 30 && !rm_fut.hasValue() && !rm_fut.hasException(); ++i) {
+    for (int i = 0; i < 30 && !rm_fut.isReady(); ++i) {
         node1.check_heartbeat_timeout();
         std::this_thread::sleep_for(std::chrono::milliseconds{30});
     }

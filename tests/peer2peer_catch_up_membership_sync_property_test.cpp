@@ -21,6 +21,7 @@
 // has already dropped it).
 #define BOOST_TEST_MODULE peer2peer_catch_up_membership_sync_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/quorum_management.hpp>
 #include <raft/raft.hpp>
@@ -56,20 +57,20 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     preset_peer_discovery() = default;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -432,7 +433,8 @@ BOOST_AUTO_TEST_CASE(learner_never_offered_as_catch_up_source, *boost::unit_test
     bool add_done = false;
     std::move(add_fut)
         .thenValue([&](std::vector<std::byte>) { add_done = true; })
-        .thenError([&](const std::exception_ptr&) { add_done = true; });
+        .thenError([&](const std::exception_ptr&) { add_done = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add_done; }));
     // node4 is now a learner replicating from node1 like any other follower.
 

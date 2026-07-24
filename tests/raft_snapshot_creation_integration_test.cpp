@@ -9,6 +9,7 @@
 
 #define BOOST_TEST_MODULE RaftSnapshotCreationIntegrationTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/examples/counter_state_machine.hpp>
@@ -35,11 +36,11 @@ BOOST_AUTO_TEST_CASE(test_create_snapshot_exists, *boost::unit_test::timeout(30)
 
     auto serializer = kythira::json_rpc_serializer<std::vector<std::byte>>{};
     auto network_client =
-        kythira::simulator_network_client<kythira::Future<std::vector<std::byte>>,
+        kythira::simulator_network_client<kythira::future_default<std::vector<std::byte>>,
                                           kythira::json_rpc_serializer<std::vector<std::byte>>,
                                           std::vector<std::byte>>{serializer};
     auto network_server =
-        kythira::simulator_network_server<kythira::Future<std::vector<std::byte>>,
+        kythira::simulator_network_server<kythira::future_default<std::vector<std::byte>>,
                                           kythira::json_rpc_serializer<std::vector<std::byte>>,
                                           std::vector<std::byte>>{serializer};
 

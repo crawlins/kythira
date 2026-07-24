@@ -55,12 +55,12 @@ BOOST_AUTO_TEST_CASE(network_node_receive_message_property_test, *boost::unit_te
 
         // Send message
         auto send_future = node_a->send(std::move(msg));
-        bool send_result = send_future.get();
+        bool send_result = std::move(send_future).get();
 
         if (send_result) {
             // Try to receive the message
             auto receive_future = node_b->receive();
-            auto received_msg = receive_future.get();
+            auto received_msg = std::move(receive_future).get();
 
             // Property: Received message should match sent message
             if (!received_msg.payload().empty()) {

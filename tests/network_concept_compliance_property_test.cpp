@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE network_concept_compliance_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/network.hpp>
 #include <raft/json_serializer.hpp>
@@ -15,9 +16,9 @@ constexpr const char* test_name = "network_concept_compliance_property_test";
 using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 using test_metrics = kythira::noop_metrics;
 using test_logger = kythira::console_logger;
-using rv_future_type = kythira::Future<kythira::request_vote_response<>>;
-using ae_future_type = kythira::Future<kythira::append_entries_response<>>;
-using is_future_type = kythira::Future<kythira::install_snapshot_response<>>;
+using rv_future_type = kythira::future_default<kythira::request_vote_response<>>;
+using ae_future_type = kythira::future_default<kythira::append_entries_response<>>;
+using is_future_type = kythira::future_default<kythira::install_snapshot_response<>>;
 }
 
 BOOST_AUTO_TEST_SUITE(network_concept_compliance_property_tests)
@@ -61,24 +62,23 @@ BOOST_AUTO_TEST_CASE(property_network_concept_compliance, *boost::unit_test::tim
     public:
         auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
                                std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::request_vote_response<>> {
-            return kythira::Future<kythira::request_vote_response<>>(
-                kythira::request_vote_response<>{});
+            -> kythira::future_default<kythira::request_vote_response<>> {
+            return kythira::future_factory_default::makeFuture(kythira::request_vote_response<>{});
         }
 
         auto send_append_entries(std::uint64_t target,
                                  const kythira::append_entries_request<>& request,
                                  std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::append_entries_response<>> {
-            return kythira::Future<kythira::append_entries_response<>>(
+            -> kythira::future_default<kythira::append_entries_response<>> {
+            return kythira::future_factory_default::makeFuture(
                 kythira::append_entries_response<>{});
         }
 
         auto send_install_snapshot(std::uint64_t target,
                                    const kythira::install_snapshot_request<>& request,
                                    std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::install_snapshot_response<>> {
-            return kythira::Future<kythira::install_snapshot_response<>>(
+            -> kythira::future_default<kythira::install_snapshot_response<>> {
+            return kythira::future_factory_default::makeFuture(
                 kythira::install_snapshot_response<>{});
         }
     };
@@ -158,24 +158,23 @@ BOOST_AUTO_TEST_CASE(test_concrete_transport_implementations, *boost::unit_test:
     public:
         auto send_request_vote(std::uint64_t target, const kythira::request_vote_request<>& request,
                                std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::request_vote_response<>> {
-            return kythira::Future<kythira::request_vote_response<>>(
-                kythira::request_vote_response<>{});
+            -> kythira::future_default<kythira::request_vote_response<>> {
+            return kythira::future_factory_default::makeFuture(kythira::request_vote_response<>{});
         }
 
         auto send_append_entries(std::uint64_t target,
                                  const kythira::append_entries_request<>& request,
                                  std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::append_entries_response<>> {
-            return kythira::Future<kythira::append_entries_response<>>(
+            -> kythira::future_default<kythira::append_entries_response<>> {
+            return kythira::future_factory_default::makeFuture(
                 kythira::append_entries_response<>{});
         }
 
         auto send_install_snapshot(std::uint64_t target,
                                    const kythira::install_snapshot_request<>& request,
                                    std::chrono::milliseconds timeout)
-            -> kythira::Future<kythira::install_snapshot_response<>> {
-            return kythira::Future<kythira::install_snapshot_response<>>(
+            -> kythira::future_default<kythira::install_snapshot_response<>> {
+            return kythira::future_factory_default::makeFuture(
                 kythira::install_snapshot_response<>{});
         }
     };

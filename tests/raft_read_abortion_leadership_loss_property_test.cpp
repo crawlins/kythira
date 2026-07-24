@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftReadAbortionLeadershipLossPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -73,7 +74,8 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
         const int scenario = static_cast<int>(gen() % 4);
 
         // Declare heartbeat_futures outside the scenario blocks
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             heartbeat_futures;
         heartbeat_futures.reserve(follower_count);
 
@@ -94,7 +96,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                         higher_term,  // Higher term indicates leadership loss
                         false,        // Success doesn't matter with higher term
                         0};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else {
@@ -103,7 +105,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     const bool success = gen() % 2 == 0;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, success, i};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 }
@@ -131,7 +133,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                         higher_term + (gen() % 3);  // Potentially different higher terms
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         response_term, false, 0};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else {
@@ -139,7 +141,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     const bool success = gen() % 2 == 0;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, success, i};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 }
@@ -160,7 +162,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     response_term,  // All higher term
                     false,          // Success doesn't matter
                     0};
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 heartbeat_futures.push_back(std::move(future));
             }
@@ -185,7 +187,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     higher_term_responses++;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         higher_term, false, 0};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else if (term_type == 3 && current_term > 1) {
@@ -194,7 +196,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     const std::uint64_t lower_term = current_term - 1;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         lower_term, false, 0};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else {
@@ -203,7 +205,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                     const bool success = gen() % 2 == 0;
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, success, i};
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 }
@@ -268,14 +270,15 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
 
     // Test with immediate higher term response
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             immediate_higher_term;
         const std::uint64_t current_term = 10;
         const std::uint64_t new_term = 15;
 
         // Single immediate higher term response
         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{new_term, false, 0};
-        immediate_higher_term.push_back(kythira::FutureFactory::makeFuture(response));
+        immediate_higher_term.push_back(kythira::future_factory_default::makeFuture(response));
 
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -290,7 +293,8 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
 
     // Test with gradually increasing terms (election in progress)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             increasing_terms;
         const std::uint64_t base_term = 20;
 
@@ -298,7 +302,7 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
             const std::uint64_t response_term = base_term + i;  // Increasing terms
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{response_term,
                                                                                     false, 0};
-            increasing_terms.push_back(kythira::FutureFactory::makeFuture(response));
+            increasing_terms.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -322,7 +326,8 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
 
     // Test with mixed higher and current terms
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             mixed_terms;
         const std::uint64_t current_term = 30;
         const std::uint64_t higher_term = 35;
@@ -333,12 +338,12 @@ BOOST_AUTO_TEST_CASE(raft_read_abortion_leadership_loss_property_test,
                 // Higher term response
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{higher_term,
                                                                                         false, 0};
-                mixed_terms.push_back(kythira::FutureFactory::makeFuture(response));
+                mixed_terms.push_back(kythira::future_factory_default::makeFuture(response));
             } else {
                 // Current term response
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     current_term, true, i};
-                mixed_terms.push_back(kythira::FutureFactory::makeFuture(response));
+                mixed_terms.push_back(kythira::future_factory_default::makeFuture(response));
             }
         }
 

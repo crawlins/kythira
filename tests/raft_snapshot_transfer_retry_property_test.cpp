@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftSnapshotTransferRetryPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -73,7 +74,7 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
         // Create operation that simulates snapshot transfer with failures
         auto snapshot_transfer_operation = [&attempt_count, failures_before_success,
                                             &failure_modes_encountered, &bytes_transferred]()
-            -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+            -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt <= failures_before_success) {
@@ -98,15 +99,15 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
                     bytes_transferred += 1024 * current_attempt;  // Simulate some progress
                 }
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error(selected_failure));
+                    std::make_exception_ptr(std::runtime_error(selected_failure)));
             }  // Success case - snapshot transfer completed
             bytes_transferred += 10240;  // Final chunk
             kythira::install_snapshot_response<std::uint64_t> success_response{
                 3  // term
             };
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -206,9 +207,8 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
         std::atomic<int> attempt_count{0};
         std::atomic<std::size_t> total_bytes{0};
 
-        auto large_snapshot_operation =
-            [&attempt_count, &attempt_times,
-             &total_bytes]() -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+        auto large_snapshot_operation = [&attempt_count, &attempt_times, &total_bytes]()
+            -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
@@ -216,12 +216,12 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
             total_bytes += 1024 * 1024;  // 1MB per attempt
 
             if (current_attempt < 4) {
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error("Network timeout during large snapshot transfer"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::install_snapshot_response<std::uint64_t>>(std::make_exception_ptr(
+                    std::runtime_error("Network timeout during large snapshot transfer")));
             }
             kythira::install_snapshot_response<std::uint64_t> success_response{1};
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         try {
@@ -267,19 +267,19 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
 
         std::atomic<int> attempt_count{0};
         auto corruption_operation = [&attempt_count]()
-            -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+            -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
                 // Simulate corruption detection (should not retry - data integrity issue)
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error("Snapshot checksum validation failed"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::install_snapshot_response<std::uint64_t>>(std::make_exception_ptr(
+                    std::runtime_error("Snapshot checksum validation failed")));
             }
             BOOST_FAIL("Should not retry on corruption detection");
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::install_snapshot_response<std::uint64_t>>(
-                std::runtime_error("Unexpected retry"));
+                std::make_exception_ptr(std::runtime_error("Unexpected retry")));
         };
 
         try {
@@ -336,11 +336,11 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
 
             std::atomic<int> attempt_count{0};
             auto error_operation = [&attempt_count, error_msg]()
-                -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+                -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
                 ++attempt_count;
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error(error_msg));
+                    std::make_exception_ptr(std::runtime_error(error_msg)));
             };
 
             try {
@@ -393,17 +393,17 @@ BOOST_AUTO_TEST_CASE(raft_snapshot_transfer_retry_property_test, *boost::unit_te
         std::atomic<int> attempt_count{0};
 
         auto timeout_progression_operation = [&attempt_count, &attempt_times]()
-            -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+            -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
             if (current_attempt < 5) {
-                return kythira::FutureFactory::makeExceptionalFuture<
-                    kythira::install_snapshot_response<std::uint64_t>>(
-                    std::runtime_error("Network timeout during snapshot transfer"));
+                return kythira::future_factory_default::makeExceptionalFuture<
+                    kythira::install_snapshot_response<std::uint64_t>>(std::make_exception_ptr(
+                    std::runtime_error("Network timeout during snapshot transfer")));
             }
             kythira::install_snapshot_response<std::uint64_t> success_response{2};
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         try {

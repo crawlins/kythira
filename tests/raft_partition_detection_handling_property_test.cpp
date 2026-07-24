@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftPartitionDetectionHandlingPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -83,7 +84,8 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
             std::atomic<int> attempt_count{0};
             auto partition_operation = [&handler, &recent_errors, &node_failure_counts, target_node,
                                         is_partitioned, &attempt_count]()
-                -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+                -> kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
                 ++attempt_count;
 
                 if (is_partitioned) {
@@ -107,9 +109,9 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
                         recent_errors.erase(recent_errors.begin());
                     }
 
-                    return kythira::FutureFactory::makeExceptionalFuture<
+                    return kythira::future_factory_default::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                        std::runtime_error(error_msg));
+                        std::make_exception_ptr(std::runtime_error(error_msg)));
                 }  // Reachable nodes respond normally
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                     1,             // term
@@ -117,7 +119,7 @@ BOOST_AUTO_TEST_CASE(raft_partition_detection_handling_property_test,
                     std::nullopt,  // conflict_term
                     std::nullopt   // conflict_index
                 };
-                return kythira::FutureFactory::makeFuture(success_response);
+                return kythira::future_factory_default::makeFuture(success_response);
             };
 
             try {

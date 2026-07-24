@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE timeout_operation_support_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <concepts/future.hpp>
 #include <raft/future.hpp>
@@ -188,14 +189,14 @@ BOOST_AUTO_TEST_CASE(property_timeout_operation_support, *boost::unit_test::time
  */
 BOOST_AUTO_TEST_CASE(test_kythira_future_timeout_support, *boost::unit_test::timeout(30)) {
     // Test that kythira::Future satisfies future concept (which requires wait method)
-    static_assert(kythira::future<kythira::Future<int>, int>,
-                  "kythira::Future<int> should satisfy future concept");
-    static_assert(kythira::future<kythira::Future<void>, void>,
-                  "kythira::Future<void> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<int>, int>,
+                  "kythira::future_default<int> should satisfy future concept");
+    static_assert(kythira::future<kythira::future_default<void>, void>,
+                  "kythira::future_default<void> should satisfy future concept");
 
-    // Test runtime timeout behavior with kythira::Future
-    kythira::Future<int> int_future(42);
-    kythira::Future<void> void_future;
+    // Test runtime timeout behavior with kythira::future_default
+    auto int_future = kythira::future_factory_default::makeFuture(42);
+    auto void_future = kythira::future_factory_default::makeFuture();
 
     constexpr std::chrono::milliseconds timeout{1000};
 

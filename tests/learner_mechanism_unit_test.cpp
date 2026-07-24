@@ -9,6 +9,7 @@
 
 #define BOOST_TEST_MODULE learner_mechanism_unit_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/config_entry.hpp>
 #include <raft/raft.hpp>
@@ -90,12 +91,12 @@ public:
     explicit preset_peer_discovery(std::vector<kythira::peer_info<NodeId, Address>> peers)
         : _peers(std::move(peers)) {}
 
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>(_peers));
     }
 
@@ -104,9 +105,9 @@ private:
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -260,7 +261,8 @@ BOOST_AUTO_TEST_CASE(learner_never_starts_election, *boost::unit_test::timeout(3
     bool add_done = false;
     std::move(add_fut)
         .thenValue([&](std::vector<std::byte>) { add_done = true; })
-        .thenError([&](const std::exception_ptr&) { add_done = true; });
+        .thenError([&](const std::exception_ptr&) { add_done = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add_done; }));
 
     // node2 is now a learner replicating from node1. Stop node1 so heartbeats stop
@@ -299,7 +301,8 @@ BOOST_AUTO_TEST_CASE(add_learner_rejects_when_not_leader, *boost::unit_test::tim
     bool threw = false;
     std::move(fut)
         .thenValue([&](std::vector<std::byte>) {})
-        .thenError([&](const std::exception_ptr&) { threw = true; });
+        .thenError([&](const std::exception_ptr&) { threw = true; })
+        .detach();
     BOOST_CHECK(wait_until([&] { return threw; }, std::chrono::milliseconds{2000}));
 
     node1.stop();
@@ -335,7 +338,8 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     bool add_done = false, add_threw = false;
     std::move(add_fut)
         .thenValue([&](std::vector<std::byte>) { add_done = true; })
-        .thenError([&](const std::exception_ptr&) { add_threw = true; });
+        .thenError([&](const std::exception_ptr&) { add_threw = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return add_done || add_threw; }));
     BOOST_REQUIRE(!add_threw);
 
@@ -343,7 +347,8 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     bool dup_threw = false;
     std::move(dup_fut)
         .thenValue([&](std::vector<std::byte>) {})
-        .thenError([&](const std::exception_ptr&) { dup_threw = true; });
+        .thenError([&](const std::exception_ptr&) { dup_threw = true; })
+        .detach();
     BOOST_CHECK(wait_until([&] { return dup_threw; }, std::chrono::milliseconds{2000}));
 
     // Learner replicates: a command submitted after admission is applied on both nodes.
@@ -353,7 +358,8 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     bool cmd_applied = false;
     std::move(cmd_fut)
         .thenValue([&](std::vector<std::byte>) { cmd_applied = true; })
-        .thenError([&](const std::exception_ptr&) {});
+        .thenError([&](const std::exception_ptr&) {})
+        .detach();
     for (int i = 0; i < 15; ++i) {
         node1.check_heartbeat_timeout();
         std::this_thread::sleep_for(std::chrono::milliseconds{30});
@@ -375,7 +381,8 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     bool remove_done = false, remove_threw = false;
     std::move(remove_fut)
         .thenValue([&](std::vector<std::byte>) { remove_done = true; })
-        .thenError([&](const std::exception_ptr&) { remove_threw = true; });
+        .thenError([&](const std::exception_ptr&) { remove_threw = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return remove_done || remove_threw; }));
     BOOST_REQUIRE(!remove_threw);
 
@@ -387,7 +394,8 @@ BOOST_AUTO_TEST_CASE(add_learner_and_remove_learner_round_trip, *boost::unit_tes
     }
     std::move(readd_fut)
         .thenValue([&](std::vector<std::byte>) { readd_done = true; })
-        .thenError([&](const std::exception_ptr&) { readd_threw = true; });
+        .thenError([&](const std::exception_ptr&) { readd_threw = true; })
+        .detach();
     BOOST_CHECK(wait_until([&] { return readd_done || readd_threw; }));
     BOOST_CHECK(!readd_threw);
 

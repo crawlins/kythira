@@ -87,7 +87,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, *boost::unit_test::ti
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener);
         BOOST_REQUIRE(listener->is_listening());
@@ -98,7 +98,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, *boost::unit_test::ti
 
             // Test Case 1: Establish connection and verify it's tracked
             auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-            auto conn = conn_future.get();
+            auto conn = std::move(conn_future).get();
 
             BOOST_REQUIRE(conn);
             BOOST_REQUIRE(conn->is_open());
@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, *boost::unit_test::ti
 
             // Test Case 5: Establish another connection and test error state cleanup
             auto conn2_future = client->connect(server_addr, server_port, connection_timeout);
-            auto conn2 = conn2_future.get();
+            auto conn2 = std::move(conn2_future).get();
 
             BOOST_REQUIRE(conn2);
             BOOST_REQUIRE(conn2->is_open());
@@ -218,7 +218,7 @@ BOOST_AUTO_TEST_CASE(property_connection_resource_cleanup, *boost::unit_test::ti
             // Create multiple connections
             for (std::size_t j = 0; j < 3; ++j) {
                 auto conn_j_future = client->connect(server_addr, server_port, connection_timeout);
-                auto conn_j = conn_j_future.get();
+                auto conn_j = std::move(conn_j_future).get();
 
                 if (conn_j && conn_j->is_open()) {
                     connections.push_back(conn_j);

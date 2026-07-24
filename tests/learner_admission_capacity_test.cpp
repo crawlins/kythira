@@ -7,6 +7,7 @@
 
 #define BOOST_TEST_MODULE learner_admission_capacity_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/raft.hpp>
 #include <raft/test_state_machine.hpp>
@@ -37,20 +38,20 @@ public:
     using node_id_type = NodeId;
     using address_type = Address;
     preset_peer_discovery() = default;
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<kythira::peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(
+        -> kythira::future_default<std::vector<kythira::peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
             std::vector<kythira::peer_info<NodeId, Address>>{});
     }
 };
 
 struct test_types {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;
@@ -172,7 +173,8 @@ BOOST_AUTO_TEST_CASE(blocked_at_target, *boost::unit_test::timeout(15)) {
         .thenError([&](const std::exception_ptr& ex) {
             threw = true;
             caught = ex;
-        });
+        })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return threw; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_THROW(std::rethrow_exception(caught), kythira::learner_capacity_exceeded_exception);
 
@@ -211,7 +213,8 @@ BOOST_AUTO_TEST_CASE(allowed_below_target, *boost::unit_test::timeout(15)) {
     bool done = false, threw = false;
     std::move(fut)
         .thenValue([&](std::vector<std::byte>) { done = true; })
-        .thenError([&](const std::exception_ptr&) { threw = true; });
+        .thenError([&](const std::exception_ptr&) { threw = true; })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return done || threw; }));
     BOOST_CHECK(!threw);
 
@@ -244,7 +247,8 @@ BOOST_AUTO_TEST_CASE(fails_closed_on_undeclared_group, *boost::unit_test::timeou
         .thenError([&](const std::exception_ptr& ex) {
             threw = true;
             caught = ex;
-        });
+        })
+        .detach();
     BOOST_REQUIRE(wait_until([&] { return threw; }, std::chrono::milliseconds{2000}));
     BOOST_CHECK_THROW(std::rethrow_exception(caught), kythira::learner_capacity_exceeded_exception);
 

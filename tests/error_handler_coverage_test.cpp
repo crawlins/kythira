@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE error_handler_coverage_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <folly/init/Init.h>
 
 #include <raft/error_handler.hpp>
@@ -387,10 +388,11 @@ BOOST_AUTO_TEST_SUITE(execute_with_retry_suite)
 BOOST_AUTO_TEST_CASE(success_on_first_attempt, *boost::unit_test::timeout(30)) {
     kythira::error_handler<int> h;
     int call_count = 0;
-    auto future = h.execute_with_retry("heartbeat", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        return kythira::FutureFactory::makeFuture<int>(42);
-    });
+    auto future =
+        h.execute_with_retry("heartbeat", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            return kythira::future_factory_default::makeFuture<int>(42);
+        });
     auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, 42);
     BOOST_CHECK_EQUAL(call_count, 1);
@@ -404,7 +406,10 @@ BOOST_AUTO_TEST_CASE(invalid_policy_returns_exceptional_future, *boost::unit_tes
                                                   .jitter_factor = 0.1,
                                                   .max_attempts = 5};
     auto future = h.execute_with_retry(
-        "test", []() -> kythira::Future<int> { return kythira::FutureFactory::makeFuture<int>(1); },
+        "test",
+        []() -> kythira::future_default<int> {
+            return kythira::future_factory_default::makeFuture<int>(1);
+        },
         bad);
     BOOST_CHECK_THROW(std::move(future).get(), std::invalid_argument);
 }
@@ -420,10 +425,12 @@ BOOST_AUTO_TEST_CASE(permanent_failure_no_retry, *boost::unit_test::timeout(30))
     h.set_retry_policy("test_permanent", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("test_permanent", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        return kythira::FutureFactory::makeExceptionalFuture<int>(std::runtime_error("disk full"));
-    });
+    auto future =
+        h.execute_with_retry("test_permanent", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            return kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("disk full")));
+        });
     BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     // Permanent failure → should not retry
     BOOST_CHECK_EQUAL(call_count, 1);
@@ -439,11 +446,12 @@ BOOST_AUTO_TEST_CASE(exhausted_retries, *boost::unit_test::timeout(30)) {
     h.set_retry_policy("exhausted_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("exhausted_op", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        return kythira::FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("unreachable host"));
-    });
+    auto future =
+        h.execute_with_retry("exhausted_op", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            return kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("unreachable host")));
+        });
     BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     BOOST_CHECK_EQUAL(call_count, 2);  // initial + 1 retry = 2 attempts
 }
@@ -458,11 +466,13 @@ BOOST_AUTO_TEST_CASE(serialization_timeout_no_retry, *boost::unit_test::timeout(
     h.set_retry_policy("ser_timeout_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("ser_timeout_op", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        return kythira::FutureFactory::makeExceptionalFuture<int>(
-            std::runtime_error("timed out deserialization"));  // serialization_timeout → no retry
-    });
+    auto future =
+        h.execute_with_retry("ser_timeout_op", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            return kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error(
+                    "timed out deserialization")));  // serialization_timeout → no retry
+        });
     BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     BOOST_CHECK_EQUAL(call_count, 1);
 }
@@ -477,14 +487,15 @@ BOOST_AUTO_TEST_CASE(network_timeout_retries_with_backoff, *boost::unit_test::ti
     h.set_retry_policy("net_timeout_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("net_timeout_op", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        if (call_count < 3) {
-            return kythira::FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error("rpc timeout no response"));
-        }
-        return kythira::FutureFactory::makeFuture<int>(99);
-    });
+    auto future =
+        h.execute_with_retry("net_timeout_op", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            if (call_count < 3) {
+                return kythira::future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("rpc timeout no response")));
+            }
+            return kythira::future_factory_default::makeFuture<int>(99);
+        });
     auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, 99);
     BOOST_CHECK_EQUAL(call_count, 3);
@@ -500,14 +511,15 @@ BOOST_AUTO_TEST_CASE(connection_failure_timeout_retries, *boost::unit_test::time
     h.set_retry_policy("conn_fail_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("conn_fail_op", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        if (call_count < 2) {
-            return kythira::FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error("timeout connection dropped"));
-        }
-        return kythira::FutureFactory::makeFuture<int>(77);
-    });
+    auto future =
+        h.execute_with_retry("conn_fail_op", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            if (call_count < 2) {
+                return kythira::future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("timeout connection dropped")));
+            }
+            return kythira::future_factory_default::makeFuture<int>(77);
+        });
     auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, 77);
 }
@@ -522,13 +534,13 @@ BOOST_AUTO_TEST_CASE(network_delay_timeout_retries, *boost::unit_test::timeout(3
     h.set_retry_policy("delay_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("delay_op", [&call_count]() -> kythira::Future<int> {
+    auto future = h.execute_with_retry("delay_op", [&call_count]() -> kythira::future_default<int> {
         ++call_count;
         if (call_count < 2) {
-            return kythira::FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error("slow delay timeout"));
+            return kythira::future_factory_default::makeExceptionalFuture<int>(
+                std::make_exception_ptr(std::runtime_error("slow delay timeout")));
         }
-        return kythira::FutureFactory::makeFuture<int>(55);
+        return kythira::future_factory_default::makeFuture<int>(55);
     });
     auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, 55);
@@ -544,16 +556,17 @@ BOOST_AUTO_TEST_CASE(unknown_timeout_retries, *boost::unit_test::timeout(30)) {
     h.set_retry_policy("unk_timeout_op", p);
 
     int call_count = 0;
-    auto future = h.execute_with_retry("unk_timeout_op", [&call_count]() -> kythira::Future<int> {
-        ++call_count;
-        if (call_count < 2) {
-            // "time_out" keyword → network_timeout classification → unknown_timeout type (no
-            // matching sub-keyword)
-            return kythira::FutureFactory::makeExceptionalFuture<int>(
-                std::runtime_error("time_out error occurred"));
-        }
-        return kythira::FutureFactory::makeFuture<int>(33);
-    });
+    auto future =
+        h.execute_with_retry("unk_timeout_op", [&call_count]() -> kythira::future_default<int> {
+            ++call_count;
+            if (call_count < 2) {
+                // "time_out" keyword → network_timeout classification → unknown_timeout type (no
+                // matching sub-keyword)
+                return kythira::future_factory_default::makeExceptionalFuture<int>(
+                    std::make_exception_ptr(std::runtime_error("time_out error occurred")));
+            }
+            return kythira::future_factory_default::makeFuture<int>(33);
+        });
     auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, 33);
 }

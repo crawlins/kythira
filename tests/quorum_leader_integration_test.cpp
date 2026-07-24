@@ -7,6 +7,7 @@
 
 #define BOOST_TEST_MODULE quorum_leader_integration_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/quorum_management.hpp>
 #include <raft/raft.hpp>
@@ -68,34 +69,34 @@ struct mock_quorum_manager {
 
     auto assess_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         assess_calls.push_back(cluster);
         next_health.live_node_count = cluster.size();
         next_health.total_node_count = cluster.size();
-        return kythira::FutureFactory::makeFuture(next_health);
+        return kythira::future_factory_default::makeFuture(next_health);
     }
 
     auto provision_node(placement_group_id_type group, std::optional<node_id_type> replacing)
-        -> kythira::Future<kythira::peer_info<node_id_type, address_type>> {
+        -> kythira::future_default<kythira::peer_info<node_id_type, address_type>> {
         ++provision_calls;
         provision_groups.emplace_back(group, replacing);
         if (!provision_result.has_value()) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::peer_info<node_id_type, address_type>>(
-                std::runtime_error("mock: provision not configured"));
+                std::make_exception_ptr(std::runtime_error("mock: provision not configured")));
         }
-        return kythira::FutureFactory::makeFuture(*provision_result);
+        return kythira::future_factory_default::makeFuture(*provision_result);
     }
 
-    auto decommission_node(const node_id_type& id) -> kythira::Future<void> {
+    auto decommission_node(const node_id_type& id) -> kythira::future_default<void> {
         ++decommission_calls;
         decommissioned_nodes.push_back(id);
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto maintain_quorum(
         const std::vector<kythira::node_placement<node_id_type, placement_group_id_type>>& cluster)
-        -> kythira::Future<kythira::quorum_health<node_id_type, placement_group_id_type>> {
+        -> kythira::future_default<kythira::quorum_health<node_id_type, placement_group_id_type>> {
         return assess_quorum(cluster);
     }
 
@@ -112,9 +113,9 @@ static_assert(kythira::quorum_manager<mock_quorum_manager, std::uint64_t, std::s
 #include <network_simulator/network_simulator.hpp>
 
 struct test_raft_types_with_qm {
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     using node_id_type = std::uint64_t;
     using term_id_type = std::uint64_t;

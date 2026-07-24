@@ -2,6 +2,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <exception>
 #include <string>
@@ -30,21 +31,21 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
                      *boost::unit_test::timeout(90)) {
     // Test 1: Static assertions for concept compliance
     {
-        // Test kythira::Promise<int> satisfies promise concept
-        static_assert(promise<Promise<int>, int>,
-                      "kythira::Promise<int> must satisfy promise concept");
+        // Test kythira::promise_default<int> satisfies promise concept
+        static_assert(promise<promise_default<int>, int>,
+                      "kythira::promise_default<int> must satisfy promise concept");
 
-        // Test kythira::Promise<std::string> satisfies promise concept
-        static_assert(promise<Promise<std::string>, std::string>,
-                      "kythira::Promise<std::string> must satisfy promise concept");
+        // Test kythira::promise_default<std::string> satisfies promise concept
+        static_assert(promise<promise_default<std::string>, std::string>,
+                      "kythira::promise_default<std::string> must satisfy promise concept");
 
-        // Test kythira::Promise<double> satisfies promise concept
-        static_assert(promise<Promise<double>, double>,
-                      "kythira::Promise<double> must satisfy promise concept");
+        // Test kythira::promise_default<double> satisfies promise concept
+        static_assert(promise<promise_default<double>, double>,
+                      "kythira::promise_default<double> must satisfy promise concept");
 
-        // Test kythira::Promise<void> satisfies promise concept
-        static_assert(promise<Promise<void>, void>,
-                      "kythira::Promise<void> must satisfy promise concept");
+        // Test kythira::promise_default<void> satisfies promise concept
+        static_assert(promise<promise_default<void>, void>,
+                      "kythira::promise_default<void> must satisfy promise concept");
 
         // Test kythira::Promise with custom types
         struct CustomType {
@@ -52,19 +53,19 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
             std::string name;
         };
 
-        static_assert(promise<Promise<CustomType>, CustomType>,
-                      "kythira::Promise<CustomType> must satisfy promise concept");
+        static_assert(promise<promise_default<CustomType>, CustomType>,
+                      "kythira::promise_default<CustomType> must satisfy promise concept");
 
         // Test kythira::Promise with pointer types
-        static_assert(promise<Promise<int*>, int*>,
-                      "kythira::Promise<int*> must satisfy promise concept");
+        static_assert(promise<promise_default<int*>, int*>,
+                      "kythira::promise_default<int*> must satisfy promise concept");
 
         BOOST_TEST_MESSAGE("All kythira::Promise types satisfy promise concept");
     }
 
     // Test 2: Runtime behavior verification for int type
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         // Initially not fulfilled
         BOOST_CHECK(!promise.isFulfilled());
@@ -81,12 +82,12 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
         BOOST_CHECK(future.isReady());
 
         // Get the value from future
-        BOOST_CHECK_EQUAL(future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(future).get(), test_value);
     }
 
     // Test 3: Runtime behavior verification for std::string type
     {
-        Promise<std::string> promise;
+        promise_default<std::string> promise;
 
         std::string test_str = "hello world";
         auto future = promise.getFuture();
@@ -95,12 +96,12 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
         BOOST_CHECK(promise.isFulfilled());
         BOOST_CHECK(future.isReady());
 
-        BOOST_CHECK_EQUAL(future.get(), test_str);
+        BOOST_CHECK_EQUAL(std::move(future).get(), test_str);
     }
 
     // Test 4: Runtime behavior verification for void type
     {
-        Promise<void> promise;
+        promise_default<void> promise;
 
         // Initially not fulfilled
         BOOST_CHECK(!promise.isFulfilled());
@@ -110,34 +111,34 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
         BOOST_CHECK(!future.isReady());
 
         // Set value (using folly::Unit for void)
-        promise.setValue(folly::Unit{});
+        promise.setValue(kythira::unit{});
         BOOST_CHECK(promise.isFulfilled());
 
         // Future should now be ready
         BOOST_CHECK(future.isReady());
 
         // Get the value from future (void)
-        future.get();  // Should not throw
+        std::move(future).get();  // Should not throw
     }
 
     // Test 5: Exception handling with folly::exception_wrapper
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         auto future = promise.getFuture();
-        auto ex = folly::exception_wrapper(std::runtime_error(test_string));
+        auto ex = std::make_exception_ptr(std::runtime_error(test_string));
         promise.setException(ex);
 
         BOOST_CHECK(promise.isFulfilled());
         BOOST_CHECK(future.isReady());
 
         // Future should throw when getting value
-        BOOST_CHECK_THROW(future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     }
 
     // Test 6: Exception handling with std::exception_ptr
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         auto future = promise.getFuture();
 
@@ -151,12 +152,12 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
         BOOST_CHECK(future.isReady());
 
         // Future should throw when getting value
-        BOOST_CHECK_THROW(future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     }
 
     // Test 7: getSemiFuture method
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         auto semi_future = promise.getSemiFuture();
         BOOST_CHECK(!semi_future.isReady());
@@ -164,7 +165,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
         promise.setValue(test_value);
         BOOST_CHECK(semi_future.isReady());
 
-        BOOST_CHECK_EQUAL(semi_future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(semi_future).get(), test_value);
     }
 
     // Test 8: Property-based testing - generate multiple test cases
@@ -173,7 +174,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
 
         // Test value fulfillment with getFuture
         {
-            Promise<int> promise;
+            promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             auto future = promise.getFuture();
@@ -183,12 +184,12 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
             BOOST_CHECK(promise.isFulfilled());
             BOOST_CHECK(future.isReady());
 
-            BOOST_CHECK_EQUAL(future.get(), random_value);
+            BOOST_CHECK_EQUAL(std::move(future).get(), random_value);
         }
 
         // Test value fulfillment with getSemiFuture
         {
-            Promise<int> promise;
+            promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             auto semi_future = promise.getSemiFuture();
@@ -198,42 +199,42 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
             BOOST_CHECK(promise.isFulfilled());
             BOOST_CHECK(semi_future.isReady());
 
-            BOOST_CHECK_EQUAL(semi_future.get(), random_value);
+            BOOST_CHECK_EQUAL(std::move(semi_future).get(), random_value);
         }
 
         // Test exception fulfillment with folly::exception_wrapper
         {
-            Promise<int> promise;
+            promise_default<int> promise;
             BOOST_CHECK(!promise.isFulfilled());
 
             auto future = promise.getFuture();
             auto ex =
-                folly::exception_wrapper(std::runtime_error("test exception " + std::to_string(i)));
+                std::make_exception_ptr(std::runtime_error("test exception " + std::to_string(i)));
             promise.setException(ex);
             BOOST_CHECK(promise.isFulfilled());
             BOOST_CHECK(future.isReady());
 
-            BOOST_CHECK_THROW(future.get(), std::runtime_error);
+            BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
         }
 
         // Test void promise
         {
-            Promise<void> void_promise;
+            promise_default<void> void_promise;
             BOOST_CHECK(!void_promise.isFulfilled());
 
             auto void_future = void_promise.getFuture();
             BOOST_CHECK(!void_future.isReady());
 
-            void_promise.setValue(folly::Unit{});
+            void_promise.setValue(kythira::unit{});
             BOOST_CHECK(void_promise.isFulfilled());
             BOOST_CHECK(void_future.isReady());
 
-            void_future.get();  // Should not throw
+            std::move(void_future).get();  // Should not throw
         }
 
         // Test move semantics
         {
-            Promise<std::string> string_promise;
+            promise_default<std::string> string_promise;
             std::string movable_string = "movable test string " + std::to_string(i);
 
             auto future = string_promise.getFuture();
@@ -242,7 +243,7 @@ BOOST_AUTO_TEST_CASE(kythira_promise_concept_compliance_property_test,
             BOOST_CHECK(future.isReady());
 
             // Note: movable_string may be empty after move, so we check the future result
-            auto result = future.get();
+            auto result = std::move(future).get();
             BOOST_CHECK(result.find("movable test string") != std::string::npos);
         }
     }
@@ -258,7 +259,7 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(
                   "std::string should not satisfy promise concept");
 
     // Test that SemiPromise doesn't satisfy promise concept (missing getFuture/getSemiFuture)
-    static_assert(!promise<SemiPromise<int>, int>,
+    static_assert(!promise<semi_promise_default<int>, int>,
                   "SemiPromise should not satisfy promise concept");
 
     // Test that types missing required methods don't satisfy the concept
@@ -281,20 +282,21 @@ BOOST_AUTO_TEST_CASE(promise_concept_rejection_test, *boost::unit_test::timeout(
  */
 BOOST_AUTO_TEST_CASE(promise_move_only_test, *boost::unit_test::timeout(30)) {
     // Test that Promise is move-only (cannot be copied)
-    static_assert(std::is_move_constructible_v<Promise<int>>,
+    static_assert(std::is_move_constructible_v<promise_default<int>>,
                   "Promise should be move constructible");
-    static_assert(std::is_move_assignable_v<Promise<int>>, "Promise should be move assignable");
-    static_assert(!std::is_copy_constructible_v<Promise<int>>,
+    static_assert(std::is_move_assignable_v<promise_default<int>>,
+                  "Promise should be move assignable");
+    static_assert(!std::is_copy_constructible_v<promise_default<int>>,
                   "Promise should not be copy constructible");
-    static_assert(!std::is_copy_assignable_v<Promise<int>>,
+    static_assert(!std::is_copy_assignable_v<promise_default<int>>,
                   "Promise should not be copy assignable");
 
     // Test move construction
-    Promise<int> promise1;
-    Promise<int> promise2 = std::move(promise1);
+    promise_default<int> promise1;
+    promise_default<int> promise2 = std::move(promise1);
 
     // Test move assignment
-    Promise<int> promise3;
+    promise_default<int> promise3;
     promise3 = std::move(promise2);
 
     BOOST_CHECK(!promise3.isFulfilled());
@@ -308,34 +310,34 @@ BOOST_AUTO_TEST_CASE(promise_move_only_test, *boost::unit_test::timeout(30)) {
 BOOST_AUTO_TEST_CASE(promise_resource_management_test, *boost::unit_test::timeout(30)) {
     // Test that Promise properly manages underlying folly::Promise
     {
-        Promise<int> promise;
+        promise_default<int> promise;
         BOOST_CHECK(!promise.isFulfilled());
 
         // Promise should be properly initialized and functional
         auto future = promise.getFuture();
         promise.setValue(test_value);
         BOOST_CHECK(promise.isFulfilled());
-        BOOST_CHECK_EQUAL(future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(future).get(), test_value);
     }  // promise goes out of scope - should clean up properly
 
     // Test with void type
     {
-        Promise<void> void_promise;
+        promise_default<void> void_promise;
         BOOST_CHECK(!void_promise.isFulfilled());
 
         auto void_future = void_promise.getFuture();
-        void_promise.setValue(folly::Unit{});
+        void_promise.setValue(kythira::unit{});
         BOOST_CHECK(void_promise.isFulfilled());
-        void_future.get();  // Should not throw
+        std::move(void_future).get();  // Should not throw
     }  // void_promise goes out of scope - should clean up properly
 
     // Test with exception
     {
-        Promise<int> exception_promise;
+        promise_default<int> exception_promise;
         auto future = exception_promise.getFuture();
-        exception_promise.setException(folly::exception_wrapper(std::runtime_error("test")));
+        exception_promise.setException(std::make_exception_ptr(std::runtime_error("test")));
         BOOST_CHECK(exception_promise.isFulfilled());
-        BOOST_CHECK_THROW(future.get(), std::runtime_error);
+        BOOST_CHECK_THROW(std::move(future).get(), std::runtime_error);
     }  // exception_promise goes out of scope - should clean up properly
 }
 
@@ -345,23 +347,23 @@ BOOST_AUTO_TEST_CASE(promise_resource_management_test, *boost::unit_test::timeou
 BOOST_AUTO_TEST_CASE(promise_future_relationship_test, *boost::unit_test::timeout(30)) {
     // Test that multiple getFuture calls return different futures
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         auto future1 = promise.getFuture();
         // Note: folly::Promise::getFuture() can only be called once, so we can't test multiple
         // calls This is expected behavior - each promise can only have one associated future
 
         promise.setValue(test_value);
-        BOOST_CHECK_EQUAL(future1.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(future1).get(), test_value);
     }
 
     // Test that getSemiFuture works independently
     {
-        Promise<int> promise;
+        promise_default<int> promise;
 
         auto semi_future = promise.getSemiFuture();
         promise.setValue(test_value);
-        BOOST_CHECK_EQUAL(semi_future.get(), test_value);
+        BOOST_CHECK_EQUAL(std::move(semi_future).get(), test_value);
     }
 
     // Test that both getFuture and getSemiFuture work on the same promise

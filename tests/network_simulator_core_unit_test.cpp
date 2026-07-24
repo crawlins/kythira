@@ -258,7 +258,7 @@ BOOST_AUTO_TEST_CASE(route_message_requires_started_simulator, *boost::unit_test
 
     // Should fail when simulator is not started
     auto future = sim.route_message(std::move(msg));
-    auto result = future.get();
+    auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, false);
 }
 
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(route_message_succeeds_when_started, *boost::unit_test::tim
 
     // Should succeed when simulator is started and route exists
     auto future = sim.route_message(std::move(msg));
-    auto result = future.get();
+    auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, true);
 }
 
@@ -294,7 +294,7 @@ BOOST_AUTO_TEST_CASE(route_message_fails_without_route, *boost::unit_test::timeo
 
     // Should fail when no route exists
     auto future = sim.route_message(std::move(msg));
-    auto result = future.get();
+    auto result = std::move(future).get();
     BOOST_CHECK_EQUAL(result, false);
 }
 
@@ -374,7 +374,7 @@ BOOST_AUTO_TEST_CASE(deliver_message_queues_at_destination, *boost::unit_test::t
 
     // Should be able to retrieve message
     auto future = sim.retrieve_message(test_node_b);
-    auto retrieved_msg = future.get();
+    auto retrieved_msg = std::move(future).get();
 
     BOOST_CHECK_EQUAL(retrieved_msg.source_address(), test_node_a);
     BOOST_CHECK_EQUAL(retrieved_msg.destination_address(), test_node_b);
@@ -388,7 +388,7 @@ BOOST_AUTO_TEST_CASE(retrieve_message_returns_empty_when_no_messages,
 
     // Should return empty message when no messages queued
     auto future = sim.retrieve_message(test_node_a);
-    auto retrieved_msg = future.get();
+    auto retrieved_msg = std::move(future).get();
 
     // Empty message should have empty addresses
     BOOST_CHECK(retrieved_msg.source_address().empty());

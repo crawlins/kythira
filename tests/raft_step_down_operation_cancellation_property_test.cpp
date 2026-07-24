@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftStepDownOperationCancellationPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/error_handler.hpp>
@@ -142,8 +143,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test,
             BOOST_TEST_MESSAGE("Test 2: Step-down due to network partition detection");
 
             kythira::commit_waiter<std::uint64_t> commit_waiter;
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 heartbeat_futures;
 
             std::atomic<std::size_t> operation_rejected_count{0};
@@ -176,7 +177,7 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test,
 
             // Create heartbeat futures that would fail (simulating partition)
             for (std::size_t i = 0; i < future_count; ++i) {
-                auto promise = std::make_shared<kythira::Promise<
+                auto promise = std::make_shared<kythira::promise_default<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 heartbeat_futures.push_back(
                     promise->getFuture().within(std::chrono::milliseconds{100}));  // Short timeout
@@ -209,8 +210,8 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test,
             BOOST_TEST_MESSAGE("Test 3: Step-down during active replication");
 
             kythira::commit_waiter<std::uint64_t> commit_waiter;
-            std::vector<
-                kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+            std::vector<kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                 replication_futures;
 
             std::atomic<std::size_t> replication_cancelled_count{0};
@@ -232,7 +233,7 @@ BOOST_AUTO_TEST_CASE(raft_step_down_operation_cancellation_property_test,
 
             // Create replication futures (simulating ongoing AppendEntries RPCs)
             for (std::size_t i = 0; i < future_count; ++i) {
-                auto promise = std::make_shared<kythira::Promise<
+                auto promise = std::make_shared<kythira::promise_default<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>>();
                 replication_futures.push_back(promise->getFuture().within(operation_timeout));
             }

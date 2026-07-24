@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE core_implementation_namespace_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/http_transport.hpp>
 #include <raft/coap_transport.hpp>
@@ -24,7 +25,7 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_namespace, *boost::unit_test::t
     // Verify the concept exists in kythira namespace by checking it can be used
     // Note: We don't check if specific implementations satisfy the concept here,
     // just that the concept itself is accessible in the kythira namespace
-    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using FutureType = kythira::future_default<kythira::request_vote_response<>>;
     using TestTypes =
         kythira::http_transport_types<kythira::json_rpc_serializer<std::vector<std::byte>>,
                                       kythira::noop_metrics, kythira::console_logger>;
@@ -60,7 +61,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_namespace, *boost::unit_test::timeout(30))
 
 BOOST_AUTO_TEST_CASE(test_connection_namespace, *boost::unit_test::timeout(30)) {
     // Test that Connection is in kythira namespace
-    using FutureType = kythira::Future<std::vector<std::byte>>;
+    using FutureType = kythira::future_default<std::vector<std::byte>>;
     using ConnectionType = kythira::Connection<std::uint64_t, unsigned short, FutureType>;
 
     // If this compiles, the class is accessible in kythira namespace
@@ -70,7 +71,7 @@ BOOST_AUTO_TEST_CASE(test_connection_namespace, *boost::unit_test::timeout(30)) 
 
 BOOST_AUTO_TEST_CASE(test_listener_namespace, *boost::unit_test::timeout(30)) {
     // Test that Listener is in kythira namespace
-    using FutureType = kythira::Future<std::vector<std::byte>>;
+    using FutureType = kythira::future_default<std::vector<std::byte>>;
     using ConnectionType = kythira::Connection<std::uint64_t, unsigned short, FutureType>;
     using ListenerType = kythira::Listener<std::uint64_t, unsigned short, FutureType>;
 
@@ -81,7 +82,7 @@ BOOST_AUTO_TEST_CASE(test_listener_namespace, *boost::unit_test::timeout(30)) {
 
 BOOST_AUTO_TEST_CASE(test_simulator_network_client_namespace, *boost::unit_test::timeout(30)) {
     // Test that simulator_network_client is in kythira namespace
-    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using FutureType = kythira::future_default<kythira::request_vote_response<>>;
     using ClientType = kythira::simulator_network_client<
         FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
 
@@ -92,7 +93,7 @@ BOOST_AUTO_TEST_CASE(test_simulator_network_client_namespace, *boost::unit_test:
 
 BOOST_AUTO_TEST_CASE(test_simulator_network_server_namespace, *boost::unit_test::timeout(30)) {
     // Test that simulator_network_server is in kythira namespace
-    using FutureType = kythira::Future<kythira::request_vote_response<>>;
+    using FutureType = kythira::future_default<kythira::request_vote_response<>>;
     using ServerType = kythira::simulator_network_server<
         FutureType, kythira::json_rpc_serializer<std::vector<std::byte>>, std::vector<std::byte>>;
 

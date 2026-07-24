@@ -14,6 +14,7 @@
 
 #define BOOST_TEST_MODULE RaftRetryLogicExponentialBackoffIntegrationTest
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
@@ -229,15 +230,15 @@ BOOST_AUTO_TEST_CASE(heartbeat_retry_network_failures, *boost::unit_test::timeou
     network_client.set_failure_count(test_node_b_str, 2);
 
     auto heartbeat_operation = [&network_client]()
-        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        -> kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
             test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
             auto response = network_client.send_heartbeat(test_node_b_str, request, medium_timeout);
-            return kythira::FutureFactory::makeFuture(std::move(response));
+            return kythira::future_factory_default::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }
@@ -312,7 +313,8 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::t
         network_client.set_failure_count(test_node_b_str, 1);
 
         auto append_operation = [&network_client]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
                 test_term_1,
                 test_node_a,
@@ -325,9 +327,9 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::t
             try {
                 auto response =
                     network_client.send_append_entries(test_node_b_str, request, medium_timeout);
-                return kythira::FutureFactory::makeFuture(std::move(response));
+                return kythira::future_factory_default::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
@@ -350,7 +352,8 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::t
         network_client.set_failure_count(test_node_c_str, 3);
 
         auto append_operation = [&network_client]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
                 test_term_2,
                 test_node_a,
@@ -363,9 +366,9 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::t
             try {
                 auto response =
                     network_client.send_append_entries(test_node_c_str, request, medium_timeout);
-                return kythira::FutureFactory::makeFuture(std::move(response));
+                return kythira::future_factory_default::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
@@ -404,16 +407,17 @@ BOOST_AUTO_TEST_CASE(append_entries_retry_failure_patterns, *boost::unit_test::t
         network_client.set_always_fail(test_node_b_str, true);
 
         auto append_operation = [&network_client]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
                 test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
             try {
                 auto response =
                     network_client.send_append_entries(test_node_b_str, request, medium_timeout);
-                return kythira::FutureFactory::makeFuture(std::move(response));
+                return kythira::future_factory_default::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
@@ -463,8 +467,8 @@ BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, *boost::unit_test
     // Simulate partial transfer failures
     network_client.set_failure_count(test_node_c_str, 2);
 
-    auto snapshot_operation =
-        [&network_client]() -> kythira::Future<kythira::install_snapshot_response<std::uint64_t>> {
+    auto snapshot_operation = [&network_client]()
+        -> kythira::future_default<kythira::install_snapshot_response<std::uint64_t>> {
         kythira::install_snapshot_request<std::uint64_t, std::uint64_t> request{
             test_term_1,
             test_node_a,
@@ -478,9 +482,9 @@ BOOST_AUTO_TEST_CASE(install_snapshot_retry_partial_transfers, *boost::unit_test
         try {
             auto response =
                 network_client.send_install_snapshot(test_node_c_str, request, long_timeout);
-            return kythira::FutureFactory::makeFuture(std::move(response));
+            return kythira::future_factory_default::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::install_snapshot_response<std::uint64_t>>(std::current_exception());
         }
     };
@@ -551,17 +555,17 @@ BOOST_AUTO_TEST_CASE(request_vote_retry_elections, *boost::unit_test::timeout(60
     // Simulate election with network issues
     network_client.set_failure_count(test_node_b_str, 1);
 
-    auto vote_operation =
-        [&network_client]() -> kythira::Future<kythira::request_vote_response<std::uint64_t>> {
+    auto vote_operation = [&network_client]()
+        -> kythira::future_default<kythira::request_vote_response<std::uint64_t>> {
         kythira::request_vote_request<std::uint64_t, std::uint64_t> request{
             test_term_2, test_node_a, test_log_index_1, test_term_1};
 
         try {
             auto response =
                 network_client.send_request_vote(test_node_b_str, request, medium_timeout);
-            return kythira::FutureFactory::makeFuture(std::move(response));
+            return kythira::future_factory_default::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::request_vote_response<std::uint64_t>>(std::current_exception());
         }
     };
@@ -623,16 +627,16 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, *boost::unit_test::
     network_client.set_failure_count(test_node_b_str, 4);
 
     auto test_operation = [&network_client]()
-        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        -> kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
             test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
             auto response =
                 network_client.send_append_entries(test_node_b_str, request, medium_timeout);
-            return kythira::FutureFactory::makeFuture(std::move(response));
+            return kythira::future_factory_default::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }
@@ -717,16 +721,17 @@ BOOST_AUTO_TEST_CASE(retry_limit_enforcement, *boost::unit_test::timeout(60)) {
             .max_attempts = max_attempts};
 
         auto test_operation = [&network_client]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
                 test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
             try {
                 auto response =
                     network_client.send_append_entries(test_node_b_str, request, medium_timeout);
-                return kythira::FutureFactory::makeFuture(std::move(response));
+                return kythira::future_factory_default::makeFuture(std::move(response));
             } catch (const std::exception& e) {
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                     std::current_exception());
             }
@@ -781,16 +786,16 @@ BOOST_AUTO_TEST_CASE(max_delay_cap_enforcement, *boost::unit_test::timeout(90)) 
     network_client.set_failure_count(test_node_b_str, 5);
 
     auto test_operation = [&network_client]()
-        -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        -> kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
         kythira::append_entries_request<std::uint64_t, std::uint64_t> request{
             test_term_1, test_node_a, test_log_index_1, test_term_1, {}, test_log_index_1};
 
         try {
             auto response =
                 network_client.send_append_entries(test_node_b_str, request, medium_timeout);
-            return kythira::FutureFactory::makeFuture(std::move(response));
+            return kythira::future_factory_default::makeFuture(std::move(response));
         } catch (const std::exception& e) {
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
                 std::current_exception());
         }

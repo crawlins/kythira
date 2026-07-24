@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftAppendEntriesRetryHandlingPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -73,7 +74,8 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
         // Create operation that fails with different modes then succeeds
         auto append_entries_operation = [&attempt_count, failures_before_success,
                                          &failure_modes_encountered]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt <= failures_before_success) {
@@ -91,9 +93,9 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                 auto selected_failure = failure_messages[msg_dist(rng)];
                 failure_modes_encountered.push_back(selected_failure);
 
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error(selected_failure));
+                    std::make_exception_ptr(std::runtime_error(selected_failure)));
             }  // Success case - AppendEntries succeeded
             kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                 2,             // term
@@ -101,7 +103,7 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                 std::nullopt,  // conflict_term
                 std::nullopt   // conflict_index
             };
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         // Execute with retry
@@ -183,8 +185,9 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto log_conflict_operation = [&attempt_count]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto log_conflict_operation =
+            [&attempt_count]() -> kythira::future_default<
+                                   kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
@@ -195,12 +198,12 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                     std::make_optional<std::uint64_t>(1),  // conflict_term
                     std::make_optional<std::uint64_t>(5)   // conflict_index
                 };
-                return kythira::FutureFactory::makeFuture(conflict_response);
+                return kythira::future_factory_default::makeFuture(conflict_response);
             }  // Subsequent attempts should not happen for log conflicts
             BOOST_FAIL("Should not retry on log conflict");
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                std::runtime_error("Unexpected retry"));
+                std::make_exception_ptr(std::runtime_error("Unexpected retry")));
         };
 
         try {
@@ -225,8 +228,9 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
         error_handler<kythira::append_entries_response<std::uint64_t, std::uint64_t>> handler;
 
         std::atomic<int> attempt_count{0};
-        auto term_mismatch_operation = [&attempt_count]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+        auto term_mismatch_operation =
+            [&attempt_count]() -> kythira::future_default<
+                                   kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             int current_attempt = ++attempt_count;
 
             if (current_attempt == 1) {
@@ -237,12 +241,12 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
                     std::nullopt,  // conflict_term
                     std::nullopt   // conflict_index
                 };
-                return kythira::FutureFactory::makeFuture(higher_term_response);
+                return kythira::future_factory_default::makeFuture(higher_term_response);
             }
             BOOST_FAIL("Should not retry on term mismatch");
-            return kythira::FutureFactory::makeExceptionalFuture<
+            return kythira::future_factory_default::makeExceptionalFuture<
                 kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                std::runtime_error("Unexpected retry"));
+                std::make_exception_ptr(std::runtime_error("Unexpected retry")));
         };
 
         try {
@@ -282,11 +286,12 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
 
             std::atomic<int> attempt_count{0};
             auto error_operation = [&attempt_count, error_msg]()
-                -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+                -> kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
                 ++attempt_count;
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error(error_msg));
+                    std::make_exception_ptr(std::runtime_error(error_msg)));
             };
 
             try {
@@ -330,18 +335,19 @@ BOOST_AUTO_TEST_CASE(raft_append_entries_retry_handling_property_test,
         std::atomic<int> attempt_count{0};
 
         auto backoff_test_operation = [&attempt_count, &attempt_times]()
-            -> kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
+            -> kythira::future_default<
+                kythira::append_entries_response<std::uint64_t, std::uint64_t>> {
             attempt_times.push_back(std::chrono::steady_clock::now());
             int current_attempt = ++attempt_count;
 
             if (current_attempt < 4) {
-                return kythira::FutureFactory::makeExceptionalFuture<
+                return kythira::future_factory_default::makeExceptionalFuture<
                     kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                    std::runtime_error("Network timeout occurred"));
+                    std::make_exception_ptr(std::runtime_error("Network timeout occurred")));
             }
             kythira::append_entries_response<std::uint64_t, std::uint64_t> success_response{
                 1, true, std::nullopt, std::nullopt};
-            return kythira::FutureFactory::makeFuture(success_response);
+            return kythira::future_factory_default::makeFuture(success_response);
         };
 
         try {

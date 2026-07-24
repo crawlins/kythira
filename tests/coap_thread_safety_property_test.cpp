@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_thread_safety_property_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <boost/test/data/test_case.hpp>
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
@@ -30,7 +31,8 @@ struct test_transport_types {
     using logger_type = kythira::console_logger;
     using executor_type = kythira::console_logger;
 
-    template<typename T> using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::future_default<T>;
+    template<typename T> using promise_template = kythira::promise_default<T>;
 };
 
 /**

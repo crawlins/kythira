@@ -70,7 +70,7 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, *boost::unit_
 
     auto accept_future = listener->accept(test_timeout);
 
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
     auto server_connection = std::move(accept_future).get();
 
     BOOST_CHECK(client_connection != nullptr);
@@ -137,7 +137,7 @@ BOOST_AUTO_TEST_CASE(connection_establishment_timeout_integration, *boost::unit_
 
     // Verify all client connections succeeded
     for (auto& future : connection_futures) {
-        auto conn = future.get();
+        auto conn = std::move(future).get();
         BOOST_CHECK(conn != nullptr);
         BOOST_CHECK(conn->is_open());
         conn->close();
@@ -188,7 +188,7 @@ BOOST_AUTO_TEST_CASE(connection_pooling_integration, *boost::unit_test::timeout(
         });
 
     auto server_conn1 = std::move(listener->accept(test_timeout)).get();
-    auto client_conn1 = connect_future1.get();
+    auto client_conn1 = std::move(connect_future1).get();
 
     BOOST_REQUIRE(client_conn1 != nullptr);
     BOOST_CHECK(client_conn1->is_open());
@@ -214,7 +214,7 @@ BOOST_AUTO_TEST_CASE(connection_pooling_integration, *boost::unit_test::timeout(
         });
 
     auto server_conn2 = std::move(listener->accept(test_timeout)).get();
-    auto client_conn2 = connect_future2.get();
+    auto client_conn2 = std::move(connect_future2).get();
 
     BOOST_CHECK(client_conn2 != nullptr);
     BOOST_CHECK(client_conn2->is_open());
@@ -335,7 +335,7 @@ BOOST_AUTO_TEST_CASE(connection_lifecycle_integration, *boost::unit_test::timeou
         });
 
     auto server_connection = std::move(listener->accept(test_timeout)).get();
-    auto client_connection = connect_future.get();
+    auto client_connection = std::move(connect_future).get();
 
     BOOST_REQUIRE(client_connection != nullptr);
     BOOST_REQUIRE(server_connection != nullptr);
@@ -438,7 +438,7 @@ BOOST_AUTO_TEST_CASE(connection_management_stress_test, *boost::unit_test::timeo
             });
 
         auto server_conn = std::move(listener->accept(test_timeout)).get();
-        auto client_conn = connect_future.get();
+        auto client_conn = std::move(connect_future).get();
 
         BOOST_REQUIRE(client_conn != nullptr);
         BOOST_REQUIRE(server_conn != nullptr);

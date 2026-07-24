@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE coap_get_joined_multicast_groups_test
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
@@ -15,9 +16,10 @@ struct test_types {
     using port_type = std::uint16_t;
     using executor_type = folly::Executor;
 
-    template<typename T> using future_template = kythira::Future<T>;
+    template<typename T> using future_template = kythira::future_default<T>;
+    template<typename T> using promise_template = kythira::promise_default<T>;
 
-    using future_type = kythira::Future<std::vector<std::byte>>;
+    using future_type = kythira::future_default<std::vector<std::byte>>;
 };
 
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::timeout(30)) {

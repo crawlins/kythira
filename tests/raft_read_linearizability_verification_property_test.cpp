@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftReadLinearizabilityVerificationPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -65,7 +66,8 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
 
         // Simulate read_state operation requiring heartbeat verification
         // Create futures representing heartbeat responses for linearizability verification
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             heartbeat_futures;
         heartbeat_futures.reserve(follower_count);
 
@@ -91,7 +93,7 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
                     0                  // match_index
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 heartbeat_futures.push_back(std::move(future));
             } else if (will_succeed) {
@@ -103,7 +105,7 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
                     0              // match_index
                 };
 
-                auto future = kythira::FutureFactory::makeFuture(response).delay(
+                auto future = kythira::future_factory_default::makeFuture(response).delay(
                     std::chrono::milliseconds(delay_ms));
                 heartbeat_futures.push_back(std::move(future));
             } else {
@@ -115,14 +117,14 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
                         false,         // failed
                         0              // match_index
                     };
-                    auto future = kythira::FutureFactory::makeFuture(response).delay(
+                    auto future = kythira::future_factory_default::makeFuture(response).delay(
                         std::chrono::milliseconds(delay_ms));
                     heartbeat_futures.push_back(std::move(future));
                 } else {
                     // Timeout simulation
-                    auto future = kythira::FutureFactory::makeExceptionalFuture<
+                    auto future = kythira::future_factory_default::makeExceptionalFuture<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>(
-                        std::runtime_error("Heartbeat timeout"));
+                        std::make_exception_ptr(std::runtime_error("Heartbeat timeout")));
                     heartbeat_futures.push_back(std::move(future));
                 }
             }
@@ -196,7 +198,8 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
 
     // Test with empty futures vector (should fail)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             empty_futures;
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -209,10 +212,11 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
 
     // Test with single future (single node cluster - majority of 1 is 1)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             single_future;
         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{1, true, 0};
-        single_future.push_back(kythira::FutureFactory::makeFuture(response));
+        single_future.push_back(kythira::future_factory_default::makeFuture(response));
 
         auto collection_future =
             raft_future_collector<kythira::append_entries_response<std::uint64_t, std::uint64_t>>::
@@ -226,7 +230,8 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
 
     // Test all higher term responses (leadership definitely lost)
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             higher_term_futures;
         const std::uint64_t current_term = 3;
 
@@ -235,7 +240,7 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
                 current_term + 1,  // higher term
                 false,             // doesn't matter
                 0};
-            higher_term_futures.push_back(kythira::FutureFactory::makeFuture(response));
+            higher_term_futures.push_back(kythira::future_factory_default::makeFuture(response));
         }
 
         auto collection_future =
@@ -254,12 +259,13 @@ BOOST_AUTO_TEST_CASE(raft_read_linearizability_verification_property_test,
 
     // Test timeout behavior for linearizability verification
     {
-        std::vector<kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+        std::vector<
+            kythira::future_default<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
             slow_futures;
         for (std::size_t i = 0; i < 3; ++i) {
             kythira::append_entries_response<std::uint64_t, std::uint64_t> response{1, true, 0};
             // Create futures that take longer than the timeout
-            auto future = kythira::FutureFactory::makeFuture(response).delay(
+            auto future = kythira::future_factory_default::makeFuture(response).delay(
                 std::chrono::milliseconds(6000));  // Longer than test_timeout
             slow_futures.push_back(std::move(future));
         }

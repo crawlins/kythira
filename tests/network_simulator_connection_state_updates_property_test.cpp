@@ -88,7 +88,7 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, *boost::unit_test::timeo
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener);
         BOOST_REQUIRE(listener->is_listening());
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(property_connection_state_updates, *boost::unit_test::timeo
 
             // Test Case 1: Establish connection and verify initial state
             auto conn_future = client->connect(server_addr, server_port, connection_timeout);
-            auto conn = conn_future.get();
+            auto conn = std::move(conn_future).get();
 
             BOOST_REQUIRE(conn);
             BOOST_REQUIRE(conn->is_open());

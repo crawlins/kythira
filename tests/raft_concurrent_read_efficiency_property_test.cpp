@@ -1,6 +1,7 @@
 #define BOOST_TEST_MODULE RaftConcurrentReadEfficiencyPropertyTest
 
 #include <boost/test/unit_test.hpp>
+#include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
 #include <raft/future.hpp>
@@ -82,8 +83,8 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
                 BOOST_TEST_MESSAGE("Starting concurrent read " << read_id);
 
                 // Simulate heartbeat collection for this read
-                std::vector<
-                    kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                std::vector<kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                     heartbeat_futures;
                 heartbeat_futures.reserve(follower_count);
 
@@ -100,14 +101,14 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
                         successful_responses++;
                         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                             current_term, true, i};
-                        auto future = kythira::FutureFactory::makeFuture(response).delay(
+                        auto future = kythira::future_factory_default::makeFuture(response).delay(
                             std::chrono::milliseconds(delay_ms));
                         heartbeat_futures.push_back(std::move(future));
                     } else {
                         // Failed response
                         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                             current_term, false, 0};
-                        auto future = kythira::FutureFactory::makeFuture(response).delay(
+                        auto future = kythira::future_factory_default::makeFuture(response).delay(
                             std::chrono::milliseconds(delay_ms));
                         heartbeat_futures.push_back(std::move(future));
                     }
@@ -218,14 +219,14 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
         auto simultaneous_read = [&](std::size_t read_id) {
             try {
                 // Create minimal heartbeat collection
-                std::vector<
-                    kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                std::vector<kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                     heartbeat_futures;
 
                 // Single successful response (for single-node majority)
                 kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                     current_term, true, 0};
-                heartbeat_futures.push_back(kythira::FutureFactory::makeFuture(response));
+                heartbeat_futures.push_back(kythira::future_factory_default::makeFuture(response));
 
                 collection_count.fetch_add(1);
                 auto collection_future = raft_future_collector<kythira::append_entries_response<
@@ -274,15 +275,16 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
                 std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
 
                 // Perform heartbeat collection
-                std::vector<
-                    kythira::Future<kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
+                std::vector<kythira::future_default<
+                    kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                     heartbeat_futures;
 
                 // Create 2 successful responses (majority of 3 with leader)
                 for (std::size_t i = 0; i < 2; ++i) {
                     kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                         current_term, true, i};
-                    heartbeat_futures.push_back(kythira::FutureFactory::makeFuture(response));
+                    heartbeat_futures.push_back(
+                        kythira::future_factory_default::makeFuture(response));
                 }
 
                 auto collection_future = raft_future_collector<kythira::append_entries_response<
@@ -307,7 +309,7 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
         // Collect results
         std::size_t successful_staggered = 0;
         for (auto& future : staggered_futures) {
-            if (future.get()) {
+            if (std::move(future).get()) {
                 successful_staggered++;
             }
         }
@@ -338,7 +340,7 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
 
             auto cluster_read = [&](std::size_t read_id) {
                 try {
-                    std::vector<kythira::Future<
+                    std::vector<kythira::future_default<
                         kythira::append_entries_response<std::uint64_t, std::uint64_t>>>
                         heartbeat_futures;
                     heartbeat_futures.reserve(follower_count);
@@ -351,7 +353,8 @@ BOOST_AUTO_TEST_CASE(raft_concurrent_read_efficiency_property_test,
                         const bool success = i < needed_followers;  // Ensure majority
                         kythira::append_entries_response<std::uint64_t, std::uint64_t> response{
                             300, success, i};
-                        heartbeat_futures.push_back(kythira::FutureFactory::makeFuture(response));
+                        heartbeat_futures.push_back(
+                            kythira::future_factory_default::makeFuture(response));
                     }
 
                     auto collection_future = raft_future_collector<

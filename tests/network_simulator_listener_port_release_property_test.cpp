@@ -83,7 +83,7 @@ BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, *boost::unit_test
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener != nullptr);
         BOOST_REQUIRE(listener->is_listening());
@@ -99,7 +99,7 @@ BOOST_AUTO_TEST_CASE(property_listener_port_immediate_release, *boost::unit_test
 
         // Verify we can immediately bind to the same port again
         auto listener_future2 = server->bind(server_port);
-        auto listener2 = listener_future2.get();
+        auto listener2 = std::move(listener_future2).get();
 
         BOOST_REQUIRE(listener2 != nullptr);
         BOOST_REQUIRE(listener2->is_listening());
@@ -160,7 +160,7 @@ BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, *boost::unit_test:
             BOOST_CHECK(listener_manager.is_port_available(port));
 
             auto listener_future = server->bind(port);
-            auto listener = listener_future.get();
+            auto listener = std::move(listener_future).get();
 
             BOOST_REQUIRE(listener != nullptr);
             BOOST_REQUIRE(listener->is_listening());
@@ -183,7 +183,7 @@ BOOST_AUTO_TEST_CASE(property_multiple_listener_port_release, *boost::unit_test:
         // Verify we can bind to all ports again
         for (const auto& port : ports) {
             auto listener_future = server->bind(port);
-            auto listener = listener_future.get();
+            auto listener = std::move(listener_future).get();
 
             BOOST_REQUIRE(listener != nullptr);
             BOOST_REQUIRE(listener->is_listening());
@@ -234,7 +234,7 @@ BOOST_AUTO_TEST_CASE(property_port_release_on_stop, *boost::unit_test::timeout(1
 
         // Bind a listener on the server
         auto listener_future = server->bind(server_port);
-        auto listener = listener_future.get();
+        auto listener = std::move(listener_future).get();
 
         BOOST_REQUIRE(listener != nullptr);
         BOOST_REQUIRE(listener->is_listening());
@@ -253,7 +253,7 @@ BOOST_AUTO_TEST_CASE(property_port_release_on_stop, *boost::unit_test::timeout(1
 
         // Verify we can bind to the same port after restart
         auto listener_future2 = server->bind(server_port);
-        auto listener2 = listener_future2.get();
+        auto listener2 = std::move(listener_future2).get();
 
         BOOST_REQUIRE(listener2 != nullptr);
         BOOST_REQUIRE(listener2->is_listening());
