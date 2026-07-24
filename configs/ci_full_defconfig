@@ -1,0 +1,16 @@
+# ci_full_defconfig — every optional dependency selected (y). Every other
+# symbol not listed here keeps its Kconfig-declared default, which for every
+# non-listed optional dependency is already y (Requirement 4.4) — this file
+# only needs to list the ones that differ from default: EDHOC and the two
+# alternate future backends (STDEXEC_BACKEND, BOOST_FUTURE_BACKEND) all
+# default to n. COVERAGE is deliberately left at its default (n): forcing it
+# on here would require Clang and CMAKE_BUILD_TYPE=Debug project-wide,
+# breaking the g++-13 build/test CI jobs that also want to apply this
+# defconfig — coverage is a separate build variant with its own dedicated CI
+# job and its own direct -DENABLE_COVERAGE=ON, not a feature toggle this
+# defconfig should force. Intended for use with -DKYTHIRA_KCONFIG_STRICT=ON
+# so CI fails fast if a dependency silently stops being installable in the
+# CI image, per Requirement 5.1.
+CONFIG_EDHOC=y
+CONFIG_STDEXEC_BACKEND=y
+CONFIG_BOOST_FUTURE_BACKEND=y
