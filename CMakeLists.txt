@@ -230,22 +230,59 @@ if(stdexec_FOUND)
     endif()
 endif()
 
+# boost-future-backend spec: a third Future/Promise/Executor
+# implementation, backed by boost::thread's extended future API (then()/
+# when_all/when_any). boost-thread and boost-asio are already required
+# (non-optional) dependencies of this project for unrelated reasons - this
+# option only controls whether THIS backend's own targets/headers are
+# built, not whether Boost itself is available.
+option(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND "Build the boost::thread-backed Future/Promise/Executor backend" OFF)
+
+# BOOST_THREAD_VERSION is a project-wide ABI setting, not a per-file flag:
+# Boost.Thread's future/promise templates compile differently depending on
+# this macro's value at each translation unit's compile time, and mixing
+# TUs compiled with different values that pass the same boost::future/
+# boost::promise object across a TU boundary is undefined behavior. Applied
+# once here as an INTERFACE compile definition on network_simulator - the
+# same mechanism KYTHIRA_HAS_STDEXEC already uses - so every consumer gets
+# the identical value automatically. BOOST_THREAD_PROVIDES_EXECUTORS is
+# defined explicitly rather than relied upon as an auto-definition: the
+# Phase 0 spike (.kiro/specs/boost-future-backend/spike-notes.md) found it
+# is only auto-defined at BOOST_THREAD_VERSION>=5, not >=4 as originally
+# assumed from source inspection alone.
+if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    if(NOT Boost_FOUND)
+        message(FATAL_ERROR "KYTHIRA_BUILD_BOOST_FUTURE_BACKEND requires Boost, which was not found")
+    endif()
+    target_compile_definitions(network_simulator INTERFACE
+        BOOST_THREAD_VERSION=4
+        BOOST_THREAD_PROVIDES_EXECUTORS
+        KYTHIRA_HAS_BOOST_FUTURE
+    )
+    target_link_libraries(network_simulator INTERFACE Boost::thread)
+    message(STATUS "boost future backend enabled (BOOST_THREAD_VERSION=4)")
+endif()
+
 # Requirement 11: which backend kythira::future_default<T> (the non-generic
 # call sites that just want "the project's chosen future implementation"
 # without spelling out a backend) resolves to. Templated core code that is
 # already generic over a future type never references future_default and
 # is unaffected by this option either way (Requirement 11.2/11.5).
 set(KYTHIRA_DEFAULT_FUTURE_BACKEND "folly" CACHE STRING
-    "Backend kythira::future_default<T> resolves to: folly (default) or stdexec")
-set_property(CACHE KYTHIRA_DEFAULT_FUTURE_BACKEND PROPERTY STRINGS folly stdexec)
-if(NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly" AND NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec")
-    message(FATAL_ERROR "KYTHIRA_DEFAULT_FUTURE_BACKEND must be \"folly\" or \"stdexec\", got \"${KYTHIRA_DEFAULT_FUTURE_BACKEND}\"")
+    "Backend kythira::future_default<T> resolves to: folly (default), stdexec, or boost")
+set_property(CACHE KYTHIRA_DEFAULT_FUTURE_BACKEND PROPERTY STRINGS folly stdexec boost)
+if(NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly"
+   AND NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec"
+   AND NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    message(FATAL_ERROR "KYTHIRA_DEFAULT_FUTURE_BACKEND must be \"folly\", \"stdexec\", or \"boost\", got \"${KYTHIRA_DEFAULT_FUTURE_BACKEND}\"")
 endif()
 if(KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "stdexec")
     if(NOT stdexec_FOUND)
         message(FATAL_ERROR "KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec requires the stdexec dependency, which was not found")
     endif()
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_FUTURE_BACKEND_STDEXEC)
+elseif(KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_FUTURE_BACKEND_BOOST)
 endif()
 
 # Property 5: Optional Dependency Isolation (Task 1.1, Requirements 4.2,

@@ -65,9 +65,13 @@ existing production call site, and does not change the default backend.
   (`include/boost/thread/detail/config.hpp` in the vendored headers)
   selecting which API surface is compiled; must be `4` or `5` for
   `then()`/`when_all`/`when_any` to exist at all. Defining it to `4`
-  auto-defines `BOOST_THREAD_PROVIDES_FUTURE_CONTINUATION` and
-  `BOOST_THREAD_PROVIDES_EXECUTORS` unless the build already defined
-  either explicitly.
+  auto-defines `BOOST_THREAD_PROVIDES_FUTURE_CONTINUATION`, but — confirmed
+  by the Phase 0 spike (`spike-notes.md`), correcting this document's own
+  original assumption — does **not** auto-define
+  `BOOST_THREAD_PROVIDES_EXECUTORS` (that auto-definition is gated on
+  `BOOST_THREAD_VERSION>=5` specifically); this project defines it
+  explicitly alongside `BOOST_THREAD_VERSION=4` rather than moving to
+  version `5`.
 - **Extension API**: Any `boost::future`/`boost::promise` member or free
   function marked `// EXTENSION` in the Boost.Thread source — not part of
   the C++ standard `std::future` surface, documented by Boost itself as
@@ -267,7 +271,9 @@ same way regardless of backend.
 4. WHEN `via(scheduler)` is called on the `boost` backend THEN the system
    SHALL reschedule the continuation onto the given `boost::executors::executor`
    using the `then(Ex&, F)` overload (requires
-   `BOOST_THREAD_PROVIDES_EXECUTORS`, auto-enabled per Requirement 1.2)
+   `BOOST_THREAD_PROVIDES_EXECUTORS`, explicitly defined per Requirement
+   1.2 — confirmed by the Phase 0 spike to need explicit definition, not
+   auto-enabled at `BOOST_THREAD_VERSION=4`)
 5. WHEN `delay(duration)` or `within(timeout)` is called on the `boost`
    backend THEN the system SHALL implement it using `boost::asio`
    (`boost-asio` is already a required vcpkg dependency of this project,

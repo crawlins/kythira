@@ -235,7 +235,9 @@ public:
     auto ensure(F&& func) -> Future<T>;
 
     // via: then(Ex&, F) overload, requires BOOST_THREAD_PROVIDES_EXECUTORS
-    // (auto-enabled at BOOST_THREAD_VERSION>=4, Requirement 1.2).
+    // (explicitly defined alongside BOOST_THREAD_VERSION=4, Requirement
+    // 1.2 - the Phase 0 spike found this is NOT auto-enabled until
+    // version>=5, correcting this document's own original assumption).
     auto via(boost::executors::executor& ex) -> Future<T>;
 
     // delay/within: no Boost.Thread primitive (Requirement 6.5) — backed

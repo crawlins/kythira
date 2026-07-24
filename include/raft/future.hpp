@@ -697,6 +697,15 @@ public:
         return _folly_future.wait(timeout).isReady();
     }
 
+    // Run this future to completion in the background, discarding its
+    // result (Requirement: portable fire-and-forget). No-op beyond
+    // consuming *this: folly::Future is eager - any continuation already
+    // attached via thenValue/thenTry runs regardless of whether the
+    // returned Future object is kept alive, unlike stdexec_backend's
+    // lazy senders (see that backend's detach() for the contrast this
+    // method exists to paper over).
+    auto detach() && -> void {}
+
     // Legacy methods for backward compatibility
     template<typename F> auto then(F&& func) -> Future<std::invoke_result_t<F, T>> {
         return thenValue(std::forward<F>(func));
@@ -916,6 +925,9 @@ public:
     auto wait(std::chrono::milliseconds timeout) -> bool {
         return _folly_future.wait(timeout).isReady();
     }
+
+    // See Future<T>::detach() above - same eager-backend no-op rationale.
+    auto detach() && -> void {}
 
     // Legacy methods for backward compatibility
     template<typename F> auto then(F&& func) -> Future<std::invoke_result_t<F>> {

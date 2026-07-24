@@ -93,6 +93,22 @@ if(stdexec_FOUND)
     )
 endif()
 
+# boost-future-backend spec (.kiro/specs/boost-future-backend/, Task 18):
+# Folly-vs-boost backend comparison. Only present when the boost future
+# backend was actually enabled at configure time
+# (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or KYTHIRA_DEFAULT_FUTURE_BACKEND=
+# boost, root CMakeLists.txt) — raft/future_boost.hpp is a no-op header
+# otherwise, mirroring the stdexec_FOUND gate immediately above.
+if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    add_network_example(boost_backend_migration_guide_example boost-backend/migration_guide_example.cpp)
+    add_test(NAME boost_backend_migration_guide_example_test COMMAND boost_backend_migration_guide_example)
+    set_tests_properties(boost_backend_migration_guide_example_test PROPERTIES
+        TIMEOUT 60
+        LABELS "example;migration;boost-future;future-backend;unit"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+endif()
+
 # future-backend-performance-benchmark spec: standalone Folly-vs-stdexec
 # comparison report generator. Unlike stdexec_backend_migration_guide_example
 # above, this target is NOT gated behind stdexec_FOUND — it must build and

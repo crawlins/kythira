@@ -80,6 +80,26 @@ function(add_stdexec_test test_name source_file)
     set_tests_properties(${test_name} PROPERTIES LABELS "stdexec;future-backend")
 endfunction()
 
+# Helper for boost-future-backend spec tests (.kiro/specs/boost-future-backend/).
+# kythira_test_pch already links Boost::thread and defines
+# BOOST_THREAD_VERSION=4/BOOST_THREAD_PROVIDES_EXECUTORS/
+# KYTHIRA_HAS_BOOST_FUTURE when the backend is enabled (root CMakeLists.txt,
+# KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or KYTHIRA_DEFAULT_FUTURE_BACKEND=boost)
+# — unlike stdexec, boost-thread is already a required (non-optional)
+# project dependency, so this is an opt-in build-time cost, not an
+# optional-dependency-availability gate; callers wrap each
+# add_boost_future_test() call in the same condition so these targets
+# simply don't exist otherwise. "boost-future"/"future-backend" labels let
+# `ctest -L boost-future` / `ctest -LE boost-future` select or exclude
+# this suite, mirroring the stdexec label convention exactly.
+function(add_boost_future_test test_name source_file)
+    add_executable(${test_name} ${source_file})
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch)
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS "boost-future;future-backend")
+endfunction()
+
 # Test files
 add_network_test(concept_test concept_test.cpp)
 add_network_test(folly_concept_compilation_property_test folly_concept_compilation_property_test.cpp)
@@ -2532,6 +2552,25 @@ set_tests_properties(concepts_future_folly_independence_test PROPERTIES
     LABELS "unit;concepts;folly-independence;stdexec;future-backend"
 )
 
+# backend_non_interference_compile_fail_test (Property 14 / Property 11 —
+# see the file's own top comment) is always registered, not gated behind
+# stdexec_FOUND or the boost backend flag: raft/future_stdexec.hpp and
+# raft/future_boost.hpp are both safe no-op headers when their respective
+# backend isn't enabled, and the file's own #ifdef KYTHIRA_HAS_STDEXEC /
+# KYTHIRA_HAS_BOOST_FUTURE guards make each backend-pair's checks compile
+# away to nothing in that case — so this target builds and passes trivially
+# in a Folly-only configuration too, and exercises whichever backend pairs
+# are actually enabled otherwise. Links kythira_test_pch (not a raw
+# add_executable like concepts_future_folly_independence_test above) since,
+# unlike that check, this one needs Folly's real include directories.
+add_executable(backend_non_interference_compile_fail_test backend_non_interference_compile_fail_test.cpp)
+target_link_libraries(backend_non_interference_compile_fail_test PRIVATE kythira_test_pch)
+target_precompile_headers(backend_non_interference_compile_fail_test REUSE_FROM kythira_test_pch)
+add_test(NAME backend_non_interference_compile_fail_test COMMAND backend_non_interference_compile_fail_test)
+set_tests_properties(backend_non_interference_compile_fail_test PROPERTIES
+    LABELS "unit;concepts;stdexec;boost-future;future-backend"
+)
+
 # Optional: only present when stdexec was found (root CMakeLists.txt).
 if(stdexec_FOUND)
     add_stdexec_test(single_shot_channel_property_test single_shot_channel_property_test.cpp)
@@ -2548,9 +2587,20 @@ if(stdexec_FOUND)
     add_stdexec_test(stdexec_executor_concept_compliance_property_test stdexec_executor_concept_compliance_property_test.cpp)
     add_stdexec_test(stdexec_concept_wrappers_unit_test stdexec_concept_wrappers_unit_test.cpp)
     add_stdexec_test(stdexec_concept_wrappers_interoperability_property_test stdexec_concept_wrappers_interoperability_property_test.cpp)
-    add_stdexec_test(backend_non_interference_compile_fail_test backend_non_interference_compile_fail_test.cpp)
     add_stdexec_test(backend_selection_isolation_property_test backend_selection_isolation_property_test.cpp)
     add_stdexec_test(unit_type_equivalence_property_test unit_type_equivalence_property_test.cpp)
+endif()
+
+# ── boost-future-backend (.kiro/specs/boost-future-backend/) ─────────────────
+# Only present when the boost future backend was actually enabled at
+# configure time (KYTHIRA_BUILD_BOOST_FUTURE_BACKEND or
+# KYTHIRA_DEFAULT_FUTURE_BACKEND=boost, root CMakeLists.txt) — otherwise
+# include/raft/future_boost.hpp's `#ifdef KYTHIRA_HAS_BOOST_FUTURE` guard
+# makes the whole header a no-op and these test files would fail to
+# compile (Try/Promise/Future/etc. wouldn't be defined).
+if(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND OR KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
+    add_boost_future_test(boost_future_concept_compliance_property_test boost_future_concept_compliance_property_test.cpp)
+    add_boost_future_test(boost_future_continuation_and_collector_property_test boost_future_continuation_and_collector_property_test.cpp)
 endif()
 
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─

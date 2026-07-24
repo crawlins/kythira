@@ -6,8 +6,11 @@
 ///     one in `include/raft/future.hpp`.
 ///
 /// Scope (see `.kiro/specs/stdexec-future-backend/` for the full design):
-/// no existing production call site is converted from Folly to `stdexec` by
-/// this feature; the Folly dependency is not removed or made optional-only;
+/// no production call site is hardcoded to this backend specifically by
+/// this feature — call sites that use `kythira::future_default` (rather
+/// than this namespace directly) resolve here only when
+/// `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec` is selected; the Folly
+/// dependency is not removed or made optional-only;
 /// GPU execution (`nvexec`) and other `stdexec` extensions beyond CPU
 /// scheduling are out of scope. This header is compiled only when
 /// `KYTHIRA_HAS_STDEXEC` is defined (root `CMakeLists.txt`, when
@@ -907,6 +910,24 @@ public:
     }
 
     // Future-returning overload (automatic flattening).
+    //
+    // Normalizes _sender's value/error completion into a single
+    // value-channel-only sender carrying Try<T> first, THEN calls func
+    // exactly once via one let_value stage - rather than mirroring the
+    // non-Future-returning overload's "let_value(func) | let_error(func)"
+    // shape directly. That mirrored shape is unsound here: func's
+    // returned Future can itself complete with an error, and
+    // ex::let_error can't distinguish "the original _sender failed" from
+    // "func's own spliced-in result sender failed" - it fires on either,
+    // so a func call that succeeds via the value path but returns a
+    // *failing* Future gets invoked a SECOND time via the outer
+    // let_error. Confirmed via a minimal repro (nested Future-returning
+    // thenTry whose result fails was invoked twice) before this fix.
+    // ex::just can't itself fail, so normalizing through it first closes
+    // that hole: composed's own let_value always fires exactly once,
+    // deterministically, regardless of which channel _sender completed
+    // on, and func's own later failure has no further let_error to
+    // (incorrectly) re-trigger.
     template<typename F>
     auto thenTry(F&& func) -> std::invoke_result_t<F, Try<T>>
     requires(detail::is_future_v<std::invoke_result_t<F, Try<T>>>)
@@ -914,13 +935,15 @@ public:
         using FutureR = std::invoke_result_t<F, Try<T>>;
         using InnerT = typename FutureR::value_type;
         using ErasedInnerT = std::conditional_t<std::is_void_v<InnerT>, kythira::unit, InnerT>;
-        auto with_value = std::move(_sender) | ex::let_value([func](T value) mutable {
-                              return std::move(func(Try<T>(std::move(value)))).extract_sender();
-                          });
-        auto composed =
-            std::move(with_value) | ex::let_error([func](std::exception_ptr ex_ptr) mutable {
-                return std::move(func(Try<T>(std::move(ex_ptr)))).extract_sender();
+        auto normalized =
+            std::move(_sender) |
+            ex::let_value([](T value) mutable { return ex::just(Try<T>(std::move(value))); }) |
+            ex::let_error([](std::exception_ptr ex_ptr) mutable {
+                return ex::just(Try<T>(std::move(ex_ptr)));
             });
+        auto composed = std::move(normalized) | ex::let_value([func](Try<T> result) mutable {
+                            return std::move(func(std::move(result))).extract_sender();
+                        });
         return FutureR(std::move(composed));
     }
 
@@ -1079,6 +1102,23 @@ public:
         return future;
     }
 
+    // Run this future to completion in the background, discarding its
+    // result (Requirement: portable fire-and-forget). Unlike Folly's/
+    // boost's eager futures - where attaching a continuation is enough,
+    // regardless of whether the returned Future object is kept alive -
+    // stdexec's senders are lazy: nothing runs at all until something
+    // starts the chain. Generic code (e.g. raft_future_collector's
+    // per-future thenTry loop) that discards a thenTry/thenValue result
+    // expecting it to keep running is a silent no-op under this backend
+    // without an explicit start - this is that explicit start.
+    // detail::spawn_recording funnels the value/error/stopped completion
+    // paths into one signature so exec::start_detached never observes an
+    // unhandled error channel; the record callback here discards the
+    // result outright, matching detach()'s "don't care" contract.
+    auto detach() && -> void {
+        exec::start_detached(detail::spawn_recording<T>(std::move(_sender), [](Try<T>) {}));
+    }
+
 private:
     any_sender_t<T> _sender;
     std::function<bool()> _is_ready_fn;
@@ -1192,6 +1232,11 @@ public:
         }
     }
 
+    // See Future<T>::thenTry's Future-returning overload for why this
+    // normalizes through ex::just first rather than mirroring the
+    // "let_value(func) | let_error(func)" shape directly (that shape lets
+    // func's own later failure incorrectly re-trigger func a second time
+    // via the outer let_error).
     template<typename F>
     auto thenTry(F&& func) -> std::invoke_result_t<F, Try<void>>
     requires(detail::is_future_v<std::invoke_result_t<F, Try<void>>>)
@@ -1199,13 +1244,15 @@ public:
         using FutureR = std::invoke_result_t<F, Try<void>>;
         using InnerT = typename FutureR::value_type;
         using ErasedInnerT = std::conditional_t<std::is_void_v<InnerT>, kythira::unit, InnerT>;
-        auto with_value = std::move(_sender) | ex::let_value([func](kythira::unit) mutable {
-                              return std::move(func(Try<void>(kythira::unit{}))).extract_sender();
+        auto normalized = std::move(_sender) | ex::let_value([](kythira::unit) mutable {
+                              return ex::just(Try<void>(kythira::unit{}));
+                          }) |
+                          ex::let_error([](std::exception_ptr ex_ptr) mutable {
+                              return ex::just(Try<void>(std::move(ex_ptr)));
                           });
-        auto composed =
-            std::move(with_value) | ex::let_error([func](std::exception_ptr ex_ptr) mutable {
-                return std::move(func(Try<void>(std::move(ex_ptr)))).extract_sender();
-            });
+        auto composed = std::move(normalized) | ex::let_value([func](Try<void> result) mutable {
+                            return std::move(func(std::move(result))).extract_sender();
+                        });
         return FutureR(std::move(composed));
     }
 
@@ -1303,6 +1350,11 @@ public:
                              }));
 
         return future;
+    }
+
+    // See Future<T>::detach() for the full rationale.
+    auto detach() && -> void {
+        exec::start_detached(detail::spawn_recording<void>(std::move(_sender), [](Try<void>) {}));
     }
 
 private:
