@@ -3,6 +3,99 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 24, 2026, continued)
+
+- **Implemented the `kconfig-integration` spec**
+  (`.kiro/specs/kconfig-integration/`): a declarative front end, via
+  [Kconfiglib](https://github.com/ulfalizer/Kconfiglib) (the same
+  configuration language as the Linux kernel, Zephyr, Buildroot, and
+  coreboot), layered over Kythira's existing `find_package()`-driven
+  optional-dependency matrix. All 19 tasks across the spec's 5 phases
+  complete.
+  - **Root [`Kconfig`](../Kconfig) file**: one `config` symbol per optional
+    dependency (`OPENSSL`, `HTTP_TRANSPORT`, `HTTP_TRANSPORT_TLS`,
+    `COAP_TRANSPORT`, `EDHOC`, `DNS_DISCOVERY`, `POCO_DISCOVERY`, `AWS_SDK`,
+    `AWS_ACM_PCA`, `LIBSSH2_TESTS`, `CHAOS_TESTS`, `COVERAGE`), grouped into
+    `menu`s, with `depends on` expressing every prerequisite the existing
+    CMake `if()` chains already encoded (`HTTP_TRANSPORT_TLS` needs
+    `HTTP_TRANSPORT` and `OPENSSL`; `EDHOC` needs `COAP_TRANSPORT`;
+    `AWS_ACM_PCA` needs `AWS_SDK`) — verified directly with Kconfiglib that
+    deselecting the prerequisite correctly greys out the dependent symbol.
+    Extended beyond the spec's original two-backend (`folly`/`stdexec`)
+    `choice` to a three-way `folly`/`stdexec`/`boost` choice plus a
+    `BOOST_FUTURE_BACKEND` symbol, since the `boost-future-backend` spec
+    (and this session's earlier `future_default` migration) had since made
+    boost a third real backend the original spec design predated.
+  - **`scripts/kconfig/genconfig.py`**: translates a resolved `.config`
+    into `build/generated/autoconf.cmake` (`KCONFIG_<NAME>` CMake
+    variables for every symbol) and `build/generated/kythira/autoconf.hpp`
+    (`#define`s using the *existing* macro names — `KYTHIRA_HAS_LDNS`,
+    `LAKERS_AVAILABLE`, `LIBCOAP_AVAILABLE`, etc. — so no existing `#ifdef`
+    call site needed to change). Unit-verified against `ci_full_defconfig`,
+    `minimal_defconfig`, and bare Kconfig defaults (no `.config` at all),
+    confirming the bare-defaults output exactly matches `ci_full_defconfig`
+    except for the two/three symbols that deliberately default off
+    (`EDHOC`, `STDEXEC_BACKEND`, `BOOST_FUTURE_BACKEND` — all gated behind
+    toolchain/vcpkg features not assumed present).
+  - **`cmake/Kconfig.cmake`**: `KYTHIRA_KCONFIG`/`KYTHIRA_KCONFIG_STRICT`
+    cache variables; graceful degradation to "no `KCONFIG_*` variables
+    defined" when `python3`/`kconfiglib` aren't available, so Kconfig
+    remains purely additive tooling, never a build requirement; three new
+    macros — `kythira_find_optional()` for dependencies resolved by a
+    single plain `find_package()` call (OpenSSL, httplib, lakers, AWSSDK
+    core, libssh2), and `kythira_kconfig_gate()`/`kythira_kconfig_require()`
+    for the hand-written multi-step ones that don't fit that shape
+    (libcoap's CONFIG-then-PkgConfig fallback, libldns and libfiu's
+    `pkg_check_modules`, Poco DNSSD's vcpkg-tree-then-CMake-then-pkgconfig
+    cascade, and `AWS_ACM_PCA`'s existing `unset(AWSSDK_FOUND)` re-probe
+    trick, all preserved verbatim and just wrapped in the new gate).
+    `CONFIG_COVERAGE` and `CONFIG_BOOST_FUTURE_BACKEND` pre-seed their
+    legacy cache variables (`ENABLE_COVERAGE`,
+    `KYTHIRA_BUILD_BOOST_FUTURE_BACKEND`) the same way — via a plain
+    `set(... CACHE ...)` without `FORCE`, which only takes effect if the
+    cache entry doesn't already exist, so an explicit `-D` on the command
+    line always wins over the Kconfig-derived value, verified directly by
+    configuring with both set and confirming the `-D` value survives.
+  - **`menuconfig`/`guiconfig`/`savedefconfig`/`kconfig-check` CMake
+    targets**, following the same stub-target-when-tool-missing pattern as
+    the existing `format`/`static-analysis` targets — always listed by
+    `cmake --build build --target help`, but print an actionable
+    `pip install` hint and fail only themselves when `kconfiglib` is
+    absent, verified not to block the rest of the build.
+  - **`configs/ci_full_defconfig`** (every optional feature on) and
+    **`configs/minimal_defconfig`** (every optional feature off, core
+    folly/Boost/plain-HTTP transport untouched since those stay outside
+    Kconfig's control entirely) — both minimal by construction (only
+    symbols differing from their Kconfig-declared default), validated by
+    `scripts/kconfig/check_defconfigs.py` (the `kconfig-check` target).
+  - **Verification, all performed against a real build** (not just
+    Kconfiglib-level symbol checks): zero-config regression — diffed the
+    complete `cmake --build --target help` output between this branch and
+    an origin/main baseline (same `vcpkg_installed/` tree, via a symlinked
+    git worktree) both with and without `kconfiglib` installed; identical
+    apart from the four new Kconfig targets. Strict-mode failure —
+    selected `CONFIG_EDHOC=y` with `KYTHIRA_KCONFIG_STRICT=ON` against this
+    environment's genuinely-not-installed `lakers` vcpkg feature and
+    confirmed CMake's own standard `find_package(... REQUIRED)` not-found
+    error fires, naming `lakers`, with the call stack pointing at
+    `kythira_find_optional`; confirmed the identical `.config` without
+    strict mode degrades gracefully instead. Minimal-config check —
+    applied `minimal_defconfig` on a machine with every optional dependency
+    actually installed and confirmed none of them link in
+    (`KYTHIRA_HAS_POCO_DNSSD` etc. absent, `poco_discovery_node` etc.
+    skipped) despite being available. `menuconfig` round-trip — simulated
+    via Kconfiglib's API directly (deselect `POCO_DISCOVERY` from
+    `ci_full_defconfig`, save, reconfigure): confirmed
+    `KYTHIRA_HAS_POCO_DNSSD` disappears from the generated `autoconf.hpp`
+    and `poco_discovery_node` is skipped, and that `savedefconfig`'s output
+    differs from `ci_full_defconfig` by exactly that one symbol.
+  - **Documentation**: new "Build Configuration (Kconfig)" section in
+    [README.md](../README.md); `kconfiglib` documented in
+    [DEPENDENCIES.md](../DEPENDENCIES.md) under its own subsection,
+    explicitly distinct from the required/optional C++ library
+    dependencies already there (it's Python tooling, not something the
+    build itself links against).
+
 ### What Changed (July 24, 2026)
 
 - **Converted the entire test suite and all production RPC/collection

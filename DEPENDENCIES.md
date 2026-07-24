@@ -122,6 +122,25 @@ This document lists the dependencies required to build and use the network simul
   each job's own disk budget (`.kiro/specs/ccache-adoption/`); that sizing is
   CI-only and not relevant to local use.
 
+### kconfiglib — build configuration tooling (Kconfig)
+- **Status**: Optional Python *tooling*, not a C++ library — distinct from every
+  dependency above. Only needed to run `menuconfig`/`guiconfig`/`savedefconfig`
+  or to regenerate the Kconfig-derived autoconf artifacts from a changed
+  `.config`; a machine without it configures and builds identically (every
+  `find_package()` call falls back to unconditional probing, equivalent to
+  every optional symbol defaulting to `y`)
+- **Purpose**: Pure-Python parser/menu engine for the root [`Kconfig`](Kconfig)
+  file — the same configuration language used by the Linux kernel, Zephyr,
+  Buildroot, and coreboot — layered over the `find_package()`-driven optional-
+  dependency matrix documented throughout this file. See the "Build
+  Configuration (Kconfig)" section of [README.md](README.md) and
+  [`.kiro/specs/kconfig-integration/`](.kiro/specs/kconfig-integration/) for
+  the full design.
+- **Installation**:
+  ```bash
+  pip install -r scripts/kconfig/requirements.txt
+  ```
+
 ### Property-Based Testing Library
 - **RapidCheck** or similar C++ property-based testing framework
 - Required for property-based tests (tasks 4.5+)

@@ -12,8 +12,8 @@ The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
-  stdexec future backend, the Folly-vs-stdexec performance benchmark suite, and
-  RPC-internal mTLS for `ca_cluster_node`
+  stdexec future backend, the Folly-vs-stdexec performance benchmark suite,
+  RPC-internal mTLS for `ca_cluster_node`, and Kconfig-based build configuration
 - Build clean with no errors or warnings
 - Coverage floor: 89.16% (non-decreasing ratchet, see `coverage_floor.txt`)
 
@@ -48,9 +48,8 @@ unambiguous at a glance.
 
 ### Not Started
 
-| Spec | What it would do |
-|------|-------|
-| [`kconfig-integration`](../.kiro/specs/kconfig-integration/) | Replace the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*` pattern with a single Kconfig-style declarative system |
+None currently — `kconfig-integration` (the last entry here) reached full
+completion on July 24, 2026; see `doc/CHANGELOG.md` for that day's entry.
 
 ### Partially Implemented
 
@@ -181,6 +180,48 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
   three now gated at the top level; full build with Folly hidden
   completes cleanly (exit 0) instead of failing catastrophically; no
   regression in the normal (Folly present) configuration
+- [x] **Kconfig integration** — a declarative front end (via
+  [Kconfiglib](https://github.com/ulfalizer/Kconfiglib), the same
+  configuration language as the Linux kernel/Zephyr/Buildroot/coreboot)
+  layered over the ad hoc per-dependency `find_package`/`KYTHIRA_HAS_*`
+  pattern: a root [`Kconfig`](../Kconfig) file declaring every optional
+  dependency (OpenSSL, HTTP transport TLS, CoAP transport, EDHOC, DNS/Poco
+  peer discovery, the AWS SDK core and ACM Private CA components, libssh2,
+  libfiu, and the stdexec/boost future backends) with `depends on`
+  constraints (`AWS_ACM_PCA` needs `AWS_SDK`, `EDHOC` needs `COAP_TRANSPORT`,
+  `HTTP_TRANSPORT_TLS` needs `HTTP_TRANSPORT` and `OPENSSL`);
+  `scripts/kconfig/genconfig.py` translating a resolved `.config` into
+  `build/generated/autoconf.cmake` (`KCONFIG_<NAME>` variables) and
+  `build/generated/kythira/autoconf.hpp` (the existing macro names,
+  unchanged, so no `#ifdef` call site needed to change); `cmake/Kconfig.cmake`
+  wiring those into the root `CMakeLists.txt` via two new macros
+  (`kythira_find_optional()` for single-call dependencies,
+  `kythira_kconfig_gate()`/`kythira_kconfig_require()` for the hand-written
+  multi-step ones: libcoap, libldns, libfiu, Poco DNSSD, the AWS ACM PCA
+  two-step re-probe); `menuconfig`/`guiconfig`/`savedefconfig`/
+  `kconfig-check` CMake targets; checked-in `configs/ci_full_defconfig` and
+  `configs/minimal_defconfig`. `KYTHIRA_KCONFIG_STRICT=ON` turns "wanted but
+  not found" from a silent skip into a hard `find_package(... REQUIRED)`-
+  style configure failure — verified directly by selecting `CONFIG_EDHOC=y`
+  with the `lakers` vcpkg feature genuinely not installed in this
+  environment and confirming CMake's own standard not-found error fires,
+  naming `lakers`. folly, Boost, and stdexec deliberately stay outside
+  Kconfig's control (hard-required or already-unconditionally-probed, per
+  the design doc's "Kconfig expresses intent; CMake still does detection"
+  principle) — only genuinely optional dependencies are gated. Zero-config
+  behavior (no `-DKYTHIRA_KCONFIG`, no prior `menuconfig`) is byte-for-byte
+  unchanged from before this feature, verified both with and without
+  `kconfiglib` installed by diffing the full `cmake --build --target help`
+  target list against a pre-Kconfig baseline configured from the same
+  `vcpkg_installed/` tree — identical apart from the four new Kconfig
+  targets themselves. `configs/ci_full_defconfig` deliberately leaves
+  `CONFIG_COVERAGE` at its default (off) despite selecting every other
+  optional feature: forcing it on would require Clang and
+  `CMAKE_BUILD_TYPE=Debug` project-wide, breaking the g++-13 CI jobs that
+  also apply this defconfig — coverage remains a separate build variant
+  with its own dedicated CI job and direct `-DENABLE_COVERAGE=ON`, verified
+  to produce identical `ENABLE_COVERAGE` cache state whether set that way or
+  via `CONFIG_COVERAGE=y`.
 
 ### New Transport Implementations
 

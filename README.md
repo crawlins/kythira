@@ -87,6 +87,58 @@ cmake --build .
 ctest
 ```
 
+## Build Configuration (Kconfig)
+
+Kythira's optional-dependency matrix (OpenSSL, CoAP/HTTP transport TLS,
+EDHOC, DNS/Poco peer discovery, the AWS SDK and ACM Private CA, libssh2,
+libfiu, and the alternate stdexec/boost future backends) is declared in a
+single root [`Kconfig`](Kconfig) file, browsable/editable with
+[Kconfiglib](https://github.com/ulfalizer/Kconfiglib) — the same
+configuration language and tooling family used by the Linux kernel, Zephyr,
+Buildroot, and coreboot. This is optional, additive tooling layered over the
+existing `find_package()`-driven detection: **the zero-config `cmake -S . -B
+build` path above works identically whether or not you ever touch Kconfig**,
+on a machine with or without `kconfiglib` installed. Kconfig does not
+replace `find_package()` — CMake still does the actual probing of what's
+installed; Kconfig adds a single tree of symbols with declared `depends on`
+relationships (e.g. `AWS_ACM_PCA` can't be selected without `AWS_SDK`), a
+named/checked-in way to select a feature set, and an opt-in strict mode.
+
+Install the tooling (only needed for `menuconfig`/`guiconfig`/
+`savedefconfig`, not for ordinary building):
+
+```bash
+pip install -r scripts/kconfig/requirements.txt
+```
+
+Interactively choose a feature set, then configure from it:
+
+```bash
+cmake --build build --target menuconfig      # writes build/.config
+cmake -S . -B build -DKYTHIRA_KCONFIG=build/.config
+```
+
+Or apply one of the checked-in, non-interactive defconfigs:
+
+```bash
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/ci_full_defconfig   # every optional feature on
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/minimal_defconfig   # every optional feature off
+```
+
+By default (no `-DKYTHIRA_KCONFIG`, no prior `menuconfig`), a dependency
+that Kconfig wants but `find_package()` can't find is silently skipped —
+exactly today's zero-config behavior. Passing `-DKYTHIRA_KCONFIG_STRICT=ON`
+turns that into a hard configure failure instead, useful for CI or any build
+that wants to catch a dependency silently going missing from its image
+rather than discover it later as a quietly-disabled feature:
+
+```bash
+cmake -S . -B build -DKYTHIRA_KCONFIG=configs/ci_full_defconfig -DKYTHIRA_KCONFIG_STRICT=ON
+```
+
+See [`.kiro/specs/kconfig-integration/`](.kiro/specs/kconfig-integration/)
+for the full design and requirements.
+
 ## ARM (arm64) Support
 
 Kythira is built and tested natively on 64-bit ARM (`aarch64`, vcpkg triplet
