@@ -1,0 +1,19 @@
+# minimal_defconfig — smallest buildable configuration: the hard-required
+# core (folly, Boost, HTTP transport plain-HTTP) stays enabled since it is
+# outside Kconfig's control entirely (find_package(folly)/find_package(Boost)
+# run unconditionally regardless of any CONFIG symbol — see cmake/Kconfig.cmake
+# and the design doc's "Kconfig expresses intent; CMake still does detection"
+# principle), and every genuinely optional feature is explicitly off,
+# including HTTPS/TLS support for the HTTP transport itself.
+# CONFIG_OPENSSL and CONFIG_HTTP_TRANSPORT are left at their Kconfig default
+# (y) rather than forced off: OpenSSL is needed by certificate_authority
+# regardless, and disabling the HTTP transport target entirely isn't a
+# configuration this project's CMakeLists.txt supports switching off (only
+# its TLS layer, CONFIG_HTTP_TRANSPORT_TLS, is genuinely optional).
+# CONFIG_HTTP_TRANSPORT_TLS is not set
+# CONFIG_COAP_TRANSPORT is not set
+# CONFIG_DNS_DISCOVERY is not set
+# CONFIG_POCO_DISCOVERY is not set
+# CONFIG_AWS_SDK is not set
+# CONFIG_LIBSSH2_TESTS is not set
+# CONFIG_CHAOS_TESTS is not set

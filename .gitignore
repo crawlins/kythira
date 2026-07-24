@@ -27,6 +27,7 @@ Makefile
 *.cmake
 !CMakeLists.txt
 !vcpkg-overlays/**/*.cmake
+!cmake/Kconfig.cmake
 vcpkg_installed/
 
 # Rust build output (vcpkg overlay ports built via cargo)

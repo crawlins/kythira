@@ -1,0 +1,150 @@
+mainmenu "Kythira Build Configuration"
+
+config COVERAGE
+	bool "Source-based coverage instrumentation"
+	default n
+	help
+	  Mirrors the existing ENABLE_COVERAGE CMake option. Requires Clang;
+	  forces CMAKE_BUILD_TYPE=Debug. See cmake/Kconfig.cmake for how this
+	  symbol continues to set the legacy ENABLE_COVERAGE cache variable
+	  so `cmake --build build --target coverage` keeps working unchanged.
+
+menu "Transports"
+
+config OPENSSL
+	bool "OpenSSL (TLS/HTTPS support)"
+	default y
+	help
+	  find_package(OpenSSL). Backs KYTHIRA_HAS_OPENSSL and, combined with
+	  HTTP_TRANSPORT, CPPHTTPLIB_OPENSSL_SUPPORT. vcpkg package: openssl.
+
+config HTTP_TRANSPORT
+	bool "HTTP transport (cpp-httplib)"
+	default y
+	help
+	  find_package(httplib). vcpkg package: cpp-httplib.
+
+config HTTP_TRANSPORT_TLS
+	bool "HTTPS support for HTTP transport"
+	depends on HTTP_TRANSPORT && OPENSSL
+	default y
+	help
+	  Defines CPPHTTPLIB_OPENSSL_SUPPORT, enabling httplib::SSLServer/
+	  SSLClient and ca_service --serve's --tls-cert/--tls-key mode.
+
+config COAP_TRANSPORT
+	bool "CoAP transport (libcoap, DTLS)"
+	default y
+	help
+	  find_package(libcoap CONFIG) or PkgConfig fallback (libcoap-3).
+	  Backs LIBCOAP_AVAILABLE. vcpkg package: libcoap (feature: dtls).
+
+config EDHOC
+	bool "EDHOC-to-OSCORE credential bootstrap (lakers)"
+	depends on COAP_TRANSPORT
+	default n
+	help
+	  Backs LAKERS_AVAILABLE, enabling oscore_bootstrap::edhoc (see
+	  coap-transport-security spec, Requirement 5). Requires a Rust
+	  toolchain to build the lakers vcpkg overlay port from source — see
+	  vcpkg-overlays/lakers/README.md. vcpkg feature: edhoc. Defaults to
+	  n because the Rust toolchain is not assumed to be present; strict
+	  mode will fail configure if you select y without it.
+
+endmenu # Transports
+
+menu "Peer Discovery"
+
+config DNS_DISCOVERY
+	bool "RFC 1035/2136 DNS peer discovery (libldns)"
+	default y
+	help
+	  PkgConfig module `ldns`. Backs KYTHIRA_HAS_LDNS.
+
+config POCO_DISCOVERY
+	bool "Poco DNS-SD peer discovery"
+	default y
+	help
+	  Poco::DNSSD, either from the manually-built vcpkg_installed tree
+	  (with avahi-client/avahi-common) or system CMake config/pkg-config.
+	  Backs KYTHIRA_HAS_POCO_DNSSD.
+
+endmenu # Peer Discovery
+
+menu "AWS Integration"
+
+config AWS_SDK
+	bool "AWS SDK (EC2/ASG/IAM/S3/STS quorum managers)"
+	default y
+	help
+	  find_package(AWSSDK COMPONENTS core ec2 autoscaling iam s3 sts).
+	  Backs KYTHIRA_HAS_AWS_SDK.
+
+config AWS_ACM_PCA
+	bool "AWS ACM Private CA provider"
+	depends on AWS_SDK
+	default y
+	help
+	  find_package(AWSSDK COMPONENTS acm-pca) — independently found even
+	  though it depends on AWS_SDK, because AWSSDKConfig.cmake only
+	  defines the acm-pca imported target on a component-scoped call.
+	  Backs KYTHIRA_HAS_AWS_ACM_PCA.
+
+endmenu # AWS Integration
+
+menu "Test-Only Dependencies"
+
+config LIBSSH2_TESTS
+	bool "libssh2 (real-EC2 integration tests)"
+	default y
+	help
+	  find_package(libssh2), CMake config preferred over pkg-config.
+
+config CHAOS_TESTS
+	bool "libfiu fault injection / chaos tests"
+	default y
+	help
+	  PkgConfig module libfiu. Backs CHAOS_TESTS_ENABLED and FIU_ENABLE.
+
+endmenu # Test-Only Dependencies
+
+choice
+	prompt "Default kythira::Future backend"
+	default DEFAULT_FUTURE_BACKEND_FOLLY
+	help
+	  Selects the KYTHIRA_DEFAULT_FUTURE_BACKEND alias target introduced
+	  by the stdexec-future-backend spec (Requirement 11.3). Only affects
+	  non-templated call sites using kythira::future_default; templated
+	  core code accepts either backend regardless of this choice.
+
+config DEFAULT_FUTURE_BACKEND_FOLLY
+	bool "folly"
+
+config DEFAULT_FUTURE_BACKEND_STDEXEC
+	bool "stdexec"
+	depends on STDEXEC_BACKEND
+
+config DEFAULT_FUTURE_BACKEND_BOOST
+	bool "boost"
+	depends on BOOST_FUTURE_BACKEND
+
+endchoice
+
+config STDEXEC_BACKEND
+	bool "stdexec-backed Future/Promise/Executor backend"
+	default n
+	help
+	  Backs the second Future backend from the stdexec-future-backend
+	  spec. vcpkg package: stdexec.
+
+config BOOST_FUTURE_BACKEND
+	bool "boost::thread-backed Future/Promise/Executor backend"
+	default n
+	help
+	  Backs the third Future backend from the boost-future-backend spec
+	  (include/raft/future_boost.hpp). boost::thread/boost::asio are
+	  already hard-required dependencies of this project for unrelated
+	  reasons; this only controls whether this backend's own targets/
+	  headers are built. Backs KYTHIRA_HAS_BOOST_FUTURE.
+
+# (mainmenu close is implicit at EOF)

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 project(network_simulator VERSION 0.1.0 LANGUAGES CXX)
 
+# Kconfig integration: resolves a .config into KCONFIG_<NAME> CMake variables
+# (used below to gate optional find_package() calls) and a generated C++
+# header. Must run before any find_package() call in this file. See
+# cmake/Kconfig.cmake and .kiro/specs/kconfig-integration/ for the design.
+include(cmake/Kconfig.cmake)
+
 # C++23 standard required
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,7 +47,15 @@ else()
     message(STATUS "ccache: disabled (KYTHIRA_ENABLE_CCACHE=OFF)")
 endif()
 
-# Code coverage support
+# Code coverage support. CONFIG_COVERAGE (cmake/Kconfig.cmake) pre-seeds this
+# cache entry when Kconfig is engaged; set(... CACHE ...) without FORCE only
+# takes effect if the cache entry doesn't already exist, so an explicit
+# -DENABLE_COVERAGE=ON on the command line (legacy, no Kconfig involved)
+# always wins over KCONFIG_COVERAGE, and the option() call below is always a
+# no-op once either has run.
+if(DEFINED KCONFIG_COVERAGE)
+    set(ENABLE_COVERAGE ${KCONFIG_COVERAGE} CACHE BOOL "Build with gcov coverage instrumentation")
+endif()
 option(ENABLE_COVERAGE "Build with gcov coverage instrumentation" OFF)
 
 if(ENABLE_COVERAGE)
@@ -67,29 +81,42 @@ endif()
 # Find dependencies
 # Note: folly is required for the full implementation
 # For now, we'll make it optional to allow initial build
+# folly and Boost are hard-required core dependencies, outside Kconfig's
+# control entirely -- they are not modeled as CONFIG symbols and always run
+# unconditionally, same as before Kconfig integration (see design doc's
+# "Kconfig expresses intent; CMake still does detection" principle: Kconfig
+# only governs genuinely optional dependencies).
 find_package(folly QUIET)
 find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context)
-find_package(httplib QUIET)
-find_package(OpenSSL QUIET)
+kythira_find_optional(HTTP_TRANSPORT httplib)
+kythira_find_optional(OPENSSL OpenSSL)
 
 # Find libcoap using CMake config (vcpkg) or PkgConfig (system)
-find_package(libcoap QUIET CONFIG)
-if(NOT libcoap_FOUND)
-    # Fallback to PkgConfig for system installations
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBCOAP QUIET libcoap-3)
+kythira_kconfig_gate(COAP_TRANSPORT)
+if(_KYTHIRA_GATE_COAP_TRANSPORT)
+    find_package(libcoap QUIET CONFIG)
+    if(NOT libcoap_FOUND)
+        # Fallback to PkgConfig for system installations
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBCOAP QUIET libcoap-3)
+        endif()
+    else()
+        # Set LIBCOAP_FOUND for consistency with pkg-config path
+        set(LIBCOAP_FOUND TRUE)
     endif()
-else()
-    # Set LIBCOAP_FOUND for consistency with pkg-config path
-    set(LIBCOAP_FOUND TRUE)
 endif()
+kythira_kconfig_require(COAP_TRANSPORT LIBCOAP_FOUND "libcoap")
 
 # Find libldns using PkgConfig (system installation; pc file is named "ldns")
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(LIBLDNS QUIET ldns)
+kythira_kconfig_gate(DNS_DISCOVERY)
+if(_KYTHIRA_GATE_DNS_DISCOVERY)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBLDNS QUIET ldns)
+    endif()
 endif()
+kythira_kconfig_require(DNS_DISCOVERY LIBLDNS_FOUND "libldns")
 
 # EDHOC support (coap-transport-security spec, Requirement 5) — optional;
 # only present when vcpkg installed with the "edhoc" feature enabled (it
@@ -97,7 +124,7 @@ endif()
 # vcpkg-overlays/lakers/README.md). Absent by default, in which case
 # LAKERS_AVAILABLE stays undefined and oscore_bootstrap::edhoc fails
 # construction with a descriptive error instead of silently degrading.
-find_package(lakers CONFIG QUIET)
+kythira_find_optional(EDHOC lakers CONFIG)
 
 # stdexec-future-backend spec: a second, sender/receiver-based Future/
 # Promise/Executor implementation alongside the default Folly one. A
@@ -153,6 +180,7 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 add_library(network_simulator INTERFACE)
 target_include_directories(network_simulator INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
     $<INSTALL_INTERFACE:include>
 )
 if(folly_FOUND)
@@ -230,12 +258,36 @@ if(stdexec_FOUND)
     endif()
 endif()
 
+# CONFIG_DEFAULT_FUTURE_BACKEND_{FOLLY,STDEXEC,BOOST} (Kconfig `choice`) pre-
+# seeds KYTHIRA_DEFAULT_FUTURE_BACKEND's cache entry below the same way
+# CONFIG_COVERAGE pre-seeds ENABLE_COVERAGE — before it's used (the boost
+# branch below reads it), so it must run ahead of both this block and the
+# set(... CACHE STRING ...) declaration further down. An explicit
+# -DKYTHIRA_DEFAULT_FUTURE_BACKEND=... on the command line always wins,
+# since that already populates the cache before this file starts executing.
+if(DEFINED KCONFIG_DEFAULT_FUTURE_BACKEND_STDEXEC AND KCONFIG_DEFAULT_FUTURE_BACKEND_STDEXEC)
+    set(KYTHIRA_DEFAULT_FUTURE_BACKEND "stdexec" CACHE STRING
+        "Backend kythira::future_default<T> resolves to: folly (default), stdexec, or boost")
+elseif(DEFINED KCONFIG_DEFAULT_FUTURE_BACKEND_BOOST AND KCONFIG_DEFAULT_FUTURE_BACKEND_BOOST)
+    set(KYTHIRA_DEFAULT_FUTURE_BACKEND "boost" CACHE STRING
+        "Backend kythira::future_default<T> resolves to: folly (default), stdexec, or boost")
+elseif(DEFINED KCONFIG_DEFAULT_FUTURE_BACKEND_FOLLY)
+    set(KYTHIRA_DEFAULT_FUTURE_BACKEND "folly" CACHE STRING
+        "Backend kythira::future_default<T> resolves to: folly (default), stdexec, or boost")
+endif()
+
 # boost-future-backend spec: a third Future/Promise/Executor
 # implementation, backed by boost::thread's extended future API (then()/
 # when_all/when_any). boost-thread and boost-asio are already required
 # (non-optional) dependencies of this project for unrelated reasons - this
 # option only controls whether THIS backend's own targets/headers are
-# built, not whether Boost itself is available.
+# built, not whether Boost itself is available. CONFIG_BOOST_FUTURE_BACKEND
+# pre-seeds the cache entry the same way CONFIG_COVERAGE pre-seeds
+# ENABLE_COVERAGE, above.
+if(DEFINED KCONFIG_BOOST_FUTURE_BACKEND)
+    set(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND ${KCONFIG_BOOST_FUTURE_BACKEND} CACHE BOOL
+        "Build the boost::thread-backed Future/Promise/Executor backend")
+endif()
 option(KYTHIRA_BUILD_BOOST_FUTURE_BACKEND "Build the boost::thread-backed Future/Promise/Executor backend" OFF)
 
 # BOOST_THREAD_VERSION is a project-wide ABI setting, not a per-file flag:
@@ -303,7 +355,8 @@ add_custom_target(verify-optional-dependency-isolation
 # left cpp_httplib_server's SSL support unimplemented (see certificate-authority
 # spec Requirement 14) and would otherwise block ca_service --serve's own
 # optional --tls-cert/--tls-key mode (Requirement 11.5).
-if(httplib_FOUND AND OpenSSL_FOUND)
+kythira_kconfig_gate(HTTP_TRANSPORT_TLS)
+if(httplib_FOUND AND OpenSSL_FOUND AND _KYTHIRA_GATE_HTTP_TRANSPORT_TLS)
     target_compile_definitions(network_simulator INTERFACE CPPHTTPLIB_OPENSSL_SUPPORT)
 endif()
 
@@ -331,9 +384,11 @@ endif()
 # host that hasn't built the archives either. See doc/TODO.md / README.md's
 # ARM support section for this known limitation.
 set(POCO_DNSSD_FOUND FALSE)
+kythira_kconfig_gate(POCO_DISCOVERY)
 set(_poco_dnssd_lib     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSD.a")
 set(_poco_dnssd_avahi   "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libPocoDNSSDAvahi.a")
 set(_poco_dnssd_inc     "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/include")
+if(_KYTHIRA_GATE_POCO_DISCOVERY)
 if(EXISTS "${_poco_dnssd_lib}" AND EXISTS "${_poco_dnssd_avahi}")
     # avahi-client / avahi-common are runtime-installed but their dev headers and
     # unversioned .so symlinks are absent without the -dev package.  We look first
@@ -417,6 +472,8 @@ else()
         endif()
     endif()
 endif()
+endif() # _KYTHIRA_GATE_POCO_DISCOVERY
+kythira_kconfig_require(POCO_DISCOVERY POCO_DNSSD_FOUND "Poco DNSSD")
 
 if(POCO_DNSSD_FOUND)
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_POCO_DNSSD)
@@ -440,7 +497,7 @@ else()
 endif()
 
 # ── AWS SDK (aws_ec2_quorum_manager, aws_asg_quorum_manager) ──────────────────
-find_package(AWSSDK QUIET COMPONENTS core ec2 autoscaling iam s3 sts)
+kythira_find_optional(AWS_SDK AWSSDK COMPONENTS core ec2 autoscaling iam s3 sts)
 if(AWSSDK_FOUND)
     message(STATUS "AWS SDK found: ${AWSSDK_VERSION}")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AWS_SDK)
@@ -459,8 +516,17 @@ endif()
 # for the component's own imported target afterward (rather than trusting
 # AWSSDK_FOUND) additionally guards against the component genuinely being
 # absent, matching the project's find_package(AWSSDK...) result caching model.
-unset(AWSSDK_FOUND)
-find_package(AWSSDK QUIET COMPONENTS acm-pca)
+kythira_kconfig_gate(AWS_ACM_PCA)
+if(_KYTHIRA_GATE_AWS_ACM_PCA)
+    unset(AWSSDK_FOUND)
+    find_package(AWSSDK QUIET COMPONENTS acm-pca)
+endif()
+if(TARGET aws-cpp-sdk-acm-pca)
+    set(_KYTHIRA_AWS_ACM_PCA_FOUND TRUE)
+else()
+    set(_KYTHIRA_AWS_ACM_PCA_FOUND FALSE)
+endif()
+kythira_kconfig_require(AWS_ACM_PCA _KYTHIRA_AWS_ACM_PCA_FOUND "AWS ACM Private CA SDK component")
 if(TARGET aws-cpp-sdk-acm-pca)
     message(STATUS "AWS ACM Private CA SDK component found")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AWS_ACM_PCA)
@@ -504,17 +570,21 @@ endif()
 # ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────
 # Prefer the CMake config package (vcpkg, conan) over pkg-config so that we get
 # a proper imported target rather than a bare -lssh2 that the linker can't resolve.
-find_package(libssh2 QUIET)
-if(libssh2_FOUND)
-    set(LIBSSH2_FOUND TRUE)
-    set(LIBSSH2_LIBRARIES libssh2::libssh2)
-    set(LIBSSH2_INCLUDE_DIRS "")
-else()
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(LIBSSH2 QUIET libssh2)
+kythira_kconfig_gate(LIBSSH2_TESTS)
+if(_KYTHIRA_GATE_LIBSSH2_TESTS)
+    find_package(libssh2 QUIET)
+    if(libssh2_FOUND)
+        set(LIBSSH2_FOUND TRUE)
+        set(LIBSSH2_LIBRARIES libssh2::libssh2)
+        set(LIBSSH2_INCLUDE_DIRS "")
+    else()
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(LIBSSH2 QUIET libssh2)
+        endif()
     endif()
 endif()
+kythira_kconfig_require(LIBSSH2_TESTS LIBSSH2_FOUND "libssh2")
 if(LIBSSH2_FOUND)
     message(STATUS "libssh2 found — real-EC2 SSH tests enabled")
 else()
@@ -555,10 +625,14 @@ target_compile_features(network_simulator INTERFACE cxx_std_23)
 # target_compile_features(test_single_case PRIVATE cxx_std_23)
 
 # Find libfiu for fault injection / chaos tests
-find_package(PkgConfig QUIET)
-if(PkgConfig_FOUND)
-    pkg_check_modules(FIU QUIET libfiu)
+kythira_kconfig_gate(CHAOS_TESTS)
+if(_KYTHIRA_GATE_CHAOS_TESTS)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FIU QUIET libfiu)
+    endif()
 endif()
+kythira_kconfig_require(CHAOS_TESTS FIU_FOUND "libfiu")
 
 if(FIU_FOUND)
     set(CHAOS_TESTS_ENABLED TRUE)
@@ -728,6 +802,57 @@ if(ENABLE_COVERAGE)
             COMMENT "Source-based HTML coverage report"
         )
     endif()
+endif()
+
+# ── Kconfig targets ───────────────────────────────────────────────────────────
+# menuconfig/guiconfig/savedefconfig/kconfig-check follow the same
+# stub-target-when-tool-missing pattern as format/format-check and
+# static-analysis/static-analysis-fix below: `cmake --build build --target
+# help` always lists them, but invoking one without python3/kconfiglib
+# available prints an actionable install hint and fails only that target.
+if(_KYTHIRA_KCONFIG_OK)
+    add_custom_target(menuconfig
+        COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
+                ${Python3_EXECUTABLE} -m kconfiglib.menuconfig "${CMAKE_SOURCE_DIR}/Kconfig"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Interactive Kconfig menu -- writes ${CMAKE_BINARY_DIR}/.config"
+        USES_TERMINAL
+        VERBATIM
+    )
+    add_custom_target(guiconfig
+        COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
+                ${Python3_EXECUTABLE} -m kconfiglib.guiconfig "${CMAKE_SOURCE_DIR}/Kconfig"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Tkinter Kconfig menu -- writes ${CMAKE_BINARY_DIR}/.config"
+        USES_TERMINAL
+        VERBATIM
+    )
+    add_custom_target(savedefconfig
+        COMMAND ${CMAKE_COMMAND} -E env "KCONFIG_CONFIG=${CMAKE_BINARY_DIR}/.config"
+                ${Python3_EXECUTABLE} -m kconfiglib.savedefconfig
+                --kconfig "${CMAKE_SOURCE_DIR}/Kconfig"
+                --out "${CMAKE_BINARY_DIR}/defconfig"
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "savedefconfig: wrote ${CMAKE_BINARY_DIR}/defconfig -- cp it into configs/<name>_defconfig to check it in"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Writing minimal defconfig from ${CMAKE_BINARY_DIR}/.config"
+        VERBATIM
+    )
+    add_custom_target(kconfig-check
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/scripts/kconfig/check_defconfigs.py"
+                "${CMAKE_SOURCE_DIR}/Kconfig" "${CMAKE_SOURCE_DIR}/configs"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        COMMENT "Validating every configs/*_defconfig against Kconfig"
+        VERBATIM
+    )
+else()
+    foreach(_t menuconfig guiconfig savedefconfig kconfig-check)
+        add_custom_target(${_t}
+            COMMAND ${CMAKE_COMMAND} -E echo
+                "ERROR: python3/kconfiglib not found. Install with: pip install -r scripts/kconfig/requirements.txt"
+            COMMAND ${CMAKE_COMMAND} -E false
+        )
+    endforeach()
 endif()
 
 # ── clang-format targets ──────────────────────────────────────────────────────
