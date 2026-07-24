@@ -3,6 +3,182 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 24, 2026)
+
+- **Converted the entire test suite and all production RPC/collection
+  machinery it depends on from the Folly-hardcoded `kythira::Future`/
+  `Promise`/`Try`/`FutureFactory`/`FutureCollector` to the backend-selectable
+  `kythira::future_default`/`promise_default`/`try_default`/
+  `future_factory_default`/`future_collector_default` family, so `ctest`
+  passes cleanly under all three `KYTHIRA_DEFAULT_FUTURE_BACKEND` values
+  (`folly`, `boost`, `stdexec`), not just the default.** Scope grew far
+  beyond "convert test files": the boost and stdexec future backends
+  (`.kiro/specs/boost-future-backend/`, `.kiro/specs/stdexec-future-backend/`)
+  had shipped with 52+31 passing tests each but had never actually been
+  exercised by the *production* Raft/RPC code path (`include/raft/raft.hpp`,
+  `error_handler.hpp`, `future_collector.hpp`, `tcp_rpc.hpp`,
+  `tls_tcp_rpc.hpp`, `configuration_synchronizer.hpp`,
+  `network_simulator/*`), which was still hardcoded to Folly's `kythira::`
+  namespace throughout — so this pass is the first real end-to-end proof
+  that a non-Folly backend can run a real multi-node Raft cluster, not just
+  satisfy the wrapper-level concept-compliance tests.
+  - **Mechanical conversion** (regex/sed, verified via `-fsyntax-only`
+    against all three backends before any build): ~115 test files plus the
+    production headers above renamed `Future<`/`Promise<`/`SemiPromise<`/
+    `Try<`/`FutureFactory::`/`FutureCollector::` to their `_default`
+    counterparts; raw-exception `makeExceptionalFuture(std::runtime_error(...))`
+    calls (a Folly-only implicit-conversion convenience) rewrapped in
+    `std::make_exception_ptr(...)`; bare lvalue `.get()` calls (valid on
+    Folly's unqualified `Future<T>::get()` but a compile error against
+    boost/stdexec's `&&`-qualified one) rewrapped as `std::move(f).get()`
+    — the single most common fix, needed in well over 100 places across the
+    `network_simulator` test suite alone; `.hasException()`/`.value()` on
+    `Future<T>` (Folly-only convenience methods never in the portable
+    `future` concept) replaced with try/catch around `.get()` or
+    `.isReady()`.
+  - **Files judged genuinely Folly-specific were left untouched** rather
+    than converted: `future_test.cpp`, the `folly_concept_wrappers_*` suite,
+    and four `*_future_returning_callback_*` test files that specifically
+    exercise Folly's `.thenError()`/`.thenTry()` overload accepting a
+    `folly::exception_wrapper`-typed callback (an overload boost/stdexec
+    never implemented) all stayed on the raw Folly types by design, not
+    oversight — each confirmed via direct inspection (constructor calls
+    into `folly::Try`/`folly::Promise`, or an `is_invocable_v<F,
+    folly::exception_wrapper>` dependency) rather than assumed from
+    filename.
+  - **Two genuine production bugs found and fixed in `future_boost.hpp`**,
+    surfaced only because this pass was the first time boost-backend code
+    actually ran against real test scenarios rather than synthetic
+    concept-compliance cases: `collectAnyWithoutException<void>` tried to
+    construct an ill-formed `std::tuple<size_t, void>` (fixed with the same
+    void/non-void split Folly and stdexec already had); and
+    `set_exception_from_std` called `std::rethrow_exception(nullptr)`
+    unconditionally, which is undefined behavior per the standard and
+    segfaults on this libstdc++ — fixed with an explicit null check. Also
+    added the missing `FutureFactory::makeReadyFuture(T value)` overload
+    (boost only had the zero-arg void one; Folly and stdexec both had the
+    value-taking overload already).
+  - **A genuine stdexec-backend double-execution bug** in
+    `Future<T>::thenTry`'s Future-returning ("automatic flattening")
+    overload: it composed `_sender | ex::let_value(func) | ex::let_error(func)`
+    — mirroring the shape of the non-Future-returning overload, which is
+    safe there because it wraps `func`'s result in `ex::just(...)` (always a
+    value, never an error). The Future-returning overload instead
+    `.extract_sender()`s `func`'s *own* returned Future, which can itself
+    complete with an error — and `ex::let_error` can't distinguish "the
+    original antecedent failed" from "func's own later-spliced sender
+    failed," so it fired a second, spurious call to `func` on the latter.
+    Isolated with a minimal standalone repro (a nested Future-returning
+    `thenTry` whose result fails was invoked twice; without `.delay()`,
+    without recursion — pure two-level nesting was enough) before touching
+    the real code. Fixed by normalizing both of `_sender`'s completion
+    channels into a single value-channel-only `Try<T>` via `ex::just(...)`
+    first, then calling `func` exactly once from one `let_value` stage with
+    no outer `let_error` left to double-fire. Fixed identically for both
+    `Future<T>` and the `Future<void>` specialization.
+  - **Added `kythira::Future<T>::detach()`** (all three backends) after
+    discovering the deepest and most widespread issue: stdexec's senders
+    are lazy (nothing runs until something *starts* the composed chain),
+    unlike Folly's and boost's eager futures (attaching a `.thenTry()`/
+    `.thenValue()` continuation runs it regardless of whether the returned
+    `Future` object is kept). Production and test code throughout this
+    codebase has a long-standing "attach a continuation, discard the
+    returned Future, fire-and-forget" idiom — safe under Folly/boost, a
+    silent no-op under stdexec. `detach()` is a no-op on Folly/boost
+    (the continuation is already running) and wraps `exec::start_detached`
+    on stdexec. Applied to ~10 genuine fire-and-forget call sites in
+    `raft.hpp` (election vote-outcome and pre-vote-outcome collection,
+    heartbeat and AppendEntries response handlers, `add_learner`/
+    `remove_server`/`promote_to_voter` triggered from RPC handlers,
+    peer-to-peer progress-advertisement and catch-up chains) and one in
+    `future_collector.hpp` (`collect_n_successes_with_timeout`'s per-future
+    loop) — all previously either bare-discarded or wrapped in `(void)fut;`,
+    which reads as intentional but has the identical silent-no-op problem
+    under stdexec. Also fixed the same discard pattern in 11 test files
+    (`membership_change_*`, `learner_*`, `quorum_promotion_capacity_fallback_test`,
+    `peer2peer_catch_up_membership_sync_property_test`) that used a
+    `std::move(fut).thenValue(...).thenError(...);` idiom to flip a
+    `bool` flag polled via `wait_until(...)` — 28 occurrences fixed with a
+    script, not by hand, after confirming the exact discard shape.
+  - **Added `kythira::executor_default`** (`include/raft/executor_default.hpp`),
+    a small owning N-thread pool whose `.handle()` is directly usable as the
+    argument to `future_default<T>::via(...)` across all three backends,
+    despite `.via()` itself taking a genuinely different type per backend
+    (`folly::Executor&`, a duck-typed `boost::executors::basic_thread_pool&`,
+    `stdexec_backend::scheduler_handle&`) — what's portable is the *call
+    shape* (`future.via(executor.handle())`), not a shared type. Exists
+    because `error_handler_async_retry_property_test.cpp` needed a real,
+    bounded thread pool to prove its actual property (retry backoff doesn't
+    starve other work queued on the same pool), which can't be written
+    portably against a single backend's native executor type.
+  - **Verification**: full `cmake --build` + `ctest` (373 non-chaos/AWS/
+    real-EC2 tests) run to completion in all three
+    `KYTHIRA_DEFAULT_FUTURE_BACKEND` configurations — boost 373/373, stdexec
+    373/373, Folly (default) 370/373 with all 3 remaining failures
+    independently reproduced as pre-existing CPU-contention flakiness under
+    `ctest -j$(nproc)` (2 confirmed passing standalone; the third,
+    `ca_cluster_node_test`, matches this project's already-documented flaky
+    pattern under parallel test contention — see the CI-reliability entry
+    below), not migration regressions.
+
+### What Changed (July 23, 2026, continued further)
+
+- **Implemented `.kiro/specs/boost-future-backend/` end to end — the third
+  `Future`/`Promise`/`Try`/`Executor` backend, `boost::thread`-based,
+  alongside Folly (default) and `stdexec`.** `include/raft/future_boost.hpp`
+  (~1000 lines, `namespace kythira::boost_backend`, guarded behind
+  `KYTHIRA_HAS_BOOST_FUTURE`): `Try<T>`/`SemiPromise<T>`/`Promise<T>` direct
+  wraps of `boost::promise<T>` (push-model like Folly, no hand-rolled
+  bridge needed unlike `stdexec`'s pull model); `Future<T>` with
+  `thenValue`/`thenError`/`ensure`/`via`/`delay`/`within`; a Meyers-singleton
+  `timer_service` (one shared `boost::asio::io_context` + background
+  thread) backing `delay`/`within`, since Boost.Thread has no built-in timed
+  continuation; `FutureFactory`; `FutureCollector` with `collectAll`
+  (`boost::when_all`), `collectAny`/`collectAnyWithoutException`
+  (`boost::when_any` plus a shrinking-pool retry loop for the
+  without-exception variant), and `collectN` (same shrinking-pool shape,
+  Folly-matching semantics — first N to complete regardless of success,
+  not N successes). Wired into `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` and
+  `include/raft/future_default.hpp` alongside the existing `folly`/`stdexec`
+  options; no existing production call site converted, Folly stays default.
+  Two new property-test binaries (`boost_future_concept_compliance_property_test`,
+  `boost_future_continuation_and_collector_property_test`, 31 cases total)
+  plus a `boost-backend/migration_guide_example.cpp` comparison example,
+  gated on the same `KYTHIRA_BUILD_BOOST_FUTURE_BACKEND`/
+  `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` condition throughout.
+  `tests/backend_non_interference_compile_fail_test.cpp` extended with
+  boost-vs-Folly and boost-vs-`stdexec` non-interference checks and, in the
+  process, converted from `stdexec_FOUND`-gated to unconditional (Folly is
+  always present; `future_stdexec.hpp`/`future_boost.hpp` are both safe
+  no-op headers when their backend isn't enabled, so the file's own
+  internal `#ifdef` guards now do the gating instead of the CMake
+  registration) so it validates whichever subset of backends is actually
+  active in any given configuration.
+  A pre-implementation spike (throwaway compiles against the real vendored
+  Boost 1.89.0 headers, not documentation) found two real corrections to
+  the spec's original design: `BOOST_THREAD_PROVIDES_EXECUTORS` is gated on
+  `BOOST_THREAD_VERSION>=5`, not `>=4` as first read from source — fixed by
+  defining it explicitly rather than relying on auto-definition; and
+  `boost::exception_ptr` is a distinct type from `std::exception_ptr` whose
+  *implicit* converting constructor compiles cleanly but silently rethrows
+  a `clone_impl<std::exception_ptr>` wrapper instead of the original
+  exception on `get()` — fixed with genuine catch-and-rethrow bridge
+  functions used at every exception boundary, verified end-to-end to
+  preserve the original exception's concrete type and message. A third
+  finding surfaced while writing the non-interference test: unlike Folly's
+  and `stdexec`'s `via()` (each fixed to one concrete executor type),
+  `boost_backend::Future::via()` is deliberately templated on the executor
+  type (Boost.Thread's own concrete executors, e.g. `basic_thread_pool`,
+  don't share a common base), which makes a `static_assert(!requires{...})`
+  -style cross-backend check vacuously pass for `via()` specifically — not
+  a real interference bug, just undetectable through that particular SFINAE
+  idiom, so those specific checks were omitted with an explanatory comment
+  rather than kept as a false-negative test. All new/extended targets
+  verified via the real CMake/CTest build in three configurations: boost
+  backend enabled (with stdexec also available), and Folly-only (both
+  optional backends disabled) for the now-unconditional non-interference
+  test specifically.
+
 ### What Changed (July 23, 2026, continued)
 
 - **Fixed Folly CMake detection so builds actually degrade gracefully when
