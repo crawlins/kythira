@@ -122,6 +122,13 @@ add_raft_completion_test(state_machine_determinism_property_test state_machine_d
 add_raft_completion_test(state_machine_performance_benchmark state_machine_performance_benchmark.cpp)
 add_raft_completion_test(state_machine_apply_performance_property_test state_machine_apply_performance_property_test.cpp)
 set_tests_properties(state_machine_apply_performance_property_test PROPERTIES
+    # Measures real elapsed-time thresholds for state machine apply
+    # throughput — CPU contention from co-scheduled tests under `ctest -j`
+    # skews those thresholds the same way it does the ca_cluster_node_test
+    # timing (see that test's own PROCESSORS comment). PROCESSORS matches
+    # the runner's core count so ctest's scheduler won't start other tests
+    # alongside it.
+    PROCESSORS 4
     LABELS "performance;state_machine"
 )
 
