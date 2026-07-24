@@ -60,6 +60,42 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
 
 ---
 
+## Known Follow-ups
+
+- **`ca_cluster_node_test` intermittent hang (root cause not yet found)** —
+  reproduced directly (not just inferred from CI flakiness): the test
+  process itself hangs indefinitely on roughly 1 in 12-15 runs, confirmed
+  by `timeout 120` actually firing and killing a genuinely stuck process
+  (not just a slow one). From the one log captured before the kill: a
+  follower node is `stop()`'d cleanly, then the leader retries
+  `AppendEntries` to it forever (expected Raft behavior), but the test's
+  own main thread goes silent at the same point and never progresses —
+  consistent with it blocking on something unbounded (a synchronous
+  `httplib` call, or a `waitpid()` on a child that's itself stuck), but
+  unproven. Investigation was blocked by this sandbox having no `ptrace`
+  access (`gdb -p` and `/proc/<pid>/task/*/stack` both refused with
+  "Inappropriate ioctl for device" / permission denied even for our own
+  process) and no sudo to relax `/proc/sys/kernel/yama/ptrace_scope`, so
+  only `/proc/<pid>/task/*/wchan` was available, which never caught the
+  race in ~12 further attempts. Getting a real fix likely needs either an
+  environment with `ptrace` available, or targeted diagnostic logging
+  added around the suspected blocking calls (synchronous `httplib::Client`
+  requests in the test, `waitpid()` in `cluster_node_process::stop()`) to
+  narrow it down without a debugger.
+  July 24, 2026: the resulting failure mode — an abnormally-terminated
+  test process orphaning a spawned `ca_cluster_node` child, which then
+  holds the test's stdout/stderr pipe open indefinitely and wedges
+  `ctest`'s own output capture (turning one flaky test into a hung whole
+  suite) — was fixed independently via `PR_SET_PDEATHSIG`, applied to all
+  three files sharing this `posix_spawn`-based subprocess pattern
+  (`ca_cluster_node_test.cpp`, `ca_cluster_node_rpc_tls_test.cpp`,
+  `ca_cluster_node_rpc_tls_restart_test.cpp`). Verified via 10 further
+  runs with no orphans left behind. The underlying intermittent hang
+  itself is still unresolved — this fix only ensures it can no longer
+  wedge the whole test run when it happens.
+
+---
+
 ## Remaining Work (All Optional)
 
 ### Build Tooling

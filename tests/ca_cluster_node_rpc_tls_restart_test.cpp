@@ -28,9 +28,9 @@
 #include <memory>
 #include <netinet/in.h>
 #include <optional>
-#include <spawn.h>
 #include <sstream>
 #include <string>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <thread>
@@ -160,9 +160,26 @@ struct rpc_tls_node_process {
         }
         argv.push_back(nullptr);
 
-        int rc = posix_spawn(&pid, CA_CLUSTER_NODE_PATH, nullptr, nullptr, argv.data(), environ);
-        BOOST_REQUIRE_MESSAGE(rc == 0,
-                              "posix_spawn(ca_cluster_node) failed: " << std::strerror(rc));
+        // fork()+prctl(PR_SET_PDEATHSIG)+execve() rather than posix_spawn:
+        // if this test process dies abnormally before this object's
+        // destructor runs, an orphaned ca_cluster_node child inherits this
+        // process's stdout/stderr pipe and keeps it open indefinitely -
+        // observed (in ca_cluster_node_test.cpp, which shares this exact
+        // spawn pattern) to wedge ctest's own output capture. PR_SET_PDEATHSIG
+        // makes the kernel SIGKILL this child directly the moment its
+        // parent dies, for any reason, without relying on that parent's
+        // own cleanup code running at all.
+        pid_t parent_pid = getpid();
+        pid = fork();
+        BOOST_REQUIRE_MESSAGE(pid >= 0, "fork() failed: " << std::strerror(errno));
+        if (pid == 0) {
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            if (getppid() != parent_pid) {
+                _exit(1);
+            }
+            execve(CA_CLUSTER_NODE_PATH, argv.data(), environ);
+            _exit(127);  // execve() only returns on failure
+        }
     }
 
     auto stop() -> void {
