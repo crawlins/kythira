@@ -120,6 +120,33 @@ current list of outstanding work, see [TODO.md](TODO.md).
     `ca_cluster_node_test`, matches this project's already-documented flaky
     pattern under parallel test contention — see the CI-reliability entry
     below), not migration regressions.
+  - **Two follow-up fixes for the three flaky tests found during
+    verification above**: `state_machine_apply_performance_property_test`
+    (measures real elapsed-time thresholds, same class of test as
+    `ca_cluster_node_test`) got the same `PROCESSORS 4` CMake isolation
+    `ca_cluster_node_test` already carried, so it no longer gets
+    co-scheduled into CPU contention by `ctest -j$(nproc)`. Separately,
+    investigating `ca_cluster_node_test`'s own flakiness surfaced a real
+    bug distinct from the flakiness itself: it (and its two siblings,
+    `ca_cluster_node_rpc_tls_test`/`ca_cluster_node_rpc_tls_restart_test`)
+    spawn a real `ca_cluster_node` subprocess via `posix_spawn` and rely on
+    RAII (a destructor sending SIGTERM) to clean it up — which never runs
+    if the test process itself is killed by an external SIGTERM (from
+    `timeout`, or ctest's own `TIMEOUT`), orphaning the child and leaving
+    it holding the test's stdout/stderr pipe open indefinitely, capable of
+    wedging the entire `ctest` invocation rather than just failing one
+    test. Fixed by replacing `posix_spawn` with
+    `fork()`+`prctl(PR_SET_PDEATHSIG, SIGKILL)`+`execve()` in all three
+    files, so the kernel kills the child the instant its parent dies for
+    any reason, independent of destructors running; verified via a 10-run
+    local loop with zero orphans left behind afterward. The intermittent
+    hang itself (reproduced directly, ~1 in 12-15 runs) remains unresolved
+    — diagnosing it needs a live backtrace, and this sandbox has no
+    `ptrace` access — and is tracked as a documented follow-up in
+    `TODO.md`.
+  - **Merged to `main` via [PR #92](https://github.com/crawlins/kythira/pull/92)**
+    (rebase merge, 6 commits, all CI checks — 4 build/test matrix jobs,
+    coverage, and the Packer AMI build — passing).
 
 ### What Changed (July 23, 2026, continued further)
 
