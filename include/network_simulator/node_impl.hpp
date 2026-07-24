@@ -3,18 +3,11 @@
 #include "node.hpp"
 #include "simulator.hpp"
 #include "exceptions.hpp"
+#include <raft/future_default.hpp>
 
 #include <atomic>
 #include <random>
 #include <sstream>
-
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#endif
-
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#endif
 
 namespace network_simulator {
 
@@ -67,13 +60,8 @@ template<typename Types> auto NetworkNode<Types>::release_port(port_type port) -
 // Connectionless send operations
 template<typename Types> auto NetworkNode<Types>::send(message_type msg) -> future_bool_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<bool>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_bool_type(
+        return kythira::future_factory_default::makeExceptionalFuture<bool>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     return _simulator->route_message(std::move(msg));
@@ -86,34 +74,19 @@ auto NetworkNode<Types>::send(message_type msg, std::chrono::milliseconds timeou
     // In a full implementation, this would use a timer
     auto future = send(std::move(msg));
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    // folly::Future doesn't have a simple wait() method, so we use get() with timeout
-    try {
-        auto result = std::move(future).get(timeout);
-        return folly::makeFuture(result);
-    } catch (const folly::FutureTimeout&) {
-        return folly::makeFuture(false);
-    }
-#else
     // Check if timeout occurred (simplified implementation)
     if (!future.wait(timeout)) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     return future;
-#endif
 }
 
 // Connectionless receive operations
 template<typename Types> auto NetworkNode<Types>::receive() -> future_message_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_message_type(
+        return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     return _simulator->retrieve_message(_address);
@@ -122,11 +95,8 @@ template<typename Types> auto NetworkNode<Types>::receive() -> future_message_ty
 template<typename Types>
 auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_message_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
-#else
-        return future_message_type(std::make_exception_ptr(TimeoutException()));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<message_type>(
+            std::make_exception_ptr(TimeoutException()));
     }
 
     return _simulator->retrieve_message(_address, timeout);
@@ -136,11 +106,8 @@ template<typename Types>
 auto NetworkNode<Types>::receive(port_type port, std::chrono::milliseconds timeout)
     -> future_message_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
-#else
-        return future_message_type(std::make_exception_ptr(TimeoutException()));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<message_type>(
+            std::make_exception_ptr(TimeoutException()));
     }
 
     return _simulator->retrieve_message(_address, port, timeout);
@@ -159,13 +126,9 @@ template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port_type src_port)
     -> future_connection_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_connection_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     // Mark source port as used (thread-safe)
@@ -182,13 +145,9 @@ template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
                                  std::chrono::milliseconds timeout) -> future_connection_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<connection_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_connection_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     // Use ephemeral port allocation
@@ -202,13 +161,9 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
 // Connection-oriented server operations
 template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_listener_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     return _simulator->create_listener(_address);
@@ -216,13 +171,9 @@ template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type
 
 template<typename Types> auto NetworkNode<Types>::bind(port_type port) -> future_listener_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_listener_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     // Mark port as used (thread-safe)
@@ -238,13 +189,9 @@ template<typename Types>
 auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
     -> future_listener_type {
     if (!_simulator) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not available")));
-#else
-        return future_listener_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
-#endif
     }
 
     // Mark port as used (thread-safe)
@@ -258,51 +205,30 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
 
     // For timeout handling, we need to check if the bind operation would succeed
     // In this implementation, bind operations are synchronous, so we either succeed or fail
-    // immediately The timeout is mainly for testing timeout exception behavior
-
-#ifdef FOLLY_FUTURES_AVAILABLE
+    // immediately. The timeout is mainly for testing timeout exception behavior - since bind
+    // is synchronous, we don't actually block on `timeout` here (matches this method's
+    // pre-existing behavior), we only use PortInUseException as a stand-in "would have timed
+    // out" signal below.
     try {
-        // Get the result with timeout
-        auto result = std::move(future).get(timeout);
-        return folly::makeFuture(std::move(result));
-    } catch (const folly::FutureTimeout&) {
-        // Release the port since bind failed
-        {
-            std::lock_guard<std::mutex> lock(_port_mutex);
-            _used_ports.erase(port);
-        }
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(TimeoutException()));
-    } catch (const std::exception&) {
-        // Release the port since bind failed
-        {
-            std::lock_guard<std::mutex> lock(_port_mutex);
-            _used_ports.erase(port);
-        }
-        throw;  // Re-throw the original exception
-    }
-#else
-    // For SimpleFuture, check if the operation would timeout
-    // Since bind is synchronous in our implementation, we simulate timeout behavior
-    // by checking if the port is already in use and treating that as a timeout scenario
-    try {
-        auto result = future.get();
+        auto result = std::move(future).get();
         if (!result) {
             // Bind failed, release the port and throw timeout exception
             {
                 std::lock_guard<std::mutex> lock(_port_mutex);
                 _used_ports.erase(port);
             }
-            return future_listener_type(std::make_exception_ptr(TimeoutException()));
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
         }
-        return future_listener_type(result);
+        return kythira::future_factory_default::makeFuture(std::move(result));
     } catch (const PortInUseException&) {
         // Port in use - for timeout version, convert to TimeoutException
         {
             std::lock_guard<std::mutex> lock(_port_mutex);
             _used_ports.erase(port);
         }
-        return future_listener_type(std::make_exception_ptr(TimeoutException()));
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(std::make_exception_ptr(TimeoutException()));
     } catch (...) {
         // Other exceptions, release port and re-throw
         {
@@ -311,7 +237,6 @@ auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
         }
         throw;
     }
-#endif
 }
 
 }  // namespace network_simulator

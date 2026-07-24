@@ -4,6 +4,7 @@
 /// @brief Peer-discovery concept and built-in implementations.
 
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <algorithm>
 #include <chrono>
 #include <concepts>
@@ -36,12 +37,14 @@ concept peer_discovery =
         typename P::address_type;
         requires std::same_as<typename P::node_id_type, NodeId>;
         requires std::same_as<typename P::address_type, Address>;
-        /// Advertise this node so other nodes can discover it.
-        { finder.register_node(self_id, self_address) } -> std::same_as<kythira::Future<void>>;
+        /// Advertise this node so other nodes can discover it. Backend-generic
+        /// (kythira::future<..., void>, not a fixed std::same_as<kythira::
+        /// Future<void>>) so implementations may return any backend's future
+        /// type, not just the Folly one - see .kiro/specs/boost-future-backend/
+        /// and .kiro/specs/stdexec-future-backend/.
+        { finder.register_node(self_id, self_address) } -> kythira::future<void>;
         /// Return a snapshot of currently reachable peers within `timeout`.
-        {
-            finder.find_peers(timeout)
-        } -> std::same_as<kythira::Future<std::vector<peer_info<NodeId, Address>>>>;
+        { finder.find_peers(timeout) } -> kythira::future<std::vector<peer_info<NodeId, Address>>>;
     };
 
 /// @brief No-op peer-discovery implementation for single-node and test scenarios.
@@ -57,14 +60,15 @@ public:
     using address_type = Address;
 
     /// @brief No-op registration; always succeeds.
-    auto register_node(NodeId, Address) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto register_node(NodeId, Address) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 
     /// @brief Returns an empty peer list immediately.
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(std::vector<peer_info<NodeId, Address>>{});
+        -> kythira::future_default<std::vector<peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
+            std::vector<peer_info<NodeId, Address>>{});
     }
 };
 
@@ -88,19 +92,20 @@ public:
 
     /// @brief Validates that `self_id` is in the fixed peer list.
     /// @throws std::invalid_argument if `self_id` is not found.
-    auto register_node(NodeId self_id, Address) -> kythira::Future<void> {
+    auto register_node(NodeId self_id, Address) -> kythira::future_default<void> {
         auto it = std::ranges::find(_peers, self_id, &peer_info<NodeId, Address>::node_id);
         if (it == _peers.end()) {
             throw std::invalid_argument(
                 "static_peer_discovery: self_id not found in fixed peers list");
         }
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     /// @brief Returns a copy of the full fixed peer list.
     [[nodiscard]] auto find_peers(std::chrono::milliseconds) const
-        -> kythira::Future<std::vector<peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(std::vector<peer_info<NodeId, Address>>(_peers));
+        -> kythira::future_default<std::vector<peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
+            std::vector<peer_info<NodeId, Address>>(_peers));
     }
 
 private:

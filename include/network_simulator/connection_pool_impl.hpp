@@ -1,6 +1,7 @@
 #pragma once
 
 #include "connection_pool.hpp"
+#include <raft/future_default.hpp>
 #include <algorithm>
 
 namespace network_simulator {
@@ -30,11 +31,7 @@ auto ConnectionPool<Types>::get_or_create_connection(
                     pool_it->second.erase(it);
                     pool_it->second.push_back(std::move(pooled_conn));
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-                    return folly::makeFuture(conn);
-#else
-                    return future_connection_type(conn);
-#endif
+                    return kythira::future_factory_default::makeFuture(conn);
                 }
             }
 

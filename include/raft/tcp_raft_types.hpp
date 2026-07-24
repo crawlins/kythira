@@ -11,6 +11,7 @@
 #include <raft/console_logger.hpp>
 #include <raft/file_persistence.hpp>
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/membership.hpp>
 #include <raft/metrics.hpp>
@@ -25,9 +26,12 @@ namespace kythira {
 
 struct tcp_raft_types {
     // ── Future types ─────────────────────────────────────────────────────────
-    using future_type = kythira::Future<std::vector<std::byte>>;
-    using promise_type = kythira::Promise<std::vector<std::byte>>;
-    using try_type = kythira::Try<std::vector<std::byte>>;
+    // future_default (not the hardcoded Folly kythira::Future) so this stays
+    // consistent with tcp_rpc_client (raft/tcp_rpc.hpp), which now also uses
+    // future_default/promise_default/future_factory_default throughout.
+    using future_type = kythira::future_default<std::vector<std::byte>>;
+    using promise_type = kythira::promise_default<std::vector<std::byte>>;
+    using try_type = kythira::try_default<std::vector<std::byte>>;
 
     // ── Primitive types ──────────────────────────────────────────────────────
     using node_id_type = std::uint64_t;

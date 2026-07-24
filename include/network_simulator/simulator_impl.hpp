@@ -4,6 +4,7 @@
 #include "node.hpp"
 #include "connection.hpp"
 #include "listener.hpp"
+#include <raft/future_default.hpp>
 #include <algorithm>
 #include <chrono>
 #include <future>
@@ -14,10 +15,6 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <arpa/inet.h>
-
-#ifdef FOLLY_FUTURES_AVAILABLE
-#include <folly/futures/Future.h>
-#endif
 
 namespace network_simulator {
 
@@ -345,7 +342,7 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
     if (!_started.load()) {
         // Return false if simulator is not started
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     auto src_addr = msg.source_address();
@@ -354,14 +351,14 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
     // Check if source and destination nodes exist
     if (_topology.find(src_addr) == _topology.end() ||
         _topology.find(dst_addr) == _topology.end()) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     // Find path from source to destination using BFS
     auto path = find_path(src_addr, dst_addr);
     if (path.empty()) {
         // No route exists
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     // Apply reliability and latency for the entire path
@@ -374,7 +371,7 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
         // Apply reliability check for this hop
         if (!check_reliability(hop_from, hop_to)) {
-            return future_bool_type(false);
+            return kythira::future_factory_default::makeFuture(false);
         }
 
         // Accumulate latency for this hop
@@ -390,14 +387,14 @@ auto NetworkSimulator<Types>::route_message(message_type msg) -> future_bool_typ
 
         // Check if simulator is still started after the delay
         if (!_started.load()) {
-            return future_bool_type(false);
+            return kythira::future_factory_default::makeFuture(false);
         }
     }
 
     // Deliver message immediately after delay
     deliver_message(std::move(msg));
 
-    return future_bool_type(true);
+    return kythira::future_factory_default::makeFuture(true);
 }
 
 template<typename Types>
@@ -472,12 +469,12 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address) -> future_m
     if (queue_it == _message_queues.end() || queue_it->second.empty()) {
         // No messages available - in a full implementation, this would block
         // For now, return an empty message
-        return future_message_type(message_type{});
+        return kythira::future_factory_default::makeFuture(message_type{});
     }
 
     auto msg = queue_it->second.front();
     queue_it->second.pop_front();
-    return future_message_type(std::move(msg));
+    return kythira::future_factory_default::makeFuture(std::move(msg));
 }
 
 template<typename Types>
@@ -492,17 +489,14 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address,
     });
 
     if (!got) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
-#else
-        return future_message_type(std::make_exception_ptr(TimeoutException()));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<message_type>(
+            std::make_exception_ptr(TimeoutException()));
     }
 
     auto& dq = _message_queues[address];
     auto msg = std::move(dq.front());
     dq.pop_front();
-    return future_message_type(std::move(msg));
+    return kythira::future_factory_default::makeFuture(std::move(msg));
 }
 
 template<typename Types>
@@ -521,11 +515,8 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, port_type p
     bool got = _msg_available.wait_for(lock, timeout, try_dequeue);
 
     if (!got) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
-#else
-        return future_message_type(std::make_exception_ptr(TimeoutException()));
-#endif
+        return kythira::future_factory_default::makeExceptionalFuture<message_type>(
+            std::make_exception_ptr(TimeoutException()));
     }
 
     auto& dq = _message_queues[address];
@@ -533,15 +524,12 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, port_type p
         if (it->destination_port() == port) {
             auto msg = std::move(*it);
             dq.erase(it);
-            return future_message_type(std::move(msg));
+            return kythira::future_factory_default::makeFuture(std::move(msg));
         }
     }
     // Unreachable after a successful wait, but satisfies the compiler.
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture<message_type>(folly::exception_wrapper(TimeoutException()));
-#else
-    return future_message_type(std::make_exception_ptr(TimeoutException()));
-#endif
+    return kythira::future_factory_default::makeExceptionalFuture<message_type>(
+        std::make_exception_ptr(TimeoutException()));
 }
 
 // Connection and Listener Management (stubs for now)
@@ -574,14 +562,9 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         std::shared_lock lock(_mutex);
 
         if (!_started.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-            // For folly::Future, return exception for not started
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(std::runtime_error("Simulator not started")));
-#else
-            return future_connection_type(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(
                 std::make_exception_ptr(std::runtime_error("Simulator not started")));
-#endif
         }
 
         // Check if there's a route between the addresses using path finding
@@ -590,14 +573,9 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             std::string src_str = address_to_string(src_addr);
             std::string dst_str = address_to_string(dst_addr);
             std::string error_msg = "No route from " + src_str + " to " + dst_str;
-#ifdef FOLLY_FUTURES_AVAILABLE
-            // For folly::Future, return exception for no route
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(NoRouteException(error_msg, error_msg)));
-#else
-            return future_connection_type(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(
                 std::make_exception_ptr(NoRouteException(error_msg, error_msg)));
-#endif
         }
     }
 
@@ -620,25 +598,16 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
             std::string error_msg = "Connection refused: no listener on " +
                                     address_to_string(dst_addr) + ":" + port_to_string(dst_port) +
                                     ". Available listeners: " + available_listeners;
-#ifdef FOLLY_FUTURES_AVAILABLE
-            // For folly::Future, return exception for no listener - this should cause timeout
-            return folly::makeFuture<std::shared_ptr<connection_type>>(
-                folly::exception_wrapper(std::runtime_error(error_msg)));
-#else
-            return future_connection_type(std::make_exception_ptr(std::runtime_error(error_msg)));
-#endif
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(
+                std::make_exception_ptr(std::runtime_error(error_msg)));
         }
 
         listener = listener_it->second;
         if (!listener->is_listening()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-            // For folly::Future, return exception for listener not listening
-            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(std::make_exception_ptr(
                 std::runtime_error("Connection refused: listener not accepting connections")));
-#else
-            return future_connection_type(std::make_exception_ptr(
-                std::runtime_error("Connection refused: listener not accepting connections")));
-#endif
         }
     }
 
@@ -653,14 +622,9 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
     bool reliability_passed = true;  // Always allow connection establishment
 
     if (!reliability_passed) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        // For folly::Future, return exception for reliability failure
-        return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<connection_type>>(std::make_exception_ptr(
             std::runtime_error("Connection failed due to network unreliability")));
-#else
-        return future_connection_type(std::make_exception_ptr(
-            std::runtime_error("Connection failed due to network unreliability")));
-#endif
     }
 
     // Apply latency delay for connection establishment
@@ -677,26 +641,18 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
         // Check if simulator is still started after the delay
         std::shared_lock lock(_mutex);
         if (!_started.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(std::make_exception_ptr(
                 std::runtime_error("Simulator stopped during connection establishment")));
-#else
-            return future_connection_type(std::make_exception_ptr(
-                std::runtime_error("Simulator stopped during connection establishment")));
-#endif
         }
 
         // Re-check listener is still available after delay
         auto listener_it = _listeners.find(server_endpoint);
         if (listener_it == _listeners.end() || !listener_it->second ||
             !listener_it->second->is_listening()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<connection_type>>(folly::exception_wrapper(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<connection_type>>(std::make_exception_ptr(
                 std::runtime_error("Connection refused: listener unavailable after delay")));
-#else
-            return future_connection_type(std::make_exception_ptr(
-                std::runtime_error("Connection refused: listener unavailable after delay")));
-#endif
         }
         listener = listener_it->second;
     }
@@ -725,12 +681,7 @@ auto NetworkSimulator<Types>::establish_connection_internal(address_type src_add
     // Notify the listener about the incoming connection
     listener->queue_pending_connection(server_connection);
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    // For folly::Future, use folly::makeFuture
-    return folly::makeFuture(client_connection);
-#else
-    return future_connection_type(client_connection);
-#endif
+    return kythira::future_factory_default::makeFuture(client_connection);
 }
 
 template<typename Types>
@@ -739,13 +690,9 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(
-            folly::exception_wrapper(std::runtime_error("Simulator not started")));
-#else
-        return future_listener_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not started")));
-#endif
     }
 
     endpoint_type local_endpoint(addr, port);
@@ -753,13 +700,9 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
     // Check if port is already in use using ListenerManager
     if (_listener_manager && !_listener_manager->is_port_available(addr, port)) {
         std::string port_str = port_to_string(port);
-#ifdef FOLLY_FUTURES_AVAILABLE
-        return folly::makeFuture<std::shared_ptr<listener_type>>(folly::exception_wrapper(
-            PortInUseException("Port " + port_str + " is already in use")));
-#else
-        return future_listener_type(
+        return kythira::future_factory_default::makeExceptionalFuture<
+            std::shared_ptr<listener_type>>(
             std::make_exception_ptr(PortInUseException("Port " + port_str + " is already in use")));
-#endif
     }
 
     // Check legacy _listeners map and clean up closed listeners
@@ -771,13 +714,9 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
         } else {
             // Port is still in use by an active listener
             std::string port_str = port_to_string(port);
-#ifdef FOLLY_FUTURES_AVAILABLE
-            return folly::makeFuture<std::shared_ptr<listener_type>>(folly::exception_wrapper(
+            return kythira::future_factory_default::makeExceptionalFuture<
+                std::shared_ptr<listener_type>>(std::make_exception_ptr(
                 PortInUseException("Port " + port_str + " is already in use")));
-#else
-            return future_listener_type(std::make_exception_ptr(
-                PortInUseException("Port " + port_str + " is already in use")));
-#endif
         }
     }
 
@@ -789,11 +728,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr, port_type port)
         _listener_manager->register_listener(local_endpoint, listener);
     }
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    return folly::makeFuture(listener);
-#else
-    return future_listener_type(listener);
-#endif
+    return kythira::future_factory_default::makeFuture(listener);
 }
 
 // Timer and Scheduling Implementation
@@ -940,7 +875,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        return future_listener_type(std::shared_ptr<listener_type>{});
+        return kythira::future_factory_default::makeFuture(std::shared_ptr<listener_type>{});
     }
 
     // Find an unused port
@@ -965,7 +900,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports
-            return future_listener_type(std::shared_ptr<listener_type>{});
+            return kythira::future_factory_default::makeFuture(std::shared_ptr<listener_type>{});
         }
 
     } else if constexpr (std::is_same_v<port_type, std::string>) {
@@ -987,7 +922,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
 
         if (!found_port) {
             // No available ports after many attempts
-            return future_listener_type(std::shared_ptr<listener_type>{});
+            return kythira::future_factory_default::makeFuture(std::shared_ptr<listener_type>{});
         }
 
     } else {
@@ -1000,7 +935,7 @@ auto NetworkSimulator<Types>::create_listener(address_type addr) -> future_liste
     auto listener = std::make_shared<listener_type>(local_endpoint, this);
     _listeners[local_endpoint] = listener;
 
-    return future_listener_type(listener);
+    return kythira::future_factory_default::makeFuture(listener);
 }
 
 template<typename Types>
@@ -1036,43 +971,6 @@ auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src
     // Attempt to establish the connection
     auto connection_future = establish_connection(src_addr, src_port, dst_addr, dst_port);
 
-#ifdef FOLLY_FUTURES_AVAILABLE
-    // For folly::Future, use within() for timeout handling
-    return std::move(connection_future)
-        .within(timeout)
-        .onError([=](const folly::FutureTimeout& e) {
-            // Remove from pending connections on timeout
-            {
-                std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-                _pending_connections.erase(
-                    std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                                   [&](const ConnectionRequest& req) {
-                                       return req.source == source_endpoint &&
-                                              req.destination == destination_endpoint;
-                                   }),
-                    _pending_connections.end());
-            }
-
-            // Throw TimeoutException
-            throw TimeoutException();
-        })
-        .onError([=](const std::exception& e) {
-            // Remove from pending connections on any error
-            {
-                std::lock_guard<std::mutex> lock(_connection_requests_mutex);
-                _pending_connections.erase(
-                    std::remove_if(_pending_connections.begin(), _pending_connections.end(),
-                                   [&](const ConnectionRequest& req) {
-                                       return req.source == source_endpoint &&
-                                              req.destination == destination_endpoint;
-                                   }),
-                    _pending_connections.end());
-            }
-
-            // Re-throw the exception
-            throw;
-        });
-#else
     // For SimpleFuture, we don't have timeout support built-in
     // Just return the connection future and let the caller handle timeout
     // The timeout checking will be done at a higher level
@@ -1090,7 +988,6 @@ auto NetworkSimulator<Types>::establish_connection_with_timeout(address_type src
     }
 
     return connection_future;
-#endif
 }
 
 template<typename Types> auto NetworkSimulator<Types>::process_connection_timeouts() -> void {
@@ -1138,13 +1035,13 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
     std::unique_lock lock(_mutex);
 
     if (!_started.load()) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     // Check if there's a route between the addresses using path finding
     auto path = find_path(conn_id.src_addr, conn_id.dst_addr);
     if (path.empty()) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     // Apply reliability and latency for the entire path
@@ -1157,7 +1054,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
         // Apply reliability check for this hop
         if (!check_reliability(hop_from, hop_to)) {
-            return future_bool_type(false);
+            return kythira::future_factory_default::makeFuture(false);
         }
 
         // Accumulate latency for this hop
@@ -1171,12 +1068,12 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
     auto conn_it = _connections.find(dest_conn_id);
     if (conn_it == _connections.end() || !conn_it->second) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     auto dest_connection = conn_it->second;
     if (!dest_connection->is_open()) {
-        return future_bool_type(false);
+        return kythira::future_factory_default::makeFuture(false);
     }
 
     // Apply the total latency delay
@@ -1188,7 +1085,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
 
         // Check if simulator is still started and connection is still open after the delay
         if (!_started.load() || !dest_connection->is_open()) {
-            return future_bool_type(false);
+            return kythira::future_factory_default::makeFuture(false);
         }
     }
 
@@ -1202,7 +1099,7 @@ auto NetworkSimulator<Types>::route_connection_data(connection_id_type conn_id,
     lock.unlock();
     dest_connection->deliver_data(std::move(data));
 
-    return future_bool_type(true);
+    return kythira::future_factory_default::makeFuture(true);
 }
 
 // Connection Management Configuration

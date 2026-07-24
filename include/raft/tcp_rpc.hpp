@@ -2,6 +2,7 @@
 
 #include <raft/exceptions.hpp>
 #include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
 #include <raft/types.hpp>
@@ -264,7 +265,8 @@ public:
     }
 
     auto send_request_vote(std::uint64_t target, const request_vote_request<>& req,
-                           std::chrono::milliseconds timeout) -> Future<request_vote_response<>> {
+                           std::chrono::milliseconds timeout)
+        -> future_default<request_vote_response<>> {
         return call<request_vote_response<>>(target, _ser.serialize(req), timeout,
                                              [this](const std::vector<std::byte>& d) {
                                                  return _ser.deserialize_request_vote_response(d);
@@ -274,7 +276,7 @@ public:
     // Satisfies kythira::network_client_with_pre_vote (`.kiro/specs/raft-pre-vote/`).
     auto send_request_pre_vote(std::uint64_t target, const request_pre_vote_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> Future<request_pre_vote_response<>> {
+        -> future_default<request_pre_vote_response<>> {
         return call<request_pre_vote_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_request_pre_vote_response(d);
@@ -283,7 +285,7 @@ public:
 
     auto send_append_entries(std::uint64_t target, const append_entries_request<>& req,
                              std::chrono::milliseconds timeout)
-        -> Future<append_entries_response<>> {
+        -> future_default<append_entries_response<>> {
         return call<append_entries_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_append_entries_response(d);
@@ -292,7 +294,7 @@ public:
 
     auto send_install_snapshot(std::uint64_t target, const install_snapshot_request<>& req,
                                std::chrono::milliseconds timeout)
-        -> Future<install_snapshot_response<>> {
+        -> future_default<install_snapshot_response<>> {
         return call<install_snapshot_response<>>(
             target, _ser.serialize(req), timeout, [this](const std::vector<std::byte>& d) {
                 return _ser.deserialize_install_snapshot_response(d);
@@ -302,10 +304,10 @@ public:
 private:
     template<typename Resp, typename Deser>
     auto call(std::uint64_t target, const std::vector<std::byte>& payload,
-              std::chrono::milliseconds timeout, Deser deser) -> Future<Resp> {
+              std::chrono::milliseconds timeout, Deser deser) -> future_default<Resp> {
         auto peer = _peers.lookup(target);
         if (!peer) {
-            return FutureFactory::makeExceptionalFuture<Resp>(std::make_exception_ptr(
+            return future_factory_default::makeExceptionalFuture<Resp>(std::make_exception_ptr(
                 network_exception("tcp_rpc_client: unknown peer " + std::to_string(target))));
         }
 
@@ -314,7 +316,7 @@ private:
         // broadcasting to multiple peers in a loop move on to the next peer
         // immediately instead of blocking on this one's full
         // connect()-through-recv() sequence.
-        Promise<Resp> promise;
+        promise_default<Resp> promise;
         auto future = promise.getFuture();
 
         // Captured by value: `payload` is a reference to the caller's

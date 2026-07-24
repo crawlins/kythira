@@ -4,6 +4,7 @@
 #include <raft/metrics.hpp>
 #include <raft/logger.hpp>
 #include <folly/futures/Future.h>
+#include <folly/futures/Promise.h>
 #include <folly/executors/InlineExecutor.h>
 #include <string>
 #include <cstdint>
@@ -13,6 +14,10 @@ namespace kythira {
 // Test transport types template for use in CoAP transport tests
 template<typename Serializer> struct test_transport_types {
     template<typename T> using future_template = folly::Future<T>;
+    // Matches future_template's own folly::Future<T> - coap_transport_impl.hpp's
+    // send_rpc() uses promise_template<Response> to build the promise/future pair
+    // for both its LIBCOAP_AVAILABLE and stub code paths.
+    template<typename T> using promise_template = folly::Promise<T>;
 
     using serializer_type = Serializer;
     using rpc_serializer_type = Serializer;

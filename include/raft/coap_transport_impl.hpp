@@ -2242,7 +2242,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         // Create future and promise for response
-        auto promise = std::make_shared<typename future_type::promise_type>();
+        auto promise = std::make_shared<promise_template<Response>>();
         auto future = promise->getFuture();
 
         // Store pending request
@@ -2293,16 +2293,27 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
         // Create a default response for the stub implementation
         Response response{};
-        return FutureFactory::makeFuture(std::move(response));
+        {
+            promise_template<Response> stub_promise;
+            auto stub_future = stub_promise.getFuture();
+            stub_promise.setValue(std::move(response));
+            return stub_future;
+        }
 #endif
 
     } catch (const coap_transport_error& e) {
         // CoAP-specific errors
-        return FutureFactory::makeExceptionalFuture<Response>(std::make_exception_ptr(e));
+        promise_template<Response> error_promise;
+        auto error_future = error_promise.getFuture();
+        error_promise.setException(std::make_exception_ptr(e));
+        return error_future;
     } catch (const std::exception& e) {
         // Generic errors
-        return FutureFactory::makeExceptionalFuture<Response>(std::make_exception_ptr(
+        promise_template<Response> error_promise;
+        auto error_future = error_promise.getFuture();
+        error_promise.setException(std::make_exception_ptr(
             coap_transport_error("Unexpected error in send_rpc: " + std::string(e.what()))));
+        return error_future;
     }
 }
 
@@ -6056,15 +6067,21 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     // Validate multicast port
     if (multicast_port == 0) {
         _logger.error("Invalid multicast port", {{"port", std::to_string(multicast_port)}});
-        return FutureFactory::makeExceptionalFuture<std::vector<std::byte>>(
+        promise_template<std::vector<std::byte>> error_promise;
+        auto error_future = error_promise.getFuture();
+        error_promise.setException(
             std::make_exception_ptr(coap_network_error("Invalid multicast port: 0")));
+        return error_future;
     }
 
     // Validate multicast address
     if (!is_valid_multicast_address(multicast_address)) {
         _logger.error("Invalid multicast address", {{"address", multicast_address}});
-        return FutureFactory::makeExceptionalFuture<std::vector<std::byte>>(std::make_exception_ptr(
+        promise_template<std::vector<std::byte>> error_promise;
+        auto error_future = error_promise.getFuture();
+        error_promise.setException(std::make_exception_ptr(
             coap_network_error("Invalid multicast address: " + multicast_address)));
+        return error_future;
     }
 
     // Record metrics for multicast message
@@ -6097,7 +6114,10 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     _logger.debug("Returning stub multicast response",
                   {{"response_size", std::to_string(stub_response.size())}});
 
-    return FutureFactory::makeFuture(std::move(stub_response));
+    promise_template<std::vector<std::byte>> stub_promise;
+    auto stub_future = stub_promise.getFuture();
+    stub_promise.setValue(std::move(stub_response));
+    return stub_future;
 #else
     // Stub implementation when libcoap is not available
     _logger.warning("libcoap not available, using stub multicast implementation");
@@ -6115,7 +6135,10 @@ auto coap_client<Types>::send_multicast_message(const std::string& multicast_add
     _logger.debug("Returning stub multicast response",
                   {{"response_size", std::to_string(stub_response.size())}});
 
-    return FutureFactory::makeFuture(std::move(stub_response));
+    promise_template<std::vector<std::byte>> stub_promise;
+    auto stub_future = stub_promise.getFuture();
+    stub_promise.setValue(std::move(stub_response));
+    return stub_future;
 #endif
 }
 

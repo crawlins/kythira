@@ -10,6 +10,7 @@
 
 // Include kythira future wrapper which provides the correct API
 #include "../raft/future.hpp"
+#include "../raft/future_default.hpp"
 #define KYTHIRA_FUTURES_AVAILABLE 1
 
 namespace network_simulator {
@@ -82,6 +83,16 @@ public:
         return *this;
     }
 
+    // thenValue/thenError: aliases matching the generic kythira future
+    // concept surface (network_simulator/concepts.hpp), which uses these
+    // names rather than the legacy then()/onError() ones.
+    template<typename F> auto thenValue(F&& func) -> SimpleFuture<std::invoke_result_t<F, T>> {
+        return then(std::forward<F>(func));
+    }
+    template<typename F> auto thenError(F&& func) -> SimpleFuture<T> {
+        return onError(std::forward<F>(func));
+    }
+
     [[nodiscard]] auto isReady() const -> bool { return _ready; }
 
     [[nodiscard]] auto wait(std::chrono::milliseconds /*timeout*/) const -> bool { return _ready; }
@@ -129,6 +140,16 @@ public:
             }
         }
         return *this;
+    }
+
+    // thenValue/thenError: aliases matching the generic kythira future
+    // concept surface (network_simulator/concepts.hpp), which uses these
+    // names rather than the legacy then()/onError() ones.
+    template<typename F> auto thenValue(F&& func) -> SimpleFuture<std::invoke_result_t<F>> {
+        return then(std::forward<F>(func));
+    }
+    template<typename F> auto thenError(F&& func) -> SimpleFuture<void> {
+        return onError(std::forward<F>(func));
     }
 
     [[nodiscard]] auto isReady() const -> bool { return _ready; }
@@ -237,13 +258,15 @@ struct DefaultNetworkTypes {
     using listener_type = Listener<DefaultNetworkTypes>;
     using node_type = NetworkNode<DefaultNetworkTypes>;
 
-    // Future types - use kythira::Future since we included it
+    // Future types - kythira::future_default tracks whichever backend
+    // KYTHIRA_DEFAULT_FUTURE_BACKEND selects (folly/stdexec/boost), not
+    // hardcoded to Folly specifically.
 #ifdef KYTHIRA_FUTURES_AVAILABLE
-    using future_bool_type = kythira::Future<bool>;
-    using future_message_type = kythira::Future<message_type>;
-    using future_connection_type = kythira::Future<std::shared_ptr<connection_type>>;
-    using future_listener_type = kythira::Future<std::shared_ptr<listener_type>>;
-    using future_bytes_type = kythira::Future<std::vector<std::byte>>;
+    using future_bool_type = kythira::future_default<bool>;
+    using future_message_type = kythira::future_default<message_type>;
+    using future_connection_type = kythira::future_default<std::shared_ptr<connection_type>>;
+    using future_listener_type = kythira::future_default<std::shared_ptr<listener_type>>;
+    using future_bytes_type = kythira::future_default<std::vector<std::byte>>;
 #else
     using future_bool_type = SimpleFuture<bool>;
     using future_message_type = SimpleFuture<message_type>;

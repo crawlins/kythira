@@ -149,7 +149,8 @@ struct desired_topology {
 ///        remediation.
 ///
 /// Implementations are environment-specific (AWS EC2, GCP, bare-metal bastion scripts, …).
-/// All I/O-bound operations return `kythira::Future<T>` to avoid blocking the Raft event loop.
+/// All I/O-bound operations return `kythira::future_default<T>` to avoid blocking the Raft event
+/// loop.
 ///
 /// ### Caller responsibilities
 /// - `assess_quorum`: The caller supplies the full cluster membership annotated with placement
@@ -175,21 +176,17 @@ concept quorum_manager =
         requires std::same_as<typename Q::address_type, Address>;
         requires std::same_as<typename Q::placement_group_id_type, GroupId>;
 
-        {
-            mgr.assess_quorum(cluster)
-        } -> std::same_as<kythira::Future<quorum_health<NodeId, GroupId>>>;
+        { mgr.assess_quorum(cluster) } -> kythira::future<quorum_health<NodeId, GroupId>>;
 
         {
             mgr.provision_node(target_group, replacing)
-        } -> std::same_as<kythira::Future<peer_info<NodeId, Address>>>;
+        } -> kythira::future<peer_info<NodeId, Address>>;
 
-        { mgr.decommission_node(node_id) } -> std::same_as<kythira::Future<void>>;
+        { mgr.decommission_node(node_id) } -> kythira::future<void>;
 
         { mgr.topology() } -> std::same_as<desired_topology<GroupId>>;
 
-        {
-            mgr.maintain_quorum(cluster)
-        } -> std::same_as<kythira::Future<quorum_health<NodeId, GroupId>>>;
+        { mgr.maintain_quorum(cluster) } -> kythira::future<quorum_health<NodeId, GroupId>>;
     };
 
 // ============================================================================
@@ -229,7 +226,7 @@ public:
     /// @param cluster Full cluster membership with placement-group annotations.
     /// @return An immediately-resolved `Future` containing the health report.
     auto assess_quorum(const std::vector<node_placement<NodeId, GroupId>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, GroupId>> {
+        -> kythira::future_default<quorum_health<NodeId, GroupId>> {
         std::vector<placement_group_health<NodeId, GroupId>> group_health;
         for (const auto& np : cluster) {
             auto it = std::ranges::find(group_health, np.group_id,
@@ -256,21 +253,22 @@ public:
             .unreachable_nodes = {},
             .groups = std::move(group_health),
         };
-        return kythira::FutureFactory::makeFuture(std::move(report));
+        return kythira::future_factory_default::makeFuture(std::move(report));
     }
 
     /// @brief Always returns an exceptional `Future`; provisioning is not supported.
     /// @throws std::runtime_error (via the Future) unconditionally.
     auto provision_node(GroupId, std::optional<NodeId>)
-        -> kythira::Future<peer_info<NodeId, Address>> {
-        return kythira::FutureFactory::makeExceptionalFuture<peer_info<NodeId, Address>>(
-            std::runtime_error("no_op_quorum_manager: provisioning is not supported"));
+        -> kythira::future_default<peer_info<NodeId, Address>> {
+        return kythira::future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
+            std::make_exception_ptr(
+                std::runtime_error("no_op_quorum_manager: provisioning is not supported")));
     }
 
     /// @brief No-op; the caller should remove the node via the Raft membership path.
     /// @return An immediately-resolved void `Future`.
-    auto decommission_node(const NodeId&) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto decommission_node(const NodeId&) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 
     /// @brief Returns the desired topology supplied at construction.
@@ -278,7 +276,7 @@ public:
 
     /// @brief Delegates to `assess_quorum`; no remediation is performed.
     auto maintain_quorum(const std::vector<node_placement<NodeId, GroupId>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, GroupId>> {
+        -> kythira::future_default<quorum_health<NodeId, GroupId>> {
         return assess_quorum(cluster);
     }
 

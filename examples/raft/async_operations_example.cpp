@@ -74,9 +74,9 @@ public:
     // Simulate sending heartbeat (AppendEntries with empty entries)
     auto send_heartbeat(std::uint64_t target_node, std::uint64_t term,
                         std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::append_entries_response<>> {
+        -> kythira::future_default<kythira::append_entries_response<>> {
         // Simulate network delay
-        return kythira::FutureFactory::makeFuture()
+        return kythira::future_factory_default::makeFuture()
             .delay(_simulated_latency)
             .thenValue([this, target_node, term]() {
                 if (_simulate_failures && target_node == follower_node_2_id) {
@@ -96,8 +96,8 @@ public:
     // Simulate sending vote request
     auto send_vote_request(std::uint64_t target_node, std::uint64_t term,
                            std::uint64_t candidate_id, std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::request_vote_response<>> {
-        return kythira::FutureFactory::makeFuture()
+        -> kythira::future_default<kythira::request_vote_response<>> {
+        return kythira::future_factory_default::makeFuture()
             .delay(_simulated_latency)
             .thenValue([this, target_node, term, candidate_id]() {
                 if (_simulate_failures && target_node == follower_node_2_id) {
@@ -115,8 +115,8 @@ public:
     auto send_replication(std::uint64_t target_node, std::uint64_t term,
                           const std::vector<std::byte>& entry_data,
                           std::chrono::milliseconds timeout)
-        -> kythira::Future<kythira::append_entries_response<>> {
-        return kythira::FutureFactory::makeFuture()
+        -> kythira::future_default<kythira::append_entries_response<>> {
+        return kythira::future_factory_default::makeFuture()
             .delay(_simulated_latency)
             .thenValue([this, target_node, term, entry_data]() {
                 if (_simulate_failures && target_node == follower_node_2_id) {
@@ -145,7 +145,7 @@ auto test_heartbeat_collection() -> bool {
         auto network_client = mock_async_network_client{leader_node_id};
 
         // Simulate sending heartbeats to followers
-        std::vector<kythira::Future<kythira::append_entries_response<>>> heartbeat_futures;
+        std::vector<kythira::future_default<kythira::append_entries_response<>>> heartbeat_futures;
 
         std::cout << "  Sending heartbeats to followers...\n";
 
@@ -210,7 +210,7 @@ auto test_election_vote_collection() -> bool {
         std::cout << "  Starting election process...\n";
 
         // Simulate sending vote requests to other nodes
-        std::vector<kythira::Future<kythira::request_vote_response<>>> vote_futures;
+        std::vector<kythira::future_default<kythira::request_vote_response<>>> vote_futures;
 
         // Send vote request to node 1 (leader)
         auto vote_request_1 = network_client.send_vote_request(leader_node_id,
@@ -274,7 +274,8 @@ auto test_replication_acknowledgment_tracking() -> bool {
         auto entry_data = string_to_bytes(test_command_payload);
 
         // Simulate sending replication requests to followers
-        std::vector<kythira::Future<kythira::append_entries_response<>>> replication_futures;
+        std::vector<kythira::future_default<kythira::append_entries_response<>>>
+            replication_futures;
 
         // Send replication to follower 1
         auto replication_1 = network_client.send_replication(follower_node_1_id,
@@ -340,7 +341,7 @@ auto test_future_collection_timeout_handling() -> bool {
         std::cout << "  Testing timeout handling with network failures...\n";
 
         // Simulate sending operations that will partially fail
-        std::vector<kythira::Future<kythira::append_entries_response<>>> operation_futures;
+        std::vector<kythira::future_default<kythira::append_entries_response<>>> operation_futures;
 
         // This will succeed
         auto operation_1 = network_client.send_heartbeat(follower_node_1_id,
@@ -407,7 +408,7 @@ auto test_future_collection_cancellation() -> bool {
         std::cout << "  Testing future collection cancellation...\n";
 
         // Create a collection of futures
-        std::vector<kythira::Future<kythira::append_entries_response<>>> futures_to_cancel;
+        std::vector<kythira::future_default<kythira::append_entries_response<>>> futures_to_cancel;
 
         // Add some long-running operations
         for (std::uint64_t i = 0; i < 3; ++i) {
