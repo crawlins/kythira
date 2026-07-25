@@ -108,27 +108,32 @@ config CHAOS_TESTS
 
 endmenu # Test-Only Dependencies
 
-choice
-	prompt "Default kythira::Future backend"
-	default DEFAULT_FUTURE_BACKEND_FOLLY
+menu "Futures"
+
+config FOLLY
+	bool "folly-backed Future/Promise/Executor backend"
+	default y
 	help
-	  Selects the KYTHIRA_DEFAULT_FUTURE_BACKEND alias target introduced
-	  by the stdexec-future-backend spec (Requirement 11.3). Only affects
-	  non-templated call sites using kythira::future_default; templated
-	  core code accepts either backend regardless of this choice.
-
-config DEFAULT_FUTURE_BACKEND_FOLLY
-	bool "folly"
-
-config DEFAULT_FUTURE_BACKEND_STDEXEC
-	bool "stdexec"
-	depends on STDEXEC_BACKEND
-
-config DEFAULT_FUTURE_BACKEND_BOOST
-	bool "boost"
-	depends on BOOST_FUTURE_BACKEND
-
-endchoice
+	  The original, default kythira::Future/Promise/Try backend
+	  (include/raft/future.hpp). Gates find_package(folly) the same way
+	  CONFIG_STDEXEC_BACKEND/CONFIG_BOOST_FUTURE_BACKEND gate their own
+	  dependencies -- deselecting it skips probing for Folly entirely.
+	  Selected by default because it's the only backend with no
+	  additional vcpkg feature/toolchain requirement. Deselecting it is
+	  fully supported at the header level as of the folly-decoupling
+	  work (July 2026): production code no longer requires Folly
+	  transitively through future_default.hpp regardless of which
+	  backend is selected, verified by a real, Folly-hidden-from-the-
+	  include-path compile of every affected header under both
+	  alternate backends. Two genuinely independent, non-future-related
+	  Folly dependencies remain out of scope for this symbol though --
+	  folly::init()/folly::Init in ~30 test files (process bootstrap,
+	  unrelated to which future backend is selected) and this project's
+	  own certificate_authority/most examples/most of the test suite
+	  still being gated on folly_FOUND at the CMakeLists.txt
+	  subdirectory level (not per-target) -- so CONFIG_FOLLY=n alone
+	  does not yet unlock building those with Folly genuinely absent;
+	  see doc/TODO.md's "Known Follow-ups" for both.
 
 config STDEXEC_BACKEND
 	bool "stdexec-backed Future/Promise/Executor backend"
@@ -146,5 +151,38 @@ config BOOST_FUTURE_BACKEND
 	  already hard-required dependencies of this project for unrelated
 	  reasons; this only controls whether this backend's own targets/
 	  headers are built. Backs KYTHIRA_HAS_BOOST_FUTURE.
+
+comment "WARNING: select at least one Future backend above"
+	depends on !FOLLY && !STDEXEC_BACKEND && !BOOST_FUTURE_BACKEND
+
+choice
+	prompt "Default kythira::Future backend"
+	default DEFAULT_FUTURE_BACKEND_FOLLY if FOLLY
+	default DEFAULT_FUTURE_BACKEND_STDEXEC if STDEXEC_BACKEND
+	default DEFAULT_FUTURE_BACKEND_BOOST if BOOST_FUTURE_BACKEND
+	help
+	  Selects the KYTHIRA_DEFAULT_FUTURE_BACKEND alias target introduced
+	  by the stdexec-future-backend spec (Requirement 11.3). Only affects
+	  non-templated call sites using kythira::future_default; templated
+	  core code accepts either backend regardless of this choice. Folly
+	  is the default whenever it's enabled (the common case); if it's
+	  been deselected above, the default falls through to whichever
+	  other backend is enabled instead.
+
+config DEFAULT_FUTURE_BACKEND_FOLLY
+	bool "folly"
+	depends on FOLLY
+
+config DEFAULT_FUTURE_BACKEND_STDEXEC
+	bool "stdexec"
+	depends on STDEXEC_BACKEND
+
+config DEFAULT_FUTURE_BACKEND_BOOST
+	bool "boost"
+	depends on BOOST_FUTURE_BACKEND
+
+endchoice
+
+endmenu # Futures
 
 # (mainmenu close is implicit at EOF)

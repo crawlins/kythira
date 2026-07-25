@@ -80,6 +80,22 @@ endif()
 
 include("${KYTHIRA_KCONFIG_CMAKE_OUT}")
 
+# Structural validity check, not a "dependency not found" case, so it applies
+# regardless of KYTHIRA_KCONFIG_STRICT and only when Kconfig actually
+# resolved a full symbol set (KCONFIG_FOLLY etc. are only ever all three
+# simultaneously defined when genconfig.py ran successfully -- the
+# kconfiglib-absent branch above leaves autoconf.cmake empty, so this never
+# fires on the zero-config/no-kconfiglib path). CONFIG_FOLLY defaults to y,
+# so this only trips if a user explicitly deselects every backend.
+if(DEFINED KCONFIG_FOLLY AND DEFINED KCONFIG_STDEXEC_BACKEND AND DEFINED KCONFIG_BOOST_FUTURE_BACKEND)
+    if(NOT KCONFIG_FOLLY AND NOT KCONFIG_STDEXEC_BACKEND AND NOT KCONFIG_BOOST_FUTURE_BACKEND)
+        message(FATAL_ERROR
+            "Kconfig: at least one Future backend must be selected "
+            "(CONFIG_FOLLY, CONFIG_STDEXEC_BACKEND, CONFIG_BOOST_FUTURE_BACKEND "
+            "are all n)")
+    endif()
+endif()
+
 # kythira_find_optional(<SYMBOL> <find_package-style call>)
 # Wraps one optional dependency behind a single, plain find_package() call:
 # skipped entirely if KCONFIG_<SYMBOL> is explicitly OFF (Requirement 4.3);

@@ -79,14 +79,22 @@ if(ENABLE_COVERAGE)
 endif()
 
 # Find dependencies
-# Note: folly is required for the full implementation
-# For now, we'll make it optional to allow initial build
-# folly and Boost are hard-required core dependencies, outside Kconfig's
-# control entirely -- they are not modeled as CONFIG symbols and always run
-# unconditionally, same as before Kconfig integration (see design doc's
-# "Kconfig expresses intent; CMake still does detection" principle: Kconfig
-# only governs genuinely optional dependencies).
-find_package(folly QUIET)
+# Boost is a hard-required core dependency, outside Kconfig's control
+# entirely -- it is not modeled as a CONFIG symbol and always runs
+# unconditionally. Folly, by contrast, is CONFIG_FOLLY-gated like any other
+# optional dependency in the "Futures" menu (Kconfig): every other backend
+# it coexists alongside (stdexec, boost) is gated the same way, and
+# CONFIG_FOLLY/CONFIG_STDEXEC_BACKEND/CONFIG_BOOST_FUTURE_BACKEND together
+# enforce that at least one backend stays selected (see the Kconfig
+# "comment" beneath them, and the hard configure-time check below). Note
+# that deselecting CONFIG_FOLLY only stops CMake from probing for it --
+# include/raft/future.hpp is still included unconditionally by
+# include/raft/future_default.hpp regardless of KYTHIRA_DEFAULT_FUTURE_
+# BACKEND, so most of the codebase (certificate_authority, both
+# transports, most of the test suite) still requires Folly transitively
+# today even with a non-folly default backend selected; see doc/TODO.md's
+# "Known Follow-ups" for the header-level decoupling this would still need.
+kythira_find_optional(FOLLY folly)
 find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context)
 kythira_find_optional(HTTP_TRANSPORT httplib)
 kythira_find_optional(OPENSSL OpenSSL)
