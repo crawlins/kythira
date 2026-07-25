@@ -144,6 +144,78 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
   that into fine-grained per-target gating across 100+ targets is a
   separate, much larger undertaking than this pass.
 
+- **Gap 1 above (test-file `folly::init()` bootstrap) closed** (July 25,
+  2026) — the "roughly 30 test files" estimate was low: a full grep found
+  135 files calling `folly::init()`/constructing `folly::Init`, of which
+  120 had no other Folly usage at all (the rest — `folly_concept_wrappers_*`,
+  `*_future_returning_callback_*`, etc. — genuinely need Folly and were left
+  untouched). Of those 120, 13 are `cmd/*/main.cpp` and `examples/*.cpp`
+  standalone executables calling `folly::init()` in a real `main()` — out of
+  scope, since that's legitimate production usage, not vestigial Boost.Test
+  bootstrap. The remaining 106 (105 `tests/*.cpp` files plus the shared
+  `tests/chaos/chaos_test_types.hpp` fixture) had their
+  `FollyInitFixture`/`GlobalFixture`/`chaos_test_fixture` boilerplate gated
+  behind `#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) &&
+  !defined(KYTHIRA_FUTURE_BACKEND_BOOST)` — the same backend-conditional
+  pattern used throughout the rest of the Folly-decoupling work — rather than
+  deleted outright.
+  Deletion was the first approach tried, and it was wrong: it broke 37 tests
+  at runtime (`SIGABRT`, `"Singleton folly::Timekeeper ... requested before
+  registrationComplete()"`). Under the Folly backend (still the project
+  default), `kythira::future_default<T>` *is* `folly::Future<T>`, so any
+  test that transitively touches Folly's async timer machinery — retry
+  backoff delays in `error_handler.hpp`, `future_collector.hpp` timeouts,
+  etc. — needs `folly::init()` to have run first, even though the test's own
+  source never mentions `folly::` by name. A static grep for the literal
+  string `folly::` in each file's own text (the heuristic used to classify
+  "boilerplate-only" vs "genuinely needs Folly") can't see that transitive,
+  runtime-only dependency, so it isn't a safe signal for whether the init
+  call can simply be deleted. Caught by actually running the full test
+  suite after the change (not just rebuilding), which is why that step is
+  never skippable for this kind of change. The conditional-gating fix
+  restores identical behavior under the Folly backend (still selected by
+  default today) while genuinely removing the Folly dependency once
+  `CONFIG_STDEXEC_BACKEND`/`CONFIG_BOOST_FUTURE_BACKEND` is selected instead.
+  `tests/chaos/chaos_test_types.hpp`'s shared fixture needed hand-editing
+  rather than the scripted pass, since it does double duty (`folly::Init`
+  *and* `fiu_init(0)` fault-injection setup in the same constructor) — only
+  the Folly half is gated, `fiu_init(0)` stays unconditional.
+  `tests/minimal_network_test.cpp` (a standalone smoke-test `main()`, not a
+  Boost.Test file at all) was left untouched for the same reason as the
+  `cmd/`/`examples/` files.
+  Verified with a full rebuild + the same label-filtered `ctest` subset the
+  pre-commit coverage hook and CI both use
+  (`-LE ^(slow|performance|verbose|benchmark|docker)$`,
+  `--repeat until-pass:3`): 382/382 passed, 0 failed — confirmed via
+  `ctest`'s own exit code and `Testing/Temporary/LastTest.log`, not just the
+  wrapping shell pipeline's exit code (which had earlier masked the
+  37-failure regression, since piping through `tee | tail` reports the exit
+  code of `tail`, not `ctest`).
+  Gap 2 (per-target `folly_FOUND` CMake gating across 100+ targets) remains
+  deliberately out of scope, unchanged from the note above.
+
+  **Unrelated, found and fixed along the way**: the repo-root
+  `vcpkg_installed/x64-linux` dependency cache (gitignored, local-only) had
+  silent file-level corruption in three `boost/intrusive` headers
+  (`pack_options.hpp`, `detail/mpl.hpp`, `detail/function_detector.hpp`) —
+  stray characters inserted into macro definitions (e.g. `template< class
+  (TYPE)>` instead of `template< class TYPE>`), breaking any target that
+  pulls in Folly's futures headers. Root-caused by diffing against the
+  known-good copy in `build-clang/vcpkg_installed`; fixed for good via a
+  full `vcpkg install` reinstall from the manifest (binary-cache-backed, a
+  few seconds) after moving the corrupted directory aside. That reinstall
+  doesn't manage everything under `vcpkg_installed/`, though: the
+  `libPocoDNSSD.a`/`libPocoDNSSDAvahi.a` static archives documented in
+  README.md's ARM-support section are manually built and placed there by
+  hand (DNSSD isn't a vcpkg feature), so they were lost when the corrupted
+  directory was deleted rather than kept. The project's own graceful-
+  degradation path (`POCO_DNSSD_FOUND=FALSE` when the archives are absent)
+  handled it correctly once `build-clang` was reconfigured — the affected
+  targets (`poco_peer_discovery*`, a handful of `coap_*` tests) simply
+  disable that backend, exactly as an x86_64 host without the prebuilt
+  archives already would. Rebuilding those archives from scratch, if ever
+  needed, isn't documented anywhere yet — worth adding if this bites again.
+
 ---
 
 ## Remaining Work (All Optional)

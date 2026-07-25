@@ -3,8 +3,11 @@
 
 #include <raft/quorum_management.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -14,7 +17,11 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#endif
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 // Concept satisfaction (Req 10.1, Req 8.1, Req 3.3)
 static_assert(

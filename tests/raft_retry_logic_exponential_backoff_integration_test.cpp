@@ -19,8 +19,10 @@
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -33,6 +35,7 @@
 #include <mutex>
 
 // Global test fixture to initialize Folly
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -46,8 +49,11 @@ struct FollyInitFixture {
 
     std::unique_ptr<folly::Init> _init;
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 namespace {
 // Test constants

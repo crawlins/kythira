@@ -1,6 +1,8 @@
 #define BOOST_TEST_MODULE error_handler_exponential_backoff_unit_test
 #include <boost/test/unit_test.hpp>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#endif
 #include <raft/error_handler.hpp>
 #include <raft/future_default.hpp>
 #include <chrono>
@@ -8,6 +10,7 @@
 #include <iostream>
 
 // Global fixture to initialize Folly
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         static bool initialized = false;
@@ -20,8 +23,11 @@ struct FollyInitFixture {
         }
     }
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_TEST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 namespace {
 constexpr std::size_t test_max_attempts = 5;

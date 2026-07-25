@@ -8,13 +8,16 @@
 #include <raft/rfc6763_ldns_peer_discovery.hpp>
 #include <raft/rfc6763_peer_discovery.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -24,7 +27,11 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#endif
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 #ifdef KYTHIRA_HAS_LDNS
 

@@ -16,7 +16,9 @@
 #include <raft/test_state_machine.hpp>
 #include <network_simulator/network_simulator.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#endif
 #include <fiu.h>
 #include <fiu-control.h>
 
@@ -102,16 +104,27 @@ inline void clear_all_faults() {
 // Global Folly + FIU initialisation fixture — use with BOOST_GLOBAL_FIXTURE.
 // BOOST_GLOBAL_FIXTURE cannot handle namespaced types directly; test files must
 // declare a file-scope alias before invoking the macro.
+// The folly::Init member is only needed under the Folly backend, where
+// future_default<T> is folly::Future<T> and transitively touches Folly's
+// Timekeeper singleton (e.g. via error_handler.hpp's retry-delay timers);
+// registering it before folly::init() has run aborts with "Singleton
+// folly::Timekeeper ... requested before registrationComplete()". Under
+// the stdexec/boost backends there's no such dependency, so it's skipped
+// entirely rather than just left unused.
 struct chaos_test_fixture {
     chaos_test_fixture() {
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
         int argc = 1;
         char* argv_data[] = {const_cast<char*>("chaos_test"), nullptr};
         char** argv = argv_data;
         _init = std::make_unique<folly::Init>(&argc, &argv);
+#endif
         fiu_init(0);
     }
     ~chaos_test_fixture() { clear_all_faults(); }
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
     std::unique_ptr<folly::Init> _init;
+#endif
 };
 
 // Add bidirectional full-mesh edges between every pair of node addresses.

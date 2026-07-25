@@ -1,8 +1,10 @@
 #define BOOST_TEST_MODULE error_handler_coverage_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
 
@@ -11,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -20,7 +23,11 @@ struct FollyInitFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#endif
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 BOOST_AUTO_TEST_SUITE(classify_error_suite)
 

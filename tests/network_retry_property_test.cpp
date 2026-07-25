@@ -14,13 +14,16 @@
 
 #include <raft/simulator_network.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <chrono>
 #include <thread>
 #include <random>
 
 // Global test fixture to initialize Folly
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -33,8 +36,11 @@ struct FollyInitFixture {
 
     std::unique_ptr<folly::Init> _init;
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 namespace {
 constexpr std::uint64_t client_node_id = 1;

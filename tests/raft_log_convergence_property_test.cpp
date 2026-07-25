@@ -13,14 +13,17 @@
 
 #include <raft/raft.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <random>
 #include <chrono>
 #include <thread>
 #include <vector>
 
 // Global test fixture to initialize Folly
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -33,8 +36,11 @@ struct FollyInitFixture {
 
     std::unique_ptr<folly::Init> _init;
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 namespace {
 constexpr std::size_t property_test_iterations = 10;

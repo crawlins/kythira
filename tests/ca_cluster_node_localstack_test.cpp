@@ -39,8 +39,10 @@
 #include <aws/sts/STSClient.h>
 #include <aws/sts/model/GetCallerIdentityRequest.h>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
@@ -132,6 +134,7 @@ struct PreflightSkipFixture {
     }
 };
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
@@ -139,6 +142,7 @@ struct FollyInitFixture {
         folly::init(&argc, &argv, false);
     }
 };
+#endif
 
 struct AwsSdkFixture {
     AwsSdkFixture() {
@@ -152,7 +156,9 @@ struct AwsSdkFixture {
 };
 
 BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 auto make_client_cfg() -> Aws::Client::ClientConfiguration {

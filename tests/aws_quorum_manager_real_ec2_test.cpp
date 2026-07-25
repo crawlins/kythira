@@ -60,8 +60,10 @@
 
 #include <libssh2.h>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include "aws_real_ec2_test_support.hpp"
 
 #include <algorithm>
@@ -126,6 +128,7 @@ struct PreflightSkipFixture {
     }
 };
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
@@ -133,6 +136,7 @@ struct FollyInitFixture {
         folly::init(&argc, &argv, false);
     }
 };
+#endif
 
 struct AwsSdkFixture {
     AwsSdkFixture() {
@@ -146,7 +150,9 @@ struct AwsSdkFixture {
 };
 
 BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 auto make_tag(const std::string& k, const std::string& v) -> Aws::EC2::Model::Tag {
