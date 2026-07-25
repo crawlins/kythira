@@ -2390,6 +2390,11 @@ add_test(NAME aws_quorum_manager_localstack_test COMMAND aws_quorum_manager_loca
 set_tests_properties(aws_quorum_manager_localstack_test PROPERTIES
     TIMEOUT 300
     LABELS "integration;raft;quorum;aws;localstack;slow"
+    # PreflightSkipFixture (a BOOST_GLOBAL_FIXTURE, registered first) exits
+    # with this code before any Boost.Test case runs if LocalStack isn't
+    # reachable, so ctest reports "Not Run" instead of "Failed" when this
+    # environment isn't available.
+    SKIP_RETURN_CODE 77
 )
 
 # LocalStack coverage for the ca_cluster_node-specific 3-AZ topology shape
@@ -2411,6 +2416,7 @@ add_test(NAME ca_cluster_node_localstack_test COMMAND ca_cluster_node_localstack
 set_tests_properties(ca_cluster_node_localstack_test PROPERTIES
     TIMEOUT 300
     LABELS "integration;raft;quorum;aws;localstack;slow;ca;ca_cluster_node"
+    SKIP_RETURN_CODE 77
 )
 
 # Real-EC2 integration tests — requires AWS credentials + env vars.
@@ -2446,6 +2452,11 @@ set_tests_properties(aws_quorum_manager_real_ec2_test PROPERTIES
     # timeout-minutes: 180.
     TIMEOUT 10800
     LABELS "integration;raft;quorum;aws;real-ec2;slow"
+    # PreflightSkipFixture (a BOOST_GLOBAL_FIXTURE, registered first) exits
+    # with this code before any Boost.Test case runs if
+    # AWS_DEFAULT_REGION/AWS_REGION isn't set, so ctest reports "Not Run"
+    # instead of "Failed" when this environment isn't available.
+    SKIP_RETURN_CODE 77
 )
 
 # Real-EC2 coverage for the ca_cluster_node-specific 3-AZ deployment — see
@@ -2471,6 +2482,7 @@ add_test(NAME ca_cluster_node_real_ec2_test COMMAND ca_cluster_node_real_ec2_tes
 set_tests_properties(ca_cluster_node_real_ec2_test PROPERTIES
     TIMEOUT 900
     LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node"
+    SKIP_RETURN_CODE 77
 )
 
 # Real-EC2 coverage for the RPC-TLS-enabled 3-AZ ca_cluster_node deployment
@@ -2509,6 +2521,7 @@ set_tests_properties(ca_cluster_node_rpc_tls_real_ec2_test PROPERTIES
     # timeouts (6800s) plus per-case fixture setup/teardown overhead.
     TIMEOUT 9000
     LABELS "integration;raft;quorum;aws;real-ec2;slow;ca;ca_cluster_node;rpc_tls"
+    SKIP_RETURN_CODE 77
 )
 endif()  # TARGET certificate_authority
 
