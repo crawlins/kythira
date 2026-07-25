@@ -93,6 +93,57 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
   itself is still unresolved — this fix only ensures it can no longer
   wedge the whole test run when it happens.
 
+- **Folly decoupling is complete at the header level; two independent
+  gaps remain out of scope** (July 24, 2026) — `future_default.hpp` no
+  longer unconditionally pulls in Folly (`include/raft/future.hpp`)
+  regardless of `KYTHIRA_DEFAULT_FUTURE_BACKEND`; ~20 production headers
+  that hardcoded raw `kythira::Future`/`FutureFactory` (certificate/AWS/
+  ACME providers, DNS peer discovery, RPC transports) were converted to
+  `future_default`/`future_factory_default`; two genuinely non-future
+  Folly dependencies masquerading as future-backend ones
+  (`folly::Synchronized` in `peer2peer_replication.hpp`/
+  `tcp_gossip_transport.hpp`, `folly::CPUThreadPoolExecutor` in
+  `tcp_rpc.hpp`/`tls_tcp_rpc.hpp`) were replaced with portable
+  equivalents (`kythira::synchronized<T>`, new
+  `include/raft/synchronized.hpp`; `kythira::executor_default::submit()`,
+  extending the existing `executor_default`). Verified for real: every
+  affected header compiles under `KYTHIRA_FUTURE_BACKEND_STDEXEC` with
+  `-H` header-tracing confirming zero Folly headers touched (not just "the
+  Kconfig symbol allows it"), plus full `cmake --build` + `ctest` runs
+  under all three backends (folly 389/394, stdexec 389/391, boost
+  388/394 — only pre-existing, unrelated failures: the 5 documented
+  LocalStack/real-EC2 tests, plus two timing-threshold-sensitive tests
+  this sandbox's stdexec overhead trips that the same tests don't touch
+  under folly/boost, both in files untouched by this work
+  — `performance_equivalence_property_test.cpp`,
+  `future_backend_benchmark_test.cpp`).
+  Also found and fixed, mid-verification: `ldns/common.h` (`libldns`,
+  used by the DNS peer-discovery headers and `acme_certificate_provider`'s
+  DNS-01 challenge support) `#define`s `true`/`false` as plain macros
+  with no `__cplusplus` guard, silently corrupting any C++20
+  `concept`/`requires` code parsed afterward in the same translation unit
+  — harmless standalone, but a real, reproducible compile break the moment
+  a file pulls in both `<ldns/ldns.h>` and stdexec's headers (`"atomic
+  constraint must be of type bool (found int)"`). Fixed with a defensive
+  `#undef true` / `#undef false` immediately after every direct
+  `<ldns/ldns.h>` include (7 files) — always safe in C++, since `true`/
+  `false` are keywords regardless of macro state.
+  **Two things deliberately left out of scope**, both documented directly
+  in `CONFIG_FOLLY`'s own Kconfig help text: (1) roughly 30 test files call
+  `folly::init()`/construct `folly::Init` for Boost.Test process bootstrap
+  — a real Folly dependency, but entirely unrelated to which future
+  backend is selected, so converting it isn't a "decouple the future
+  backend" change; (2) the root `CMakeLists.txt` still gates
+  `certificate_authority`, most of `examples/`, and the whole `tests/`
+  subdirectory on `folly_FOUND` at the subdirectory level rather than
+  per-target — meaning `CONFIG_FOLLY=n` today stops CMake from *probing*
+  for Folly, but doesn't yet make those targets actually *buildable*
+  without it, since the ~20-30 genuinely Folly-specific test files (by
+  design, e.g. `folly_concept_wrappers_*`, `*_future_returning_callback_*`)
+  are mixed into the same subdirectories as everything else. Restructuring
+  that into fine-grained per-target gating across 100+ targets is a
+  separate, much larger undertaking than this pass.
+
 ---
 
 ## Remaining Work (All Optional)
