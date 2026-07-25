@@ -2,7 +2,6 @@
 
 #include <raft/future_default.hpp>
 
-#include <raft/future.hpp>
 #include <vector>
 #include <chrono>
 #include <exception>

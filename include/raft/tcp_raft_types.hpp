@@ -10,7 +10,6 @@
 
 #include <raft/console_logger.hpp>
 #include <raft/file_persistence.hpp>
-#include <raft/future.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/membership.hpp>

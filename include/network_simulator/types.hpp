@@ -9,7 +9,6 @@
 #include <vector>
 
 // Include kythira future wrapper which provides the correct API
-#include "../raft/future.hpp"
 #include "../raft/future_default.hpp"
 #define KYTHIRA_FUTURES_AVAILABLE 1
 

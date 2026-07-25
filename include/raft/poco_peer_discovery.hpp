@@ -1,6 +1,6 @@
 #pragma once
 
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
 #include <chrono>
@@ -83,7 +83,8 @@ public:
     poco_peer_discovery(poco_peer_discovery&&) = delete;
     poco_peer_discovery& operator=(poco_peer_discovery&&) = delete;
 
-    auto register_node(std::string self_id, std::string self_address) -> kythira::Future<void> {
+    auto register_node(std::string self_id, std::string self_address)
+        -> kythira::future_default<void> {
         auto [host, port] = parse_address(self_address);
 
         ensure_started();
@@ -95,11 +96,11 @@ public:
         do_register();  // throws on failure
         _registered = true;
         start_fresher();
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto find_peers(std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<peer_info<std::string, std::string>>> {
+        -> kythira::future_default<std::vector<peer_info<std::string, std::string>>> {
         std::vector<peer_info<std::string, std::string>> results;
         try {
             ensure_started();
@@ -107,7 +108,7 @@ public:
         } catch (...) {
         }
         std::erase_if(results, [this](const auto& p) { return p.address == _self_address; });
-        return kythira::FutureFactory::makeFuture(std::move(results));
+        return kythira::future_factory_default::makeFuture(std::move(results));
     }
 
 private:

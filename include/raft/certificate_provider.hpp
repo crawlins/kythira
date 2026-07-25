@@ -10,7 +10,7 @@
 ///        a CSR in and hand back a certificate — never a private key.
 
 #include <raft/certificate_authority.hpp>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 
 #include <concepts>
 #include <string>
@@ -31,8 +31,8 @@ namespace raft::testing {
 /// backend-agnostic.
 template<typename P>
 concept certificate_provider = requires(P& p, std::string csr_pem, csr_signing_options options) {
-    { p.root_certificate_pem() } -> std::same_as<kythira::Future<std::string>>;
-    { p.sign_csr(csr_pem, options) } -> std::same_as<kythira::Future<pem_material>>;
+    { p.root_certificate_pem() } -> std::same_as<kythira::future_default<std::string>>;
+    { p.sign_csr(csr_pem, options) } -> std::same_as<kythira::future_default<pem_material>>;
 };
 
 /// Adapts a local, in-process `certificate_authority` to `certificate_provider` by
@@ -41,13 +41,14 @@ class local_certificate_provider {
 public:
     explicit local_certificate_provider(certificate_authority& ca) : _ca(ca) {}
 
-    [[nodiscard]] auto root_certificate_pem() -> kythira::Future<std::string> {
-        return kythira::FutureFactory::makeReadyFuture(std::string(_ca.root_certificate_pem()));
+    [[nodiscard]] auto root_certificate_pem() -> kythira::future_default<std::string> {
+        return kythira::future_factory_default::makeReadyFuture(
+            std::string(_ca.root_certificate_pem()));
     }
 
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
-        -> kythira::Future<pem_material> {
-        return kythira::FutureFactory::makeReadyFuture(
+        -> kythira::future_default<pem_material> {
+        return kythira::future_factory_default::makeReadyFuture(
             _ca.sign_csr(std::move(csr_pem), std::move(options)));
     }
 

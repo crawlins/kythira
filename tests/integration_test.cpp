@@ -5,9 +5,9 @@
 #include <network_simulator/simulator.hpp>
 #include <network_simulator/types.hpp>
 #include <network_simulator/exceptions.hpp>
-#include <raft/future.hpp>
 
 #include <chrono>
+#include <future>
 #include <string>
 #include <vector>
 #include <thread>

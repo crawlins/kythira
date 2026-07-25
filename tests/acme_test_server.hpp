@@ -28,6 +28,18 @@
 
 #ifdef KYTHIRA_HAS_LDNS
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 #endif
 
 #include <arpa/inet.h>

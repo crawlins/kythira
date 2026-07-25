@@ -2,7 +2,6 @@
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
-#include <raft/future.hpp>
 #include <concepts/future.hpp>
 
 #include <type_traits>

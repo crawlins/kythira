@@ -3,7 +3,6 @@
 /// @file peer_discovery.hpp
 /// @brief Peer-discovery concept and built-in implementations.
 
-#include <raft/future.hpp>
 #include <raft/future_default.hpp>
 #include <algorithm>
 #include <chrono>

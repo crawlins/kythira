@@ -12,10 +12,9 @@
 /// `tcp_gossip_peer2peer_replicator` (`.kiro/specs/peer2peer-gossip-transport/`,
 /// `include/raft/tcp_gossip_transport.hpp`).
 
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
-
-#include <folly/Synchronized.h>
+#include <raft/synchronized.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -49,16 +48,16 @@ concept peer2peer_replicator =
         /// (if any) happens on the implementation's own schedule.
         {
             replicator.advertise_progress(self_id, self_address, term, last_log_index)
-        } -> std::same_as<kythira::Future<void>>;
+        } -> std::same_as<kythira::future_default<void>>;
         /// Return a peer believed, from gossiped digests, to hold entries
         /// covering `[from_index, to_index]`, or `std::nullopt` if none is known.
         {
             replicator.find_catch_up_source(from_index, to_index, timeout)
-        } -> std::same_as<kythira::Future<std::optional<peer_info<NodeId, Address>>>>;
+        } -> std::same_as<kythira::future_default<std::optional<peer_info<NodeId, Address>>>>;
         /// Replace this instance's notion of current core cluster membership.
         /// This is the replicator's *only* source of truth for "who's in the
         /// cluster" — no separately/independently maintained peer list.
-        { replicator.update_membership(member_ids) } -> std::same_as<kythira::Future<void>>;
+        { replicator.update_membership(member_ids) } -> std::same_as<kythira::future_default<void>>;
     };
 
 /// @brief No-op peer-to-peer replicator — preserves today's leader-only
@@ -75,21 +74,23 @@ public:
     using log_index_type = LogIndex;
 
     /// @brief No-op; always succeeds immediately.
-    auto advertise_progress(NodeId, Address, std::uint64_t, LogIndex) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto advertise_progress(NodeId, Address, std::uint64_t, LogIndex)
+        -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 
     /// @brief Always resolves `std::nullopt` — this alone guarantees zero
     /// behavioral change when a `Types` bundle does not declare a real
     /// `peer2peer_replicator_type`.
     [[nodiscard]] auto find_catch_up_source(LogIndex, LogIndex, std::chrono::milliseconds) const
-        -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
-        return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
+        return kythira::future_factory_default::makeFuture(
+            std::optional<peer_info<NodeId, Address>>{});
     }
 
     /// @brief No-op; always succeeds immediately.
-    auto update_membership(std::vector<NodeId>) -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+    auto update_membership(std::vector<NodeId>) -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 };
 
@@ -117,7 +118,7 @@ public:
         std::uint64_t term;
         LogIndex last_log_index;
     };
-    using table_type = folly::Synchronized<std::unordered_map<NodeId, progress_digest>>;
+    using table_type = kythira::synchronized<std::unordered_map<NodeId, progress_digest>>;
 
     /// @param shared_table Progress table shared across every node instance in
     ///        a simulated cluster.
@@ -125,10 +126,10 @@ public:
         : _table(std::move(shared_table)) {}
 
     auto advertise_progress(NodeId self_id, Address self_address, std::uint64_t term,
-                            LogIndex last_log_index) -> kythira::Future<void> {
+                            LogIndex last_log_index) -> kythira::future_default<void> {
         _table->wlock()->insert_or_assign(self_id,
                                           progress_digest{self_address, term, last_log_index});
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     /// @brief Returns the first peer, currently in this instance's own
@@ -137,7 +138,7 @@ public:
     /// `last_log_index >= from_index`, excluding this node's own entry.
     auto find_catch_up_source(LogIndex from_index, LogIndex /*to_index*/,
                               std::chrono::milliseconds) const
-        -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
         auto members = _member_ids.rlock();
         auto locked = _table->rlock();
         for (const auto& [id, digest] : *locked) {
@@ -145,16 +146,18 @@ public:
                 continue;
             }
             if (digest.last_log_index >= from_index) {
-                return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{
-                    peer_info<NodeId, Address>{id, digest.address}});
+                return kythira::future_factory_default::makeFuture(
+                    std::optional<peer_info<NodeId, Address>>{
+                        peer_info<NodeId, Address>{id, digest.address}});
             }
         }
-        return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
+        return kythira::future_factory_default::makeFuture(
+            std::optional<peer_info<NodeId, Address>>{});
     }
 
-    auto update_membership(std::vector<NodeId> member_ids) -> kythira::Future<void> {
+    auto update_membership(std::vector<NodeId> member_ids) -> kythira::future_default<void> {
         *_member_ids.wlock() = std::unordered_set<NodeId>(member_ids.begin(), member_ids.end());
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
 private:
@@ -162,7 +165,7 @@ private:
     // Not part of the shared table — this instance's own last-`update_membership`-
     // supplied set (Requirement 11.1), exactly as the real system calls
     // `update_membership` per node<Types> instance.
-    folly::Synchronized<std::unordered_set<NodeId>> _member_ids;
+    kythira::synchronized<std::unordered_set<NodeId>> _member_ids;
 };
 
 static_assert(

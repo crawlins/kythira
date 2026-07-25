@@ -3,7 +3,6 @@
 #include <raft/future_default.hpp>
 
 #include <concepts/future.hpp>
-#include <raft/future.hpp>
 #include <type_traits>
 #include <chrono>
 #include <functional>

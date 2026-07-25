@@ -6,6 +6,7 @@
 ///        `KYTHIRA_HAS_AWS_ACM_PCA` is defined.
 
 #include <raft/aws_acm_pca_provider.hpp>
+#include <raft/future_default.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 
@@ -60,12 +61,13 @@ inline aws_acm_pca_provider::aws_acm_pca_provider(aws_acm_pca_provider_config co
     }
 }
 
-inline auto aws_acm_pca_provider::root_certificate_pem() -> kythira::Future<std::string> {
+inline auto aws_acm_pca_provider::root_certificate_pem() -> kythira::future_default<std::string> {
     try {
         {
             std::lock_guard<std::mutex> lock(_mutex);
             if (_cached_root_pem) {
-                return kythira::FutureFactory::makeReadyFuture(std::string(*_cached_root_pem));
+                return kythira::future_factory_default::makeReadyFuture(
+                    std::string(*_cached_root_pem));
             }
         }
 
@@ -87,15 +89,16 @@ inline auto aws_acm_pca_provider::root_certificate_pem() -> kythira::Future<std:
             std::lock_guard<std::mutex> lock(_mutex);
             _cached_root_pem = root_pem;
         }
-        return kythira::FutureFactory::makeReadyFuture(std::move(root_pem));
+        return kythira::future_factory_default::makeReadyFuture(std::move(root_pem));
     } catch (const std::exception& ex) {
-        return kythira::FutureFactory::makeExceptionalFuture<std::string>(std::runtime_error(
-            std::string("aws_acm_pca_provider::root_certificate_pem: ") + ex.what()));
+        return kythira::future_factory_default::makeExceptionalFuture<std::string>(
+            std::make_exception_ptr(std::runtime_error(
+                std::string("aws_acm_pca_provider::root_certificate_pem: ") + ex.what())));
     }
 }
 
 inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_options options)
-    -> kythira::Future<pem_material> {
+    -> kythira::future_default<pem_material> {
     try {
         fiu_do_on("raft/aws/acm_pca/issue_certificate",
                   throw std::runtime_error("fault: raft/aws/acm_pca/issue_certificate"););
@@ -141,7 +144,7 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
                 out.chain_pem = out.certificate_pem + get_outcome.GetResult().GetCertificateChain();
                 // serial is left 0 — ACM Private CA identifies certificates by ARN,
                 // not the local monotonic-counter scheme certificate_authority uses.
-                return kythira::FutureFactory::makeReadyFuture(std::move(out));
+                return kythira::future_factory_default::makeReadyFuture(std::move(out));
             }
 
             bool still_issuing = get_outcome.GetError().GetErrorType() ==
@@ -155,13 +158,14 @@ inline auto aws_acm_pca_provider::sign_csr(std::string csr_pem, csr_signing_opti
             backoff = std::min(backoff * 2, std::chrono::milliseconds(5000));
         }
     } catch (const std::exception& ex) {
-        return kythira::FutureFactory::makeExceptionalFuture<pem_material>(
-            std::runtime_error(std::string("aws_acm_pca_provider::sign_csr: ") + ex.what()));
+        return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
+            std::make_exception_ptr(
+                std::runtime_error(std::string("aws_acm_pca_provider::sign_csr: ") + ex.what())));
     }
 }
 
 inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial)
-    -> kythira::Future<void> {
+    -> kythira::future_default<void> {
     try {
         fiu_do_on("raft/aws/acm_pca/revoke_certificate",
                   throw std::runtime_error("fault: raft/aws/acm_pca/revoke_certificate"););
@@ -175,10 +179,10 @@ inline auto aws_acm_pca_provider::revoke(const std::string& certificate_serial)
             throw std::runtime_error("acm-pca RevokeCertificate: " +
                                      std::string(outcome.GetError().GetMessage()));
         }
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     } catch (const std::exception& ex) {
-        return kythira::FutureFactory::makeExceptionalFuture<void>(
-            std::runtime_error(std::string("aws_acm_pca_provider::revoke: ") + ex.what()));
+        return kythira::future_factory_default::makeExceptionalFuture<void>(std::make_exception_ptr(
+            std::runtime_error(std::string("aws_acm_pca_provider::revoke: ") + ex.what())));
     }
 }
 

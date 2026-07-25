@@ -8,7 +8,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <unordered_map>
 #include <string>
 #include <vector>

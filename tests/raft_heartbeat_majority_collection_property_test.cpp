@@ -4,7 +4,6 @@
 #include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
-#include <raft/future.hpp>
 #include <folly/init/Init.h>
 #include <vector>
 #include <chrono>

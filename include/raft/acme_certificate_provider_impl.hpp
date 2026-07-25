@@ -7,6 +7,7 @@
 ///        included directly by consumers, not compiled into a separate .cpp).
 
 #include <raft/acme_certificate_provider.hpp>
+#include <raft/future_default.hpp>
 
 #include <httplib.h>
 #include <boost/json.hpp>
@@ -18,6 +19,18 @@
 
 #ifdef KYTHIRA_HAS_LDNS
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 #endif
 
 #include <array>
@@ -318,18 +331,20 @@ inline acme_certificate_provider::acme_certificate_provider(acme_certificate_pro
 
 inline acme_certificate_provider::~acme_certificate_provider() = default;
 
-inline auto acme_certificate_provider::root_certificate_pem() -> kythira::Future<std::string> {
+inline auto acme_certificate_provider::root_certificate_pem()
+    -> kythira::future_default<std::string> {
     std::lock_guard lock(_mutex);
     if (_last_root_pem.empty()) {
-        return kythira::FutureFactory::makeExceptionalFuture<std::string>(std::make_exception_ptr(
-            std::runtime_error("acme_certificate_provider: no certificate has been obtained yet — "
-                               "call sign_csr() first")));
+        return kythira::future_factory_default::makeExceptionalFuture<std::string>(
+            std::make_exception_ptr(std::runtime_error(
+                "acme_certificate_provider: no certificate has been obtained yet — "
+                "call sign_csr() first")));
     }
-    return kythira::FutureFactory::makeReadyFuture(std::string(_last_root_pem));
+    return kythira::future_factory_default::makeReadyFuture(std::string(_last_root_pem));
 }
 
 inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing_options options)
-    -> kythira::Future<pem_material> {
+    -> kythira::future_default<pem_material> {
     try {
         std::lock_guard lock(_mutex);
 
@@ -591,9 +606,9 @@ inline auto acme_certificate_provider::sign_csr(std::string csr_pem, csr_signing
         result.chain_pem = cert_res->body;
         _last_root_pem = blocks.back();
 
-        return kythira::FutureFactory::makeReadyFuture(std::move(result));
+        return kythira::future_factory_default::makeReadyFuture(std::move(result));
     } catch (const std::exception&) {
-        return kythira::FutureFactory::makeExceptionalFuture<pem_material>(
+        return kythira::future_factory_default::makeExceptionalFuture<pem_material>(
             std::current_exception());
     }
 }

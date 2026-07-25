@@ -2,6 +2,8 @@
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
+// Needed directly (not just transitively): static_assert below compares
+// against the real folly::Future<int> type, independent of future_default.
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
 
@@ -53,9 +55,10 @@ BOOST_AUTO_TEST_CASE(property_integration_tests_use_kythira_future,
         return;
     }
 
-    // Check that the file includes raft/future.hpp
-    BOOST_TEST(content.find("#include <raft/future.hpp>") != std::string::npos,
-               "Integration test should include raft/future.hpp");
+    // Check that the file includes raft/future_default.hpp (raft/future.hpp itself
+    // is Folly-specific and no longer unconditionally pulled in by future_default.hpp)
+    BOOST_TEST(content.find("#include <raft/future_default.hpp>") != std::string::npos,
+               "Integration test should include raft/future_default.hpp");
 
     // Check that kythira::Future is used instead of folly::Future for collections
     BOOST_TEST(content.find("std::vector<kythira::future_default<bool>>") != std::string::npos,

@@ -5,7 +5,7 @@
 #ifdef KYTHIRA_HAS_LDNS
 
 #include <raft/fault_injection.hpp>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
 #include <chrono>
@@ -17,6 +17,18 @@
 #include <vector>
 
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 
 namespace kythira {
 
@@ -56,7 +68,8 @@ public:
     rfc6763_ldns_peer_discovery(rfc6763_ldns_peer_discovery&&) = delete;
     rfc6763_ldns_peer_discovery& operator=(rfc6763_ldns_peer_discovery&&) = delete;
 
-    auto register_node(std::string self_id, std::string self_address) -> kythira::Future<void> {
+    auto register_node(std::string self_id, std::string self_address)
+        -> kythira::future_default<void> {
         auto [host, port] = parse_self_address(self_address);
         const std::string instance_name = self_id + "." + _cfg.query.service_name;
 
@@ -75,12 +88,12 @@ public:
         _self_port = port;
         _self_address = std::move(self_address);
 
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto find_peers(std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<peer_info<std::string, std::string>>> {
-        auto all = _rfc6763.find_peers(timeout).get();
+        -> kythira::future_default<std::vector<peer_info<std::string, std::string>>> {
+        auto all = std::move(_rfc6763.find_peers(timeout)).get();
         std::vector<peer_info<std::string, std::string>> filtered;
         filtered.reserve(all.size());
         for (auto& p : all) {
@@ -88,7 +101,7 @@ public:
                 filtered.push_back(std::move(p));
             }
         }
-        return kythira::FutureFactory::makeFuture(std::move(filtered));
+        return kythira::future_factory_default::makeFuture(std::move(filtered));
     }
 
 private:

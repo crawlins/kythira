@@ -1,7 +1,7 @@
 #pragma once
 
 #include <raft/fault_injection.hpp>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
 #include <chrono>
@@ -13,6 +13,18 @@
 #ifdef KYTHIRA_HAS_LDNS
 
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 
 namespace kythira {
 
@@ -30,12 +42,12 @@ public:
     explicit rfc1035_peer_discovery(config cfg) : _cfg(std::move(cfg)) {}
 
     auto register_node(std::string /*self_id*/, std::string /*self_address*/)
-        -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+        -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto find_peers(std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<peer_info<std::string, std::string>>> {
+        -> kythira::future_default<std::vector<peer_info<std::string, std::string>>> {
         std::vector<peer_info<std::string, std::string>> results;
 
         struct ResolverDeleter {
@@ -50,7 +62,7 @@ public:
 
         std::unique_ptr<ldns_resolver, ResolverDeleter> res{ldns_resolver_new()};
         if (!res) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         ldns_resolver_set_port(res.get(), _cfg.port);
@@ -76,19 +88,19 @@ public:
         std::unique_ptr<ldns_rdf, RdfDeleter> qname{
             ldns_dname_new_frm_str(_cfg.shared_name.c_str())};
         if (!qname) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         // Chaos: simulate DNS failure (returns empty) or inject synthetic peer lists.
         fiu_do_on("raft/dns/rfc1035/find_peers/fail",
-                  return kythira::FutureFactory::makeFuture(
+                  return kythira::future_factory_default::makeFuture(
                       std::vector<peer_info<std::string, std::string>>{}););
         fiu_do_on("raft/dns/rfc1035/find_peers/inject_ipv4",
-                  return kythira::FutureFactory::makeFuture(
+                  return kythira::future_factory_default::makeFuture(
                       std::vector<peer_info<std::string, std::string>>{{"10.0.0.1", "10.0.0.1"},
                                                                        {"10.0.0.2", "10.0.0.2"}}););
         fiu_do_on("raft/dns/rfc1035/find_peers/inject_mixed",
-                  return kythira::FutureFactory::makeFuture(
+                  return kythira::future_factory_default::makeFuture(
                       std::vector<peer_info<std::string, std::string>>{{"10.0.0.1", "10.0.0.1"},
                                                                        {"::2", "::2"}}););
 
@@ -125,7 +137,7 @@ public:
             }
         }
 
-        return kythira::FutureFactory::makeFuture(std::move(results));
+        return kythira::future_factory_default::makeFuture(std::move(results));
     }
 
 private:

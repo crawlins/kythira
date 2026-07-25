@@ -4,7 +4,6 @@
 #include <folly/init/Init.h>
 
 #include <raft/error_handler.hpp>
-#include <raft/future.hpp>
 #include <raft/types.hpp>
 
 #include <chrono>
