@@ -3,6 +3,142 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 24, 2026, continued further)
+
+- **Reorganized the Kconfig "Futures" menu and made Folly genuinely
+  optional at the header level.** Grouped `CONFIG_FOLLY` (new),
+  `CONFIG_STDEXEC_BACKEND`, and `CONFIG_BOOST_FUTURE_BACKEND` into a
+  dedicated `menu "Futures"`, added a Kconfig `comment` that becomes
+  visible if all three are deselected simultaneously, and enforce "at
+  least one backend must be selected" as a hard configure-time error in
+  `cmake/Kconfig.cmake` (not just a UI hint) — verified directly by
+  configuring with all three off and confirming a real `CMake Error`
+  fires, and confirming the default state (`CONFIG_FOLLY=y`) configures
+  cleanly. The `Default kythira::Future backend` choice's default
+  resolution changed from a single unconditional `default
+  DEFAULT_FUTURE_BACKEND_FOLLY` to a priority chain (`default
+  DEFAULT_FUTURE_BACKEND_FOLLY if FOLLY`, then `STDEXEC if
+  STDEXEC_BACKEND`, then `BOOST if BOOST_FUTURE_BACKEND`), so folly stays
+  the default whenever it's enabled but the choice still falls through
+  correctly if a user deselects it.
+  `CONFIG_FOLLY=n` now gates `find_package(folly)` itself via
+  `kythira_find_optional(FOLLY folly)`, the same mechanism already used
+  for stdexec/boost's own dependencies -- CMake configure genuinely skips
+  probing for Folly when deselected, and every existing downstream
+  `folly_FOUND` guard (already present throughout `CMakeLists.txt` for
+  the "Folly happens to be missing from the host" case) handles the
+  Kconfig-driven case identically.
+  Making this a *meaningful* toggle (not just a CMake-level no-op)
+  required a substantial header-level decoupling pass, since
+  `future_default.hpp` previously `#include`d the Folly-backed
+  `future.hpp` *unconditionally*, regardless of which
+  `KYTHIRA_FUTURE_BACKEND_*` macro was set -- meaning every one of the
+  three backends silently still required Folly to compile. Fixed by
+  moving the `future.hpp` include into the same `#if/#elif/#else` chain
+  already used for `future_stdexec.hpp`/`future_boost.hpp`, so it's only
+  reached when Folly is actually the selected backend. That single fix
+  then surfaced (via real compile attempts, not just code review) three
+  further layers of latent Folly coupling, all fixed in the same pass:
+  - **~20 production headers hardcoded raw Folly types**, relying
+    entirely on `future.hpp`'s old unconditional include to make
+    `kythira::Future<T>`/`FutureFactory::` available -- none of them
+    included `future.hpp` themselves, so a naive grep for direct
+    `#include <raft/future.hpp>` users (the approach used for the
+    original `future_default` migration) missed all of them. Converted
+    to `future_default`/`future_factory_default` using the same
+    mechanical playbook as that migration (raw exceptions wrapped in
+    `std::make_exception_ptr`, bare `.get()` rewrapped as
+    `std::move(f).get()`): `certificate_provider.hpp`,
+    `docker_quorum_manager.hpp`, `peer2peer_replication.hpp`,
+    `poco_peer_discovery.hpp`, the five `rfc*_*_discovery.hpp`/
+    `rfc*_peer_discovery.hpp` DNS peer-discovery headers,
+    `coap_transport.hpp`'s `coap_multicast_peer_discovery` class,
+    `tcp_gossip_transport.hpp`, `acme_certificate_provider.hpp`/
+    `_impl.hpp`, `aws_acm_pca_provider.hpp`/`_impl.hpp`,
+    `aws_asg_quorum_manager.hpp`, `aws_ec2_quorum_manager.hpp`, and
+    `cmd/ca_service/main.cpp`.
+  - **Two non-future-related Folly dependencies were transitively
+    reachable only through the future-backend headers**, despite having
+    nothing to do with which future backend is selected:
+    `folly::Synchronized<T>` (`peer2peer_replication.hpp`,
+    `tcp_gossip_transport.hpp` -- mutex-guarded progress/membership
+    tables) and `folly::CPUThreadPoolExecutor` (`tcp_rpc.hpp`,
+    `tls_tcp_rpc.hpp` -- the private RPC-dispatch thread pool). Added
+    `kythira::synchronized<T>` (new `include/raft/synchronized.hpp`,
+    ~50 lines: `std::shared_mutex` + RAII `wlock()`/`rlock()` proxies
+    matching `folly::Synchronized`'s API, with explicit copy/move
+    constructors since `std::shared_mutex` itself isn't copyable/movable
+    -- a real regression caught by the Folly-backend build after the
+    naive version compiled fine under stdexec but broke
+    `static_peer2peer_replicator`'s default-constructibility under
+    Folly). Extended `kythira::executor_default`
+    (`.kiro/specs/...`/`error_handler_async_retry_property_test.cpp`'s
+    original test-only helper) with a portable `submit(Func)` method
+    normalizing each backend's fire-and-forget dispatch primitive
+    (`folly::Executor::add`, `boost::basic_thread_pool::submit`,
+    `exec::start_detached` composed over the stdexec scheduler), then
+    switched `tcp_rpc_client`/`tls_tcp_rpc`'s private executor from a
+    hardcoded `folly::CPUThreadPoolExecutor` to
+    `kythira::executor_default`.
+  - **A genuine, reproducible system-library bug**: `<ldns/common.h>`
+    (`libldns`, already a dependency for DNS peer discovery)
+    `#define`s `true 1` / `false 0` whenever
+    `__bool_true_false_are_defined` isn't already set, with no
+    `__cplusplus` guard of its own -- a pre-existing C-compatibility
+    shim that happens to be harmless in isolation, but corrupts any
+    C++20 `concept`/`requires` code parsed afterward in the same
+    translation unit. Never triggered before because no file previously
+    combined `<ldns/ldns.h>` with stdexec's headers in one TU (every
+    ldns-using file was hard-Folly via the old unconditional
+    `future.hpp` include); surfaced immediately once
+    `acme_certificate_provider_impl.hpp` (which both `#include`s
+    `<ldns/ldns.h>` directly for its DNS-01 TXT record support, and now
+    correctly resolves to whichever backend is selected) was exercised
+    under stdexec for the first time, as `stdexec/__detail/__concepts.hpp`
+    failing to parse `concept __true = true;` ("atomic constraint must
+    be of type bool, found int"). Root-caused by isolating the exact
+    failing target with `-j1` (parallel builds interleave error output
+    across concurrent compiler invocations) and reading the resulting
+    macro-expansion trace. Fixed with a defensive `#undef true` /
+    `#undef false` immediately after every direct `<ldns/ldns.h>`
+    include (7 files) -- always safe in C++, since `true`/`false` are
+    keywords regardless of any macro's state.
+  - **A handful of files relied on transitively-included standard
+    library headers** that disappeared along with Folly:
+    `std::async`/`std::launch` (the *standard library* `<future>`,
+    unrelated to `kythira`'s own future types) in
+    `raft_concurrent_read_efficiency_property_test.cpp` and
+    `integration_test.cpp`, plus `folly::Executor` used directly as a
+    `transport_types::executor_type` in 12 `coap_*` test files with no
+    include of their own for it.
+  - **Verification**: for every affected production header, confirmed
+    with a real compile -- not just "the code looks portable" -- that it
+    builds under `-DKYTHIRA_FUTURE_BACKEND_STDEXEC` with zero Folly
+    headers touched, via `clang++ -H` (header-trace) output filtered for
+    `folly/`. Then full `cmake --build` + `ctest -j4 --repeat
+    until-pass:3` runs to completion under all three
+    `KYTHIRA_DEFAULT_FUTURE_BACKEND` values: folly 389/394, stdexec
+    389/391, boost 388/394 -- every failure in all three runs was one of
+    the 5 already-documented LocalStack/real-EC2 tests, or (stdexec/boost
+    only) a pre-existing, unrelated timing-threshold sensitivity in
+    `performance_equivalence_property_test.cpp`/
+    `future_backend_benchmark_test.cpp` (both untouched by this work;
+    this sandbox's stdexec per-operation overhead is measurably higher
+    than whatever machine those hardcoded thresholds were tuned
+    against -- e.g. 949ms measured against a 500ms threshold for 50,000
+    `makeFuture`+`.get()` round trips). Zero regressions introduced by
+    this pass under any backend.
+  - Two deliberately out-of-scope, non-future Folly dependencies are
+    documented directly in `CONFIG_FOLLY`'s Kconfig help text and in
+    `doc/TODO.md`'s "Known Follow-ups": ~30 test files' `folly::init()`
+    process-bootstrap calls (unrelated to future backend selection), and
+    the root `CMakeLists.txt` still gating `certificate_authority`/
+    `examples/`/`tests/` on `folly_FOUND` at the subdirectory level
+    rather than per-target -- so `CONFIG_FOLLY=n` stops CMake from
+    probing for Folly, but doesn't yet make those targets buildable
+    without it, since genuinely Folly-specific test files are mixed into
+    the same subdirectories as everything else.
+
 ### What Changed (July 24, 2026, continued)
 
 - **Implemented the `kconfig-integration` spec**
