@@ -6,7 +6,6 @@
 #include <raft/future_collector.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
-#include <raft/future.hpp>
 #include <folly/init/Init.h>
 #include <random>
 #include <chrono>

@@ -11,10 +11,11 @@
 /// whatever `network_client_type`/`network_server_type` the owning
 /// `node<Types>` is configured with (Requirement 3).
 
+#include <raft/future_default.hpp>
 #include <raft/peer2peer_replication.hpp>
+#include <raft/synchronized.hpp>
 #include <raft/tcp_rpc.hpp>
 
-#include <folly/Synchronized.h>
 #include <boost/json.hpp>
 
 #include <arpa/inet.h>
@@ -257,7 +258,7 @@ public:
     // The actual network dissemination happens asynchronously on the
     // background gossip thread's own schedule, never synchronously here.
     auto advertise_progress(NodeId self_id, Address self_address, std::uint64_t term,
-                            LogIndex last_log_index) -> kythira::Future<void> {
+                            LogIndex last_log_index) -> kythira::future_default<void> {
         auto fresh_until =
             gossip_detail::epoch_seconds_now() +
             std::chrono::duration_cast<std::chrono::seconds>(_cfg.freshness_interval).count();
@@ -267,14 +268,14 @@ public:
                 self_id, self_address, term, last_log_index, fresh_until};
         }
         *_self_id.wlock() = self_id;
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     // Requirement 1.3 — pure local-table read, filtered by _active_members,
     // never itself performing network I/O. Excludes this node's own entry.
     auto find_catch_up_source(LogIndex from_index, LogIndex /*to_index*/,
                               std::chrono::milliseconds) const
-        -> kythira::Future<std::optional<peer_info<NodeId, Address>>> {
+        -> kythira::future_default<std::optional<peer_info<NodeId, Address>>> {
         auto self = _self_id.rlock();
         auto members = _active_members.rlock();
         auto locked = _table.rlock();
@@ -291,19 +292,21 @@ public:
                 continue;
             }
             if (digest.last_log_index >= from_index) {
-                return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{
-                    peer_info<NodeId, Address>{id, digest.address}});
+                return kythira::future_factory_default::makeFuture(
+                    std::optional<peer_info<NodeId, Address>>{
+                        peer_info<NodeId, Address>{id, digest.address}});
             }
         }
-        return kythira::FutureFactory::makeFuture(std::optional<peer_info<NodeId, Address>>{});
+        return kythira::future_factory_default::makeFuture(
+            std::optional<peer_info<NodeId, Address>>{});
     }
 
     // Requirement 1.4/2.2 — replaces _active_members; resolves immediately.
     // This, not address_book, is this instance's source of truth for "who is
     // currently a cluster member."
-    auto update_membership(std::vector<NodeId> member_ids) -> kythira::Future<void> {
+    auto update_membership(std::vector<NodeId> member_ids) -> kythira::future_default<void> {
         *_active_members.wlock() = std::unordered_set<NodeId>(member_ids.begin(), member_ids.end());
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     // ── Pure local-table/membership logic ────────────────────────────────────
@@ -556,13 +559,13 @@ private:
 
     tcp_gossip_config<NodeId, Address> _cfg;
 
-    folly::Synchronized<std::optional<NodeId>> _self_id;
-    folly::Synchronized<std::unordered_map<NodeId, gossip_digest<NodeId, Address, LogIndex>>>
+    kythira::synchronized<std::optional<NodeId>> _self_id;
+    kythira::synchronized<std::unordered_map<NodeId, gossip_digest<NodeId, Address, LogIndex>>>
         _table;
     // Requirement 2.2: empty until the first update_membership() call —
     // deliberately NOT initialized from _cfg.address_book's keys, since
     // address_book is address-resolution data, not a membership statement.
-    folly::Synchronized<std::unordered_set<NodeId>> _active_members;
+    kythira::synchronized<std::unordered_set<NodeId>> _active_members;
 
     std::mt19937 _rng{std::random_device{}()};  // only ever touched by the gossip thread.
 

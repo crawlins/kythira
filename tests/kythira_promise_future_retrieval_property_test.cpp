@@ -1,7 +1,6 @@
 #define BOOST_TEST_MODULE KythiraPromiseFutureRetrievalPropertyTest
 #include <boost/test/unit_test.hpp>
 
-#include <raft/future.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <exception>

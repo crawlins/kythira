@@ -1,7 +1,7 @@
 #pragma once
 
 #include <raft/fault_injection.hpp>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
 #ifdef KYTHIRA_HAS_LDNS
@@ -18,6 +18,18 @@
 #include <vector>
 
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 
 namespace kythira {
 
@@ -60,38 +72,39 @@ public:
     rfc2136_dns_sd_discovery(rfc2136_dns_sd_discovery&&) = delete;
     rfc2136_dns_sd_discovery& operator=(rfc2136_dns_sd_discovery&&) = delete;
 
-    auto register_node(std::string node_id, std::string self_addr) -> kythira::Future<void> {
+    auto register_node(std::string node_id, std::string self_addr)
+        -> kythira::future_default<void> {
         _self_node_id = std::move(node_id);
         _self_addr = std::move(self_addr);
         send_register(fresh_until_epoch());
         start_fresher();
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto find_peers(std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<peer_info<std::string, std::string>>> {
+        -> kythira::future_default<std::vector<peer_info<std::string, std::string>>> {
         std::vector<peer_info<std::string, std::string>> results;
 
         auto res = make_resolver(timeout);
         if (!res) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         // Step 1: browse PTR records at _service_type._service_domain
         const std::string browse = _cfg.service_type + "." + _cfg.service_domain;
         auto browse_rdf = rdf_from_name(browse);
         if (!browse_rdf) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         auto ptr_pkt = pkt_query(res.get(), browse_rdf.get(), LDNS_RR_TYPE_PTR);
         if (!ptr_pkt) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         ldns_rr_list* ptr_answer = ldns_pkt_answer(ptr_pkt.get());
         if (ptr_answer == nullptr) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         const int64_t now = epoch_seconds_now();
@@ -176,7 +189,7 @@ public:
             }
         }
 
-        return kythira::FutureFactory::makeFuture(std::move(results));
+        return kythira::future_factory_default::makeFuture(std::move(results));
     }
 
 private:

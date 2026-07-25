@@ -12,7 +12,7 @@
 // a single filtered GET /containers/json call independently of any in-process
 // state.
 
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/quorum_management.hpp>
 
 #include <httplib.h>
@@ -90,7 +90,7 @@ public:
     // ── assess_quorum (Req 18 AC 7-10) ───────────────────────────────────────
 
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        -> kythira::future_default<quorum_health<NodeId, std::string>> {
         try {
             auto cli = make_client();
 
@@ -138,18 +138,18 @@ public:
                 .unreachable_nodes = unreachable,
                 .groups = {grp},
             };
-            return FutureFactory::makeFuture(std::move(report));
+            return future_factory_default::makeFuture(std::move(report));
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
-                std::runtime_error(std::string("docker_quorum_manager::assess_quorum: ") +
-                                   ex.what()));
+            return future_factory_default::makeExceptionalFuture<
+                quorum_health<NodeId, std::string>>(std::make_exception_ptr(std::runtime_error(
+                std::string("docker_quorum_manager::assess_quorum: ") + ex.what())));
         }
     }
 
     // ── provision_node (Req 18 AC 11-15) ─────────────────────────────────────
 
     auto provision_node(std::string /*target_group*/, std::optional<NodeId> replacing)
-        -> kythira::Future<peer_info<NodeId, Address>> {
+        -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             auto cli = make_client();
             NodeId new_id = next_node_id(*cli);
@@ -206,8 +206,9 @@ public:
                         : "connection failed";
                 // Attempt cleanup of any partially-created container (Req 18 AC 14)
                 try_remove(*cli, name);
-                return FutureFactory::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                    std::runtime_error("docker_quorum_manager: create failed: " + msg));
+                return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
+                    std::make_exception_ptr(
+                        std::runtime_error("docker_quorum_manager: create failed: " + msg)));
             }
 
             auto start_path = "/containers/" + name + "/start";
@@ -219,24 +220,25 @@ public:
                         ? ("HTTP " + std::to_string(start_res->status) + ": " + start_res->body)
                         : "connection failed";
                 try_remove(*cli, name);
-                return FutureFactory::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                    std::runtime_error("docker_quorum_manager: start failed: " + msg));
+                return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
+                    std::make_exception_ptr(
+                        std::runtime_error("docker_quorum_manager: start failed: " + msg)));
             }
 
             // Address: container hostname resolves via Docker's embedded DNS
             Address addr = static_cast<Address>(name + ":" + std::to_string(_cfg.node_port));
-            return FutureFactory::makeFuture(peer_info<NodeId, Address>{new_id, addr});
+            return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
 
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                std::runtime_error(std::string("docker_quorum_manager::provision_node: ") +
-                                   ex.what()));
+            return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("docker_quorum_manager::provision_node: ") + ex.what())));
         }
     }
 
     // ── decommission_node (Req 18 AC 16-18) ──────────────────────────────────
 
-    auto decommission_node(const NodeId& node) -> kythira::Future<void> {
+    auto decommission_node(const NodeId& node) -> kythira::future_default<void> {
         try {
             auto cli = make_client();
             auto name = container_name(node);
@@ -245,18 +247,19 @@ public:
 
             if (res && res->status == 404) {
                 // Idempotent — container already gone (Req 18 AC 17)
-                return FutureFactory::makeFuture();
+                return future_factory_default::makeFuture();
             }
             if (!res || res->status < 200 || res->status >= 300) {
                 auto msg = res ? ("HTTP " + std::to_string(res->status) + ": " + res->body)
                                : "connection failed";
-                return FutureFactory::makeExceptionalFuture<void>(
-                    std::runtime_error("docker_quorum_manager: decommission failed: " + msg));
+                return future_factory_default::makeExceptionalFuture<void>(std::make_exception_ptr(
+                    std::runtime_error("docker_quorum_manager: decommission failed: " + msg)));
             }
-            return FutureFactory::makeFuture();
+            return future_factory_default::makeFuture();
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<void>(std::runtime_error(
-                std::string("docker_quorum_manager::decommission_node: ") + ex.what()));
+            return future_factory_default::makeExceptionalFuture<void>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("docker_quorum_manager::decommission_node: ") + ex.what())));
         }
     }
 
@@ -271,13 +274,13 @@ public:
     // ── maintain_quorum (Req 19.1) ────────────────────────────────────────────
 
     auto maintain_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        -> kythira::future_default<quorum_health<NodeId, std::string>> {
         quorum_health<NodeId, std::string> health;
         try {
-            health = assess_quorum(cluster).get();
+            health = std::move(assess_quorum(cluster)).get();
         } catch (...) {
-            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
-                std::current_exception());
+            return future_factory_default::makeExceptionalFuture<
+                quorum_health<NodeId, std::string>>(std::current_exception());
         }
 
         std::map<std::string, NodeId> last_replaced;
@@ -290,7 +293,7 @@ public:
                 }
             }
             try {
-                decommission_node(nid).get();
+                std::move(decommission_node(nid)).get();
                 last_replaced[grp] = nid;
             } catch (const std::exception& ex) {
                 std::cerr << "[docker_quorum_manager::maintain_quorum] decommission failed: "
@@ -315,7 +318,7 @@ public:
                     hint = it->second;
                 }
                 try {
-                    provision_node(gt.group_id, hint).get();
+                    std::move(provision_node(gt.group_id, hint)).get();
                 } catch (const std::exception& ex) {
                     std::cerr << "[docker_quorum_manager::maintain_quorum] provision failed: "
                               << ex.what() << "\n";
@@ -323,7 +326,7 @@ public:
             }
         }
 
-        return FutureFactory::makeFuture(std::move(health));
+        return future_factory_default::makeFuture(std::move(health));
     }
 
 private:

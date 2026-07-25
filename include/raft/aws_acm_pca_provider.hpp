@@ -15,6 +15,7 @@
 #include <raft/aws_client_config.hpp>
 #include <raft/certificate_provider.hpp>
 #include <raft/fault_injection.hpp>
+#include <raft/future_default.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 
@@ -49,19 +50,20 @@ public:
 
     /// Calls `GetCertificateAuthorityCertificate`, caching the result after the
     /// first successful call.
-    [[nodiscard]] auto root_certificate_pem() -> kythira::Future<std::string>;
+    [[nodiscard]] auto root_certificate_pem() -> kythira::future_default<std::string>;
 
     /// Calls `IssueCertificate` with the CSR bytes, then polls `GetCertificate`
     /// (bounded by `aws_client_config::api_timeout`, with backoff between polls)
     /// until the certificate is available or the timeout elapses.
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
-        -> kythira::Future<pem_material>;
+        -> kythira::future_default<pem_material>;
 
     /// Calls `RevokeCertificate`. Requires the target CA to already have a
     /// CRL/OCSP configuration (an out-of-band operator setup); a call against a
     /// CA without one surfaces the resulting AWS error to the caller rather than
     /// falling back to any local behavior.
-    [[nodiscard]] auto revoke(const std::string& certificate_serial) -> kythira::Future<void>;
+    [[nodiscard]] auto revoke(const std::string& certificate_serial)
+        -> kythira::future_default<void>;
 
 private:
     Aws::ACMPCA::ACMPCAClient _client;

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <raft/fault_injection.hpp>
-#include <raft/future.hpp>
 #include <raft/future_default.hpp>
 #include <raft/network.hpp>
 #include <raft/types.hpp>

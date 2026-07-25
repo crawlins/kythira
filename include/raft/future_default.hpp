@@ -28,12 +28,16 @@
 /// for boost) so nothing is silently mixed (see also
 /// `tests/backend_non_interference_compile_fail_test.cpp`).
 
-#include "future.hpp"
-
 #if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC)
 #include "future_stdexec.hpp"
 #elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include "future_boost.hpp"
+#else
+// future.hpp is Folly-backed with no #ifdef of its own -- only pulled in
+// when it's actually the selected backend, so KYTHIRA_FUTURE_BACKEND_STDEXEC/
+// BOOST builds (and CONFIG_FOLLY=n Kconfig configurations) never require
+// Folly through this header. See Kconfig's "Futures" menu.
+#include "future.hpp"
 #endif
 
 namespace kythira {

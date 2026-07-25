@@ -4,13 +4,13 @@
 #include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/types.hpp>
-#include <raft/future.hpp>
 #include <folly/init/Init.h>
 #include <vector>
 #include <chrono>
 #include <random>
 #include <algorithm>
 #include <atomic>
+#include <future>
 #include <thread>
 
 using namespace kythira;

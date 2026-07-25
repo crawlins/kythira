@@ -27,6 +27,7 @@
 #include <raft/acme_jws.hpp>
 #include <raft/certificate_provider.hpp>
 #include <raft/fault_injection.hpp>
+#include <raft/future_default.hpp>
 
 #include <arpa/inet.h>
 
@@ -135,7 +136,7 @@ public:
     /// CAs distribute trust roots out-of-band), authoritative against
     /// `acme_test_server`, whose chain terminates at its own root. Rejects
     /// if no certificate has been obtained yet.
-    [[nodiscard]] auto root_certificate_pem() -> kythira::Future<std::string>;
+    [[nodiscard]] auto root_certificate_pem() -> kythira::future_default<std::string>;
 
     /// Drives the full RFC 8555 order lifecycle for the identifiers named in
     /// `options` against `_config.directory_url`. `csr_pem`'s own subject/SAN
@@ -143,7 +144,7 @@ public:
     /// are authoritative, exactly mirroring how `certificate_authority::sign_csr()`
     /// takes `csr_signing_options` separately from the CSR itself.
     [[nodiscard]] auto sign_csr(std::string csr_pem, csr_signing_options options)
-        -> kythira::Future<pem_material>;
+        -> kythira::future_default<pem_material>;
 
 private:
     acme_jws::evp_pkey_ptr _account_key;

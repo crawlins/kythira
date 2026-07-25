@@ -3,7 +3,7 @@
 /// @file quorum_management.hpp
 /// @brief Quorum-health types, the `quorum_manager` concept, and the no-op default implementation.
 
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 #include <raft/types.hpp>
 #include <algorithm>

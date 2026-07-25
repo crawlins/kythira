@@ -2,6 +2,7 @@
 
 #include <raft/aws_client_config.hpp>
 #include <raft/fault_injection.hpp>
+#include <raft/future_default.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_SDK
@@ -161,7 +162,7 @@ public:
     /// A node is live iff its instance state is "running" (SetIncludeAllInstances=true
     /// so transitioning instances are visible). Returns an exceptional Future on API error.
     auto assess_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        -> kythira::future_default<quorum_health<NodeId, std::string>> {
         try {
             fiu_do_on("raft/aws/ec2/describe_instance_status",
                       throw std::runtime_error("fault: raft/aws/ec2/describe_instance_status"););
@@ -192,9 +193,9 @@ public:
 
             return build_health(cluster, live_map);
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
-                std::runtime_error(std::string("aws_ec2_quorum_manager::assess_quorum: ") +
-                                   ex.what()));
+            return future_factory_default::makeExceptionalFuture<
+                quorum_health<NodeId, std::string>>(std::make_exception_ptr(std::runtime_error(
+                std::string("aws_ec2_quorum_manager::assess_quorum: ") + ex.what())));
         }
     }
 
@@ -202,21 +203,21 @@ public:
     /// Decommission and provision errors are logged to stderr but do not abort the operation;
     /// the returned health reflects the pre-maintenance cluster state.
     auto maintain_quorum(const std::vector<node_placement<NodeId, std::string>>& cluster)
-        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        -> kythira::future_default<quorum_health<NodeId, std::string>> {
         try {
             fiu_do_on("raft/aws/ec2/maintain_quorum",
                       throw std::runtime_error("fault: raft/aws/ec2/maintain_quorum"););
         } catch (...) {
-            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
-                std::current_exception());
+            return future_factory_default::makeExceptionalFuture<
+                quorum_health<NodeId, std::string>>(std::current_exception());
         }
 
         quorum_health<NodeId, std::string> pre_health;
         try {
-            pre_health = assess_quorum(cluster).get();
+            pre_health = std::move(assess_quorum(cluster)).get();
         } catch (...) {
-            return FutureFactory::makeExceptionalFuture<quorum_health<NodeId, std::string>>(
-                std::current_exception());
+            return future_factory_default::makeExceptionalFuture<
+                quorum_health<NodeId, std::string>>(std::current_exception());
         }
 
         std::map<std::string, NodeId> last_replaced;
@@ -229,7 +230,7 @@ public:
                 }
             }
             try {
-                decommission_node(nid).get();
+                std::move(decommission_node(nid)).get();
                 last_replaced[grp] = nid;
             } catch (const std::exception& ex) {
                 std::cerr << "[aws_ec2_quorum_manager::maintain_quorum] decommission of "
@@ -253,7 +254,7 @@ public:
                     hint = it->second;
                 }
                 try {
-                    provision_node(gt.group_id, hint).get();
+                    std::move(provision_node(gt.group_id, hint)).get();
                 } catch (const std::exception& ex) {
                     std::cerr << "[aws_ec2_quorum_manager::maintain_quorum] provision in "
                               << gt.group_id << " failed: " << ex.what() << "\n";
@@ -261,7 +262,7 @@ public:
             }
         }
 
-        return FutureFactory::makeFuture(std::move(pre_health));
+        return future_factory_default::makeFuture(std::move(pre_health));
     }
 
     /// Launches a new EC2 instance in the subnet mapped to target_group.
@@ -269,7 +270,7 @@ public:
     /// by the interface but not used (the new instance gets a new ID regardless).
     /// Returns an exceptional Future if RunInstances fails or the provision_timeout is exceeded.
     auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
-        -> kythira::Future<peer_info<NodeId, Address>> {
+        -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             fiu_do_on("raft/aws/ec2/run_instances",
                       throw std::runtime_error("fault: raft/aws/ec2/run_instances"););
@@ -404,18 +405,18 @@ public:
             }
 
             Address addr = static_cast<Address>(private_ip + ":" + std::to_string(_cfg.node_port));
-            return FutureFactory::makeFuture(peer_info<NodeId, Address>{new_id, addr});
+            return future_factory_default::makeFuture(peer_info<NodeId, Address>{new_id, addr});
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<peer_info<NodeId, Address>>(
-                std::runtime_error(std::string("aws_ec2_quorum_manager::provision_node: ") +
-                                   ex.what()));
+            return future_factory_default::makeExceptionalFuture<peer_info<NodeId, Address>>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("aws_ec2_quorum_manager::provision_node: ") + ex.what())));
         }
     }
 
     /// Terminates the EC2 instance identified by node_id and waits up to 30 s for the
     /// state to leave "running", so a subsequent assess_quorum call sees it as unreachable.
     /// Returns successfully if the instance was already gone (InvalidInstanceID.NotFound).
-    auto decommission_node(const NodeId& node_id) -> kythira::Future<void> {
+    auto decommission_node(const NodeId& node_id) -> kythira::future_default<void> {
         try {
             fiu_do_on("raft/aws/ec2/terminate_instances",
                       throw std::runtime_error("fault: raft/aws/ec2/terminate_instances"););
@@ -429,7 +430,7 @@ public:
                 // InvalidInstanceID.NotFound → instance is already gone; treat as success.
                 if (std::string(err.GetExceptionName()).find("InvalidInstanceID") !=
                     std::string::npos) {
-                    return FutureFactory::makeFuture();
+                    return future_factory_default::makeFuture();
                 }
                 throw std::runtime_error("ec2 TerminateInstances: " +
                                          std::string(err.GetMessage()));
@@ -458,10 +459,11 @@ public:
                     std::this_thread::sleep_for(std::chrono::seconds{2});
                 }
             }
-            return FutureFactory::makeFuture();
+            return future_factory_default::makeFuture();
         } catch (const std::exception& ex) {
-            return FutureFactory::makeExceptionalFuture<void>(std::runtime_error(
-                std::string("aws_ec2_quorum_manager::decommission_node: ") + ex.what()));
+            return future_factory_default::makeExceptionalFuture<void>(
+                std::make_exception_ptr(std::runtime_error(
+                    std::string("aws_ec2_quorum_manager::decommission_node: ") + ex.what())));
         }
     }
 
@@ -538,7 +540,7 @@ private:
     /// Builds a quorum_health from cluster membership and a live/dead map keyed by node_id_str.
     [[nodiscard]] auto build_health(const std::vector<node_placement<NodeId, std::string>>& cluster,
                                     const std::map<std::string, bool>& live_map) const
-        -> kythira::Future<quorum_health<NodeId, std::string>> {
+        -> kythira::future_default<quorum_health<NodeId, std::string>> {
         std::vector<NodeId> unreachable;
         std::size_t live_count = 0;
         std::map<std::string, std::size_t> group_live;
@@ -575,7 +577,7 @@ private:
         }
 
         std::size_t total = cluster.size();
-        return FutureFactory::makeFuture(quorum_health<NodeId, std::string>{
+        return future_factory_default::makeFuture(quorum_health<NodeId, std::string>{
             .status = compute_status(live_count, total),
             .live_node_count = live_count,
             .total_node_count = total,

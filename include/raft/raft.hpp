@@ -14,7 +14,6 @@
 #include "console_logger.hpp"
 #include <concepts/future.hpp>
 
-#include <raft/future.hpp>
 #include <raft/future_default.hpp>
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "future.hpp"
 #include "types.hpp"
 #include "completion_exceptions.hpp"
 #include <chrono>

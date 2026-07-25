@@ -1,13 +1,11 @@
 #pragma once
 
 #include <raft/exceptions.hpp>
-#include <raft/future.hpp>
+#include <raft/executor_default.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
 #include <raft/types.hpp>
-
-#include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -238,13 +236,17 @@ private:
 // synchronous-inline call(), that alone was enough to blow through an
 // election's whole timeout budget before a live peer was ever contacted.
 //
-// Deliberately a private, directly-constructed folly::CPUThreadPoolExecutor
-// rather than folly::getGlobalCPUExecutor(): the global CPU executor is a
-// registration-gated Folly singleton that aborts ("requested before
+// Deliberately a private, directly-constructed kythira::executor_default
+// rather than a backend's global CPU executor (e.g. folly::
+// getGlobalCPUExecutor()): Folly's global CPU executor is a
+// registration-gated singleton that aborts ("requested before
 // registrationComplete()") unless folly::init() ran first, which only
 // chaos_node's main.cpp (and other real binaries) does — every plain
 // Boost.Test unit test that exercises tcp_rpc_client directly (e.g.
 // tcp_rpc_unit_test) does not, and would crash on the first RPC.
+// kythira::executor_default is backend-selected via KYTHIRA_DEFAULT_FUTURE_
+// BACKEND (KYTHIRA_FUTURE_BACKEND_STDEXEC/BOOST, else Folly), so this class
+// no longer hard-requires Folly regardless of which backend is selected.
 
 class tcp_rpc_client {
 public:
@@ -258,7 +260,7 @@ public:
     static constexpr std::size_t k_rpc_thread_pool_size = 8;
 
     tcp_rpc_client()
-        : _executor(std::make_shared<folly::CPUThreadPoolExecutor>(k_rpc_thread_pool_size)) {}
+        : _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)) {}
 
     void add_peer(std::uint64_t id, std::string host, std::uint16_t port) {
         _peers.add_peer(id, std::move(host), port);
@@ -327,7 +329,7 @@ private:
         std::string host = peer->first;
         std::uint16_t port = peer->second;
 
-        _executor->add(
+        _executor->submit(
             [promise = std::move(promise), host, port, payload, timeout, deser]() mutable {
                 int fd = tcp_detail::connect_to(host, port, timeout);
                 if (fd < 0) {
@@ -370,7 +372,7 @@ private:
 
     tcp_detail::peer_registry<std::uint64_t> _peers;
     serializer_t _ser;
-    std::shared_ptr<folly::CPUThreadPoolExecutor> _executor;
+    std::shared_ptr<kythira::executor_default> _executor;
 };
 
 // ── tcp_rpc_server ────────────────────────────────────────────────────────────

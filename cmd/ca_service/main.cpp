@@ -32,6 +32,7 @@
 #include <raft/ca_http_helpers.hpp>
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
+#include <raft/future_default.hpp>
 
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
 #include <raft/aws_acm_pca_provider.hpp>
@@ -270,29 +271,29 @@ public:
     template<raft::testing::certificate_provider P>
     explicit any_certificate_provider(P& p) : _self(std::make_unique<model<P>>(p)) {}
 
-    auto root_certificate_pem() -> kythira::Future<std::string> {
+    auto root_certificate_pem() -> kythira::future_default<std::string> {
         return _self->root_certificate_pem();
     }
     auto sign_csr(std::string csr_pem, raft::testing::csr_signing_options options)
-        -> kythira::Future<raft::testing::pem_material> {
+        -> kythira::future_default<raft::testing::pem_material> {
         return _self->sign_csr(std::move(csr_pem), std::move(options));
     }
 
 private:
     struct concept_t {
         virtual ~concept_t() = default;
-        virtual auto root_certificate_pem() -> kythira::Future<std::string> = 0;
+        virtual auto root_certificate_pem() -> kythira::future_default<std::string> = 0;
         virtual auto sign_csr(std::string, raft::testing::csr_signing_options)
-            -> kythira::Future<raft::testing::pem_material> = 0;
+            -> kythira::future_default<raft::testing::pem_material> = 0;
     };
     template<typename P> struct model : concept_t {
         P& provider;
         explicit model(P& p) : provider(p) {}
-        auto root_certificate_pem() -> kythira::Future<std::string> override {
+        auto root_certificate_pem() -> kythira::future_default<std::string> override {
             return provider.root_certificate_pem();
         }
         auto sign_csr(std::string csr_pem, raft::testing::csr_signing_options options)
-            -> kythira::Future<raft::testing::pem_material> override {
+            -> kythira::future_default<raft::testing::pem_material> override {
             return provider.sign_csr(std::move(csr_pem), std::move(options));
         }
     };
@@ -514,7 +515,7 @@ int run_serve(const serve_options& opts) {
 
     server->Get("/v1/root-ca", [&](const httplib::Request&, httplib::Response& res) {
         try {
-            auto pem = provider->root_certificate_pem().get();
+            auto pem = std::move(provider->root_certificate_pem()).get();
             res.set_content(pem, "application/x-pem-file");
         } catch (const std::exception& ex) {
             res.status = 502;
@@ -535,7 +536,7 @@ int run_serve(const serve_options& opts) {
             std::string csr_pem = std::string(csr_val->as_string());
             auto options = raft::testing::parse_csr_signing_options(body);
 
-            auto material = provider->sign_csr(csr_pem, options).get();
+            auto material = std::move(provider->sign_csr(csr_pem, options)).get();
             res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
                             "application/json");
         } catch (const std::invalid_argument& ex) {
@@ -565,7 +566,7 @@ int run_serve(const serve_options& opts) {
         }
 
         try {
-            auto root_pem = provider->root_certificate_pem().get();
+            auto root_pem = std::move(provider->root_certificate_pem()).get();
             if (!raft::testing::cert_chains_to_root(peer_cert, root_pem)) {
                 X509_free(peer_cert);
                 res.status = 401;
@@ -590,7 +591,7 @@ int run_serve(const serve_options& opts) {
                 options.validity = std::chrono::hours(24 * v->to_number<int>());
             }
 
-            auto material = provider->sign_csr(csr_pem, options).get();
+            auto material = std::move(provider->sign_csr(csr_pem, options)).get();
             res.set_content(boost::json::serialize(raft::testing::pem_material_to_json(material)),
                             "application/json");
         } catch (const std::invalid_argument& ex) {

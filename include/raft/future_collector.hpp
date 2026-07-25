@@ -1,6 +1,5 @@
 #pragma once
 
-#include "future.hpp"
 #include "future_default.hpp"
 #include "../raft/completion_exceptions.hpp"
 #include <vector>

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "future.hpp"
 #include "future_default.hpp"
 #include "types.hpp"
 #include <algorithm>

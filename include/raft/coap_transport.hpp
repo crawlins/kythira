@@ -32,7 +32,6 @@
 #include <thread>
 #include <stop_token>
 
-#include <raft/future.hpp>
 #include <raft/coap_utils.hpp>
 
 // Conditional libcoap includes
@@ -757,22 +756,23 @@ public:
           _multicast_address{std::move(multicast_address)},
           _multicast_port{multicast_port} {}
 
-    auto register_node(node_id_type, address_type) -> kythira::Future<void> {
+    auto register_node(node_id_type, address_type) -> kythira::future_default<void> {
         // CoAP multicast discovery is passive — nodes announce via multicast
         // heartbeats rather than writing to a registry.
-        return kythira::FutureFactory::makeFuture();
+        return kythira::future_factory_default::makeFuture();
     }
 
     [[nodiscard]] auto find_peers(std::chrono::milliseconds timeout) const
-        -> kythira::Future<std::vector<kythira::peer_info<node_id_type, address_type>>> {
+        -> kythira::future_default<std::vector<kythira::peer_info<node_id_type, address_type>>> {
         auto addresses =
-            _client.discover_raft_nodes(_multicast_address, _multicast_port, timeout).get();
+            std::move(_client.discover_raft_nodes(_multicast_address, _multicast_port, timeout))
+                .get();
         std::vector<kythira::peer_info<node_id_type, address_type>> peers;
         peers.reserve(addresses.size());
         for (auto& addr : addresses) {
             peers.push_back({addr, addr});
         }
-        return kythira::FutureFactory::makeFuture(std::move(peers));
+        return kythira::future_factory_default::makeFuture(std::move(peers));
     }
 
 private:

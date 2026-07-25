@@ -59,14 +59,12 @@
 #include <raft/ca_bootstrap_client.hpp>
 #include <raft/ca_http_helpers.hpp>
 #include <raft/exceptions.hpp>
-#include <raft/future.hpp>
+#include <raft/executor_default.hpp>
 #include <raft/future_default.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
 #include <raft/tcp_rpc.hpp>
 #include <raft/types.hpp>
-
-#include <folly/executors/CPUThreadPoolExecutor.h>
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -286,7 +284,7 @@ public:
 
     explicit client_impl(tls_tcp_rpc_config config)
         : _config(config),
-          _executor(std::make_shared<folly::CPUThreadPoolExecutor>(k_rpc_thread_pool_size)) {
+          _executor(std::make_shared<kythira::executor_default>(k_rpc_thread_pool_size)) {
         ignore_sigpipe_once();
         _ctx = SSL_CTX_new(TLS_client_method());
         if (_ctx == nullptr) {
@@ -360,8 +358,8 @@ public:
         std::string host = peer->first;
         std::uint16_t port = peer->second;
 
-        _executor->add([promise = std::move(promise), raw_ssl, host, port, payload, timeout,
-                        policy_snapshot, deser]() mutable {
+        _executor->submit([promise = std::move(promise), raw_ssl, host, port, payload, timeout,
+                           policy_snapshot, deser]() mutable {
             ssl_conn_guard sslg{raw_ssl};
 
             int fd = tcp_detail::connect_to(host, port, timeout);
@@ -420,7 +418,7 @@ private:
     SSL_CTX* _ctx{nullptr};
     std::mutex _ctx_mu;  // guards _ctx's loaded identity AND _config.trust_policy
     tls_tcp_rpc_config _config;
-    std::shared_ptr<folly::CPUThreadPoolExecutor> _executor;
+    std::shared_ptr<kythira::executor_default> _executor;
 };
 
 // ── server_impl (Requirement 1.1, 1.2) ──────────────────────────────────────

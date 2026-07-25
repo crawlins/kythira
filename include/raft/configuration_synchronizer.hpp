@@ -5,7 +5,7 @@
 #include <optional>
 #include <string>
 #include <mutex>
-#include "future.hpp"
+#include "future_default.hpp"
 #include "types.hpp"
 #include "completion_exceptions.hpp"
 
@@ -27,7 +27,8 @@ namespace kythira {
  * Raft safety properties.
  */
 template<typename NodeId = std::uint64_t, typename LogIndex = std::uint64_t,
-         typename FutureType = kythira::Future<bool>, typename PromiseType = kythira::Promise<bool>>
+         typename FutureType = kythira::future_default<bool>,
+         typename PromiseType = kythira::promise_default<bool>>
 requires kythira::node_id<NodeId> && kythira::log_index<LogIndex>
 class configuration_synchronizer {
 public:

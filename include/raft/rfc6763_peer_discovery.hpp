@@ -1,7 +1,7 @@
 #pragma once
 
 #include <raft/fault_injection.hpp>
-#include <raft/future.hpp>
+#include <raft/future_default.hpp>
 #include <raft/peer_discovery.hpp>
 
 #include <chrono>
@@ -13,6 +13,18 @@
 #ifdef KYTHIRA_HAS_LDNS
 
 #include <ldns/ldns.h>
+// ldns/common.h defines true/false as plain macros (1/0) whenever
+// __bool_true_false_are_defined is not already set, with no __cplusplus
+// guard of its own -- harmless in isolation, but corrupts any C++20
+// concept/requires code parsed afterward in the same translation unit
+// (e.g. stdexec's own "concept __true = true;" becomes "= 1", producing
+// "atomic constraint must be of type bool"). Undefining immediately
+// after is always safe in C++ -- true/false are keywords regardless of
+// macro state -- and neutralizes the pollution before anything else in
+// this header (or a file that includes it) reaches stdexec/
+// future_stdexec.hpp.
+#undef true
+#undef false
 
 namespace kythira {
 
@@ -34,12 +46,12 @@ public:
     explicit rfc6763_peer_discovery(config cfg) : _cfg(std::move(cfg)) {}
 
     auto register_node(std::string /*self_id*/, std::string /*self_address*/)
-        -> kythira::Future<void> {
-        return kythira::FutureFactory::makeFuture();
+        -> kythira::future_default<void> {
+        return kythira::future_factory_default::makeFuture();
     }
 
     auto find_peers(std::chrono::milliseconds timeout)
-        -> kythira::Future<std::vector<peer_info<std::string, std::string>>> {
+        -> kythira::future_default<std::vector<peer_info<std::string, std::string>>> {
         std::vector<peer_info<std::string, std::string>> results;
 
         struct ResolverDeleter {
@@ -54,7 +66,7 @@ public:
 
         std::unique_ptr<ldns_resolver, ResolverDeleter> res{ldns_resolver_new()};
         if (!res) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         ldns_resolver_set_port(res.get(), _cfg.port);
@@ -80,15 +92,15 @@ public:
         std::unique_ptr<ldns_rdf, RdfDeleter> qname{
             ldns_dname_new_frm_str(_cfg.service_name.c_str())};
         if (!qname) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         // Chaos: simulate DNS failure (returns empty) or inject synthetic peer lists.
         fiu_do_on("raft/dns/rfc6763/find_peers/fail",
-                  return kythira::FutureFactory::makeFuture(
+                  return kythira::future_factory_default::makeFuture(
                       std::vector<peer_info<std::string, std::string>>{}););
         fiu_do_on("raft/dns/rfc6763/find_peers/inject",
-                  return kythira::FutureFactory::makeFuture(
+                  return kythira::future_factory_default::makeFuture(
                       std::vector<peer_info<std::string, std::string>>{
                           {"node1.cluster.example.com.", "node1.cluster.example.com.:4001"},
                           {"node2.cluster.example.com.", "node2.cluster.example.com.:4002"}}););
@@ -96,12 +108,12 @@ public:
         std::unique_ptr<ldns_pkt, PktDeleter> pkt{ldns_resolver_query(
             res.get(), qname.get(), LDNS_RR_TYPE_SRV, LDNS_RR_CLASS_IN, LDNS_RD)};
         if (!pkt) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         ldns_rr_list* answer = ldns_pkt_answer(pkt.get());
         if (answer == nullptr) {
-            return kythira::FutureFactory::makeFuture(std::move(results));
+            return kythira::future_factory_default::makeFuture(std::move(results));
         }
 
         std::size_t count = ldns_rr_list_rr_count(answer);
@@ -128,7 +140,7 @@ public:
             results.push_back(peer_info<std::string, std::string>{target, address});
         }
 
-        return kythira::FutureFactory::makeFuture(std::move(results));
+        return kythira::future_factory_default::makeFuture(std::move(results));
     }
 
 private:

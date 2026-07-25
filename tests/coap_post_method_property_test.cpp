@@ -6,6 +6,7 @@
 #define BOOST_TEST_TIMEOUT 30
 
 #include <raft/coap_transport.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 
