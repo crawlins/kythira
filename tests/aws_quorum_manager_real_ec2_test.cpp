@@ -72,6 +72,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <netdb.h>
@@ -87,6 +88,43 @@
 namespace {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Returns env var value or empty string.
+auto env(const char* name) -> std::string {
+    const char* v = std::getenv(name);
+    return (v != nullptr) ? std::string(v) : std::string{};
+}
+
+// Run once before any other global fixture constructs: if
+// AWS_DEFAULT_REGION/AWS_REGION isn't set (this test's own RealEc2Fixture
+// already treats that as its first "skip: ..." condition, thrown from
+// inside a per-case fixture constructor), exit immediately with the
+// reserved code tests/CMakeLists.txt registers via SKIP_RETURN_CODE, so
+// `ctest` reports this test as "Not Run" instead of "Failed" when no real
+// AWS environment is configured -- which isn't a real bug. Doesn't replace
+// the existing in-fixture check (kept as-is, e.g. as a safety net for the
+// rarer "region set but credentials invalid" case this pre-check
+// deliberately doesn't try to catch, since that needs a real network round
+// trip this cheap env-var-only check avoids).
+//
+// This has to be a BOOST_GLOBAL_FIXTURE, not a custom init_unit_test_suite:
+// BOOST_TEST_MODULE makes unit_test_suite.hpp auto-generate its own
+// init_unit_test_suite() at global scope, and a same-named function defined
+// here would land inside this file's anonymous namespace instead -- a
+// distinct, unrelated function with internal linkage that Boost's
+// precompiled main() never calls (no redefinition error, just silently
+// dead code; confirmed by disassembling the built binary, which only ever
+// contained the auto-generated `return 0;` stub). Global fixtures run in
+// registration order, so registering this one first still guarantees it
+// runs before FollyInitFixture/AwsSdkFixture below.
+struct PreflightSkipFixture {
+    PreflightSkipFixture() {
+        if (env("AWS_DEFAULT_REGION").empty() && env("AWS_REGION").empty()) {
+            std::cerr << "SKIP: AWS region not set (AWS_DEFAULT_REGION or AWS_REGION)\n";
+            std::exit(77);
+        }
+    }
+};
 
 struct FollyInitFixture {
     FollyInitFixture() {
@@ -107,14 +145,9 @@ struct AwsSdkFixture {
     }
 };
 
+BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
-
-// Returns env var value or empty string.
-auto env(const char* name) -> std::string {
-    const char* v = std::getenv(name);
-    return (v != nullptr) ? std::string(v) : std::string{};
-}
 
 auto make_tag(const std::string& k, const std::string& v) -> Aws::EC2::Model::Tag {
     Aws::EC2::Model::Tag t;

@@ -92,6 +92,45 @@ constexpr const char* DUMMY_REGION_FALLBACK = "us-east-1";
 constexpr const char* TEST_UNSEAL_PASSPHRASE = "kythira-real-ec2-test-unseal-passphrase";
 constexpr const char* TEST_AUTH_TOKEN = "kythira-real-ec2-test-auth-token";
 
+auto env(const char* name) -> std::string {
+    const char* v = std::getenv(name);
+    return v != nullptr ? std::string(v) : std::string{};
+}
+
+auto region() -> std::string {
+    auto r = env("AWS_REGION");
+    return r.empty() ? DUMMY_REGION_FALLBACK : r;
+}
+
+// Run once before any other global fixture constructs: if
+// KYTHIRA_EC2_TEST_AMI isn't set (three_az_network_fixture's own second
+// "skip: ..." condition, thrown from its constructor), exit immediately
+// with the reserved code tests/CMakeLists.txt registers via
+// SKIP_RETURN_CODE, so `ctest` reports this test as "Not Run" instead of
+// "Failed" when no real AWS environment is configured. Doesn't replace the
+// fixture's own checks (kept as-is, including its STS reachability check,
+// which needs a real network round trip this cheap env-var-only check
+// deliberately avoids).
+//
+// This has to be a BOOST_GLOBAL_FIXTURE, not a custom init_unit_test_suite:
+// BOOST_TEST_MODULE makes unit_test_suite.hpp auto-generate its own
+// init_unit_test_suite() at global scope, and a same-named function defined
+// here would land inside this file's anonymous namespace instead -- a
+// distinct, unrelated function with internal linkage that Boost's
+// precompiled main() never calls (no redefinition error, just silently
+// dead code; confirmed by disassembling the built binary, which only ever
+// contained the auto-generated `return 0;` stub). Global fixtures run in
+// registration order, so registering this one first still guarantees it
+// runs before FollyInitFixture/AwsSdkFixture below.
+struct PreflightSkipFixture {
+    PreflightSkipFixture() {
+        if (env("KYTHIRA_EC2_TEST_AMI").empty()) {
+            std::cerr << "SKIP: KYTHIRA_EC2_TEST_AMI not set\n";
+            std::exit(77);
+        }
+    }
+};
+
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
@@ -111,6 +150,7 @@ struct AwsSdkFixture {
     }
 };
 
+BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
@@ -120,16 +160,6 @@ using kythira::testing::aws_real_ec2::AwsSignalHandlerFixture;
 using kythira::testing::aws_real_ec2::CostSummaryFixture;
 BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
-
-auto env(const char* name) -> std::string {
-    const char* v = std::getenv(name);
-    return v != nullptr ? std::string(v) : std::string{};
-}
-
-auto region() -> std::string {
-    auto r = env("AWS_REGION");
-    return r.empty() ? DUMMY_REGION_FALLBACK : r;
-}
 
 // Executes `cmd` on the host at `public_ip` via SSH (public-key auth using an
 // in-memory-generated key pair — the EC2-side key pair created by this

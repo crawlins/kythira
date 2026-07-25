@@ -41,8 +41,17 @@
 
 #include <folly/init/Init.h>
 
+#include <fcntl.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -51,7 +60,77 @@
 namespace {
 
 constexpr const char* LOCALSTACK_ENDPOINT = "http://localhost:4566";
+constexpr const char* LOCALSTACK_HOST = "localhost";
+constexpr const char* LOCALSTACK_PORT = "4566";
 constexpr const char* DUMMY_REGION = "us-east-1";
+
+// Cheap, AWS-SDK-free reachability probe: a plain non-blocking TCP connect
+// to LocalStack's own port, bounded by `timeout`. Deliberately doesn't use
+// the AWS SDK (unlike the fixture's own reachability check via STS
+// GetCallerIdentity below) since Aws::InitAPI() hasn't run yet at
+// init_unit_test_suite() time -- AwsSdkFixture only runs as a Boost.Test global
+// fixture, which is set up *after* init_unit_test_suite() returns.
+bool localstack_reachable(std::chrono::milliseconds timeout) {
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* res = nullptr;
+    if (getaddrinfo(LOCALSTACK_HOST, LOCALSTACK_PORT, &hints, &res) != 0) {
+        return false;
+    }
+    bool connected = false;
+    for (addrinfo* p = res; p != nullptr && !connected; p = p->ai_next) {
+        int fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, p->ai_addr, p->ai_addrlen);
+        if (rc == 0) {
+            connected = true;
+        } else if (errno == EINPROGRESS) {
+            pollfd pfd{.fd = fd, .events = POLLOUT, .revents = 0};
+            if (poll(&pfd, 1, static_cast<int>(timeout.count())) > 0) {
+                int so_error = 0;
+                socklen_t len = sizeof(so_error);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == 0 && so_error == 0) {
+                    connected = true;
+                }
+            }
+        }
+        close(fd);
+    }
+    freeaddrinfo(res);
+    return connected;
+}
+
+// Run once before any other global fixture constructs: if LocalStack isn't
+// reachable (the per-case fixture's own STS-based reachability check would
+// hit the same condition, just via a slower AWS-SDK round trip after
+// AwsSdkFixture has already initialized), exit immediately with the
+// reserved code tests/CMakeLists.txt registers via SKIP_RETURN_CODE, so
+// `ctest` reports this test as "Not Run" instead of "Failed" when no
+// LocalStack container is running -- which isn't a real bug.
+//
+// This has to be a BOOST_GLOBAL_FIXTURE, not a custom init_unit_test_suite:
+// BOOST_TEST_MODULE makes unit_test_suite.hpp auto-generate its own
+// init_unit_test_suite() at global scope, and a same-named function defined
+// here would land inside this file's anonymous namespace instead -- a
+// distinct, unrelated function with internal linkage that Boost's
+// precompiled main() never calls (no redefinition error, just silently
+// dead code; confirmed by disassembling the built binary, which only ever
+// contained the auto-generated `return 0;` stub). Global fixtures run in
+// registration order, so registering this one first still guarantees it
+// runs before FollyInitFixture/AwsSdkFixture below.
+struct PreflightSkipFixture {
+    PreflightSkipFixture() {
+        if (!localstack_reachable(std::chrono::milliseconds{2000})) {
+            std::cerr << "SKIP: LocalStack not reachable at " << LOCALSTACK_ENDPOINT << "\n";
+            std::exit(77);
+        }
+    }
+};
 
 struct FollyInitFixture {
     FollyInitFixture() {
@@ -72,6 +151,7 @@ struct AwsSdkFixture {
     }
 };
 
+BOOST_GLOBAL_FIXTURE(PreflightSkipFixture);
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
