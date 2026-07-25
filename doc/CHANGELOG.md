@@ -3,6 +3,53 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 25, 2026)
+
+- **Closed the first of the two Folly-decoupling follow-up gaps: test files'
+  vestigial `folly::init()` Boost.Test bootstrap.** A full grep found 135
+  files calling `folly::init()`/constructing `folly::Init` (the prior
+  estimate of "roughly 30" was low); 120 had no other Folly usage in their
+  own source at all. Of those, 13 are `cmd/*/main.cpp` / `examples/*.cpp`
+  standalone executables where the call is legitimate production usage and
+  out of scope; the remaining 106 (105 `tests/*.cpp` files plus the shared
+  `tests/chaos/chaos_test_types.hpp` fixture) had their Folly bootstrap
+  fixture gated behind `#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) &&
+  !defined(KYTHIRA_FUTURE_BACKEND_BOOST)`, matching the backend-conditional
+  pattern already used throughout the rest of the decoupling work.
+  The first attempt deleted the fixture outright instead of gating it, and
+  that broke 37 tests at runtime with `SIGABRT` /
+  `"Singleton folly::Timekeeper ... requested before
+  registrationComplete()"` — under the still-default Folly backend,
+  `kythira::future_default<T>` *is* `folly::Future<T>`, so any test
+  transitively touching Folly's async timers (retry-backoff delays in
+  `error_handler.hpp`, `future_collector.hpp` timeouts) needs `folly::init()`
+  to have run, regardless of whether the test's own source mentions
+  `folly::` by name — a transitive, runtime-only dependency invisible to a
+  static text grep. Caught by running the full test suite after the change,
+  not just rebuilding; fixed by gating instead of deleting, which restores
+  identical Folly-backend behavior while genuinely dropping the Folly
+  dependency once a different backend is selected. Re-verified clean:
+  382/382 tests passed (`-LE ^(slow|performance|verbose|benchmark|docker)$`,
+  `--repeat until-pass:3`), checked via `ctest`'s own exit code and
+  `Testing/Temporary/LastTest.log` rather than a wrapping shell pipeline's
+  exit code (piping through `tee | tail` had silently reported `tail`'s
+  exit code instead of `ctest`'s during the initial, broken pass).
+  Gap 2 (per-target, rather than subdirectory-level, `folly_FOUND` CMake
+  gating across 100+ targets) remains out of scope — see TODO.md.
+- **Unrelated, found and fixed along the way: silent corruption in the
+  repo-root `vcpkg_installed/x64-linux` dependency cache.** Three
+  `boost/intrusive` headers had stray characters inserted into macro
+  definitions (e.g. `template< class (TYPE)>` instead of `template< class
+  TYPE>`), breaking any target pulling in Folly's futures headers. Fixed via
+  a full `vcpkg install` reinstall from the manifest after moving the
+  corrupted directory aside (binary-cache-backed, seconds not minutes).
+  That reinstall doesn't manage the manually-built `libPocoDNSSD.a`/
+  `libPocoDNSSDAvahi.a` archives (DNSSD isn't a vcpkg feature; see
+  README.md's ARM-support section), so those were lost along with the
+  corrupted directory — handled correctly by the project's existing
+  `POCO_DNSSD_FOUND=FALSE` graceful-degradation path once `build-clang` was
+  reconfigured, same as any host without those archives.
+
 ### What Changed (July 24, 2026, continued further)
 
 - **Reorganized the Kconfig "Futures" menu and made Folly genuinely

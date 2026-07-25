@@ -15,7 +15,9 @@
 #include <boost/test/unit_test.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/executor_default.hpp>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#endif
 #include <chrono>
 #include <random>
 #include <atomic>
@@ -35,6 +37,7 @@ std::mt19937 gen(rd());
 }
 
 // Global fixture to initialize Folly once for all tests
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = 1;
@@ -47,8 +50,11 @@ struct FollyInitFixture {
 
     std::unique_ptr<folly::Init> _init;
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 BOOST_AUTO_TEST_SUITE(error_handler_async_retry_property_tests)
 

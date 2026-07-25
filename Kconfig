@@ -125,15 +125,20 @@ config FOLLY
 	  transitively through future_default.hpp regardless of which
 	  backend is selected, verified by a real, Folly-hidden-from-the-
 	  include-path compile of every affected header under both
-	  alternate backends. Two genuinely independent, non-future-related
-	  Folly dependencies remain out of scope for this symbol though --
-	  folly::init()/folly::Init in ~30 test files (process bootstrap,
-	  unrelated to which future backend is selected) and this project's
-	  own certificate_authority/most examples/most of the test suite
-	  still being gated on folly_FOUND at the CMakeLists.txt
-	  subdirectory level (not per-target) -- so CONFIG_FOLLY=n alone
-	  does not yet unlock building those with Folly genuinely absent;
-	  see doc/TODO.md's "Known Follow-ups" for both.
+	  alternate backends. Test files' own folly::init()/folly::Init
+	  Boost.Test bootstrap (135 files, not the ~30 originally estimated)
+	  is likewise now backend-conditional as of July 2026 -- gated behind
+	  the same KYTHIRA_FUTURE_BACKEND_STDEXEC/BOOST checks used elsewhere,
+	  not deleted outright, since several of them transitively need
+	  Folly's Timekeeper singleton initialized (e.g. error_handler.hpp's
+	  retry-backoff delays) whenever future_default<T> resolves to
+	  folly::Future<T> under this backend. One genuinely independent,
+	  non-future-related gap remains out of scope for this symbol though
+	  -- this project's own certificate_authority/most examples/most of
+	  the test suite still being gated on folly_FOUND at the
+	  CMakeLists.txt subdirectory level (not per-target) -- so
+	  CONFIG_FOLLY=n alone does not yet unlock building those with Folly
+	  genuinely absent; see doc/TODO.md's "Known Follow-ups" for details.
 
 config STDEXEC_BACKEND
 	bool "stdexec-backed Future/Promise/Executor backend"

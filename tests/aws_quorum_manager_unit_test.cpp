@@ -25,10 +25,13 @@ struct AsgSkipHealthCheckFixture {
 #endif
 };
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 namespace {
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
@@ -36,6 +39,7 @@ struct FollyInitFixture {
         folly::init(&argc, &argv, false);
     }
 };
+#endif
 
 struct AwsSdkFixture {
     AwsSdkFixture() {
@@ -52,7 +56,9 @@ struct AwsSdkFixture {
 };
 
 // Global fixtures — SDK must outlive all test suites.
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 // ── EC2 manager construction ───────────────────────────────────────────────────

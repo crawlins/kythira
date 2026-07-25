@@ -11,8 +11,10 @@
 #include <raft/rfc6763_ldns_peer_discovery.hpp>
 #include <raft/rfc6763_peer_discovery.hpp>
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 #include <chrono>
 #include <memory>
 #include <stdexcept>
@@ -46,6 +48,7 @@ static constexpr const char* k_all_dns_faults[] = {
     k_rfc6763_ldns_update_noop,
 };
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct DnsChaosFixture {
     DnsChaosFixture() {
         int argc = 1;
@@ -61,7 +64,11 @@ struct DnsChaosFixture {
     }
     std::unique_ptr<folly::Init> _init;
 };
+#endif
+
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(DnsChaosFixture);
+#endif
 
 static void clear_faults() {
     for (const auto* name : k_all_dns_faults) {

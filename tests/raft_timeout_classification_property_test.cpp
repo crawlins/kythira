@@ -4,7 +4,9 @@
 #include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/types.hpp>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
+#endif
 #include <vector>
 #include <chrono>
 #include <random>
@@ -22,6 +24,7 @@ constexpr std::chrono::milliseconds long_timeout{5000};
 }
 
 // Global fixture to initialize Folly
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct GlobalFixture {
     GlobalFixture() {
         int argc = 1;
@@ -30,8 +33,11 @@ struct GlobalFixture {
         folly::init(&argc, &argv_ptr);
     }
 };
+#endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(GlobalFixture);
+#endif
 
 /**
  * **Feature: raft-completion, Property 21: Timeout Classification**

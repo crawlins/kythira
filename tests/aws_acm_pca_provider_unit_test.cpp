@@ -12,12 +12,15 @@
 #include <fiu-control.h>
 #endif
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 #include <folly/init/Init.h>
 
+#endif
 using namespace raft::testing;
 
 namespace {
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 struct FollyInitFixture {
     FollyInitFixture() {
         int argc = boost::unit_test::framework::master_test_suite().argc;
@@ -25,6 +28,7 @@ struct FollyInitFixture {
         folly::init(&argc, &argv, false);
     }
 };
+#endif
 
 struct AwsSdkFixture {
     AwsSdkFixture() {
@@ -42,7 +46,9 @@ struct AwsSdkFixture {
 
 }  // namespace
 
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 BOOST_GLOBAL_FIXTURE(AwsSdkFixture);
 
 BOOST_AUTO_TEST_SUITE(acm_pca_construction)
