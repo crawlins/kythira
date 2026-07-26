@@ -148,11 +148,10 @@ This document lists the dependencies required to build and use the network simul
 
 ## Current Build Status
 
-The project currently builds with:
-- ✅ CMake 3.28.3
-- ✅ GCC 13.3.0
-- ✅ Boost 1.84.0
-- ⚠️  folly (not yet installed, but build system is configured)
+This section predates the project's move to vcpkg manifest mode for
+dependency management; see [README.md](README.md)'s Requirements/Building
+sections for the current, actively-maintained build instructions. For
+folly specifically, see "Building Without folly" below.
 
 ## Verifying Dependencies
 
@@ -175,7 +174,19 @@ pkg-config --exists folly && echo "folly found" || echo "folly not found"
 
 ## Building Without folly
 
-The current implementation can be built without folly installed. The build system will issue a warning but will continue. However, the full implementation of async operations will require folly to be installed.
+As of July 2026 (see `doc/TODO.md`'s "Known Follow-ups" for the two-part
+Folly-decoupling work), `certificate_authority` and `tests/` build and pass
+without folly installed, provided an alternate `kythira::Future` backend is
+selected instead (`CONFIG_STDEXEC_BACKEND=y` or `CONFIG_BOOST_FUTURE_BACKEND=y`
+in Kconfig, or `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`/`boost` without
+Kconfig). Tests that are genuinely Folly-specific by design (HTTP/CoAP
+transport tests, Folly concept-wrapper tests, cross-backend benchmarks) are
+individually skipped rather than failing the build. `examples/` and the
+standalone `cmd/*` production executables (`ca_cluster_node`, `chaos_node`,
+the discovery-node binaries) remain folly-only, since their own `main()`s
+call `folly::init()` directly. Without folly *and* without selecting an
+alternate backend, the build system issues a warning and skips the
+Folly-dependent targets, same as always.
 
 ## Next Steps
 

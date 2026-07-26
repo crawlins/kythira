@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 24, 2026
+**Last Updated**: July 25, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -8,14 +8,19 @@ For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
 The project is **PRODUCTION READY** ✅ with 100% test pass rate.
 
-- **All tests passing** (100%) — 391 tests registered in CTest
+- **All tests passing** (100%) — 393 tests registered in CTest
 - **0 tests failing, 0 tests disabled**
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
   stdexec future backend, the Folly-vs-stdexec performance benchmark suite,
   RPC-internal mTLS for `ca_cluster_node`, and Kconfig-based build configuration
 - Build clean with no errors or warnings
-- Coverage floor: 89.16% (non-decreasing ratchet, see `coverage_floor.txt`)
+- Both Folly-decoupling follow-up gaps closed for `tests/`/`certificate_authority`:
+  test-bootstrap backend-conditional gating (PR #93) and per-target rather than
+  subdirectory-level Folly CMake gating (PR #94) — see "Known Follow-ups" below
+- Coverage floor: 88.99% (non-decreasing ratchet, see `coverage_floor.txt`;
+  re-baselined July 25, 2026 to match CI's own measurement after ten days of
+  accumulated drift from the prior 89.16% floor)
 
 ---
 

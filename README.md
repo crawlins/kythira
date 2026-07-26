@@ -54,8 +54,8 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 - See [Certificate Authority & ACME](#certificate-authority--acme) below
 
 ### Testing & Quality
-- **385 Tests, 100% Pass Rate** — 0 failing, 0 disabled
-- **88.6%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
+- **393 Tests, 100% Pass Rate** — 0 failing, 0 disabled
+- **88.99%+ Line Coverage**, enforced by a non-decreasing ratchet (see [Code Coverage](#code-coverage))
 - **Property-Based Testing** using Boost.Test
 - **Integration, Chaos, and Docker-Chaos Tests** for end-to-end and fault-injected validation
 - **Zero Test Failures** across the full test suite
@@ -64,7 +64,11 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 
 - C++23 compatible compiler (GCC 13+, Clang 16+, or MSVC 2022+)
 - CMake 3.20 or higher
-- folly library
+- folly library (default `kythira::Future` backend; genuinely optional if
+  `stdexec` or `boost::thread` is selected instead via Kconfig's
+  `CONFIG_STDEXEC_BACKEND`/`CONFIG_BOOST_FUTURE_BACKEND` — see
+  `doc/TODO.md`'s Folly-decoupling entries. HTTP/CoAP transport and a
+  handful of Folly-specific tests still require it regardless of backend.)
 - Boost (system, thread, unit_test_framework)
 - cpp-httplib (for HTTP transport)
 - libcoap (optional, for CoAP transport)
@@ -568,10 +572,10 @@ All major components are pluggable via template parameters:
 See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis, [doc/TODO.md](doc/TODO.md) for full task-by-task project status, and [doc/CHANGELOG.md](doc/CHANGELOG.md) for a dated history of what changed and why.
 
 **Summary**:
-- **Total Tests**: 378 (registered in CTest)
-- **Passing**: 378 (100%)
+- **Total Tests**: 393 (registered in CTest)
+- **Passing**: 393 (100%)
 - **Failing**: 0 (0%)
-- **Line Coverage**: 88.6%+ (non-decreasing ratchet, see [Code Coverage](#code-coverage))
+- **Line Coverage**: 88.99%+ (non-decreasing ratchet, see [Code Coverage](#code-coverage))
 
 ### Test Categories
 
@@ -1045,11 +1049,16 @@ for the full design.
 
 **Scope** — see
 [`include/raft/future_stdexec_README.md`](include/raft/future_stdexec_README.md)
-for the complete picture, but in short: no existing production call site is
-converted by this feature, Folly is not removed or made optional-only, and
-GPU execution (`nvexec`) is out of scope. This is a second, independent
-implementation for new code that specifically wants direct access to
-`stdexec` schedulers/algorithms — not a replacement or a migration path.
+for the complete picture, but in short: this feature itself converted no
+existing production call site, and GPU execution (`nvexec`) is out of
+scope. This is a second, independent implementation for new code that
+specifically wants direct access to `stdexec` schedulers/algorithms — not
+a replacement or a migration path. A separate, later effort (see
+`doc/TODO.md`'s Folly-decoupling entries) *did* subsequently make Folly
+genuinely optional across most of the codebase — `certificate_authority`
+and `tests/` now build and pass with an alternate backend selected and
+folly absent entirely — though HTTP/CoAP transport and a handful of
+Folly-specific tests remain Folly-only by design.
 
 ### Components
 
@@ -1335,7 +1344,7 @@ The implementation has been tested with multiple transport layers:
 ✅ **stdexec Future Backend**: optional, opt-in second `Future`/`Promise`/
   `Executor` implementation for new `stdexec`-specific code; Folly stays
   the default and is unaffected either way
-✅ **Testing**: 100% pass rate (385 tests), comprehensive property/integration/chaos testing
+✅ **Testing**: 100% pass rate (393 tests), comprehensive property/integration/chaos testing
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
 [`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
