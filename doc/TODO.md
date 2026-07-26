@@ -216,6 +216,79 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
   archives already would. Rebuilding those archives from scratch, if ever
   needed, isn't documented anywhere yet — worth adding if this bites again.
 
+- **Gap 2 above (per-target `folly_FOUND` CMake gating) closed for
+  `tests/`/`certificate_authority`** (July 25, 2026) — scoped empirically
+  with a real probe build (`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON
+  -DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`), the only reliable way to find
+  what actually breaks rather than guessing from inspection. Three
+  independent problems, found in that order:
+  1. **The subdirectory-level gates were checking the wrong condition.**
+     `certificate_authority`/`tests/`/three `cmd/*` groups were gated on
+     `folly_FOUND` specifically, when the real requirement is "the
+     *selected* future backend's dependency is satisfied" — not the same
+     thing once a non-folly backend is chosen. Replaced with
+     `KYTHIRA_FUTURE_BACKEND_AVAILABLE` (`folly_FOUND OR NOT
+     KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly"`), reusing the
+     invariant CMake already enforces via `FATAL_ERROR` for stdexec/boost
+     when *they're* selected without being found. `examples/` and the 5
+     `cmd/*` discovery-node/ca_cluster_node executables were deliberately
+     left `folly_FOUND`-gated, not relaxed: every one of them calls
+     `folly::init()` directly in its own `main()` to demonstrate/require
+     real Folly usage, unlike `tests/`.
+  2. **A handful of test targets silently ignored `KYTHIRA_DEFAULT_FUTURE_
+     BACKEND` entirely.** `quorum_management_test`,
+     `docker_quorum_manager_test`, `state_machine_commutativity_property_
+     test`, `state_machine_crash_recovery_property_test`,
+     `raft_multi_node_fixture_test`, `raft_cluster_initialization_unit_test`
+     used a legacy hand-rolled `add_executable`/`target_link_libraries`
+     pattern that never linked `network_simulator` (the target that
+     carries the `KYTHIRA_FUTURE_BACKEND_STDEXEC`/`_BOOST` compile
+     definitions) — meaning they always compiled `future_default.hpp`'s
+     Folly branch regardless of which backend Kconfig actually selected. A
+     latent, pre-existing bug (silently wrong under boost/stdexec even
+     with Folly present) that gap 2's stress-testing surfaced as a hard
+     failure instead. Fixed by adding `network_simulator` to each one's
+     link libraries.
+  3. **A real, substantial minority of tests are genuinely Folly-only by
+     design**, not something to "fix": HTTP/CoAP transport tests
+     (`include/raft/http_transport.hpp`/`coap_transport.hpp` hardcode
+     `folly::Future<T>` as `future_template` — a real, header-level Folly
+     dependency the original decoupling pass never covered, since that
+     pass scoped to the Raft core and RPC transports, not HTTP/CoAP),
+     Folly concept-wrapper tests (`folly_concept_wrappers_*`,
+     `kythira_*_concept_compliance_*`, etc.), and cross-backend comparison
+     tests that need Folly present to compare against
+     (`future_backend_benchmark_test`, `cross_backend_concept_compliance_
+     property_test`). Decoupling HTTP/CoAP transport from Folly the way
+     the Raft core already is would be a separate, much larger feature —
+     explicitly out of scope here. Instead, all 70 such targets (found by
+     rerunning the probe after fixes 1–2 and reading off the real
+     remaining failure list, not guessed up front) were wrapped in
+     `if(TARGET Folly::folly) ... else() message(STATUS "...: skipped
+     (requires Folly)") endif()` within `tests/CMakeLists.txt`, so they're
+     cleanly skipped rather than hard-failing when Folly is absent.
+  Verified clean on all three backends, each with Folly genuinely absent
+  (`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON`) in a real (non-tmp) build
+  directory — a first probe run under `/tmp/.../scratchpad/` produced two
+  spurious failures (`complete_conversion_validation_property_test`,
+  `namespace_consistency_property_test`) that turned out to be a
+  source-root path-resolution artifact of that unusual nested location,
+  not a real regression; both pass cleanly once built from a normal path,
+  confirmed by rerunning from scratch: stdexec 244/247 passed (only
+  `performance_equivalence_property_test`, an already-documented
+  pre-existing stdexec-timing sensitivity), boost 245/247 passed (that
+  same pre-existing test, plus `membership_change_leader_crash_property_
+  test`, confirmed flaky rather than a regression by 4 clean standalone
+  reruns immediately after). The default Folly-enabled build was also
+  fully re-verified after all these changes: 382/382 passed, 0 failed —
+  zero regressions for the common case.
+  **Two things remain deliberately out of scope**: (1) decoupling HTTP/
+  CoAP transport from Folly at the header level, the same way the Raft
+  core already is — a separate, much larger feature, not "finishing" gap
+  2; (2) `examples/` and the 5 standalone `cmd/*` production executables
+  stay Folly-only, since their own `main()`s call `folly::init()` directly
+  by design.
+
 ---
 
 ## Remaining Work (All Optional)
