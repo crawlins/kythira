@@ -3,6 +3,41 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 25, 2026, continued)
+
+- **Closed gap 2 of the Folly-decoupling follow-ups for `tests/`/
+  `certificate_authority`: per-target rather than subdirectory-level
+  `folly_FOUND` CMake gating.** Scoped empirically with a real probe build
+  (Folly's `find_package` disabled, stdexec selected as the default
+  backend) rather than guessing from inspection, which surfaced three
+  distinct problems: (1) the subdirectory-level gates checked `folly_FOUND`
+  when the real question is "is the *selected* backend's dependency
+  satisfied" — fixed with a `KYTHIRA_FUTURE_BACKEND_AVAILABLE` variable
+  reusing the invariant CMake already enforces for stdexec/boost; (2) six
+  test targets used a legacy linking pattern that never picked up the
+  `KYTHIRA_FUTURE_BACKEND_STDEXEC`/`_BOOST` compile definition at all — a
+  latent, pre-existing bug (silently always-Folly regardless of Kconfig
+  selection) that gap 2 surfaced rather than caused, fixed by linking
+  `network_simulator` properly; (3) 70 test targets are genuinely Folly-
+  only by design (HTTP/CoAP transport tests — those headers hardcode
+  `folly::Future<T>`, a real gap the original decoupling pass never
+  covered since it scoped to the Raft core/RPC transports — Folly
+  concept-wrapper tests, cross-backend benchmarks), now cleanly skipped
+  via per-target `if(TARGET Folly::folly)` guards instead of hard-failing.
+  Verified on all three backends with Folly genuinely absent from a real
+  build directory (a first pass under a `/tmp/.../scratchpad/` path
+  produced two false-positive failures traced to that location's own
+  path-resolution quirk, not a real bug) — stdexec and boost each passed
+  cleanly except for already-known/confirmed-flaky timing-sensitive
+  tests unrelated to Folly's availability — and the default Folly build
+  was fully re-verified afterward: 382/382 passed, 0 failed, no
+  regressions. `examples/` and 5 standalone `cmd/*` production
+  executables stay deliberately Folly-only (their own `main()`s call
+  `folly::init()` directly); decoupling HTTP/CoAP transport from Folly
+  at the header level remains explicitly out of scope, a separate,
+  larger feature. See TODO.md's "Known Follow-ups" for the full
+  breakdown.
+
 ### What Changed (July 25, 2026)
 
 - **Closed the first of the two Folly-decoupling follow-up gaps: test files'

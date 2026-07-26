@@ -132,13 +132,21 @@ config FOLLY
 	  not deleted outright, since several of them transitively need
 	  Folly's Timekeeper singleton initialized (e.g. error_handler.hpp's
 	  retry-backoff delays) whenever future_default<T> resolves to
-	  folly::Future<T> under this backend. One genuinely independent,
-	  non-future-related gap remains out of scope for this symbol though
-	  -- this project's own certificate_authority/most examples/most of
-	  the test suite still being gated on folly_FOUND at the
-	  CMakeLists.txt subdirectory level (not per-target) -- so
-	  CONFIG_FOLLY=n alone does not yet unlock building those with Folly
-	  genuinely absent; see doc/TODO.md's "Known Follow-ups" for details.
+	  folly::Future<T> under this backend. certificate_authority and
+	  tests/ are also now correctly buildable with CONFIG_FOLLY=n and an
+	  alternate backend selected (July 2026): the CMakeLists.txt
+	  subdirectory-level gates check whether the *selected* backend's
+	  dependency is satisfied, not folly_FOUND specifically, and the
+	  genuinely Folly-only tests (HTTP/CoAP transport -- those headers
+	  still hardcode folly::Future<T>, unlike the Raft core -- Folly
+	  concept-wrapper tests, cross-backend benchmarks) are individually
+	  skipped rather than blocking the whole subdirectory. Two things
+	  remain deliberately out of scope: decoupling HTTP/CoAP transport
+	  from Folly at the header level (a separate, much larger feature),
+	  and examples/ plus the 5 standalone cmd/* production executables,
+	  which stay Folly-only since their own main()s call folly::init()
+	  directly by design; see doc/TODO.md's "Known Follow-ups" for
+	  details.
 
 config STDEXEC_BACKEND
 	bool "stdexec-backed Future/Promise/Executor backend"

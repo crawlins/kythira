@@ -345,6 +345,22 @@ elseif(KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "boost")
     target_compile_definitions(network_simulator INTERFACE KYTHIRA_FUTURE_BACKEND_BOOST)
 endif()
 
+# Whether the actually-selected future backend's dependency is satisfied --
+# not "is folly found", which is the wrong question once a non-folly
+# backend is selected. stdexec/boost already fail configure above (via
+# FATAL_ERROR) if their own dependency is missing while selected, so by
+# the time this is evaluated, the only remaining gap is folly selected
+# without being found. Gates below use this instead of folly_FOUND
+# directly so certificate_authority/tests/examples/the discovery-node
+# executables aren't skipped just because CONFIG_FOLLY=n, as long as
+# whichever backend *is* selected actually works (see doc/TODO.md's
+# Folly-decoupling gap 2 note).
+if(folly_FOUND OR NOT KYTHIRA_DEFAULT_FUTURE_BACKEND STREQUAL "folly")
+    set(KYTHIRA_FUTURE_BACKEND_AVAILABLE TRUE)
+else()
+    set(KYTHIRA_FUTURE_BACKEND_AVAILABLE FALSE)
+endif()
+
 # Property 5: Optional Dependency Isolation (Task 1.1, Requirements 4.2,
 # 4.3) — configures a throwaway build directory with stdexec hidden from
 # find_package() and confirms the rest of the project still configures
@@ -544,18 +560,15 @@ else()
 endif()
 
 # ── certificate_authority (CA testing/provisioning framework) ────────────────
-# folly_FOUND, not just TARGET OpenSSL::SSL: certificate_provider.hpp's
-# kythira::Future usage (via include/raft/future.hpp) pulls in Folly
-# unconditionally — that #include has no #ifdef guard of its own, unlike the
-# stdexec/boost backends, which only exist behind their own *_FOUND checks.
-# Without this, a folly-not-found configure still attempted this target and
-# failed deep inside src/certificate_authority.cpp's #include chain with a
-# `GLOG_EXPORT` "unknown type name" error from glog/flags.h — a real,
-# confirmed failure (reproduced via `-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON`,
-# the same isolation technique
-# scripts/verify-optional-dependency-isolation.sh already uses for stdexec)
-# that gives no hint the actual problem is a missing Folly dependency.
-if(TARGET OpenSSL::SSL AND folly_FOUND)
+# KYTHIRA_FUTURE_BACKEND_AVAILABLE, not just TARGET OpenSSL::SSL:
+# certificate_provider.hpp's kythira::future_default usage still needs
+# *some* future backend's dependency satisfied, same as everything else
+# that transitively includes future_default.hpp. This used to be
+# folly_FOUND specifically, back when future_default.hpp unconditionally
+# pulled in Folly regardless of KYTHIRA_DEFAULT_FUTURE_BACKEND (see
+# doc/TODO.md's Folly-decoupling entries) — that's fixed now, so this
+# only needs *a* backend, not folly by name.
+if(TARGET OpenSSL::SSL AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
     add_library(certificate_authority STATIC src/certificate_authority.cpp)
     target_include_directories(certificate_authority PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -661,45 +674,46 @@ enable_testing()
 if(NOT ENABLE_COVERAGE)
     if(TARGET certificate_authority)
         add_subdirectory(cmd/ca_service)
-        if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+        if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
             add_subdirectory(cmd/ca_cluster_node)
         endif()
     endif()
 endif()
-# folly_FOUND, not just Boost_FOUND: confirmed by direct build attempt
-# (-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON) that the overwhelming majority of
-# this project's 391+ registered tests transitively require Folly (every
-# kythira::Future/Promise/Try use is Folly-backed regardless of which
-# backend a given test is actually about — even stdexec-only test files
-# still transitively reach include/raft/future.hpp through shared project
-# headers) and fail the same GLOG_EXPORT compile error the
-# certificate_authority/examples guards above document. tests/CMakeLists.txt
-# already does its own finer-grained per-target gating in specific places
-# (e.g. the discovery-node docker image targets, each on their own FOUND
-# variable) - this guard only prevents attempting the whole subdirectory
-# when Folly, tests/CMakeLists.txt's own single largest transitive
-# dependency, is absent.
-if(Boost_FOUND AND folly_FOUND)
+# KYTHIRA_FUTURE_BACKEND_AVAILABLE, not folly_FOUND: with a non-folly
+# backend selected and its own dependency present, the overwhelming
+# majority of this project's registered tests build and pass fine --
+# every kythira::future_default use now resolves to whichever backend
+# was actually selected (see doc/TODO.md's Folly-decoupling entries).
+# A real, still-substantial minority remain genuinely Folly-only by
+# design (HTTP/CoAP transport tests -- http_transport.hpp/
+# coap_transport.hpp hardcode folly::Future<T> themselves, unlike the
+# RPC transports -- Folly concept-wrapper tests, and the cross-backend
+# benchmark comparisons); those are individually gated on
+# `if(TARGET Folly::folly)` within tests/CMakeLists.txt itself rather
+# than blocking the whole subdirectory the way this guard used to.
+if(Boost_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE)
     add_subdirectory(tests)
 elseif(Boost_FOUND)
-    message(STATUS "folly not found — tests/ disabled (391+ registered tests overwhelmingly require it transitively)")
+    message(STATUS "folly not found and no alternate future backend selected — tests/ disabled")
 endif()
 if(NOT ENABLE_COVERAGE)
-    if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)
+    if(KYTHIRA_FUTURE_BACKEND_AVAILABLE AND Boost_FOUND AND httplib_FOUND)
         add_subdirectory(cmd/chaos_node)
         add_subdirectory(cmd/poco_discovery_node)
     endif()
-    if(LIBLDNS_FOUND AND folly_FOUND AND httplib_FOUND)
+    if(LIBLDNS_FOUND AND KYTHIRA_FUTURE_BACKEND_AVAILABLE AND httplib_FOUND)
         add_subdirectory(cmd/dns_discovery_node)
         add_subdirectory(cmd/dns_sd_discovery_node)
     endif()
 endif()
-# folly_FOUND: confirmed by direct build attempt (-DCMAKE_DISABLE_FIND_
-# PACKAGE_folly=ON) that every example target transitively requires Folly
-# (via network_simulator's own headers, which reach include/raft/future.hpp
-# through several paths) and fails the same confusing GLOG_EXPORT compile
-# error the certificate_authority guard above documents — not a partial
-# gap affecting only some examples.
+# folly_FOUND, not KYTHIRA_FUTURE_BACKEND_AVAILABLE: unlike tests/ and
+# certificate_authority, every example program calls folly::init()/
+# constructs folly::Init directly in its own main() to demonstrate real
+# Folly usage -- that's the point of an "example". Deliberately left
+# Folly-only rather than extended the gap-1-style backend-conditional
+# treatment used for tests/ (see doc/TODO.md's Folly-decoupling gap 2
+# note); examples/ isn't part of the test suite CONFIG_FOLLY=n needs to
+# keep working.
 if(folly_FOUND)
     add_subdirectory(examples)
 else()
