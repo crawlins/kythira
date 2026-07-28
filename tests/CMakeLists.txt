@@ -100,6 +100,42 @@ function(add_boost_future_test test_name source_file)
     set_tests_properties(${test_name} PROPERTIES LABELS "boost-future;future-backend")
 endfunction()
 
+# Helper for boost-beast-http-transport spec tests
+# (.kiro/specs/boost-beast-http-transport/). Only present when
+# KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT was enabled at configure time (root
+# CMakeLists.txt) -- callers wrap each add_beast_test() call in that
+# condition, the same "targets simply don't exist otherwise" pattern
+# add_stdexec_test()/add_boost_future_test() use. Boost::beast is
+# header-only (no library to link, just include dirs -- already carried by
+# the Boost::beast target itself), but this transport calls raw OpenSSL
+# APIs directly (unlike network_simulator's other consumers, which reach
+# OpenSSL only indirectly through httplib/Folly), so OpenSSL::SSL/Crypto are
+# linked explicitly, matching the same opt-in pattern used by e.g.
+# http_ssl_configuration_property_test. All tests carry the "beast-http"
+# label (design.md Testing Strategy, point 5), letting `ctest -L beast-http`
+# select or `-LE beast-http` exclude this suite.
+function(add_beast_test test_name source_file)
+    add_executable(${test_name} ${source_file})
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch Boost::beast)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(${test_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Root CMakeLists.txt's ENABLE_COVERAGE branch documents the same gap:
+        # clang with GCC's libstdc++ doesn't provide __atomic_is_lock_free as a
+        # compiler builtin the way GCC does. Every other test target in this
+        # project happens to link something that already pulls in libatomic
+        # transitively; this is the first target whose own std::atomic<bool>/
+        # std::atomic<std::size_t> usage (boost_beast_server's _running/
+        # _live_sessions) surfaces the gap directly, independent of whether
+        # coverage is enabled.
+        target_link_libraries(${test_name} PRIVATE atomic)
+    endif()
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS "beast-http")
+endfunction()
+
 # Test files
 add_network_test(concept_test concept_test.cpp)
 add_network_test(folly_concept_compilation_property_test folly_concept_compilation_property_test.cpp)
@@ -2904,6 +2940,13 @@ if(TARGET Folly::folly)
 
 else()
     message(STATUS "backend_non_interference_compile_fail_test: skipped (requires Folly)")
+endif()
+
+# ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    add_beast_test(beast_transport_test beast_transport_test.cpp)
+else()
+    message(STATUS "beast_transport_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
 endif()
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
 # Single binary rather than a second add_stdexec_test()-gated executable:
