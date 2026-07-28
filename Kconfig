@@ -32,6 +32,23 @@ config HTTP_TRANSPORT_TLS
 	  Defines CPPHTTPLIB_OPENSSL_SUPPORT, enabling httplib::SSLServer/
 	  SSLClient and ca_service --serve's --tls-cert/--tls-key mode.
 
+config BOOST_BEAST_TRANSPORT
+	bool "Boost.Beast HTTP transport (second implementation, alongside cpp-httplib)"
+	default n
+	help
+	  Adds a second network_client/network_server implementation backed by
+	  Boost.Beast, satisfying the same concepts as HTTP_TRANSPORT's
+	  cpp-httplib backend (include/raft/http_transport.hpp) without
+	  replacing it. boost-beast is always vcpkg-installed regardless of
+	  this symbol (header-only, low-cost, same treatment as stdexec in the
+	  Futures menu below) -- this only controls whether this project's own
+	  beast_http_transport.hpp targets/tests are built. Uses Boost.Beast's
+	  asynchronous API driven by a caller-owned net::io_context, a
+	  genuinely new I/O model for this codebase (every other transport
+	  uses blocking calls dispatched onto an executor instead) -- see
+	  .kiro/specs/boost-beast-http-transport/ for the full design,
+	  including why.
+
 config COAP_TRANSPORT
 	bool "CoAP transport (libcoap, DTLS)"
 	default y

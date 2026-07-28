@@ -16,6 +16,10 @@
       "version>=": "1.89.0"
     },
     {
+      "name": "boost-beast",
+      "version>=": "1.89.0"
+    },
+    {
       "name": "boost-json",
       "version>=": "1.89.0"
     },
