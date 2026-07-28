@@ -33,6 +33,19 @@ function(add_raft_example example_name source_file)
         endif()
     endif()
 
+    # Add Boost.Beast transport dependencies for beast_transport_example
+    # (.kiro/specs/boost-beast-http-transport/) -- only registered at all
+    # when KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT is set, see below.
+    if(${example_name} STREQUAL "beast_transport_example")
+        target_link_libraries(${example_name} PRIVATE Boost::beast)
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(${example_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_link_libraries(${example_name} PRIVATE atomic)
+        endif()
+    endif()
+
     # Add CoAP transport dependencies for CoAP examples
     if(${example_name} MATCHES "coap_.*_example")
         # Link libcoap if available
@@ -101,6 +114,12 @@ add_raft_example(snapshot_example snapshot_example.cpp)
 
 # Transport layer examples
 add_raft_example(http_transport_example http_transport_example.cpp)
+
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    add_raft_example(beast_transport_example beast_transport_example.cpp)
+else()
+    message(STATUS "beast_transport_example: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
 
 # CoAP transport examples - demonstrate CoAP/DTLS integration
 add_raft_example(coap_transport_basic_example coap_transport_basic_example.cpp)

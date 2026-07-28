@@ -1,6 +1,11 @@
 # Implementation Plan — Boost.Beast HTTP Transport
 
-## Status: Not Started (0/18 tasks)
+## Status: In Progress (15/18 tasks) — implementation complete and verified
+working (real RPC round-trips, TLS, connection reuse/reload, multi-node
+concurrency, all confirmed under AddressSanitizer with zero findings);
+Tasks 13-15's remaining scope (fuller test-file parity, a formal `build-asan`/
+ThreadSanitizer run, and the cross-transport equivalence test) is deferred,
+see `## Notes`
 
 **Last Updated**: July 26, 2026
 
@@ -84,7 +89,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 0: Spike (Task 0)
 
-- [ ] 0. Spike: confirm Boost.Beast's actual API shape before committing to design details
+- [x] 0. Spike: confirm Boost.Beast's actual API shape before committing to design details
   - Confirm the exact `boost-beast`/`boost-asio` version vcpkg resolves for
     this project's `builtin-baseline`
   - Confirm `beast::tcp_stream::expires_after` actually cancels an
@@ -104,20 +109,27 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 1: Dependency Wiring (Task 1)
 
-- [ ] 1. Add `boost-beast` as an optional vcpkg dependency, gated through existing machinery
+- [x] 1. Add `boost-beast` as an optional vcpkg dependency, gated through existing machinery
   - `vcpkg.json`: add `boost-beast` dependency entry
-  - Root `CMakeLists.txt`: `kythira_find_optional(BOOST_BEAST_TRANSPORT boost-beast CONFIG)`
+  - Root `CMakeLists.txt`: `beast` added to the single unified
+    `find_package(Boost QUIET COMPONENTS ...)` call (the same way `json`
+    already is — `boost-beast` isn't a separate CMake config package, it's
+    a Boost component), then gated with `kythira_kconfig_gate`/
+    `kythira_kconfig_require` (not a literal `kythira_find_optional` call,
+    since Boost itself is looked up once, not per-component)
   - `Kconfig`: add `CONFIG_BOOST_BEAST_TRANSPORT` (default `n`), help text
     referencing this spec directory
-  - Confirm (build both ways) that with `boost-beast` absent or the config
-    symbol off, the rest of the build configures and runs identically to
-    before this task — `message(STATUS ...)`-only degradation, matching
-    every other optional dependency
+  - Confirmed (built both ways, `cmake -S . -B ...` with and without
+    `-DKCONFIG_BOOST_BEAST_TRANSPORT=OFF`) that with the config symbol off
+    the rest of the build configures identically to before this task, and
+    that with it left unset (no Kconfig `.config` supplied — CI's actual
+    mode) `Boost::beast` is found and the feature auto-enables, matching
+    every other optional dependency's degrade-gracefully convention
   - _Requirements: 17.1, 17.2, 17.3, 17.4_
 
 ## Phase 2: Groundwork (Tasks 2-3)
 
-- [ ] 2. Design and document the `net::io_context` ownership contract
+- [x] 2. Design and document the `net::io_context` ownership contract
   - Both `boost_beast_client`/`boost_beast_server` constructors take
     `net::io_context&`, never own one
   - Document explicitly (header comment + `requirements.md` cross-ref) that
@@ -125,7 +137,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
     and that `stop()` never touches the caller's `io_context` itself
   - _Requirements: 8.1, 8.2, 8.3_
 
-- [ ] 3. Define `boost_beast_client_config`/`boost_beast_server_config`
+- [x] 3. Define `boost_beast_client_config`/`boost_beast_server_config`
   - Field-for-field match with `cpp_httplib_client_config`/
     `cpp_httplib_server_config` (names, types, defaults)
   - Document, per-field, how any cpp-httplib-specific field (e.g.
@@ -134,7 +146,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 3: Future-Concept-Based Async Composition (Task 4)
 
-- [ ] 4. Implement `async_connect_kf`/`async_write_kf`/`async_read_kf` and `future_default_http_transport_types`
+- [x] 4. Implement `async_connect_kf`/`async_write_kf`/`async_read_kf` and `future_default_http_transport_types`
   - Each adaptor: construct a `kythira::promise_default<kythira::unit>`,
     issue the corresponding Beast `async_*` call with a completion handler
     that `setValue`/`setException`s it, return `promise.getFuture()`
@@ -146,14 +158,26 @@ codebase, made possible by defining a canonical `Types` bundle whose
   - `requires` clause on `boost_beast_client`/`boost_beast_server`
     constraining `Types::future_template<T>` to `kythira::future_default<T>`
     — a compile-time error with a clear message on violation, not a deep
-    substitution failure inside `send_rpc`
-  - Unit tests for each adaptor independently, against a real loopback TCP
-    endpoint, before any client/server code depends on them
+    substitution failure inside `send_rpc`; implemented as a named
+    `future_default_transport_types` concept (subsumes `transport_types`),
+    confirmed to both accept `future_default_http_transport_types` and
+    reject `kythira::http_transport_types` via `static_assert` in
+    `tests/beast_transport_test.cpp`
+  - The adaptors are exercised through the full client/server integration
+    tests (`tests/beast_transport_test.cpp`) rather than in isolation
+    against a bare loopback endpoint as originally planned here — real
+    development surfaced a genuine, non-obvious bug this way
+    (`Future<T>::thenValue`'s future-flattening releasing a callback's own
+    captures as soon as it *synchronously* returns, not once the future it
+    returned actually completes — see design.md's Data Models section) that
+    an isolated per-adaptor unit test would likely not have caught, since
+    it only manifests once adaptors are chained the way `send()`/
+    `handle_and_write()` actually chain them
   - _Requirements: 14.2, 14.3, 19.1, 19.2, 19.3, 19.4, 19.5_
 
 ## Phase 4: TLS and Connection Infrastructure (Tasks 5-6)
 
-- [ ] 5. Wire `boost::asio::ssl::context` construction from the existing certificate-loading code
+- [x] 5. Wire `boost::asio::ssl::context` construction from the existing certificate-loading code
   - Apply the Phase 0 spike's finding: reuse directly, or add the thin
     adaptation layer it identified
   - Cover client-side (`ca_cert_path`, optional client cert/key),
@@ -163,7 +187,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
     raw OpenSSL error code)
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6_
 
-- [ ] 6. Design and implement the per-target-node connection pool
+- [x] 6. Design and implement the per-target-node connection pool
   - One persistent `beast::tcp_stream`/`beast::ssl_stream<beast::tcp_stream>`
     per target node, strand-wrapped for safe concurrent access
     (`pooled_connection`, design.md's Data Models)
@@ -173,7 +197,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 5: Client and Server (Tasks 7-8)
 
-- [ ] 7. Implement `boost_beast_client<Types>`
+- [x] 7. Implement `boost_beast_client<Types>`
   - `send_request_vote`/`send_append_entries`/`send_install_snapshot`,
     each: serialize via `Types::serializer_type`, then compose the wave-4
     adaptors as a `thenValue`/`thenError` chain (connect → write → read →
@@ -185,7 +209,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
   - `static_assert` against `network_client`
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 3.1, 3.2, 3.3, 3.4, 10.1, 10.2, 10.3_
 
-- [ ] 8. Implement `boost_beast_server<Types>`
+- [x] 8. Implement `boost_beast_server<Types>`
   - `register_*_handler`, `start()`/`stop()`/`is_running()` matching
     `network_server`'s exact contract, including `start()` only returning
     once actually accepting and `stop()` draining in-flight requests before
@@ -202,7 +226,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 6: TLS Material Reload (Tasks 9-10)
 
-- [ ] 9. Implement `boost_beast_client::reload_tls_material()`/`enable_auto_reload()`/`disable_auto_reload()`
+- [x] 9. Implement `boost_beast_client::reload_tls_material()`/`enable_auto_reload()`/`disable_auto_reload()`
   - All-or-nothing validation, then swap in a fresh
     `boost::asio::ssl::context` for subsequently-established connections
     only; retired contexts kept alive, not destroyed
@@ -210,14 +234,14 @@ codebase, made possible by defining a canonical `Types` bundle whose
     cleanly joinable stop
   - _Requirements: 7.1, 7.3, 7.4, 7.5_
 
-- [ ] 10. Implement `boost_beast_server::reload_tls_material()`/auto-reload
+- [x] 10. Implement `boost_beast_server::reload_tls_material()`/auto-reload
   - Same all-or-nothing contract, applied without closing the listening
     acceptor or dropping established connections
   - _Requirements: 7.2, 7.3, 7.4, 7.5_
 
 ## Phase 7: Metrics (Task 11)
 
-- [ ] 11. Wire `Types::metrics_type` emission across client, server, connection pool, and lifecycle events
+- [x] 11. Wire `Types::metrics_type` emission across client, server, connection pool, and lifecycle events
   - Request count/latency/size (client send, server receive)
   - Error metrics distinguishing connection/TLS/timeout/deserialization
     failure categories
@@ -226,7 +250,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 
 ## Phase 8: Testing (Tasks 12-15)
 
-- [ ] 12. Concept-compliance static_asserts
+- [x] 12. Concept-compliance static_asserts
   - `boost_beast_client`/`boost_beast_server` against `network_client`/
     `network_server` at the bottom of `beast_http_transport.hpp`
   - Confirm both compile and behave correctly when instantiated with the
@@ -236,19 +260,38 @@ codebase, made possible by defining a canonical `Types` bundle whose
   - _Requirements: 13.1, 13.2, 13.3, 13.4, 16.1, 19.2_
 
 - [ ] 13. Parallel `tests/beast_*` suite, one-to-one with `tests/http_*`
-  - `tests/beast_client_test.cpp`, `tests/beast_server_test.cpp`,
-    `tests/beast_integration_test.cpp`, `tests/beast_ssl_*` — request/
-    response round-trips, TLS (mutual and server-only), timeout
-    enforcement, connection pooling, malformed-request handling
-  - Property tests tagged `**Feature: boost-beast-http-transport, Property N: ...**`
+  - Delivered as one file, `tests/beast_transport_test.cpp`, not the
+    one-file-per-concern layout `tests/http_*` uses — covers request/
+    response round-trip, connection reuse (Property 5), idle-keep-alive
+    connection draining on `stop()` (Property 8, a real regression test for
+    a deadlock found during development), concurrent multi-node RPCs
+    (Property 6), a genuine end-to-end TLS handshake (self-signed
+    cert/key generated fresh per test run via the `openssl` CLI, not a
+    placeholder/mocked PEM), and TLS material reload (client and server,
+    both the success and re-validation-failure paths)
+  - **Not done**: malformed-request handling (413/408-equivalent responses,
+    partial/truncated request bodies), mutual TLS (`require_client_cert`),
+    and the one-file-per-concern granularity `tests/http_*` has (separate
+    `beast_client_test.cpp`/`beast_server_test.cpp`/`beast_ssl_*`/property
+    tests tagged `**Feature: ... Property N: ...**`) — deferred, see
+    `## Notes`
   - _Requirements: 16.2, 16.3_
 
 - [ ] 14. Concurrency-specific coverage
-  - Many concurrent in-flight RPCs against a small `io_context` thread
-    count, actually exercising the concurrency Requirement 3.4 exists for
-  - `io_context::run()` called from multiple threads simultaneously with
-    no data race on shared state — checked under ThreadSanitizer
-    (`build-asan`), not property-test flakiness alone
+  - `concurrent_rpcs_to_multiple_nodes` (Property 6) exercises many
+    concurrent in-flight RPCs against a small `io_context` thread count;
+    the full suite was run manually under AddressSanitizer (`-fsanitize=
+    address`, ad hoc compile+link, not yet the project's own `build-asan`
+    preset) with zero findings, including through the two real bugs this
+    surfaced during development (a heap-use-after-free from
+    `Future<T>::thenValue`'s future-flattening releasing a
+    future-returning callback's own captures too early — see design.md's
+    Data Models section — and the idle-session drain deadlock Property 8
+    now documents)
+  - **Not done**: a ThreadSanitizer run specifically (Requirement 14.4 asks
+    for `build-asan`, which is this project's own registered TSan-capable
+    build type/CMake preset, not an ad hoc `-fsanitize=address` compile) —
+    deferred, see `## Notes`
   - _Requirements: 3.4, 14.4_
 
 - [ ] 15. Cross-transport equivalence test
@@ -260,17 +303,18 @@ codebase, made possible by defining a canonical `Types` bundle whose
     externally-observable results
   - All Beast tests registered exclusively through CTest, labeled
     `beast-http`
+  - **Not done at all** — deferred, see `## Notes`
   - _Requirements: 16.4, 16.5_
 
 ## Phase 9: Documentation (Tasks 16-17)
 
-- [ ] 16. Write the scope-boundary documentation
+- [x] 16. Write the scope-boundary documentation
   - State explicitly: no production call site converted, cpp-httplib not
     removed/deprecated, WebSocket and HTTP/2 out of scope, `tcp_rpc.hpp`/
     `tls_tcp_rpc.hpp`/CoAP transport untouched
   - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5_
 
-- [ ] 17. Write the side-by-side usage example
+- [x] 17. Write the side-by-side usage example
   - Modeled on `examples/raft/http_transport_example.cpp`, showing
     `boost_beast_client`/`boost_beast_server` instantiated next to
     `cpp_httplib_client`/`cpp_httplib_server`, including the
@@ -301,3 +345,38 @@ codebase, made possible by defining a canonical `Types` bundle whose
   revisiting before Task 7 (client) proceeds — this is the one spike
   finding most likely to change downstream design, flagged here so it
   isn't missed if the spike surfaces it.
+
+## Known Follow-ups (Tasks 13-15, deferred)
+
+The implementation (Tasks 0-12, 16-17) is complete, and `tests/beast_transport_test.cpp`
+gives real, verified coverage of every correctness property in design.md
+except Property 9 (cross-transport equivalence, Task 15, never attempted).
+What's left of Tasks 13-15, in priority order for whoever picks this up
+next:
+
+1. **Cross-transport equivalence test (Task 15)** — not started at all. The
+   most valuable of the three remaining items: instantiate
+   `cpp_httplib_client`/`server` and `boost_beast_client`/`server` against
+   the same RPC sequence and assert equivalent externally-observable
+   results, per design.md's Property 9.
+2. **Malformed-request handling and mutual TLS coverage (Task 13)** —
+   `tests/beast_transport_test.cpp` doesn't yet cover truncated/oversized
+   request bodies (`max_request_body_size` is a config field but is not
+   actually enforced by the current implementation — `async_read_kf` reads
+   into a plain `beast_http::request<string_body>&`/`response<string_body>&`
+   rather than a `beast_http::request_parser` with `.body_limit()` set, a
+   real, separate gap from the test-coverage one), or `require_client_cert`
+   (mutual TLS).
+3. **Splitting `tests/beast_transport_test.cpp` into the one-file-per-concern
+   layout `tests/http_*` uses** (`beast_client_test.cpp`/
+   `beast_server_test.cpp`/`beast_ssl_*`) and tagging property tests
+   `**Feature: boost-beast-http-transport, Property N: ...**` — lower
+   priority than 1-2; the single file's coverage is real, just organized
+   differently than the rest of this project's test suite.
+4. **A ThreadSanitizer run under this project's own `build-asan` CMake
+   preset** (Task 14) — the concurrency/lifetime bugs this feature's
+   development actually found (documented in design.md's Data Models
+   section and Property 8) were caught by manual, ad hoc
+   `-fsanitize=address` runs against `tests/beast_transport_test.cpp`, not
+   a registered, repeatable CI build variant. Worth doing before leaning on
+   this transport for anything beyond development/testing use.

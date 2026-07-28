@@ -203,6 +203,16 @@ pattern concrete:
 
 ```cpp
 net::io_context ioc;
+// io_context::run() returns as soon as there is no outstanding work -- it
+// does not block waiting for work that arrives later unless something is
+// keeping it "busy". At this point nothing has been posted to ioc yet (the
+// client/server below don't exist), so without a work guard every thread
+// spawned here would call run(), find nothing to do, and return
+// immediately; every async_accept/async_connect issued afterward would then
+// sit forever with no thread driving it (this was caught empirically, not
+// just reasoned about -- an early draft of this example hung on exactly
+// this, see the implementation's own test setup for the same fix).
+auto work_guard = net::make_work_guard(ioc);
 std::vector<std::thread> io_threads;
 for (int i = 0; i < 4; ++i) {
     io_threads.emplace_back([&ioc] { ioc.run(); });
@@ -213,6 +223,7 @@ kythira::boost_beast_server<my_transport_types> server{ioc, "0.0.0.0", 8080, {},
 // ... use client/server; both are driven by the same 4-thread pool ...
 
 server.stop();      // stops accepting, drains in-flight requests -- does NOT stop ioc
+work_guard.reset();  // let ioc.run() return once nothing else keeps it busy
 ioc.stop();          // caller's own responsibility, only once nothing else needs it
 for (auto& t : io_threads) t.join();
 ```
@@ -496,19 +507,52 @@ same reason elsewhere in this codebase.
 
 ```cpp
 struct pooled_connection {
-    beast::tcp_stream stream;                              // or ssl_stream<tcp_stream>
+    std::unique_ptr<beast_detail::beast_connection> connection;  // type-erased
+        // base (plain_beast_connection or tls_beast_connection), so the pool
+        // is one homogeneous map regardless of which target nodes are
+        // http:// vs. https://, rather than a std::variant/std::visit at
+        // every call site
     net::ip::tcp::endpoint endpoint;
-    net::strand<net::io_context::executor_type> strand;     // serializes all
-        // operations on this one connection; RPCs to *other* nodes use a
-        // different connection's strand and run genuinely concurrently
-    beast::flat_buffer buffer;                               // reused across
-        // requests on this connection -- Beast grows it as needed, this
-        // design does not reset its capacity between requests, only its
-        // consumed/committed state
+    std::string host_header;
     std::chrono::steady_clock::time_point last_used;          // idle-timeout
         // eviction (Requirement 9.2) reads this, does not need its own timer
 };
 ```
+
+Two deliberate refinements from this section's original sketch, made during
+implementation:
+
+- **No explicit `strand` field.** The per-connection `beast::tcp_stream`/
+  `beast::ssl_stream<beast::tcp_stream>` is constructed directly on
+  `net::make_strand(_ioc)` (Phase 3/4's own connection-creation code), so
+  every asynchronous operation issued through it is automatically serialized
+  by construction -- a separate stored `strand` that call sites would have
+  to remember to route operations through was unnecessary indirection for
+  the same guarantee.
+- **No pooled `buffer`.** Reusing one `beast::flat_buffer` across requests on
+  a connection turned out to be a real lifetime hazard, not just a missed
+  optimization: `beast_http::async_write`/`async_read` hold a reference to
+  whatever buffer/message they're given for the *entire* asynchronous
+  operation, which can span multiple `io_context::run()` iterations after
+  the call that issued it returns. A per-connection buffer reused
+  synchronously across calls is fine; the actual bug this surfaced (found by
+  a real crash, not inspection -- an `AddressSanitizer`-confirmed
+  heap-use-after-free) was Folly's `thenValue` future-flattening releasing a
+  future-returning callback's own captures as soon as that callback
+  *synchronously* returns, not once the future it returned actually
+  completes. `async_connect_kf`/`async_write_kf`'s completion is invoked
+  later, by a different callback further down the chain -- so anything a
+  still-pending downstream operation needs (the flat_buffer, the response
+  object) must be re-captured in *that* callback too, not only the one that
+  issues the operation. `plain_beast_connection`/`tls_beast_connection::send()`
+  now allocate a fresh `flat_buffer`/response per call (via `shared_ptr`,
+  captured in every continuation through completion) rather than reusing a
+  pooled one -- simpler and safe by construction, at the cost of one
+  allocation per RPC instead of amortizing it across a connection's
+  lifetime. The same fix shape applies server-side
+  (`server_session::handle_and_write()`'s response object, and the session
+  itself needing to recapture `shared_from_this()` in its own write
+  continuation rather than relying on the read-loop callback's capture).
 
 ### Config Structs
 
@@ -581,6 +625,19 @@ in-flight, every in-flight request should be allowed to complete before
 `stop()` returns, and no new connection should be accepted after `stop()`
 is called
 **Validates: Requirement 5.2**
+
+A gap found during implementation, not anticipated when this property was
+first written: a session sitting idle on a keep-alive connection (its own
+`read_loop()` waiting for a *next* request that may simply never arrive) has
+no in-flight request for `stop()` to wait on — waiting passively for such a
+session to finish on its own deadlocks `stop()` forever. The implementation
+resolves this by having `stop()` actively close every live session's socket
+after closing the acceptor (posted onto each session's own strand, so it
+never races a write that session is still in the middle of), which causes
+an idle session's pending read to fail and route through the same
+finish()-on-error path any other read failure already uses. A request that
+*is* genuinely in-flight still gets to finish its current response first —
+the close only affects sessions with nothing outstanding.
 
 **Property 9: Cross-Transport Equivalence**
 *For any* `Types` bundle and RPC sequence run through both
