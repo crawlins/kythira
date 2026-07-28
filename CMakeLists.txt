@@ -95,7 +95,7 @@ endif()
 # today even with a non-folly default backend selected; see doc/TODO.md's
 # "Known Follow-ups" for the header-level decoupling this would still need.
 kythira_find_optional(FOLLY folly)
-find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context)
+find_package(Boost QUIET COMPONENTS system thread unit_test_framework json context beast)
 kythira_find_optional(HTTP_TRANSPORT httplib)
 kythira_find_optional(OPENSSL OpenSSL)
 
@@ -139,6 +139,30 @@ kythira_find_optional(EDHOC lakers CONFIG)
 # default (non-feature-gated) dependency, same as folly — see
 # vcpkg-overlays/stdexec/README.md for why it's an overlay port.
 find_package(stdexec CONFIG QUIET)
+
+# boost-beast-http-transport spec: a second network_client/network_server
+# implementation alongside the existing cpp-httplib-backed one
+# (include/raft/http_transport.hpp). boost-beast is a default (unconditional,
+# not Kconfig-gated) vcpkg dependency, same as stdexec above — it is
+# header-only and low-cost, so there is no reason to make vcpkg itself skip
+# installing it the way EDHOC's Rust-toolchain-requiring lakers dependency
+# is skipped via a real vcpkg "feature" (COMPONENTS beast is always
+# requested as part of the single unified Boost find_package() call,
+# above, the same way COMPONENTS json already is). Requirement 17.2 calls
+# for gating this feature's own targets/tests through
+# kythira_kconfig_gate/kythira_kconfig_require -- the same machinery every
+# other optional dependency in this project uses -- rather than a bespoke
+# option()/CACHE BOOL check (unlike KYTHIRA_BUILD_BOOST_FUTURE_BACKEND
+# below, which predates this convention).
+kythira_kconfig_gate(BOOST_BEAST_TRANSPORT)
+set(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT FALSE)
+if(_KYTHIRA_GATE_BOOST_BEAST_TRANSPORT AND TARGET Boost::beast)
+    set(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT TRUE)
+    message(STATUS "boost-beast HTTP transport enabled (.kiro/specs/boost-beast-http-transport/)")
+else()
+    message(STATUS "boost-beast HTTP transport disabled (Boost::beast not found, or CONFIG_BOOST_BEAST_TRANSPORT=n)")
+endif()
+kythira_kconfig_require(BOOST_BEAST_TRANSPORT KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT "Boost::beast")
 
 if(NOT folly_FOUND)
     # include/raft/future.hpp (kythira::Future/Promise/Try, the default
