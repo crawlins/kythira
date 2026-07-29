@@ -136,6 +136,36 @@ function(add_beast_test test_name source_file)
     set_tests_properties(${test_name} PROPERTIES LABELS "beast-http")
 endfunction()
 
+# Helper for proxygen-http-transport spec tests
+# (.kiro/specs/proxygen-http-transport/). Only present when
+# KYTHIRA_BUILD_PROXYGEN_TRANSPORT was enabled at configure time (root
+# CMakeLists.txt) -- callers wrap each add_proxygen_test() call in that
+# condition, the same "targets simply don't exist otherwise" pattern
+# add_beast_test() uses. Links proxygen::proxygen (client: HTTPConnector/
+# HTTPUpstreamSession) and proxygen::proxygenhttpserver (server: HTTPServer)
+# explicitly, plus Folly::folly (this feature's headers include Folly
+# unconditionally, matching future.hpp's own posture). All tests carry the
+# "proxygen-http" label (Requirement 19.6), letting `ctest -L proxygen-http`
+# select or `-LE proxygen-http` exclude this suite.
+function(add_proxygen_test test_name source_file)
+    add_executable(${test_name} ${source_file})
+    target_link_libraries(${test_name} PRIVATE kythira_test_pch
+        proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(${test_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # See add_beast_test()'s own comment: the first target to bring in
+        # std::atomic<...> usage without something else already pulling in
+        # libatomic transitively needs it linked explicitly under
+        # clang+libstdc++.
+        target_link_libraries(${test_name} PRIVATE atomic)
+    endif()
+    target_precompile_headers(${test_name} REUSE_FROM kythira_test_pch)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+    set_tests_properties(${test_name} PROPERTIES LABELS "proxygen-http")
+endfunction()
+
 # Test files
 add_network_test(concept_test concept_test.cpp)
 add_network_test(folly_concept_compilation_property_test folly_concept_compilation_property_test.cpp)
@@ -2947,6 +2977,12 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     add_beast_test(beast_transport_test beast_transport_test.cpp)
 else()
     message(STATUS "beast_transport_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
+# ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_proxygen_test(proxygen_transport_test proxygen_transport_test.cpp)
+else()
+    message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
 # Single binary rather than a second add_stdexec_test()-gated executable:
