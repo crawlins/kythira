@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 25, 2026
+**Last Updated**: July 29, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -623,6 +623,36 @@ capability.
   Service
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
+
+### RPC Serializer Implementations
+
+`kythira::rpc_serializer` (`include/raft/types.hpp`) is a compile-time
+concept — `serializer_type` is a template parameter on `raft_types`/
+`tcp_raft_types` (default `json_rpc_serializer`,
+`include/raft/json_serializer.hpp`), so adding a concrete alternative needs
+no change to that seam, only a new type satisfying the concept plus
+`serialize`/`deserialize` overloads for every RPC message type (RequestVote,
+RequestPreVote, AppendEntries, InstallSnapshot, ClusterJoin, and their
+responses — see `tests/rpc_serializer_concept_test.cpp` for the exact
+surface a conforming implementation must cover).
+
+- [ ] **Protocol Buffers** — `.proto`-defined messages for the existing RPC
+  request/response types, compiled via `protoc`; a schema-driven alternative
+  to today's hand-rolled `boost::json` construction, with generated
+  accessors instead of manual field-by-field (de)serialization
+- [ ] **gRPC / protobuf-binary** — layers gRPC's binary wire format (protobuf
+  payloads over HTTP/2) on top of the Protocol Buffers message definitions
+  above; would need its own `network_client_type`/`network_server_type`
+  transport pairing (gRPC owns framing/HTTP/2 itself, unlike the
+  serializer-only JSON path used over `tcp_rpc`/`tls_tcp_rpc`), not just a
+  new `serializer_type`
+- [ ] **CBOR (RFC 8949)** — compact binary JSON-equivalent encoding; same
+  logical structure as `json_rpc_serializer`'s `boost::json::object` field
+  layout, smaller wire size and no text-parsing overhead, likely the
+  lowest-effort binary alternative to implement first
+- [ ] **Amazon Ion** — Amazon's self-describing binary/text data format
+  (binary encoding for wire efficiency, with the text encoding available for
+  debugging/logging the same messages)
 
 ### Metrics Backends
 
