@@ -91,6 +91,17 @@ jobs:
 
     strategy:
       fail-fast: false
+      # Run the x64 and arm64 legs one at a time, not concurrently. Each test
+      # case stands up a full VPC (with a NAT gateway, an EIP and up to nine
+      # instances) against a test account on the default per-region service
+      # quotas (5 VPCs, 5 EIPs). Two legs running at once double the peak
+      # footprint, and when both were simultaneously inside the long 9-node
+      # AZ-outage cases — which hold their VPC for tens of minutes — the
+      # combined demand exceeded the 5-VPC limit and CreateVpc started failing
+      # with "maximum number of VPCs has been reached". Serialising the legs
+      # keeps peak usage to a single leg's worth (verified to fit), at the cost
+      # of ~2x wall-clock on this weekly/on-demand workflow.
+      max-parallel: 1
       matrix:
         include:
           - os: ubuntu-24.04
