@@ -59,6 +59,10 @@
       "features": ["net"]
     },
     {
+      "name": "proxygen",
+      "version>=": "2025.05.19.00"
+    },
+    {
       "name": "aws-sdk-cpp",
       "features": [
         "acm-pca",
