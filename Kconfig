@@ -49,6 +49,24 @@ config BOOST_BEAST_TRANSPORT
 	  .kiro/specs/boost-beast-http-transport/ for the full design,
 	  including why.
 
+config PROXYGEN_TRANSPORT
+	bool "Proxygen HTTP transport (third implementation, alongside cpp-httplib and Beast)"
+	default n
+	depends on FOLLY
+	help
+	  Adds a third network_client/network_server implementation backed by
+	  Meta's Proxygen library, satisfying the same concepts as the existing
+	  cpp-httplib (include/raft/http_transport.hpp) and Boost.Beast
+	  (include/raft/beast_http_transport.hpp) transports without replacing
+	  either. Requires the proxygen vcpkg package, which itself
+	  unconditionally depends on folly -- unlike most CONFIG_X=n
+	  combinations in this project, CONFIG_PROXYGEN_TRANSPORT=y with
+	  CONFIG_FOLLY=n is not a valid, degraded-but-buildable configuration.
+	  See .kiro/specs/proxygen-http-transport/ for the full design,
+	  including the optional Folly-native fast path this feature adds when
+	  both this and CONFIG_FOLLY (as the selected default backend) are
+	  active.
+
 config COAP_TRANSPORT
 	bool "CoAP transport (libcoap, DTLS)"
 	default y

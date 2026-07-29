@@ -26,6 +26,31 @@ else()
     set(KYTHIRA_VCPKG_TRIPLET "x64-linux")
 endif()
 
+# This project configures vcpkg's manifest-mode output via CMAKE_PREFIX_PATH
+# rather than vcpkg's own scripts/buildsystems/vcpkg.cmake toolchain file
+# (every dependency up through Beast resolved fine that way). The
+# proxygen-http-transport spec's first-time-needed transitive dependency
+# (unofficial-sodium, pulled in by fizz/mvfst) is the first vcpkg port in
+# this project's tree whose generated *-config.cmake references
+# _VCPKG_INSTALLED_DIR/VCPKG_TARGET_TRIPLET directly (most ports instead
+# derive their own install prefix relative to the config file's own
+# location, which needs neither variable) -- those two variables are only
+# ever defined by vcpkg's toolchain file, so they're empty here, collapsing
+# unofficial-sodium's INTERFACE_INCLUDE_DIRECTORIES to a literal "//include"
+# and failing CMake's imported-target path-existence check at generate time.
+# Defining both here (only if a caller hasn't already, e.g. via the real
+# toolchain file) is a minimal, general fix for this whole class of vcpkg
+# port -- not specific to proxygen or unofficial-sodium -- without adopting
+# the toolchain file project-wide.
+if(NOT DEFINED _VCPKG_INSTALLED_DIR)
+    set(_VCPKG_INSTALLED_DIR "${CMAKE_SOURCE_DIR}/vcpkg_installed" CACHE PATH
+        "vcpkg manifest-mode install root, for port *-config.cmake scripts that need it directly")
+endif()
+if(NOT DEFINED VCPKG_TARGET_TRIPLET)
+    set(VCPKG_TARGET_TRIPLET "${KYTHIRA_VCPKG_TRIPLET}" CACHE STRING
+        "vcpkg triplet, for port *-config.cmake scripts that need it directly")
+endif()
+
 # ccache: speeds up rebuilds by skipping recompilation of translation units
 # whose preprocessed content + compiler flags exactly match a prior compile.
 # Purely opt-in acceleration — absent or disabled, the build is identical to
@@ -163,6 +188,28 @@ else()
     message(STATUS "boost-beast HTTP transport disabled (Boost::beast not found, or CONFIG_BOOST_BEAST_TRANSPORT=n)")
 endif()
 kythira_kconfig_require(BOOST_BEAST_TRANSPORT KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT "Boost::beast")
+
+# proxygen-http-transport spec: a third network_client/network_server
+# implementation, backed by Meta's Proxygen (itself built directly on
+# Folly's EventBase/AsyncSocket). Unlike boost-beast above, proxygen is a
+# genuinely optional vcpkg dependency (Requirement 20.1) -- it unconditionally
+# depends on folly, which is itself CONFIG_FOLLY-gated in this project
+# (doc/TODO.md's Folly-decoupling entries), so enabling this feature
+# requires both `TARGET proxygen::proxygen` *and* `TARGET Folly::folly` to
+# be present, not either alone (Requirement 20.4). See
+# .kiro/specs/proxygen-http-transport/ for the full design.
+kythira_find_optional(PROXYGEN_TRANSPORT proxygen CONFIG)
+
+kythira_kconfig_gate(PROXYGEN_TRANSPORT)
+set(KYTHIRA_BUILD_PROXYGEN_TRANSPORT FALSE)
+if(_KYTHIRA_GATE_PROXYGEN_TRANSPORT AND TARGET proxygen::proxygen AND TARGET Folly::folly)
+    set(KYTHIRA_BUILD_PROXYGEN_TRANSPORT TRUE)
+    message(STATUS "Proxygen HTTP transport enabled (.kiro/specs/proxygen-http-transport/)")
+else()
+    message(STATUS "Proxygen HTTP transport disabled "
+                    "(proxygen and/or Folly not found, or CONFIG_PROXYGEN_TRANSPORT=n)")
+endif()
+kythira_kconfig_require(PROXYGEN_TRANSPORT KYTHIRA_BUILD_PROXYGEN_TRANSPORT "proxygen::proxygen")
 
 if(NOT folly_FOUND)
     # include/raft/future.hpp (kythira::Future/Promise/Try, the default
