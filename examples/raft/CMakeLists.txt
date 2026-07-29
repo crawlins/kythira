@@ -46,6 +46,19 @@ function(add_raft_example example_name source_file)
         endif()
     endif()
 
+    # Add Proxygen transport dependencies for proxygen_transport_example
+    # (.kiro/specs/proxygen-http-transport/) -- only registered at all when
+    # KYTHIRA_BUILD_PROXYGEN_TRANSPORT is set, see below.
+    if(${example_name} STREQUAL "proxygen_transport_example")
+        target_link_libraries(${example_name} PRIVATE proxygen::proxygen proxygen::proxygenhttpserver)
+        if(TARGET OpenSSL::SSL)
+            target_link_libraries(${example_name} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+        endif()
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_link_libraries(${example_name} PRIVATE atomic)
+        endif()
+    endif()
+
     # Add CoAP transport dependencies for CoAP examples
     if(${example_name} MATCHES "coap_.*_example")
         # Link libcoap if available
@@ -119,6 +132,56 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
     add_raft_example(beast_transport_example beast_transport_example.cpp)
 else()
     message(STATUS "beast_transport_example: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
+
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_raft_example(proxygen_transport_example proxygen_transport_example.cpp)
+else()
+    message(STATUS "proxygen_transport_example: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
+
+# Requirement 17 (.kiro/specs/proxygen-http-transport/) / the mid-implementation
+# request to compare all three HTTP transports directly against each other:
+# needs all three transports linked into the same binary, so it's gated on
+# both flags rather than either add_raft_example()'s per-name special case.
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_raft_example(http_transport_comparison_benchmark http_transport_comparison_benchmark.cpp)
+    target_link_libraries(http_transport_comparison_benchmark PRIVATE
+        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(http_transport_comparison_benchmark PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_libraries(http_transport_comparison_benchmark PRIVATE atomic)
+    endif()
+    # add_raft_example()'s own name-based TIMEOUT heuristic (above) doesn't
+    # match this target's name and would default it to 60s -- measured full
+    # runtime is dominated by cpp-httplib's default TCP_NODELAY=false
+    # behavior (~80ms/call Nagle/delayed-ACK interaction,
+    # doc/http_transport_performance_comparison.md's own measured finding),
+    # roughly 3 minutes for the full 2000-iteration comparison across all
+    # three transports. A generous fixed override, not the "performance"
+    # regex match, since this is a real measured comparison run (not a
+    # correctness check needing only a reduced smoke test the way
+    # future_backend_benchmark_report_test's own CTest entry is).
+    set_tests_properties(http_transport_comparison_benchmark_test PROPERTIES
+        TIMEOUT 300
+        # Confirmed by direct observation: running this test's ~3 minutes of
+        # real network I/O concurrently with raft_comprehensive_performance_
+        # benchmark's own latency-coefficient-of-variation check under
+        # `ctest -j4` caused that unrelated test to fail on CPU contention
+        # alone (it passes cleanly standalone) -- the same category of CI
+        # flakiness ca_cluster_node_test's own PROCESSORS property (below,
+        # this same mechanism) already documents and works around. PROCESSORS
+        # matching the runner's core count stops ctest's scheduler from
+        # starting other tests alongside this one, without hard-serializing
+        # the whole suite around it (RUN_SERIAL would do that unconditionally).
+        PROCESSORS 4
+        LABELS "example;raft;performance;slow"
+    )
+else()
+    message(STATUS "http_transport_comparison_benchmark: skipped (requires both "
+                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 
 # CoAP transport examples - demonstrate CoAP/DTLS integration
