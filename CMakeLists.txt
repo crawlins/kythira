@@ -56,23 +56,40 @@ endif()
 # proxygen -> wangle -> folly, none of which any pre-existing target in this
 # project included before .kiro/specs/proxygen-http-transport/) includes
 # <ext/random>, which on aarch64 conditionally includes libstdc++'s own
-# <ext/opt_random.h> under `#if __ARM_NEON`. That header uses GCC-internal
-# vector typedefs (__Uint32x4_t/__Uint8x16_t) that only GCC's own arm_neon.h
-# defines -- clang's separate arm_neon.h implementation does not provide
-# them under those exact names, so clang fails with "unknown type name
-# '__Uint32x4_t'" parsing GCC's own system header. Confirmed directly from a
-# real CI failure (Build & Test (clang++-18, arm64)): g++-13/aarch64 (GCC
+# <ext/opt_random.h> under `#if __ARM_NEON`. That header's NEON fast path
+# uses GCC's `__builtin_shuffle`, which clang does not implement at all, so
+# clang cannot compile it under that branch. Confirmed directly from a real
+# CI failure (Build & Test (clang++-18, arm64)): g++-13/aarch64 (GCC
 # compiling GCC's own header) and clang++-18/x64 (__ARM_NEON never defined,
 # not an ARM target) both build the identical header chain cleanly --
 # clang+aarch64 is the one combination where both conditions needed to
-# trigger this hold simultaneously. Undefining the feature-test macro for
-# this one compile only routes libstdc++'s own #if __ARM_NEON guard to its
-# portable (non-vectorized) Mersenne Twister fallback -- a possible, unmeasured
-# perf-only cost to that specific RNG path, not a correctness change, and it
-# does not disable actual NEON codegen (ABI-level vector registers/intrinsics
-# elsewhere are untouched by undefining one preprocessor macro).
+# trigger this hold simultaneously.
+#
+# A first fix (globally passing -U__ARM_NEON for this compiler+arch) made
+# the build succeed but introduced a real, measured ABI mismatch: it also
+# flips every other `#ifdef __ARM_NEON` branch in folly/proxygen's own
+# headers for the *whole* translation unit, which changes the computed
+# layout of unrelated types -- e.g. proxygen::HTTPMessage came out as 608
+# bytes under that workaround vs. 576 bytes under both GCC and a plain
+# clang build. Since the vcpkg-built proxygen/folly static libraries are
+# always GCC-compiled (vcpkg does not key its build on the consuming
+# project's compiler), that 32-byte mismatch meant clang-compiled code
+# stack-allocating a proxygen::HTTPMessage disagreed with GCC-compiled
+# proxygen internals about its own member offsets -- the actual root cause
+# of a proxygen HTTPHeaders segfault that only reproduced on clang+aarch64,
+# root-caused via a sizeof(HTTPMessage) probe compiled with both compilers
+# on real ARM64 hardware.
+#
+# Fix: force-include arm64_clang_ext_random_compat.hpp first in every TU
+# instead. It pre-processes <ext/random> with __ARM_NEON locally undefined
+# only for that one system header; the header's own include guard then
+# makes every later #include <ext/random> (transitively, via
+# folly/Random.h) a no-op, so __ARM_NEON stays defined -- matching GCC --
+# for every other header in the translation unit. Confirmed on real ARM64
+# hardware to restore sizeof(HTTPMessage) to 576 while still compiling
+# cleanly under clang.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-U__ARM_NEON)
+    add_compile_options(-include "${CMAKE_SOURCE_DIR}/include/raft/arm64_clang_ext_random_compat.hpp")
 endif()
 
 # ccache: speeds up rebuilds by skipping recompilation of translation units
