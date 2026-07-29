@@ -1518,10 +1518,23 @@ struct RealEc2Fixture : signal_cleanup_target {
 BOOST_GLOBAL_FIXTURE(AwsSignalHandlerFixture);
 
 // ── Test cases ────────────────────────────────────────────────────────────────
+//
+// Per-case timeout budget: every case pays the same teardown tax — terminate
+// instances, then delete the NAT gateway (waiting for it to actually vanish
+// before releasing its EIP) and retry DeleteNetworkAcl/DeleteVpc — which alone
+// runs to several minutes on top of the case's own provisioning and, for the
+// stop/start cases, up to six minutes of StopInstances/StartInstances polling.
+// The 9-node cases were already raised from 1200s to 1500s for this reason;
+// the lighter cases carried a stale 600s cap that only held while the suite was
+// aborting early on other failures. Once it ran end-to-end,
+// quarantine_sg_causes_unreachable (provision + stop + start + teardown) blew
+// 600s during teardown. All non-2400s cases now share the same teardown-aware
+// 1500s budget — a ceiling for pathological hangs, not a target; a case still
+// returns as soon as its real work completes.
 
 BOOST_FIXTURE_TEST_SUITE(real_ec2, RealEc2Fixture)
 
-BOOST_AUTO_TEST_CASE(provision_three_nodes_one_per_az, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(provision_three_nodes_one_per_az, *boost::unit_test::timeout(1500)) {
     kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& az : {"AZ1", "AZ2", "AZ3"}) {
@@ -1536,7 +1549,7 @@ BOOST_AUTO_TEST_CASE(provision_three_nodes_one_per_az, *boost::unit_test::timeou
     BOOST_CHECK_EQUAL(health.status, kythira::quorum_status::healthy);
 }
 
-BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(1500)) {
     kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
     auto peer = mgr.provision_node("AZ1", std::nullopt).get();
     track_instances(1);
@@ -1544,7 +1557,7 @@ BOOST_AUTO_TEST_CASE(decommission_is_idempotent, *boost::unit_test::timeout(600)
     BOOST_CHECK_NO_THROW(mgr.decommission_node(peer.node_id).get());
 }
 
-BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeout(1500)) {
     // A stopped (non-running) instance is detected as unreachable via
     // DescribeInstanceStatus; restarting it restores liveness.
     kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
@@ -1569,7 +1582,7 @@ BOOST_AUTO_TEST_CASE(quarantine_sg_causes_unreachable, *boost::unit_test::timeou
     BOOST_CHECK_EQUAL(health2.live_node_count, 1u);
 }
 
-BOOST_AUTO_TEST_CASE(hardware_failure_via_terminate_instances, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(hardware_failure_via_terminate_instances, *boost::unit_test::timeout(1500)) {
     kythira::aws_ec2_quorum_manager<> mgr{mgr_cfg};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
@@ -1584,7 +1597,7 @@ BOOST_AUTO_TEST_CASE(hardware_failure_via_terminate_instances, *boost::unit_test
     BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 1u);
 }
 
-BOOST_AUTO_TEST_CASE(process_crash_via_ssh_kill, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(process_crash_via_ssh_kill, *boost::unit_test::timeout(1500)) {
     // A node that halts (instance stops) is detected as unreachable.
     // The SSH path to the bastion is exercised even though the actual
     // halt is issued through the EC2 StopInstances API (cluster nodes
@@ -1612,7 +1625,7 @@ BOOST_AUTO_TEST_CASE(process_crash_via_ssh_kill, *boost::unit_test::timeout(600)
     BOOST_CHECK_EQUAL(health.unreachable_nodes.size(), 1u);
 }
 
-BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::timeout(600)) {
+BOOST_AUTO_TEST_CASE(maintain_quorum_restores_full_cluster, *boost::unit_test::timeout(1500)) {
     kythira::aws_ec2_quorum_manager_config cfg = mgr_cfg;
     cfg.topology.groups.clear();
     cfg.topology.groups.push_back({.group_id = "AZ1", .target_count = 3});
