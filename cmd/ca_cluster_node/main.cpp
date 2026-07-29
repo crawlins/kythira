@@ -1296,13 +1296,35 @@ auto run_ca_cluster_node(ca_cluster_node::ca_cluster_node_config cfg, std::strin
     std::cerr << "[info] ca_cluster_node shutting down\n";
     g_stop = true;
     server->stop();
+
+    // raft_node.stop() unconditionally rejects every pending submit_command()/
+    // read_state() future (CommitWaiter::cancel_all_operations) and MUST run
+    // before joining any thread that might currently be blocked inside one of
+    // those calls' .get() — maintenance_thread's leader-transition no-op
+    // commit (ensure_signer/maybe_bootstrap), or an in-flight /v1/certificates
+    // HTTP handler. The only other thing that ever resolves such a call is
+    // check_heartbeat_timeout()'s CommitWaiter::cancel_timed_out_operations(),
+    // which fires solely while heartbeat_timer is still ticking — and
+    // heartbeat_timer is itself one of the threads joined below. Previously
+    // this call came LAST, after every join(): a thread blocked in .get() on
+    // a commit that can never land (this node has just lost the quorum it
+    // needs, precisely because it and/or its peers are shutting down) had
+    // nothing left running to either complete or time out its operation,
+    // deadlocking maintenance_thread.join() forever and, with it, this whole
+    // process's exit. That is the documented intermittent hang tracked in
+    // doc/TODO.md ("ca_cluster_node_test intermittent hang") — reproduced
+    // there as the test's own waitpid() on this process never returning.
+    // Calling stop() here, before any of those joins, guarantees such a call
+    // is force-rejected immediately instead of racing an already-stopped
+    // timeout mechanism.
+    raft_node.stop();
+
     http_thread.join();
     election_timer.join();
     heartbeat_timer.join();
     maintenance_thread.request_stop();
     maintenance_thread.join();
 
-    raft_node.stop();
     std::cerr << "[info] ca_cluster_node shut down cleanly\n";
     return 0;
 }
