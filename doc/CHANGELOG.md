@@ -3,6 +3,105 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 28, 2026)
+
+- **Proxygen HTTP transport** — a third `network_client`/`network_server`
+  implementation (`include/raft/proxygen_http_transport.hpp`/`_impl.hpp`),
+  backed by Meta's Proxygen driven directly by Folly's `EventBase`/
+  `IOThreadPoolExecutor`, alongside the existing cpp-httplib and
+  Boost.Beast transports. Spec at `.kiro/specs/proxygen-http-transport/`,
+  all 17 tasks across 12 phases complete.
+  - Generic (any-`KYTHIRA_DEFAULT_FUTURE_BACKEND`) async bridge composed
+    via `future_transformable`'s `thenValue`/`thenTry`, mirroring Beast's
+    own bridge shape but adapted to Proxygen's callback interfaces
+    (`HTTPConnector::Callback`, the 10-method `HTTPTransactionHandler` —
+    `spike-notes.md` Finding 2 corrects `design.md`'s original 4-method
+    sketch). One connection pooled per target node, with one
+    `folly::EventBase` pinned per node for its whole connection lifetime
+    (not round-robin per call — required for correctness, since
+    `HTTPUpstreamSession` is permanently pinned to its creating
+    `EventBase`) and an `HTTPSessionBase::InfoCallback`-based liveness
+    tracker so a dead connection is transparently replaced on next use.
+  - An optional Folly-native fast path: when the project's future backend
+    is Folly (the default), `send_rpc` skips the generic
+    `kythira::promise_default<T>` bridge entirely and wraps a raw
+    `folly::Promise<T>`/`folly::Future<T>` directly into
+    `kythira::Future<T>`, dispatched via `if constexpr` on `Types`'s own
+    `future_template<T>` member type — never a
+    `KYTHIRA_DEFAULT_FUTURE_BACKEND` macro check. Confirmed actually taken
+    (not merely "the RPC succeeded") via a metrics path-label distinguishing
+    it from the generic bridge.
+  - Server side built on Proxygen's own higher-level `RequestHandler`/
+    `RequestHandlerFactory`/`ResponseBuilder` API rather than a raw
+    `HTTPTransactionHandler` — a deliberate refinement over the spec's
+    original lower-level sketch (`spike-notes.md` Finding 6), since
+    Proxygen itself documents this as the intended extension point for
+    exactly this shape of server.
+  - TLS (mutual and server-only) via `folly::SSLContext` (client) /
+    `wangle::SSLContextConfig` (server), with hot reload
+    (`reload_tls_material()`/`enable_auto_reload()`) matching both existing
+    transports' contract.
+  - A real, non-obvious bug found and fixed during development (not by a
+    reviewer after the fact): an early draft captured the same move-only
+    `kythira::promise_default<T>`/`folly::Promise<T>` into both a
+    `.thenValue()` and a separate `.thenError()` continuation, moving from
+    an already-moved-from promise on the error path. Fixed by settling the
+    outer promise from a single trailing `.thenTry()`/`folly::Future<T>::thenTry()`
+    instead.
+  - Two real, pre-authoring discrepancies between the spec's assumptions
+    and the actually-vendored `proxygen`/`folly` headers, found and
+    recorded via direct header inspection rather than assumed:  the
+    resolvable `proxygen` version at this project's pinned
+    `builtin-baseline` is `2025.05.19.00`, not the `2026.02.23.00` the spec
+    document originally stated; and `HTTPTransactionHandler` has 10
+    pure-virtual methods, not the 4 the original design sketch showed.
+    Full findings in `.kiro/specs/proxygen-http-transport/spike-notes.md`.
+  - A genuine, general project-level CMake gap surfaced by this feature's
+    new transitive dependency chain (fizz/mvfst pull in `unofficial-sodium`
+    for the first time): this project configures vcpkg's manifest-mode
+    output via `CMAKE_PREFIX_PATH` rather than vcpkg's own toolchain file,
+    and `unofficial-sodium`'s generated CMake config is the first vcpkg
+    port in this project's tree whose config script reads
+    `_VCPKG_INSTALLED_DIR`/`VCPKG_TARGET_TRIPLET` directly (most ports
+    instead derive their install prefix relative to the config file's own
+    location) — those two variables are only ever defined by vcpkg's
+    toolchain file, so left undefined they silently collapsed
+    `unofficial-sodium::sodium`'s `INTERFACE_INCLUDE_DIRECTORIES` to a
+    literal `"//include"`, failing CMake's imported-target path-existence
+    check at generate time (misleadingly attributed by CMake's own
+    diagnostic to `proxygen::proxygen`, the top-level target actually being
+    linked, not the deeply-nested real source). Fixed generally in root
+    `CMakeLists.txt` (defining both variables from `KYTHIRA_VCPKG_TRIPLET`
+    when a caller hasn't already), not specific to this one port.
+  - `doc/http_transport_performance_comparison.md`: a real, measured
+    throughput/latency comparison of all three HTTP transports
+    (`examples/raft/http_transport_comparison_benchmark.cpp`) doing the
+    same `RequestVote` round trip. Notable finding: cpp-httplib measured at
+    ~12 ops/sec (vs. Beast's 3,527 and Proxygen's 2,839) on this run,
+    traced to cpp-httplib's vendored `CPPHTTPLIB_TCP_NODELAY` defaulting to
+    `false` — a genuine Nagle/delayed-ACK interaction, not a benchmark
+    artifact or a general "cpp-httplib is slow" claim.
+  - `configs/ci_full_defconfig` was already missing `CONFIG_BOOST_BEAST_TRANSPORT=y`
+    (a pre-existing gap predating this feature — Beast's own default is
+    `n`, same as every other optional transport, so "every optional
+    dependency selected" was never actually true for either HTTP
+    transport); fixed alongside adding `CONFIG_PROXYGEN_TRANSPORT=y`, so
+    CI's full-feature build now actually exercises both.
+  - Full `ci_full_defconfig` regression suite: 393/395 passing (2 new
+    targets from this feature, both passing); the 2 non-passing entries
+    are the pre-existing, already-documented `ca_cluster_node_test`/
+    `ca_cluster_node_rpc_tls_restart_test` intermittent-hang flake (Known
+    Follow-ups), confirmed unrelated (both pass standalone; this feature
+    touches neither `certificate_authority` nor `ca_cluster_node`) and
+    reconfirmed rather than assumed. One real, transient regression found
+    and fixed along the way: this feature's own new
+    `http_transport_comparison_benchmark_test` (a genuine ~3-minute,
+    CPU-heavy real-network run) caused `raft_comprehensive_performance_benchmark`'s
+    latency-coefficient-of-variation check to fail under `ctest -j4`
+    contention alone (confirmed by an isolated rerun passing cleanly) —
+    fixed with the same `PROCESSORS`-matches-runner-cores CTest property
+    `ca_cluster_node_test` itself already uses for the identical reason.
+
 ### What Changed (July 25, 2026, continued)
 
 - **Closed gap 2 of the Folly-decoupling follow-ups for `tests/`/

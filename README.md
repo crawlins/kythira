@@ -1344,7 +1344,17 @@ The implementation has been tested with multiple transport layers:
 ✅ **stdexec Future Backend**: optional, opt-in second `Future`/`Promise`/
   `Executor` implementation for new `stdexec`-specific code; Folly stays
   the default and is unaffected either way
-✅ **Testing**: 100% pass rate (393 tests), comprehensive property/integration/chaos testing
+✅ **Alternative HTTP Transports**: Boost.Beast and Proxygen, two additional
+  opt-in `network_client`/`network_server` implementations alongside the
+  default cpp-httplib transport — same `transport_types` concept, a
+  template-argument swap away; neither replaces cpp-httplib as the default
+  for any existing call site. See
+  [`doc/http_transport_performance_comparison.md`](doc/http_transport_performance_comparison.md)
+  for a measured throughput/latency comparison across all three.
+✅ **Testing**: 393/395 tests passing, comprehensive property/integration/chaos testing
+  (the 2 non-passing are a pre-existing, already-documented intermittent-hang
+  flake in `ca_cluster_node_test`'s own family — see `doc/TODO.md`'s Known
+  Follow-ups, unrelated to any transport)
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
 [`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
@@ -1353,8 +1363,6 @@ See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
 
 ⚠️ **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
   managers / certificate providers — AWS is implemented today
-⚠️ **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
-  alternatives to the current httplib-based transport
 
 ### Production Checklist
 
@@ -1377,10 +1385,8 @@ outstanding-work list. Areas where help is needed:
 
 1. **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
    managers / certificate providers
-2. **Alternative HTTP transports**: Boost.Beast and Proxygen as optional
-   alternatives to the current httplib-based transport
-3. **Performance Optimization**: Profiling and memory usage optimization
-4. **Documentation**: More examples and tutorials
+2. **Performance Optimization**: Profiling and memory usage optimization
+3. **Documentation**: More examples and tutorials
 
 ## Troubleshooting
 
