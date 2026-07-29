@@ -70,6 +70,7 @@
 #include <algorithm>
 #include <arpa/inet.h>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -224,18 +225,53 @@ struct SpotSelection {
     double spot_price_per_hr{0.0};
 };
 
-// Returns the cheapest Linux/UNIX spot instance type available in the region
-// connected to `ec2_client`.  `arch` must be "x86_64" or "arm64" — bare-metal
-// types are excluded.  Falls back to a hardcoded default if the API calls fail.
+// A concrete way to launch one instance: an instance type plus whether to
+// request it on the spot market or on demand, with the matching hourly price.
+struct InstanceOption {
+    std::string instance_type;
+    bool spot{true};
+    double price_per_hr{0.0};
+};
+
+// True if an EC2 error is a (transient, retryable-with-a-different-choice)
+// capacity shortage — either InsufficientInstanceCapacity for an on-demand
+// launch or "There is no Spot capacity available…" for a spot launch. Both
+// carry "capacity" in the exception name or message; nothing else the launch
+// path can hit does, so a case-insensitive substring match is sufficient and
+// robust to the SDK not having a mapped enum for these ("Unable to parse
+// ExceptionName: InsufficientInstanceCapacity" in the raw logs).
+template<typename Error> auto is_insufficient_capacity(const Error& err) -> bool {
+    const auto contains_capacity = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s.find("capacity") != std::string::npos;
+    };
+    return contains_capacity(std::string(err.GetExceptionName())) ||
+           contains_capacity(std::string(err.GetMessage()));
+}
+
+// Cheapest reliably-available on-demand fallback for `arch`. A nano on-demand
+// instance is the cheapest way to still get *an* instance once spot capacity
+// is exhausted across the cheap types, and on-demand nano capacity is
+// effectively always available.
+auto cheapest_on_demand(const std::string& arch) -> InstanceOption {
+    return (arch == "arm64") ? InstanceOption{"t4g.nano", false, 0.0042}
+                             : InstanceOption{"t3.nano", false, 0.0052};
+}
+
+// Returns every Linux/UNIX spot-eligible instance type available in the region
+// connected to `ec2_client`, sorted cheapest-first by current spot price.
+// `arch` must be "x86_64" or "arm64" — bare-metal types are excluded.  Falls
+// back to a single hardcoded default if the API calls fail or return nothing.
 //
 // Algorithm:
 //   1. DescribeInstanceTypes — enumerate non-bare-metal spot-eligible types for
 //      the requested architecture (paginated).
 //   2. DescribeSpotPriceHistory — batch-query current Linux/UNIX spot prices for
 //      those types (50 types per API call).
-//   3. Return the type with the lowest observed price.
-auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& arch)
-    -> SpotSelection {
+//   3. Return all priced types, sorted by ascending price.
+auto ranked_spot_instances(Aws::EC2::EC2Client& ec2_client, const std::string& arch)
+    -> std::vector<SpotSelection> {
     const std::string fallback_type = (arch == "arm64") ? "t4g.micro" : "t3.micro";
     const double fallback_price = (arch == "arm64") ? 0.0047 : 0.0052;
 
@@ -269,7 +305,7 @@ auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& 
             }
             auto out = ec2_client.DescribeInstanceTypes(req);
             if (!out.IsSuccess()) {
-                return {fallback_type, fallback_price};
+                return {{fallback_type, fallback_price}};
             }
             for (const auto& info : out.GetResult().GetInstanceTypes()) {
                 candidates.push_back(info.GetInstanceType());
@@ -279,7 +315,7 @@ auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& 
     }
 
     if (candidates.empty()) {
-        return {fallback_type, fallback_price};
+        return {{fallback_type, fallback_price}};
     }
 
     // Step 2: batch-query spot price history (50 types per call).
@@ -319,13 +355,45 @@ auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& 
     }
 
     if (price_by_type.empty()) {
-        return {fallback_type, fallback_price};
+        return {{fallback_type, fallback_price}};
     }
 
-    const auto min_it =
-        std::min_element(price_by_type.begin(), price_by_type.end(),
-                         [](const auto& a, const auto& b) { return a.second < b.second; });
-    return {min_it->first, min_it->second};
+    std::vector<SpotSelection> ranked;
+    ranked.reserve(price_by_type.size());
+    for (const auto& [type, price] : price_by_type) {
+        ranked.push_back({type, price});
+    }
+    std::sort(ranked.begin(), ranked.end(), [](const SpotSelection& a, const SpotSelection& b) {
+        return a.spot_price_per_hr < b.spot_price_per_hr;
+    });
+    return ranked;
+}
+
+// Cheapest single spot type (front of the ranked list, which is never empty).
+auto cheapest_spot_instance(Aws::EC2::EC2Client& ec2_client, const std::string& arch)
+    -> SpotSelection {
+    return ranked_spot_instances(ec2_client, arch).front();
+}
+
+// Ordered launch options for a single spot-first instance (e.g. the bastion):
+// every spot type in ascending price order that still undercuts simply paying
+// on-demand for the cheap fallback type, followed by that on-demand fallback.
+// Walking this list on InsufficientInstanceCapacity degrades cheapest-spot →
+// next-cheapest-spot → … → on-demand, always taking the cheaper of "next spot
+// type" vs "cheapest on-demand" at each step (once the next spot type costs at
+// least as much as on-demand, there is no reason to keep trying spot).
+auto spot_first_launch_options(Aws::EC2::EC2Client& ec2_client, const std::string& arch)
+    -> std::vector<InstanceOption> {
+    const InstanceOption on_demand = cheapest_on_demand(arch);
+    std::vector<InstanceOption> options;
+    for (const auto& s : ranked_spot_instances(ec2_client, arch)) {
+        if (s.spot_price_per_hr >= on_demand.price_per_hr) {
+            break;
+        }
+        options.push_back({s.instance_type, true, s.spot_price_per_hr});
+    }
+    options.push_back(on_demand);
+    return options;
 }
 
 // ── Signal-driven cleanup ─────────────────────────────────────────────────────
@@ -427,6 +495,11 @@ struct RealEc2Fixture : signal_cleanup_target {
 
     // ── quorum manager config template ────────────────────────────────────────
     kythira::aws_ec2_quorum_manager_config mgr_cfg;
+
+    // Ordered bastion launch options (spot types cheapest-first, then an
+    // on-demand fallback) walked by launch_bastion when a choice hits
+    // InsufficientInstanceCapacity. front() is the preferred (cheapest) option.
+    std::vector<InstanceOption> bastion_options;
 
     // ── Cost tracking ──────────────────────────────────────────────────────────
     TestCostReport cost_report;
@@ -556,14 +629,21 @@ struct RealEc2Fixture : signal_cleanup_target {
             spot_price_cluster = ec2_hourly_rate(instance_type);
         }
         if (bastion_instance_type.empty()) {
-            auto sel = cheapest_spot_instance(*ec2, target_arch);
-            bastion_instance_type = sel.instance_type;
-            spot_price_bastion = sel.spot_price_per_hr;
-            BOOST_TEST_MESSAGE("[spot-select] bastion: " + bastion_instance_type + " at $" +
-                               std::to_string(spot_price_bastion) + "/hr");
+            // Build the whole spot→on-demand fallback ladder so launch_bastion
+            // can survive an InsufficientInstanceCapacity on any single choice.
+            bastion_options = spot_first_launch_options(*ec2, target_arch);
         } else {
-            spot_price_bastion = ec2_hourly_rate(bastion_instance_type);
+            // A forced type still gets an on-demand fallback of the same type
+            // so a spot-capacity gap doesn't fail the run outright.
+            const double rate = ec2_hourly_rate(bastion_instance_type);
+            bastion_options = {{bastion_instance_type, true, rate},
+                               {bastion_instance_type, false, rate}};
         }
+        bastion_instance_type = bastion_options.front().instance_type;
+        spot_price_bastion = bastion_options.front().price_per_hr;
+        BOOST_TEST_MESSAGE("[spot-select] bastion: " + bastion_instance_type + " at $" +
+                           std::to_string(spot_price_bastion) + "/hr (" +
+                           std::to_string(bastion_options.size()) + " launch option(s))");
 
         // A test-case-ID-derived value is NOT sufficient here:
         // boost::unit_test::framework::current_test_case().p_id is
@@ -868,32 +948,62 @@ struct RealEc2Fixture : signal_cleanup_target {
     }
 
     void launch_bastion() {
-        Aws::EC2::Model::RunInstancesRequest req;
-        req.SetImageId(ami_id);
-        req.SetInstanceType(
-            Aws::EC2::Model::InstanceTypeMapper::GetInstanceTypeForName(bastion_instance_type));
-        req.SetMinCount(1);
-        req.SetMaxCount(1);
-        req.SetSubnetId(pub_subnet_id);
-        req.AddSecurityGroupIds(bastion_sg_id);
-        req.SetKeyName(ssh_key_name);
-        Aws::EC2::Model::IamInstanceProfileSpecification iam_spec;
-        iam_spec.SetName(node_instance_profile_name);
-        req.SetIamInstanceProfile(iam_spec);
-        Aws::EC2::Model::InstanceMarketOptionsRequest market_opts;
-        market_opts.SetMarketType(Aws::EC2::Model::MarketType::spot);
-        Aws::EC2::Model::SpotMarketOptions spot_opts;
-        spot_opts.SetSpotInstanceType(Aws::EC2::Model::SpotInstanceType::one_time);
-        market_opts.SetSpotOptions(spot_opts);
-        req.SetInstanceMarketOptions(market_opts);
+        // Walk the bastion's launch options (cheapest spot first, an on-demand
+        // fallback last). A single spot type in a single AZ regularly hits
+        // InsufficientInstanceCapacity — that alone used to fail the whole
+        // case — so on a capacity error we drop to the next option rather than
+        // giving up. Any non-capacity error is a real problem and aborts.
+        InstanceOption chosen;
+        std::string last_error;
+        for (const auto& opt : bastion_options) {
+            Aws::EC2::Model::RunInstancesRequest req;
+            req.SetImageId(ami_id);
+            req.SetInstanceType(
+                Aws::EC2::Model::InstanceTypeMapper::GetInstanceTypeForName(opt.instance_type));
+            req.SetMinCount(1);
+            req.SetMaxCount(1);
+            req.SetSubnetId(pub_subnet_id);
+            req.AddSecurityGroupIds(bastion_sg_id);
+            req.SetKeyName(ssh_key_name);
+            Aws::EC2::Model::IamInstanceProfileSpecification iam_spec;
+            iam_spec.SetName(node_instance_profile_name);
+            req.SetIamInstanceProfile(iam_spec);
+            if (opt.spot) {
+                Aws::EC2::Model::InstanceMarketOptionsRequest market_opts;
+                market_opts.SetMarketType(Aws::EC2::Model::MarketType::spot);
+                Aws::EC2::Model::SpotMarketOptions spot_opts;
+                spot_opts.SetSpotInstanceType(Aws::EC2::Model::SpotInstanceType::one_time);
+                market_opts.SetSpotOptions(spot_opts);
+                req.SetInstanceMarketOptions(market_opts);
+            }
 
-        auto out = ec2->RunInstances(req);
-        BOOST_REQUIRE_MESSAGE(out.IsSuccess(),
-                              "bastion RunInstances: " + std::string(out.GetError().GetMessage()));
-        bastion_ec2_id = std::string(out.GetResult().GetInstances()[0].GetInstanceId());
+            auto out = ec2->RunInstances(req);
+            if (out.IsSuccess()) {
+                bastion_ec2_id = std::string(out.GetResult().GetInstances()[0].GetInstanceId());
+                chosen = opt;
+                break;
+            }
+            last_error = std::string(out.GetError().GetMessage());
+            if (!is_insufficient_capacity(out.GetError())) {
+                // Not a capacity problem — a real failure; don't mask it by
+                // walking the list.
+                break;
+            }
+            BOOST_TEST_MESSAGE("[bastion] " + opt.instance_type + " (" +
+                               (opt.spot ? "spot" : "on-demand") + ") unavailable: " + last_error +
+                               " — trying next option");
+        }
+        BOOST_REQUIRE_MESSAGE(
+            !bastion_ec2_id.empty(),
+            "bastion RunInstances: exhausted all launch options; last error: " + last_error);
+        // Reflect the option actually launched in the recorded bastion type,
+        // price and cost line (they seed the cost report and other messages).
+        bastion_instance_type = chosen.instance_type;
+        spot_price_bastion = chosen.price_per_hr;
         cost_report.resources.push_back({
-            "1x " + bastion_instance_type + " (bastion, spot)",
-            spot_price_bastion,
+            "1x " + chosen.instance_type + " (bastion, " + (chosen.spot ? "spot" : "on-demand") +
+                ")",
+            chosen.price_per_hr,
             std::chrono::steady_clock::now(),
             std::nullopt,
         });
