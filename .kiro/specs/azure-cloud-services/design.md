@@ -884,6 +884,24 @@ VMs/VMSS instances tagged `kythira:cluster = {CLUSTER}`, and tags itself
 `kythira:status = ready` — functionally identical to the AWS bootstrap
 script's steps, substituting Azure CLI/ARM calls for the AWS CLI ones.
 
+### CI wiring (Requirement 21)
+
+`.github/workflows/real-cloud-tests.yml`'s `azure` job (scaffolded as a
+no-op by `.kiro/specs/ci-real-cloud-tests/`) is replaced with real steps
+mirroring the `aws` job's shape: an `azure/login@v2` step using Workload
+Identity Federation (no client secret), then a per-bundle `ctest -R`
+invocation gated by `REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED` /
+`REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED`. `tests/azure_quorum_manager_real_test.cpp`
+gains the same `TestCostReport`/`CostAccumulator`/`CostSummaryFixture`
+apparatus `aws_real_ec2_test_support.hpp` already provides for AWS,
+re-priced against Azure's published `AZURE_TEST_VM_SIZE` on-demand rate,
+and the same signal-driven (`SIGTERM`/`SIGINT`/`SIGHUP`/`SIGQUIT`/`SIGPIPE`)
+teardown-on-cancel handlers, so a canceled or killed CI run still tears
+down VMs/VMSS instances rather than leaking them. `scripts/ci-cloud-credentials/azure/`
+mirrors the AWS directory's shape (provisioning script, per-bundle
+`policies/*.json` role-assignment fragments, `README.md`) — see
+Requirement 21 for the full acceptance criteria.
+
 ---
 
 ## Dependencies

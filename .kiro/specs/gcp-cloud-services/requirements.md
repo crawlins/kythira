@@ -1082,7 +1082,57 @@ account, plus optional integration tests that run against real GCP.
 
 ---
 
-### Requirement 24: Documentation
+### Requirement 24: CI Wiring — Replace the `gcp` Job Skeleton
+
+**User Story:** As a maintainer, I want the existing no-op `gcp` job in
+`.github/workflows/real-cloud-tests.yml` (scaffolded by
+`.kiro/specs/ci-real-cloud-tests/`, whose own design.md names this exact
+future spec as the place to fill it in) replaced with real steps, following
+the same toggle and credential-federation pattern already established for
+the `aws` job.
+
+#### Acceptance Criteria
+
+1. The `gcp` job SHALL gain the same resolution pattern as the `aws` job:
+   `REAL_CLOUD_TESTS_GCP_ENABLED` (already scaffolded per
+   `ci-real-cloud-tests/design.md`) gates the job; new
+   `REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED` and
+   `REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED` bundle-level variables gate the
+   `gcp_quorum_manager_real_gce_test` (Compute Engine + MIG suites) and
+   `gcp_privateca_provider_real_test` binaries independently, mirroring
+   `REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED`.
+2. CI authentication SHALL use GCP Workload Identity Federation: a Workload
+   Identity Pool and OIDC provider trusting `token.actions.githubusercontent.com`
+   for a subject scoped to this repository (optionally narrowed to a ref or
+   the `real-cloud-tests` GitHub Environment, mirroring Requirement 4.4 of
+   `ci-real-cloud-tests`), impersonating a dedicated service account via
+   `google-github-actions/auth@v2`'s `workload_identity_provider`/
+   `service_account` inputs — no service-account JSON key is ever stored as
+   a CI secret, matching the `aws` job's OIDC role-assumption posture with
+   GCP's own native federation mechanism rather than a long-lived credential
+   fallback.
+3. A `scripts/ci-cloud-credentials/gcp/` directory SHALL be added, mirroring
+   `scripts/ci-cloud-credentials/aws/`'s shape: a provisioning script
+   creating the Workload Identity Pool/provider, the impersonated service
+   account, and IAM role bindings scoped to exactly the enabled bundles; a
+   `policies/` directory holding one IAM-binding fragment per bundle
+   (`gcp-quorum-manager.json`, `gcp-privateca.json`); and a `README.md`
+   walkthrough.
+4. Test cost estimation and reporting (mirroring Requirement 20 of
+   `aws-quorum-manager`) SHALL be added to
+   `tests/gcp_quorum_manager_real_gce_test.cpp`, using published GCE
+   on-demand machine-type pricing for the fixture's chosen instance shape,
+   with an equivalent `TestCostReport`/`CostAccumulator`/
+   `CostSummaryFixture` structure.
+5. Signal-driven test cleanup (mirroring Requirement 21 of
+   `aws-quorum-manager`) SHALL be added identically: SIGTERM/SIGINT/SIGHUP/
+   SIGQUIT/SIGPIPE handlers invoke the active fixture's `teardown()` before
+   re-raising, with the same async-signal-safety caveat documented at the
+   handler definition.
+
+---
+
+### Requirement 25: Documentation
 
 **User Story:** As a contributor reading `README.md`/`DEPENDENCIES.md`, I
 want GCP support documented in the same places AWS support is, so the

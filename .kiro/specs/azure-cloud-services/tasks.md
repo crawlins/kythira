@@ -43,6 +43,9 @@ Reference implementations to study before starting:
 - `include/raft/fault_injection.hpp` — `fiu_do_on` macro usage.
 - `cmd/ca_service/` — the `any_certificate_provider` type-erasure pattern to
   extend with a third provider option (Requirement 17 AC 7).
+- `.kiro/specs/ci-real-cloud-tests/` — the CI toggle pattern this spec's
+  Task 8 plugs into; its own design.md names this exact future spec as the
+  place to fill in the `azure` job skeleton.
 
 ## Task Dependency Graph
 
@@ -77,7 +80,7 @@ Reference implementations to study before starting:
     {
       "wave": 6,
       "tasks": [8],
-      "description": "Real-Azure integration tests — independent per-suite, but grouped since they share one fixture pattern"
+      "description": "Real-Azure integration tests + CI wiring — independent per-suite, but grouped since they share one fixture pattern and the same ci-real-cloud-tests toggle plumbing"
     },
     {
       "wave": 7,
@@ -468,7 +471,7 @@ Reference implementations to study before starting:
   - Verify: `ctest -R azure_key_vault_ca_provider_unit_test` passes.
   - _Requirements: 20.1, 20.4–20.6_
 
-- [ ] 8. Real-Azure integration tests
+- [ ] 8. Real-Azure integration tests + CI wiring
   - Create `tests/azure_quorum_manager_real_test.cpp` (VM + VMSS suites) and
     `tests/azure_key_vault_ca_provider_real_test.cpp`, both guarded by
     `#ifdef KYTHIRA_AZURE_REAL_TESTS`
@@ -527,6 +530,26 @@ Reference implementations to study before starting:
     but are not registered in CTest; all other tests pass unmodified.
   - _Requirements: 20.8–20.14_
 
+  **CI wiring** (design.md § "CI wiring"):
+  - Port `aws_real_ec2_test_support.hpp`'s cost-tracking
+    (`BilledResource`/`TestCostReport`/`CostAccumulator`/
+    `CostSummaryFixture`) and signal-driven-cleanup apparatus to an
+    Azure-flavored equivalent, re-priced against published Azure on-demand
+    VM/VMSS pricing for `AZURE_TEST_VM_SIZE` (Req 21.4–21.5)
+  - Replace the no-op `azure` job body in
+    `.github/workflows/real-cloud-tests.yml` with real steps: `azure/login@v2`
+    via Workload Identity Federation, then `REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED`/
+    `REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED`-gated `ctest -R` steps for
+    `azure_quorum_manager_real_test`/`azure_key_vault_ca_provider_real_test`,
+    following the `aws` job's shape (Req 21.1–21.2)
+  - Add `scripts/ci-cloud-credentials/azure/` (provisioning script + Azure
+    RBAC `policies/*.json` fragments + `README.md`) (Req 21.3)
+  - Verify: `workflow_dispatch` manual runs exercise the master-off,
+    provider-off, all-bundles-off, and one-bundle-on toggle combinations,
+    matching `ci-real-cloud-tests`'s own verification approach for the `aws`
+    job
+  - _Requirements: 21.1–21.5_
+
 - [ ] 9. Wire `ca_service --provider azure-key-vault` and update documentation
   - In `cmd/ca_service/` source, add `--provider azure-key-vault` alongside
     `local`/`aws-acm-pca`, plus `--key-vault-url`, `--key-vault-key-name`,
@@ -545,7 +568,7 @@ Reference implementations to study before starting:
   - Verify: `cmake --build build --target format-check` passes on all new
     files; existing AWS-related README sections are left unmodified except
     for the "What's In Progress"/"What's Ready" bullet move
-  - _Requirements: 17.7, 21.1–21.3_
+  - _Requirements: 17.7, 22.1–22.3_
 
 ## Notes
 

@@ -32,6 +32,9 @@ Reference implementations to study before starting:
   (used here as the model for GCP's fake-client unit-test layer, since GCP
   has no widely available Compute Engine emulator — see `design.md`'s
   Testing Strategy section)
+- `.kiro/specs/ci-real-cloud-tests/` — the CI toggle pattern this spec's
+  Task 11 plugs into; its own design.md names this exact future spec as the
+  place to fill in the `gcp` job skeleton.
 
 ## Task Dependency Graph
 
@@ -71,7 +74,7 @@ Reference implementations to study before starting:
     {
       "wave": 7,
       "tasks": [11, 12],
-      "description": "Real-GCP integration test fixtures and test cases"
+      "description": "Real-GCP integration test fixtures and test cases, plus CI wiring for the gcp job (task 11)"
     },
     {
       "wave": 8,
@@ -216,7 +219,7 @@ Reference implementations to study before starting:
 - `sign_csr`/`root_certificate_pem` behavior, fault point coverage.
 - _Requirements: 23 (AC 12)_
 
-### Task 11: Real-GCP Quorum Manager Integration Tests
+### Task 11: Real-GCP Quorum Manager Integration Tests + CI Wiring
 
 - `tests/gcp_quorum_manager_real_gce_test.cpp`, guarded by
   `KYTHIRA_GCP_REAL_TESTS=1`, excluded from default `ctest`, labels
@@ -227,6 +230,26 @@ Reference implementations to study before starting:
   account), ordered teardown with error collection.
 - Test cases per Requirement 23 ACs 18–19 (both managers).
 - _Requirements: 23 (ACs 13–19)_
+
+**CI wiring** (design.md § "CI wiring"):
+- Port `aws_real_ec2_test_support.hpp`'s cost-tracking
+  (`BilledResource`/`TestCostReport`/`CostAccumulator`/`CostSummaryFixture`)
+  and signal-driven-cleanup apparatus to a GCP-flavored equivalent, re-priced
+  against published GCE on-demand machine-type pricing (Req 24.4–24.5).
+- Replace the no-op `gcp` job body in `.github/workflows/real-cloud-tests.yml`
+  with real steps: `google-github-actions/auth@v2` via Workload Identity
+  Federation (impersonated service account, no JSON key), then
+  `REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED`/
+  `REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED`-gated `ctest -R` steps for
+  `gcp_quorum_manager_real_gce_test`/`gcp_privateca_provider_real_test`,
+  following the `aws` job's shape (Req 24.1–24.2).
+- Add `scripts/ci-cloud-credentials/gcp/` (provisioning script + IAM-binding
+  `policies/*.json` fragments + `README.md`) (Req 24.3).
+- Verify: `workflow_dispatch` manual runs exercise the master-off,
+  provider-off, all-bundles-off, and one-bundle-on toggle combinations,
+  matching `ci-real-cloud-tests`'s own verification approach for the `aws`
+  job.
+- _Requirements: 24.1–24.5_
 
 ### Task 12: Real-GCP Certificate Provider Integration Test
 
@@ -244,4 +267,4 @@ Reference implementations to study before starting:
 - Write `doc/gcp_quorum_manager_README.md` covering the label/metadata
   scheme, the node-identity design decision, and config construction
   examples.
-- _Requirements: 24_
+- _Requirements: 25_

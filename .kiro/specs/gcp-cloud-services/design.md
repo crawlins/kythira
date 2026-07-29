@@ -632,6 +632,26 @@ Mirrors `aws_quorum_manager_unit_test.cpp`'s shape but only two tiers
    skip-don't-fail-on-missing-credentials discipline as
    `aws_quorum_manager_real_ec2_test.cpp`.
 
+### CI wiring (Requirement 24)
+
+`.github/workflows/real-cloud-tests.yml`'s `gcp` job (scaffolded as a
+no-op by `.kiro/specs/ci-real-cloud-tests/`) is replaced with real steps
+mirroring the `aws` job's shape: a `google-github-actions/auth@v2` step
+using Workload Identity Federation to impersonate a dedicated service
+account (no service-account JSON key), then a per-bundle `ctest -R`
+invocation gated by `REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED` /
+`REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED`.
+`tests/gcp_quorum_manager_real_gce_test.cpp` gains the same
+`TestCostReport`/`CostAccumulator`/`CostSummaryFixture` apparatus
+`aws_real_ec2_test_support.hpp` already provides for AWS, re-priced against
+published GCE on-demand machine-type pricing, and the same
+signal-driven (`SIGTERM`/`SIGINT`/`SIGHUP`/`SIGQUIT`/`SIGPIPE`)
+teardown-on-cancel handlers, so a canceled or killed CI run still tears
+down instances/MIG capacity rather than leaking them.
+`scripts/ci-cloud-credentials/gcp/` mirrors the AWS directory's shape
+(provisioning script, per-bundle `policies/*.json` IAM-binding fragments,
+`README.md`) — see Requirement 24 for the full acceptance criteria.
+
 ## Open Questions / Follow-ups (out of scope for this spec)
 
 - **Regional MIGs**: this spec only covers zonal MIGs (Requirement

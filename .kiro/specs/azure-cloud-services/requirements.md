@@ -999,7 +999,57 @@ subscription.
 
 ---
 
-### Requirement 21: Documentation
+### Requirement 21: CI Wiring — Replace the `azure` Job Skeleton
+
+**User Story:** As a maintainer, I want the existing no-op `azure` job in
+`.github/workflows/real-cloud-tests.yml` (scaffolded by
+`.kiro/specs/ci-real-cloud-tests/`, whose own design.md names this exact
+future spec as the place to fill it in) replaced with real steps, following
+the same toggle and credential-federation pattern already established for
+the `aws` job.
+
+#### Acceptance Criteria
+
+1. The `azure` job SHALL gain the same resolution pattern as the `aws` job:
+   `REAL_CLOUD_TESTS_AZURE_ENABLED` (already scaffolded per
+   `ci-real-cloud-tests/design.md`) gates the job; new
+   `REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED` and
+   `REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED` bundle-level variables gate the
+   `azure_quorum_manager_real_test` (VM + VMSS suites) and
+   `azure_key_vault_ca_provider_real_test` binaries independently, mirroring
+   `REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED`.
+2. CI authentication SHALL use Microsoft Entra ID Workload Identity
+   Federation: a federated credential configured on an App Registration's
+   Service Principal, trusting `token.actions.githubusercontent.com` for a
+   subject scoped to this repository (optionally narrowed to a ref or the
+   `real-cloud-tests` GitHub Environment, mirroring Requirement 4.4 of
+   `ci-real-cloud-tests`), exchanged via `azure/login@v2`'s OIDC mode
+   (`client-id`/`tenant-id`/`subscription-id` inputs, no `client-secret`) —
+   no client secret or certificate is ever stored as a CI secret, matching
+   the `aws` job's OIDC role-assumption posture with Azure's own native
+   federation mechanism rather than a long-lived credential fallback.
+3. A `scripts/ci-cloud-credentials/azure/` directory SHALL be added,
+   mirroring `scripts/ci-cloud-credentials/aws/`'s shape: a provisioning
+   script creating the App Registration/Service Principal, its federated
+   credential, and Azure RBAC role assignments scoped to exactly the
+   enabled bundles; a `policies/` directory holding one role-assignment
+   JSON fragment per bundle (`azure-quorum-manager.json`,
+   `azure-key-vault.json`); and a `README.md` walkthrough.
+4. Test cost estimation and reporting (mirroring Requirement 20 of
+   `aws-quorum-manager`) SHALL be added to
+   `tests/azure_quorum_manager_real_test.cpp`, using published Azure
+   on-demand VM/VMSS pricing for the fixture's chosen `AZURE_TEST_VM_SIZE`,
+   with an equivalent `TestCostReport`/`CostAccumulator`/
+   `CostSummaryFixture` structure.
+5. Signal-driven test cleanup (mirroring Requirement 21 of
+   `aws-quorum-manager`) SHALL be added identically: SIGTERM/SIGINT/SIGHUP/
+   SIGQUIT/SIGPIPE handlers invoke the active fixture's `teardown()` before
+   re-raising, with the same async-signal-safety caveat documented at the
+   handler definition.
+
+---
+
+### Requirement 22: Documentation
 
 **User Story:** As a contributor, I want the top-level README and
 `DEPENDENCIES.md` updated so that Azure support is discoverable the same way
