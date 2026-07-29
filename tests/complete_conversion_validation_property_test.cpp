@@ -167,6 +167,30 @@ BOOST_AUTO_TEST_CASE(property_no_remaining_folly_future_in_public_interfaces,
                         "include/raft/http_transport.hpp" ||  // Contains folly_http_transport_types
                     file_path == "include/raft/http_transport_impl.hpp" ||  // Implementation checks
                                                                             // for folly::Future
+                    file_path ==
+                        "include/raft/proxygen_http_transport_impl.hpp" ||  // .kiro/specs/
+                                                                            // proxygen-http-transport/
+                                                                            // Requirement 16's
+                                                                            // Folly-native fast
+                                                                            // path deliberately
+                                                                            // wraps raw
+                                                                            // folly::Promise<T>/
+                                                                            // folly::Future<T>
+                                                                            // directly, not
+                                                                            // kythira::promise_default<T>,
+                                                                            // specifically to skip
+                                                                            // the generic bridge's
+                                                                            // extra translation hop
+                                                                            // when the project's
+                                                                            // future backend is
+                                                                            // Folly -- the same
+                                                                            // "implementation
+                                                                            // legitimately touches
+                                                                            // folly::Future by
+                                                                            // name" exemption
+                                                                            // http_transport_impl.hpp
+                                                                            // already has, for an
+                                                                            // analogous reason
                     file_path == "include/raft/test_types.hpp") {  // Test helper file for CoAP
                                                                    // transport tests
                     continue;
