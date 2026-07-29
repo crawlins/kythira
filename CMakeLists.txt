@@ -51,6 +51,30 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
         "vcpkg triplet, for port *-config.cmake scripts that need it directly")
 endif()
 
+# clang++/aarch64 + GCC's libstdc++ <ext/opt_random.h> incompatibility:
+# folly/Random.h (pulled in transitively by proxygen_http_transport.hpp via
+# proxygen -> wangle -> folly, none of which any pre-existing target in this
+# project included before .kiro/specs/proxygen-http-transport/) includes
+# <ext/random>, which on aarch64 conditionally includes libstdc++'s own
+# <ext/opt_random.h> under `#if __ARM_NEON`. That header uses GCC-internal
+# vector typedefs (__Uint32x4_t/__Uint8x16_t) that only GCC's own arm_neon.h
+# defines -- clang's separate arm_neon.h implementation does not provide
+# them under those exact names, so clang fails with "unknown type name
+# '__Uint32x4_t'" parsing GCC's own system header. Confirmed directly from a
+# real CI failure (Build & Test (clang++-18, arm64)): g++-13/aarch64 (GCC
+# compiling GCC's own header) and clang++-18/x64 (__ARM_NEON never defined,
+# not an ARM target) both build the identical header chain cleanly --
+# clang+aarch64 is the one combination where both conditions needed to
+# trigger this hold simultaneously. Undefining the feature-test macro for
+# this one compile only routes libstdc++'s own #if __ARM_NEON guard to its
+# portable (non-vectorized) Mersenne Twister fallback -- a possible, unmeasured
+# perf-only cost to that specific RNG path, not a correctness change, and it
+# does not disable actual NEON codegen (ABI-level vector registers/intrinsics
+# elsewhere are untouched by undefining one preprocessor macro).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-U__ARM_NEON)
+endif()
+
 # ccache: speeds up rebuilds by skipping recompilation of translation units
 # whose preprocessed content + compiler flags exactly match a prior compile.
 # Purely opt-in acceleration — absent or disabled, the build is identical to
