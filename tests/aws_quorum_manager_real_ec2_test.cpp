@@ -65,6 +65,7 @@
 
 #endif
 #include "aws_real_ec2_test_support.hpp"
+#include "aws_refreshing_credentials_provider.hpp"
 
 #include <algorithm>
 #include <arpa/inet.h>
@@ -95,6 +96,34 @@ namespace {
 auto env(const char* name) -> std::string {
     const char* v = std::getenv(name);
     return (v != nullptr) ? std::string(v) : std::string{};
+}
+
+// Builds a credentials provider that re-federates GitHub Actions OIDC before
+// the temporary credentials expire, or returns nullptr when the OIDC
+// environment isn't present (e.g. a developer running the test locally, where
+// the SDK's default chain is the correct source). A fresh provider is built per
+// fixture rather than shared process-wide: it only needs to refresh *within* a
+// single (long-running) test case, and a per-fixture lifetime keeps every
+// SDK-owning object destroyed before Aws::ShutdownAPI runs. The role ARN comes
+// from KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN (set by the workflow to
+// vars.AWS_CI_ROLE_ARN), falling back to the SDK's conventional AWS_ROLE_ARN.
+auto refreshing_credentials_provider(const std::string& region)
+    -> std::shared_ptr<Aws::Auth::AWSCredentialsProvider> {
+    using kythira::testing::aws_real_ec2::github_oidc_refreshing_credentials_provider;
+
+    if (!github_oidc_refreshing_credentials_provider::environment_available()) {
+        return nullptr;  // fall back to the default chain
+    }
+    std::string role_arn = env("KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN");
+    if (role_arn.empty()) {
+        role_arn = env("AWS_ROLE_ARN");
+    }
+    if (role_arn.empty()) {
+        return nullptr;  // cannot re-federate without a role to assume
+    }
+    return std::make_shared<github_oidc_refreshing_credentials_provider>(
+        Aws::String(role_arn.c_str()), Aws::String("kythira-ci-real-cloud-tests"),
+        Aws::String(region.c_str()));
 }
 
 // Run once before any other global fixture constructs: if
@@ -342,6 +371,10 @@ struct RealEc2Fixture : signal_cleanup_target {
 
     // ── AWS clients ─────────────────────────────────────────────────────────
     std::shared_ptr<Aws::EC2::EC2Client> ec2;
+    // Refreshing OIDC credentials provider (nullptr when not running under
+    // GitHub Actions OIDC); shared with the quorum manager so its own EC2
+    // client re-federates too.
+    std::shared_ptr<Aws::Auth::AWSCredentialsProvider> creds_provider;
 
     // ── Cluster UUID (scopes all resource names) ─────────────────────────────
     std::string uuid;
@@ -484,9 +517,20 @@ struct RealEc2Fixture : signal_cleanup_target {
 
         Aws::Client::ClientConfiguration cli_cfg;
         cli_cfg.region = region;
-        ec2 = std::make_shared<Aws::EC2::EC2Client>(cli_cfg);
 
-        Aws::STS::STSClient sts{cli_cfg};
+        // A real-EC2 run outlives the one-hour static session credentials that
+        // GitHub's configure-aws-credentials exports, so build every client on
+        // a provider that re-federates OIDC as the credentials expire. Falls
+        // back to the SDK default chain off-CI (local runs).
+        creds_provider = refreshing_credentials_provider(region);
+        if (creds_provider) {
+            ec2 = std::make_shared<Aws::EC2::EC2Client>(creds_provider, cli_cfg);
+        } else {
+            ec2 = std::make_shared<Aws::EC2::EC2Client>(cli_cfg);
+        }
+
+        auto sts = creds_provider ? Aws::STS::STSClient{creds_provider, cli_cfg}
+                                  : Aws::STS::STSClient{cli_cfg};
         auto id_out = sts.GetCallerIdentity(Aws::STS::Model::GetCallerIdentityRequest{});
         if (!id_out.IsSuccess()) {
             throw std::runtime_error(
@@ -895,6 +939,14 @@ struct RealEc2Fixture : signal_cleanup_target {
         mgr_cfg.provision_timeout = std::chrono::seconds{120};
         mgr_cfg.poll_interval = std::chrono::seconds{5};
         mgr_cfg.aws.region = region;
+        // Hand the manager the same re-federating provider so its own EC2
+        // client survives the static-session-credential expiry too. The config
+        // takes a chain, so wrap the single provider in a one-entry chain.
+        if (creds_provider) {
+            mgr_cfg.aws.credentials_provider =
+                std::make_shared<kythira::testing::aws_real_ec2::single_provider_chain>(
+                    creds_provider);
+        }
     }
 
     // ── Per-test helpers ──────────────────────────────────────────────────────
@@ -1185,33 +1237,70 @@ struct RealEc2Fixture : signal_cleanup_target {
         // f: delete NAT gateway first and poll until fully deleted.
         // This MUST happen before subnet deletion — subnets cannot be removed
         // while a NAT gateway occupying them is still in "deleting" state.
+        auto nat_gw_state = [&]() -> std::optional<Aws::EC2::Model::NatGatewayState> {
+            Aws::EC2::Model::DescribeNatGatewaysRequest poll;
+            poll.AddNatGatewayIds(nat_gw_id);
+            auto out = ec2->DescribeNatGateways(poll);
+            if (!out.IsSuccess()) {
+                return std::nullopt;
+            }
+            const auto& gws = out.GetResult().GetNatGateways();
+            if (gws.empty()) {
+                return std::nullopt;
+            }
+            return gws[0].GetState();
+        };
+        // g is folded in here: the NAT gateway must reach "deleted" both
+        // before its subnets can be removed (step i) and before its Elastic IP
+        // can be released — ReleaseAddress fails with InvalidIPAddress.InUse
+        // while the gateway still holds the association. The previous code
+        // polled for deletion and then issued a single, unchecked
+        // ReleaseAddress, so a release that raced the association teardown
+        // silently failed and leaked the EIP; leaked EIPs pile up against the
+        // account's low default per-region cap (5) until AllocateAddress fails
+        // for every case, which is what took this whole suite red. This single
+        // bounded loop waits for the gateway to disappear and then retries the
+        // release. The budget is kept close to the old 3-minute poll on
+        // purpose: teardown runs inside each case's Boost timeout (e.g.
+        // 600s here), so it must not balloon — a widened window previously
+        // pushed a stop/start case past its timeout during teardown.
+        bool nat_deleted = nat_gw_id.empty();
+        bool eip_released = eip_alloc_id.empty();
         if (!nat_gw_id.empty()) {
             Aws::EC2::Model::DeleteNatGatewayRequest d;
             d.SetNatGatewayId(nat_gw_id);
             ec2->DeleteNatGateway(d);
-            // Poll up to 3 minutes for the NAT GW to reach "deleted" state.
-            auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{3};
-            while (std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::seconds{10});
-                Aws::EC2::Model::DescribeNatGatewaysRequest poll;
-                poll.AddNatGatewayIds(nat_gw_id);
-                auto out = ec2->DescribeNatGateways(poll);
-                if (!out.IsSuccess()) {
-                    continue;
+        }
+        {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{210};
+            while (std::chrono::steady_clock::now() < deadline && !(nat_deleted && eip_released)) {
+                if (!nat_deleted) {
+                    auto st = nat_gw_state();
+                    // std::nullopt: the gateway no longer resolves — gone.
+                    nat_deleted = !st || *st == Aws::EC2::Model::NatGatewayState::deleted;
+                    if (!nat_deleted) {
+                        std::this_thread::sleep_for(std::chrono::seconds{10});
+                        continue;
+                    }
                 }
-                const auto& gws = out.GetResult().GetNatGateways();
-                if (!gws.empty() &&
-                    gws[0].GetState() == Aws::EC2::Model::NatGatewayState::deleted) {
+                // NAT gateway gone — its EIP association is (or is about to be)
+                // clear, so the release can now succeed.
+                Aws::EC2::Model::ReleaseAddressRequest d;
+                d.SetAllocationId(eip_alloc_id);
+                if (ec2->ReleaseAddress(d).IsSuccess()) {
+                    eip_released = true;
                     break;
                 }
+                std::this_thread::sleep_for(std::chrono::seconds{10});
             }
         }
-
-        // g: release EIP (must be after NAT GW is deleted — it holds the association).
-        if (!eip_alloc_id.empty()) {
-            Aws::EC2::Model::ReleaseAddressRequest d;
-            d.SetAllocationId(eip_alloc_id);
-            ec2->ReleaseAddress(d);
+        if (!eip_alloc_id.empty() && !eip_released) {
+            // noexcept teardown, possibly reached from the signal handler —
+            // avoid the Boost.Test framework here and just warn on stderr so an
+            // operator can reclaim the leaked address manually.
+            std::cerr << "[teardown] WARNING: could not release Elastic IP " << eip_alloc_id
+                      << " within the teardown budget (allocation may be leaked; check the "
+                      << "account's EIP quota)\n";
         }
 
         // h: disassociate and delete private route table.
