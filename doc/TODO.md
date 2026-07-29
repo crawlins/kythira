@@ -312,8 +312,12 @@ None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
 - [x] **clang-tidy integration** — `.clang-tidy` config with `WarningsAsErrors: "*"`;
   CMake `static-analysis`/`static-analysis-fix` targets; pre-commit opt-in hook
   step; zero findings across 291 source files
-- [x] **Code coverage** — CMake `ENABLE_COVERAGE` option with gcovr targets,
-  HTML reports, and pre-commit ratchet hook (`coverage_floor.txt` = 84.8%)
+- [x] **Code coverage** — CMake `ENABLE_COVERAGE` option using Clang/LLVM
+  source-based instrumentation (`llvm-profdata`/`llvm-cov`, switched from an
+  earlier gcovr approach that undercounted template-heavy headers via
+  COMDAT folding), HTML reports, pre-commit ratchet hook, and a dedicated CI
+  coverage job (`coverage_floor.txt` = 88.99%); code-coverage spec now
+  20/20 tasks complete
 - [x] **CI reliability (flaky build-and-test/coverage jobs)** — `ca_cluster_node_test`
   (real multi-process Raft cluster, flaked under `ctest -j$(nproc)` CPU
   contention) now retries via `--repeat until-pass:3` and is isolated from

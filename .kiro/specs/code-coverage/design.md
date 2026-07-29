@@ -3,9 +3,24 @@
 ## Overview
 
 This document describes the design for code coverage measurement and ratchet
-enforcement in Kythira. Coverage is collected with gcov/lcov against a separate
-instrumented build, reported as an HTML tree, and enforced by a Git pre-commit
-hook that prevents any commit from lowering the recorded line-coverage floor.
+enforcement in Kythira. Coverage is collected via **Clang's LLVM source-based
+instrumentation** (`-fprofile-instr-generate -fcoverage-mapping`) against a
+separate build (`build-coverage/`), reported via `llvm-cov`, and enforced both
+by a Git pre-commit hook and by a dedicated CI job — both compare against a
+non-decreasing line-coverage floor recorded in `coverage_floor.txt`.
+
+> **Note on mechanism**: this spec originally targeted gcov/lcov over a
+> GCC-instrumented build. That approach was replaced in commit `bd5e1bb`
+> ("build: switch coverage measurement to LLVM source-based instrumentation").
+> gcov attributes template function bodies to whichever translation unit wins
+> the COMDAT merge, leaving clones in every other TU at zero count — for a
+> template-heavy header like `raft.hpp` this understated coverage by roughly
+> 10 points despite the code being well-exercised. LLVM's source-based
+> coverage instruments at the AST level, before inlining and before the
+> linker runs, so every template instantiation in every TU is tracked
+> independently. Everything below describes the current, implemented
+> mechanism; see git history for the retired lcov design if it's ever needed
+> for reference.
 
 ## Architecture
 
@@ -13,11 +28,18 @@ hook that prevents any commit from lowering the recorded line-coverage floor.
 Developer workflow
 ──────────────────
 git commit
-    └── .git/hooks/pre-commit
+    └── .git/hooks/pre-commit  (scripts/pre-commit-coverage.sh)
+            ├── require clang++/llvm-profdata/llvm-cov (skip check if absent)
+            ├── configure build-coverage/ with -DENABLE_COVERAGE=ON,
+            │   forcing the clang toolchain (reconfigures if the cache was
+            │   built with a different compiler)
             ├── cmake --build build-coverage   (incremental instrumented build)
-            ├── ctest -LE "slow|performance|verbose"  (fast subset)
-            ├── lcov --capture → filter → summary
-            ├── compare to coverage_floor.txt
+            ├── delete stale *.profraw
+            ├── LLVM_PROFILE_FILE=%p-%m.profraw ctest -LE "^(slow|performance|verbose|benchmark|docker)$"
+            │       --repeat until-pass:3   (fast subset; retries absorb flakes)
+            ├── llvm-profdata merge -sparse *.profraw -o merged.profdata
+            ├── llvm-cov report --instr-profile=merged.profdata <bins> --ignore-filename-regex=...
+            ├── compare TOTAL line-coverage % to coverage_floor.txt
             │       ├── [lower]  → abort commit, print shortfall
             │       ├── [equal]  → allow commit unchanged
             │       └── [higher] → update coverage_floor.txt, git add, allow commit
@@ -25,259 +47,223 @@ git commit
 
 Developer ad-hoc
 ────────────────
-cmake --build build-coverage --target coverage        (full suite, text summary)
-cmake --build build-coverage --target coverage-html   (full suite, HTML report)
+cmake --build build-coverage --target coverage        (full suite, text summary via llvm-cov report)
+cmake --build build-coverage --target coverage-html   (full suite, HTML report via llvm-cov show)
+cmake --build build-coverage --target coverage-reset  (delete *.profraw only)
+
+CI (.github/workflows/ci.yml, "Coverage (clang++-18)" job)
+───────────────────────────────────────────────────────────
+configure build-coverage (clang++-18, ENABLE_COVERAGE=ON)
+    → build → ctest (full suite, JUnit output)
+    → llvm-profdata merge → llvm-cov report (+ llvm-cov show for HTML artifact)
+    → compare to coverage_floor.txt (soft-fail tolerance for measurement noise)
+    → job summary + PR comment with the coverage table
 ```
 
-## Component Design
+## Components and Interfaces
 
 ### 1. CMake Integration (`CMakeLists.txt`)
 
-A new CMake option `ENABLE_COVERAGE` (default `OFF`) gates the coverage
-instrumentation. When `ON`:
+A CMake option `ENABLE_COVERAGE` (default `OFF`, pre-seedable from Kconfig via
+`KCONFIG_COVERAGE`) gates the coverage instrumentation. When `ON`:
 
+- The compiler is required to be Clang (`CMAKE_CXX_COMPILER_ID MATCHES
+  "Clang"`); configure fails with a `FATAL_ERROR` pointing at
+  `-DCMAKE_CXX_COMPILER=clang++` otherwise. Source-based coverage is a
+  Clang/LLVM feature — there is no GCC equivalent path.
 - The build type defaults to `Debug` if none is specified.
-- All targets receive the compile and link flags:
-  ```cmake
-  -fprofile-arcs -ftest-coverage   # legacy gcov flags (also accepted by Clang)
-  --coverage                        # equivalent shorthand; used on link step
-  ```
-- `find_program` locates `lcov` and `genhtml`; if either is missing, the coverage
-  targets are replaced with stubs that print a clear error.
+- Compile flags gain `-fprofile-instr-generate -fcoverage-mapping`; the
+  executable/shared linker flags gain `-fprofile-instr-generate` plus
+  `-latomic` (Clang against GCC's libstdc++ does not provide
+  `__atomic_is_lock_free` as a compiler builtin the way GCC does, so
+  `libatomic` must be linked explicitly).
+- `find_program` locates `llvm-profdata`/`llvm-cov` (preferring the
+  versioned `-18` binaries, falling back to unversioned); if either is
+  missing, the three coverage targets are replaced with stubs that print an
+  actionable error and fail (`${CMAKE_COMMAND} -E false`).
 
-Three custom targets are defined:
+Three custom targets are defined (`CMakeLists.txt:857-939`):
 
-#### `coverage-reset`
-Zeroes all `.gcda` counter files without rebuilding:
-```cmake
-add_custom_target(coverage-reset
-    COMMAND lcov --zerocounters --directory ${CMAKE_BINARY_DIR}
-    COMMENT "Resetting coverage counters"
-)
-```
+- **`coverage-reset`** — deletes all `*.profraw` files under the build
+  directory without rebuilding or re-running tests.
+- **`coverage`** — deletes stale `*.profraw`; runs the full CTest suite with
+  `LLVM_PROFILE_FILE=<dir>/%p-%m.profraw` so every test process (including
+  multi-process fixtures) writes its own uniquely named raw profile; invokes
+  `cmake/llvm_coverage.cmake` in `MODE=report`, which merges profiles with
+  `llvm-profdata merge -sparse` and prints a filtered `llvm-cov report`
+  summary.
+- **`coverage-html`** — same as `coverage`, but `MODE=html` runs `llvm-cov
+  show --format=html` to produce a browsable report tree under
+  `build-coverage/coverage-report/`.
 
-#### `coverage`
-Depends on building all test targets, then:
-1. `lcov --zerocounters` — reset stale data
-2. `ctest -j$(nproc)` — run the full suite
-3. `lcov --capture --directory . --output-file coverage.info`
-4. `lcov --remove coverage.info` to strip exclusions
-5. `lcov --summary coverage.info` — print line/branch/function totals
+### 2. `cmake/llvm_coverage.cmake`
 
-#### `coverage-html`
-Extends `coverage` by calling `genhtml coverage.info --output-directory
-coverage-report/` to produce a browsable HTML tree. A convenience message
-prints the path to `index.html`.
-
-### Exclusion Patterns
-
-lcov `--remove` strips the following path patterns:
-```
-'*/build-coverage/*'
-'*/vcpkg_installed/*'
-'/usr/*'
-'*/tests/*'        # optional: include or exclude test code per preference
-```
-
-The spec leaves test-file inclusion as a build option
-(`COVERAGE_INCLUDE_TESTS`, default `OFF`) since some teams prefer to measure only
-production code.
-
-### 2. Coverage Floor File (`coverage_floor.txt`)
-
-A plain-text file at the repository root containing a single line:
-```
-78.5
-```
-
-This file is committed to version control. It moves only upward:
-- When a new contributor pushes and coverage has grown, they update the file.
-- CI rejects PRs where the file would decrease.
-- The pre-commit hook automates local enforcement.
-
-The file uses one decimal place (e.g., `78.5`) so that small improvements are
-recorded. The hook truncates to one decimal before comparing to avoid
-floating-point noise from run-to-run measurement variation (lcov reports to one
-decimal).
+A standalone `cmake -P` script (not inlined into `CMakeLists.txt`) so that
+shell-variable escaping never has to cross a `add_custom_target(COMMAND ...)`
+boundary. Takes `BUILD_DIR`, `LLVM_PROFDATA`, `LLVM_COV`, `PROFDATA`, `MODE`,
+`HTML_DIR`, and `IGNORE_LIST` (semicolon-separated regexes) as `-D`
+arguments. Collects `*.profraw` via `file(GLOB_RECURSE)`, merges them,
+collects test binaries by filtering extensionless files out of
+`${BUILD_DIR}/tests/`, and dispatches to `llvm-cov report` or `llvm-cov show`
+per `MODE`.
 
 ### 3. Pre-Commit Hook (`scripts/pre-commit-coverage.sh`)
 
-This script is the canonical hook implementation. `scripts/install-hooks.sh`
-symlinks or copies it to `.git/hooks/pre-commit`.
+The canonical hook implementation, combined with format (`clang-format`) and
+opt-in static-analysis (`clang-tidy`) checks ahead of the coverage stage.
+`scripts/install-hooks.sh` symlinks it to `.git/hooks/pre-commit`.
 
+Coverage stage flow:
+1. `SKIP_COVERAGE_CHECK=1` escape hatch — skip entirely, exit 0.
+2. Require `llvm-profdata`, `llvm-cov`, and `clang++` (preferring `-18`
+   suffixed binaries); warn and skip (exit 0) if any are absent, so
+   contributors without LLVM installed are never blocked.
+3. Configure `build-coverage/` if its cache is missing, or reconfigure it
+   from scratch if the existing cache was built with a non-Clang compiler
+   (detected by grepping `CMAKE_CXX_COMPILER` out of `CMakeCache.txt`).
+   Inherits `CMAKE_PREFIX_PATH` from the primary `build/` cache so it finds
+   the same vcpkg-resolved dependencies.
+4. Incremental `cmake --build build-coverage`.
+5. Delete stale `*.profraw`, then run
+   `ctest -LE '^(slow|performance|verbose|benchmark|docker)$' --repeat
+   until-pass:3` (label-anchored to avoid accidental substring matches —
+   see commit `089927a`) with `LLVM_PROFILE_FILE` set per-process.
+6. Merge profiles with `llvm-profdata merge -sparse` (with
+   `DEBUGINFOD_URLS=""` to prevent network stalls from an environment-wide
+   debuginfod configuration — see commit `01fb9d6`), then run `llvm-cov
+   report` and extract the `TOTAL` row's line-coverage column (`$7`) via
+   `awk`.
+7. Compare against `coverage_floor.txt` (default `0.0` if absent) using
+   `awk` for portable float comparison; raise-and-stage, allow-unchanged, or
+   abort-with-shortfall-box as appropriate.
+8. Print elapsed time; exit 0 or 1.
+
+### 4. `scripts/install-hooks.sh`
+
+Symlinks `scripts/pre-commit-coverage.sh` to `.git/hooks/pre-commit`, making
+it executable. Refuses to overwrite a pre-existing non-symlink hook (prints a
+warning and exits 1) so it never silently clobbers a developer's own hook.
+
+### 5. CI Integration (`.github/workflows/ci.yml`, job `coverage`)
+
+A dedicated `coverage` job (name: "Coverage (clang++-18)") runs alongside the
+matrix build/test jobs:
+1. Configure `build-coverage` with `-DENABLE_COVERAGE=ON` and
+   `clang++-18`/`clang-18` (ccache-backed, keyed separately from the main
+   build's cache).
+2. Build, then run the **full** CTest suite (no label filtering — CI budget
+   is not constrained the way a pre-commit hook is) with per-process
+   `.profraw` output; publish JUnit results as a GitHub check and artifact;
+   fail the job outright if any test failed, independent of coverage.
+3. Merge profiles, run `llvm-cov report` for the summary percentage and
+   `llvm-cov show --format=html` for a downloadable HTML artifact.
+4. Compare the measured percentage to `coverage_floor.txt`, write a job
+   summary table, and post/update a PR comment (keyed by the bot's own prior
+   comment, so re-runs edit in place rather than piling up).
+
+## Data Models
+
+### `coverage_floor.txt`
+
+A plain-text file at the repository root containing a single floating-point
+line, e.g.:
 ```
-scripts/
-├── install-hooks.sh          # one-time setup; run after clone
-└── pre-commit-coverage.sh    # the hook itself
+88.99
 ```
+One decimal of precision (matching `llvm-cov report`'s own output), stored in
+version control so the threshold is visible in code review and travels with
+every branch. Read with a default of `0.0` if the file is absent.
 
-#### Hook Flow
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-START=$(date +%s)
-
-# 1. Allow escape hatch for WIP commits
-[[ "${SKIP_COVERAGE_CHECK:-0}" == "1" ]] && exit 0
-
-# 2. Require lcov; warn-and-skip if absent
-command -v lcov >/dev/null 2>&1 || { echo "WARNING: lcov not found, skipping coverage check"; exit 0; }
-
-# 3. Configure coverage build if needed
-COVERAGE_BUILD="$(git rev-parse --show-toplevel)/build-coverage"
-if [[ ! -f "$COVERAGE_BUILD/CMakeCache.txt" ]]; then
-    cmake -S "$(git rev-parse --show-toplevel)" -B "$COVERAGE_BUILD" \
-          -DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
-fi
-
-# 4. Incremental build
-cmake --build "$COVERAGE_BUILD" -j"$(nproc)"
-
-# 5. Run fast test subset (exclude slow/performance/verbose labels)
-pushd "$COVERAGE_BUILD" >/dev/null
-lcov --zerocounters --directory .
-ctest -j"$(nproc)" -LE "slow|performance|verbose" --output-on-failure || {
-    echo "ERROR: Tests failed. Fix failing tests before committing."; exit 1
-}
-
-# 6. Capture and filter coverage
-lcov --capture --directory . \
-     --output-file coverage.info --quiet
-lcov --remove coverage.info \
-     '*/build-coverage/*' '*/vcpkg_installed/*' '/usr/*' \
-     --output-file coverage_filtered.info --quiet
-popd >/dev/null
-
-# 7. Extract line coverage percentage (one decimal)
-NEW_PCT=$(lcov --summary "$COVERAGE_BUILD/coverage_filtered.info" 2>&1 \
-    | grep -oP 'lines\.*: \K[0-9]+\.[0-9]')
-
-# 8. Read floor (default 0.0 if absent)
-FLOOR_FILE="$(git rev-parse --show-toplevel)/coverage_floor.txt"
-OLD_FLOOR=$(cat "$FLOOR_FILE" 2>/dev/null || echo "0.0")
-
-# 9. Compare using awk for portable float arithmetic
-RESULT=$(awk -v new="$NEW_PCT" -v old="$OLD_FLOOR" \
-    'BEGIN { if (new+0 < old+0) print "below"; else if (new+0 > old+0) print "above"; else print "same" }')
-
-ELAPSED=$(( $(date +%s) - START ))
-
-case "$RESULT" in
-  below)
-    echo ""
-    echo "  COVERAGE RATCHET FAILED"
-    echo "  Floor  : ${OLD_FLOOR}%"
-    echo "  Current: ${NEW_PCT}%"
-    echo "  Shortfall: $(awk -v n="$NEW_PCT" -v o="$OLD_FLOOR" 'BEGIN{printf "%.1f", o-n}')%"
-    echo ""
-    echo "  Add tests to bring coverage back up before committing."
-    echo "  To skip this check for a WIP commit: SKIP_COVERAGE_CHECK=1 git commit"
-    echo ""
-    exit 1
-    ;;
-  above)
-    echo "$NEW_PCT" > "$FLOOR_FILE"
-    git add "$FLOOR_FILE"
-    echo "  Coverage floor raised: ${OLD_FLOOR}% → ${NEW_PCT}%"
-    ;;
-  same)
-    echo "  Coverage unchanged at ${NEW_PCT}%"
-    ;;
-esac
-
-echo "  Coverage check passed in ${ELAPSED}s"
-exit 0
-```
-
-#### `scripts/install-hooks.sh`
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-REPO=$(git rev-parse --show-toplevel)
-HOOK_SRC="$REPO/scripts/pre-commit-coverage.sh"
-HOOK_DST="$REPO/.git/hooks/pre-commit"
-
-if [[ -f "$HOOK_DST" && ! -L "$HOOK_DST" ]]; then
-    echo "WARNING: $HOOK_DST already exists and is not a symlink."
-    echo "Rename or remove it, then re-run this script."
-    exit 1
-fi
-
-ln -sf "$HOOK_SRC" "$HOOK_DST"
-chmod +x "$HOOK_SRC"
-echo "Pre-commit coverage hook installed."
-```
-
-### 4. Build Directory Layout
+### Build Directory Layout
 
 ```
 build/                        # normal optimised build (unchanged)
-build-coverage/               # coverage-instrumented debug build
+build-coverage/               # coverage-instrumented debug build (Clang only)
     ├── CMakeCache.txt
-    ├── coverage.info          # raw lcov capture
-    ├── coverage_filtered.info # after exclusions
-    └── coverage-report/       # genhtml HTML tree (from coverage-html target)
+    ├── *.profraw             # one per test process, deleted before each run
+    ├── merged.profdata       # llvm-profdata merge output
+    └── coverage-report/      # llvm-cov show --format=html tree (coverage-html target)
         └── index.html
 ```
-
 `build-coverage/` is listed in `.gitignore`.
 
-### 5. CI Integration
+## Correctness Properties
 
-For CI (e.g., GitHub Actions), the full suite without label filtering should run:
+*A property is a characteristic or behavior that should hold true across
+all valid executions of a system.*
 
-```yaml
-- name: Configure coverage build
-  run: cmake -S . -B build-coverage -DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
+**Property 1: Floor Monotonicity**
+*For any* sequence of commits made through the pre-commit hook,
+`coverage_floor.txt`'s value should never decrease — a measurement below
+the floor aborts the commit before the file is touched; a measurement at or
+above it either leaves the file untouched or raises it to the new value
+**Validates: Requirements 3.2, 3.3, 3.4**
 
-- name: Build
-  run: cmake --build build-coverage -j$(nproc)
+**Property 2: No Silent Skip on Real Regressions**
+*For any* commit, the coverage stage should only pass without measuring
+when `SKIP_COVERAGE_CHECK=1` is explicitly set or the LLVM toolchain is
+genuinely absent — in the latter case CI should still measure
+unconditionally on every push, so a regression cannot merge unnoticed even
+if every local contributor skips the hook
+**Validates: Requirements 4.5, 4.6**
 
-- name: Run tests with coverage
-  run: |
-    cd build-coverage
-    lcov --zerocounters --directory .
-    ctest -j$(nproc) --output-on-failure
-    lcov --capture --directory . --output-file coverage.info
-    lcov --remove coverage.info '*/build-coverage/*' '*/vcpkg_installed/*' '/usr/*' \
-         --output-file coverage_filtered.info
-    lcov --summary coverage_filtered.info
+**Property 3: Instrumentation Isolation**
+*For any* build configured without `-DENABLE_COVERAGE=ON`, no coverage
+instrumentation flags or profiling overhead should appear in its compiler or
+linker invocations — coverage flags are only ever added to
+`build-coverage/`'s configuration, never to `build/`, and the two
+directories should share no object files
+**Validates: Requirement 1.3**
 
-- name: Enforce ratchet
-  run: |
-    NEW=$(lcov --summary build-coverage/coverage_filtered.info 2>&1 \
-          | grep -oP 'lines\.*: \K[0-9]+\.[0-9]')
-    OLD=$(cat coverage_floor.txt 2>/dev/null || echo "0.0")
-    awk -v n="$NEW" -v o="$OLD" \
-        'BEGIN { if (n+0 < o+0) { print "Coverage decreased: "o"% -> "n"%"; exit 1 } }'
-```
+**Property 4: Test-Failure Precedence**
+*For any* commit where the coverage-stage test run fails, the commit should
+be aborted before coverage is measured at all, regardless of what the
+resulting percentage would have been — a red build should never "buy" a
+passing commit via a lucky coverage number
+**Validates: Requirement 4.4**
 
-## Key Design Decisions
+## Error Handling
 
-### Separate build directory
-The instrumented build and the normal build must not share object files. Using
-`build-coverage/` keeps them fully isolated and avoids any chance of accidentally
-shipping coverage-instrumented binaries.
+- **Missing LLVM toolchain** (`clang++`/`llvm-profdata`/`llvm-cov` not
+  found): the hook prints a warning naming the missing tool and the install
+  command, then exits 0 (allows the commit). CMake's coverage targets take
+  the analogous path — stub targets that print an actionable error and fail
+  only if a developer explicitly invokes them.
+- **Wrong-compiler cache reuse**: if `build-coverage/CMakeCache.txt` exists
+  but was configured with a non-Clang compiler, the hook detects this (by
+  reading the cached `CMAKE_CXX_COMPILER` entry) and transparently deletes
+  and reconfigures the directory, rather than failing with a confusing
+  Clang-flag-on-GCC compile error.
+- **Failing tests**: `ctest` failure aborts the commit immediately with a
+  clear message and the skip-hatch reminder; coverage is never measured in
+  this case.
+- **Unparseable coverage output**: if the `TOTAL` row can't be extracted
+  from `llvm-cov report` (e.g., a tool version change reformats the table),
+  the hook warns and skips the ratchet rather than failing closed on a
+  parsing bug unrelated to actual coverage.
+- **debuginfod network stalls**: `DEBUGINFOD_URLS=""` is forced for every
+  `llvm-profdata`/`llvm-cov` invocation, since an environment-wide
+  debuginfod configuration otherwise turns a ~2s local report into a
+  60+ minute hang (see commit `01fb9d6`) — these are locally built binaries
+  with embedded debug info, so remote symbol fetching is never needed.
 
-### Floor stored in version control
-Storing `coverage_floor.txt` in the repository rather than in CI configuration
-ensures the threshold is visible in code review and follows every branch. When a
-feature branch adds code and tests, it should raise the floor as part of that PR.
+## Testing Strategy
 
-### One decimal precision
-lcov reports line coverage to one decimal place (e.g., `78.5%`). Storing and
-comparing at the same precision avoids spurious floor updates from measurement
-noise (e.g., `78.49` vs `78.51` from run-to-run ordering variation).
-
-### Label-filtered pre-commit run
-The full Kythira suite takes ~18 minutes. Excluding tests labelled `slow`,
-`performance`, and `verbose` reduces this to approximately 3–5 minutes on a modern
-workstation — acceptable for a pre-commit gate. The CI job runs the full suite to
-enforce the floor on the complete test population.
-
-### Graceful degradation
-The hook exits 0 (allowing the commit) if `lcov` is not installed. This prevents
-blocking contributors on machines without the tooling, while still enforcing
-coverage in environments where the tool is present and in CI.
+- **Ratchet rejection path**: manually verified by setting the floor above
+  the measured percentage and confirming the hook prints the shortfall box
+  and exits non-zero (spec Task 16).
+- **Ratchet raise path**: exercised for real on essentially every commit
+  that adds test coverage — `coverage_floor.txt`'s own git history (e.g.
+  `2c16503`, `791ae6a`, `82fab61`, `f616679`) is a continuous record of the
+  hook's raise-and-stage branch running correctly in production, a stronger
+  guarantee than a single synthetic test (spec Task 15).
+- **Unchanged path**: verified by committing with no coverage-affecting
+  changes and confirming the hook reports "Unchanged at N%" and exits 0
+  (spec Task 14).
+- **CMake target discoverability**: `cmake --build build-coverage --target
+  help` confirmed to list `coverage`, `coverage-html`, and `coverage-reset`
+  (spec Task 20).
+- **CI parity**: the CI `coverage` job runs the identical measurement
+  pipeline (llvm-profdata/llvm-cov) against the full test suite, providing
+  an independent, unconditional check that doesn't depend on any local
+  hook being installed or its escape hatches being left alone.
