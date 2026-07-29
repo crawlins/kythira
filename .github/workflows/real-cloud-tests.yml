@@ -260,6 +260,14 @@ jobs:
         env:
           KYTHIRA_TEST_IAM_INSTANCE_PROFILE: kythira-aws-quorum-test-node-profile
           KYTHIRA_TEST_AMI_ID: ${{ steps.resolve-ami.outputs.ami_id }}
+          # The static session credentials configure-aws-credentials exported
+          # expire after one hour; this suite runs longer. The test builds its
+          # AWS clients on a provider that re-federates OIDC as they expire
+          # (tests/aws_refreshing_credentials_provider.hpp), which needs the
+          # role to re-assume — the runner already injects the OIDC token
+          # endpoint (ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN) because this job has
+          # id-token: write.
+          KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN: ${{ vars.AWS_CI_ROLE_ARN }}
         run: |
           ctest --test-dir build -L 'real-ec2' -R '^aws_quorum_manager_real_ec2_test$' --output-on-failure
 
