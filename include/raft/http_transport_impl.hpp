@@ -691,9 +691,22 @@ auto validate_tls_version_range_simple(const std::string& min_version,
     }
 }
 
-// Helper function to create futures with exceptions
-template<typename Types, typename Response>
-auto make_future_with_exception(const std::exception& e) ->
+// Helper function to create futures with exceptions. Templated on the
+// concrete exception type (Exception), not narrowed to `const std::exception&`:
+// folly::makeFuture<Response>(e) is itself templated on the exception type
+// and preserves it fully (via make_exception_wrapper<E>(e)) -- narrowing the
+// parameter here to the base class first would slice a derived exception
+// (e.g. kythira::http_server_error) down to a plain std::exception before
+// folly ever sees it, silently discarding status_code() and any other
+// derived state. This was a real, pre-existing bug (every call site below
+// passes a concrete derived type), only surfaced by
+// tests/beast_cross_transport_equivalence_test.cpp's error-status-code
+// equivalence check (Property 9, .kiro/specs/boost-beast-http-transport/) --
+// no prior test exercised a handler exception through cpp_httplib_client's
+// full send_rpc path far enough to observe the resulting exception's actual
+// dynamic type.
+template<typename Types, typename Response, typename Exception>
+auto make_future_with_exception(const Exception& e) ->
     typename Types::template future_template<Response> {
 #ifdef FOLLY_AVAILABLE
     if constexpr (std::is_same_v<typename Types::template future_template<Response>,
