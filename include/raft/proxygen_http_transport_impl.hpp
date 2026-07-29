@@ -1,0 +1,1435 @@
+#pragma once
+
+#include <raft/proxygen_http_transport.hpp>
+
+#include <folly/io/IOBuf.h>
+#include <proxygen/lib/http/HTTPMessage.h>
+#include <proxygen/lib/http/HTTPCommonHeaders.h>
+#include <proxygen/lib/http/HTTPException.h>
+#include <proxygen/lib/http/HTTPConstants.h>
+#include <proxygen/lib/http/ProxygenErrorEnum.h>
+
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/pem.h>
+#include <openssl/err.h>
+#include <openssl/asn1.h>
+
+#include <algorithm>
+#include <exception>
+#include <format>
+#include <fstream>
+#include <stdexcept>
+#include <utility>
+
+namespace kythira {
+
+namespace {
+// ---------------------------------------------------------------------------
+// TLS material validation/configuration. Deliberately duplicated (not
+// #included) from http_transport_impl.hpp's/beast_http_transport_impl.hpp's
+// own anonymous-namespace equivalents -- each transport keeps its own copy
+// (design.md Phase 6, following the Beast spec's own precedent for
+// tls_tcp_rpc.hpp/http_transport_impl.hpp). These operate on raw OpenSSL
+// types (SSL_CTX*/X509*), so they port to `folly::SSLContext` verbatim via
+// `getSSLCtx()` (`spike-notes.md` Finding 5's confirmed direct-transfer
+// method-name mapping -- `loadCertificate`/`loadPrivateKey`/
+// `loadTrustedCertificates`/`ciphers`/`setVerificationOption` all exist on
+// `folly::SSLContext` with the exact names `design.md` assumed).
+// ---------------------------------------------------------------------------
+
+auto proxygen_asn1_time_to_time_t(const ASN1_TIME* asn1_time) -> time_t {
+    if (asn1_time == nullptr) {
+        return 0;
+    }
+    struct tm tm_time{};
+    if (ASN1_TIME_to_tm(asn1_time, &tm_time) != 1) {
+        return 0;
+    }
+    return timegm(&tm_time);
+}
+
+auto proxygen_validate_certificate_file(const std::string& cert_path) -> void {
+    if (cert_path.empty()) {
+        throw kythira::certificate_validation_error("Certificate path is empty");
+    }
+    if (!std::filesystem::exists(cert_path)) {
+        throw kythira::certificate_validation_error(
+            std::format("Certificate file does not exist: {}", cert_path));
+    }
+    FILE* fp = fopen(cert_path.c_str(), "r");
+    if (fp == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to open certificate file: {}", cert_path));
+    }
+    X509* cert = PEM_read_X509(fp, nullptr, nullptr, nullptr);
+    fclose(fp);
+    if (cert == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to parse certificate file: {}", cert_path));
+    }
+    X509_free(cert);
+}
+
+auto proxygen_validate_private_key_file(const std::string& key_path) -> void {
+    if (key_path.empty()) {
+        throw kythira::certificate_validation_error("Private key path is empty");
+    }
+    if (!std::filesystem::exists(key_path)) {
+        throw kythira::certificate_validation_error(
+            std::format("Private key file does not exist: {}", key_path));
+    }
+    FILE* fp = fopen(key_path.c_str(), "r");
+    if (fp == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to open private key file: {}", key_path));
+    }
+    EVP_PKEY* key = PEM_read_PrivateKey(fp, nullptr, nullptr, nullptr);
+    fclose(fp);
+    if (key == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to parse private key file: {}", key_path));
+    }
+    EVP_PKEY_free(key);
+}
+
+auto proxygen_validate_certificate_key_pair(const std::string& cert_path,
+                                            const std::string& key_path) -> void {
+    SSL_CTX* ctx = SSL_CTX_new(TLS_method());
+    if (ctx == nullptr) {
+        throw kythira::ssl_context_error("Failed to create SSL context for key-pair validation");
+    }
+    if (SSL_CTX_use_certificate_file(ctx, cert_path.c_str(), SSL_FILETYPE_PEM) != 1) {
+        SSL_CTX_free(ctx);
+        throw kythira::certificate_validation_error(
+            std::format("Failed to load certificate: {}", cert_path));
+    }
+    if (SSL_CTX_use_PrivateKey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) != 1) {
+        SSL_CTX_free(ctx);
+        throw kythira::certificate_validation_error(
+            std::format("Failed to load private key: {}", key_path));
+    }
+    if (SSL_CTX_check_private_key(ctx) != 1) {
+        SSL_CTX_free(ctx);
+        throw kythira::certificate_validation_error(
+            std::format("Certificate/key mismatch: {} / {}", cert_path, key_path));
+    }
+    SSL_CTX_free(ctx);
+}
+
+auto proxygen_check_certificate_expiration(const std::string& cert_path) -> void {
+    FILE* fp = fopen(cert_path.c_str(), "r");
+    if (fp == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to open certificate file: {}", cert_path));
+    }
+    X509* cert = PEM_read_X509(fp, nullptr, nullptr, nullptr);
+    fclose(fp);
+    if (cert == nullptr) {
+        throw kythira::certificate_validation_error(
+            std::format("Failed to parse certificate file: {}", cert_path));
+    }
+    time_t not_after = proxygen_asn1_time_to_time_t(X509_get0_notAfter(cert));
+    X509_free(cert);
+    if (not_after != 0 && not_after < time(nullptr)) {
+        throw kythira::certificate_validation_error(
+            std::format("Certificate has expired: {}", cert_path));
+    }
+}
+
+auto proxygen_validate_cipher_suites(const std::string& cipher_suites) -> void {
+    if (cipher_suites.empty()) {
+        return;
+    }
+    SSL_CTX* ctx = SSL_CTX_new(TLS_method());
+    if (ctx == nullptr) {
+        throw kythira::ssl_context_error(
+            "Failed to create SSL context for cipher suite validation");
+    }
+    if (SSL_CTX_set_cipher_list(ctx, cipher_suites.c_str()) != 1) {
+        SSL_CTX_free(ctx);
+        throw kythira::ssl_configuration_error(
+            std::format("Invalid cipher suites: {}", cipher_suites));
+    }
+    SSL_CTX_free(ctx);
+}
+
+auto proxygen_tls_version_number(const std::string& version) -> int {
+    if (version == "TLSv1.0") {
+        return TLS1_VERSION;
+    }
+    if (version == "TLSv1.1") {
+        return TLS1_1_VERSION;
+    }
+    if (version == "TLSv1.2") {
+        return TLS1_2_VERSION;
+    }
+    if (version == "TLSv1.3") {
+        return TLS1_3_VERSION;
+    }
+    throw kythira::ssl_configuration_error(std::format("Unsupported TLS version: {}", version));
+}
+
+auto proxygen_validate_tls_version_range(const std::string& min_version,
+                                         const std::string& max_version) -> void {
+    if (min_version.empty() && max_version.empty()) {
+        return;
+    }
+    int min_ver = min_version.empty() ? TLS1_2_VERSION : proxygen_tls_version_number(min_version);
+    int max_ver = max_version.empty() ? TLS1_3_VERSION : proxygen_tls_version_number(max_version);
+    if (min_ver > max_ver) {
+        throw kythira::ssl_configuration_error(
+            std::format("Minimum TLS version ({}) is higher than maximum TLS version ({})",
+                        min_version, max_version));
+    }
+    if (min_ver < TLS1_2_VERSION) {
+        throw kythira::ssl_configuration_error(
+            std::format("Minimum TLS version ({}) is below security requirements (TLS 1.2 minimum)",
+                        min_version));
+    }
+}
+
+auto proxygen_configure_ssl_context(SSL_CTX* ctx, const std::string& cipher_suites,
+                                    const std::string& min_tls_version,
+                                    const std::string& max_tls_version) -> void {
+    if (ctx == nullptr) {
+        throw kythira::ssl_context_error("Cannot configure null SSL context");
+    }
+    if (!cipher_suites.empty() && SSL_CTX_set_cipher_list(ctx, cipher_suites.c_str()) != 1) {
+        throw kythira::ssl_context_error(
+            std::format("Failed to set cipher suites: {}", cipher_suites));
+    }
+    if (!min_tls_version.empty() &&
+        SSL_CTX_set_min_proto_version(ctx, proxygen_tls_version_number(min_tls_version)) != 1) {
+        throw kythira::ssl_context_error(
+            std::format("Failed to set minimum TLS version: {}", min_tls_version));
+    }
+    if (!max_tls_version.empty() &&
+        SSL_CTX_set_max_proto_version(ctx, proxygen_tls_version_number(max_tls_version)) != 1) {
+        throw kythira::ssl_context_error(
+            std::format("Failed to set maximum TLS version: {}", max_tls_version));
+    }
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_verify_depth(ctx, 10);
+}
+
+auto proxygen_rpc_type_name(std::string_view endpoint) -> std::string {
+    if (endpoint == proxygen_detail::proxygen_endpoint_request_vote) {
+        return "request_vote";
+    }
+    if (endpoint == proxygen_detail::proxygen_endpoint_append_entries) {
+        return "append_entries";
+    }
+    if (endpoint == proxygen_detail::proxygen_endpoint_install_snapshot) {
+        return "install_snapshot";
+    }
+    return "unknown";
+}
+
+auto proxygen_status_reason(unsigned status_code) -> std::string {
+    switch (status_code) {
+        case 200:
+            return "OK";
+        case 400:
+            return "Bad Request";
+        case 404:
+            return "Not Found";
+        default:
+            return "Internal Server Error";
+    }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// proxygen_detail bridge primitives (Requirement 14.1/14.2)
+// ---------------------------------------------------------------------------
+
+namespace proxygen_detail {
+
+inline connect_bridge::connect_bridge(
+    folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
+    kythira::promise_default<proxygen::HTTPUpstreamSession*> promise)
+    : _wheel_timer(txn_timeout, evb),
+      _connector(this, _wheel_timer),
+      _promise(std::move(promise)) {}
+
+inline auto connect_bridge::connectSuccess(proxygen::HTTPUpstreamSession* session) -> void {
+    _promise.setValue(session);
+    delete this;
+}
+
+inline auto connect_bridge::connectError(const folly::AsyncSocketException& ex) -> void {
+    _promise.setException(std::make_exception_ptr(ex));
+    delete this;
+}
+
+inline transaction_bridge::transaction_bridge(kythira::promise_default<http_response> promise)
+    : _promise(std::move(promise)) {}
+
+inline auto transaction_bridge::setTransaction(proxygen::HTTPTransaction* txn) noexcept -> void {
+    _txn = txn;
+}
+
+inline auto transaction_bridge::detachTransaction() noexcept -> void {
+    // Defensive only: proxygen guarantees onEOM or onError fires before
+    // detachTransaction on every normal or erroring path
+    // (HTTPTransactionHandler's own documented contract) -- this only
+    // fires _fulfilled==false in a genuine "torn down with no prior
+    // signal" edge case, which must surface as a failure, not a bogus
+    // default-constructed success value.
+    fulfill_exception(std::make_exception_ptr(
+        std::runtime_error("proxygen transaction detached without completion")));
+    delete this;
+}
+
+inline auto transaction_bridge::onHeadersComplete(
+    std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
+    _response.status_code = msg->getStatusCode();
+}
+
+inline auto transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
+    if (chain) {
+        chain->coalesce();
+        _response.body.append(reinterpret_cast<const char*>(chain->data()), chain->length());
+    }
+}
+
+inline auto transaction_bridge::onTrailers(std::unique_ptr<proxygen::HTTPHeaders>) noexcept
+    -> void {}
+
+inline auto transaction_bridge::onEOM() noexcept -> void {
+    fulfill_value();
+}
+
+inline auto transaction_bridge::onUpgrade(proxygen::UpgradeProtocol) noexcept -> void {}
+
+inline auto transaction_bridge::onError(const proxygen::HTTPException& error) noexcept -> void {
+    fulfill_exception(std::make_exception_ptr(std::runtime_error(error.what())));
+}
+
+inline auto transaction_bridge::onEgressPaused() noexcept -> void {}
+inline auto transaction_bridge::onEgressResumed() noexcept -> void {}
+
+inline auto transaction_bridge::fulfill_value() -> void {
+    if (!_fulfilled) {
+        _fulfilled = true;
+        _promise.setValue(std::move(_response));
+    }
+}
+
+inline auto transaction_bridge::fulfill_exception(std::exception_ptr ex) -> void {
+    if (!_fulfilled) {
+        _fulfilled = true;
+        _promise.setException(ex);
+    }
+}
+
+// --- folly_transaction_bridge (Requirement 16.2's fast-path handler) -------
+
+inline folly_transaction_bridge::folly_transaction_bridge(folly::Promise<http_response> promise)
+    : _promise(std::move(promise)) {}
+
+inline auto folly_transaction_bridge::setTransaction(proxygen::HTTPTransaction* txn) noexcept
+    -> void {
+    _txn = txn;
+}
+
+inline auto folly_transaction_bridge::detachTransaction() noexcept -> void {
+    fulfill_exception(folly::exception_wrapper(
+        std::runtime_error("proxygen transaction detached without completion")));
+    delete this;
+}
+
+inline auto folly_transaction_bridge::onHeadersComplete(
+    std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
+    _response.status_code = msg->getStatusCode();
+}
+
+inline auto folly_transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
+    if (chain) {
+        chain->coalesce();
+        _response.body.append(reinterpret_cast<const char*>(chain->data()), chain->length());
+    }
+}
+
+inline auto folly_transaction_bridge::onTrailers(std::unique_ptr<proxygen::HTTPHeaders>) noexcept
+    -> void {}
+
+inline auto folly_transaction_bridge::onEOM() noexcept -> void {
+    fulfill_value();
+}
+
+inline auto folly_transaction_bridge::onUpgrade(proxygen::UpgradeProtocol) noexcept -> void {}
+
+inline auto folly_transaction_bridge::onError(const proxygen::HTTPException& error) noexcept
+    -> void {
+    fulfill_exception(folly::exception_wrapper(std::runtime_error(error.what())));
+}
+
+inline auto folly_transaction_bridge::onEgressPaused() noexcept -> void {}
+inline auto folly_transaction_bridge::onEgressResumed() noexcept -> void {}
+
+inline auto folly_transaction_bridge::fulfill_value() -> void {
+    if (!_fulfilled) {
+        _fulfilled = true;
+        _promise.setValue(std::move(_response));
+    }
+}
+
+inline auto folly_transaction_bridge::fulfill_exception(folly::exception_wrapper ex) -> void {
+    if (!_fulfilled) {
+        _fulfilled = true;
+        _promise.setException(std::move(ex));
+    }
+}
+
+// --- session_liveness_tracker (Requirement 9.3) ----------------------------
+
+inline session_liveness_tracker::session_liveness_tracker(
+    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot)
+    : _slot(std::move(slot)) {}
+
+inline auto session_liveness_tracker::onDestroy(const proxygen::HTTPSessionBase&) -> void {
+    _slot->store(nullptr, std::memory_order_release);
+    delete this;
+}
+
+// --- send_on_session (generic bridge) / send_on_session_folly (fast path) -
+
+/// @brief Issues one POST on `session` (which must already be established,
+///     and this must already be running on `session`'s own pinned
+///     `EventBase` -- callers arrange that via `runInEventBaseThread`, this
+///     function itself never hops threads) and fulfills the returned
+///     future once the response is fully read or an error occurs.
+inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::string& path,
+                            const std::string& body, const std::string& host,
+                            const std::string& user_agent, std::chrono::milliseconds timeout)
+    -> kythira::future_default<http_response> {
+    kythira::promise_default<http_response> promise;
+    auto future = promise.getFuture();
+    auto* bridge = new transaction_bridge(std::move(promise));
+    auto* txn = session->newTransaction(bridge);
+    if (txn == nullptr) {
+        delete bridge;  // never attached to a transaction -- nothing else owns it
+        kythira::promise_default<http_response> failed_promise;
+        auto failed_future = failed_promise.getFuture();
+        failed_promise.setException(std::make_exception_ptr(
+            std::runtime_error("proxygen: session unavailable for new transaction")));
+        return failed_future;
+    }
+    txn->setIdleTimeout(timeout);
+    proxygen::HTTPMessage msg;
+    msg.setMethod(proxygen::HTTPMethod::POST);
+    msg.setURL(path);
+    msg.setHTTPVersion(1, 1);
+    msg.getHeaders().set(proxygen::HTTP_HEADER_HOST, host);
+    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, "application/json");
+    msg.getHeaders().set(proxygen::HTTP_HEADER_USER_AGENT, user_agent);
+    txn->sendHeaders(msg);
+    txn->sendBody(folly::IOBuf::copyBuffer(body));
+    txn->sendEOM();
+    return future;
+}
+
+inline auto send_on_session_folly(proxygen::HTTPUpstreamSession* session, const std::string& path,
+                                  const std::string& body, const std::string& host,
+                                  const std::string& user_agent, std::chrono::milliseconds timeout)
+    -> folly::Future<http_response> {
+    folly::Promise<http_response> promise;
+    auto future = promise.getFuture();
+    auto* bridge = new folly_transaction_bridge(std::move(promise));
+    auto* txn = session->newTransaction(bridge);
+    if (txn == nullptr) {
+        delete bridge;
+        folly::Promise<http_response> failed_promise;
+        auto failed_future = failed_promise.getFuture();
+        failed_promise.setException(folly::exception_wrapper(
+            std::runtime_error("proxygen: session unavailable for new transaction")));
+        return failed_future;
+    }
+    txn->setIdleTimeout(timeout);
+    proxygen::HTTPMessage msg;
+    msg.setMethod(proxygen::HTTPMethod::POST);
+    msg.setURL(path);
+    msg.setHTTPVersion(1, 1);
+    msg.getHeaders().set(proxygen::HTTP_HEADER_HOST, host);
+    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, "application/json");
+    msg.getHeaders().set(proxygen::HTTP_HEADER_USER_AGENT, user_agent);
+    txn->sendHeaders(msg);
+    txn->sendBody(folly::IOBuf::copyBuffer(body));
+    txn->sendEOM();
+    return future;
+}
+
+/// @brief Requirement 9.1/9.3: reuse `*session_slot` when it is non-null and
+///     still `isReusable()`; otherwise establish a fresh session via
+///     `HTTPConnector` and record it into `*session_slot` (plus wire up
+///     `session_liveness_tracker` for the *next* staleness detection) once
+///     connected. Callers must already be running on `evb`'s own thread
+///     (every read/write of `*session_slot` that matters for the decision
+///     happens here, on that thread, structurally avoiding the cross-thread
+///     session-liveness race a plain mutex-guarded pointer would have --
+///     `spike-notes.md` Finding 4).
+inline auto connect_if_needed(
+    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> session_slot,
+    folly::EventBase* evb, const folly::SocketAddress& addr,
+    std::shared_ptr<folly::SSLContext> ssl_ctx, bool use_ssl,
+    std::chrono::milliseconds connection_timeout)
+    -> kythira::future_default<proxygen::HTTPUpstreamSession*> {
+    auto* existing = session_slot->load(std::memory_order_acquire);
+    if (existing != nullptr && existing->isReusable()) {
+        kythira::promise_default<proxygen::HTTPUpstreamSession*> ready_promise;
+        auto ready_future = ready_promise.getFuture();
+        ready_promise.setValue(existing);
+        return ready_future;
+    }
+    kythira::promise_default<proxygen::HTTPUpstreamSession*> connect_promise;
+    auto connect_future = connect_promise.getFuture();
+    auto* bridge = new connect_bridge(evb, connection_timeout, std::move(connect_promise));
+    if (use_ssl) {
+        bridge->connector().connectSSL(evb, addr, ssl_ctx, nullptr, connection_timeout);
+    } else {
+        bridge->connector().connect(evb, addr, connection_timeout);
+    }
+    return std::move(connect_future)
+        .thenValue([session_slot](proxygen::HTTPUpstreamSession* session) {
+            session_slot->store(session, std::memory_order_release);
+            session->setInfoCallback(new session_liveness_tracker(session_slot));
+            return session;
+        });
+}
+
+}  // namespace proxygen_detail
+
+// ---------------------------------------------------------------------------
+// proxygen_client
+// ---------------------------------------------------------------------------
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+proxygen_client<Types>::proxygen_client(
+    folly::IOThreadPoolExecutorBase& io_executor,
+    std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
+    proxygen_client_config config, metrics_type metrics)
+    : _io_executor(io_executor),
+      _node_id_to_url(std::move(node_id_to_url_map)),
+      _config(std::move(config)),
+      _metrics(std::move(metrics)) {
+    validate_certificate_files();
+    bool any_https = std::ranges::any_of(
+        _node_id_to_url, [](const auto& entry) { return entry.second.starts_with("https://"); });
+    if (any_https) {
+        _ssl_ctx = build_ssl_context();
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+proxygen_client<Types>::~proxygen_client() {
+    disable_auto_reload();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::validate_certificate_files() const -> void {
+    proxygen_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
+    proxygen_validate_cipher_suites(_config.cipher_suites);
+    if (!_config.ca_cert_path.empty()) {
+        proxygen_validate_certificate_file(_config.ca_cert_path);
+        proxygen_check_certificate_expiration(_config.ca_cert_path);
+    }
+    if (!_config.client_cert_path.empty()) {
+        proxygen_validate_certificate_file(_config.client_cert_path);
+        proxygen_check_certificate_expiration(_config.client_cert_path);
+        if (_config.client_key_path.empty()) {
+            throw kythira::ssl_configuration_error(
+                "Client certificate provided but no private key specified");
+        }
+        proxygen_validate_private_key_file(_config.client_key_path);
+        proxygen_validate_certificate_key_pair(_config.client_cert_path, _config.client_key_path);
+    } else if (!_config.client_key_path.empty()) {
+        throw kythira::ssl_configuration_error(
+            "Client private key provided but no certificate specified");
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::build_ssl_context() -> std::shared_ptr<folly::SSLContext> {
+    auto ctx = std::make_shared<folly::SSLContext>();
+    ctx->setVerificationOption(_config.enable_ssl_verification
+                                   ? folly::SSLContext::SSLVerifyPeerEnum::VERIFY
+                                   : folly::SSLContext::SSLVerifyPeerEnum::NO_VERIFY);
+    if (!_config.ca_cert_path.empty()) {
+        ctx->loadTrustedCertificates(_config.ca_cert_path.c_str());
+    }
+    if (!_config.client_cert_path.empty() && !_config.client_key_path.empty()) {
+        ctx->loadCertificate(_config.client_cert_path.c_str());
+        ctx->loadPrivateKey(_config.client_key_path.c_str());
+    }
+    proxygen_configure_ssl_context(ctx->getSSLCtx(), _config.cipher_suites, _config.min_tls_version,
+                                   _config.max_tls_version);
+    return ctx;
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::reload_tls_material() -> void {
+    validate_certificate_files();
+    auto new_ctx = build_ssl_context();
+
+    std::lock_guard<std::mutex> lock(_mutex);
+    // Retired (not destroyed): an in-flight HTTPUpstreamSession may still
+    // reference the old folly::SSLContext (Property 7, matching
+    // boost_beast_client::reload_tls_material's own comment).
+    if (_ssl_ctx) {
+        _retired_ssl_contexts.push_back(_ssl_ctx);
+    }
+    _ssl_ctx = std::move(new_ctx);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+    disable_auto_reload();
+    _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::error_code ec;
+            auto mtime = std::filesystem::last_write_time(_config.client_cert_path, ec);
+            if (!ec && mtime != _last_reloaded_cert_mtime) {
+                try {
+                    reload_tls_material();
+                    _last_reloaded_cert_mtime = mtime;
+                } catch (const std::exception&) {
+                    auto metric = _metrics;
+                    metric.set_metric_name("proxygen_http.client.tls_reload.failed");
+                    metric.add_one();
+                    metric.emit();
+                }
+            }
+            std::this_thread::sleep_for(poll_interval);
+        }
+    });
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::disable_auto_reload() -> void {
+    if (_auto_reload_thread.joinable()) {
+        _auto_reload_thread.request_stop();
+        _auto_reload_thread.join();
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::get_or_create_slot(std::uint64_t target)
+    -> proxygen_detail::pooled_connection& {
+    std::lock_guard<std::mutex> lock(_mutex);
+    auto it = _connections.find(target);
+    if (it != _connections.end()) {
+        it->second.last_used = std::chrono::steady_clock::now();
+        return it->second;
+    }
+    // Requirement 9.4: connection_pool_size is an upper bound on
+    // simultaneously-tracked target nodes -- evict the LRU entry (by
+    // last_used) before adding a new one that would exceed it, matching
+    // Beast's own precedent.
+    if (_connections.size() >= _config.connection_pool_size && !_connections.empty()) {
+        auto lru_it = std::min_element(_connections.begin(), _connections.end(),
+                                       [](const auto& lhs, const auto& rhs) {
+                                           return lhs.second.last_used < rhs.second.last_used;
+                                       });
+        _connections.erase(lru_it);
+    }
+    proxygen_detail::pooled_connection slot;
+    // Requirement 21.3: one EventBase pinned for this node's whole
+    // connection lifetime, not round-robin per call -- required for
+    // correctness, not just style, since HTTPUpstreamSession itself is
+    // permanently pinned to whichever EventBase it was created on
+    // (spike-notes.md Finding 3): reusing a pooled session from a
+    // different EventBase than the one it was created on would violate
+    // Proxygen's own threading contract.
+    slot.event_base = _io_executor.getEventBase();
+    slot.last_used = std::chrono::steady_clock::now();
+    auto [inserted_it, ok] = _connections.emplace(target, std::move(slot));
+    return inserted_it->second;
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::resolve_target(std::uint64_t target) const
+    -> std::tuple<folly::SocketAddress, std::string, bool> {
+    auto url_it = _node_id_to_url.find(target);
+    if (url_it == _node_id_to_url.end()) {
+        throw std::runtime_error(std::format("No URL mapping found for node {}", target));
+    }
+    const std::string& url = url_it->second;
+    bool is_https = url.starts_with("https://");
+    std::string authority = url.substr(is_https ? 8 : 7);
+    auto colon = authority.find(':');
+    auto slash = authority.find('/');
+    std::string host = authority.substr(0, std::min(colon, slash));
+    std::string port_str =
+        (colon != std::string::npos)
+            ? authority.substr(
+                  colon + 1, (slash == std::string::npos ? authority.size() : slash) - (colon + 1))
+            : (is_https ? "443" : "80");
+    folly::SocketAddress addr;
+    // Synchronous DNS resolution on the calling thread, once per connect
+    // attempt (not per RPC, since sessions are pooled/reused) -- the same
+    // scope/tradeoff boost_beast_client::get_or_create_connection's own
+    // resolver.resolve() call documents.
+    addr.setFromHostPort(host, static_cast<std::uint16_t>(std::stoi(port_str)));
+    return {addr, host, is_https};
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+template<typename Request, typename Response>
+auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
+                                      const Request& request, std::chrono::milliseconds timeout)
+    -> future_template<Response> {
+    // Requirement 16.1: compile-time dispatch purely on Types's own
+    // future_template member type -- not a KYTHIRA_DEFAULT_FUTURE_BACKEND
+    // macro check (see design.md / this file's own comment on
+    // send_rpc_folly_fast_path for why that distinction matters).
+    if constexpr (std::same_as<future_template<Response>, kythira::Future<Response>>) {
+        return send_rpc_folly_fast_path<Request, Response>(target, endpoint, request, timeout);
+    } else {
+        std::string rpc_type = proxygen_rpc_type_name(endpoint);
+        kythira::promise_default<Response> promise;
+        auto future = promise.getFuture();
+        try {
+            auto& slot = get_or_create_slot(target);
+            auto [addr, host, is_https] = resolve_target(target);
+            auto serialized = _serializer.serialize(request);
+            std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
+            auto* evb = slot.event_base;
+            auto session_slot = slot.session;
+            auto ssl_ctx = _ssl_ctx;
+            auto user_agent = _config.user_agent;
+            auto connection_timeout = _config.connection_timeout;
+            auto start_time = std::chrono::steady_clock::now();
+
+            auto metric = _metrics;
+            metric.set_metric_name("proxygen_http.client.request.sent");
+            metric.add_dimension("rpc_type", rpc_type);
+            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_dimension("path", "generic_bridge");
+            metric.add_one();
+            metric.emit();
+
+            evb->runInEventBaseThread([this, evb, session_slot, addr, ssl_ctx, is_https,
+                                       connection_timeout, host, body = std::move(body),
+                                       endpoint = std::string(endpoint), timeout, target, rpc_type,
+                                       start_time, promise = std::move(promise)]() mutable {
+                // The response-transform step below returns Response or
+                // throws (Beast's own send_rpc pattern exactly) rather
+                // than fulfilling `promise` from two separate
+                // thenValue/thenError callbacks -- capturing the
+                // move-only `promise` into *both* would move from it
+                // twice. A single trailing .thenTry() (Try<Response> ->
+                // void) is the one place `promise` is captured/settled,
+                // exactly once, regardless of which upstream step
+                // produced the value or the exception.
+                auto chain =
+                    proxygen_detail::connect_if_needed(session_slot, evb, addr, ssl_ctx, is_https,
+                                                       connection_timeout)
+                        .thenValue([evb, host, body = std::move(body), endpoint,
+                                    user_agent = _config.user_agent,
+                                    timeout](proxygen::HTTPUpstreamSession* session) {
+                            return proxygen_detail::send_on_session(session, endpoint, body, host,
+                                                                    user_agent, timeout);
+                        })
+                        .thenValue([this, target, rpc_type,
+                                    start_time](proxygen_detail::http_response resp) -> Response {
+                            auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - start_time);
+                            auto latency_metric = _metrics;
+                            latency_metric.set_metric_name("proxygen_http.client.request.latency");
+                            latency_metric.add_dimension("rpc_type", rpc_type);
+                            latency_metric.add_dimension("target_node_id", std::to_string(target));
+                            latency_metric.add_dimension(
+                                "status", resp.status_code == 200 ? "success" : "error");
+                            latency_metric.add_dimension("path", "generic_bridge");
+                            latency_metric.add_duration(latency);
+                            latency_metric.emit();
+
+                            if (resp.status_code == 200) {
+                                std::vector<std::byte> response_data;
+                                response_data.reserve(resp.body.size());
+                                for (char c : resp.body) {
+                                    response_data.push_back(static_cast<std::byte>(c));
+                                }
+                                try {
+                                    if constexpr (std::is_same_v<
+                                                      Response, kythira::request_vote_response<>>) {
+                                        return _serializer.deserialize_request_vote_response(
+                                            response_data);
+                                    } else if constexpr (std::is_same_v<
+                                                             Response,
+                                                             kythira::append_entries_response<>>) {
+                                        return _serializer.deserialize_append_entries_response(
+                                            response_data);
+                                    } else {
+                                        return _serializer.deserialize_install_snapshot_response(
+                                            response_data);
+                                    }
+                                } catch (const std::exception& e) {
+                                    throw kythira::serialization_error(std::format(
+                                        "Failed to deserialize response: {}", e.what()));
+                                }
+                            }
+                            if (resp.status_code >= 400 && resp.status_code < 500) {
+                                throw kythira::http_client_error(
+                                    resp.status_code, std::format("HTTP client error {}: {}",
+                                                                  resp.status_code, resp.body));
+                            }
+                            if (resp.status_code >= 500) {
+                                throw kythira::http_server_error(
+                                    resp.status_code, std::format("HTTP server error {}: {}",
+                                                                  resp.status_code, resp.body));
+                            }
+                            throw std::runtime_error(
+                                std::format("Unexpected HTTP status code: {}", resp.status_code));
+                        })
+                        .thenError([this, target](std::exception_ptr e) -> Response {
+                            auto error_metric = _metrics;
+                            error_metric.set_metric_name("proxygen_http.client.error");
+                            error_metric.add_dimension("target_node_id", std::to_string(target));
+                            error_metric.add_one();
+                            error_metric.emit();
+                            std::rethrow_exception(e);
+                        });
+                std::move(chain)
+                    .thenTry([promise = std::move(promise)](kythira::Try<Response> result) mutable {
+                        if (result.hasException()) {
+                            promise.setException(result.exception());
+                        } else {
+                            promise.setValue(std::move(result.value()));
+                        }
+                    })
+                    .detach();  // Requirement 14.3: guarantees this chain
+                                // actually executes under every backend
+                                // (stdexec's lazy senders in particular),
+                                // not only Folly's eager-by-construction
+                                // one -- future.hpp's own detach() comment.
+            });
+            return future;
+        } catch (const std::exception&) {
+            promise.setException(std::current_exception());
+            return future;
+        }
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+template<typename Request, typename Response>
+auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
+                                                      std::string_view endpoint,
+                                                      const Request& request,
+                                                      std::chrono::milliseconds timeout)
+    -> kythira::Future<Response> {
+    std::string rpc_type = proxygen_rpc_type_name(endpoint);
+    // Raw folly::Promise<T>, not kythira::promise_default<T> -- no generic
+    // bridge type is constructed on this path at all (Requirement 16.2).
+    folly::Promise<Response> promise;
+    auto folly_future = promise.getFuture();
+    try {
+        auto& slot = get_or_create_slot(target);
+        auto [addr, host, is_https] = resolve_target(target);
+        auto serialized = _serializer.serialize(request);
+        std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
+        auto* evb = slot.event_base;
+        auto session_slot = slot.session;
+        auto ssl_ctx = _ssl_ctx;
+        auto connection_timeout = _config.connection_timeout;
+        auto start_time = std::chrono::steady_clock::now();
+
+        auto metric = _metrics;
+        metric.set_metric_name("proxygen_http.client.request.sent");
+        metric.add_dimension("rpc_type", rpc_type);
+        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("path", "folly_fast_path");
+        metric.add_one();
+        metric.emit();
+
+        evb->runInEventBaseThread([this, evb, session_slot, addr, ssl_ctx, is_https,
+                                   connection_timeout, host, body = std::move(body),
+                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
+                                   start_time, promise = std::move(promise)]() mutable {
+            // Requirement 16.3: continuations scheduled via .via(evb) --
+            // the connection's own pinned EventBase -- so this chain
+            // never hops threads beyond the single initial dispatch onto
+            // evb every RPC (generic or fast path) already needs, since
+            // the calling thread is arbitrary. As in the generic path
+            // (send_rpc, above), the response-transform step returns
+            // Response or throws rather than fulfilling `promise` from
+            // two separate thenValue/thenError callbacks -- a single
+            // trailing .thenTry() is the one place `promise` is
+            // captured/settled.
+            auto chain =
+                proxygen_detail::connect_if_needed(session_slot, evb, addr, ssl_ctx, is_https,
+                                                   connection_timeout)
+                    .get_folly_future()
+                    .via(evb)
+                    .thenValue([evb, host, body = std::move(body), endpoint,
+                                user_agent = _config.user_agent,
+                                timeout](proxygen::HTTPUpstreamSession* session) {
+                        return proxygen_detail::send_on_session_folly(session, endpoint, body, host,
+                                                                      user_agent, timeout);
+                    })
+                    .via(evb)
+                    .thenValue([this, target, rpc_type,
+                                start_time](proxygen_detail::http_response resp) -> Response {
+                        auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - start_time);
+                        auto latency_metric = _metrics;
+                        latency_metric.set_metric_name("proxygen_http.client.request.latency");
+                        latency_metric.add_dimension("rpc_type", rpc_type);
+                        latency_metric.add_dimension("target_node_id", std::to_string(target));
+                        latency_metric.add_dimension("status",
+                                                     resp.status_code == 200 ? "success" : "error");
+                        latency_metric.add_dimension("path", "folly_fast_path");
+                        latency_metric.add_duration(latency);
+                        latency_metric.emit();
+
+                        if (resp.status_code == 200) {
+                            std::vector<std::byte> response_data;
+                            response_data.reserve(resp.body.size());
+                            for (char c : resp.body) {
+                                response_data.push_back(static_cast<std::byte>(c));
+                            }
+                            try {
+                                if constexpr (std::is_same_v<Response,
+                                                             kythira::request_vote_response<>>) {
+                                    return _serializer.deserialize_request_vote_response(
+                                        response_data);
+                                } else if constexpr (std::is_same_v<
+                                                         Response,
+                                                         kythira::append_entries_response<>>) {
+                                    return _serializer.deserialize_append_entries_response(
+                                        response_data);
+                                } else {
+                                    return _serializer.deserialize_install_snapshot_response(
+                                        response_data);
+                                }
+                            } catch (const std::exception& e) {
+                                throw kythira::serialization_error(
+                                    std::format("Failed to deserialize response: {}", e.what()));
+                            }
+                        }
+                        if (resp.status_code >= 400 && resp.status_code < 500) {
+                            throw kythira::http_client_error(
+                                resp.status_code, std::format("HTTP client error {}: {}",
+                                                              resp.status_code, resp.body));
+                        }
+                        if (resp.status_code >= 500) {
+                            throw kythira::http_server_error(
+                                resp.status_code, std::format("HTTP server error {}: {}",
+                                                              resp.status_code, resp.body));
+                        }
+                        throw std::runtime_error(
+                            std::format("Unexpected HTTP status code: {}", resp.status_code));
+                    })
+                    .thenError([this, target](folly::exception_wrapper ew) -> Response {
+                        auto error_metric = _metrics;
+                        error_metric.set_metric_name("proxygen_http.client.error");
+                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_one();
+                        error_metric.emit();
+                        ew.throw_exception();
+                    });
+            std::move(chain).thenTry(
+                [promise = std::move(promise)](folly::Try<Response> result) mutable {
+                    if (result.hasException()) {
+                        promise.setException(std::move(result.exception()));
+                    } else {
+                        promise.setValue(std::move(result.value()));
+                    }
+                });
+        });
+    } catch (const std::exception&) {
+        promise.setException(folly::exception_wrapper(std::current_exception()));
+    }
+    // The one translation this path cannot avoid: folly::Future<T> ->
+    // kythira::Future<T>, via the already-existing constructor
+    // (include/raft/future.hpp) -- not a new bridging mechanism
+    // (Requirement 16.2).
+    return kythira::Future<Response>(std::move(folly_future));
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_request_vote(std::uint64_t target,
+                                               const kythira::request_vote_request<>& request,
+                                               std::chrono::milliseconds timeout)
+    -> future_template<kythira::request_vote_response<>> {
+    return send_rpc<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+        target, proxygen_detail::proxygen_endpoint_request_vote, request, timeout);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_append_entries(std::uint64_t target,
+                                                 const kythira::append_entries_request<>& request,
+                                                 std::chrono::milliseconds timeout)
+    -> future_template<kythira::append_entries_response<>> {
+    return send_rpc<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+        target, proxygen_detail::proxygen_endpoint_append_entries, request, timeout);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_client<Types>::send_install_snapshot(
+    std::uint64_t target, const kythira::install_snapshot_request<>& request,
+    std::chrono::milliseconds timeout) -> future_template<kythira::install_snapshot_response<>> {
+    return send_rpc<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+        target, proxygen_detail::proxygen_endpoint_install_snapshot, request, timeout);
+}
+
+// ---------------------------------------------------------------------------
+// Server-side RequestHandler/RequestHandlerFactory (Requirement 4) -- built
+// on Proxygen's own higher-level server API (proxygen::RequestHandler +
+// proxygen::ResponseBuilder), not a raw HTTPTransactionHandler the way the
+// client side is -- spike-notes.md Finding 6 records this as a deliberate
+// design refinement over design.md's original lower-level sketch, since
+// Proxygen itself provides and documents this as the intended server-side
+// extension point.
+// ---------------------------------------------------------------------------
+
+namespace proxygen_detail {
+
+template<typename Types> class rpc_request_handler final : public proxygen::RequestHandler {
+public:
+    explicit rpc_request_handler(proxygen_server<Types>* server) : _server(server) {}
+
+    auto onRequest(std::unique_ptr<proxygen::HTTPMessage> headers) noexcept -> void override {
+        _path = headers->getPath();
+        _request_id = _server->register_request();
+    }
+
+    auto onBody(std::unique_ptr<folly::IOBuf> body) noexcept -> void override {
+        if (body) {
+            body->coalesce();
+            const auto* data = reinterpret_cast<const std::byte*>(body->data());
+            _body.insert(_body.end(), data, data + body->length());
+        }
+    }
+
+    auto onUpgrade(proxygen::UpgradeProtocol) noexcept -> void override {}
+
+    auto onEOM() noexcept -> void override {
+        std::string response_body;
+        unsigned status_code = 200;
+        _server->dispatch(_path, _body, response_body, status_code);
+        proxygen::ResponseBuilder(downstream_)
+            .status(static_cast<std::uint16_t>(status_code), proxygen_status_reason(status_code))
+            .header(proxygen::HTTP_HEADER_CONTENT_TYPE,
+                    status_code == 200 ? "application/json" : "text/plain")
+            .body(std::move(response_body))
+            .sendWithEOM();
+    }
+
+    auto requestComplete() noexcept -> void override {
+        _server->request_finished(_request_id);
+        delete this;
+    }
+
+    auto onError(proxygen::ProxygenError) noexcept -> void override {
+        _server->request_finished(_request_id);
+        delete this;
+    }
+
+private:
+    proxygen_server<Types>* _server;
+    std::string _path;
+    std::vector<std::byte> _body;
+    std::size_t _request_id{0};
+};
+
+template<typename Types> class rpc_handler_factory final : public proxygen::RequestHandlerFactory {
+public:
+    explicit rpc_handler_factory(proxygen_server<Types>* server) : _server(server) {}
+
+    auto onServerStart(folly::EventBase*) noexcept -> void override {}
+    auto onServerStop() noexcept -> void override {}
+
+    auto onRequest(proxygen::RequestHandler*, proxygen::HTTPMessage*) noexcept
+        -> proxygen::RequestHandler* override {
+        return new rpc_request_handler<Types>(_server);
+    }
+
+private:
+    proxygen_server<Types>* _server;
+};
+
+}  // namespace proxygen_detail
+
+// ---------------------------------------------------------------------------
+// proxygen_server
+// ---------------------------------------------------------------------------
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+proxygen_server<Types>::proxygen_server(
+    std::string bind_address, std::uint16_t bind_port, proxygen_server_config config,
+    metrics_type metrics, std::shared_ptr<folly::IOThreadPoolExecutorBase> io_executor)
+    : _bind_address(std::move(bind_address)),
+      _bind_port(bind_port),
+      _config(std::move(config)),
+      _metrics(std::move(metrics)),
+      _io_executor(std::move(io_executor)) {
+    validate_certificate_files();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+proxygen_server<Types>::~proxygen_server() {
+    disable_auto_reload();
+    stop();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::validate_certificate_files() const -> void {
+    proxygen_validate_tls_version_range(_config.min_tls_version, _config.max_tls_version);
+    proxygen_validate_cipher_suites(_config.cipher_suites);
+    if (!_config.enable_ssl) {
+        return;
+    }
+    if (_config.ssl_cert_path.empty() || _config.ssl_key_path.empty()) {
+        throw kythira::ssl_configuration_error(
+            "enable_ssl is set but ssl_cert_path/ssl_key_path are not both provided");
+    }
+    proxygen_validate_certificate_file(_config.ssl_cert_path);
+    proxygen_check_certificate_expiration(_config.ssl_cert_path);
+    proxygen_validate_private_key_file(_config.ssl_key_path);
+    proxygen_validate_certificate_key_pair(_config.ssl_cert_path, _config.ssl_key_path);
+    if (!_config.ca_cert_path.empty()) {
+        proxygen_validate_certificate_file(_config.ca_cert_path);
+    } else if (_config.require_client_cert) {
+        throw kythira::ssl_configuration_error(
+            "require_client_cert is set but ca_cert_path is not provided");
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::build_ssl_context_config() -> wangle::SSLContextConfig {
+    wangle::SSLContextConfig ssl_config;
+    ssl_config.setCertificate(_config.ssl_cert_path, _config.ssl_key_path, "");
+    ssl_config.sslCiphers = _config.cipher_suites.empty()
+                                ? wangle::SSLContextConfig::getDefaultCiphers()
+                                : _config.cipher_suites;
+    // wangle::SSLContextConfig::sslVersion is a single floor, not a
+    // min/max range -- Requirement 11.3: no direct equivalent for
+    // max_tls_version exists on this config surface (spike-notes.md
+    // Finding 5); TLS 1.3 is negotiated automatically whenever the peer
+    // offers it regardless of this floor, so max_tls_version is accepted
+    // and validated (validate_certificate_files, above) but has no
+    // further effect server-side beyond that validation.
+    if (_config.min_tls_version == "TLSv1.3") {
+        ssl_config.sslVersion = folly::SSLContext::TLSv1_3;
+    } else {
+        ssl_config.sslVersion = folly::SSLContext::TLSv1_2;
+    }
+    if (!_config.ca_cert_path.empty()) {
+        ssl_config.clientCAFile = _config.ca_cert_path;
+    }
+    ssl_config.clientVerification =
+        _config.require_client_cert
+            ? folly::SSLContext::VerifyClientCertificate::ALWAYS
+            : (_config.ca_cert_path.empty()
+                   ? folly::SSLContext::VerifyClientCertificate::DO_NOT_REQUEST
+                   : folly::SSLContext::VerifyClientCertificate::IF_PRESENTED);
+    ssl_config.isDefault = true;
+    return ssl_config;
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::reload_tls_material() -> void {
+    if (!_config.enable_ssl) {
+        throw kythira::ssl_configuration_error("SSL is not enabled on this server");
+    }
+    validate_certificate_files();
+    // Requirement 7.2: proxygen::HTTPServer::updateTLSCredentials() re-reads
+    // the certificate/key paths already configured on the running
+    // acceptors without closing the listener or dropping established
+    // connections -- the direct Proxygen equivalent of Beast/cpp-httplib's
+    // own "swap in a fresh context" reload, just performed in place rather
+    // than by constructing a whole new config object.
+    std::lock_guard<std::mutex> lock(_mutex);
+    if (_http_server) {
+        _http_server->updateTLSCredentials();
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::enable_auto_reload(std::chrono::seconds poll_interval) -> void {
+    disable_auto_reload();
+    _auto_reload_thread = std::jthread([this, poll_interval](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::error_code ec;
+            auto mtime = std::filesystem::last_write_time(_config.ssl_cert_path, ec);
+            if (!ec && mtime != _last_reloaded_cert_mtime) {
+                try {
+                    reload_tls_material();
+                    _last_reloaded_cert_mtime = mtime;
+                } catch (const std::exception&) {
+                    auto metric = _metrics;
+                    metric.set_metric_name("proxygen_http.server.tls_reload.failed");
+                    metric.add_one();
+                    metric.emit();
+                }
+            }
+            std::this_thread::sleep_for(poll_interval);
+        }
+    });
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::disable_auto_reload() -> void {
+    if (_auto_reload_thread.joinable()) {
+        _auto_reload_thread.request_stop();
+        _auto_reload_thread.join();
+    }
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_request_vote_handler(
+    std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
+    -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _request_vote_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_append_entries_handler(
+    std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _append_entries_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_install_snapshot_handler(
+    std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
+        handler) -> void {
+    std::lock_guard<std::mutex> lock(_mutex);
+    _install_snapshot_handler = std::move(handler);
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::start() -> void {
+    {
+        std::lock_guard<std::mutex> lock(_start_mutex);
+        if (_running.load()) {
+            return;
+        }
+    }
+
+    proxygen::HTTPServerOptions options;
+    options.threads = 1;
+    options.idleTimeout = _config.request_timeout;
+    options.handlerFactories = proxygen::RequestHandlerChain()
+                                   .addThen<proxygen_detail::rpc_handler_factory<Types>>(this)
+                                   .build();
+
+    _http_server = std::make_unique<proxygen::HTTPServer>(std::move(options));
+
+    proxygen::HTTPServer::IPConfig ip_config(folly::SocketAddress(_bind_address, _bind_port),
+                                             proxygen::HTTPServer::Protocol::HTTP);
+    if (_config.enable_ssl) {
+        ip_config.sslConfigs.push_back(build_ssl_context_config());
+    }
+    _http_server->bind({ip_config});
+
+    // Requirement 5.1: HTTPServer::start() genuinely blocks the calling
+    // thread until stop() (spike-notes.md Finding 1) -- own and join a
+    // dedicated thread to run it on, the same shape cpp_httplib_server's
+    // own _server_thread already uses for httplib::Server::listen()'s
+    // equally blocking call, signaling readiness back via start()'s own
+    // onSuccess/onError callbacks (which fire from the event loop, not a
+    // fixed sleep or a race).
+    _server_thread = std::thread([this] {
+        _http_server->start(
+            [this] {
+                std::lock_guard<std::mutex> lock(_start_mutex);
+                _start_signaled = true;
+                _running.store(true);
+                _start_cv.notify_all();
+            },
+            [this](std::exception_ptr ex) {
+                std::lock_guard<std::mutex> lock(_start_mutex);
+                _start_signaled = true;
+                _start_error = ex;
+                _start_cv.notify_all();
+            },
+            nullptr, _io_executor);
+    });
+
+    std::unique_lock<std::mutex> lock(_start_mutex);
+    _start_cv.wait(lock, [this] { return _start_signaled; });
+    if (_start_error) {
+        auto ex = _start_error;
+        _start_error = nullptr;
+        _start_signaled = false;
+        lock.unlock();
+        _server_thread.join();
+        std::rethrow_exception(ex);
+    }
+
+    auto metric = _metrics;
+    metric.set_metric_name("proxygen_http.server.started");
+    metric.add_one();
+    metric.emit();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::stop() -> void {
+    if (!_running.load()) {
+        return;
+    }
+    // Requirement 5.2, Property 8: stop accepting first, then drain
+    // in-flight requests -- proxygen::HTTPServer::stop() itself "drop[s]
+    // all connections immediately" per its own header comment, the
+    // opposite of what's needed here, so this feature's own drain step
+    // runs in front of it (design.md Phase 3), mirroring the same
+    // active-drain addendum boost_beast_server::stop() needed.
+    _http_server->stopListening();
+
+    {
+        std::unique_lock<std::mutex> drain_lock(_drain_mutex);
+        _drain_cv.wait(drain_lock, [this] {
+            std::lock_guard<std::mutex> requests_lock(_requests_mutex);
+            return _live_requests == 0;
+        });
+    }
+
+    _http_server->stop();
+    _running.store(false);
+    if (_server_thread.joinable()) {
+        _server_thread.join();
+    }
+
+    auto metric = _metrics;
+    metric.set_metric_name("proxygen_http.server.stopped");
+    metric.add_one();
+    metric.emit();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::is_running() const -> bool {
+    return _running.load();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::register_request() -> std::size_t {
+    std::lock_guard<std::mutex> lock(_requests_mutex);
+    ++_live_requests;
+    return _next_request_id++;
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::request_finished(std::size_t /*request_id*/) -> void {
+    {
+        std::lock_guard<std::mutex> lock(_requests_mutex);
+        --_live_requests;
+    }
+    std::lock_guard<std::mutex> drain_lock(_drain_mutex);
+    _drain_cv.notify_all();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector<std::byte>& body,
+                                      std::string& response_body, unsigned& status_code) -> void {
+    auto handle = [&]<typename Request, typename Response>(
+                      const std::function<Response(const Request&)>& handler,
+                      std::string_view rpc_type, auto deserialize) {
+        auto start_time = std::chrono::steady_clock::now();
+        auto received_metric = _metrics;
+        received_metric.set_metric_name("proxygen_http.server.request.received");
+        received_metric.add_dimension("rpc_type", std::string(rpc_type));
+        received_metric.add_one();
+        received_metric.emit();
+
+        if (!handler) {
+            status_code = 500;
+            response_body = "Handler not registered";
+            return;
+        }
+        Request request;
+        try {
+            request = deserialize(body);
+        } catch (const std::exception& e) {
+            status_code = 400;
+            response_body = std::format("Bad Request: {}", e.what());
+            return;
+        }
+        try {
+            Response response = handler(request);
+            auto serialized = _serializer.serialize(response);
+            response_body.assign(reinterpret_cast<const char*>(serialized.data()),
+                                 serialized.size());
+            status_code = 200;
+        } catch (const std::exception&) {
+            status_code = 500;
+            response_body = "Internal Server Error";
+        }
+
+        auto latency_metric = _metrics;
+        latency_metric.set_metric_name("proxygen_http.server.request.latency");
+        latency_metric.add_dimension("rpc_type", std::string(rpc_type));
+        latency_metric.add_dimension("status_code", std::to_string(status_code));
+        latency_metric.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start_time));
+        latency_metric.emit();
+    };
+
+    if (target == proxygen_detail::proxygen_endpoint_request_vote) {
+        handle
+            .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
+                _request_vote_handler, "request_vote", [this](const std::vector<std::byte>& b) {
+                    return _serializer.deserialize_request_vote_request(b);
+                });
+    } else if (target == proxygen_detail::proxygen_endpoint_append_entries) {
+        handle.template
+        operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
+            _append_entries_handler, "append_entries", [this](const std::vector<std::byte>& b) {
+                return _serializer.deserialize_append_entries_request(b);
+            });
+    } else if (target == proxygen_detail::proxygen_endpoint_install_snapshot) {
+        handle.template
+        operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+            _install_snapshot_handler, "install_snapshot", [this](const std::vector<std::byte>& b) {
+                return _serializer.deserialize_install_snapshot_request(b);
+            });
+    } else {
+        status_code = 404;
+        response_body = "Not Found";
+        auto error_metric = _metrics;
+        error_metric.set_metric_name("proxygen_http.server.error");
+        error_metric.add_dimension("error_type", "not_found");
+        error_metric.add_one();
+        error_metric.emit();
+    }
+}
+
+}  // namespace kythira
