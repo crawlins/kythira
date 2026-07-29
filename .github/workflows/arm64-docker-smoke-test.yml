@@ -35,6 +35,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
+          # "Install system dependencies" step for why (vcpkg's gperf port,
+          # a host-tool dependency of proxygen -- now an unconditional
+          # vcpkg.json dependency like boost-beast, so any workflow running
+          # `vcpkg install` against this manifest needs these regardless of
+          # which Kconfig transports it actually builds).
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
             g++-13 \
@@ -42,7 +48,11 @@ jobs:
             ninja-build \
             libfiu-dev \
             libavahi-client-dev \
-            libldns-dev
+            libldns-dev \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool
 
       - name: Verify a container runtime is available
         run: |

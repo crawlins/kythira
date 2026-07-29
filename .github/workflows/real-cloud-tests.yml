@@ -133,13 +133,23 @@ jobs:
       # apt's own per-package retry window covers.
       - name: Install system dependencies
         run: |
+          # autoconf/autoconf-archive/automake/libtool: see ci.yml's own
+          # "Install system dependencies" step for why (vcpkg's gperf port,
+          # a host-tool dependency of proxygen -- now an unconditional
+          # vcpkg.json dependency like boost-beast, so any workflow running
+          # `vcpkg install` against this manifest needs these regardless of
+          # which Kconfig transports it actually builds).
           for attempt in 1 2 3; do
             if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
                  clang-18 \
                  cmake \
                  ninja-build \
                  libfiu-dev \
-                 ccache; then
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."

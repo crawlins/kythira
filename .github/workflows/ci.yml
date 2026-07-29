@@ -68,6 +68,14 @@ jobs:
       # retrying against the same failed one.
       - name: Install system dependencies
         run: |
+          # autoconf/autoconf-archive/automake/libtool: not a direct
+          # dependency of this project's own code -- required by vcpkg's
+          # gperf port (vcpkg_make_configure/vcpkg_run_autoreconf), itself a
+          # host-tool dependency of the proxygen port
+          # (.kiro/specs/proxygen-http-transport/). Confirmed as the actual
+          # CI failure cause (not a code bug) by reading the real CI log's
+          # "gperf currently requires the following programs from the system
+          # package manager" error.
           for attempt in 1 2 3; do
             if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
                  g++-13 \
@@ -75,7 +83,11 @@ jobs:
                  cmake \
                  ninja-build \
                  libfiu-dev \
-                 ccache; then
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
               exit 0
             fi
             echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
@@ -271,6 +283,10 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # autoconf/autoconf-archive/automake/libtool: see the identical
+          # addition in build-and-test's own "Install system dependencies"
+          # step above for why (vcpkg's gperf port, a host-tool dependency
+          # of proxygen, needs them from the system package manager).
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends \
             clang-18 \
@@ -278,7 +294,11 @@ jobs:
             cmake \
             ninja-build \
             libfiu-dev \
-            ccache
+            ccache \
+            autoconf \
+            autoconf-archive \
+            automake \
+            libtool
 
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
       # source (vcpkg's "edhoc" feature below) — see the identical step in
