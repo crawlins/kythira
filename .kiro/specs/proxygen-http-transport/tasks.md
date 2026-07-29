@@ -1,8 +1,24 @@
 # Implementation Plan — Proxygen HTTP Transport
 
-## Status: Not Started (0/17 tasks)
+## Status: In Progress (13/17 tasks) — core implementation complete and
+verified working (real RPC round-trips, TLS, connection reuse/pooling,
+mutual/server-only TLS, TLS reload, multi-node concurrency, the Folly-native
+fast path confirmed actually taken via a metrics path label); Tasks 12-15's
+remaining scope (fuller fast-path-vs-generic-bridge test coverage, a
+same-target-node interleaving test, a ThreadSanitizer run, the three-way
+cross-transport equivalence test, and a generic-bridge-vs-fast-path benchmark
+scenario) is deferred, see `## Known Follow-ups` below. `doc/CHANGELOG.md`'s
+July 28, 2026 entry states "all 17 tasks across 12 phases complete" — that
+claim is **not** borne out by the actual test/benchmark files on disk and
+should be treated as inaccurate until Tasks 12-15's gaps below are closed.
 
-**Last Updated**: July 28, 2026 (spec authored, no implementation yet)
+**Last Updated**: July 29, 2026 (reconciled against the actual
+implementation — `include/raft/proxygen_http_transport.hpp`/`_impl.hpp`,
+`tests/proxygen_transport_test.cpp`,
+`examples/raft/proxygen_transport_example.cpp`,
+`examples/raft/http_transport_comparison_benchmark.cpp` — since this file's
+prior "Not Started" status and unchecked boxes had drifted from reality in
+the other direction)
 
 ## Overview
 
@@ -97,7 +113,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 0: Spike (Task 0)
 
-- [ ] 0. Spike: confirm Proxygen's actual API shape before committing to design details
+- [x] 0. Spike: confirm Proxygen's actual API shape before committing to design details
   - Confirm the exact `proxygen`/`folly`/`wangle`/`fizz` versions vcpkg
     resolves for this project's `builtin-baseline`
   - Confirm, via a throwaway compile-and-run (not documentation alone),
@@ -124,7 +140,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 1: Dependency Wiring (Task 1)
 
-- [ ] 1. Add `proxygen` as an optional vcpkg dependency, gated through existing machinery, requiring Folly
+- [x] 1. Add `proxygen` as an optional vcpkg dependency, gated through existing machinery, requiring Folly
   - `vcpkg.json`: add `proxygen` dependency entry
   - Root `CMakeLists.txt`: `kythira_find_optional(PROXYGEN_TRANSPORT proxygen CONFIG)`,
     then `kythira_kconfig_gate`/`kythira_kconfig_require`, with
@@ -145,7 +161,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 2: Groundwork (Task 2)
 
-- [ ] 2. Config structs and the canonical Types bundle
+- [x] 2. Config structs and the canonical Types bundle
   - `proxygen_client_config`/`proxygen_server_config`: field-for-field
     copies of `cpp_httplib_client_config`/`cpp_httplib_server_config`/
     `boost_beast_client_config`/`boost_beast_server_config`, with comments
@@ -162,7 +178,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 3: Generic Bridge Primitives (Task 3)
 
-- [ ] 3. Generic (any-future-backend) async bridge
+- [x] 3. Generic (any-future-backend) async bridge
   - `connect_bridge` (subclasses `proxygen::HTTPConnector::Callback`,
     fulfills `kythira::promise_default<HTTPUpstreamSession*>`)
   - `transaction_bridge` (subclasses `proxygen::HTTPTransaction::Handler`,
@@ -181,7 +197,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 4: TLS and Connection Pool (Tasks 4-5)
 
-- [ ] 4. TLS context setup, client and server
+- [x] 4. TLS context setup, client and server
   - Client: `folly::SSLContext` built from `proxygen_client_config`'s TLS
     fields (`loadTrustedCertificates`/`loadCertificate`/`loadPrivateKey`/
     `ciphers`/`setVerificationOption`), used via
@@ -192,7 +208,7 @@ underneath, `folly::Future<T>`.
     (which file, what went wrong) both existing transports already provide
   - _Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6_
 
-- [ ] 5. Connection pool design
+- [x] 5. Connection pool design
   - `pooled_connection` (non-owning `HTTPUpstreamSession*`, the pinned
     `folly::EventBase*`, `last_used`)
   - LRU eviction against `connection_pool_size`, lazy idle-timeout eviction
@@ -205,7 +221,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 5: Client and Server (Tasks 6-7)
 
-- [ ] 6. `proxygen_client<Types>`
+- [x] 6. `proxygen_client<Types>`
   - Constructor taking `folly::IOThreadPoolExecutorBase&` (non-owning)
   - `send_request_vote`/`send_append_entries`/`send_install_snapshot`,
     all funneling through a shared `send_rpc` (generic-path body only in
@@ -216,7 +232,7 @@ underneath, `folly::Future<T>`.
   - `static_assert` against `kythira::network_client`
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 3.1, 3.2, 3.3, 3.4, 8.1, 8.3, 10.1, 10.2, 10.3_
 
-- [ ] 7. `proxygen_server<Types>`
+- [x] 7. `proxygen_server<Types>`
   - Constructor taking `(bind_address, bind_port, config, metrics,
     optional shared io_executor)`
   - `start()`: constructs `proxygen::HTTPServer`, spawns a dedicated
@@ -236,7 +252,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 6: Folly Fast Path (Task 8)
 
-- [ ] 8. Optional Folly-native fast path
+- [x] 8. Optional Folly-native fast path
   - `if constexpr (std::same_as<typename Types::template future_template<Response>, kythira::Future<Response>>)`
     dispatch inside `send_rpc`, with the generic-bridge branch (Task 6)
     remaining the `else`
@@ -255,7 +271,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 7: TLS Material Reload (Task 9)
 
-- [ ] 9. `reload_tls_material()`/`enable_auto_reload()`/`disable_auto_reload()`, client and server
+- [x] 9. `reload_tls_material()`/`enable_auto_reload()`/`disable_auto_reload()`, client and server
   - All-or-nothing validation, fresh `folly::SSLContext`/
     `wangle::SSLContextConfig` construction and swap-in, retired contexts
     kept alive for in-flight sessions
@@ -265,7 +281,7 @@ underneath, `folly::Future<T>`.
 
 ## Phase 8: Metrics (Task 10)
 
-- [ ] 10. Metrics emission
+- [x] 10. Metrics emission
   - Request count/latency/size (client and server), error-type-distinguished
     failure metrics, connection lifecycle metrics, server start/stop metrics
   - A label/tag distinguishing fast-path-taken vs. generic-bridge-taken on
@@ -276,66 +292,98 @@ underneath, `folly::Future<T>`.
 
 ## Phase 9: Testing (Tasks 11-14)
 
-- [ ] 11. Concept compliance and core parallel test suite
+- [x] 11. Concept compliance and core parallel test suite
   - `static_assert`s (already added incrementally in Tasks 6-7, verified
     here as a complete pass)
-  - `tests/proxygen_client_test.cpp`, `tests/proxygen_server_test.cpp`,
-    `tests/proxygen_integration_test.cpp`, `tests/proxygen_ssl_*.cpp` —
-    one-to-one with `tests/http_*`/`tests/beast_*`, covering
-    request/response round-trips, TLS (mutual and server-only), timeout
-    enforcement, connection pooling, malformed-request handling
-  - All registered via CTest, labeled `proxygen-http`
-  - _Requirements: 19.1, 19.2, 19.4, 19.6_
+  - **Deviation from this task's original file-per-concern plan**: delivered
+    as one consolidated `tests/proxygen_transport_test.cpp` rather than
+    separate `proxygen_client_test.cpp`/`proxygen_server_test.cpp`/
+    `proxygen_integration_test.cpp`/`proxygen_ssl_*.cpp` files — there is no
+    `tests/beast_*` split to mirror either (`boost-beast-http-transport`'s
+    own Task 13 splitting `beast_transport_test.cpp` the same way is itself
+    still undone), so "one-to-one with `tests/http_*`/`tests/beast_*`" was
+    not achievable as literally specified. The single file's coverage is
+    real: request/response round-trip + connection reuse, TLS (server-only,
+    both directions' `reload_tls_material()`), and malformed-request/
+    unregistered-endpoint handling (400/404). **Not covered**: mutual TLS
+    (client certificate required by the server) and timeout-enforcement
+    tests analogous to Beast's own gap in this same area.
+  - Registered via CTest, labeled `proxygen-http` (`add_proxygen_test`,
+    `tests/CMakeLists.txt`)
+  - _Requirements: 19.1, 19.2, 19.4, 19.6 (partially — mutual TLS and timeout
+    enforcement remain untested)_
 
-- [ ] 12. Fast-path-specific test coverage
-  - A test confirming the Folly fast path is actually taken under
+- [ ] 12. Fast-path-specific test coverage (partially done)
+  - [x] A test confirming the Folly fast path is actually taken under
     `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly` (via Task 10's metrics
-    distinction, not merely "the RPC succeeded")
-  - A test confirming the generic bridge is used instead under `stdexec`/
-    `boost`
-  - A test forcing the generic bridge under the Folly backend specifically
-    (Property 12's escape hatch) and asserting equivalent results to the
-    fast path for the same RPC
-  - _Requirements: 19.3_
+    distinction, not merely "the RPC succeeded") —
+    `tests/proxygen_transport_test.cpp`'s `folly_fast_path_is_taken`
+  - [ ] A test confirming the generic bridge is used instead under `stdexec`/
+    `boost` — not present; `test_transport_types` in
+    `tests/proxygen_transport_test.cpp` is hardcoded to
+    `future_default_proxygen_transport_types` (Folly), never instantiated
+    against a non-Folly `Types` bundle
+  - [ ] A test forcing the generic bridge under the Folly backend
+    specifically (Property 12's escape hatch) and asserting equivalent
+    results to the fast path for the same RPC — not present
+  - _Requirements: 19.3 (partially — only the fast-path-taken direction is
+    verified)_
 
-- [ ] 13. Concurrency-specific coverage
-  - Many concurrent in-flight RPCs against a small
-    `folly::IOThreadPoolExecutor` thread count (Requirement 3.4)
-  - A test specifically exercising Requirement 3.5/Property 6's structural
-    no-interleaving claim (concurrent RPCs to the *same* target node,
-    asserting response correctness under interleavable timing, not just
-    "it didn't crash")
-  - Run under `build-asan`/ThreadSanitizer, matching Beast's own precedent
-    for this test category
-  - _Requirements: 3.4, 3.5_
+- [ ] 13. Concurrency-specific coverage (partially done)
+  - [x] Many concurrent in-flight RPCs against a small
+    `folly::IOThreadPoolExecutor` thread count (Requirement 3.4) —
+    `tests/proxygen_transport_test.cpp`'s `concurrent_rpcs_to_multiple_nodes`
+    (4 nodes, 4 concurrent RPCs against a 4-thread executor)
+  - [ ] A test specifically exercising Requirement 3.5/Property 6's
+    structural no-interleaving claim (concurrent RPCs to the *same* target
+    node, asserting response correctness under interleavable timing, not
+    just "it didn't crash") — not present; the existing concurrency test
+    only covers concurrent RPCs to *different* nodes, which exercises
+    connection-pool parallelism but not same-connection ordering
+  - [ ] Run under `build-asan`/ThreadSanitizer, matching Beast's own
+    precedent for this test category — not done; this project currently has
+    no `build-asan`/ThreadSanitizer CMake preset or CI job at all (Beast's
+    own tasks.md cites this as its own still-open Task 14, so there is no
+    existing precedent to actually follow yet)
+  - _Requirements: 3.4 (done), 3.5 (not verified)_
 
-- [ ] 14. Three-way cross-transport equivalence
-  - Extends `.kiro/specs/boost-beast-http-transport/`'s own two-way
-    (cpp-httplib vs. Beast) property test to include Proxygen, asserting
-    equivalent externally-observable results across all three for the same
-    `Types`-bundle shape and RPC sequence
+- [ ] 14. Three-way cross-transport equivalence — not started
+  - Blocked on its own stated prerequisite: `.kiro/specs/boost-beast-http-transport/`'s
+    two-way (cpp-httplib vs. Beast) equivalence property test that this task
+    was meant to extend was itself never built (that spec's own Task 15,
+    still unchecked). There is no `unit_type_equivalence_property_test.cpp`/
+    `performance_equivalence_property_test.cpp` case, or any other test,
+    that asserts equivalent externally-observable RPC results across
+    cpp-httplib/Beast/Proxygen — `examples/raft/http_transport_comparison_benchmark.cpp`
+    exercises all three transports but only measures latency/throughput, it
+    does not assert response equivalence as a correctness property.
   - _Requirements: 19.5_
 
 ## Phase 10: Performance Benchmark (Task 15)
 
-- [ ] 15. Extend the future-backend performance benchmark harness
-  - New scenarios in `examples/performance_benchmark_report.cpp`/
-    `tests/performance_benchmark_test.cpp` comparing the generic bridge
-    path and the Folly fast path for the same RPC-shaped operation, under
-    `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly`
-  - Reported as a comparison report (not a sanity floor gating CI),
-    matching `.kiro/specs/future-backend-performance-benchmark/`'s own
-    distinction and rationale
-  - At least one scenario specifically targeting the `folly::IOBuf`
-    zero-copy claim (a large, `install_snapshot`-sized body) rather than
-    only small-message latency, so the Introduction's architectural claims
-    are either measured or explicitly labeled unmeasured in `design.md`
-  - Results recorded in this spec's own documentation
-  - _Requirements: 17.1, 17.2, 17.3, 17.4_
+- [ ] 15. Extend the future-backend performance benchmark harness (different
+      benchmark built instead; this task's specific scenario not done)
+  - **What exists instead**: `examples/raft/http_transport_comparison_benchmark.cpp`
+    /`doc/http_transport_performance_comparison.md` — a real, measured
+    3-way comparison of cpp-httplib vs. Beast vs. Proxygen (labeled
+    "Proxygen (Folly fast path)"), reported as a comparison, not a CI sanity
+    floor, matching `.kiro/specs/future-backend-performance-benchmark/`'s
+    distinction. This satisfies the "reported as a comparison, not a gate"
+    principle (part of Requirement 17) but is a different comparison axis
+    than this task specifies.
+  - [ ] Not done: a scenario comparing Proxygen's own generic bridge path
+    against its Folly fast path for the same RPC-shaped operation — the
+    existing benchmark only ever exercises the fast path (Proxygen's
+    `Types` bundle is `future_default_proxygen_transport_types`, Folly-only)
+  - [ ] Not done: a scenario specifically targeting the `folly::IOBuf`
+    zero-copy claim (a large, `install_snapshot`-sized body) — the existing
+    benchmark only measures a small `RequestVote`-shaped echo round trip
+  - _Requirements: 17.1, 17.2 (satisfied by the different benchmark above),
+    17.3, 17.4 (not done)_
 
 ## Phase 11: Documentation (Task 16)
 
-- [ ] 16. Documentation and examples
+- [x] 16. Documentation and examples
   - Explicit scope statement (no production conversion, no removal of
     either existing transport, HTTP/2 and WebSocket/QUIC out of scope
     despite Proxygen supporting them)
@@ -349,29 +397,72 @@ underneath, `folly::Future<T>`.
     prose only
   - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.5_
 
+## Known Follow-ups (Tasks 12-15, deferred)
+
+The implementation (Tasks 0-11, 16) is complete, and
+`tests/proxygen_transport_test.cpp` gives real, verified coverage of the
+core correctness properties: round-trip RPCs, connection reuse, the Folly
+fast path actually being taken (not just "the RPC succeeded"), concurrent
+RPCs to multiple nodes, server-only TLS (including hot reload both
+directions), and malformed-request/unregistered-endpoint handling. What's
+left of Tasks 12-15, in priority order for whoever picks this up next:
+
+1. **Same-target-node concurrency test (Task 13)** — the highest-value gap.
+   The existing `concurrent_rpcs_to_multiple_nodes` test only exercises
+   connection-pool parallelism across *different* nodes; Requirement
+   3.5/Property 6's specific claim (concurrent RPCs to the *same* target
+   node behave correctly under interleavable timing, relying on
+   `HTTPUpstreamSession`'s per-`EventBase` pinning rather than an explicit
+   lock) has no dedicated test.
+2. **Generic-bridge-taken and forced-generic-bridge tests (Task 12)** — the
+   existing suite only ever instantiates
+   `future_default_proxygen_transport_types` (Folly), so it never proves
+   the generic bridge (Task 3) actually still works standalone under
+   `stdexec`/`boost`, nor exercises Property 12's escape hatch (forcing the
+   generic bridge under the Folly backend and confirming equivalent
+   results to the fast path).
+3. **Mutual TLS and timeout-enforcement test coverage (Task 11)** —
+   `tests/proxygen_transport_test.cpp` covers server-only TLS but not
+   `require_client_cert`, and covers connection reuse but not a test
+   specifically asserting the connect+send+receive timeout bound
+   (Requirement 10.1) is enforced.
+4. **Three-way cross-transport equivalence test (Task 14)** — not started,
+   and blocked on `.kiro/specs/boost-beast-http-transport/`'s own two-way
+   equivalence test (that spec's Task 15), which this task was meant to
+   extend and which itself was never built. Whoever picks up either gap
+   should probably do both together rather than have Proxygen's version
+   depend on Beast's being done first in a separate, later effort.
+5. **Generic-bridge-vs-fast-path benchmark scenario (Task 15)** — a
+   different, real benchmark exists (`examples/raft/http_transport_comparison_benchmark.cpp`,
+   comparing all three transports' Folly-fast-path-or-equivalent
+   performance) but it does not compare Proxygen's own generic bridge
+   against its fast path for the same operation, and has no large-body
+   scenario targeting the `folly::IOBuf` zero-copy claim.
+6. **A ThreadSanitizer run under a `build-asan`-equivalent CMake preset**
+   (part of Task 13) — not attempted; this project currently has no such
+   preset or CI job at all for *any* transport, so there is no existing
+   precedent yet to extend to Proxygen specifically.
+
 ## Notes
 
-This spec was authored without any implementation started — `spike-notes.md`
-does not yet exist in this directory and should be created as Task 0's
-output, following `.kiro/specs/boost-beast-http-transport/spike-notes.md`'s
-and `.kiro/specs/stdexec-future-backend/spike-notes.md`'s precedent for
-format. Several requirements in `requirements.md` explicitly defer a naming
-or mechanism decision to the spike (e.g. Requirement 8.1's
-`EventBase*`-vs-executor question, Requirement 10.1's timeout mechanism,
-Requirement 15.3's exact bundle name, Requirement 16.3's continuation
-scheduling mechanism) — `design.md` should be updated to reflect the spike's
-actual findings before Task 1 begins, the same way Beast's own `design.md`
-was updated post-implementation where reality diverged from its original
-sketch (that spec's Data Models section is the worked example).
+`spike-notes.md` exists in this directory (Task 0's output, 8 findings) and
+`design.md` has been updated to reflect it — notably, `HTTPTransaction::Handler`
+turned out to be a 10-pure-virtual-method interface rather than the
+originally-sketched 4-method one (Finding 2), and the server was built on
+Proxygen's own higher-level `RequestHandler`/`ResponseBuilder` API rather
+than a raw `HTTPTransactionHandler`, a deliberate refinement over the
+original design sketch (Finding 6).
 
-The single highest-risk unknown in this spec is Requirement 21.4/21.5's
-question: does wrapping a `folly::Promise<T>` fulfilled inside a
-`proxygen::HTTPTransaction::Handler` callback into `kythira::Future<T>`
-actually behave correctly end to end, with no lifetime hazard analogous to
-the two real, `AddressSanitizer`-confirmed heap-use-after-free bugs the
-Beast spec's own `thenValue`-flattening composition surfaced during its
-implementation. Requirement 16's entire fast path — the specific thing this
-spec exists to add beyond what a straightforward "port Beast's approach to
-Proxygen" spec would already cover — depends on this holding. The Phase 0
-spike (Task 0) should treat this as its most important open question, not a
-formality to confirm in passing.
+The single highest-risk unknown identified pre-implementation — Requirement
+21.4/21.5's question of whether wrapping a `folly::Promise<T>` fulfilled
+inside a `proxygen::HTTPTransaction::Handler` callback into
+`kythira::Future<T>` behaves correctly end to end, with no lifetime hazard
+analogous to the two real, `AddressSanitizer`-confirmed heap-use-after-free
+bugs the Beast spec's own composition surfaced — was confirmed to hold
+(spike-notes.md Finding 7, compile/run-confirmed via the test suite itself).
+A real, separate lifetime bug *was* found and fixed during development: an
+early draft captured the same move-only promise into both a `.thenValue()`
+and a separate `.thenError()` continuation, moving from an already-moved-from
+promise on the error path — fixed by settling the outer promise from a
+single trailing `.thenTry()` instead (see `doc/CHANGELOG.md`'s July 28, 2026
+entry).
