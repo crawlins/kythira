@@ -2,14 +2,19 @@
 
 ## Status: Core fix complete and verified (5/5 tasks) — full scenario-suite verification COMPLETE, all 7 scenario tests pass
 
-**Last Updated**: July 19, 2026 (Tasks 1-5 all done. Task 5's real
-`workflow_dispatch` verification confirms the "Dockerfile can't build
-chaos_node" bug is fixed. Getting a real image to build and start for
-the first time surfaced a chain of further, genuine, previously-hidden
-bugs, all now root-caused and fixed — see Task 5's entry below for the
-full writeup. The final `workflow_dispatch` run (29693678147) shows
-all 7 `docker_chaos` scenario-test binaries passing cleanly, including
-the three that were never reachable before this session.)
+**Last Updated**: July 29, 2026 (Tasks 1-5 all done and all now checked
+off — Tasks 1-4's underlying work was already complete and matched
+design.md, but the checkboxes themselves had never been ticked; fixed
+in this pass, along with Task 4's follow-up cleanup of the
+`arm64-docker-smoke-test.yml` `continue-on-error`/comment left over
+from before Task 5's verification. Task 5's real `workflow_dispatch`
+verification confirms the "Dockerfile can't build chaos_node" bug is
+fixed. Getting a real image to build and start for the first time
+surfaced a chain of further, genuine, previously-hidden bugs, all now
+root-caused and fixed — see Task 5's entry below for the full writeup.
+The final `workflow_dispatch` run (29693678147) shows all 7
+`docker_chaos` scenario-test binaries passing cleanly, including the
+three that were never reachable before this session.)
 
 ## Overview
 
@@ -54,7 +59,7 @@ manual dispatch that surfaced the original bug.
 
 ## Phase 1: Staging Plumbing (Task 1)
 
-- [ ] 1. Add the staging directory and ignore it
+- [x] 1. Add the staging directory and ignore it
   - Create `docker/chaos_node/dist/` (an empty directory is fine; the
     staging copy step creates it at build time too via `${CMAKE_COMMAND} -E
     make_directory`, so this task just needs the `.gitignore` entry to
@@ -66,7 +71,7 @@ manual dispatch that surfaced the original bug.
 
 ## Phase 2: Build/Package Rewrite (Tasks 2-3)
 
-- [ ] 2. Wire the host build + staging copy into `docker-chaos-image`
+- [x] 2. Wire the host build + staging copy into `docker-chaos-image`
   - `tests/docker_chaos/CMakeLists.txt`: replace the existing unconditional
     `docker-chaos-image` custom target with the
     `if(folly_FOUND AND Boost_FOUND AND httplib_FOUND)` / `else()` pair from
@@ -79,7 +84,7 @@ manual dispatch that surfaced the original bug.
     the other three images' targets) is untouched.
   - _Requirements: 1.3, 3.1, 3.2_
 
-- [ ] 3. Rewrite `docker/chaos_node/Dockerfile` to a single runtime-only stage
+- [x] 3. Rewrite `docker/chaos_node/Dockerfile` to a single runtime-only stage
   - Replace the two-stage Dockerfile with design.md's Component 2: no
     builder stage, no compiler/CMake/Ninja/dev-package installs; same
     runtime `apt-get install` list, `EXPOSE`, `HEALTHCHECK`, `ENTRYPOINT` as
@@ -89,7 +94,7 @@ manual dispatch that surfaced the original bug.
 
 ## Phase 3: CI Parity Fix (Task 4)
 
-- [ ] 4. Add `libfiu-dev` to `arm64-docker-smoke-test.yml`'s host install step
+- [x] 4. Add `libfiu-dev` to `arm64-docker-smoke-test.yml`'s host install step
   - `.github/workflows/arm64-docker-smoke-test.yml`: add `libfiu-dev` to the
     "Install system dependencies" step's package list (alongside the
     existing `g++-13`/`cmake`/`ninja-build`), matching `ci.yml`'s
@@ -98,6 +103,15 @@ manual dispatch that surfaced the original bug.
     the rest of the old in-container `cmake` invocation deleted in Task 3 —
     nothing carries it forward; fault injection is determined solely by
     `libfiu-dev`'s presence at host configure time (`CHAOS_TESTS_ENABLED`).
+  - **Follow-up cleanup (this pass)**: Task 5's real runs having confirmed
+    the fix green end to end, the "Run docker-chaos-tests" step's
+    `continue-on-error: true` (added back when this Dockerfile genuinely
+    couldn't build `chaos_node` on any architecture) and the workflow
+    comment justifying it were both stale — the step now fails the job on
+    a real regression instead of silently masking one.
+    `docker-otlp-collector-tests` keeps its own `continue-on-error` (its
+    own, unrelated OTel Collector container health-check flakiness noted
+    in Task 5's writeup, out of this spec's scope).
   - _Requirements: 4.1, 4.2, 4.3_
 
 ## Phase 4: Verification (Task 5)

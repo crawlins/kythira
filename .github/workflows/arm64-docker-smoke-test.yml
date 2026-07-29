@@ -94,14 +94,23 @@ jobs:
       # test binaries that exercise them, then runs the full scenario suite
       # against a live container cluster on this arm64 host.
       #
-      # docker-chaos-tests and docker-otlp-collector-tests (the latter reuses
-      # the chaos_node image built by the former) are marked
-      # continue-on-error: docker/chaos_node/Dockerfile cannot currently
-      # build chaos_node on any architecture (folly isn't apt-installable in
-      # its minimal builder stage — a pre-existing, x64-and-arm64-both
-      # issue, tracked separately in doc/TODO.md's Minor Enhancements and
-      # .kiro/specs/chaos-node-host-build/, not something this workflow run
-      # can fix).
+      # docker-chaos-tests previously could not build chaos_node on any
+      # architecture at all (folly isn't apt-installable in the old
+      # in-container builder stage) and ran continue-on-error as a result.
+      # Fixed via .kiro/specs/chaos-node-host-build/: chaos_node is now
+      # built on the host with the project's real vcpkg-based CMake
+      # configuration and docker/chaos_node/Dockerfile just packages the
+      # already-built binary. Confirmed green on real arm64 hardware,
+      # including all 7 chaos scenario tests (workflow_dispatch run
+      # 29693678147) — this step is no longer continue-on-error, so a
+      # regression here now fails the job instead of being silently masked.
+      #
+      # docker-otlp-collector-tests reuses the chaos_node image built above
+      # (so it benefits from the same fix) but keeps its own
+      # continue-on-error: its own scenario test has separate, unrelated
+      # flakiness (an OTel Collector container health-check timeout seen
+      # during chaos-node-host-build's own verification run) that this spec
+      # doesn't cover.
       #
       # docker-poco-discovery-tests is marked continue-on-error for a
       # different, also-already-documented reason: PocoDNSSD's static
@@ -120,7 +129,6 @@ jobs:
       # actually get verified on arm64 instead of being skipped as a side
       # effect of unrelated, already-tracked/already-documented gaps.
       - name: Run docker-chaos-tests (chaos_node image + 7 scenario tests)
-        continue-on-error: true
         run: cmake --build build --target docker-chaos-tests -j$(nproc)
 
       - name: Run docker-poco-discovery-tests (poco_discovery_node image)
