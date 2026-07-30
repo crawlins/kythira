@@ -1130,6 +1130,46 @@ target_link_libraries(rpc_malformed_message_property_test PRIVATE
 target_compile_features(rpc_malformed_message_property_test PRIVATE cxx_std_23)
 add_test(NAME rpc_malformed_message_property_test COMMAND rpc_malformed_message_property_test)
 
+# CBOR serializer concept test needs Boost.JSON (transitively via coap_utils/json_serializer)
+add_executable(cbor_serializer_concept_test cbor_serializer_concept_test.cpp)
+target_link_libraries(cbor_serializer_concept_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(cbor_serializer_concept_test PRIVATE cxx_std_23)
+add_test(NAME cbor_serializer_concept_test COMMAND cbor_serializer_concept_test)
+
+# CBOR serialization property test (round-trip, discriminant mismatch, name/content-format)
+add_executable(cbor_serialization_property_test cbor_serialization_property_test.cpp)
+target_link_libraries(cbor_serialization_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(cbor_serialization_property_test PRIVATE cxx_std_23)
+add_test(NAME cbor_serialization_property_test COMMAND cbor_serialization_property_test)
+
+# CBOR malformed message property test
+add_executable(cbor_malformed_message_property_test cbor_malformed_message_property_test.cpp)
+target_link_libraries(cbor_malformed_message_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(cbor_malformed_message_property_test PRIVATE cxx_std_23)
+add_test(NAME cbor_malformed_message_property_test COMMAND cbor_malformed_message_property_test)
+
+# CBOR-vs-JSON size comparison property test
+add_executable(cbor_json_size_comparison_property_test cbor_json_size_comparison_property_test.cpp)
+target_link_libraries(cbor_json_size_comparison_property_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(cbor_json_size_comparison_property_test PRIVATE cxx_std_23)
+add_test(NAME cbor_json_size_comparison_property_test COMMAND cbor_json_size_comparison_property_test)
+
 # Network retry property test needs Boost.JSON and Folly
 add_executable(network_retry_property_test network_retry_property_test.cpp)
 target_link_libraries(network_retry_property_test PRIVATE
