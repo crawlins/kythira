@@ -142,6 +142,25 @@ jobs:
           # Blobless clone: full commit+tree history (needed for git read-tree
           # when vcpkg checks out port files), but no file blobs until accessed.
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the vcpkg tool + scripts + registry to vcpkg.json's
+          # builtin-baseline instead of a moving HEAD. This CI bootstraps
+          # vcpkg by cloning microsoft/vcpkg at HEAD, but pins port
+          # *versions* via vcpkg.json's builtin-baseline -- so the tool and
+          # scripts are a moving target while the versions are fixed. On a
+          # warm binary cache this is invisible; on any cold build (cache
+          # miss, for any reason -- a dependency change, cache eviction, or
+          # just this being the first build for a given runner arch) it
+          # picks up whatever vcpkg-tool HEAD is that day. Observed directly
+          # on this branch (which touches no vcpkg.json dependency at all):
+          # an upstream vcpkg-tool regression's SBOM script
+          # (scripts/cmake/z_vcpkg_spdx.cmake) called a string(JSON ...
+          # STRING_ENCODE) mode the bundled cmake rejects, failing every
+          # port build ("building zlib:arm64-linux failed with:
+          # BUILD_FAILED"). Pinning to the same commit the manifest's
+          # version constraints already resolve against keeps the tool,
+          # scripts, and resolved versions consistent and cold builds
+          # reproducible regardless of upstream HEAD churn.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           # --x-feature=edhoc: builds the lakers overlay port (see
           # vcpkg-overlays/lakers/) so LAKERS_AVAILABLE is defined and the
@@ -320,6 +339,25 @@ jobs:
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the vcpkg tool + scripts + registry to vcpkg.json's
+          # builtin-baseline instead of a moving HEAD. This CI bootstraps
+          # vcpkg by cloning microsoft/vcpkg at HEAD, but pins port
+          # *versions* via vcpkg.json's builtin-baseline -- so the tool and
+          # scripts are a moving target while the versions are fixed. On a
+          # warm binary cache this is invisible; on any cold build (cache
+          # miss, for any reason -- a dependency change, cache eviction, or
+          # just this being the first build for a given runner arch) it
+          # picks up whatever vcpkg-tool HEAD is that day. Observed directly
+          # on this branch (which touches no vcpkg.json dependency at all):
+          # an upstream vcpkg-tool regression's SBOM script
+          # (scripts/cmake/z_vcpkg_spdx.cmake) called a string(JSON ...
+          # STRING_ENCODE) mode the bundled cmake rejects, failing every
+          # port build ("building zlib:arm64-linux failed with:
+          # BUILD_FAILED"). Pinning to the same commit the manifest's
+          # version constraints already resolve against keeps the tool,
+          # scripts, and resolved versions consistent and cold builds
+          # reproducible regardless of upstream HEAD churn.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
@@ -595,6 +633,25 @@ jobs:
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the vcpkg tool + scripts + registry to vcpkg.json's
+          # builtin-baseline instead of a moving HEAD. This CI bootstraps
+          # vcpkg by cloning microsoft/vcpkg at HEAD, but pins port
+          # *versions* via vcpkg.json's builtin-baseline -- so the tool and
+          # scripts are a moving target while the versions are fixed. On a
+          # warm binary cache this is invisible; on any cold build (cache
+          # miss, for any reason -- a dependency change, cache eviction, or
+          # just this being the first build for a given runner arch) it
+          # picks up whatever vcpkg-tool HEAD is that day. Observed directly
+          # on this branch (which touches no vcpkg.json dependency at all):
+          # an upstream vcpkg-tool regression's SBOM script
+          # (scripts/cmake/z_vcpkg_spdx.cmake) called a string(JSON ...
+          # STRING_ENCODE) mode the bundled cmake rejects, failing every
+          # port build ("building zlib:arm64-linux failed with:
+          # BUILD_FAILED"). Pinning to the same commit the manifest's
+          # version constraints already resolve against keeps the tool,
+          # scripts, and resolved versions consistent and cold builds
+          # reproducible regardless of upstream HEAD churn.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
@@ -752,6 +809,25 @@ jobs:
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          # Pin the vcpkg tool + scripts + registry to vcpkg.json's
+          # builtin-baseline instead of a moving HEAD. This CI bootstraps
+          # vcpkg by cloning microsoft/vcpkg at HEAD, but pins port
+          # *versions* via vcpkg.json's builtin-baseline -- so the tool and
+          # scripts are a moving target while the versions are fixed. On a
+          # warm binary cache this is invisible; on any cold build (cache
+          # miss, for any reason -- a dependency change, cache eviction, or
+          # just this being the first build for a given runner arch) it
+          # picks up whatever vcpkg-tool HEAD is that day. Observed directly
+          # on this branch (which touches no vcpkg.json dependency at all):
+          # an upstream vcpkg-tool regression's SBOM script
+          # (scripts/cmake/z_vcpkg_spdx.cmake) called a string(JSON ...
+          # STRING_ENCODE) mode the bundled cmake rejects, failing every
+          # port build ("building zlib:arm64-linux failed with:
+          # BUILD_FAILED"). Pinning to the same commit the manifest's
+          # version constraints already resolve against keeps the tool,
+          # scripts, and resolved versions consistent and cold builds
+          # reproducible regardless of upstream HEAD churn.
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
         env:
