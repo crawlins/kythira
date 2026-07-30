@@ -194,11 +194,21 @@ and the CBOR-vs-JSON size-comparison property (Requirement 10).*
       so CBOR over HTTP round-trips correctly but is mislabeled on the wire; call out the
       Future Enhancement rather than fixing it in this spec
     - _Requirements: All (documentation only; not required for this spec itself)_
-  - [ ] 9.3 Example program demonstrating `cbor_rpc_serializer` usage
-    - Construct a `transport_types`/`raft_types` bundle with
-      `serializer_type = cbor_serializer`, following this project's example-program
-      guidelines
+  - [x] 9.3 Example program demonstrating `cbor_rpc_serializer` usage
+    - `examples/cbor_serializer_example.cpp` (registered in `examples/CMakeLists.txt` and
+      run under CTest): names `cbor_serializer` as a bundle's `serializer_type`
+      (static_assert `rpc_serializer` conformance), round-trips each RPC family over CBOR,
+      prints the CBOR-vs-JSON wire sizes, and shows the `application/cbor` media type
     - _Requirements: All_
+
+  - [x] 9.4 Implement the HTTP transport `Content-Type` generalization (the Future
+        Enhancement 9.2 noted)
+    - `cpp_httplib_client`/`cpp_httplib_server` now derive their `Content-Type` from
+      `_serializer.name()` via `coap_utils::get_content_format_for_serializer` +
+      `content_format_to_string` (`include/raft/http_transport_impl.hpp`), replacing the
+      hardcoded `"application/json"`, so CBOR over HTTP is labeled `application/cbor` on
+      the wire — matching what CoAP already does. Advisory labeling only: the receiver
+      still decodes with its own `_serializer`, so no wire-protocol behavior changes
 
 - [ ] 10. Final validation
   - [ ] 10.1 Run the full test suite
