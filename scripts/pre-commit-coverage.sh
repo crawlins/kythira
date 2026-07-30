@@ -262,6 +262,9 @@ LLVM_COV_OUT=$(DEBUGINFOD_URLS="" "$LLVM_COV" report \
     --ignore-filename-regex='.*/tests/ca_cluster_node_real_ec2_test.*' \
     --ignore-filename-regex='.*/tests/ca_cluster_node_rpc_tls_real_ec2_test.*' \
     --ignore-filename-regex='.*/tests/aws_real_ec2_test_support.*' \
+    --ignore-filename-regex='.*/tests/azure_quorum_manager_real_test.*' \
+    --ignore-filename-regex='.*/tests/azure_key_vault_ca_provider_real_test.*' \
+    --ignore-filename-regex='.*/tests/azure_real_test_support.*' \
     --ignore-filename-regex='.*/tests/future_backend_benchmark_test.*' \
     --ignore-filename-regex='.*/examples/.*' \
     2>&1)
