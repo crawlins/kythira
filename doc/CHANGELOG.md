@@ -152,6 +152,91 @@ current list of outstanding work, see [TODO.md](TODO.md).
     (17/17 tasks)**, and `.kiro/specs/boost-beast-http-transport/tasks.md`'s
     own identical ThreadSanitizer follow-up (its Task 14) is closed too,
     via the same `tsan` job.
+### What Changed (July 30, 2026, yet further continued)
+
+- **Boost.Beast HTTP transport: closed out the remaining 3 tasks** —
+  `.kiro/specs/boost-beast-http-transport/` now stands at 18/18. See that
+  spec's `tasks.md` for the full per-task writeup; summary below.
+  - **Cross-transport equivalence test** (`tests/beast_cross_transport_equivalence_test.cpp`,
+    Task 15/Property 9) — `cpp_httplib_client`/`server` and
+    `boost_beast_client`/`server`, run through different `Types` bundles
+    that share the same `serializer_type`, against the identical
+    RequestVote/AppendEntries/InstallSnapshot request values, assert
+    field-for-field equivalent responses. Kept alongside PR #117's own
+    three-way `three_way_http_transport_equivalence_test.cpp` (which
+    independently closed the same task) rather than deleted: it confirmed a
+    genuine, pre-existing asymmetry the three-way test's own design doesn't
+    happen to surface — `http_transport_impl.hpp`'s
+    `make_future_with_exception` slices `http_client_error`/
+    `http_server_error` down to plain `std::exception` before an async
+    failure ever reaches a catch block (a `std::make_exception_ptr(e)` call
+    where `e`'s *static* type is `const std::exception&`) — a real, separate
+    bug this spec's Non-Goals rule out fixing here, so the new test works
+    around it rather than papering over it.
+  - **Malformed-request handling** (Task 13) — `boost_beast_server_config::
+    max_request_body_size` was a validated-but-unenforced config field:
+    `async_read_kf` read into a bare `beast_http::request<string_body>&`,
+    whose default body limit is Beast's own internal one, not the
+    configured value. `server_session::read_loop` now reads through a
+    `beast_http::request_parser<string_body>` with `.body_limit()` set
+    instead (a new `async_read_kf` overload taking a `parser`), responding
+    413 when exceeded. New tests cover oversized bodies and a truncated-
+    request regression for the accept loop's own resilience.
+  - **Mutual TLS test coverage** (Task 13) — `require_client_cert` was
+    already fully implemented both server- and client-side; only the test
+    (`mutual_tls_client_certificate_enforcement`) was missing.
+  - `tests/beast_transport_test.cpp` was split one-file-per-concern
+    (`beast_client_test.cpp`/`beast_server_test.cpp`/
+    `beast_integration_test.cpp`/`beast_ssl_test.cpp`), matching the layout
+    the rest of this project's test suite already uses.
+
+### What Changed (July 30, 2026, and yet further still)
+
+- **Boost.Beast HTTP transport — a round-2 ThreadSanitizer pass against the
+  now-split test binaries found four more genuine, pre-existing bugs**
+  beyond the two [PR #117](https://github.com/crawlins/kythira/pull/117)'s
+  own `tsan` job found against the (then still monolithic)
+  `beast_transport_test` binary. Splitting the suite exercised
+  connection-lifetime paths — a server stopping mid-keep-alive, a client
+  torn down with an in-flight TLS handshake — the monolithic binary's own
+  test cases didn't hit the same way. None of the four were
+  Folly/Boost/Wangle packaging-mismatch false positives; all four are real:
+  - Two of `beast_server_test.cpp`'s test cases joined `io_context` worker
+    threads and a stop-thread by hand, in a way that could `std::terminate()`
+    via a still-joinable `std::thread` destructor if an exception unwound
+    past the join. Replaced with two small RAII helpers,
+    `kythira::testing::io_thread_pool`/`joining_thread`
+    (`tests/beast_test_thread_pool.hpp`), applied across all four split test
+    files — a test-harness fix, not a production one.
+  - `plain_beast_connection`/`tls_beast_connection` didn't re-arm
+    `boost::beast::basic_stream::expires_after()` for a second, separate
+    operation — that call covers one logical operation (or a consecutive
+    read-then-write), and a later, separate operation needs its own fresh
+    call. `send()`'s write and `server_session::handle_and_write()`/
+    `handle_read_error()`'s response write were each running against
+    whatever deadline the *previous* operation had armed, reading as an
+    instantly-expired timeout once that deadline had passed. Fixed by
+    re-arming `expires_after()` immediately before each of those operations.
+  - `boost_beast_client`'s destructor could tear down a connection's
+    `ssl::context` while a handshake was still in flight on another thread,
+    racing `SSL_do_handshake()`'s own `CRYPTO_THREAD_write_lock`/
+    `CRYPTO_THREAD_lock_free` calls. `boost_beast_server` already had a
+    drain-on-stop pattern for this; added the client-side equivalent — an
+    `in_flight_operations` counter guarded by a mutex/condition variable, via
+    an RAII `in_flight_guard` held for the duration of `send_rpc`'s
+    connection use, with the destructor closing every connection first and
+    then waiting for the count to reach zero before destroying any
+    `ssl::context`.
+  - A ThreadSanitizer-only segfault in `beast_cross_transport_equivalence_test`,
+    traced to cpp-httplib's `CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO` compile
+    flag: glibc's `getaddrinfo_a()` spins up its own internal worker threads
+    outside any `pthread_create()` the application makes, which TSan's
+    allocator interceptors didn't handle cleanly. Fixed in the root
+    `CMakeLists.txt` — when `KYTHIRA_SANITIZER STREQUAL "thread"`, that one
+    compile definition is stripped from `httplib::httplib`'s
+    `INTERFACE_COMPILE_DEFINITIONS` before anything links against it.
+  - All five `beast-http`-labeled CTest binaries now pass cleanly under
+    `-DKYTHIRA_SANITIZER=thread` locally.
 
 ### What Changed (July 28, 2026)
 

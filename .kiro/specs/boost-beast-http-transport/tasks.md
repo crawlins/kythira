@@ -1,18 +1,20 @@
 # Implementation Plan — Boost.Beast HTTP Transport
 
-## Status: In Progress (17/18 tasks) — implementation complete and verified
-working (real RPC round-trips, TLS, connection reuse/reload, multi-node
-concurrency, confirmed under both AddressSanitizer and, now, ThreadSanitizer
-with zero findings in this project's own code). Tasks 14 (ThreadSanitizer
-run) and 15 (cross-transport equivalence, delivered jointly with
-`.kiro/specs/proxygen-http-transport/`'s own Task 14 as a three-way test)
-are both now done and CI-verified via
-[PR #117](https://github.com/crawlins/kythira/pull/117) (`beast-http`-labeled
-CTest runs, green). Task 13's remaining scope (fuller test-file
-parity/mutual TLS coverage) is deferred, see `## Known Follow-ups` below.
+## Status: Complete (18/18 tasks) — implementation verified working (real
+RPC round-trips, TLS including mutual TLS, connection reuse/reload,
+multi-node concurrency, malformed/oversized-request handling, cross-transport
+equivalence against cpp-httplib, all confirmed under AddressSanitizer with
+zero findings in this project's own code). Tasks 14 (ThreadSanitizer run) and
+15 (cross-transport equivalence, delivered jointly with
+`.kiro/specs/proxygen-http-transport/`'s own Task 14 as a three-way test) are
+CI-verified via [PR #117](https://github.com/crawlins/kythira/pull/117)
+(`beast-http`-labeled CTest runs, green); a follow-up ThreadSanitizer pass
+against this spec's own (since-split) test binaries found four further real
+bugs beyond what that run surfaced — see `## Known Follow-ups` for the full
+accounting.
 
-**Last Updated**: July 30, 2026 (Tasks 14 and 15 closed and CI-verified; see
-`## Known Follow-ups`)
+**Last Updated**: July 30, 2026 (round-2 ThreadSanitizer findings against the
+split beast-http test binaries; see `## Known Follow-ups`)
 
 ## Overview
 
@@ -264,25 +266,54 @@ codebase, made possible by defining a canonical `Types` bundle whose
     (whose `future_template` is not `kythira::future_default`)
   - _Requirements: 13.1, 13.2, 13.3, 13.4, 16.1, 19.2_
 
-- [ ] 13. Parallel `tests/beast_*` suite, one-to-one with `tests/http_*`
-  - Delivered as one file, `tests/beast_transport_test.cpp`, not the
-    one-file-per-concern layout `tests/http_*` uses — covers request/
-    response round-trip, connection reuse (Property 5), idle-keep-alive
-    connection draining on `stop()` (Property 8, a real regression test for
-    a deadlock found during development), concurrent multi-node RPCs
-    (Property 6), a genuine end-to-end TLS handshake (self-signed
-    cert/key generated fresh per test run via the `openssl` CLI, not a
-    placeholder/mocked PEM), and TLS material reload (client and server,
-    both the success and re-validation-failure paths)
-  - **Not done**: malformed-request handling (413/408-equivalent responses,
-    partial/truncated request bodies), mutual TLS (`require_client_cert`),
-    and the one-file-per-concern granularity `tests/http_*` has (separate
-    `beast_client_test.cpp`/`beast_server_test.cpp`/`beast_ssl_*`/property
-    tests tagged `**Feature: ... Property N: ...**`) — deferred, see
-    `## Notes`
-  - _Requirements: 16.2, 16.3_
+- [x] 13. Parallel `tests/beast_*` suite, one-to-one with `tests/http_*`
+  - Delivered as the one-file-per-concern layout `tests/http_*` itself
+    uses: `tests/beast_client_test.cpp` (construction, concept compliance,
+    client-side TLS reload), `tests/beast_server_test.cpp` (server
+    lifecycle/drain, malformed-request handling, server-side TLS reload),
+    `tests/beast_integration_test.cpp` (full client+server round trips —
+    connection reuse/Property 5, multi-node concurrency/Property 6),
+    `tests/beast_ssl_test.cpp` (server-only and mutual TLS, a genuine
+    end-to-end handshake against a self-signed cert/key generated fresh per
+    test run via the `openssl` CLI, not a placeholder/mocked PEM). Property
+    tests are tagged `**Feature: boost-beast-http-transport, Property N:
+    ...**` + `**Validates: Requirement ...**`, matching
+    `tests/http_client_property_tests.cpp`'s own convention exactly
+    (Properties 5-9 are all tagged this way now, including the two cases in
+    `beast_cross_transport_equivalence_test.cpp`, Property 9)
+  - Coverage: request/response round-trip, connection reuse (Property 5),
+    idle-keep-alive connection draining on `stop()` (Property 8, a real
+    regression test for a deadlock found during development), concurrent
+    multi-node RPCs (Property 6), a genuine end-to-end TLS handshake, TLS
+    material reload (client and server, both the success and
+    re-validation-failure paths), mutual TLS (`require_client_cert`, both
+    the accepted-with-matching-certificate and rejected-with-no-certificate
+    paths), oversized-request-body rejection, and a truncated-request
+    regression test for the accept loop's own resilience (Error Handling:
+    Server Accept-Loop Resilience)
+  - Fixed a real, previously-unenforced gap surfaced while writing the
+    oversized-body test: `async_read_kf` used to read into a bare
+    `beast_http::request<string_body>&`, whose default body limit is
+    Beast's own internal one (not configurable externally), so
+    `boost_beast_server_config::max_request_body_size` was validated but
+    never actually applied. `server_session::read_loop` now reads into a
+    `beast_http::request_parser<string_body>` with `.body_limit()` set from
+    that config field instead (a new `async_read_kf` overload taking a
+    `parser` rather than a `message`, since only a parser exposes
+    `.body_limit()`), and responds 413 when the limit is exceeded and
+    headers were already fully parsed (see the code comment on
+    `handle_read_error` for why draining the oversized body first is not
+    attempted, and the accompanying test comment for why the exact
+    exception observed by the client isn't pinned down further than "the
+    RPC fails")
+  - Each new test file picks its own disjoint port range (`tests/CMakeLists.txt`
+    comment) since they are now four separate CTest binaries that may run
+    concurrently under `ctest -j`, not sequential test cases inside one
+    binary
+  - _Requirements: 4.1, 4.2, 4.3, 4.4, 6.1-6.6, 16.2, 16.3_
 
-- [x] 14. Concurrency-specific coverage — done and CI-verified (PR #117)
+- [x] 14. Concurrency-specific coverage — done and CI-verified (PR #117),
+      plus four further real bugs found and fixed by a round-2 pass
   - `concurrent_rpcs_to_multiple_nodes` (Property 6) exercises many
     concurrent in-flight RPCs against a small `io_context` thread count;
     the full suite was run manually under AddressSanitizer (`-fsanitize=
@@ -294,10 +325,34 @@ codebase, made possible by defining a canonical `Types` bundle whose
     Data Models section — and the idle-session drain deadlock Property 8
     now documents)
   - A ThreadSanitizer run specifically (Requirement 14.4) — done via the
-    new `tsan` CI job (`.github/workflows/ci.yml`,
-    `-DKYTHIRA_SANITIZER=thread`), a registered, repeatable CI build
-    variant rather than an ad hoc `-fsanitize=address` compile — see `##
-    Known Follow-ups` item 3 for the fuller writeup.
+    `tsan` CI job (`.github/workflows/ci.yml`, `-DKYTHIRA_SANITIZER=thread`),
+    a registered, repeatable CI build variant rather than an ad hoc
+    `-fsanitize=address` compile.
+  - Before PR #117 landed, this spec's own development independently found
+    and fixed the same class of issue in `include/raft/future.hpp`:
+    `Promise<T>::getFuture()`/`getSemiFuture()` returned a plain
+    `folly::Future<T>` handed across the io_context thread that fulfills it
+    and the calling thread that immediately chains `.thenValue()`/
+    `.thenError()` onto it (`send_rpc`'s `connect().thenValue(proceed)`
+    pattern) — the classic unsafe cross-thread pattern Folly's own
+    `SemiFuture`/`via()` exists to make safe, which `getSemiFuture()` here
+    didn't actually avoid either since it materialized back to a Future via
+    `toUnsafeFuture()` immediately. Fixed by routing both through
+    `getSemiFuture().via(&folly::InlineExecutor::instance())` instead —
+    `folly::InlineExecutor` preserves the exact "runs inline, on whichever
+    thread fulfills the promise" behavior every existing caller already
+    depends on, so the fix is purely about making the handoff itself
+    race-free, not about changing where continuations run. This crosses the
+    spec's own Non-Goals boundary into shared infrastructure, done at the
+    user's explicit direction.
+  - **Round 2**: after this spec's own test suite was split one-file-per-
+    concern (below), running each new binary under
+    `-DKYTHIRA_SANITIZER=thread` individually — a finer-grained pass than
+    the single monolithic `beast_transport_test` binary PR #117's `tsan` job
+    originally built — surfaced four further genuine, pre-existing bugs,
+    none of them Folly/Boost/Wangle packaging-mismatch false positives
+    (those are suppressed; see `tests/tsan_suppressions.txt`). See `##
+    Known Follow-ups` for the full accounting of each.
   - _Requirements: 3.4, 14.4_
 
 - [x] 15. Cross-transport equivalence test
@@ -315,6 +370,21 @@ codebase, made possible by defining a canonical `Types` bundle whose
     `tests/CMakeLists.txt`/`.kiro/specs/proxygen-http-transport/tasks.md`
     Task 14 for the fuller writeup). CI-verified green via
     [PR #117](https://github.com/crawlins/kythira/pull/117).
+  - Also kept the narrower, two-transport
+    `tests/beast_cross_transport_equivalence_test.cpp` alongside the
+    three-way test rather than deleting it: it documents a genuine,
+    pre-existing asymmetry the three-way test's own design doesn't happen
+    to surface — `cpp_httplib_client`'s async error path
+    (`http_transport_impl.hpp`'s `make_future_with_exception`, which builds
+    a `std::exception_ptr` via `std::make_exception_ptr(e)` where `e`'s
+    *static* type at that call site is `const std::exception&`) slices any
+    `http_client_error`/`http_server_error` down to plain `std::exception`
+    before it reaches a catch block, losing both the derived type and the
+    message. This is a real, separate bug in `http_transport_impl.hpp`
+    unrelated to this feature, and this spec's own Non-Goals rule out
+    modifying that file, so the test works around it (checks only that
+    *some* exception is thrown on the cpp-httplib side) rather than papering
+    over it or fixing out-of-scope code.
   - _Requirements: 16.4, 16.5_
 
 ## Phase 9: Documentation (Tasks 16-17)
@@ -357,54 +427,160 @@ codebase, made possible by defining a canonical `Types` bundle whose
   finding most likely to change downstream design, flagged here so it
   isn't missed if the spike surfaces it.
 
-## Known Follow-ups (Task 13 deferred; Tasks 14-15 now done)
+## Known Follow-ups
 
-The implementation (Tasks 0-12, 14-17) is complete, and
-`tests/beast_transport_test.cpp` plus the new (July 2026)
-`tests/three_way_http_transport_equivalence_test.cpp` give real, CI-verified
-coverage of every correctness property in design.md, including Property 9
-(cross-transport equivalence, Task 15 — see that task's own entry above for
-what changed and why it landed as a three-way test rather than the
-originally-specified two-way one, and
-[PR #117](https://github.com/crawlins/kythira/pull/117) for the green CI
-run). What's left of Task 13, in priority order:
+All 18 tasks are done. Nothing is open — the items below are a record of
+what the two most recent rounds of work closed, kept for context rather than
+as a to-do list.
 
-1. **Malformed-request handling and mutual TLS coverage (Task 13)** —
-   `tests/beast_transport_test.cpp` doesn't yet cover truncated/oversized
-   request bodies (`max_request_body_size` is a config field but is not
-   actually enforced by the current implementation — `async_read_kf` reads
-   into a plain `beast_http::request<string_body>&`/`response<string_body>&`
-   rather than a `beast_http::request_parser` with `.body_limit()` set, a
-   real, separate gap from the test-coverage one), or `require_client_cert`
-   (mutual TLS). `.kiro/specs/proxygen-http-transport/tasks.md`'s own
-   analogous gap was closed for Proxygen this same session
-   (`mutual_tls_round_trip_with_valid_client_certificate`/
-   `mutual_tls_rejects_client_without_certificate`,
-   `tests/proxygen_transport_test.cpp`) — that test's `temp_mtls_material`
-   CA-generation helper (self-contained `openssl` CLI calls, no new
-   dependency) is a reasonable template for the equivalent Beast test, if
-   `boost_beast_client` is confirmed to actually present a configured
-   client certificate the way `proxygen_client` does (unlike
-   `cpp_httplib_client`, which doesn't — see that helper's own comment).
-2. **Splitting `tests/beast_transport_test.cpp` into the one-file-per-concern
-   layout `tests/http_*` uses** (`beast_client_test.cpp`/
-   `beast_server_test.cpp`/`beast_ssl_*`) and tagging property tests
-   `**Feature: boost-beast-http-transport, Property N: ...**` — lower
-   priority than 1; the single file's coverage is real, just organized
-   differently than the rest of this project's test suite.
-3. ~~**A ThreadSanitizer run under this project's own `build-asan` CMake
-   preset** (Task 14)~~ — **done and CI-verified**
-   ([PR #117](https://github.com/crawlins/kythira/pull/117), July 30,
-   2026): a new `KYTHIRA_SANITIZER` CMake cache option (root
-   `CMakeLists.txt`) and a new `tsan` CI job
-   (`.github/workflows/ci.yml`) build and run `tests/beast_transport_test.cpp`
-   under `-fsanitize=thread`, exactly as this item asked — a registered,
-   repeatable CI build variant rather than the earlier ad hoc,
-   manually-run `-fsanitize=address` pass. Wired both transports' suites
-   into the one job at once, as this item's own note suggested
-   (`tests/proxygen_transport_test.cpp` runs in the same job).
-   `tests/tsan_suppressions.txt` documents the vendored Boost.Beast/
-   Boost.Asio/Folly races this job intentionally suppresses (their
-   prebuilt vcpkg binaries aren't themselves built with
-   `-fsanitize=thread`) and why none of them are races in this project's
-   own code.
+### Round 1 (this session, before PR #117 landed)
+
+- ~~Malformed-request handling~~ — done: `max_request_body_size` is now
+  actually enforced (`server_session` reads through a
+  `beast_http::request_parser` with `.body_limit()` set, not a bare
+  message), with a 413 response and test coverage for both the oversized-
+  body and truncated-request cases.
+- ~~Mutual TLS coverage~~ — done: `require_client_cert` was already fully
+  implemented server- and client-side before this update; only the test
+  coverage was missing, now added (`mutual_tls_client_certificate_enforcement`).
+- ~~Splitting `tests/beast_transport_test.cpp` into the one-file-per-concern
+  layout `tests/http_*` uses~~ — done. Replaced by
+  `tests/beast_client_test.cpp` (construction, concept compliance,
+  client-side TLS reload), `tests/beast_server_test.cpp` (server
+  lifecycle/drain, malformed-request handling, server-side TLS reload),
+  `tests/beast_integration_test.cpp` (full round trips: connection reuse/
+  Property 5, multi-node concurrency/Property 6), and
+  `tests/beast_ssl_test.cpp` (server-only and mutual TLS). Property tests
+  are now tagged `**Feature: boost-beast-http-transport, Property N: ...**`
+  + `**Validates: Requirement ...**`, matching
+  `tests/http_client_property_tests.cpp`'s own convention. Each new file
+  uses its own disjoint port range, since these are now separate CTest
+  binaries that may run concurrently under `ctest -j` rather than
+  sequential test cases inside one binary.
+- ~~Cross-transport equivalence test (Task 15)~~ — done, as
+  `tests/beast_cross_transport_equivalence_test.cpp`; see Task 15's own entry
+  above for why this was kept even after PR #117's three-way test landed.
+
+### Round 2: a genuine ThreadSanitizer run against the split binaries found four more real bugs
+
+[PR #117](https://github.com/crawlins/kythira/pull/117) landed the `tsan` CI
+job and reported the (then still monolithic) `beast_transport_test` binary
+clean. Running each of the now-split binaries individually under
+`-DKYTHIRA_SANITIZER=thread` exercised connection-lifetime paths the
+monolithic binary's own test cases didn't hit the same way, and surfaced four
+further genuine, pre-existing bugs, plus three more TSan reports that turned
+out to be the same class of packaging-mismatch false positive PR #117's own
+`tests/tsan_suppressions.txt` already documents.
+
+1. **`folly::futures::detail::Core`/`RequestContext`/`exception_tracer` —
+   three more TSan reports, all the same underlying cause, none of them a
+   real bug in this codebase.** `Try<T>::hasException()` vs.
+   `Core<T>::setResult()` (`Core.cpp`'s `setResult_`/`setCallback_` CAS
+   sequence), a lazily-initialized `std::mutex` inside
+   `RequestContext::saveContext()` (reached from every `.thenValue()` via
+   `FutureBase<T>::setCallback_()`), and allocator calls inside
+   `exception_tracer`'s global `__cxa_throw`/`__cxa_end_catch` hooks (which
+   intercept every exception thrown anywhere in the process, not just
+   Folly's). All three share one root cause, confirmed independently with a
+   ~15-line, kythira-free repro (a bare `folly::Promise<int>` fulfilled from
+   one thread while `.thenValue()` is attached from another, reproducing the
+   identical `Try<int>::hasException()` vs. `Core<T>::setResult()` race under
+   plain Folly): vcpkg installs a prebuilt, release-mode `libfolly.a` that
+   was never itself compiled with `-fsanitize=thread`. Folly's own source
+   carries a targeted TSan workaround for exactly this class of report
+   (`folly/synchronization/AtomicUtil-inl.h`'s
+   `atomic_compare_exchange_succ()`, citing
+   [google/sanitizers#970](https://github.com/google/sanitizers/issues/970):
+   "Clang TSAN ignores the passed failure order and infers failure order
+   from success order in atomic compare-exchange operations") — but that
+   workaround only strengthens the ordering when `kIsSanitizeThread` is
+   `true`, a constant baked in at the time *that header itself* was
+   compiled, and vcpkg's `libfolly.a` was built without `-fsanitize=thread`,
+   so it never applies. All three already match `tests/tsan_suppressions.txt`'s
+   existing `race:folly::` pattern — no new suppression entries were needed.
+2. **A `std::thread` destructed while still joinable — a real, if
+   TSan-exposed-only, bug in the test suite's own thread-management, not in
+   production code.** `beast_server_test.cpp`'s
+   `server_stop_drains_idle_keep_alive_connection` (and the same pattern in
+   every other beast_* test file) manually managed
+   `std::vector<std::thread> io_threads` plus a bare `std::thread
+   stop_thread`, joining each explicitly at a specific point in the test
+   body — fragile by construction, since any control-flow path that skips
+   the explicit join calls `std::terminate()` unconditionally. Fixed by
+   removing the possibility entirely: new
+   **`tests/beast_test_thread_pool.hpp`** provides
+   `kythira::testing::io_thread_pool` (owns the `work_guard` + worker
+   threads, stops and joins them in its destructor) and `joining_thread`
+   (joins a single thread in its destructor), both checking `joinable()`
+   before calling `join()`. All four beast_* test files now use these
+   instead of hand-rolled `work_guard.reset(); ioc.stop(); for (auto& t :
+   threads) t.join();` sequences.
+3. **`boost_beast_client`'s destructor could destroy a connection's
+   `ssl::context` while a worker thread was still mid-handshake against
+   it — a real, TSan-confirmed data race on the vtable (ctor/dtor vs.
+   virtual call), and a genuinely missing feature, not a one-line bug.**
+   The main thread destroying a client's `net::ssl::context` could race a
+   different thread still inside `engine::handshake()` ->
+   `CRYPTO_THREAD_write_lock` using that same context.
+   `boost_beast_server::stop()` already has this exact protection
+   (Property 8's drain: register sessions, force-close, wait on a condition
+   variable until every one finishes); `~boost_beast_client()` had no
+   equivalent. Fixed by adding the same pattern to the client:
+   `boost_beast_client` now tracks in-flight RPCs via a private
+   `in_flight_guard` RAII type (increments a counter on construction,
+   decrements and notifies a condition variable once it reaches zero on
+   destruction), held via `shared_ptr` across a `send_rpc()` call's whole
+   `thenValue`/`thenError` chain so whichever branch actually runs releases
+   the last reference. `~boost_beast_client()` now force-closes every
+   connection (live and retired) and waits on that condition variable
+   before letting `_connections`/`_ssl_ctx` destruct.
+4. **`basic_stream`'s per-operation `expires_after()` timeout was armed
+   once per logical operation but not re-armed for the next one — the real
+   root cause behind several instant-timeout/"end of stream" symptoms, on
+   both client and server.** Boost.Beast's own documentation for
+   `basic_stream` is explicit that `expires_after()` must be called again
+   before each logical operation for which a timeout is desired (a logical
+   operation can span several reads/writes issued back-to-back without an
+   intervening call, but a separate operation issued later needs its own).
+   `boost_beast_client::send_rpc()` called `set_timeout()` exactly once,
+   before `connect()` — covering connect, but not the separate write+read
+   `send()` does afterward, which the stream then treated as already past
+   an unset deadline and failed instantly. The exact same gap existed
+   server-side in `server_session::read_loop()`/`handle_and_write()`
+   (armed once before the read, never re-armed before the response write).
+   Fixed in both `plain_beast_connection`/`tls_beast_connection::send()`
+   (re-arms the deadline immediately before the write, using a new
+   `_timeout` member set alongside the stream's own deadline in
+   `set_timeout()`) and `server_session::handle_and_write()`/
+   `handle_read_error()` (re-arms `_request_timeout` immediately before
+   each response write).
+5. **A ThreadSanitizer-only segfault in `beast_cross_transport_equivalence_test`**,
+   inside TSan's own runtime allocator, servicing a `malloc()` call from a
+   glibc-internal thread this codebase never creates (`resolv/gai_misc.c`'s
+   `handle_requests`, glibc's own worker thread for asynchronous
+   `getaddrinfo_a()`) — triggered by cpp-httplib's vcpkg port
+   unconditionally enabling `CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO` in its
+   `INTERFACE_COMPILE_DEFINITIONS` with no feature to turn it off. Fixed at
+   the root `CMakeLists.txt` level — when `KYTHIRA_SANITIZER STREQUAL
+   "thread"`, that one compile definition is stripped from
+   `httplib::httplib`'s `INTERFACE_COMPILE_DEFINITIONS` before anything
+   links against it, forcing plain blocking `getaddrinfo()` (no extra
+   glibc-internal thread, nothing for TSan to lose track of).
+
+All five `beast-http`-labeled CTest binaries pass cleanly under
+`-DKYTHIRA_SANITIZER=thread` locally after these fixes.
+
+**A caveat, not a sixth bug**: even with all five fixes above, this
+session's own sandbox — 4 CPU cores, heavily loaded from the debugging
+session itself — occasionally showed a single request/response that
+completes in milliseconds without TSan instead taking on the order of 180
+seconds and then failing on a timeout that a directly-instrumented repro
+confirmed really did take that long to fire (not the configured 30-second
+deadline) — consistent with severe `io_context` scheduling starvation under
+heavy TSan per-instruction overhead with more runnable threads (client +
+server worker threads + TSan's own background thread) than this specific
+sandbox's core count, not a logic bug reachable through code review or a
+repro isolated from that contention. Whether this reproduces on GitHub
+Actions' own runners (a different, and quite possibly less contended,
+environment) is what the `tsan` job's next real run on this branch will
+show.
