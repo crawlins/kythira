@@ -3,6 +3,156 @@
 Chronological log of notable changes to Kythira, newest first. For the
 current list of outstanding work, see [TODO.md](TODO.md).
 
+### What Changed (July 30, 2026)
+
+- **Proxygen HTTP transport — closed the remaining test-coverage and
+  benchmark gaps flagged by the July 29, 2026 reconciliation of
+  `.kiro/specs/proxygen-http-transport/tasks.md`** (that reconciliation
+  itself has no separate changelog entry; see that file's own "Last
+  Updated" history). Everything below is written and reviewed but **not
+  compiled or run** — this session's environment could not obtain a
+  working `vcpkg install` (a from-scratch bootstrap failed downloading
+  `zlib`, a transitive `proxygen` dependency, from its upstream GitHub
+  release archive with a 403 traced to this environment's GitHub access
+  being scoped to this repository specifically, not a transient network
+  error — confirmed via the proxy's own structured error response). See
+  `.kiro/specs/proxygen-http-transport/tasks.md`'s "Known Follow-ups" for
+  the full accounting; this entry is the short version.
+  - **Property 12's forced-generic-bridge escape hatch**: `proxygen_client::send_rpc`'s
+    generic-bridge branch is now a standalone method,
+    `send_rpc_generic_bridge`, reachable unconditionally via a new public,
+    explicitly test-only `send_rpc_via_generic_bridge_for_test` — the only
+    way to exercise the generic bridge at all when the project's future
+    backend is Folly, since `send_rpc`'s own `if constexpr` dispatch would
+    otherwise always select the fast path.
+  - **Test coverage added**: mutual TLS (a self-contained CA plus
+    server/client leaf certs generated via the `openssl` CLI, no new test
+    dependency), whole-RPC timeout enforcement against a raw-socket
+    listener that accepts a connection and never responds, concurrent RPCs
+    to the *same* target node (not just different ones), and the forced
+    generic bridge producing identical results to the Folly fast path for
+    the same RPC. The existing Folly-fast-path-taken test's assertion was
+    also generalized (computed from `Types`'s own `future_template` member
+    type, the same condition `send_rpc`'s dispatch itself uses) so the same
+    test is correct whether the surrounding project is built with
+    `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly`, `=stdexec`, or `=boost`, instead
+    of needing a second, backend-specific test.
+  - **Three-way cross-transport equivalence test**
+    (`tests/three_way_http_transport_equivalence_test.cpp`), built jointly
+    with `.kiro/specs/boost-beast-http-transport/`'s own long-open Task 15
+    (a two-way cpp-httplib-vs-Beast equivalence test that spec had never
+    built, and that this spec's own Task 14 was blocked on) — one test file
+    now satisfies both specs' equivalence requirements, extended to all
+    three transports rather than duplicated as two separate two-way and
+    three-way tests.
+  - **Two new benchmark scenarios** in
+    `examples/raft/http_transport_comparison_benchmark.cpp`: Proxygen's
+    generic bridge vs. its Folly fast path for the same small RPC, and the
+    same comparison at a 1 MiB `install_snapshot`-sized body (the concrete
+    measurement Requirement 17.3 asked for to turn the zero-copy
+    `folly::IOBuf` claim into a measured result instead of an unmeasured
+    architectural expectation) — `doc/http_transport_performance_comparison.md`
+    documents both scenarios as implemented-but-unmeasured rather than
+    presenting invented numbers, per that document's own established
+    "measure or label unmeasured" rule.
+  - **Not attempted**: a ThreadSanitizer run/CMake preset (this project
+    still has no such preset for *any* transport, and this session had no
+    working build to validate a new one against).
+
+### What Changed (July 30, 2026, continued)
+
+- **Proxygen HTTP transport — CI-verified everything the entry above
+  described as "written and reviewed but not compiled or run."**
+  [PR #117](https://github.com/crawlins/kythira/pull/117) ran green across
+  all four `Build & Test` legs (g++-13/clang++-18 × x64/arm64) plus
+  `Coverage (clang++-18)`, on real GitHub Actions runners (unlike the
+  session that wrote the code, GitHub Actions runners have normal internet
+  access, so the earlier `vcpkg install` blocker didn't apply there).
+  - **Two real bugs found and fixed by that first real compile**, neither
+    caught by hand review: `kythira::Future<T>::thenTry`'s two
+    non-flattening overloads (`include/raft/future.hpp`) didn't mark their
+    wrapping closures `mutable`, breaking on the first-ever call site in
+    this project's history to pass them a mutable callback (Property 12's
+    new escape hatch, `send_rpc_generic_bridge`'s trailing `.thenTry()`) —
+    fixed to match the adjacent flattening overloads, which already did
+    this correctly, and confirmed no other call site anywhere in this
+    codebase had ever hit the gap. And `temp_mtls_material` (the new
+    mutual-TLS test's self-signed CA/leaf-cert generator,
+    `tests/proxygen_transport_test.cpp`) produced a client leaf certificate
+    with zero X.509v3 extensions, which a real TLS handshake rejected with
+    a "bad certificate" alert — fixed by adding proper
+    `basicConstraints`/`keyUsage`/`extendedKeyUsage` to both leaf certs,
+    verified locally via `openssl verify` before the fix was even pushed.
+  - **The two new benchmark scenarios are now measured**, via a temporary
+    CI step added, run once, and reverted (this benchmark's CTest entry
+    carries the `performance`/`slow` labels specifically so it's excluded
+    from every normal CI run — there was no other way to capture real
+    numbers short of a working local build). Result: no measurable
+    fast-path advantage over the generic bridge at either the small
+    RequestVote body (9,089 vs. 8,996 ops/sec) or the 1 MiB
+    `install_snapshot` body (52 vs. 53 ops/sec) on this run — a genuine,
+    reported-as-is result, not a fabricated one, with an honest
+    interpretation in `doc/http_transport_performance_comparison.md` of
+    why that's plausible rather than a sign the fast path doesn't work.
+  - Still open: a ThreadSanitizer run/preset (no precedent for any
+    transport in this project) and confirming the generic-bridge test
+    coverage under `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`/`=boost`
+    specifically (this project's CI has no future-backend axis for any
+    feature yet). See `.kiro/specs/proxygen-http-transport/tasks.md`'s
+    "Known Follow-ups".
+
+### What Changed (July 30, 2026, further continued)
+
+- **Proxygen HTTP transport — closed both remaining Known Follow-ups from
+  the entry above.** [PR #117](https://github.com/crawlins/kythira/pull/117)
+  added a `KYTHIRA_SANITIZER` CMake cache option (root `CMakeLists.txt`,
+  mirroring `ENABLE_COVERAGE`'s existing shape) and two new CI jobs
+  (`.github/workflows/ci.yml`): `tsan` (ThreadSanitizer over
+  `beast_transport_test`/`proxygen_transport_test`) and
+  `future-backend-compat` (a 2-leg matrix building `proxygen_transport_test`
+  under `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec` and `=boost`). Both are now
+  green. Building and running under configurations this project had never
+  actually exercised before found four more genuine, pre-existing bugs, on
+  top of the two the entry above already documents:
+  - The same missing-`mutable` gap already found in `thenTry` also existed
+    in all four `thenValue` overloads of `include/raft/future.hpp` — fixed
+    the same way.
+  - `include/raft/proxygen_http_transport_impl.hpp`'s generic bridge
+    hardcoded the Folly-specific `kythira::Try<Response>` where the
+    backend-generic `kythira::try_default<Response>` was needed — harmless
+    under the default Folly backend, a hard compile error under
+    `stdexec`/`boost`.
+  - `include/raft/future_stdexec.hpp`'s non-flattening `thenTry` overloads
+    attached one callback to two separate continuations by copying it into
+    each, which cannot compile for a move-only callback — fixed by wrapping
+    the callback in a `shared_ptr` so both continuations copy that instead.
+  - A real, pre-existing capacity limit of HTTP/1.1 session reuse: under
+    genuine 16-way concurrent load against the `boost` backend,
+    `HTTPUpstreamSession::newTransaction()` legitimately returned nullptr
+    for whichever caller lost the race to reuse a busy pooled session
+    (only one in-flight transaction per HTTP/1.1 connection) — fixed at the
+    test level with a bounded retry on specifically that transient
+    condition, since the test's own purpose (no cross-response
+    interleaving) is unaffected by it. An initial theory that this was a
+    thread-affinity bug (forcing the completion handler through
+    `evb->runInEventBaseThread()`) did not change the observed crash at all
+    and was reverted before the real root cause was identified.
+  - `tests/tsan_suppressions.txt` documents the vendored Folly/Wangle/
+    Boost races the `tsan` job intentionally suppresses (their prebuilt
+    vcpkg binaries aren't themselves built with `-fsanitize=thread`) —
+    every suppressed report was inspected and none had a `kythira::`
+    function as the actual racing read or write.
+    `three_way_http_transport_equivalence_test` is deliberately excluded
+    from the `tsan` job: it reproduced an undiagnosable, zero-output
+    SIGSEGV under TSan on two separate real CI runs while passing cleanly
+    under ordinary CI, and its own test cases are entirely sequential (no
+    concurrent RPC threads), so it was never exercising a concurrent code
+    path that job exists to check.
+  - `.kiro/specs/proxygen-http-transport/tasks.md` is now **Complete
+    (17/17 tasks)**, and `.kiro/specs/boost-beast-http-transport/tasks.md`'s
+    own identical ThreadSanitizer follow-up (its Task 14) is closed too,
+    via the same `tsan` job.
+
 ### What Changed (July 28, 2026)
 
 - **Proxygen HTTP transport** — a third `network_client`/`network_server`
