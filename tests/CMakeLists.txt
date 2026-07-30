@@ -2984,6 +2984,33 @@ if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
 else()
     message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
+# Requirement 19.5 (.kiro/specs/proxygen-http-transport/) / Task 15
+# (.kiro/specs/boost-beast-http-transport/, that spec's own stated
+# prerequisite for this one): needs cpp-httplib, Boost.Beast, and Proxygen
+# all linked into the same binary, so it's gated on both transport flags
+# rather than either add_beast_test()/add_proxygen_test() alone -- mirrors
+# examples/raft/http_transport_comparison_benchmark.cpp's identical gating
+# and dependency set.
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
+    add_executable(three_way_http_transport_equivalence_test three_way_http_transport_equivalence_test.cpp)
+    target_link_libraries(three_way_http_transport_equivalence_test PRIVATE kythira_test_pch
+        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
+        target_link_libraries(three_way_http_transport_equivalence_test PRIVATE atomic)
+    endif()
+    target_precompile_headers(three_way_http_transport_equivalence_test REUSE_FROM kythira_test_pch)
+    add_test(NAME three_way_http_transport_equivalence_test COMMAND three_way_http_transport_equivalence_test)
+    set_tests_properties(three_way_http_transport_equivalence_test PROPERTIES
+        LABELS "beast-http;proxygen-http"
+        TIMEOUT 180)
+else()
+    message(STATUS "three_way_http_transport_equivalence_test: skipped (requires both "
+                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+endif()
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
 # Single binary rather than a second add_stdexec_test()-gated executable:
 # the Folly-only sanity floors must still run when stdexec is unavailable,
