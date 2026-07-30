@@ -174,6 +174,143 @@ auto bench_beast(std::uint16_t port) -> scenario_result {
     return summarize("Boost.Beast", std::move(samples_us), elapsed);
 }
 
+// Requirement 17.1 (.kiro/specs/proxygen-http-transport/): compares
+// Proxygen's own generic bridge (Requirement 14) against its Folly fast
+// path (Requirement 16, bench_proxygen above) for the *same* RPC-shaped
+// operation, both under this program's KYTHIRA_DEFAULT_FUTURE_BACKEND=folly
+// build -- Property 12's test-only escape hatch
+// (proxygen_client::send_rpc_via_generic_bridge_for_test,
+// proxygen_http_transport.hpp) is what makes this comparison possible
+// without a second, non-Folly build entirely (there would be no way to
+// reach the generic bridge under a Folly-backend Types bundle otherwise --
+// send_rpc's own if-constexpr dispatch, Requirement 16.1, would always
+// select the fast path).
+auto bench_proxygen_generic_bridge(std::uint16_t port) -> scenario_result {
+    auto io_executor = std::make_shared<folly::IOThreadPoolExecutor>(4);
+
+    kythira::proxygen_server<proxygen_types> server("127.0.0.1", port, {}, kythira::noop_metrics{},
+                                                    io_executor);
+    server.register_request_vote_handler(
+        [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            return {._term = req.term(), ._vote_granted = true};
+        });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::proxygen_client<proxygen_types> client(*io_executor, node_map, {},
+                                                    kythira::noop_metrics{});
+
+    kythira::request_vote_request<> req{};
+    req._term = 1;
+    for (int i = 0; i < warmup_iterations; ++i) {
+        std::move(client.send_rpc_via_generic_bridge_for_test<kythira::request_vote_request<>,
+                                                              kythira::request_vote_response<>>(
+                      node_id, kythira::proxygen_detail::proxygen_endpoint_request_vote, req,
+                      rpc_timeout))
+            .get();
+    }
+
+    std::vector<double> samples_us;
+    samples_us.reserve(measured_iterations);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < measured_iterations; ++i) {
+        auto call_start = std::chrono::steady_clock::now();
+        std::move(client.send_rpc_via_generic_bridge_for_test<kythira::request_vote_request<>,
+                                                              kythira::request_vote_response<>>(
+                      node_id, kythira::proxygen_detail::proxygen_endpoint_request_vote, req,
+                      rpc_timeout))
+            .get();
+        auto call_end = std::chrono::steady_clock::now();
+        samples_us.push_back(std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                                 call_end - call_start)
+                                 .count());
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    server.stop();
+    return summarize("Proxygen (generic bridge)", std::move(samples_us), elapsed);
+}
+
+// Requirement 17.3: the Introduction's zero-copy folly::IOBuf claim was, at
+// authoring time, explicitly unmeasured (design.md's own Non-Goals /
+// Post-Spike Addendum note the accumulate-into-std::string posture this
+// first cut actually has -- proxygen_detail::http_response, this feature's
+// own header comment). This scenario is what turns "architectural
+// expectation" into "measured": a large (install_snapshot-sized) body,
+// round-tripped through both Proxygen paths, so a reader can see whether
+// the fast path's shorter translation chain (Requirement 16's own point)
+// shows up more or less at this body size than at the small-RequestVote
+// size the scenarios above use.
+auto bench_proxygen_large_snapshot_body(std::uint16_t port, bool use_fast_path) -> scenario_result {
+    constexpr std::size_t body_size = 1024 * 1024;  // 1 MiB -- install_snapshot-sized
+                                                    // (Introduction's own framing: the one
+                                                    // RPC this project's Raft implementation
+                                                    // already treats as having a large body).
+    constexpr int large_body_warmup_iterations = 20;
+    constexpr int large_body_measured_iterations = 200;  // fewer than the small-body scenarios --
+                                                         // 1 MiB x 2000 iterations would dominate
+                                                         // this program's runtime for no added
+                                                         // measurement value.
+
+    auto io_executor = std::make_shared<folly::IOThreadPoolExecutor>(4);
+    kythira::proxygen_server<proxygen_types> server("127.0.0.1", port, {}, kythira::noop_metrics{},
+                                                    io_executor);
+    server.register_install_snapshot_handler(
+        [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
+            return {._term = req.term()};
+        });
+    server.start();
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {node_id, std::string("http://127.0.0.1:") + std::to_string(port)}};
+    kythira::proxygen_client<proxygen_types> client(*io_executor, node_map, {},
+                                                    kythira::noop_metrics{});
+
+    kythira::install_snapshot_request<> req{};
+    req._term = 1;
+    req._leader_id = node_id;
+    req._last_included_index = 1;
+    req._last_included_term = 1;
+    req._offset = 0;
+    req._data.assign(body_size, std::byte{0x42});
+    req._done = true;
+
+    auto call_once = [&] {
+        if (use_fast_path) {
+            return std::move(client.send_install_snapshot(node_id, req, rpc_timeout)).get();
+        }
+        return std::move(
+                   client.send_rpc_via_generic_bridge_for_test<
+                       kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
+                       node_id, kythira::proxygen_detail::proxygen_endpoint_install_snapshot, req,
+                       rpc_timeout))
+            .get();
+    };
+
+    for (int i = 0; i < large_body_warmup_iterations; ++i) {
+        call_once();
+    }
+
+    std::vector<double> samples_us;
+    samples_us.reserve(large_body_measured_iterations);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < large_body_measured_iterations; ++i) {
+        auto call_start = std::chrono::steady_clock::now();
+        call_once();
+        auto call_end = std::chrono::steady_clock::now();
+        samples_us.push_back(std::chrono::duration_cast<std::chrono::duration<double, std::micro>>(
+                                 call_end - call_start)
+                                 .count());
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    server.stop();
+    return summarize(use_fast_path ? "Proxygen 1MiB snapshot (fast path)"
+                                   : "Proxygen 1MiB snapshot (generic bridge)",
+                     std::move(samples_us), elapsed);
+}
+
 auto bench_proxygen(std::uint16_t port) -> scenario_result {
     auto io_executor = std::make_shared<folly::IOThreadPoolExecutor>(4);
 
@@ -249,7 +386,28 @@ auto main(int argc, char** argv) -> int {
     results.push_back(bench_cpp_httplib(28090));
     results.push_back(bench_beast(28091));
     results.push_back(bench_proxygen(28092));
-
     print_table(results);
+
+    // Requirement 17.1: generic bridge vs. Folly fast path, same RPC shape,
+    // same build -- a separate table since this is a within-Proxygen
+    // comparison, not a cross-transport one like the results above.
+    std::cout << "Proxygen: generic bridge vs. Folly fast path (Requirement 17.1)\n";
+    std::vector<scenario_result> path_results;
+    path_results.push_back(bench_proxygen_generic_bridge(28093));
+    path_results.push_back(bench_proxygen(28094));
+    print_table(path_results);
+
+    // Requirement 17.3: the same generic-bridge-vs-fast-path comparison,
+    // but with a large (1 MiB, install_snapshot-sized) body -- turns the
+    // Introduction's zero-copy folly::IOBuf claim into a measured result
+    // rather than an unmeasured architectural expectation.
+    std::cout << "Proxygen: 1 MiB install_snapshot body, generic bridge vs. fast path "
+                 "(Requirement 17.3)\n";
+    std::vector<scenario_result> large_body_results;
+    large_body_results.push_back(
+        bench_proxygen_large_snapshot_body(28095, /*use_fast_path=*/false));
+    large_body_results.push_back(bench_proxygen_large_snapshot_body(28096, /*use_fast_path=*/true));
+    print_table(large_body_results);
+
     return 0;
 }
