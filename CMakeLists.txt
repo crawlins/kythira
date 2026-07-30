@@ -225,6 +225,26 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT)
 endif()
 kythira_kconfig_require(COAP_TRANSPORT LIBCOAP_FOUND "libcoap")
 
+# grpc-transport spec: gRPC + Protocol Buffers back a third full-concept-family
+# transport (.kiro/specs/grpc-transport/). Optional and gracefully degrading,
+# exactly like libcoap above: probed only when CONFIG_GRPC_TRANSPORT is wanted,
+# skipped-with-a-warning when gRPC/Protobuf are absent, and a hard configure
+# failure only under KYTHIRA_KCONFIG_STRICT. gRPC pulls Protobuf in
+# transitively via the vcpkg `grpc` port, but we find_package(Protobuf)
+# explicitly too so the protobuf::protoc / gRPC::grpc_cpp_plugin codegen
+# targets are guaranteed to be imported.
+kythira_kconfig_gate(GRPC_TRANSPORT)
+if(_KYTHIRA_GATE_GRPC_TRANSPORT)
+    find_package(gRPC CONFIG QUIET)
+    find_package(Protobuf CONFIG QUIET)
+endif()
+if(gRPC_FOUND AND Protobuf_FOUND)
+    set(GRPC_TRANSPORT_FOUND TRUE)
+else()
+    set(GRPC_TRANSPORT_FOUND FALSE)
+endif()
+kythira_kconfig_require(GRPC_TRANSPORT GRPC_TRANSPORT_FOUND "grpc")
+
 # Find libldns using PkgConfig (system installation; pc file is named "ldns")
 kythira_kconfig_gate(DNS_DISCOVERY)
 if(_KYTHIRA_GATE_DNS_DISCOVERY)
@@ -771,6 +791,64 @@ elseif(NOT TARGET OpenSSL::SSL)
     message(STATUS "OpenSSL not found — certificate_authority target disabled")
 else()
     message(STATUS "folly not found — certificate_authority target disabled (requires Folly via raft/future.hpp)")
+endif()
+
+# ── raft_grpc_transport (gRPC + Protocol Buffers transport) ──────────────────
+# .kiro/specs/grpc-transport/. Unlike the header-only HTTP/CoAP transports
+# (folded into network_simulator's INTERFACE target), the gRPC transport needs
+# a compiled library: protoc + grpc_cpp_plugin generate raft.pb.{h,cc} /
+# raft.grpc.pb.{h,cc} into the build tree (never checked in, Requirement 2.7),
+# and those .cc files plus src/grpc_transport_impl.cpp make up the target.
+# Gated on GRPC_TRANSPORT_FOUND (probed above) AND Folly: like the HTTP/CoAP
+# transports, grpc_transport.hpp hardcodes kythira::Future/Promise (Folly's
+# default backend) rather than the backend-selected future_default, so the
+# target is Folly-oriented and requires TARGET Folly::folly, not merely *some*
+# future backend. Absent gRPC → skipped with a warning, rest of the project
+# unaffected (Requirement 18.1).
+if(GRPC_TRANSPORT_FOUND AND TARGET Folly::folly)
+    set(RAFT_PROTO "${CMAKE_CURRENT_SOURCE_DIR}/proto/raft.proto")
+    set(GRPC_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/raft")
+    file(MAKE_DIRECTORY "${GRPC_GENERATED_DIR}")
+
+    add_custom_command(
+        OUTPUT "${GRPC_GENERATED_DIR}/raft.pb.cc" "${GRPC_GENERATED_DIR}/raft.pb.h"
+               "${GRPC_GENERATED_DIR}/raft.grpc.pb.cc" "${GRPC_GENERATED_DIR}/raft.grpc.pb.h"
+        COMMAND protobuf::protoc
+        # No quotes around the plugin path: under VERBATIM each ARGS token is
+        # passed literally, so quotes *inside* the --plugin= token would reach
+        # protoc as part of the path ("…/grpc_cpp_plugin": program not found).
+        # VERBATIM already handles any escaping the path itself needs.
+        ARGS --grpc_out "${GRPC_GENERATED_DIR}" --cpp_out "${GRPC_GENERATED_DIR}"
+             --plugin=protoc-gen-grpc=$<TARGET_FILE:gRPC::grpc_cpp_plugin>
+             -I "${CMAKE_CURRENT_SOURCE_DIR}/proto" "${RAFT_PROTO}"
+        DEPENDS "${RAFT_PROTO}" protobuf::protoc gRPC::grpc_cpp_plugin
+        COMMENT "Generating gRPC/Protobuf sources from proto/raft.proto"
+        VERBATIM
+    )
+
+    add_library(raft_grpc_transport STATIC
+        src/grpc_transport_impl.cpp
+        "${GRPC_GENERATED_DIR}/raft.pb.cc"
+        "${GRPC_GENERATED_DIR}/raft.grpc.pb.cc"
+    )
+    target_include_directories(raft_grpc_transport PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+        "${GRPC_GENERATED_DIR}"
+    )
+    # network_simulator (PUBLIC): grpc_transport_impl.hpp's kythira::Future/
+    # Promise usage pulls in Folly, which needs the same include-order/link
+    # setup network_simulator's INTERFACE target already carries — mirrors how
+    # certificate_authority links network_simulator rather than re-wiring Folly.
+    target_link_libraries(raft_grpc_transport PUBLIC
+        gRPC::grpc++ protobuf::libprotobuf OpenSSL::SSL OpenSSL::Crypto network_simulator
+    )
+    target_compile_features(raft_grpc_transport PUBLIC cxx_std_23)
+    message(STATUS "raft_grpc_transport target: enabled (.kiro/specs/grpc-transport/)")
+elseif(NOT GRPC_TRANSPORT_FOUND)
+    message(WARNING "gRPC/Protobuf not found. gRPC transport will not be available.")
+else()
+    message(STATUS "Folly not found — raft_grpc_transport target disabled (transport hardcodes kythira::Future via raft/future.hpp)")
 endif()
 
 # ── libssh2 (real-EC2 integration tests, in-memory SSH key material) ─────────

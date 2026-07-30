@@ -248,3 +248,28 @@ set_tests_properties(continuation_example_test PROPERTIES
 
 # Add Raft examples subdirectory
 add_subdirectory(raft)
+
+# ── gRPC transport example (.kiro/specs/grpc-transport/) ─────────────────────
+# Only built when the raft_grpc_transport target exists (gRPC/Protobuf found)
+# and certificate_authority is available for the mutual-TLS scenario.
+if(TARGET raft_grpc_transport AND TARGET certificate_authority)
+    add_executable(grpc_transport_example grpc_transport_example.cpp)
+    target_link_libraries(grpc_transport_example PRIVATE
+        raft_grpc_transport certificate_authority
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(grpc_transport_example PRIVATE Folly::folly)
+    endif()
+    target_compile_features(grpc_transport_example PRIVATE cxx_std_23)
+    set_target_properties(grpc_transport_example PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+    add_test(NAME grpc_transport_example_test COMMAND grpc_transport_example)
+    set_tests_properties(grpc_transport_example_test PROPERTIES
+        TIMEOUT 120
+        LABELS "example;grpc;transport;integration"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+else()
+    message(STATUS "grpc_transport_example: skipped (requires raft_grpc_transport and certificate_authority)")
+endif()

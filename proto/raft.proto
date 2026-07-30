@@ -1,0 +1,171 @@
+// Canonical wire schema for the Kythira gRPC Raft transport.
+//
+// This .proto file is the single source of truth for every Raft RPC message
+// and service the gRPC transport (.kiro/specs/grpc-transport/) speaks. Unlike
+// the HTTP and CoAP transports — which serialize the generic
+// serialized_data_type byte buffer produced by a pluggable rpc_serializer —
+// the gRPC transport uses Protocol Buffers as both the wire format and the RPC
+// framing, generated from this file at build time via protoc + grpc_cpp_plugin
+// (raft.pb.{h,cc} / raft.grpc.pb.{h,cc}). Generated code is NOT checked in
+// (Requirement 2.7); only this file is.
+//
+// The package is versioned (kythira.raft.v1, Requirement 2.6) so a future
+// breaking schema change can introduce kythira.raft.v2 without colliding with
+// this version on the wire.
+
+syntax = "proto3";
+
+package kythira.raft.v1;
+
+// Mirrors kythira::entry_type (include/raft/types.hpp). proto3 requires the
+// zero value to be the default, which lines up with entry_type::normal == 0.
+enum EntryType {
+  ENTRY_TYPE_NORMAL = 0;
+  ENTRY_TYPE_CONFIGURATION = 1;
+  ENTRY_TYPE_NO_OP = 2;
+}
+
+// Mirrors kythira::log_entry<TermId, LogIndex>. `command` is opaque state-machine
+// bytes; `type` discriminates normal/configuration/no-op entries.
+message LogEntry {
+  uint64 term = 1;
+  uint64 index = 2;
+  bytes command = 3;
+  EntryType type = 4;
+}
+
+// ── Core RPCs (RaftService) ─────────────────────────────────────────────────
+
+message RequestVoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated LogEntry entries = 5;
+  uint64 leader_commit = 6;
+}
+
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  // Optional so an absent conflict hint round-trips as std::nullopt rather than
+  // a zero that the requester would misread as "conflict at index 0".
+  optional uint64 conflict_index = 3;
+  optional uint64 conflict_term = 4;
+}
+
+message InstallSnapshotRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term = 4;
+  // Offset-based chunking contract, preserved unchanged from the other
+  // transports (Requirement 5.3): the leader sends one RPC per chunk rather
+  // than gRPC client-streaming a whole snapshot.
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
+}
+
+message InstallSnapshotResponse {
+  uint64 term = 1;
+}
+
+// The base, minimal service surface — matches every other transport's core
+// scope. A non-C++ observer that only wants RequestVote/AppendEntries/
+// InstallSnapshot never needs to know the extension messages below exist.
+service RaftService {
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+}
+
+// ── Optional extensions (Requirements 15-17) ────────────────────────────────
+//
+// Each optional extension lives in its own service, not extra RPCs bolted onto
+// RaftService, so grpc_server::start() can register only the services whose
+// handlers were actually provided. A client that calls a method on a service
+// the server never registered gets UNIMPLEMENTED automatically from gRPC core,
+// with no application code (Requirement 6.3 / Property 5).
+
+// RequestPreVote election extension (Requirement 16). Same shape as RequestVote:
+// the candidate advertises the term it *would* use without incrementing its own.
+message RequestPreVoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestPreVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+service RaftElectionExtensionService {
+  rpc RequestPreVote(RequestPreVoteRequest) returns (RequestPreVoteResponse);
+}
+
+// ClusterJoin/ClusterLeave bootstrap extension (Requirement 15). PeerInfo
+// mirrors kythira::peer_info<NodeId, Address> and carries the not-leader
+// redirect hint.
+message PeerInfo {
+  uint64 node_id = 1;
+  string address = 2;
+}
+
+message ClusterJoinRequest {
+  uint64 node_id = 1;
+  string contact_address = 2;
+}
+
+message ClusterJoinResponse {
+  bool accepted = 1;
+  optional PeerInfo redirect = 2;
+}
+
+message ClusterLeaveRequest {
+  uint64 node_id = 1;
+}
+
+message ClusterLeaveResponse {
+  bool accepted = 1;
+  optional PeerInfo redirect = 2;
+}
+
+service RaftBootstrapService {
+  rpc ClusterJoin(ClusterJoinRequest) returns (ClusterJoinResponse);
+  rpc ClusterLeave(ClusterLeaveRequest) returns (ClusterLeaveResponse);
+}
+
+// Peer-to-peer fetch_log_entries extension (Requirement 17,
+// .kiro/specs/peer2peer-log-replication/). Shaped like AppendEntries minus the
+// leader-only fields — the responder is never treated as a leader.
+message FetchLogEntriesRequest {
+  uint64 requester_id = 1;
+  uint64 from_index = 2;
+  uint64 to_index = 3;
+}
+
+message FetchLogEntriesResponse {
+  uint64 responder_id = 1;
+  bool available = 2;
+  uint64 prev_log_term = 3;
+  repeated LogEntry entries = 4;
+}
+
+service RaftPeerReplicationService {
+  rpc FetchLogEntries(FetchLogEntriesRequest) returns (FetchLogEntriesResponse);
+}

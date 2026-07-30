@@ -76,6 +76,29 @@ This document lists the dependencies required to build and use the network simul
   of the build is unaffected (`KYTHIRA_HAS_OPENSSL` mirrors the existing `KYTHIRA_HAS_LDNS` /
   `KYTHIRA_HAS_POCO_DNSSD` optional-dependency pattern).
 
+### gRPC + Protocol Buffers — gRPC transport
+- **Status**: Optional — `raft_grpc_transport` target only compiled when detected
+  (and Folly is available); mirrors the libcoap graceful-degradation pattern
+- **Purpose**: HTTP/2 + Protocol Buffers implementation of the
+  `network_client`/`network_server` concept family
+  (`include/raft/grpc_transport.hpp`, `grpc_transport_impl.hpp`). `protoc` +
+  `grpc_cpp_plugin` generate `raft.pb.{h,cc}`/`raft.grpc.pb.{h,cc}` from
+  `proto/raft.proto` at build time (generated code is not checked in)
+- **Minimum Version**: gRPC ≥ 1.42 provides the stable (non-experimental)
+  callback API this transport uses; the version is left unpinned in `vcpkg.json`
+  so the project's pinned `builtin-baseline` supplies it (that baseline's gRPC
+  is well past 1.42), avoiding an unsatisfiable `version>=` constraint against
+  the baseline
+- **Installation**: `grpc` vcpkg port (declared in `vcpkg.json`); pulls in
+  Protobuf transitively
+- **Notes**: `find_package(gRPC CONFIG)` / `find_package(Protobuf CONFIG)` back
+  `GRPC_TRANSPORT_FOUND` and the `GRPC_TRANSPORT` Kconfig symbol. When gRPC/
+  Protobuf are absent the `raft_grpc_transport` target and its tests/example are
+  simply not defined; the rest of the build is unaffected. Under
+  `-DKYTHIRA_KCONFIG_STRICT=ON`, `CONFIG_GRPC_TRANSPORT=y` with gRPC missing is a
+  hard configure error. See `.kiro/specs/grpc-transport/` and
+  `doc/grpc_transport_README.md`.
+
 ### AWS SDK ACM Private CA component — aws_acm_pca_provider
 - **Status**: Optional — independent of the core `KYTHIRA_HAS_AWS_SDK` component set
   already used by `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`
