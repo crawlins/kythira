@@ -1,6 +1,10 @@
 # HTTP Transport Performance Comparison
 
-**Last Updated**: July 28, 2026
+**Last Updated**: July 30, 2026 (Requirement 17.1/17.3's
+generic-bridge-vs-fast-path and large-body scenarios, added July 29, 2026,
+now measured — see `## Generic bridge vs. fast path, and large-body
+scenarios` below. `## Results` below is still the original July 28, 2026
+run, on a different host — not re-measured this pass)
 
 ## Overview
 
@@ -64,9 +68,9 @@ than it clarifies for just three data points).
 - Since this project's default `KYTHIRA_DEFAULT_FUTURE_BACKEND` is
   `folly`, the Proxygen row below exercises Requirement 16's Folly-native
   fast path, not the generic bridge — see
-  `.kiro/specs/proxygen-http-transport/requirements.md` Requirement 17 for
-  the *separate* generic-bridge-vs-fast-path-specific benchmark (within
-  Proxygen only), which this document does not duplicate.
+  `## Generic bridge vs. fast path, and large-body scenarios` below for the
+  *separate* generic-bridge-vs-fast-path-specific benchmark (within
+  Proxygen only), added to the same program but not (yet) re-run.
 
 ### Running it yourself
 
@@ -152,13 +156,92 @@ run July 28, 2026).
   `concurrent_rpcs_to_multiple_nodes` test exercises for correctness, not
   throughput.
 
+## Generic bridge vs. fast path, and large-body scenarios
+
+Requirement 17.1/17.3 (`.kiro/specs/proxygen-http-transport/requirements.md`)
+ask for two more comparisons, both now implemented in
+`examples/raft/http_transport_comparison_benchmark.cpp`'s `main()` as two
+additional tables printed after the cross-transport one above:
+
+1. **Generic bridge vs. Folly fast path** (`bench_proxygen_generic_bridge`/
+   `bench_proxygen`), same small `RequestVote`-shaped workload as `## Method`
+   above, both under this program's `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly`
+   build. Reachable at all only because of Property 12's test-only escape
+   hatch (`proxygen_client::send_rpc_via_generic_bridge_for_test`,
+   `include/raft/proxygen_http_transport.hpp`) — without it there would be
+   no way to force the generic bridge under a Folly-backend `Types` bundle,
+   since `send_rpc`'s own `if constexpr` dispatch (Requirement 16.1) always
+   selects the fast path for one.
+2. **1 MiB `install_snapshot` body, generic bridge vs. fast path**
+   (`bench_proxygen_large_snapshot_body`) — the Introduction's zero-copy
+   `folly::IOBuf` claim, at a body size actually representative of what this
+   project's Raft implementation treats as its one large-body RPC (20
+   warmup + 200 measured iterations per path, rather than the small-body
+   scenarios' 200 + 2000 — see the function's own comment for why).
+
+**Measured** (July 30, 2026, PR #117): this repository's own development
+environment could not obtain a working `vcpkg install` (a from-scratch
+bootstrap failed downloading `proxygen`'s and its transitive dependencies'
+upstream GitHub release archives — not a transient network error, but that
+environment's GitHub access being scoped to this repository specifically),
+so these numbers instead come from a real GitHub Actions CI runner
+(4-core `ubuntu-24.04`, g++-13, `-O3` Release), captured via a temporary
+CI step added specifically to run this normally-excluded (`performance`/
+`slow`-labeled) benchmark once and print its output — see PR #117's commits
+for that temporary step, since it was reverted immediately after this run
+rather than left as a permanent CI job (this benchmark's whole point is to
+be run and read by a person, not gated on).
+
+| Transport | ops/sec | p50 (µs) | p95 (µs) | p99 (µs) |
+|---|---:|---:|---:|---:|
+| Proxygen (generic bridge) | 9,089 | 103.3 | 140.3 | 148.6 |
+| Proxygen (Folly fast path) | 8,996 | 105.0 | 142.6 | 147.8 |
+
+| Transport | ops/sec | p50 (µs) | p95 (µs) | p99 (µs) |
+|---|---:|---:|---:|---:|
+| Proxygen 1 MiB snapshot (generic bridge) | 52 | 19,315.4 | 19,597.5 | 19,679.0 |
+| Proxygen 1 MiB snapshot (fast path) | 53 | 19,003.7 | 19,324.5 | 19,423.9 |
+
+(For reference, the same run's cross-transport table, `## Results`'
+own comparison re-measured on this CI host rather than the original
+development host: cpp-httplib 12 ops/sec / 82,001.3µs p50; Boost.Beast
+7,547 ops/sec / 131.5µs p50; Proxygen fast path 9,018 ops/sec / 105.2µs
+p50 — same relative ordering as `## Results` above, different host so not
+directly comparable number-for-number to that table.)
+
+**Interpreting these numbers: no measurable fast-path advantage at either
+body size, on this run.** This is a genuine, slightly surprising result
+worth stating plainly rather than explaining away — the Introduction's
+architectural case for Requirement 16 (the fast path skips one
+`kythira::promise_default<T>` translation hop the generic bridge pays) is
+still structurally true, but at neither the small `RequestVote` size nor
+the 1 MiB `install_snapshot` size did that translate into a measurable
+throughput or latency win here: the generic bridge is marginally *faster*
+in both tables (9,089 vs. 8,996 ops/sec; 52 vs. 53 ops/sec — the second
+pair is within one iteration's rounding of each other and not a real
+difference either way). Plausible reasons this project's own architecture
+suggests, none independently confirmed by a further benchmark: the skipped
+translation hop is genuinely cheap relative to the dominant costs at both
+sizes (TCP/TLS-free loopback I/O and JSON serialization for the small case;
+the 1 MiB body's own copy/transfer cost for the large case, which
+`proxygen_detail::http_response`'s accumulate-into-`std::string` posture
+(`include/raft/proxygen_http_transport.hpp`'s own header comment on that
+struct) pays on *both* paths identically, generic bridge and fast path
+alike — meaning this scenario was never actually positioned to isolate an
+`IOBuf`-specific win in the first place, only to *check for* one that a
+future, more targeted change (skipping that accumulation step) would be
+needed to actually surface. Matching this document's own
+"comparison, not a declaration of a winner" stance (`## Overview` above):
+this measures what Requirement 17.1/17.3 asked to be measured, and the
+honest answer is "no difference here," not "the fast path doesn't work" —
+Task 12's own test coverage (`generic_bridge_forced_matches_fast_path_result`,
+`tests/proxygen_transport_test.cpp`) already confirms both paths are
+correct; this section is about their relative cost, and on this run, cost
+was a wash.
+
 ## Non-goals
 
 - This is not a decision to change any call site's default transport —
   `cmd/ca_service`/`cmd/ca_cluster_node`/every existing example keep using
   whichever transport they already use.
-- This does not measure TLS handshake cost, large-body (`install_snapshot`)
-  transfer, or Proxygen's `folly::IOBuf` zero-copy claim specifically —
-  see `.kiro/specs/proxygen-http-transport/requirements.md` Requirement
-  17.3's own explicit "measure or label unmeasured" rule for that
-  narrower claim.
+- This does not measure TLS handshake cost.

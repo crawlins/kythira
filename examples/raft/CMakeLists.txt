@@ -159,13 +159,20 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
     # runtime is dominated by cpp-httplib's default TCP_NODELAY=false
     # behavior (~80ms/call Nagle/delayed-ACK interaction,
     # doc/http_transport_performance_comparison.md's own measured finding),
-    # roughly 3 minutes for the full 2000-iteration comparison across all
-    # three transports. A generous fixed override, not the "performance"
+    # roughly 3 minutes for the original 2000-iteration cross-transport
+    # comparison alone. A generous fixed override, not the "performance"
     # regex match, since this is a real measured comparison run (not a
     # correctness check needing only a reduced smoke test the way
-    # future_backend_benchmark_report_test's own CTest entry is).
+    # future_backend_benchmark_report_test's own CTest entry is). Bumped
+    # from the original 300s: Requirement 17.1/17.3's two added comparisons
+    # (generic-bridge-vs-fast-path, and the same comparison at a 1 MiB
+    # install_snapshot body size) run two more 2000-iteration scenarios plus
+    # two 200-iteration large-body ones in the same process -- this margin
+    # is a conservative estimate, not itself a re-measured number (this
+    # session's environment could not run a full vcpkg/proxygen/folly build
+    # to re-measure; see doc/http_transport_performance_comparison.md).
     set_tests_properties(http_transport_comparison_benchmark_test PROPERTIES
-        TIMEOUT 300
+        TIMEOUT 600
         # Confirmed by direct observation: running this test's ~3 minutes of
         # real network I/O concurrently with raft_comprehensive_performance_
         # benchmark's own latency-coefficient-of-variation check under
