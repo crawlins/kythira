@@ -440,18 +440,42 @@ public:
     Promise(const Promise&) = delete;
     Promise& operator=(const Promise&) = delete;
 
-    // Get associated future (for concept compliance)
+    // Get associated future (for concept compliance).
+    //
+    // Routed through getSemiFuture().via(&InlineExecutor::instance())
+    // rather than a plain _folly_promise.getFuture() call: the latter
+    // returns a Future with no executor attached, which Folly's own docs
+    // warn against ("Taking a future straight from a promise via
+    // getFuture(), without going via the safer SemiFuture, results in a
+    // Future that does not carry an executor, which is in general
+    // something to avoid"). This was a real, not theoretical, bug --
+    // .kiro/specs/boost-beast-http-transport/'s tsan-beast-transport CI
+    // job (the first consumer to fulfill one of these promises from a
+    // genuinely different thread, an io_context worker, while immediately
+    // chaining .thenValue()/.thenError() on the calling thread) caught a
+    // ThreadSanitizer data race on the underlying Core's executor/
+    // KeepAlive bookkeeping without this. InlineExecutor preserves the
+    // exact behavior every existing caller already observes and depends
+    // on -- continuations still run inline, on whichever thread actually
+    // fulfills the promise, never hopped onto a separate thread pool --
+    // the fix is purely about making that handoff itself race-free.
     auto getFuture() -> Future<T> {
         if constexpr (std::is_void_v<T>) {
-            return Future<void>(this->_folly_promise.getFuture());
+            return Future<void>(
+                this->_folly_promise.getSemiFuture().via(&folly::InlineExecutor::instance()));
         } else {
-            return Future<T>(this->_folly_promise.getFuture());
+            return Future<T>(
+                this->_folly_promise.getSemiFuture().via(&folly::InlineExecutor::instance()));
         }
     }
 
-    // Get associated semi-future (for concept compliance)
+    // Get associated semi-future (for concept compliance). Same fix as
+    // getFuture() above, and for the same reason: toUnsafeFuture() (the
+    // previous implementation) produces exactly the executor-less Future
+    // getFuture() itself used to, just via a different Folly entry point.
     auto getSemiFuture() -> Future<T> {
-        return Future<T>(this->_folly_promise.getSemiFuture().toUnsafeFuture());
+        return Future<T>(
+            this->_folly_promise.getSemiFuture().via(&folly::InlineExecutor::instance()));
     }
 };
 
