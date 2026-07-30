@@ -560,10 +560,45 @@ All major components are pluggable via template parameters:
 
 - **State Machine**: Your application logic
 - **Network Transport**: HTTP, simulator, or custom
+- **RPC Serializer**: JSON (`json_rpc_serializer`) or CBOR (`cbor_rpc_serializer`), or custom
 - **Persistence**: Memory, disk, or custom
 - **Logger**: Console, file, or custom
 - **Metrics**: Prometheus, StatsD, or custom
 - **Membership Manager**: Default or custom authorization
+
+#### RPC Serializer: JSON or CBOR
+
+Every transport treats `Types::serializer_type` as an opaque byte-in/byte-out
+component, so the wire encoding is a drop-in choice. Two implementations ship
+in-tree, both with zero additional dependencies:
+
+- `kythira::json_serializer` (`raft/json_serializer.hpp`) — human-readable JSON,
+  the default.
+- `kythira::cbor_serializer` (`raft/cbor_serializer.hpp`) — CBOR (RFC 8949), a
+  binary encoding that drops JSON's text-parsing overhead and carries raw byte
+  fields (log-entry commands, snapshot chunks) as CBOR byte strings instead of
+  base64 text, avoiding JSON's ~33% inflation on exactly those fields. It uses a
+  self-contained, hand-rolled codec covering only the CBOR major types the Raft
+  messages need — no new `vcpkg.json` entry.
+
+Adopting CBOR is a one-line change to a `Types` bundle:
+
+```cpp
+#include <raft/cbor_serializer.hpp>
+
+// Anywhere json_rpc_serializer<std::vector<std::byte>> appears as
+// serializer_type, name cbor_rpc_serializer<std::vector<std::byte>> instead:
+using serializer_type = kythira::cbor_rpc_serializer<std::vector<std::byte>>;
+```
+
+The CoAP transport already tags CBOR payloads with the `application/cbor`
+Content-Format automatically (its content-type detection keys off
+`serializer.name()`). Note one pre-existing limitation: the cpp-httplib HTTP
+transport hardcodes the `Content-Type` header to `application/json` regardless
+of the serializer, so CBOR over HTTP still round-trips correctly (both peers use
+the same serializer) but is mislabeled on the wire — generalizing the HTTP
+transport to derive its `Content-Type` from `serializer.name()`, as CoAP does,
+is a tracked follow-up.
 
 ## Test Suite
 

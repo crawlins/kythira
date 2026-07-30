@@ -64,7 +64,6 @@ unambiguous at a glance.
 | `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
 | `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
 | `ion-rpc-serializer` | 0/45 | Design-only; `ion_rpc_serializer<Data>` over the `ion-c` overlay port |
-| `cbor-rpc-serializer` | 0/49 | Design-only; hand-rolled RFC 8949 codec, no new dependency |
 | `azure-cloud-services` | 0/9 | Design-only; `azure_vm_quorum_manager`/`azure_vmss_quorum_manager`/`azure_key_vault_ca_provider` |
 | `gcp-cloud-services` | 0/13 | Design-only; `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
@@ -698,10 +697,15 @@ surface a conforming implementation must cover).
   transport pairing (gRPC owns framing/HTTP/2 itself, unlike the
   serializer-only JSON path used over `tcp_rpc`/`tls_tcp_rpc`), not just a
   new `serializer_type`
-- [ ] **CBOR (RFC 8949)** — compact binary JSON-equivalent encoding; same
+- [x] **CBOR (RFC 8949)** — compact binary JSON-equivalent encoding; same
   logical structure as `json_rpc_serializer`'s `boost::json::object` field
   layout, smaller wire size and no text-parsing overhead, likely the
-  lowest-effort binary alternative to implement first
+  lowest-effort binary alternative to implement first. Implemented as
+  `cbor_rpc_serializer<Data>` / `cbor_serializer` (`raft/cbor_serializer.hpp`):
+  hand-rolled RFC 8949 codec (definite-length uint/byte-string/text-string/
+  array/map/bool subset), byte fields carried as CBOR byte strings (no base64),
+  absent optionals omitted, `name()` → `"cbor"` for CoAP `application/cbor`;
+  no `vcpkg.json`/`Kconfig` change
 - [ ] **Amazon Ion** — Amazon's self-describing binary/text data format
   (binary encoding for wire efficiency, with the text encoding available for
   debugging/logging the same messages)
