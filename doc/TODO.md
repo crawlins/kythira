@@ -8,13 +8,13 @@ For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
 The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 
-- **393/395 tests passing** on the full `ci_full_defconfig` suite (5 additional
+- **395/395 tests passing** on the full `ci_full_defconfig` suite (5 additional
   tests registered since the Proxygen HTTP transport spec's `proxygen_transport_test`/
-  `http_transport_comparison_benchmark_test` targets landed) — the 2 non-passing
-  entries are both in the `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_restart_test`
-  family's own already-documented intermittent hang (see "Known Follow-ups" below;
-  confirmed pre-existing and unrelated — both pass cleanly in isolation, only
-  flake under heavy concurrent `ctest -j` load)
+  `http_transport_comparison_benchmark_test` targets landed) — the
+  `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
+  `ca_cluster_node_rpc_tls_restart_test` family's own intermittent SIGTERM-
+  shutdown hang (see "Known Follow-ups" below) is now fixed and verified,
+  not just believed fixed
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
   stdexec future backend, the Folly-vs-stdexec performance benchmark suite,
@@ -94,37 +94,61 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **`ca_cluster_node_test` intermittent hang (root cause not yet found)** —
-  reproduced directly (not just inferred from CI flakiness): the test
-  process itself hangs indefinitely on roughly 1 in 12-15 runs, confirmed
-  by `timeout 120` actually firing and killing a genuinely stuck process
-  (not just a slow one). From the one log captured before the kill: a
-  follower node is `stop()`'d cleanly, then the leader retries
-  `AppendEntries` to it forever (expected Raft behavior), but the test's
-  own main thread goes silent at the same point and never progresses —
-  consistent with it blocking on something unbounded (a synchronous
-  `httplib` call, or a `waitpid()` on a child that's itself stuck), but
-  unproven. Investigation was blocked by this sandbox having no `ptrace`
-  access (`gdb -p` and `/proc/<pid>/task/*/stack` both refused with
-  "Inappropriate ioctl for device" / permission denied even for our own
-  process) and no sudo to relax `/proc/sys/kernel/yama/ptrace_scope`, so
-  only `/proc/<pid>/task/*/wchan` was available, which never caught the
-  race in ~12 further attempts. Getting a real fix likely needs either an
-  environment with `ptrace` available, or targeted diagnostic logging
-  added around the suspected blocking calls (synchronous `httplib::Client`
-  requests in the test, `waitpid()` in `cluster_node_process::stop()`) to
-  narrow it down without a debugger.
-  July 24, 2026: the resulting failure mode — an abnormally-terminated
-  test process orphaning a spawned `ca_cluster_node` child, which then
-  holds the test's stdout/stderr pipe open indefinitely and wedges
-  `ctest`'s own output capture (turning one flaky test into a hung whole
-  suite) — was fixed independently via `PR_SET_PDEATHSIG`, applied to all
-  three files sharing this `posix_spawn`-based subprocess pattern
-  (`ca_cluster_node_test.cpp`, `ca_cluster_node_rpc_tls_test.cpp`,
-  `ca_cluster_node_rpc_tls_restart_test.cpp`). Verified via 10 further
-  runs with no orphans left behind. The underlying intermittent hang
-  itself is still unresolved — this fix only ensures it can no longer
-  wedge the whole test run when it happens.
+- **`ca_cluster_node_test` intermittent hang — fixed and verified (July 30,
+  2026).** Root cause, found in commit `19b05e2` (July 29, 2026):
+  `run_ca_cluster_node()`'s shutdown sequence joined `http_thread`,
+  `election_timer`, `heartbeat_timer`, and `maintenance_thread` *before*
+  calling `raft_node.stop()`. Every `submit_command()`/`read_state()`
+  future is only ever resolved two ways: it completes normally, or
+  `check_heartbeat_timeout()` calls
+  `CommitWaiter::cancel_timed_out_operations()` on its next tick.
+  `raft_node.stop()`'s `CommitWaiter::cancel_all_operations()` is the only
+  other path that resolves a pending future, but it ran last, after every
+  `join()`. If SIGTERM landed while `maintenance_thread` was blocked
+  inside a `submit_command().get()` call (e.g. the leader-transition no-op
+  commit in `ensure_signer()`/`maybe_bootstrap()`) and the commit could no
+  longer land (this node losing quorum precisely because it and/or its
+  peers were shutting down), with `heartbeat_timer` already stopped
+  ticking by the time `maintenance_thread.join()` was reached, nothing was
+  left running to ever unblock it — `maintenance_thread.join()`, and the
+  whole process, hung forever. This matched the originally-documented
+  symptom exactly (a follower `stop()`'d cleanly, the leader retrying
+  `AppendEntries` against it forever, and the test's own `waitpid()` on
+  the child never returning) but had not been connected to it at the time
+  this entry was first written; the investigation described below (no
+  `ptrace` access, ~12 attempts via `/proc/<pid>/task/*/wchan` alone)
+  never found it. Fix: call `raft_node.stop()` immediately after
+  `server->stop()`, before any thread `join()`, so a blocked `.get()` call
+  is force-rejected right away instead of racing an already-stopped
+  timeout mechanism. `cmd/chaos_node/main.cpp` was checked for the same
+  pattern and doesn't have it (no `maintenance_thread`/HTTP handlers that
+  ever block on `submit_command()`).
+  **Verification** (July 30, 2026, `fix/ca-cluster-node-hang`): 25
+  iterations of `ctest -j3 -R
+  'ca_cluster_node_test|ca_cluster_node_rpc_tls_test|ca_cluster_node_rpc_tls_restart_test'`,
+  each wrapped in `timeout --signal=KILL 120` — the same heavy concurrent
+  load that originally triggered the ~1-in-12-15 hang rate. Zero hangs
+  (zero `timeout`-forced kills) across all 25; two ordinary assertion
+  failures under load (`certificate issuance failed with only 2 of 3
+  nodes up`, a real but *different* quorum-timing flake, not a hang —
+  each failing iteration's suite still completed normally afterward,
+  confirming it isn't a recurrence of this bug). Also added defense in
+  depth: `cluster_node_process::stop()` in all three test files now polls
+  `waitpid(..., WNOHANG)` with a 30-second bounded timeout
+  (`tests/ca_cluster_node_process_wait.hpp`'s `wait_for_exit_or_kill()`)
+  instead of a plain blocking `waitpid()`, escalating to `SIGKILL` and
+  raising a `BOOST_ERROR` if exceeded — so a *future* regression of this
+  exact shutdown-ordering bug would surface as a diagnosable test failure
+  instead of silently going back to an indefinite `ctest` hang.
+  July 24, 2026 (kept for history): the resulting failure mode before the
+  above fix — an abnormally-terminated test process orphaning a spawned
+  `ca_cluster_node` child, which then held the test's stdout/stderr pipe
+  open indefinitely and wedged `ctest`'s own output capture (turning one
+  flaky test into a hung whole suite) — was fixed independently via
+  `PR_SET_PDEATHSIG`, applied to all three files sharing this
+  `posix_spawn`-based subprocess pattern. Verified via 10 further runs
+  with no orphans left behind at the time; superseded in relevance by the
+  root-cause fix above, but kept working alongside it.
 
 - **Folly decoupling is complete at the header level; two independent
   gaps remain out of scope** (July 24, 2026) — `future_default.hpp` no
