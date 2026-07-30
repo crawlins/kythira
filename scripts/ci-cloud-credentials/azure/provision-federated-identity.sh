@@ -79,9 +79,21 @@ else
 fi
 
 echo "== Federated identity credential (GitHub OIDC, no client secret) =="
-# Trusts only workflow runs from this exact repo (any branch/tag/PR — matches
-# the AWS provisioner's repo:<org>/<repo>:* trust policy). Narrow this
-# subject further (e.g. to a specific branch) if your threat model wants it.
+# real-cloud-tests.yml's azure job sets `environment: real-cloud-tests`
+# (needed for the environment's own required-reviewers/secrets scoping), which
+# changes the OIDC subject GitHub issues to
+# repo:<org>/<repo>:environment:<environment-name> -- unlike a plain
+# ref-scoped subject (repo:<org>/<repo>:ref:refs/heads/main), this is NOT
+# branch-specific, so it authenticates from any branch/PR that runs a job
+# targeting this environment (matches the AWS provisioner's
+# repo:<org>/<repo>:* trust policy's own "any branch/tag/PR" intent, just
+# scoped by environment name instead of by wildcard ref, since Azure AD
+# federated credentials require an exact subject match with no wildcard
+# support the way an AWS IAM trust policy's StringLike condition has).
+# Narrow this further (e.g. to a specific branch) if your threat model wants
+# it -- but note a ref-scoped subject would then need updating every time
+# this environment's jobs are exercised from a different branch, which is
+# exactly the mismatch this comment replaces.
 FIC_NAME="github-actions-real-cloud-tests"
 EXISTING_FIC=$(az ad app federated-credential list --id "$APP_ID" \
     --query "[?name=='$FIC_NAME'].name" -o tsv 2>/dev/null || true)
@@ -90,7 +102,7 @@ if [[ -z "$EXISTING_FIC" ]]; then
 {
   "name": "$FIC_NAME",
   "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:${GITHUB_ORG}/${GITHUB_REPO}:ref:refs/heads/main",
+  "subject": "repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:real-cloud-tests",
   "audiences": ["api://AzureADTokenExchange"]
 }
 JSON
