@@ -146,6 +146,28 @@ set_tests_properties(performance_benchmark_report_test PROPERTIES
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
 )
 
+# CBOR serializer example. Unlike add_network_example, this one also links
+# boost_json because it compares cbor_serializer against json_serializer
+# (json_serializer.hpp pulls in Boost.JSON).
+add_executable(cbor_serializer_example cbor_serializer_example.cpp)
+target_link_libraries(cbor_serializer_example PRIVATE
+    network_simulator
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(cbor_serializer_example PRIVATE Folly::folly)
+endif()
+target_compile_features(cbor_serializer_example PRIVATE cxx_std_23)
+set_target_properties(cbor_serializer_example PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+add_test(NAME cbor_serializer_example_test COMMAND cbor_serializer_example)
+set_tests_properties(cbor_serializer_example_test PROPERTIES
+    TIMEOUT 60
+    LABELS "example;serializer;cbor;unit"
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+)
+
 # Concepts usage examples
 add_network_example(concepts_usage_examples concepts_usage_examples.cpp)
 

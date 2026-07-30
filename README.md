@@ -591,14 +591,17 @@ Adopting CBOR is a one-line change to a `Types` bundle:
 using serializer_type = kythira::cbor_rpc_serializer<std::vector<std::byte>>;
 ```
 
-The CoAP transport already tags CBOR payloads with the `application/cbor`
-Content-Format automatically (its content-type detection keys off
-`serializer.name()`). Note one pre-existing limitation: the cpp-httplib HTTP
-transport hardcodes the `Content-Type` header to `application/json` regardless
-of the serializer, so CBOR over HTTP still round-trips correctly (both peers use
-the same serializer) but is mislabeled on the wire — generalizing the HTTP
-transport to derive its `Content-Type` from `serializer.name()`, as CoAP does,
-is a tracked follow-up.
+Both transports label the payload correctly on the wire: the CoAP transport tags
+CBOR payloads with the `application/cbor` Content-Format, and the cpp-httplib
+HTTP transport sets its `Content-Type` header (`application/cbor` for CBOR,
+`application/json` for JSON) — both derive the media type from
+`serializer.name()` via `coap_utils::get_content_format_for_serializer`, so no
+transport code changes when you switch serializers.
+
+A runnable end-to-end demonstration lives in
+[`examples/cbor_serializer_example.cpp`](examples/cbor_serializer_example.cpp):
+it round-trips each RPC family over CBOR, prints the CBOR-vs-JSON wire sizes, and
+shows the `application/cbor` media type both transports emit.
 
 ## Test Suite
 
