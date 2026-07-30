@@ -62,3 +62,23 @@ race:boost::asio::
 # real races in kythira's own vector-copying code.
 race:std::__copy_move<true, true, std::random_access_iterator_tag>::__copy_m<unsigned long, unsigned long>
 race:std::__copy_move<true, true, std::random_access_iterator_tag>::__copy_m<std::thread::id, std::thread::id>
+
+# A round-2 pass against the split beast_client_test/beast_server_test/
+# beast_integration_test/beast_ssl_test/beast_cross_transport_equivalence_test
+# binaries hit three more reports from this same packaging mismatch, already
+# covered by the blanket `race:folly::` pattern above but confirmed
+# independently and recorded here for anyone auditing this suppressions file
+# later: folly::Try<T>::hasException() vs. folly::futures::detail::Core<T>::
+# setResult() (Core.cpp's setResult_/setCallback_ CAS sequence -- Folly's own
+# folly/synchronization/AtomicUtil-inl.h has a targeted TSan workaround for
+# exactly this, citing https://github.com/google/sanitizers/issues/970, but
+# it only activates when kIsSanitizeThread was true at the time libfolly.a
+# itself was compiled, which vcpkg's prebuilt release binary was not); a
+# lazily-initialized std::mutex inside folly::RequestContext::saveContext()
+# (reached from every .thenValue() via FutureBase<T>::setCallback_()); and
+# allocator calls inside folly::exception_tracer's global __cxa_throw/
+# __cxa_end_catch hooks, which intercept every C++ exception thrown anywhere
+# in the process, not just Folly's own. All three were confirmed against a
+# ~15-line, kythira-free repro (a bare folly::Promise<int> fulfilled from one
+# thread while .thenValue() is attached from another) before being attributed
+# to this same root cause rather than assumed.

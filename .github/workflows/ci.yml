@@ -542,7 +542,13 @@ jobs:
   # (g++-13/x64, matching this project's own prior documented ad hoc ASan
   # runs' compiler choice) — the point is instrumented coverage of this
   # project's own concurrency-sensitive code, not compiler/arch matrix
-  # breadth the way build-and-test's own matrix is for.
+  # breadth the way build-and-test's own matrix is for. The Beast side of
+  # this job builds/runs the one-file-per-concern
+  # beast_client_test/beast_server_test/beast_integration_test/beast_ssl_test/
+  # beast_cross_transport_equivalence_test targets (tests/beast_transport_test.cpp
+  # was split into these; see .kiro/specs/boost-beast-http-transport/tasks.md's
+  # Known Follow-ups for the round-2 bugs a per-binary TSan pass against this
+  # split found beyond what the original monolithic binary surfaced).
   tsan:
     name: ThreadSanitizer (Beast + Proxygen concurrency suites)
     runs-on: ubuntu-24.04
@@ -619,7 +625,7 @@ jobs:
       # handler fires, meaning it crashes before main()'s test framework
       # is even running) with no diagnosable stack trace either time. The
       # same binary passes cleanly under the ordinary (non-TSan)
-      # build-and-test legs, and unlike beast_transport_test/
+      # build-and-test legs, and unlike the beast_* suites/
       # proxygen_transport_test -- whose own test cases hammer a shared
       # connection/session with many concurrent RPC threads, exactly what
       # this job exists to check -- this suite's test cases are entirely
@@ -628,9 +634,13 @@ jobs:
       # path TSan needed to see in the first place.
       - name: Build (ThreadSanitizer)
         run: |
-          cmake --build build-tsan -j$(nproc) --target \
-            beast_transport_test \
-            proxygen_transport_test
+          cmake --build build-tsan -j$(nproc) \
+            --target beast_client_test \
+            --target beast_server_test \
+            --target beast_integration_test \
+            --target beast_ssl_test \
+            --target beast_cross_transport_equivalence_test \
+            --target proxygen_transport_test
 
       - name: Save ccache
         if: always()
@@ -650,7 +660,7 @@ jobs:
           TSAN_OPTIONS: "second_deadlock_stack=1 suppressions=${{ github.workspace }}/tests/tsan_suppressions.txt"
         run: |
           ctest --test-dir build-tsan \
-            -R 'beast_transport_test|proxygen_transport_test' \
+            -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test' \
             --output-on-failure \
             --output-junit ${{ github.workspace }}/tsan-test-results.xml
         continue-on-error: true

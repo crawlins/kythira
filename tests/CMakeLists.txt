@@ -3013,10 +3013,33 @@ else()
 endif()
 
 # ── boost-beast-http-transport (.kiro/specs/boost-beast-http-transport/) ─────
+# One-file-per-concern layout, one-to-one with tests/http_client_*/
+# tests/http_server_*/tests/http_integration_test.cpp/tests/http_ssl_*
+# (previously a single tests/beast_transport_test.cpp; split per this spec's
+# tasks.md Known Follow-ups). Each file picks its own disjoint port range, so
+# these can safely run concurrently under `ctest -j` alongside each other and
+# alongside beast_cross_transport_equivalence_test below.
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
-    add_beast_test(beast_transport_test beast_transport_test.cpp)
+    add_beast_test(beast_client_test beast_client_test.cpp)
+    add_beast_test(beast_server_test beast_server_test.cpp)
+    add_beast_test(beast_integration_test beast_integration_test.cpp)
+    add_beast_test(beast_ssl_test beast_ssl_test.cpp)
 else()
-    message(STATUS "beast_transport_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_client_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_server_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_integration_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+    message(STATUS "beast_ssl_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)")
+endif()
+# Task 15 (Property 9): cpp_httplib_client/server vs. boost_beast_client/
+# server run against the same RPC sequence -- needs both transports enabled,
+# not just Beast (network_simulator's INTERFACE target, already linked
+# transitively via kythira_test_pch, carries httplib::httplib whenever it was
+# found, so add_beast_test() doesn't need to name it explicitly).
+if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
+    add_beast_test(beast_cross_transport_equivalence_test
+        beast_cross_transport_equivalence_test.cpp)
+else()
+    message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
 endif()
 # ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
 if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
