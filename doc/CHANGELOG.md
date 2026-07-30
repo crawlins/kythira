@@ -238,6 +238,30 @@ current list of outstanding work, see [TODO.md](TODO.md).
   - All five `beast-http`-labeled CTest binaries now pass cleanly under
     `-DKYTHIRA_SANITIZER=thread` locally.
 
+### What Changed (July 30, 2026, still further continued)
+
+- **Fixed and verified the long-standing `ca_cluster_node_test` intermittent
+  SIGTERM-shutdown hang** — root cause: `run_ca_cluster_node()`'s shutdown
+  sequence joined `http_thread`/`election_timer`/`heartbeat_timer`/
+  `maintenance_thread` *before* calling `raft_node.stop()`, the only thing
+  (besides a normal timeout) that force-rejects a `submit_command()`/
+  `read_state()` future still in flight — if SIGTERM landed while
+  `maintenance_thread` was blocked in one such call and the commit could no
+  longer land (this node losing quorum precisely because it and/or its
+  peers were shutting down), with `heartbeat_timer` already stopped by the
+  time `maintenance_thread.join()` was reached, nothing was left to ever
+  unblock it, hanging the whole process forever (commit `19b05e2`, found by
+  a different pass through this same code rather than the earlier
+  no-`ptrace`-access investigation). Verified via 25 iterations of the
+  affected tests under heavy concurrent `ctest -j` load (the condition that
+  originally produced a ~1-in-12-15 hang rate): zero hangs. Also added
+  defense in depth — `cluster_node_process::stop()` in all three affected
+  test files now bounds its wait with a 30s timeout and `SIGKILL` escalation
+  (`tests/ca_cluster_node_process_wait.hpp`) instead of a plain blocking
+  `waitpid()`, so a future regression of this exact bug surfaces as a
+  diagnosable test failure rather than silently hanging `ctest` again. See
+  `doc/TODO.md`'s Known Follow-ups for the full writeup.
+
 ### What Changed (July 28, 2026)
 
 - **Proxygen HTTP transport** — a third `network_client`/`network_server`

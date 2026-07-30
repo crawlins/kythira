@@ -16,6 +16,8 @@
 #include <raft/certificate_authority.hpp>
 #include <raft/certificate_provider.hpp>
 
+#include "ca_cluster_node_process_wait.hpp"
+
 #include <httplib.h>
 #include <boost/json.hpp>
 
@@ -185,8 +187,16 @@ struct rpc_tls_node_process {
     auto stop() -> void {
         if (pid > 0) {
             ::kill(pid, SIGTERM);
-            int status = 0;
-            ::waitpid(pid, &status, 0);
+            // Bounded, not a plain blocking waitpid(): see
+            // ca_cluster_node_process_wait.hpp's own comment for why -- this
+            // is a safety net against a regression of the exact shutdown-
+            // ordering bug that used to hang this process indefinitely on
+            // SIGTERM, not an expectation that 30s is ever actually needed.
+            if (!wait_for_exit_or_kill(pid, std::chrono::seconds(30))) {
+                BOOST_ERROR("cluster_node_process::stop(): node " << node_id << " (pid " << pid
+                                                                  << ") did not exit within 30s "
+                                                                     "of SIGTERM; force-killed");
+            }
             pid = -1;
         }
     }
