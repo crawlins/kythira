@@ -869,6 +869,62 @@ else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider disabled")
 endif()
 
+# ── Azure SDK (azure_vm_quorum_manager, azure_vmss_quorum_manager) ───────────
+kythira_find_optional(AZURE_SDK azure-core-cpp CONFIG)
+kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)
+if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
+    message(STATUS "Azure SDK found: azure-core-cpp ${azure-core-cpp_VERSION}, "
+                    "azure-identity-cpp ${azure-identity-cpp_VERSION}")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AZURE_SDK)
+    target_link_libraries(network_simulator INTERFACE Azure::azure-core Azure::azure-identity)
+    # BearerTokenAuthenticationPolicy (azure-core-cpp's policy.hpp) holds a
+    # `std::atomic<bool>` member; Clang linked against GCC's libstdc++ doesn't
+    # provide `__atomic_is_lock_free` as a compiler builtin the way GCC does
+    # (the same root cause CMakeLists.txt's ENABLE_COVERAGE block already
+    # works around further down) — libatomic supplies it at link time. Not
+    # needed for the AWS SDK, which doesn't hit this code path.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_link_libraries(network_simulator INTERFACE atomic)
+    endif()
+    # azure_vm_quorum_manager.hpp/azure_vmss_quorum_manager.hpp build ARM REST
+    # request/response bodies with boost::json directly (there is no generated
+    # ARM Compute/Network client in the Azure SDK for C++ — see those headers'
+    # own file comments). boost_json is defined above (~line 322) but not an
+    # INTERFACE dependency of network_simulator by default, so any consumer
+    # of these two headers needs it linked explicitly.
+    if(TARGET boost_json)
+        target_link_libraries(network_simulator INTERFACE boost_json)
+    endif()
+else()
+    message(STATUS "Azure SDK not found — azure_vm_quorum_manager and azure_vmss_quorum_manager disabled")
+endif()
+
+# ── Azure Key Vault Keys (azure_key_vault_ca_provider) ───────────────────────
+# Independent of KYTHIRA_HAS_AZURE_SDK, mirroring AWS_ACM_PCA's independence
+# from AWS_SDK above: an environment with the quorum-manager SDK components
+# but not Key Vault Keys (or vice versa) still builds everything except the
+# component it lacks.
+kythira_find_optional(AZURE_KEY_VAULT azure-security-keyvault-keys-cpp CONFIG)
+if(azure-security-keyvault-keys-cpp_FOUND)
+    message(STATUS "Azure Key Vault Keys SDK found: ${azure-security-keyvault-keys-cpp_VERSION}")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_AZURE_KEY_VAULT)
+    target_link_libraries(network_simulator INTERFACE Azure::azure-security-keyvault-keys)
+else()
+    message(STATUS "Azure Key Vault Keys SDK not found — azure_key_vault_ca_provider disabled")
+endif()
+
+# When ON, azure_quorum_manager_real_test/azure_key_vault_ca_provider_real_test
+# are registered with CTest (tests/CMakeLists.txt) and compiled with their real
+# test bodies active; when OFF (the default), both binaries still compile —
+# each falls back to a trivial compile-only stub case — but are never
+# add_test()'d, so a default `ctest` run neither builds real-Azure-dependent
+# assumptions into its test count nor needs real Azure credentials at all.
+# Deliberately a stronger gate than the AWS real-EC2 tests' own
+# KYTHIRA_AWS_REAL_EC2_TESTS compile definition (those always register and
+# skip at runtime via SKIP_RETURN_CODE 77) — this spec's tasks.md calls for
+# not registering at all when unset.
+option(KYTHIRA_AZURE_REAL_TESTS "Register real-Azure integration tests with CTest" OFF)
+
 # ── certificate_authority (CA testing/provisioning framework) ────────────────
 # KYTHIRA_FUTURE_BACKEND_AVAILABLE, not just TARGET OpenSSL::SSL:
 # certificate_provider.hpp's kythira::future_default usage still needs

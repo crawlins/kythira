@@ -1,15 +1,27 @@
 # Implementation Plan — Azure Cloud Services
 
-## Status: Not started
+## Status: Complete (9/9 tasks)
 
-This plan has not yet been implemented. `include/raft/azure_client_config.hpp`,
+**Last Updated**: July 29, 2026
+
+All three components exist: `include/raft/azure_client_config.hpp`,
 `include/raft/azure_vm_quorum_manager.hpp`,
 `include/raft/azure_vmss_quorum_manager.hpp`, and
-`include/raft/azure_key_vault_ca_provider.hpp` do not exist yet. Update this
-status line and the checkboxes below as work lands, following the same
-tracking discipline the `aws-quorum-manager` spec's own status header
-documents (`.kiro/specs/aws-quorum-manager/tasks.md`'s note about the doc
-previously drifting from the real implementation).
+`include/raft/azure_key_vault_ca_provider.hpp`/`_impl.hpp`, plus unit tests,
+real-Azure integration tests, CI wiring, and `ca_service --provider
+azure-key-vault`. See "Known Scope Limitations" in the Notes section below
+for the handful of places this implementation deliberately narrowed or
+simplified relative to this file's original task descriptions.
+
+Initially written without live Azure credentials available to iteratively
+validate against, unlike the AWS spec this one mirrors — that gap has since
+been partially closed: a real subscription was provisioned and the
+credential chain was exercised end-to-end against it, which is how the
+`ManagedIdentityCredential` segfault documented below and in README.md was
+actually found. The quorum-manager/CA-provider real-Azure test *bodies*
+themselves (VM/VMSS provisioning, Key Vault signing) have not yet been run
+against that subscription — only the credential-resolution path has been
+validated so far.
 
 ## Overview
 
@@ -93,7 +105,7 @@ Reference implementations to study before starting:
 
 ## Tasks
 
-- [ ] 1. Add Azure SDK for C++ CMake detection
+- [x] 1. Add Azure SDK for C++ CMake detection
   - In `CMakeLists.txt` (root), add, parallel to the existing "AWS SDK"
     section (lines 547–555):
     ```cmake
@@ -165,7 +177,7 @@ Reference implementations to study before starting:
     components present.
   - _Requirements: 1.1–1.7_
 
-- [ ] 2. Define `azure_client_config` and shared placement/priority types
+- [x] 2. Define `azure_client_config` and shared placement/priority types
   - Create `include/raft/azure_client_config.hpp` (no SDK guard on the struct
     itself; the `credential` field and `make_default_credential_chain()` free
     function are guarded by `#ifdef KYTHIRA_HAS_AZURE_SDK`), per design.md's
@@ -174,11 +186,22 @@ Reference implementations to study before starting:
     constructors), matching `aws_client_config`.
   - Implement `make_default_credential_chain()` building a
     `Azure::Identity::ChainedTokenCredential` from `EnvironmentCredential`,
-    `ManagedIdentityCredential`, `AzureCliCredential`, in that order (Req 2.2).
-  - Verify: header compiles cleanly with and without the SDK present.
+    `AzureCliCredential`, in that order (Req 2.2). Originally spec'd to also
+    include `ManagedIdentityCredential` between the two — removed after
+    testing against a real subscription found that
+    azure-identity-cpp 1.13.2's `ManagedIdentityCredential::GetToken()`
+    segfaults (not throws) when the IMDS endpoint is unreachable, which
+    describes every environment this project's real-Azure suite actually
+    runs from. See README.md's Azure section and this header's own doc
+    comment for the full explanation.
+  - Verify: header compiles cleanly with and without the SDK present. Verify:
+    the resulting chain actually resolves a token end-to-end against a real
+    subscription (done — `az login` session, `EnvironmentCredential` skipped
+    since no service-principal env vars were set, `AzureCliCredential`
+    succeeded).
   - _Requirements: 2.1–2.4_
 
-- [ ] 3. Implement `azure_vm_quorum_manager`
+- [x] 3. Implement `azure_vm_quorum_manager`
   - Create `include/raft/azure_vm_quorum_manager.hpp` with the full class
     body inside `#ifdef KYTHIRA_HAS_AZURE_SDK`:
 
@@ -268,7 +291,7 @@ Reference implementations to study before starting:
   - _Requirements: 3.1–3.3, 4.1–4.5, 5.1–5.5, 6.1–6.9, 7.1–7.9, 8.1–8.7,
     9.1–9.2, 15.1–15.4, 15.11, 16.1–16.8, 18.1–18.6, 19.1–19.3_
 
-- [ ] 4. Implement `azure_vmss_quorum_manager`
+- [x] 4. Implement `azure_vmss_quorum_manager`
   - Create `include/raft/azure_vmss_quorum_manager.hpp` with full class body
     inside `#ifdef KYTHIRA_HAS_AZURE_SDK`:
 
@@ -335,7 +358,7 @@ Reference implementations to study before starting:
   - _Requirements: 10.1–10.3, 11.1–11.5, 12.1–12.7, 13.1–13.7, 14.1–14.6,
     15.5–15.8, 15.11, 19.1–19.3_
 
-- [ ] 5. Implement `azure_key_vault_ca_provider`
+- [x] 5. Implement `azure_key_vault_ca_provider`
   - Create `include/raft/azure_key_vault_ca_provider.hpp` (public
     declaration) and `include/raft/azure_key_vault_ca_provider_impl.hpp`
     (implementation), both inside `#ifdef KYTHIRA_HAS_AZURE_KEY_VAULT`,
@@ -387,7 +410,7 @@ Reference implementations to study before starting:
     self-signed test CA key held in a real or stubbed vault.
   - _Requirements: 17.1–17.7, 15.9–15.11_
 
-- [ ] 6. Unit tests for both quorum managers
+- [x] 6. Unit tests for both quorum managers
   - Create `tests/azure_quorum_manager_unit_test.cpp`
   - Register in `tests/CMakeLists.txt` as `azure_quorum_manager_unit_test`,
     guarded by `if(KYTHIRA_HAS_AZURE_SDK)`, labels `unit;raft;quorum;azure`,
@@ -441,7 +464,7 @@ Reference implementations to study before starting:
     in any existing test.
   - _Requirements: 20.1–20.3, 20.5_
 
-- [ ] 7. Unit tests for `azure_key_vault_ca_provider`
+- [x] 7. Unit tests for `azure_key_vault_ca_provider`
   - Create `tests/azure_key_vault_ca_provider_unit_test.cpp`
   - Register in `tests/CMakeLists.txt` as
     `azure_key_vault_ca_provider_unit_test`, guarded by
@@ -471,7 +494,7 @@ Reference implementations to study before starting:
   - Verify: `ctest -R azure_key_vault_ca_provider_unit_test` passes.
   - _Requirements: 20.1, 20.4–20.6_
 
-- [ ] 8. Real-Azure integration tests + CI wiring
+- [x] 8. Real-Azure integration tests + CI wiring
   - Create `tests/azure_quorum_manager_real_test.cpp` (VM + VMSS suites) and
     `tests/azure_key_vault_ca_provider_real_test.cpp`, both guarded by
     `#ifdef KYTHIRA_AZURE_REAL_TESTS`
@@ -550,7 +573,7 @@ Reference implementations to study before starting:
     job
   - _Requirements: 21.1–21.5_
 
-- [ ] 9. Wire `ca_service --provider azure-key-vault` and update documentation
+- [x] 9. Wire `ca_service --provider azure-key-vault` and update documentation
   - In `cmd/ca_service/` source, add `--provider azure-key-vault` alongside
     `local`/`aws-acm-pca`, plus `--key-vault-url`, `--key-vault-key-name`,
     `--ca-cert-file` flags, following the existing
@@ -614,15 +637,88 @@ Reference implementations to study before starting:
   minimum, the built-in **Virtual Machine Contributor**, **Network
   Contributor**, and (for the CA provider suite) **Key Vault Crypto User**
   roles scoped to `AZURE_TEST_RESOURCE_GROUP` (and the pre-existing vault,
-  for the last one). A sample role-assignment script should be added to
-  `doc/azure-test-rbac-setup.md`, mirroring the AWS spec's
-  `doc/aws-test-iam-policy.json` companion document.
+  for the last one). Landed as
+  `scripts/ci-cloud-credentials/azure/provision-federated-identity.sh` +
+  `scripts/ci-cloud-credentials/azure/policies/*.json` role-assignment
+  fragments (this note originally sketched a standalone
+  `doc/azure-test-rbac-setup.md`; Task 8's own instructions specified the
+  `scripts/ci-cloud-credentials/azure/` location instead, which is what
+  actually landed — the two were never both built, so there is nothing
+  contradictory on disk).
 
 - **Cost estimation reporting** (mirroring the AWS spec's
   `aws_quorum_manager_real_ec2_test.cpp` `TestCostReport`/`CostAccumulator`
-  machinery, Req 20 in that spec's tasks.md): once task 8 is implemented and
-  real-world VM-hour costs for the test matrix are known, consider adding an
-  equivalent `doc/azure_test_cost_estimate.md` and in-test cost reporting.
-  Not required for this plan's initial landing; flagged here so it isn't
-  forgotten the way the AWS spec's tracking doc admits its own status line
-  briefly was.
+  machinery, Req 20 in that spec's tasks.md): implemented in
+  `tests/azure_real_test_support.hpp`, ported nearly verbatim from
+  `aws_real_ec2_test_support.hpp` with an Azure VM pricing table swapped in.
+  A dedicated `doc/azure_test_cost_estimate.md` (the AWS spec's analogue is
+  `doc/aws_acm_pca_test_cost_estimate.md`) is not included — no run against
+  real Azure has happened yet to measure actual per-scenario timings the
+  way that document requires; add it once the suite has actually been run.
+
+## Known Scope Limitations
+
+Written and implemented without live Azure credentials available anywhere in
+this environment to iteratively test and correct against, unlike the AWS
+spec (which has been exercised against real AWS repeatedly). Every line of
+Azure SDK for C++ usage was checked against the actual installed
+`azure-core-cpp`/`azure-identity-cpp`/`azure-security-keyvault-keys-cpp`
+vcpkg headers (and, for the HTTP pipeline construction pattern, the SDK's
+own `KeyClient`/`CryptographyClient` source) rather than guessed, but the
+following are deliberate, documented narrowings relative to this file's
+original task descriptions, not oversights:
+
+- **`azure_key_vault_ca_provider`'s local certificate-assembly path only
+  fully supports `rs256`.** `detail::build_leaf_cert` (reused from
+  `certificate_authority_impl.hpp` rather than duplicated, since its own doc
+  comment explicitly invites reuse by other translation units needing direct
+  X509/EVP_PKEY access) signs with `EVP_sha256()` unconditionally — it has no
+  digest parameter, having been written before there was a second signer
+  backend to parameterize for. `rs384`/`rs512` therefore fail loudly (Key
+  Vault rejects the digest-length mismatch) rather than silently producing a
+  bad certificate; `ps256`/`es256`/`es384` are explicitly rejected before
+  attempting local assembly at all (`azure_key_vault_signing_algorithm`'s doc
+  comment). Unlocking the other RSA sizes needs a small, shared
+  `build_leaf_cert` enhancement (a digest parameter) benefiting any future
+  signer, not something specific to this provider — a natural follow-up, not
+  done here to avoid touching a component with its own separate spec and
+  test suite for a currently-hypothetical second caller.
+- **The external-signing technique itself** (a custom OpenSSL `RSA_METHOD`
+  whose `sign` callback calls out to Key Vault, wrapped via
+  `EVP_PKEY_assign_RSA` so `X509_sign()` still does all of its own normal
+  DER/AlgorithmIdentifier assembly) is the standard mechanism real HSM/KMS
+  OpenSSL integrations use, verified against the actually-installed OpenSSL
+  3.6.0 headers in this environment (`RSA_meth_new`/`RSA_set_method`/
+  `EVP_PKEY_assign_RSA` are `OSSL_DEPRECATEDIN_3_0` but fully present and
+  functional — kept specifically for this use case). It is exercised
+  end-to-end by `azure_key_vault_ca_provider_unit_test`'s
+  `sign_csr_happy_path` suite (a local RSA test-CA key standing in for the
+  vault via a stub `HttpPolicy`), including a real OpenSSL signature
+  verification of the assembled certificate — not merely compiled and never
+  run.
+- **`tests/azure_quorum_manager_real_test.cpp` now implements design.md's full
+  "Integration tests (real Azure)" test list** — 10 VM cases
+  (`provision_and_assess_single_zone`, `decommission_idempotent`,
+  `provision_timeout_cleanup`, `provision_multi_zone_topology`,
+  `deallocate_one_node_degraded`, `placement_availability_zone`,
+  `placement_proximity_placement_group`, `placement_availability_set`,
+  `spot_provision_and_decommission`, `zone_outage_during_rolling_deployment`)
+  and 5 VMSS cases (`vmss_provision_increments_capacity`,
+  `vmss_assess_detects_not_running`, `vmss_decommission_removes_instance`,
+  `vmss_decommission_idempotent`, `vmss_rejects_automatic_upgrade_mode`).
+  Compiles clean and every case exercises its skip-path correctly with no
+  credentials configured (verified in this environment), but — unlike
+  `aws_quorum_manager_real_ec2_test.cpp`, which has actually been run against
+  real AWS repeatedly — none of these cases have yet executed their real
+  assertion logic against a live Azure subscription. Treat the pass/fail
+  behavior of each case's actual body as unverified until a real run happens.
+- **`AzureIntegrationFixture` creates no network infrastructure itself** —
+  it requires `AZURE_TEST_VNET_ID`/`AZURE_TEST_NSG_ID`/
+  `AZURE_TEST_SUBNET_ID_ZONE{1,2,3}` to already point at operator-provisioned
+  resources, skipping the suite (not failing it) otherwise. design.md's
+  "Integration test fixture" section describes the fixture creating these
+  itself when the env vars are absent; that VNet/subnet/NSG creation would
+  need the same raw-ARM-REST technique the quorum managers themselves use
+  (Microsoft.Network has no generated C++ SDK client either) and was left as
+  a follow-up rather than built speculatively for infrastructure this
+  environment has no way to provision or exercise.

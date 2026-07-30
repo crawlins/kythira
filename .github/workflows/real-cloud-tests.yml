@@ -36,7 +36,15 @@ on:
         type: boolean
         required: false
       azure_enabled:
-        description: "Azure (not yet implemented — see doc/TODO.md Cloud Provider Support)"
+        description: "Azure (overrides REAL_CLOUD_TESTS_AZURE_ENABLED for this run only)"
+        type: boolean
+        required: false
+      azure_bundle_quorum_manager:
+        description: "Azure bundle: quorum-manager (VM + VMSS)"
+        type: boolean
+        required: false
+      azure_bundle_key_vault:
+        description: "Azure bundle: key-vault (azure_key_vault_ca_provider)"
         type: boolean
         required: false
       gcp_enabled:
@@ -455,23 +463,150 @@ jobs:
           name: ca-cluster-node-ami-manifest-${{ matrix.arch }}
           path: packer-manifest.json
 
-  # ── Scaffolded, not-yet-implemented providers ───────────────────────────
-  # doc/TODO.md's "Cloud Provider Support" section is the source of truth
-  # for which providers have real-cloud test coverage — none of these four
-  # do yet. Each job no-ops with a clear message rather than failing, so an
-  # operator who enables one of these toggles sees why nothing ran instead
-  # of a confusing red X. .kiro/specs/ci-real-cloud-tests/ Requirement 1.5.
+  # ── Azure ────────────────────────────────────────────────────────────────
+  # .kiro/specs/azure-cloud-services/ — azure_vm_quorum_manager,
+  # azure_vmss_quorum_manager, azure_key_vault_ca_provider. Authenticated via
+  # Workload Identity Federation (azure/login@v2, no client secret), mirroring
+  # the AWS job's OIDC approach. See
+  # scripts/ci-cloud-credentials/azure/README.md for one-time setup.
   azure:
     name: Real Cloud Tests (Azure)
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: real-cloud-tests
+    permissions:
+      id-token: write
+      contents: read
     if: |
       (github.event.inputs.run_real_cloud_tests == 'true'
         || (github.event.inputs.run_real_cloud_tests == null && vars.REAL_CLOUD_TESTS_ENABLED == 'true'))
       && (github.event.inputs.azure_enabled == 'true'
         || (github.event.inputs.azure_enabled == null && vars.REAL_CLOUD_TESTS_AZURE_ENABLED == 'true'))
+
+    env:
+      BUNDLE_QUORUM_MANAGER: ${{ (github.event.inputs.azure_bundle_quorum_manager == 'true') || (github.event.inputs.azure_bundle_quorum_manager == null && vars.REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED == 'true') }}
+      BUNDLE_KEY_VAULT: ${{ (github.event.inputs.azure_bundle_key_vault == 'true') || (github.event.inputs.azure_bundle_key_vault == null && vars.REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED == 'true') }}
+      CCACHE_DIR: /home/runner/.ccache
+
     steps:
-      - name: No real-cloud tests implemented for Azure yet
-        run: echo "No real-cloud tests implemented for Azure yet — see doc/TODO.md Cloud Provider Support."
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail closed if Azure CI identity variables are unset
+        if: ${{ vars.AZURE_CI_CLIENT_ID == '' || vars.AZURE_CI_TENANT_ID == '' || vars.AZURE_CI_SUBSCRIPTION_ID == '' }}
+        run: |
+          echo "::error::REAL_CLOUD_TESTS_AZURE_ENABLED is true but AZURE_CI_CLIENT_ID/AZURE_CI_TENANT_ID/AZURE_CI_SUBSCRIPTION_ID are not all set. See scripts/ci-cloud-credentials/azure/README.md." >&2
+          exit 1
+
+      - name: Azure login (Workload Identity Federation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev \
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-azure-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-realcloud-azure-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      - name: Configure (Release, real-Azure tests enabled)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux \
+            -DKYTHIRA_AZURE_REAL_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-realcloud-azure-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Fail closed if a real-Azure test binary is missing
+        run: |
+          for t in azure_quorum_manager_real_test azure_key_vault_ca_provider_real_test; do
+            if [ ! -x "build/tests/$t" ]; then
+              echo "::error::$t was not built — check KYTHIRA_HAS_AZURE_SDK/KYTHIRA_HAS_AZURE_KEY_VAULT at configure time." >&2
+              exit 1
+            fi
+          done
+
+      - name: Run quorum-manager bundle
+        if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' }}
+        env:
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
+          AZURE_TEST_RESOURCE_GROUP: ${{ vars.AZURE_TEST_RESOURCE_GROUP }}
+          AZURE_TEST_LOCATION: ${{ vars.AZURE_TEST_LOCATION }}
+          AZURE_TEST_VNET_ID: ${{ vars.AZURE_TEST_VNET_ID }}
+          AZURE_TEST_NSG_ID: ${{ vars.AZURE_TEST_NSG_ID }}
+          AZURE_TEST_SUBNET_ID_ZONE1: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE1 }}
+          AZURE_TEST_SUBNET_ID_ZONE2: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE2 }}
+          AZURE_TEST_SUBNET_ID_ZONE3: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE3 }}
+        run: |
+          ctest --test-dir build -L 'real-azure' -R '^azure_quorum_manager_real_test$' --output-on-failure
+
+      - name: Run key-vault bundle
+        if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
+        env:
+          AZURE_TEST_KEY_VAULT_URL: ${{ vars.AZURE_TEST_KEY_VAULT_URL }}
+          AZURE_TEST_KEY_VAULT_KEY_NAME: ${{ vars.AZURE_TEST_KEY_VAULT_KEY_NAME }}
+        run: |
+          echo "${{ secrets.AZURE_TEST_KEY_VAULT_CA_CERT_PEM }}" > /tmp/azure-test-ca-cert.pem
+          AZURE_TEST_KEY_VAULT_CA_CERT_FILE=/tmp/azure-test-ca-cert.pem \
+            ctest --test-dir build -L 'real-azure' -R '^azure_key_vault_ca_provider_real_test$' --output-on-failure
 
   gcp:
     name: Real Cloud Tests (GCP)

@@ -46,7 +46,7 @@ bundles today:
 | Provider | Status | Setup doc |
 |---|---|---|
 | AWS | Implemented | [`aws/README.md`](aws/README.md) |
-| Azure | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
+| Azure | Implemented | [`azure/README.md`](azure/README.md) |
 | GCP | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
 | OCI | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
 | Alibaba Cloud | Not yet implemented; see `doc/TODO.md` Cloud Provider Support | — |
