@@ -1,0 +1,6 @@
+[
+  {
+    "roleDefinitionName": "Key Vault Crypto User",
+    "scope": "/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}/providers/Microsoft.KeyVault/vaults/{VAULT_NAME}"
+  }
+]

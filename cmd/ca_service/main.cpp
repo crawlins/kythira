@@ -13,8 +13,9 @@
 //   <service-name>/chain.pem
 //
 // Serve usage:
-//   ca_service --serve <bind-address>:<port> [--provider local|aws-acm-pca]
+//   ca_service --serve <bind-address>:<port> [--provider local|aws-acm-pca|azure-key-vault]
 //              [--acm-pca-arn <arn>] [--aws-region <region>] [--aws-endpoint-override <url>]
+//              [--key-vault-url <url>] [--key-vault-key-name <name>] [--ca-cert-file <path>]
 //              [--auth-token <token>] [--tls-cert <path> --tls-key <path>]
 //
 // --serve is mutually exclusive with --out-dir/--service. Every request must
@@ -38,6 +39,11 @@
 #include <raft/aws_acm_pca_provider.hpp>
 #include <raft/aws_acm_pca_provider_impl.hpp>
 #include <aws/core/Aws.h>
+#endif
+
+#ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
+#include <raft/azure_key_vault_ca_provider.hpp>
+#include <raft/azure_key_vault_ca_provider_impl.hpp>
 #endif
 
 #include <httplib.h>
@@ -93,6 +99,9 @@ struct serve_options {
     std::string acm_pca_arn;
     std::string aws_region;
     std::string aws_endpoint_override;
+    std::string key_vault_url;
+    std::string key_vault_key_name;
+    std::string ca_cert_file;
     std::string auth_token;
     std::string tls_cert_path;
     std::string tls_key_path;
@@ -105,9 +114,12 @@ struct serve_options {
         << "Usage: ca_service --out-dir <path> --service <name>[:alt1,alt2,...] "
            "[--service ...]\n"
         << "                  [--domain <suffix>] [--validity-days <n>] [--resolve-ips]\n"
-        << "   or: ca_service --serve <bind-address>:<port> [--provider local|aws-acm-pca]\n"
+        << "   or: ca_service --serve <bind-address>:<port> [--provider "
+           "local|aws-acm-pca|azure-key-vault]\n"
         << "                  [--acm-pca-arn <arn>] [--aws-region <region>]\n"
-        << "                  [--aws-endpoint-override <url>] [--auth-token <token>]\n"
+        << "                  [--aws-endpoint-override <url>]\n"
+        << "                  [--key-vault-url <url>] [--key-vault-key-name <name>]\n"
+        << "                  [--ca-cert-file <path>] [--auth-token <token>]\n"
         << "                  [--tls-cert <path> --tls-key <path>] [--print-root-fingerprint]\n";
     std::exit(1);
 }
@@ -318,6 +330,12 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
             opts.aws_region = next();
         } else if (arg == "--aws-endpoint-override") {
             opts.aws_endpoint_override = next();
+        } else if (arg == "--key-vault-url") {
+            opts.key_vault_url = next();
+        } else if (arg == "--key-vault-key-name") {
+            opts.key_vault_key_name = next();
+        } else if (arg == "--ca-cert-file") {
+            opts.ca_cert_file = next();
         } else if (arg == "--auth-token") {
             opts.auth_token = next();
         } else if (arg == "--tls-cert") {
@@ -337,8 +355,9 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
     (void)saw_out_dir;
     (void)saw_service;
 
-    if (opts.provider != "local" && opts.provider != "aws-acm-pca") {
-        usage_error("--provider must be 'local' or 'aws-acm-pca'");
+    if (opts.provider != "local" && opts.provider != "aws-acm-pca" &&
+        opts.provider != "azure-key-vault") {
+        usage_error("--provider must be 'local', 'aws-acm-pca', or 'azure-key-vault'");
     }
     if (!opts.tls_cert_path.empty() != !opts.tls_key_path.empty()) {
         usage_error("--tls-cert and --tls-key must be given together");
@@ -424,13 +443,16 @@ int run_serve(const serve_options& opts) {
         Aws::InitAPI(aws_sdk_options);
     }
 #endif
+#ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
+    std::unique_ptr<raft::testing::azure_key_vault_ca_provider> azure_kv_provider;
+#endif
     std::unique_ptr<any_certificate_provider> provider;
 
     if (opts.provider == "local") {
         local_ca = std::make_unique<raft::testing::certificate_authority>();
         local_provider = std::make_unique<raft::testing::local_certificate_provider>(*local_ca);
         provider = std::make_unique<any_certificate_provider>(*local_provider);
-    } else {
+    } else if (opts.provider == "aws-acm-pca") {
 #ifdef KYTHIRA_HAS_AWS_ACM_PCA
         raft::testing::aws_acm_pca_provider_config cfg;
         cfg.certificate_authority_arn = opts.acm_pca_arn;
@@ -445,6 +467,36 @@ int run_serve(const serve_options& opts) {
 #else
         std::cerr << "ca_service: built without KYTHIRA_HAS_AWS_ACM_PCA — --provider aws-acm-pca "
                      "is unavailable\n";
+        return 1;
+#endif
+    } else {
+        // opts.provider == "azure-key-vault" (parse_serve_args already rejects
+        // any other value).
+#ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
+        if (opts.key_vault_url.empty() || opts.key_vault_key_name.empty() ||
+            opts.ca_cert_file.empty()) {
+            std::cerr << "ca_service: --provider azure-key-vault requires --key-vault-url, "
+                         "--key-vault-key-name, and --ca-cert-file\n";
+            return 1;
+        }
+        std::ifstream ca_cert_stream(opts.ca_cert_file, std::ios::binary);
+        if (!ca_cert_stream) {
+            std::cerr << "ca_service: failed to open --ca-cert-file " << opts.ca_cert_file << "\n";
+            return 1;
+        }
+        std::ostringstream ca_cert_buf;
+        ca_cert_buf << ca_cert_stream.rdbuf();
+
+        raft::testing::azure_key_vault_ca_provider_config cfg;
+        cfg.vault_url = opts.key_vault_url;
+        cfg.key_name = opts.key_vault_key_name;
+        cfg.ca_certificate_pem = ca_cert_buf.str();
+        azure_kv_provider =
+            std::make_unique<raft::testing::azure_key_vault_ca_provider>(std::move(cfg));
+        provider = std::make_unique<any_certificate_provider>(*azure_kv_provider);
+#else
+        std::cerr << "ca_service: built without KYTHIRA_HAS_AZURE_KEY_VAULT — --provider "
+                     "azure-key-vault is unavailable\n";
         return 1;
 #endif
     }

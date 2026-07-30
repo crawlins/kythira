@@ -1,0 +1,10 @@
+[
+  {
+    "roleDefinitionName": "Virtual Machine Contributor",
+    "scope": "/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}"
+  },
+  {
+    "roleDefinitionName": "Network Contributor",
+    "scope": "/subscriptions/{SUBSCRIPTION_ID}/resourceGroups/{RESOURCE_GROUP}"
+  }
+]

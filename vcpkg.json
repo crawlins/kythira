@@ -81,6 +81,21 @@
       ]
     },
     {
+      "name": "azure-core-cpp",
+      "default-features": false,
+      "features": [
+        "curl"
+      ]
+    },
+    {
+      "name": "azure-identity-cpp",
+      "default-features": false
+    },
+    {
+      "name": "azure-security-keyvault-keys-cpp",
+      "default-features": false
+    },
+    {
       "name": "libssh2"
     },
     {

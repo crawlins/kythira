@@ -1133,6 +1133,68 @@ per-identifier ACME challenge-type dispatch and `.local`/mDNS validation),
 
 ---
 
+## Azure Quorum Managers & Certificate Provider
+
+Two `quorum_manager` implementations and one `certificate_provider`
+implementation for Azure, mirroring the AWS EC2/ASG quorum managers and ACM
+Private CA provider's shapes and guarantees. See
+[`.kiro/specs/azure-cloud-services/`](.kiro/specs/azure-cloud-services/) for
+the full design and requirements.
+
+### Components
+
+- **`azure_vm_quorum_manager`** (`include/raft/azure_vm_quorum_manager.hpp`)
+  — direct Azure Resource Manager `PUT`/`DELETE` on
+  `Microsoft.Compute/virtualMachines`. `NodeId` assignment runs in the
+  opposite direction from EC2's (ARM requires the caller to choose the VM
+  name up front, so `next_node_id()` tag-scans for the current maximum
+  rather than deriving an ID from an SDK-assigned identifier); liveness
+  comes solely from ARM `instanceView` power state. Supports Availability
+  Zones, Proximity Placement Groups, Availability Sets, and Spot VMs.
+  Best for dev/staging or simple deployments.
+- **`azure_vmss_quorum_manager`** (`include/raft/azure_vmss_quorum_manager.hpp`)
+  — production-grade: provisions by incrementing a Virtual Machine Scale
+  Set's `sku.capacity` and tagging the resulting instance, rather than
+  managing individual VM resources directly. Rejects scale sets configured
+  with `upgradePolicy.mode=Automatic` at construction time, so only this
+  manager ever decides when a replacement is provisioned.
+- **`azure_key_vault_ca_provider`** (`include/raft/azure_key_vault_ca_provider.hpp`)
+  — a `certificate_provider` backed by Azure Key Vault Keys: CSR parsing and
+  TBSCertificate assembly happen locally (reusing
+  `certificate_authority`'s own OpenSSL helpers), but the final signature
+  comes from Key Vault's `Sign` operation via a custom OpenSSL `RSA_METHOD`
+  that redirects just the private-key operation to Key Vault — the CA's
+  private key itself never leaves Key Vault. `ca_service --provider
+  azure-key-vault --key-vault-url <url> --key-vault-key-name <name>
+  --ca-cert-file <path>` wires it into the same HTTP API the `local` and
+  `aws-acm-pca` providers serve.
+
+Unlike AWS, there is no generated ARM management-plane client for
+Compute/Network in the Azure SDK for C++, so the quorum managers build and
+send ARM REST requests directly over
+`Azure::Core::Http::_internal::HttpPipeline` — the same internal pipeline
+class every real Azure SDK for C++ service client (including
+`CryptographyClient`, which `azure_key_vault_ca_provider` uses directly) is
+itself built on. Both quorum managers and the CA provider default to
+`Azure::Identity::ChainedTokenCredential` (environment → `az login`) when no
+explicit credential is supplied. Deliberately excludes
+`ManagedIdentityCredential` from that default chain — discovered against a
+real subscription that azure-identity-cpp 1.13.2's
+`ManagedIdentityCredential::GetToken()` segfaults, rather than throwing, when
+the IMDS endpoint is unreachable, which is true of every environment this
+project actually runs the real-Azure suite from (dev machines, containers,
+GitHub Actions runners are never Azure-hosted compute). Callers that do run
+on Azure-hosted compute and want managed identity can still construct one
+explicitly and set it on `azure_client_config::credential`.
+
+Gated behind `KYTHIRA_HAS_AZURE_SDK` (`azure-core-cpp` + `azure-identity-cpp`,
+quorum managers) and `KYTHIRA_HAS_AZURE_KEY_VAULT`
+(`azure-security-keyvault-keys-cpp`, CA provider) independently — an
+environment with one but not the other builds everything except the
+component it lacks.
+
+---
+
 ## Peer-to-Peer Log Replication & Gossip Transport
 
 By default, log replication in `node<Types>` is a strict star topology: only
@@ -1522,14 +1584,17 @@ The implementation has been tested with multiple transport layers:
   (the 2 non-passing are a pre-existing, already-documented intermittent-hang
   flake in `ca_cluster_node_test`'s own family — see `doc/TODO.md`'s Known
   Follow-ups, unrelated to any transport)
+✅ **Azure Quorum Managers & Certificate Provider**: `azure_vm_quorum_manager`,
+  `azure_vmss_quorum_manager`, and `azure_key_vault_ca_provider` — see the
+  dedicated section below. AWS and Azure are both implemented today.
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
 [`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
 
 ### What's In Progress
 
-⚠️ **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
-  managers / certificate providers — AWS is implemented today
+⚠️ **Additional cloud providers**: GCP, OCI, and Alibaba Cloud quorum
+  managers / certificate providers — AWS and Azure are implemented today
 
 ### Production Checklist
 
@@ -1550,7 +1615,7 @@ Before deploying to production:
 Contributions are welcome! See [`doc/TODO.md`](doc/TODO.md) for the full
 outstanding-work list. Areas where help is needed:
 
-1. **Additional cloud providers**: Azure, GCP, OCI, and Alibaba Cloud quorum
+1. **Additional cloud providers**: GCP, OCI, and Alibaba Cloud quorum
    managers / certificate providers
 2. **Performance Optimization**: Profiling and memory usage optimization
 3. **Documentation**: More examples and tutorials

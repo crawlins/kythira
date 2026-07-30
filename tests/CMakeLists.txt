@@ -3078,6 +3078,133 @@ else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider_unit_test will not be built")
 endif()
 
+# ── Azure quorum manager tests (Azure SDK for C++ required) ───────────────────
+if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
+
+add_executable(azure_quorum_manager_unit_test azure_quorum_manager_unit_test.cpp)
+target_link_libraries(azure_quorum_manager_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    Azure::azure-core
+    Azure::azure-identity
+)
+if(TARGET Folly::folly)
+    target_link_libraries(azure_quorum_manager_unit_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(azure_quorum_manager_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(azure_quorum_manager_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(azure_quorum_manager_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(azure_quorum_manager_unit_test PRIVATE cxx_std_23)
+add_test(NAME azure_quorum_manager_unit_test COMMAND azure_quorum_manager_unit_test)
+set_tests_properties(azure_quorum_manager_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;raft;quorum;azure"
+)
+
+else()
+    message(STATUS "Azure SDK not found — azure_quorum_manager_unit_test will not be built")
+endif()
+
+# ── azure_key_vault_ca_provider tests (independent of the core Azure SDK) ────
+if(azure-security-keyvault-keys-cpp_FOUND AND TARGET certificate_authority)
+
+add_executable(azure_key_vault_ca_provider_unit_test azure_key_vault_ca_provider_unit_test.cpp)
+target_link_libraries(azure_key_vault_ca_provider_unit_test PRIVATE
+    network_simulator
+    certificate_authority
+    Boost::unit_test_framework
+    Azure::azure-security-keyvault-keys
+)
+if(TARGET Folly::folly)
+    target_link_libraries(azure_key_vault_ca_provider_unit_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(azure_key_vault_ca_provider_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(azure_key_vault_ca_provider_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(azure_key_vault_ca_provider_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(azure_key_vault_ca_provider_unit_test PRIVATE cxx_std_23)
+add_test(NAME azure_key_vault_ca_provider_unit_test COMMAND azure_key_vault_ca_provider_unit_test)
+set_tests_properties(azure_key_vault_ca_provider_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;certificate_authority;ca;azure;keyvault"
+)
+
+else()
+    message(STATUS "Azure Key Vault Keys SDK (or certificate_authority target) not found — azure_key_vault_ca_provider_unit_test will not be built")
+endif()
+
+# ── Real-Azure integration tests ──────────────────────────────────────────────
+# Both binaries below always compile (when their respective SDK component is
+# found) regardless of KYTHIRA_AZURE_REAL_TESTS — each falls back to a
+# trivial compile-only stub Boost.Test case when the option is OFF (the
+# default), matching this spec's tasks.md verification requirement. Only
+# add_test() is conditional on the option, so a default `ctest` run never
+# depends on real Azure credentials.
+if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
+
+add_executable(azure_quorum_manager_real_test azure_quorum_manager_real_test.cpp)
+target_link_libraries(azure_quorum_manager_real_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    Azure::azure-core
+    Azure::azure-identity
+)
+if(TARGET Folly::folly)
+    target_link_libraries(azure_quorum_manager_real_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(azure_quorum_manager_real_test PRIVATE FIU_ENABLE)
+    target_link_libraries(azure_quorum_manager_real_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(azure_quorum_manager_real_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(azure_quorum_manager_real_test PRIVATE cxx_std_23)
+if(KYTHIRA_AZURE_REAL_TESTS)
+    target_compile_definitions(azure_quorum_manager_real_test PRIVATE KYTHIRA_AZURE_REAL_TESTS)
+    add_test(NAME azure_quorum_manager_real_test COMMAND azure_quorum_manager_real_test)
+    set_tests_properties(azure_quorum_manager_real_test PROPERTIES
+        TIMEOUT 600
+        LABELS "integration;azure;real-azure;slow"
+    )
+endif()
+
+else()
+    message(STATUS "Azure SDK not found — azure_quorum_manager_real_test will not be built")
+endif()
+
+if(azure-security-keyvault-keys-cpp_FOUND AND TARGET certificate_authority)
+
+add_executable(azure_key_vault_ca_provider_real_test azure_key_vault_ca_provider_real_test.cpp)
+target_link_libraries(azure_key_vault_ca_provider_real_test PRIVATE
+    network_simulator
+    certificate_authority
+    Boost::unit_test_framework
+    Azure::azure-security-keyvault-keys
+)
+if(TARGET Folly::folly)
+    target_link_libraries(azure_key_vault_ca_provider_real_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(azure_key_vault_ca_provider_real_test PRIVATE FIU_ENABLE)
+    target_link_libraries(azure_key_vault_ca_provider_real_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(azure_key_vault_ca_provider_real_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(azure_key_vault_ca_provider_real_test PRIVATE cxx_std_23)
+if(KYTHIRA_AZURE_REAL_TESTS)
+    target_compile_definitions(azure_key_vault_ca_provider_real_test PRIVATE KYTHIRA_AZURE_REAL_TESTS)
+    add_test(NAME azure_key_vault_ca_provider_real_test COMMAND azure_key_vault_ca_provider_real_test)
+    set_tests_properties(azure_key_vault_ca_provider_real_test PROPERTIES
+        TIMEOUT 600
+        LABELS "integration;azure;real-azure;slow"
+    )
+endif()
+
+else()
+    message(STATUS "Azure Key Vault Keys SDK not found — azure_key_vault_ca_provider_real_test will not be built")
+endif()
+
 # ── stdexec-future-backend tests (.kiro/specs/stdexec-future-backend/) ───────
 # Property 2 (Concept-Layer Folly Independence, Task 5/5.1) is not gated
 # behind stdexec_FOUND: it verifies include/concepts/future.hpp itself

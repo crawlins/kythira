@@ -109,6 +109,27 @@ This document lists the dependencies required to build and use the network simul
   `KYTHIRA_HAS_AWS_ACM_PCA`. Environments with the core AWS SDK but without this
   component still build everything except `aws_acm_pca_provider`.
 
+### Azure SDK for C++ (azure-core-cpp, azure-identity-cpp) — azure_vm_quorum_manager, azure_vmss_quorum_manager
+- **Status**: Optional — `find_package(azure-core-cpp CONFIG)` +
+  `find_package(azure-identity-cpp CONFIG)`
+- **Purpose**: `Azure::Core::Http::HttpPipeline`-based ARM REST calls (there is no
+  generated ARM Compute/Network management-plane client in the C++ SDK ecosystem)
+  backing `azure_vm_quorum_manager` and `azure_vmss_quorum_manager`, plus
+  `Azure::Identity::{EnvironmentCredential,ManagedIdentityCredential,AzureCliCredential,
+  ChainedTokenCredential}` for authentication
+- **Notes**: Defines `KYTHIRA_HAS_AZURE_SDK`. Independent of the AWS SDK entries
+  above — an environment can have either, both, or neither.
+
+### Azure Key Vault Keys SDK (azure-security-keyvault-keys-cpp) — azure_key_vault_ca_provider
+- **Status**: Optional — independent of the core `KYTHIRA_HAS_AZURE_SDK` component
+  set above, mirroring `AWS SDK ACM Private CA component`'s independence from
+  `KYTHIRA_HAS_AWS_SDK`
+- **Purpose**: `Azure::Security::KeyVault::Keys::KeyClient::Sign()` backing
+  `azure_key_vault_ca_provider`, one of three `certificate_provider` implementations
+- **Notes**: `find_package(azure-security-keyvault-keys-cpp CONFIG)` defines
+  `KYTHIRA_HAS_AZURE_KEY_VAULT`. Environments with the core Azure SDK but without
+  this component still build everything except `azure_key_vault_ca_provider`.
+
 ### libssh2 — real-EC2 `ca_cluster_node` deployment test
 - **Status**: Optional, test-only — `ca_cluster_node_real_ec2_test` only compiled when
   detected (and only actually run against real AWS when `KYTHIRA_AWS_REAL_EC2_TESTS`

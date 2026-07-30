@@ -728,9 +728,28 @@ capability.
   `aws_acm_pca_provider` (`certificate_provider` backed by AWS Certificate
   Manager Private CA); `aws-sdk-cpp` features: `acm-pca`, `autoscaling`,
   `ec2`, `iam`, `s3`, `sts`
-- [ ] **Microsoft Azure** — quorum manager backed by a Virtual Machine Scale
-  Set (node ID = VM instance ID, instance-view power state for liveness) and
-  a `certificate_provider` backed by Azure Key Vault Certificates
+- [x] **Microsoft Azure** — `azure_vm_quorum_manager` (direct ARM
+  `Microsoft.Compute/virtualMachines` PUT/DELETE, tag-scan `next_node_id()`
+  since ARM requires the caller to choose the VM name up front,
+  `instanceView` power state for liveness) and `azure_vmss_quorum_manager`
+  (VMSS `sku.capacity` PATCH, production-grade, rejects
+  `upgradePolicy.mode=Automatic` scale sets) and `azure_key_vault_ca_provider`
+  (`certificate_provider` backed by Azure Key Vault Keys — CSR
+  parsing/TBSCertificate assembly happen locally, only the final signature
+  comes from Key Vault's `Sign` operation via a custom OpenSSL `RSA_METHOD`);
+  `azure-core-cpp`/`azure-identity-cpp`/`azure-security-keyvault-keys-cpp`.
+  Like AWS, does not yet have the example-config-file
+  documented above — tracked as the same kind of outstanding documentation
+  gap, not a missing capability. The CA provider's local signing-assembly
+  path currently only covers `rs256` (RSA PKCS#1v1.5/SHA-256); `rs384`/
+  `rs512`/`ps256`/`es256`/`es384` are forwarded to Key Vault correctly but
+  not yet supported end-to-end (see `azure_key_vault_ca_provider.hpp`'s
+  `azure_key_vault_signing_algorithm` doc comment). This spec's own
+  real-Azure integration test file
+  (`tests/azure_quorum_manager_real_test.cpp`) now implements its design
+  doc's full test list (10 VM + 5 VMSS cases) and compiles/skip-paths
+  cleanly, but none of it has run against a live Azure subscription yet —
+  treat the real assertion logic as unverified until that first run happens.
 - [ ] **Google Cloud Platform (GCP)** — quorum manager backed by a Managed
   Instance Group (node ID = GCE instance ID, `instances.get` status for
   liveness) and a `certificate_provider` backed by Certificate Authority

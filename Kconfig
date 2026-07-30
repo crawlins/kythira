@@ -178,6 +178,26 @@ config AWS_ACM_PCA
 
 endmenu # AWS Integration
 
+menu "Azure Integration"
+
+config AZURE_SDK
+	bool "Azure SDK for C++ (VM/VMSS quorum managers)"
+	default y
+	help
+	  find_package(azure-core-cpp CONFIG) + find_package(azure-identity-cpp CONFIG).
+	  Backs KYTHIRA_HAS_AZURE_SDK.
+
+config AZURE_KEY_VAULT
+	bool "Azure Key Vault Keys (CA provider)"
+	depends on AZURE_SDK
+	default y
+	help
+	  find_package(azure-security-keyvault-keys-cpp CONFIG) — independently
+	  found even though it depends on AZURE_SDK for credential types.
+	  Backs KYTHIRA_HAS_AZURE_KEY_VAULT.
+
+endmenu # Azure Integration
+
 menu "Test-Only Dependencies"
 
 config LIBSSH2_TESTS
