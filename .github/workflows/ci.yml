@@ -528,6 +528,261 @@ jobs:
           name: coverage-report
           path: coverage-html/
 
+  # ── ThreadSanitizer (Beast + Proxygen concurrency suites) ───────────────────
+  # Both .kiro/specs/boost-beast-http-transport/ and
+  # .kiro/specs/proxygen-http-transport/'s own tasks.md flagged the same
+  # final open follow-up: their concurrency-safety claims (Property 6/
+  # Requirement 3.5's structural per-connection serialization, in
+  # particular) had only ever been exercised under ad hoc, uncommitted
+  # `-fsanitize=address` runs during development (doc/CHANGELOG.md's July
+  # 28, 2026 entry), never a registered, repeatable CI build. This is
+  # that — the first ThreadSanitizer-instrumented CI job for any transport
+  # in this project, via KYTHIRA_SANITIZER=thread (root CMakeLists.txt,
+  # this project's first sanitizer-support CMake option). Single leg
+  # (g++-13/x64, matching this project's own prior documented ad hoc ASan
+  # runs' compiler choice) — the point is instrumented coverage of this
+  # project's own concurrency-sensitive code, not compiler/arch matrix
+  # breadth the way build-and-test's own matrix is for.
+  tsan:
+    name: ThreadSanitizer (Beast + Proxygen concurrency suites)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 g++-13 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev \
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-tsan-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      - name: Configure (ThreadSanitizer)
+        run: |
+          cmake -B build-tsan -G Ninja \
+            -DKYTHIRA_SANITIZER=thread \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      # three_way_http_transport_equivalence_test is deliberately excluded:
+      # two separate real CI runs of this job reproduced an identical
+      # SIGSEGV (~2.1s in, zero output -- not even Boost.Test's own crash
+      # handler fires, meaning it crashes before main()'s test framework
+      # is even running) with no diagnosable stack trace either time. The
+      # same binary passes cleanly under the ordinary (non-TSan)
+      # build-and-test legs, and unlike beast_transport_test/
+      # proxygen_transport_test -- whose own test cases hammer a shared
+      # connection/session with many concurrent RPC threads, exactly what
+      # this job exists to check -- this suite's test cases are entirely
+      # sequential (.get() awaited one call at a time, no per-RPC
+      # threads), so it was never actually exercising a concurrent code
+      # path TSan needed to see in the first place.
+      - name: Build (ThreadSanitizer)
+        run: |
+          cmake --build build-tsan -j$(nproc) --target \
+            beast_transport_test \
+            proxygen_transport_test
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-tsan-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Test under ThreadSanitizer
+        id: test-tsan
+        env:
+          # second_deadlock_stack: the more useful of the two stacks TSan
+          # prints for a lock-order-inversion report. halt_on_error left at
+          # its default (0) so one finding doesn't hide any others in the
+          # same run. suppressions: see tests/tsan_suppressions.txt for why
+          # folly::/wangle:: races are excluded.
+          TSAN_OPTIONS: "second_deadlock_stack=1 suppressions=${{ github.workspace }}/tests/tsan_suppressions.txt"
+        run: |
+          ctest --test-dir build-tsan \
+            -R 'beast_transport_test|proxygen_transport_test' \
+            --output-on-failure \
+            --output-junit ${{ github.workspace }}/tsan-test-results.xml
+        continue-on-error: true
+
+      - name: Publish ThreadSanitizer test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: ThreadSanitizer Tests
+          path: tsan-test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+          fail-on-empty: false
+
+      - name: Upload ThreadSanitizer test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tsan-test-results
+          path: tsan-test-results.xml
+
+      - name: Fail if ThreadSanitizer found anything
+        if: steps.test-tsan.outcome == 'failure'
+        run: exit 1
+
+  # ── Future-backend compatibility (proxygen-http-transport Requirement 19.3) ─
+  # proxygen_client/server's generic bridge (Requirement 14) is designed to
+  # work under any KYTHIRA_DEFAULT_FUTURE_BACKEND, with the Folly-native
+  # fast path (Requirement 16) layered on top only when that backend is
+  # Folly specifically — but until now, this project's CI only ever built
+  # under the default (folly) backend, so the "generic bridge is used
+  # instead under stdexec/boost" direction of Requirement 19.3 was written
+  # to be correct (tests/proxygen_transport_test.cpp's
+  # folly_fast_path_is_taken/generic_bridge_forced_matches_fast_path_result
+  # compute their expectation from Types's own future_template member
+  # rather than hardcoding "folly_fast_path") but never actually confirmed
+  # under a real stdexec/boost build. `stdexec`/`boost-thread` are already
+  # unconditional (non-feature-gated) vcpkg.json dependencies, so this
+  # reuses the same vcpkg_installed cache build-and-test's own jobs already
+  # populate — no new vcpkg install, just a different
+  # -DKYTHIRA_DEFAULT_FUTURE_BACKEND configure flag.
+  future-backend-compat:
+    name: Proxygen transport (${{ matrix.backend }} future backend)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [stdexec, boost]
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 g++-13 \
+                 cmake \
+                 ninja-build \
+                 libfiu-dev \
+                 ccache \
+                 autoconf \
+                 autoconf-archive \
+                 automake \
+                 libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-X64-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      - name: Configure (${{ matrix.backend }} backend)
+        run: |
+          cmake -B build-${{ matrix.backend }} -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Build
+        run: cmake --build build-${{ matrix.backend }} -j$(nproc) --target proxygen_transport_test
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Test (confirms the generic bridge, not the Folly fast path, is taken)
+        run: |
+          ctest --test-dir build-${{ matrix.backend }} \
+            -R proxygen_transport_test \
+            --output-on-failure
+
   # ── Packer template checks (ca_cluster_node AMI) ────────────────────────────
   # Static-only: no AWS credentials, no EC2 spend, no vcpkg/C++ build — cheap
   # enough to just always run rather than wire up per-job path filtering.
