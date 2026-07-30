@@ -176,6 +176,22 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                    beast_http::message<IsRequest, Body, Fields>& message)
     -> kythira::future_default<kythira::unit>;
 
+/// @brief `beast_http::async_read`, bridged to a future -- overload taking a
+///     `beast_http::parser` (rather than a bare `message`) so a caller can
+///     call `.body_limit(n)` on it before the read starts. The plain-message
+///     overload above has no way to configure a body limit externally (Beast
+///     wraps the message in a temporary parser internally, with no caller
+///     access to it), which is why `boost_beast_server_config::
+///     max_request_body_size` needs this overload to actually be enforced,
+///     not just validated as a config field. Used by `server_session` (the
+///     only caller that needs a configurable limit); the client's response
+///     read keeps using the plain-message overload, matching cpp-httplib's
+///     own client, which does not itself cap response body size.
+template<typename Stream, bool IsRequest, typename Body, typename Fields>
+auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
+                   beast_http::parser<IsRequest, Body, Fields>& parser)
+    -> kythira::future_default<kythira::unit>;
+
 /// @brief Type-erased connection handle so `boost_beast_client`'s connection
 ///     pool can hold a single map regardless of whether a given node's URL
 ///     was `http://` or `https://`. `connect()` performs the TCP connect
@@ -215,6 +231,14 @@ public:
 
 private:
     beast::tcp_stream _stream;
+    // basic_stream's timeout (set via expires_after()) covers only the
+    // *next* logical read/write/connect operation issued after it's armed --
+    // send_rpc() calls set_timeout() once, before connect(), but connect()
+    // and send()'s write+read are separate logical operations, so the
+    // deadline armed for connect() does not carry over: send() must re-arm
+    // it immediately before issuing the write, or the write is treated as
+    // already past an unset deadline and fails instantly.
+    std::chrono::milliseconds _timeout{};
 };
 
 /// @brief `beast_connection` over `beast::ssl_stream<beast::tcp_stream>`.
@@ -232,6 +256,8 @@ public:
 
 private:
     beast::ssl_stream<beast::tcp_stream> _stream;
+    // See plain_beast_connection::_timeout above -- same reason.
+    std::chrono::milliseconds _timeout{};
 };
 
 }  // namespace beast_detail
@@ -322,6 +348,44 @@ private:
     std::vector<std::unique_ptr<beast_detail::beast_connection>> _retired_connections;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+
+    // Tracks RPCs with a live connect/handshake/send/read still in flight on
+    // an io_context worker thread, so the destructor can wait for all of
+    // them to finish (their completion handler running is what decrements
+    // this) before _connections/_ssl_ctx are torn down -- the client-side
+    // equivalent of boost_beast_server::stop()'s Property 8 drain. Without
+    // this, ~boost_beast_client() could destroy _ssl_ctx while a worker
+    // thread was still mid SSL_do_handshake() on a connection referencing
+    // it, a genuine (TSan-caught, not a false positive) use-after-free-shaped
+    // race, not merely a theoretical one.
+    mutable std::mutex _drain_mutex;
+    std::condition_variable _drain_cv;
+    std::size_t _in_flight_operations{0};
+
+    /// RAII: increments _in_flight_operations on construction, decrements
+    /// (and notifies _drain_cv once it reaches zero) on destruction. Held via
+    /// shared_ptr across a send_rpc call's whole thenValue/thenError chain so
+    /// whichever branch actually runs releases the last reference.
+    struct in_flight_guard {
+        boost_beast_client* client;
+
+        explicit in_flight_guard(boost_beast_client* c) : client(c) {
+            std::lock_guard<std::mutex> lock(client->_drain_mutex);
+            ++client->_in_flight_operations;
+        }
+
+        in_flight_guard(const in_flight_guard&) = delete;
+        auto operator=(const in_flight_guard&) -> in_flight_guard& = delete;
+        in_flight_guard(in_flight_guard&&) = delete;
+        auto operator=(in_flight_guard&&) -> in_flight_guard& = delete;
+
+        ~in_flight_guard() {
+            std::lock_guard<std::mutex> lock(client->_drain_mutex);
+            if (--client->_in_flight_operations == 0) {
+                client->_drain_cv.notify_all();
+            }
+        }
+    };
 
     auto validate_certificate_files() const -> void;
     auto load_client_certificates() -> void;

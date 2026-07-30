@@ -378,6 +378,36 @@ endif()
 
 if(httplib_FOUND)
     target_link_libraries(network_simulator INTERFACE httplib::httplib)
+
+    # cpp-httplib's own vcpkg port unconditionally enables
+    # CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO (its INTERFACE_COMPILE_DEFINITIONS
+    # bakes in `$<$<BOOL:ON>:CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO>` with no
+    # feature to turn it off), which makes cpp-httplib call glibc's
+    # getaddrinfo_a() -- an asynchronous API that spins up its own internal
+    # worker thread pool (nss/getaddrinfo.c's generate_addrinfo, invoked from
+    # resolv/gai_misc.c's handle_requests on a thread glibc creates itself,
+    # outside any pthread_create() call this codebase makes). Under TSan,
+    # tests/beast_cross_transport_equivalence_test.cpp (the one test that
+    # exercises cpp-httplib and Beast side by side, and so the one with by far
+    # the most live threads at once) reliably segfaults inside TSan's own
+    # runtime allocator (__tsan::user_alloc_internal) while servicing a
+    # malloc() call from exactly that glibc-internal resolver thread -- a
+    # TSan/glibc-internal-thread interaction bug, not a defect in this
+    # codebase or in cpp-httplib's own request-handling logic (every other
+    # symbol on the crashing stack is glibc/TSan runtime, nothing of ours).
+    # Stripping the define here forces cpp-httplib back onto plain, blocking
+    # getaddrinfo() -- no extra thread, so nothing for TSan to lose track of --
+    # for the TSan build specifically; every other configuration (including
+    # ASan, which already ran clean) keeps cpp-httplib's own default.
+    if(KYTHIRA_SANITIZER STREQUAL "thread")
+        get_target_property(_kythira_httplib_defs httplib::httplib INTERFACE_COMPILE_DEFINITIONS)
+        if(_kythira_httplib_defs)
+            list(FILTER _kythira_httplib_defs EXCLUDE REGEX "CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO")
+            set_target_properties(httplib::httplib PROPERTIES
+                INTERFACE_COMPILE_DEFINITIONS "${_kythira_httplib_defs}")
+        endif()
+        unset(_kythira_httplib_defs)
+    endif()
 endif()
 
 if(OpenSSL_FOUND)

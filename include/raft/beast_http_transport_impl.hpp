@@ -10,6 +10,7 @@
 #include <openssl/asn1.h>
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <format>
 #include <fstream>
@@ -243,6 +244,21 @@ auto beast_exceptional_future(std::exception_ptr ex) -> kythira::future_default<
 
 // ---------------------------------------------------------------------------
 // beast_detail primitive adaptors (Requirement 14.2)
+//
+// A round-1 ThreadSanitizer run found a genuine data race here under the
+// Folly future backend: the io_context thread that fulfills one of these
+// promises (promise.setValue()/setException(), below) could race the
+// calling thread that immediately chains .thenValue()/.thenError() onto the
+// future returned by promise.getFuture() (send_rpc, further down this
+// file). Root cause was in include/raft/future.hpp, not in this file --
+// kythira::Promise<T>::getFuture() used to return a plain folly::Future<T>
+// with no executor attached, exactly the pattern Folly's own SemiFuture +
+// via() exists to make safe. Fixed there (Promise<T>::getFuture()/
+// getSemiFuture() now route through
+// getSemiFuture().via(&folly::InlineExecutor::instance())), not here --
+// nothing in this file changed to address it, since the race was never in
+// how these adaptors are written, only in what promise.getFuture() itself
+// used to hand back.
 // ---------------------------------------------------------------------------
 
 namespace beast_detail {
@@ -331,6 +347,25 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
     return future;
 }
 
+template<typename Stream, bool IsRequest, typename Body, typename Fields>
+auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
+                   beast_http::parser<IsRequest, Body, Fields>& parser)
+    -> kythira::future_default<kythira::unit> {
+    kythira::promise_default<kythira::unit> promise;
+    auto future = promise.getFuture();
+    beast_http::async_read(
+        stream, buffer, parser,
+        [promise = std::move(promise)](const boost::system::error_code& ec,
+                                       std::size_t /*bytes_transferred*/) mutable {
+            if (ec) {
+                promise.setException(std::make_exception_ptr(boost::system::system_error(ec)));
+            } else {
+                promise.setValue(kythira::unit{});
+            }
+        });
+    return future;
+}
+
 // ---------------------------------------------------------------------------
 // beast_connection implementations
 // ---------------------------------------------------------------------------
@@ -343,6 +378,7 @@ inline auto plain_beast_connection::is_open() const -> bool {
 }
 
 inline auto plain_beast_connection::set_timeout(std::chrono::milliseconds timeout) -> void {
+    _timeout = timeout;
     _stream.expires_after(timeout);
 }
 
@@ -357,6 +393,12 @@ inline auto plain_beast_connection::send(beast_http::request<beast_http::string_
     auto req = std::make_shared<beast_http::request<beast_http::string_body>>(std::move(request));
     auto buffer = std::make_shared<beast::flat_buffer>();
     auto response = std::make_shared<beast_http::response<beast_http::string_body>>();
+    // Re-arm the deadline immediately before issuing the write: it covers
+    // this write and the subsequent read as one combined logical operation
+    // (per basic_stream's own documented model), but does *not* carry over
+    // from the connect() that already ran before send() was called -- see
+    // the _timeout member's doc comment (beast_http_transport.hpp) for why.
+    _stream.expires_after(_timeout);
     // `buffer` (and `response`) must be captured again in the *second*
     // thenValue below, not just the first: Folly's future-flattening
     // (triggered because the first callback itself returns a future, from
@@ -388,6 +430,7 @@ inline auto tls_beast_connection::is_open() const -> bool {
 }
 
 inline auto tls_beast_connection::set_timeout(std::chrono::milliseconds timeout) -> void {
+    _timeout = timeout;
     beast::get_lowest_layer(_stream).expires_after(timeout);
 }
 
@@ -408,6 +451,9 @@ inline auto tls_beast_connection::send(beast_http::request<beast_http::string_bo
     auto req = std::make_shared<beast_http::request<beast_http::string_body>>(std::move(request));
     auto buffer = std::make_shared<beast::flat_buffer>();
     auto response = std::make_shared<beast_http::response<beast_http::string_body>>();
+    // See plain_beast_connection::send()'s comment on re-arming the deadline
+    // here (it doesn't carry over from connect()'s handshake).
+    beast::get_lowest_layer(_stream).expires_after(_timeout);
     // See plain_beast_connection::send()'s comment: `buffer` must be
     // recaptured in the second thenValue, not just the first, because of
     // how Folly's future-flattening releases a future-returning callback's
@@ -452,6 +498,27 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 boost_beast_client<Types>::~boost_beast_client() {
     disable_auto_reload();
+
+    // Force-close every connection (live or retired) so any in-flight
+    // connect/handshake/read/write fails fast with an error rather than
+    // continuing to run on an io_context worker thread after _ssl_ctx is
+    // torn down beneath it, then wait for that failure to actually reach
+    // each operation's own completion handler (which drops its
+    // in_flight_guard) before letting _connections/_ssl_ctx destruct --
+    // mirrors boost_beast_server::stop()'s Property 8 drain on the client
+    // side.
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto& [id, conn] : _connections) {
+            conn.connection->close();
+        }
+        for (auto& conn : _retired_connections) {
+            conn->close();
+        }
+    }
+
+    std::unique_lock<std::mutex> drain_lock(_drain_mutex);
+    _drain_cv.wait(drain_lock, [this] { return _in_flight_operations == 0; });
 }
 
 template<typename Types>
@@ -692,6 +759,11 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
 
     try {
         auto& conn = get_or_create_connection(target);
+        // Held across the whole thenValue/thenError chain below (whichever
+        // branch actually runs drops the last reference), so the destructor
+        // can wait until this RPC's own connect/handshake/send/read has
+        // truly finished before it lets _connections/_ssl_ctx destruct.
+        auto in_flight = std::make_shared<in_flight_guard>(this);
         conn.connection->set_timeout(timeout);  // Property 4: bounds the
                                                 // whole chain below, not
                                                 // each step individually.
@@ -739,8 +811,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         }();
 
         return std::move(response_future)
-            .thenValue([this, target, rpc_type, start_time](
-                           beast_http::response<beast_http::string_body> resp) -> Response {
+            .thenValue([this, target, rpc_type, start_time,
+                        in_flight](beast_http::response<beast_http::string_body> resp) -> Response {
                 auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - start_time);
                 auto status = static_cast<unsigned>(resp.result_int());
@@ -785,7 +857,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 }
                 throw std::runtime_error(std::format("Unexpected HTTP status code: {}", status));
             })
-            .thenError([this, target](std::exception_ptr e) -> Response {
+            .thenError([this, target, in_flight](std::exception_ptr e) -> Response {
                 auto error_metric = _metrics;
                 error_metric.set_metric_name("beast_http.client.error");
                 error_metric.add_dimension("target_node_id", std::to_string(target));
@@ -851,8 +923,11 @@ template<typename Types, typename Stream>
 class server_session : public std::enable_shared_from_this<server_session<Types, Stream>> {
 public:
     server_session(Stream stream, boost_beast_server<Types>* server,
-                   std::chrono::seconds request_timeout)
-        : _stream(std::move(stream)), _server(server), _request_timeout(request_timeout) {}
+                   std::chrono::seconds request_timeout, std::size_t max_request_body_size)
+        : _stream(std::move(stream)),
+          _server(server),
+          _request_timeout(request_timeout),
+          _max_request_body_size(max_request_body_size) {}
 
     auto run() -> void {
         // A closer, not just a start/finish counter: a session sitting idle
@@ -891,10 +966,22 @@ private:
     auto read_loop() -> void {
         auto self = this->shared_from_this();
         _buffer.clear();
-        _req = {};
+        // A parser, not a bare message: only a parser exposes .body_limit(),
+        // which is what actually makes boost_beast_server_config::
+        // max_request_body_size enforced rather than merely a validated,
+        // unused config field -- the plain-message async_read_kf overload
+        // wraps the message in a Beast-internal parser with no way for a
+        // caller to configure it. Re-emplace()d (not reused/reset) each
+        // request: beast_http::parser has no reset-for-reuse method, matching
+        // its "one parser per message" design.
+        _parser.emplace();
+        _parser->body_limit(_max_request_body_size);
         beast::get_lowest_layer(_stream).expires_after(_request_timeout);
-        _pending = async_read_kf(_stream, _buffer, _req)
-                       .thenValue([self](kythira::unit) { return self->handle_and_write(); })
+        _pending = async_read_kf(_stream, _buffer, *_parser)
+                       .thenValue([self](kythira::unit) {
+                           self->_req = self->_parser->release();
+                           return self->handle_and_write();
+                       })
                        .thenValue([self](kythira::unit) {
                            if (self->_should_keep_alive) {
                                self->read_loop();
@@ -903,10 +990,58 @@ private:
                            }
                            return kythira::unit{};
                        })
-                       .thenError([self](std::exception_ptr) {
-                           self->finish();
-                           return kythira::unit{};
+                       .thenError([self](std::exception_ptr eptr) {
+                           return self->handle_read_error(eptr);
                        });
+    }
+
+    // Requirement 4 (malformed-request handling): a request whose body
+    // exceeds max_request_body_size fails async_read_kf with
+    // beast_http::error::body_limit rather than reaching dispatch() at all.
+    // Headers are always fully parsed before a body_limit error can occur
+    // (the limit is checked against the parsed Content-Length, or
+    // incrementally for chunked/unbounded bodies, both of which happen only
+    // after the header line and fields are already in), so responding with
+    // an explicit 413 here (rather than just severing the connection, the
+    // only option for a read failure whose cause isn't known) is safe -- the
+    // connection is still closed afterward (keep_alive(false)) rather than
+    // kept open, since the client's remaining unread bytes on the wire would
+    // otherwise be misparsed as the start of a new request. Any other read
+    // failure (peer disconnect, timeout, malformed/truncated header) has no
+    // reliable message to respond to, so it falls back to the pre-existing
+    // finish()-and-close behavior (Error Handling: Server Accept-Loop
+    // Resilience -- this session's own failure never stops do_accept() from
+    // continuing to serve other connections).
+    auto handle_read_error(std::exception_ptr eptr) -> kythira::future_default<kythira::unit> {
+        bool is_body_limit_exceeded = false;
+        try {
+            std::rethrow_exception(eptr);
+        } catch (const boost::system::system_error& e) {
+            is_body_limit_exceeded = (e.code() == beast_http::error::body_limit);
+        } catch (...) {
+        }
+        if (is_body_limit_exceeded && _parser && _parser->is_header_done()) {
+            auto self = this->shared_from_this();
+            auto res = std::make_shared<beast_http::response<beast_http::string_body>>(
+                beast_http::status::payload_too_large, _parser->get().version());
+            res->set(beast_http::field::content_type, "text/plain");
+            res->body() = "Request body exceeds maximum allowed size";
+            res->keep_alive(false);
+            res->prepare_payload();
+            // See handle_and_write()'s comment: re-arm before this write too.
+            beast::get_lowest_layer(_stream).expires_after(_request_timeout);
+            return async_write_kf(_stream, *res)
+                .thenValue([self, res](kythira::unit) {
+                    self->finish();
+                    return kythira::unit{};
+                })
+                .thenError([self](std::exception_ptr) {
+                    self->finish();
+                    return kythira::unit{};
+                });
+        }
+        finish();
+        return beast_ready_unit_future();
     }
 
     auto handle_and_write() -> kythira::future_default<kythira::unit> {
@@ -947,6 +1082,16 @@ private:
         res->prepare_payload();
         _should_keep_alive = res->keep_alive();
 
+        // Re-arm the deadline immediately before the write: basic_stream's
+        // timeout (armed once in read_loop(), before the read) covers only
+        // that read as its own logical operation -- it does not carry over
+        // to this separate write, so without re-arming here the write is
+        // treated as already past an unset deadline and fails instantly
+        // (observed as the client seeing "end of stream" right after a
+        // successful request write, since the server's own response write
+        // never actually got a chance to go out). Same root cause, same fix
+        // as boost_beast_client's connection::send() -- see its comment.
+        beast::get_lowest_layer(_stream).expires_after(_request_timeout);
         return async_write_kf(_stream, *res).thenValue([self, res](kythira::unit) {
             return kythira::unit{};
         });
@@ -962,7 +1107,9 @@ private:
     boost_beast_server<Types>* _server;
     std::size_t _session_id{};
     std::chrono::seconds _request_timeout;
+    std::size_t _max_request_body_size;
     beast::flat_buffer _buffer;
+    std::optional<beast_http::request_parser<beast_http::string_body>> _parser;
     beast_http::request<beast_http::string_body> _req;
     bool _should_keep_alive{false};
     // Held as a member, not an orphaned temporary: reassigning it from
@@ -1329,13 +1476,15 @@ auto boost_beast_server<Types>::do_accept() -> void {
                 beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), *_ssl_ctx);
                 auto session = std::make_shared<
                     beast_detail::server_session<Types, beast::ssl_stream<beast::tcp_stream>>>(
-                    std::move(stream), this, _config.request_timeout);
+                    std::move(stream), this, _config.request_timeout,
+                    _config.max_request_body_size);
                 session->run();
             } else {
                 beast::tcp_stream stream(std::move(socket));
                 auto session =
                     std::make_shared<beast_detail::server_session<Types, beast::tcp_stream>>(
-                        std::move(stream), this, _config.request_timeout);
+                        std::move(stream), this, _config.request_timeout,
+                        _config.max_request_body_size);
                 session->run();
             }
         }
