@@ -36,6 +36,9 @@ Kythira provides a fully-featured Raft consensus implementation designed for dis
 ### Transport Layers
 - **HTTP/HTTPS Transport** with TLS support and connection pooling
 - **CoAP/CoAPS Transport** for IoT and constrained networks with DTLS security
+- **gRPC Transport** — HTTP/2, Protocol Buffers wire format, TLS/mTLS,
+  connection pooling, and metrics, with full concept-family coverage (base RPCs
+  plus the pre-vote, cluster-join/leave, and peer log-fetch extensions)
 - **Network Simulator** for testing and development
 - **Pluggable Design** supporting custom transport implementations
 
@@ -470,6 +473,77 @@ server.register_request_vote_handler(vote_handler);
 server.start();
 ```
 
+### gRPC Transport for Data-Center Deployments
+
+The gRPC transport speaks HTTP/2 with Protocol Buffers as both the IDL and the
+wire format (schema: [`proto/raft.proto`](proto/raft.proto)). Unlike the HTTP
+and CoAP transports it takes no `serializer_type` — protobuf *is* the wire
+format — and it implements the full concept family: the base
+RequestVote/AppendEntries/InstallSnapshot RPCs plus the pre-vote,
+cluster-join/leave, and peer log-fetch extensions. It uses gRPC's callback API
+and posts every promise fulfillment and every registered handler onto a
+caller-owned `executor_type`, so no gRPC I/O thread is ever blocked.
+
+```cpp
+#include <raft/grpc_transport_impl.hpp>
+
+// grpc_transport_types omits serializer_type (protobuf is fixed); the example
+// bundle uses kythira::Future + a Folly CPU thread pool as the executor.
+using types = kythira::grpc_kythira_transport_types;
+
+folly::CPUThreadPoolExecutor exec(4);  // caller-owned, shared by client + server
+
+// Server (insecure by default; TLS off unless enable_tls is set).
+kythira::grpc_server_config server_cfg;
+kythira::grpc_server<types> server("0.0.0.0", 9443, server_cfg,
+                                   kythira::noop_metrics{}, exec);
+server.register_request_vote_handler(vote_handler);
+server.register_append_entries_handler(append_handler);
+server.register_install_snapshot_handler(snapshot_handler);
+server.start();
+
+// Client: a node-ID → "host:port" address book. A single Channel is reused
+// per target across repeated calls.
+std::unordered_map<std::uint64_t, std::string> book = {
+    {1, "10.0.0.10:9443"}, {2, "10.0.0.11:9443"}, {3, "10.0.0.12:9443"}};
+kythira::grpc_client_config client_cfg;
+kythira::grpc_client<types> client(book, client_cfg, kythira::noop_metrics{}, exec);
+
+auto future = client.send_request_vote(2, vote_request, std::chrono::milliseconds{2000});
+```
+
+#### Mutual TLS
+
+Certificate material is supplied as **in-memory PEM strings** (use
+`kythira::grpc_read_pem_file()` for file-backed material), so certificates minted
+by this project's [`certificate_authority`](.kiro/specs/certificate-authority/)
+plug straight in with no filesystem round-trip. TLS is never silently
+downgraded — an invalid or half-configured pair fails construction with
+`grpc_tls_configuration_error`.
+
+```cpp
+kythira::grpc_server_config s;
+s.enable_tls = true;
+s.server_cert_pem = server_cert.certificate_pem;
+s.server_key_pem  = server_cert.private_key_pem;
+s.ca_cert_pem     = ca.root_certificate_pem();  // to verify client certs
+s.require_client_cert = true;                    // enforce mTLS
+
+kythira::grpc_client_config c;
+c.enable_tls = true;
+c.ca_cert_pem     = ca.root_certificate_pem();
+c.client_cert_pem = client_cert.certificate_pem;
+c.client_key_pem  = client_cert.private_key_pem;
+```
+
+A runnable end-to-end demonstration (all core + optional RPCs, error handling,
+and mutual TLS) lives in
+[`examples/grpc_transport_example.cpp`](examples/grpc_transport_example.cpp). The
+full design is in
+[`.kiro/specs/grpc-transport/`](.kiro/specs/grpc-transport/); build-time
+troubleshooting is in
+[`doc/grpc_transport_README.md`](doc/grpc_transport_README.md).
+
 ## Architecture
 
 ### Component Overview
@@ -497,18 +571,19 @@ server.start();
 
 ### Transport Layer Comparison
 
-| Feature | HTTP/HTTPS | CoAP/CoAPS | Network Simulator |
-|---------|------------|------------|-------------------|
-| **Protocol** | TCP | UDP | In-memory |
-| **Overhead** | Medium (200-500 bytes) | Low (4-8 bytes) | None |
-| **Latency** | Medium | Low | Minimal |
-| **Throughput** | High (10K+ req/s) | Medium (5K+ req/s) | Very High |
-| **Security** | TLS 1.2/1.3 | DTLS 1.2 | N/A |
-| **Connection** | Persistent | Connectionless | N/A |
-| **Best For** | Data centers, cloud | IoT, edge, constrained | Testing, development |
-| **Reliability** | TCP guarantees | Confirmable messages | Perfect |
-| **Resource Usage** | Higher | Lower | Minimal |
-| **Standards** | RFC 7230-7235 | RFC 7252 | N/A |
+| Feature | HTTP/HTTPS | CoAP/CoAPS | gRPC | Network Simulator |
+|---------|------------|------------|------|-------------------|
+| **Protocol** | TCP | UDP | HTTP/2 (TCP) | In-memory |
+| **Wire format** | JSON/CBOR (pluggable) | JSON/CBOR (pluggable) | Protocol Buffers (fixed) | N/A |
+| **Overhead** | Medium (200-500 bytes) | Low (4-8 bytes) | Low (binary framing) | None |
+| **Latency** | Medium | Low | Low (multiplexed) | Minimal |
+| **Throughput** | High (10K+ req/s) | Medium (5K+ req/s) | High (multiplexed) | Very High |
+| **Security** | TLS 1.2/1.3 | DTLS 1.2 | TLS/mTLS | N/A |
+| **Connection** | Persistent | Connectionless | Persistent, multiplexed | N/A |
+| **Best For** | Data centers, cloud | IoT, edge, constrained | Data centers, polyglot | Testing, development |
+| **Reliability** | TCP guarantees | Confirmable messages | TCP + HTTP/2 keepalive | Perfect |
+| **Resource Usage** | Higher | Lower | Medium | Minimal |
+| **Standards** | RFC 7230-7235 | RFC 7252 | gRPC / HTTP/2 (RFC 7540) | N/A |
 
 ### When to Use Each Transport
 
@@ -528,6 +603,15 @@ server.start();
 - ✅ Multicast discovery requirements
 - ❌ Need for maximum throughput
 - ❌ Complex HTTP features required
+
+**gRPC**:
+- ✅ Data-center and cloud deployments wanting an HTTP/2, strongly-typed RPC
+- ✅ Polyglot clusters or tooling (the `raft.proto` schema is language-neutral)
+- ✅ Connection multiplexing without HTTP/1.1 pool sizing
+- ✅ Production TLS/mTLS reusing this project's `certificate_authority` stack
+- ✅ Full concept-family coverage (pre-vote, cluster join/leave, peer log-fetch)
+- ❌ Constrained/embedded devices (protobuf + HTTP/2 runtime is heavier than CoAP)
+- ❌ Environments where adding the gRPC/Protobuf dependency is undesirable
 
 **Network Simulator**:
 - ✅ Unit and integration testing
@@ -1289,6 +1373,8 @@ BOOST_AUTO_TEST_CASE(property_election_safety, * boost::unit_test::timeout(60)) 
 - **[CoAP DTLS Configuration](doc/coap_dtls_configuration.md)** - Security setup guide
 - **[CoAP Performance Tuning](doc/coap_performance_tuning.md)** - Optimization recommendations
 - **[CoAP Troubleshooting](doc/coap_troubleshooting.md)** - Diagnostic procedures
+- **[gRPC Transport Design](.kiro/specs/grpc-transport/design.md)** - gRPC/Protobuf transport architecture
+- **[gRPC Transport README](doc/grpc_transport_README.md)** - Overview and build/TLS troubleshooting
 - **[Network Simulator Design](.kiro/specs/network-simulator/design.md)** - Simulator architecture
 
 ### Certificate Authority & ACME

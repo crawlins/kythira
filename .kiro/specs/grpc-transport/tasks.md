@@ -1,5 +1,28 @@
 # Implementation Plan
 
+## Implementation Status
+
+Tasks 1–12 are implemented in the tree:
+
+- `proto/raft.proto`, `vcpkg.json` (`grpc`), `Kconfig` (`GRPC_TRANSPORT`), and
+  the `CMakeLists.txt` codegen + `raft_grpc_transport` target (Tasks 1–2).
+- `include/raft/grpc_exceptions.hpp`, `grpc_message_conversion.hpp`,
+  `grpc_transport.hpp` (types concept + config), and `grpc_transport_impl.hpp`
+  (`grpc_client`/`grpc_server` with the core RPCs, TLS/mTLS, the callback API,
+  metrics, and every optional extension), plus `src/grpc_transport_impl.cpp`
+  (Tasks 2–9).
+- Tests `tests/grpc_transport_conversion_property_test.cpp` (Property 2/3,
+  concept `static_assert`s) and `tests/grpc_transport_integration_test.cpp`
+  (end-to-end, unregistered→UNIMPLEMENTED, lifecycle, concurrency, mTLS),
+  `examples/grpc_transport_example.cpp`, and README + `doc/grpc_transport_README.md`
+  (Tasks 10–12).
+
+Tasks 1.5 and 13 (verify generated code compiles; run the full suite; strict-mode
+and graceful-degradation configure checks; performance sanity pass) require a
+build machine with gRPC/Protobuf present and are validated in CI where the
+`grpc` vcpkg port is installed — they are not checkable in a gRPC-absent
+environment, where the target is (correctly) skipped.
+
 ## Major Tasks Overview
 
 ### Tasks 1-2: Schema and Build Integration

@@ -3095,3 +3095,45 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "future_backend_benchmark_test: skipped (requires Folly)")
 endif()
+
+# ── gRPC transport tests (.kiro/specs/grpc-transport/) ───────────────────────
+# Gated on the raft_grpc_transport target existing (i.e. gRPC/Protobuf were
+# found and a future backend is available). When gRPC is absent these simply
+# aren't registered, mirroring every other optional-dependency test block.
+if(TARGET raft_grpc_transport)
+    # Conversion round-trip + concept + exception-type checks: no live server,
+    # links only the transport library.
+    add_executable(grpc_transport_conversion_property_test
+        grpc_transport_conversion_property_test.cpp)
+    target_link_libraries(grpc_transport_conversion_property_test PRIVATE
+        kythira_test_pch raft_grpc_transport)
+    if(TARGET Folly::folly)
+        target_link_libraries(grpc_transport_conversion_property_test PRIVATE Folly::folly)
+    endif()
+    target_precompile_headers(grpc_transport_conversion_property_test REUSE_FROM kythira_test_pch)
+    add_test(NAME grpc_transport_conversion_property_test
+        COMMAND grpc_transport_conversion_property_test)
+    set_tests_properties(grpc_transport_conversion_property_test PROPERTIES
+        LABELS "grpc;transport;property")
+
+    # End-to-end integration: real client/server over loopback, insecure + mTLS.
+    # Needs certificate_authority to mint short-lived test certificates rather
+    # than checked-in fixtures (Requirement 19.6).
+    if(TARGET certificate_authority)
+        add_executable(grpc_transport_integration_test grpc_transport_integration_test.cpp)
+        target_link_libraries(grpc_transport_integration_test PRIVATE
+            kythira_test_pch raft_grpc_transport certificate_authority)
+        if(TARGET Folly::folly)
+            target_link_libraries(grpc_transport_integration_test PRIVATE Folly::folly)
+        endif()
+        target_precompile_headers(grpc_transport_integration_test REUSE_FROM kythira_test_pch)
+        add_test(NAME grpc_transport_integration_test COMMAND grpc_transport_integration_test)
+        set_tests_properties(grpc_transport_integration_test PROPERTIES
+            LABELS "grpc;transport;integration"
+            TIMEOUT 120)
+    else()
+        message(STATUS "grpc_transport_integration_test: skipped (requires certificate_authority)")
+    endif()
+else()
+    message(STATUS "gRPC transport tests: skipped (raft_grpc_transport target not available)")
+endif()

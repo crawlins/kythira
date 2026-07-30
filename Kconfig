@@ -86,6 +86,20 @@ config EDHOC
 	  n because the Rust toolchain is not assumed to be present; strict
 	  mode will fail configure if you select y without it.
 
+config GRPC_TRANSPORT
+	bool "gRPC transport (grpc, Protocol Buffers)"
+	default y
+	help
+	  find_package(gRPC CONFIG) and find_package(Protobuf CONFIG).
+	  Backs GRPC_FOUND / PROTOBUF_FOUND. vcpkg package: grpc.
+	  Generates raft.pb.{h,cc}/raft.grpc.pb.{h,cc} from proto/raft.proto
+	  via protoc + grpc_cpp_plugin at build time. Follows the same
+	  always-declared-but-gracefully-optional pattern as COAP_TRANSPORT:
+	  when gRPC/Protobuf are not found the raft_grpc_transport target is
+	  skipped with a warning and the rest of the project configures
+	  unaffected, unless KYTHIRA_KCONFIG_STRICT=ON forces a hard failure.
+	  See .kiro/specs/grpc-transport/ for the full design.
+
 endmenu # Transports
 
 menu "Peer Discovery"
