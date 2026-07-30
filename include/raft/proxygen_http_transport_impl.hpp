@@ -699,130 +699,142 @@ auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view end
     if constexpr (std::same_as<future_template<Response>, kythira::Future<Response>>) {
         return send_rpc_folly_fast_path<Request, Response>(target, endpoint, request, timeout);
     } else {
-        std::string rpc_type = proxygen_rpc_type_name(endpoint);
-        kythira::promise_default<Response> promise;
-        auto future = promise.getFuture();
-        try {
-            auto& slot = get_or_create_slot(target);
-            auto [addr, host, is_https] = resolve_target(target);
-            auto serialized = _serializer.serialize(request);
-            std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
-            auto* evb = slot.event_base;
-            auto session_slot = slot.session;
-            auto ssl_ctx = _ssl_ctx;
-            auto user_agent = _config.user_agent;
-            auto connection_timeout = _config.connection_timeout;
-            auto start_time = std::chrono::steady_clock::now();
+        return send_rpc_generic_bridge<Request, Response>(target, endpoint, request, timeout);
+    }
+}
 
-            auto metric = _metrics;
-            metric.set_metric_name("proxygen_http.client.request.sent");
-            metric.add_dimension("rpc_type", rpc_type);
-            metric.add_dimension("target_node_id", std::to_string(target));
-            metric.add_dimension("path", "generic_bridge");
-            metric.add_one();
-            metric.emit();
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+template<typename Request, typename Response>
+auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
+                                                     std::string_view endpoint,
+                                                     const Request& request,
+                                                     std::chrono::milliseconds timeout)
+    -> future_template<Response> {
+    std::string rpc_type = proxygen_rpc_type_name(endpoint);
+    kythira::promise_default<Response> promise;
+    auto future = promise.getFuture();
+    try {
+        auto& slot = get_or_create_slot(target);
+        auto [addr, host, is_https] = resolve_target(target);
+        auto serialized = _serializer.serialize(request);
+        std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
+        auto* evb = slot.event_base;
+        auto session_slot = slot.session;
+        auto ssl_ctx = _ssl_ctx;
+        auto user_agent = _config.user_agent;
+        auto connection_timeout = _config.connection_timeout;
+        auto start_time = std::chrono::steady_clock::now();
 
-            evb->runInEventBaseThread([this, evb, session_slot, addr, ssl_ctx, is_https,
-                                       connection_timeout, host, body = std::move(body),
-                                       endpoint = std::string(endpoint), timeout, target, rpc_type,
-                                       start_time, promise = std::move(promise)]() mutable {
-                // The response-transform step below returns Response or
-                // throws (Beast's own send_rpc pattern exactly) rather
-                // than fulfilling `promise` from two separate
-                // thenValue/thenError callbacks -- capturing the
-                // move-only `promise` into *both* would move from it
-                // twice. A single trailing .thenTry() (Try<Response> ->
-                // void) is the one place `promise` is captured/settled,
-                // exactly once, regardless of which upstream step
-                // produced the value or the exception.
-                auto chain =
-                    proxygen_detail::connect_if_needed(session_slot, evb, addr, ssl_ctx, is_https,
-                                                       connection_timeout)
-                        .thenValue([evb, host, body = std::move(body), endpoint,
-                                    user_agent = _config.user_agent,
-                                    timeout](proxygen::HTTPUpstreamSession* session) {
-                            return proxygen_detail::send_on_session(session, endpoint, body, host,
-                                                                    user_agent, timeout);
-                        })
-                        .thenValue([this, target, rpc_type,
-                                    start_time](proxygen_detail::http_response resp) -> Response {
-                            auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now() - start_time);
-                            auto latency_metric = _metrics;
-                            latency_metric.set_metric_name("proxygen_http.client.request.latency");
-                            latency_metric.add_dimension("rpc_type", rpc_type);
-                            latency_metric.add_dimension("target_node_id", std::to_string(target));
-                            latency_metric.add_dimension(
-                                "status", resp.status_code == 200 ? "success" : "error");
-                            latency_metric.add_dimension("path", "generic_bridge");
-                            latency_metric.add_duration(latency);
-                            latency_metric.emit();
+        auto metric = _metrics;
+        metric.set_metric_name("proxygen_http.client.request.sent");
+        metric.add_dimension("rpc_type", rpc_type);
+        metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("path", "generic_bridge");
+        metric.add_one();
+        metric.emit();
 
-                            if (resp.status_code == 200) {
-                                std::vector<std::byte> response_data;
-                                response_data.reserve(resp.body.size());
-                                for (char c : resp.body) {
-                                    response_data.push_back(static_cast<std::byte>(c));
+        evb->runInEventBaseThread([this, evb, session_slot, addr, ssl_ctx, is_https,
+                                   connection_timeout, host, body = std::move(body),
+                                   endpoint = std::string(endpoint), timeout, target, rpc_type,
+                                   start_time, promise = std::move(promise)]() mutable {
+            // The response-transform step below returns Response or
+            // throws (Beast's own send_rpc pattern exactly) rather
+            // than fulfilling `promise` from two separate
+            // thenValue/thenError callbacks -- capturing the
+            // move-only `promise` into *both* would move from it
+            // twice. A single trailing .thenTry() (Try<Response> ->
+            // void) is the one place `promise` is captured/settled,
+            // exactly once, regardless of which upstream step
+            // produced the value or the exception.
+            auto chain =
+                proxygen_detail::connect_if_needed(session_slot, evb, addr, ssl_ctx, is_https,
+                                                   connection_timeout)
+                    .thenValue([evb, host, body = std::move(body), endpoint,
+                                user_agent = _config.user_agent,
+                                timeout](proxygen::HTTPUpstreamSession* session) {
+                        return proxygen_detail::send_on_session(session, endpoint, body, host,
+                                                                user_agent, timeout);
+                    })
+                    .thenValue([this, target, rpc_type,
+                                start_time](proxygen_detail::http_response resp) -> Response {
+                        auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - start_time);
+                        auto latency_metric = _metrics;
+                        latency_metric.set_metric_name("proxygen_http.client.request.latency");
+                        latency_metric.add_dimension("rpc_type", rpc_type);
+                        latency_metric.add_dimension("target_node_id", std::to_string(target));
+                        latency_metric.add_dimension("status",
+                                                     resp.status_code == 200 ? "success" : "error");
+                        latency_metric.add_dimension("path", "generic_bridge");
+                        latency_metric.add_duration(latency);
+                        latency_metric.emit();
+
+                        if (resp.status_code == 200) {
+                            std::vector<std::byte> response_data;
+                            response_data.reserve(resp.body.size());
+                            for (char c : resp.body) {
+                                response_data.push_back(static_cast<std::byte>(c));
+                            }
+                            try {
+                                if constexpr (std::is_same_v<Response,
+                                                             kythira::request_vote_response<>>) {
+                                    return _serializer.deserialize_request_vote_response(
+                                        response_data);
+                                } else if constexpr (std::is_same_v<
+                                                         Response,
+                                                         kythira::append_entries_response<>>) {
+                                    return _serializer.deserialize_append_entries_response(
+                                        response_data);
+                                } else {
+                                    return _serializer.deserialize_install_snapshot_response(
+                                        response_data);
                                 }
-                                try {
-                                    if constexpr (std::is_same_v<
-                                                      Response, kythira::request_vote_response<>>) {
-                                        return _serializer.deserialize_request_vote_response(
-                                            response_data);
-                                    } else if constexpr (std::is_same_v<
-                                                             Response,
-                                                             kythira::append_entries_response<>>) {
-                                        return _serializer.deserialize_append_entries_response(
-                                            response_data);
-                                    } else {
-                                        return _serializer.deserialize_install_snapshot_response(
-                                            response_data);
-                                    }
-                                } catch (const std::exception& e) {
-                                    throw kythira::serialization_error(std::format(
-                                        "Failed to deserialize response: {}", e.what()));
-                                }
+                            } catch (const std::exception& e) {
+                                throw kythira::serialization_error(
+                                    std::format("Failed to deserialize response: {}", e.what()));
                             }
-                            if (resp.status_code >= 400 && resp.status_code < 500) {
-                                throw kythira::http_client_error(
-                                    resp.status_code, std::format("HTTP client error {}: {}",
-                                                                  resp.status_code, resp.body));
-                            }
-                            if (resp.status_code >= 500) {
-                                throw kythira::http_server_error(
-                                    resp.status_code, std::format("HTTP server error {}: {}",
-                                                                  resp.status_code, resp.body));
-                            }
-                            throw std::runtime_error(
-                                std::format("Unexpected HTTP status code: {}", resp.status_code));
-                        })
-                        .thenError([this, target](std::exception_ptr e) -> Response {
-                            auto error_metric = _metrics;
-                            error_metric.set_metric_name("proxygen_http.client.error");
-                            error_metric.add_dimension("target_node_id", std::to_string(target));
-                            error_metric.add_one();
-                            error_metric.emit();
-                            std::rethrow_exception(e);
-                        });
-                std::move(chain)
-                    .thenTry([promise = std::move(promise)](kythira::Try<Response> result) mutable {
+                        }
+                        if (resp.status_code >= 400 && resp.status_code < 500) {
+                            throw kythira::http_client_error(
+                                resp.status_code, std::format("HTTP client error {}: {}",
+                                                              resp.status_code, resp.body));
+                        }
+                        if (resp.status_code >= 500) {
+                            throw kythira::http_server_error(
+                                resp.status_code, std::format("HTTP server error {}: {}",
+                                                              resp.status_code, resp.body));
+                        }
+                        throw std::runtime_error(
+                            std::format("Unexpected HTTP status code: {}", resp.status_code));
+                    })
+                    .thenError([this, target](std::exception_ptr e) -> Response {
+                        auto error_metric = _metrics;
+                        error_metric.set_metric_name("proxygen_http.client.error");
+                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_one();
+                        error_metric.emit();
+                        std::rethrow_exception(e);
+                    });
+            std::move(chain)
+                .thenTry(
+                    [promise = std::move(promise)](kythira::try_default<Response> result) mutable {
                         if (result.hasException()) {
                             promise.setException(result.exception());
                         } else {
                             promise.setValue(std::move(result.value()));
                         }
                     })
-                    .detach();  // Requirement 14.3: guarantees this chain
-                                // actually executes under every backend
-                                // (stdexec's lazy senders in particular),
-                                // not only Folly's eager-by-construction
-                                // one -- future.hpp's own detach() comment.
-            });
-            return future;
-        } catch (const std::exception&) {
-            promise.setException(std::current_exception());
-            return future;
-        }
+                .detach();  // Requirement 14.3: guarantees this chain
+                            // actually executes under every backend
+                            // (stdexec's lazy senders in particular),
+                            // not only Folly's eager-by-construction
+                            // one -- future.hpp's own detach() comment.
+        });
+        return future;
+    } catch (const std::exception&) {
+        promise.setException(std::current_exception());
+        return future;
     }
 }
 

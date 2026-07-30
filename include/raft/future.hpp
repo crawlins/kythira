@@ -518,7 +518,7 @@ public:
         using ReturnType = std::invoke_result_t<F, T>;
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(
-                std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) {
+                std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) mutable {
                     func(std::move(value));
                     return folly::Unit{};
                 }));
@@ -538,7 +538,7 @@ public:
 
         // Use folly's automatic future flattening
         return FutureReturnType(
-            std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) {
+            std::move(_folly_future).thenValue([func = std::forward<F>(func)](T value) mutable {
                 // Call the lambda which returns Future<U>
                 auto inner_future = func(std::move(value));
                 // Extract the folly::Future from our wrapper
@@ -556,7 +556,7 @@ public:
         if constexpr (std::is_void_v<ReturnType>) {
             return Future<void>(
                 std::move(_folly_future)
-                    .thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
+                    .thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) mutable {
                         Try<T> kythira_try(std::move(folly_try));
                         func(std::move(kythira_try));
                         return folly::Unit{};
@@ -564,7 +564,7 @@ public:
         } else {
             return Future<ReturnType>(
                 std::move(_folly_future)
-                    .thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) {
+                    .thenTry([func = std::forward<F>(func)](folly::Try<T> folly_try) mutable {
                         Try<T> kythira_try(std::move(folly_try));
                         return func(std::move(kythira_try));
                     }));
@@ -750,16 +750,15 @@ public:
     {
         using ReturnType = std::invoke_result_t<F>;
         if constexpr (std::is_void_v<ReturnType>) {
-            return Future<void>(
-                std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) {
-                    func();
-                    return folly::Unit{};
-                }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenValue([func = std::forward<F>(func)](folly::Unit) mutable {
+                                        func();
+                                        return folly::Unit{};
+                                    }));
         } else {
-            return Future<ReturnType>(
-                std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) {
-                    return func();
-                }));
+            return Future<ReturnType>(std::move(_folly_future)
+                                          .thenValue([func = std::forward<F>(func)](
+                                                         folly::Unit) mutable { return func(); }));
         }
     }
 
@@ -774,7 +773,7 @@ public:
 
         // Use folly's automatic future flattening
         return FutureReturnType(
-            std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) {
+            std::move(_folly_future).thenValue([func = std::forward<F>(func)](folly::Unit) mutable {
                 // Call the lambda which returns Future<U>
                 auto inner_future = func();
                 // Extract the folly::Future from our wrapper
@@ -790,20 +789,20 @@ public:
     {
         using ReturnType = std::invoke_result_t<F, Try<void>>;
         if constexpr (std::is_void_v<ReturnType>) {
-            return Future<void>(
-                std::move(_folly_future)
-                    .thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) {
-                        Try<void> kythira_try(std::move(folly_try));
-                        func(std::move(kythira_try));
-                        return folly::Unit{};
-                    }));
+            return Future<void>(std::move(_folly_future)
+                                    .thenTry([func = std::forward<F>(func)](
+                                                 folly::Try<folly::Unit> folly_try) mutable {
+                                        Try<void> kythira_try(std::move(folly_try));
+                                        func(std::move(kythira_try));
+                                        return folly::Unit{};
+                                    }));
         } else {
-            return Future<ReturnType>(
-                std::move(_folly_future)
-                    .thenTry([func = std::forward<F>(func)](folly::Try<folly::Unit> folly_try) {
-                        Try<void> kythira_try(std::move(folly_try));
-                        return func(std::move(kythira_try));
-                    }));
+            return Future<ReturnType>(std::move(_folly_future)
+                                          .thenTry([func = std::forward<F>(func)](
+                                                       folly::Try<folly::Unit> folly_try) mutable {
+                                              Try<void> kythira_try(std::move(folly_try));
+                                              return func(std::move(kythira_try));
+                                          }));
         }
     }
 

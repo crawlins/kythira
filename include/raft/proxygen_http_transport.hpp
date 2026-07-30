@@ -365,6 +365,34 @@ public:
     auto enable_auto_reload(std::chrono::seconds poll_interval) -> void;
     auto disable_auto_reload() -> void;
 
+    /// @brief Test-only escape hatch (design.md Property 12): runs the
+    ///     generic bridge (Requirement 14) unconditionally, even under a
+    ///     `Types` bundle for which `send_rpc`'s own `if constexpr`
+    ///     dispatch (Requirement 16.1) would otherwise always select the
+    ///     Folly fast path -- there is no way to reach this from
+    ///     `send_request_vote`/`send_append_entries`/`send_install_snapshot`,
+    ///     which always go through `send_rpc`'s ordinary dispatch and so
+    ///     always honor Property 11 (fast path taken iff
+    ///     `Types::future_template<T>` is `kythira::Future<T>` exactly).
+    ///     This method exists so a test built under
+    ///     `KYTHIRA_DEFAULT_FUTURE_BACKEND=folly` can assert that the fast
+    ///     path and the generic bridge produce the same
+    ///     externally-observable result for the same RPC, which is what
+    ///     makes Requirement 17's benchmark comparison of the two paths a
+    ///     fair one (same behavior, different cost) rather than two
+    ///     different code paths that merely happen to both "work". Public,
+    ///     not `private` + `friend`, for the same reason
+    ///     `boost_beast_server::dispatch` is: reached from test code
+    ///     outside this class, not from a nested template whose second
+    ///     parameter would otherwise vary independently of `Types`.
+    template<typename Request, typename Response>
+    auto send_rpc_via_generic_bridge_for_test(std::uint64_t target, std::string_view endpoint,
+                                              const Request& request,
+                                              std::chrono::milliseconds timeout)
+        -> future_template<Response> {
+        return send_rpc_generic_bridge<Request, Response>(target, endpoint, request, timeout);
+    }
+
 private:
     folly::IOThreadPoolExecutorBase& _io_executor;
     serializer_type _serializer;
@@ -387,6 +415,17 @@ private:
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
                   std::chrono::milliseconds timeout) -> future_template<Response>;
+
+    /// @brief The generic (any-future-backend) bridge body (Requirement 14)
+    ///     -- `send_rpc`'s `else` branch delegates here unconditionally;
+    ///     this is also `send_rpc_via_generic_bridge_for_test`'s (public,
+    ///     below) sole implementation, so there is exactly one copy of the
+    ///     generic-bridge chain-composition logic regardless of which entry
+    ///     point reaches it.
+    template<typename Request, typename Response>
+    auto send_rpc_generic_bridge(std::uint64_t target, std::string_view endpoint,
+                                 const Request& request, std::chrono::milliseconds timeout)
+        -> future_template<Response>;
 
     /// @brief Requirement 16: the Folly-native fast path, taken instead of
     ///     `send_rpc` above when `future_template<Response>` is

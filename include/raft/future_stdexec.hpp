@@ -884,21 +884,33 @@ public:
     requires(!detail::is_future_v<std::invoke_result_t<F, Try<T>>>)
     {
         using R = std::invoke_result_t<F, Try<T>>;
-        auto with_value = std::move(_sender) | ex::let_value([func](T value) mutable {
+        // func is attached to *two* let_value/let_error continuations below
+        // (exactly one of which ever actually runs, per the value/error
+        // completion channel), which requires copying it once per
+        // continuation -- fine for a copyable F, but F is frequently a
+        // lambda capturing a move-only kythira::promise_default<T> by move
+        // (e.g. proxygen_http_transport_impl.hpp's generic bridge), and
+        // std::function-style copy-into-two-closures doesn't compile for
+        // that. Wrapping func in a shared_ptr sidesteps the requirement
+        // entirely: both continuations capture (and copy) the shared_ptr,
+        // which is always copyable regardless of F, while still invoking
+        // the single underlying F exactly once.
+        auto shared_func = std::make_shared<F>(std::forward<F>(func));
+        auto with_value = std::move(_sender) | ex::let_value([shared_func](T value) mutable {
                               if constexpr (std::is_void_v<R>) {
-                                  func(Try<T>(std::move(value)));
+                                  (*shared_func)(Try<T>(std::move(value)));
                                   return ex::just(kythira::unit{});
                               } else {
-                                  return ex::just(func(Try<T>(std::move(value))));
+                                  return ex::just((*shared_func)(Try<T>(std::move(value))));
                               }
                           });
         auto composed =
-            std::move(with_value) | ex::let_error([func](std::exception_ptr ex_ptr) mutable {
+            std::move(with_value) | ex::let_error([shared_func](std::exception_ptr ex_ptr) mutable {
                 if constexpr (std::is_void_v<R>) {
-                    func(Try<T>(std::move(ex_ptr)));
+                    (*shared_func)(Try<T>(std::move(ex_ptr)));
                     return ex::just(kythira::unit{});
                 } else {
-                    return ex::just(func(Try<T>(std::move(ex_ptr))));
+                    return ex::just((*shared_func)(Try<T>(std::move(ex_ptr))));
                 }
             });
         using ErasedR = std::conditional_t<std::is_void_v<R>, kythira::unit, R>;
@@ -1207,21 +1219,27 @@ public:
     requires(!detail::is_future_v<std::invoke_result_t<F, Try<void>>>)
     {
         using R = std::invoke_result_t<F, Try<void>>;
-        auto with_value = std::move(_sender) | ex::let_value([func](kythira::unit) mutable {
+        // See Future<T>::thenTry's identical shared_func wrapping above --
+        // same reasoning: func is attached to two continuations here, only
+        // one of which ever runs, but a move-only F (e.g. a lambda
+        // capturing a move-only kythira::promise_default<T> by move) can't
+        // be copied into both.
+        auto shared_func = std::make_shared<F>(std::forward<F>(func));
+        auto with_value = std::move(_sender) | ex::let_value([shared_func](kythira::unit) mutable {
                               if constexpr (std::is_void_v<R>) {
-                                  func(Try<void>(kythira::unit{}));
+                                  (*shared_func)(Try<void>(kythira::unit{}));
                                   return ex::just(kythira::unit{});
                               } else {
-                                  return ex::just(func(Try<void>(kythira::unit{})));
+                                  return ex::just((*shared_func)(Try<void>(kythira::unit{})));
                               }
                           });
         auto composed =
-            std::move(with_value) | ex::let_error([func](std::exception_ptr ex_ptr) mutable {
+            std::move(with_value) | ex::let_error([shared_func](std::exception_ptr ex_ptr) mutable {
                 if constexpr (std::is_void_v<R>) {
-                    func(Try<void>(std::move(ex_ptr)));
+                    (*shared_func)(Try<void>(std::move(ex_ptr)));
                     return ex::just(kythira::unit{});
                 } else {
-                    return ex::just(func(Try<void>(std::move(ex_ptr))));
+                    return ex::just((*shared_func)(Try<void>(std::move(ex_ptr))));
                 }
             });
         using ErasedR = std::conditional_t<std::is_void_v<R>, kythira::unit, R>;
