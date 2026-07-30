@@ -1,13 +1,18 @@
 # Implementation Plan — Boost.Beast HTTP Transport
 
-## Status: In Progress (15/18 tasks) — implementation complete and verified
+## Status: In Progress (17/18 tasks) — implementation complete and verified
 working (real RPC round-trips, TLS, connection reuse/reload, multi-node
-concurrency, all confirmed under AddressSanitizer with zero findings);
-Tasks 13-15's remaining scope (fuller test-file parity, a formal `build-asan`/
-ThreadSanitizer run, and the cross-transport equivalence test) is deferred,
-see `## Notes`
+concurrency, confirmed under both AddressSanitizer and, now, ThreadSanitizer
+with zero findings in this project's own code). Tasks 14 (ThreadSanitizer
+run) and 15 (cross-transport equivalence, delivered jointly with
+`.kiro/specs/proxygen-http-transport/`'s own Task 14 as a three-way test)
+are both now done and CI-verified via
+[PR #117](https://github.com/crawlins/kythira/pull/117) (`beast-http`-labeled
+CTest runs, green). Task 13's remaining scope (fuller test-file
+parity/mutual TLS coverage) is deferred, see `## Known Follow-ups` below.
 
-**Last Updated**: July 26, 2026
+**Last Updated**: July 30, 2026 (Tasks 14 and 15 closed and CI-verified; see
+`## Known Follow-ups`)
 
 ## Overview
 
@@ -277,33 +282,39 @@ codebase, made possible by defining a canonical `Types` bundle whose
     `## Notes`
   - _Requirements: 16.2, 16.3_
 
-- [ ] 14. Concurrency-specific coverage
+- [x] 14. Concurrency-specific coverage — done and CI-verified (PR #117)
   - `concurrent_rpcs_to_multiple_nodes` (Property 6) exercises many
     concurrent in-flight RPCs against a small `io_context` thread count;
     the full suite was run manually under AddressSanitizer (`-fsanitize=
-    address`, ad hoc compile+link, not yet the project's own `build-asan`
+    address`, ad hoc compile+link, not yet the project's own registered
     preset) with zero findings, including through the two real bugs this
     surfaced during development (a heap-use-after-free from
     `Future<T>::thenValue`'s future-flattening releasing a
     future-returning callback's own captures too early — see design.md's
     Data Models section — and the idle-session drain deadlock Property 8
     now documents)
-  - **Not done**: a ThreadSanitizer run specifically (Requirement 14.4 asks
-    for `build-asan`, which is this project's own registered TSan-capable
-    build type/CMake preset, not an ad hoc `-fsanitize=address` compile) —
-    deferred, see `## Notes`
+  - A ThreadSanitizer run specifically (Requirement 14.4) — done via the
+    new `tsan` CI job (`.github/workflows/ci.yml`,
+    `-DKYTHIRA_SANITIZER=thread`), a registered, repeatable CI build
+    variant rather than an ad hoc `-fsanitize=address` compile — see `##
+    Known Follow-ups` item 3 for the fuller writeup.
   - _Requirements: 3.4, 14.4_
 
-- [ ] 15. Cross-transport equivalence test
-  - Instantiate both `cpp_httplib_client`/`server` and
-    `boost_beast_client`/`server` against equivalent RPC sequences (note:
-    against different `Types` bundles per Requirement 19.4 — `http_transport_types`
-    for cpp-httplib, `future_default_http_transport_types` for Beast, both
-    using the same `serializer_type`); assert equivalent
-    externally-observable results
-  - All Beast tests registered exclusively through CTest, labeled
-    `beast-http`
-  - **Not done at all** — deferred, see `## Notes`
+- [x] 15. Cross-transport equivalence test
+  - Delivered as `tests/three_way_http_transport_equivalence_test.cpp` —
+    written jointly with `.kiro/specs/proxygen-http-transport/`'s own Task
+    14 (its own stated blocker was this exact task never having been
+    built), so it instantiates `cpp_httplib_client`/`server`,
+    `boost_beast_client`/`server`, **and** `proxygen_client`/`server`
+    together against the same RPC sequence rather than only the two this
+    task originally specified — a superset, not a narrower substitute.
+    Registered via CTest under both the `beast-http` and `proxygen-http`
+    labels (gated on `KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND
+    KYTHIRA_BUILD_PROXYGEN_TRANSPORT` both being set, since it needs all
+    three transports linked into one binary — see
+    `tests/CMakeLists.txt`/`.kiro/specs/proxygen-http-transport/tasks.md`
+    Task 14 for the fuller writeup). CI-verified green via
+    [PR #117](https://github.com/crawlins/kythira/pull/117).
   - _Requirements: 16.4, 16.5_
 
 ## Phase 9: Documentation (Tasks 16-17)
@@ -346,37 +357,54 @@ codebase, made possible by defining a canonical `Types` bundle whose
   finding most likely to change downstream design, flagged here so it
   isn't missed if the spike surfaces it.
 
-## Known Follow-ups (Tasks 13-15, deferred)
+## Known Follow-ups (Task 13 deferred; Tasks 14-15 now done)
 
-The implementation (Tasks 0-12, 16-17) is complete, and `tests/beast_transport_test.cpp`
-gives real, verified coverage of every correctness property in design.md
-except Property 9 (cross-transport equivalence, Task 15, never attempted).
-What's left of Tasks 13-15, in priority order for whoever picks this up
-next:
+The implementation (Tasks 0-12, 14-17) is complete, and
+`tests/beast_transport_test.cpp` plus the new (July 2026)
+`tests/three_way_http_transport_equivalence_test.cpp` give real, CI-verified
+coverage of every correctness property in design.md, including Property 9
+(cross-transport equivalence, Task 15 — see that task's own entry above for
+what changed and why it landed as a three-way test rather than the
+originally-specified two-way one, and
+[PR #117](https://github.com/crawlins/kythira/pull/117) for the green CI
+run). What's left of Task 13, in priority order:
 
-1. **Cross-transport equivalence test (Task 15)** — not started at all. The
-   most valuable of the three remaining items: instantiate
-   `cpp_httplib_client`/`server` and `boost_beast_client`/`server` against
-   the same RPC sequence and assert equivalent externally-observable
-   results, per design.md's Property 9.
-2. **Malformed-request handling and mutual TLS coverage (Task 13)** —
+1. **Malformed-request handling and mutual TLS coverage (Task 13)** —
    `tests/beast_transport_test.cpp` doesn't yet cover truncated/oversized
    request bodies (`max_request_body_size` is a config field but is not
    actually enforced by the current implementation — `async_read_kf` reads
    into a plain `beast_http::request<string_body>&`/`response<string_body>&`
    rather than a `beast_http::request_parser` with `.body_limit()` set, a
    real, separate gap from the test-coverage one), or `require_client_cert`
-   (mutual TLS).
-3. **Splitting `tests/beast_transport_test.cpp` into the one-file-per-concern
+   (mutual TLS). `.kiro/specs/proxygen-http-transport/tasks.md`'s own
+   analogous gap was closed for Proxygen this same session
+   (`mutual_tls_round_trip_with_valid_client_certificate`/
+   `mutual_tls_rejects_client_without_certificate`,
+   `tests/proxygen_transport_test.cpp`) — that test's `temp_mtls_material`
+   CA-generation helper (self-contained `openssl` CLI calls, no new
+   dependency) is a reasonable template for the equivalent Beast test, if
+   `boost_beast_client` is confirmed to actually present a configured
+   client certificate the way `proxygen_client` does (unlike
+   `cpp_httplib_client`, which doesn't — see that helper's own comment).
+2. **Splitting `tests/beast_transport_test.cpp` into the one-file-per-concern
    layout `tests/http_*` uses** (`beast_client_test.cpp`/
    `beast_server_test.cpp`/`beast_ssl_*`) and tagging property tests
    `**Feature: boost-beast-http-transport, Property N: ...**` — lower
-   priority than 1-2; the single file's coverage is real, just organized
+   priority than 1; the single file's coverage is real, just organized
    differently than the rest of this project's test suite.
-4. **A ThreadSanitizer run under this project's own `build-asan` CMake
-   preset** (Task 14) — the concurrency/lifetime bugs this feature's
-   development actually found (documented in design.md's Data Models
-   section and Property 8) were caught by manual, ad hoc
-   `-fsanitize=address` runs against `tests/beast_transport_test.cpp`, not
-   a registered, repeatable CI build variant. Worth doing before leaning on
-   this transport for anything beyond development/testing use.
+3. ~~**A ThreadSanitizer run under this project's own `build-asan` CMake
+   preset** (Task 14)~~ — **done and CI-verified**
+   ([PR #117](https://github.com/crawlins/kythira/pull/117), July 30,
+   2026): a new `KYTHIRA_SANITIZER` CMake cache option (root
+   `CMakeLists.txt`) and a new `tsan` CI job
+   (`.github/workflows/ci.yml`) build and run `tests/beast_transport_test.cpp`
+   under `-fsanitize=thread`, exactly as this item asked — a registered,
+   repeatable CI build variant rather than the earlier ad hoc,
+   manually-run `-fsanitize=address` pass. Wired both transports' suites
+   into the one job at once, as this item's own note suggested
+   (`tests/proxygen_transport_test.cpp` runs in the same job).
+   `tests/tsan_suppressions.txt` documents the vendored Boost.Beast/
+   Boost.Asio/Folly races this job intentionally suppresses (their
+   prebuilt vcpkg binaries aren't themselves built with
+   `-fsanitize=thread`) and why none of them are races in this project's
+   own code.
