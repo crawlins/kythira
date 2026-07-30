@@ -72,12 +72,14 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `boost-beast-http-transport` | 17/18 | Core transport, ThreadSanitizer coverage, and the three-way cross-transport equivalence test (shared with `proxygen-http-transport`'s Task 14) are done and CI-verified (PR #117). Only Task 13 remains: malformed-request handling, mutual TLS (`require_client_cert`), and splitting `tests/beast_transport_test.cpp` into the one-file-per-concern layout `tests/http_*` uses — see that spec's `tasks.md` "Known Follow-ups" |
+| `cbor-rpc-serializer` | 45/49 | `cbor_rpc_serializer<Data>` implemented and tested (unit, round-trip, malformed-input, discriminant-mismatch, CBOR-vs-JSON size-comparison), no `vcpkg.json`/`Kconfig` change needed; own `tasks.md` marks itself "Status: Implemented". Remaining 4 items are optional follow-ups: an example program and a final end-to-end CoAP sanity check |
 
-`proxygen-http-transport` reached full completion (17/17) on July 30, 2026,
-alongside `boost-beast-http-transport`'s Tasks 14-15 above, all via
-[PR #117](https://github.com/crawlins/kythira/pull/117); see
-`doc/CHANGELOG.md` for that day's entry.
+`boost-beast-http-transport` and `proxygen-http-transport` both reached full
+completion (18/18 and 17/17) on July 30, 2026 via
+[PR #117](https://github.com/crawlins/kythira/pull/117) and its immediate
+follow-up commit (a second ThreadSanitizer pass against Beast's newly-split
+test binaries caught four further real data races); both are off this
+table entirely now. See `doc/CHANGELOG.md` for those entries.
 
 **A note on how this table stays honest**: `proxygen-http-transport/tasks.md`
 was found, in the same week, drifted in *both* directions in turn — first
