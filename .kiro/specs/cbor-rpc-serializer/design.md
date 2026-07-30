@@ -453,13 +453,21 @@ instead of text-string field names would shave several bytes per field at the co
 losing the current implementation's "hex dump reads like the JSON field names" property.
 Left as a follow-on since it is a pure size/readability tradeoff, not a correctness gap.
 
-### HTTP transport Content-Type generalization
+### HTTP transport Content-Type generalization — implemented
 
 As described in Interactions with Existing Transports, `cpp_httplib_client`/
 `cpp_httplib_server` should derive their `Content-Type` header from `_serializer.name()`
 (as CoAP already does via `coap_utils::get_content_format_for_serializer`) instead of the
 hardcoded `"application/json"` literal, so that CBOR (or any future non-JSON serializer)
 is correctly labeled on the wire over HTTP too.
+
+This has since been implemented: `include/raft/http_transport_impl.hpp` adds a
+`content_type_for_serializer` helper that composes
+`coap_utils::get_content_format_for_serializer(name())` with
+`coap_utils::content_format_to_string`, and both the client request and server response
+paths use it in place of the removed `content_type_json` literal. It is advisory labeling
+only — both peers still decode with their own configured `_serializer`, so no
+wire-protocol behavior changes.
 
 ### Canonical CBOR (RFC 8949 §4.2) conformance
 

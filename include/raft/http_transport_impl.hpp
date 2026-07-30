@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/http_transport.hpp>
+#include <raft/coap_utils.hpp>
 #include <httplib.h>
 #include <format>
 #include <stdexcept>
@@ -31,10 +32,24 @@ namespace {
 constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* endpoint_install_snapshot = "/v1/raft/install_snapshot";
-constexpr const char* content_type_json = "application/json";
 constexpr const char* header_content_type = "Content-Type";
 constexpr const char* header_content_length = "Content-Length";
 constexpr const char* header_user_agent = "User-Agent";
+
+// Derive the HTTP Content-Type from the serializer's name(), so a non-JSON
+// serializer (e.g. cbor_rpc_serializer -> "application/cbor") is labeled
+// correctly on the wire rather than always as "application/json". This reuses
+// the CoAP transport's serializer-name detection
+// (coap_utils::get_content_format_for_serializer) as the single source of truth
+// for the name -> media-type mapping across both transports; an unrecognized
+// serializer resolves to the same default CoAP uses. Client and server always
+// share the same serializer_type, so this is advisory labeling only — the
+// receiver decodes with its own _serializer regardless of this header.
+template<typename Serializer>
+auto content_type_for_serializer(const Serializer& serializer) -> std::string {
+    return coap_utils::content_format_to_string(
+        coap_utils::get_content_format_for_serializer(serializer.name()));
+}
 
 // SSL certificate validation helpers
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
@@ -1045,9 +1060,11 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             body.push_back(static_cast<char>(b));
         }
 
-        // Set headers
+        // Set headers. Content-Type is derived from the serializer so a CBOR
+        // (or any non-JSON) serializer is labeled correctly on the wire.
+        const std::string content_type = content_type_for_serializer(_serializer);
         httplib::Headers headers;
-        headers.emplace(header_content_type, content_type_json);
+        headers.emplace(header_content_type, content_type);
         // Let cpp-httplib handle Content-Length automatically
         headers.emplace(header_user_agent, _config.user_agent);
 
@@ -1078,7 +1095,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         metric.emit();
 
         // Send POST request
-        auto result = client->Post(endpoint, headers, body, content_type_json);
+        auto result = client->Post(endpoint, headers, body, content_type);
 
         // Record latency
         auto end_time = std::chrono::steady_clock::now();
@@ -1642,10 +1659,11 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
             response_body.push_back(static_cast<char>(b));
         }
 
-        // Set response
+        // Set response. Content-Type is derived from the serializer so a CBOR
+        // (or any non-JSON) serializer is labeled correctly on the wire.
         http_resp.status = 200;
         http_resp.body = std::move(response_body);
-        http_resp.set_header(header_content_type, content_type_json);
+        http_resp.set_header(header_content_type, content_type_for_serializer(_serializer));
         // Let cpp-httplib handle Content-Length automatically
 
         // Record response size
