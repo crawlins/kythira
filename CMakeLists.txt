@@ -144,6 +144,49 @@ if(ENABLE_COVERAGE)
                    "(${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
+# Sanitizer support. This project's own AddressSanitizer runs during the
+# Boost.Beast and Proxygen transport specs' development
+# (`.kiro/specs/boost-beast-http-transport/`/`.kiro/specs/proxygen-http-transport/`
+# design.md/tasks.md, `doc/CHANGELOG.md`'s July 28, 2026 entry) were all
+# ad hoc (`g++-13 -std=c++23 -fsanitize=address`, run and discarded, never
+# a registered build configuration) — both specs' tasks.md flagged a
+# registered, repeatable sanitizer build as their own last open follow-up.
+# This is the first sanitizer-support CMake option this project has,
+# following `ENABLE_COVERAGE`'s own established shape immediately above
+# (plain cache-variable-driven flags appended to
+# `CMAKE_CXX_FLAGS`/`CMAKE_EXE_LINKER_FLAGS`) rather than introducing
+# CMakePresets.json, which this project doesn't otherwise use anywhere.
+set(KYTHIRA_SANITIZER "" CACHE STRING
+    "Sanitizer to build with: empty (none, default), 'thread', or 'address'")
+set_property(CACHE KYTHIRA_SANITIZER PROPERTY STRINGS "" thread address)
+
+if(NOT KYTHIRA_SANITIZER STREQUAL "" AND ENABLE_COVERAGE)
+    message(FATAL_ERROR "KYTHIRA_SANITIZER and ENABLE_COVERAGE are mutually exclusive "
+                        "(both instrument every translation unit, and LLVM source-based "
+                        "coverage's own instrumentation is not sanitizer-safe)")
+endif()
+
+if(KYTHIRA_SANITIZER STREQUAL "thread")
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+        message(STATUS "KYTHIRA_SANITIZER=thread: forcing CMAKE_BUILD_TYPE=Debug")
+    endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=thread")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=thread")
+    message(STATUS "ThreadSanitizer enabled (KYTHIRA_SANITIZER=thread)")
+elseif(KYTHIRA_SANITIZER STREQUAL "address")
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+        message(STATUS "KYTHIRA_SANITIZER=address: forcing CMAKE_BUILD_TYPE=Debug")
+    endif()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+    message(STATUS "AddressSanitizer enabled (KYTHIRA_SANITIZER=address)")
+elseif(NOT KYTHIRA_SANITIZER STREQUAL "")
+    message(FATAL_ERROR "KYTHIRA_SANITIZER must be empty, 'thread', or 'address', "
+                        "got \"${KYTHIRA_SANITIZER}\"")
+endif()
+
 # Find dependencies
 # Boost is a hard-required core dependency, outside Kconfig's control
 # entirely -- it is not modeled as a CONFIG symbol and always runs

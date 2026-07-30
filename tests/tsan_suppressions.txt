@@ -1,0 +1,64 @@
+# ThreadSanitizer suppressions for kythira's Beast/Proxygen concurrency
+# suites (beast_transport_test, proxygen_transport_test -- see
+# .github/workflows/ci.yml's tsan job for why
+# three_way_http_transport_equivalence_test is excluded from this job
+# entirely rather than sharing this suppressions file).
+#
+# The vcpkg-vendored Folly/Wangle/Boost binaries linked into these test
+# binaries are prebuilt without -fsanitize=thread. TSan's shadow memory
+# cannot see the synchronization those libraries perform internally, so it
+# reports "data races" whose racing accesses are entirely inside
+# folly::/wangle:: machinery: thread-local bookkeeping in
+# folly::AtomicNotificationQueue's ThreadEntry registry, the
+# folly::Promise/Try/Core plumbing in folly::futures::detail, the
+# IOThreadPool creation/teardown paths in folly::ThreadPoolExecutor and
+# folly::NamedThreadFactory, and wangle::ServerBootstrap's listen-socket
+# mutex.
+#
+# A run of these three suites under -DKYTHIRA_SANITIZER=thread reported
+# ~285 such races. Every one was inspected: kythira:: only ever appears as
+# a template argument on a folly:: type (e.g.
+# folly::detail::TryBase<kythira::request_vote_response<...>>) or as the
+# call site several frames above the race (e.g.
+# kythira::proxygen_server<...>::start() creating an IOThreadPool thread) —
+# none had a kythira:: function as the racing read or write itself.
+# Rebuilding vcpkg's folly port (and its transitive dependency tree) with
+# -fsanitize=thread would be a substantially larger undertaking than this
+# follow-up item and is not needed to give this job real signal on
+# kythira's own code, so the known-noisy folly::/wangle:: races are
+# suppressed here instead. A race whose access frames are entirely within
+# kythira:: (no folly::/wangle:: frame in either stack) will NOT match
+# these patterns and will still fail the job.
+race:folly::
+race:wangle::
+
+# beast_transport_test's own vendored dependency, Boost.Beast/Boost.Asio,
+# has the identical problem: its prebuilt binary isn't built with
+# -fsanitize=thread either, so TSan flags races entirely inside
+# boost::beast::basic_stream::expires_after and
+# boost::asio::detail::deadline_timer_service's cancel()/expires_at() --
+# the per-connection idle-timeout timer machinery, exercised merely by
+# using a boost::beast::tcp_stream at all, not something kythira's own
+# code touches directly.
+race:boost::beast::
+race:boost::asio::
+
+# folly::ThreadPoolExecutor::addThreads()/folly::NamedThreadFactory's own
+# internal bookkeeping (recording each new IOThreadPool worker thread)
+# resizes a std::vector<T> (T has been observed as both unsigned long and
+# std::thread::id across separate bookkeeping members/runs) whose element
+# copy gets inlined into libstdc++'s std::__copy_move rather than left as
+# a named folly:: frame, so it doesn't match the race:folly:: pattern
+# above even though the allocation site and every thread-creation site
+# involved is unambiguously folly::NamedThreadFactory::newThread /
+# folly::ThreadPoolExecutor::addThreads (confirmed from real runs' full
+# race reports, not guessed, on two separate occasions with two different
+# element types). Suppressed by the specific template instantiations
+# rather than a blanket race:memmove, which would be far too broad (this
+# project's own code copies plenty of trivially-copyable ranges). Add
+# further instantiations here (rather than broadening to
+# race:std::__copy_move<...>::__copy_m without template arguments) if a
+# third element type turns up -- that broader form would also suppress
+# real races in kythira's own vector-copying code.
+race:std::__copy_move<true, true, std::random_access_iterator_tag>::__copy_m<unsigned long, unsigned long>
+race:std::__copy_move<true, true, std::random_access_iterator_tag>::__copy_m<std::thread::id, std::thread::id>
