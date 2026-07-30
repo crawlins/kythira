@@ -48,7 +48,7 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 ## Pending Specifications
 
 The table above tracks the original 8 major feature areas; `.kiro/specs/`
-has since grown to 34 per-feature spec directories, most now complete (see
+has since grown to 44 per-feature spec directories, most now complete (see
 `doc/CHANGELOG.md` for their individual completion entries). The specs
 below are the ones that are not, split into two tables since they're
 different kinds of "not done": genuinely never started (only a design/
@@ -59,14 +59,35 @@ unambiguous at a glance.
 
 ### Not Started
 
-None currently — `kconfig-integration` (the last entry here) reached full
-completion on July 24, 2026; see `doc/CHANGELOG.md` for that day's entry.
+| Spec | Tasks | Notes |
+|------|-------|-------|
+| `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
+| `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
+| `ion-rpc-serializer` | 0/45 | Design-only; `ion_rpc_serializer<Data>` over the `ion-c` overlay port |
+| `cbor-rpc-serializer` | 0/49 | Design-only; hand-rolled RFC 8949 codec, no new dependency |
+| `azure-cloud-services` | 0/9 | Design-only; `azure_vm_quorum_manager`/`azure_vmss_quorum_manager`/`azure_key_vault_ca_provider` |
+| `gcp-cloud-services` | 0/13 | Design-only; `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` |
+| `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
 
 ### Partially Implemented
 
-None currently — `ci-real-cloud-tests` and `discovery-nodes-host-build`
-(the last two entries here) both reached full completion on July 23,
-2026; see `doc/CHANGELOG.md` for that day's entries.
+| Spec | Tasks | Notes |
+|------|-------|-------|
+| `boost-beast-http-transport` | 17/18 | Core transport, ThreadSanitizer coverage, and the three-way cross-transport equivalence test (shared with `proxygen-http-transport`'s Task 14) are done and CI-verified (PR #117). Only Task 13 remains: malformed-request handling, mutual TLS (`require_client_cert`), and splitting `tests/beast_transport_test.cpp` into the one-file-per-concern layout `tests/http_*` uses — see that spec's `tasks.md` "Known Follow-ups" |
+
+`proxygen-http-transport` reached full completion (17/17) on July 30, 2026,
+alongside `boost-beast-http-transport`'s Tasks 14-15 above, all via
+[PR #117](https://github.com/crawlins/kythira/pull/117); see
+`doc/CHANGELOG.md` for that day's entry.
+
+**A note on how this table stays honest**: `proxygen-http-transport/tasks.md`
+was found, in the same week, drifted in *both* directions in turn — first
+saying "Not Started (0/17)" after the feature had actually been fully
+implemented, then (after a reconciliation pass) undercounting real gaps in
+Tasks 12-15 that a same-day CI run then closed for real. Prefer
+re-verifying a spec's `tasks.md` against its actual `include/`/`tests/`
+files and a real CI run over trusting either a stale status header or an
+unverified completion claim.
 
 ---
 
