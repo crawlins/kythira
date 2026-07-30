@@ -472,7 +472,21 @@ jobs:
   azure:
     name: Real Cloud Tests (Azure)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # 60 minutes was not enough: a real run of this job (PR #125) was killed
+    # by the job timeout while still mid-compile, having never reached the
+    # actual test-running step at all. Unlike the AWS job above, whose own
+    # 360-minute budget is dominated by real-EC2 test wall-clock time (its
+    # own comment's math: 345 minutes of CTest TIMEOUTs alone), this job's
+    # two real-Azure tests only need up to 1200s combined (600s each,
+    # tests/CMakeLists.txt) -- the dominant cost here is `cmake --build
+    # build -j$(nproc)` compiling the *whole* project from scratch against
+    # a cold vcpkg cache (this job's own vcpkg-realcloud-azure-... cache key
+    # had never been populated before that run). Matching the AWS job's own
+    # ceiling (360 -- "GitHub Actions' own default job timeout cap for
+    # hosted runners", per that job's comment) rather than guessing a
+    # smaller number and risking a second timeout on the next cold cache
+    # miss.
+    timeout-minutes: 360
     environment: real-cloud-tests
     permissions:
       id-token: write
