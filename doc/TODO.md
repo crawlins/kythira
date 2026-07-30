@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 29, 2026
+**Last Updated**: July 30, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -320,6 +320,46 @@ unverified completion claim.
   2; (2) `examples/` and the 5 standalone `cmd/*` production executables
   stay Folly-only, since their own `main()`s call `folly::init()` directly
   by design.
+
+- **`three_way_http_transport_equivalence_test` segfaults under
+  ThreadSanitizer (root cause not found)** (July 30, 2026, PR #117) — this
+  test passes cleanly under every ordinary CI leg, but reproduced an
+  identical SIGSEGV on two separate real runs of the new `tsan` CI job
+  (`.github/workflows/ci.yml`), roughly 2.1s in, with zero diagnostic
+  output either time — not even Boost.Test's own crash handler fires,
+  meaning it crashes before `main()`'s test framework is even running.
+  Worked around rather than fixed: the test is excluded from the `tsan`
+  job entirely (`beast_transport_test`/`proxygen_transport_test` still run
+  under it), on the reasoning that unlike those two suites — whose test
+  cases hammer a shared connection/session with many concurrent RPC
+  threads, exactly what that job exists to check — this suite's own test
+  cases are entirely sequential (`.get()` awaited one call at a time, no
+  per-RPC threads), so it was never exercising a concurrent code path TSan
+  needed to see in the first place. That reasoning justifies *not blocking
+  CI* on this test under TSan; it does not explain *why* it crashes. It's
+  the only one of this project's three-transport test binaries (linking
+  cpp-httplib + Boost.Beast + Proxygen together), and the crash is
+  specific to TSan instrumentation, so a static-initialization-order
+  issue or a TSan-runtime/shadow-memory interaction specific to that
+  combination of vendored libraries are both plausible, but neither is
+  confirmed. Getting a real answer likely needs a debugger attached at
+  process start (not just log inspection) or a local reproduction outside
+  this project's sandboxed CI-only development environment.
+
+- **`.kiro/specs/boost-beast-http-transport/tasks.md`'s Task 13 remains
+  open** (pre-existing, untouched by PR #117's Proxygen-focused work) —
+  two gaps, in priority order: (1) `tests/beast_transport_test.cpp`
+  doesn't yet cover truncated/oversized request bodies or mutual TLS
+  (`require_client_cert`) — the request-body gap is a real implementation
+  gap, not just missing tests: `max_request_body_size` is a config field
+  that isn't actually enforced (`async_read_kf` reads into a plain
+  `beast_http::request<string_body>&` rather than a
+  `beast_http::request_parser` with `.body_limit()` set); (2) splitting
+  that single test file into the one-file-per-concern layout
+  (`beast_client_test.cpp`/`beast_server_test.cpp`/`beast_ssl_*`) the rest
+  of this project's test suite uses — lower priority, purely
+  organizational. See that spec's own "Known Follow-ups" section for the
+  fuller writeup.
 
 ---
 
