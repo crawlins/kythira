@@ -63,7 +63,7 @@ unambiguous at a glance.
 |------|-------|-------|
 | `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
 | `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
-| `azure-cloud-services` | 0/9 | Design-only; `azure_vm_quorum_manager`/`azure_vmss_quorum_manager`/`azure_key_vault_ca_provider` |
+| `ion-rpc-serializer` | 0/45 | Design-only; `ion_rpc_serializer<Data>` over the `ion-c` overlay port |
 | `gcp-cloud-services` | 0/13 | Design-only; `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
 
