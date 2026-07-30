@@ -512,13 +512,6 @@ jobs:
           echo "::error::REAL_CLOUD_TESTS_AZURE_ENABLED is true but AZURE_CI_CLIENT_ID/AZURE_CI_TENANT_ID/AZURE_CI_SUBSCRIPTION_ID are not all set. See scripts/ci-cloud-credentials/azure/README.md." >&2
           exit 1
 
-      - name: Azure login (Workload Identity Federation)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
-
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
@@ -597,6 +590,28 @@ jobs:
               exit 1
             fi
           done
+
+      # Deliberately placed here, immediately before the test-running steps,
+      # not at the top of the job before the build: a real run (PR #125)
+      # logged in here first thing, then took ~84 minutes to cold-build the
+      # whole project against an empty vcpkg/ccache cache, and by the time
+      # the test steps below actually ran, the GitHub-issued OIDC client
+      # assertion azure/login@v2 exchanged for an AAD session token had long
+      # since expired (AADSTS700024: "Client assertion is not within its
+      # valid time range" -- observed exactly 84 minutes after the original
+      # login, well past both the ~5-10 minute GitHub OIDC token lifetime
+      # and the AAD access token's own lifetime, with no automatic refresh
+      # available since azure/login@v2 only fetches that OIDC token once,
+      # at the step's own execution time). Logging in here instead keeps the
+      # gap between authentication and actually using the credentials to the
+      # width of the two ctest steps below, not the build's own highly
+      # variable (cold vs. warm cache) duration.
+      - name: Azure login (Workload Identity Federation)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CI_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_CI_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_CI_SUBSCRIPTION_ID }}
 
       - name: Run quorum-manager bundle
         if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' }}
