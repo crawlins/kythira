@@ -346,30 +346,30 @@ unverified completion claim.
   stay Folly-only, since their own `main()`s call `folly::init()` directly
   by design.
 
-- **`three_way_http_transport_equivalence_test` segfaults under
-  ThreadSanitizer (root cause not found)** (July 30, 2026, PR #117) — this
-  test passes cleanly under every ordinary CI leg, but reproduced an
-  identical SIGSEGV on two separate real runs of the new `tsan` CI job
-  (`.github/workflows/ci.yml`), roughly 2.1s in, with zero diagnostic
-  output either time — not even Boost.Test's own crash handler fires,
-  meaning it crashes before `main()`'s test framework is even running.
-  Worked around rather than fixed: the test is excluded from the `tsan`
-  job entirely (`beast_transport_test`/`proxygen_transport_test` still run
-  under it), on the reasoning that unlike those two suites — whose test
-  cases hammer a shared connection/session with many concurrent RPC
-  threads, exactly what that job exists to check — this suite's own test
-  cases are entirely sequential (`.get()` awaited one call at a time, no
-  per-RPC threads), so it was never exercising a concurrent code path TSan
-  needed to see in the first place. That reasoning justifies *not blocking
-  CI* on this test under TSan; it does not explain *why* it crashes. It's
-  the only one of this project's three-transport test binaries (linking
-  cpp-httplib + Boost.Beast + Proxygen together), and the crash is
-  specific to TSan instrumentation, so a static-initialization-order
-  issue or a TSan-runtime/shadow-memory interaction specific to that
-  combination of vendored libraries are both plausible, but neither is
-  confirmed. Getting a real answer likely needs a debugger attached at
-  process start (not just log inspection) or a local reproduction outside
-  this project's sandboxed CI-only development environment.
+- **`three_way_http_transport_equivalence_test` segfaulted under
+  ThreadSanitizer — FIXED** (July 30, 2026, PR #117 introduced the
+  workaround; fixed shortly after) — this test passed cleanly under every
+  ordinary CI leg but reproduced an identical SIGSEGV on two separate real
+  runs of the `tsan` CI job (`.github/workflows/ci.yml`), roughly 2.1s in,
+  with zero diagnostic output either time — not even Boost.Test's own crash
+  handler fired, i.e. it crashed before `main()`'s test framework was
+  running. Root cause: it was the only Folly-touching Boost.Test binary in
+  the suite that never called `folly::init()`. Folly's registration-gated
+  singletons — notably `folly::Timekeeper`, reached through the RPC future
+  timeouts (`.get()` with an `rpc_timeout`) — abort if accessed before
+  `folly::init()` runs `registrationComplete()`. As the only binary that
+  combines the Beast (boost::asio) and Proxygen (Folly) transports in one
+  process, its thread interleavings differ from the sibling
+  `beast_*`/`proxygen_transport_test` suites, and TSan's perturbed pthread/
+  TLS ordering turned that latent, timing-dependent abort into the
+  output-less early crash (it fires from a background Folly/IO thread before
+  Boost.Test's handler is in place, which is why no stack was printed). Fix:
+  install the same `FollyInitFixture` (a `BOOST_GLOBAL_FIXTURE` constructing
+  a `folly::Init`) that the ~118 other Folly-dependent tests already use, so
+  Folly's singletons are registration-complete before any transport runs.
+  The test is re-enabled in the `tsan` job (build target + `ctest -R`) so CI
+  now verifies the fix holds, and it shares `tests/tsan_suppressions.txt`
+  with the other suites.
 
 - **`.kiro/specs/boost-beast-http-transport/tasks.md`'s Task 13 remains
   open** (pre-existing, untouched by PR #117's Proxygen-focused work) —
