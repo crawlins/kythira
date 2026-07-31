@@ -255,6 +255,26 @@ if(_KYTHIRA_GATE_DNS_DISCOVERY)
 endif()
 kythira_kconfig_require(DNS_DISCOVERY LIBLDNS_FOUND "libldns")
 
+# protobuf-rpc-serializer spec: a Protocol Buffers implementation of the
+# rpc_serializer concept (include/raft/protobuf_serializer.hpp), alongside the
+# existing json_rpc_serializer/cbor_rpc_serializer. Protobuf is used purely as
+# an encoding library for the existing transport-agnostic serializer slot --
+# there is NO gRPC dependency here, and this is deliberately independent of the
+# (separately specified) grpc-transport: distinct .proto packages
+# (kythira.raft.serializer.v1 vs. kythira.raft.v1) let both coexist in one
+# build. Gracefully optional, mirroring COAP_TRANSPORT: try the vcpkg CONFIG
+# package first, then fall back to CMake's module-mode FindProtobuf for system
+# installs. Both provide the protobuf::libprotobuf and protobuf::protoc targets
+# this feature needs. See .kiro/specs/protobuf-rpc-serializer/ for the design.
+kythira_kconfig_gate(PROTOBUF_SERIALIZER)
+if(_KYTHIRA_GATE_PROTOBUF_SERIALIZER)
+    find_package(Protobuf CONFIG QUIET)
+    if(NOT Protobuf_FOUND)
+        find_package(Protobuf QUIET)
+    endif()
+endif()
+kythira_kconfig_require(PROTOBUF_SERIALIZER Protobuf_FOUND "protobuf")
+
 # EDHOC support (coap-transport-security spec, Requirement 5) — optional;
 # only present when vcpkg installed with the "edhoc" feature enabled (it
 # requires a Rust toolchain to build from source; see
@@ -354,6 +374,44 @@ endif()
 
 if(NOT LIBCOAP_FOUND)
     message(WARNING "libcoap not found. CoAP transport will not be available.")
+endif()
+
+# ── protobuf_rpc_serializer: generated-code target ───────────────────────────
+# Generate raft_messages.pb.{h,cc} from proto/raft_messages.proto via protoc at
+# build time (the generated code is NOT checked in -- Requirement 2.6), then
+# compile it into the raft_protobuf_serializer library. Tests/consumers that use
+# include/raft/protobuf_serializer.hpp link this target (which links only the
+# Protobuf runtime -- no gRPC). Only defined when Protobuf was found; otherwise
+# the target is skipped and the rest of the project configures unaffected
+# (Requirement 9.1), the same graceful-degradation pattern LIBCOAP_FOUND uses.
+if(Protobuf_FOUND)
+    set(RAFT_MESSAGES_PROTO "${CMAKE_CURRENT_SOURCE_DIR}/proto/raft_messages.proto")
+    set(PROTOBUF_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/raft_messages")
+    file(MAKE_DIRECTORY "${PROTOBUF_GENERATED_DIR}")
+
+    add_custom_command(
+        OUTPUT "${PROTOBUF_GENERATED_DIR}/raft_messages.pb.cc"
+               "${PROTOBUF_GENERATED_DIR}/raft_messages.pb.h"
+        COMMAND protobuf::protoc
+        ARGS --cpp_out "${PROTOBUF_GENERATED_DIR}"
+             -I "${CMAKE_CURRENT_SOURCE_DIR}/proto" "${RAFT_MESSAGES_PROTO}"
+        DEPENDS "${RAFT_MESSAGES_PROTO}" protobuf::protoc
+        COMMENT "Generating raft_messages.pb.{h,cc} from proto/raft_messages.proto"
+        VERBATIM
+    )
+
+    add_library(raft_protobuf_serializer
+        "${PROTOBUF_GENERATED_DIR}/raft_messages.pb.cc"
+    )
+    target_include_directories(raft_protobuf_serializer PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        "${PROTOBUF_GENERATED_DIR}"
+    )
+    target_link_libraries(raft_protobuf_serializer PUBLIC protobuf::libprotobuf)
+    target_compile_features(raft_protobuf_serializer PUBLIC cxx_std_23)
+    message(STATUS "protobuf_rpc_serializer enabled (.kiro/specs/protobuf-rpc-serializer/)")
+else()
+    message(WARNING "Protobuf not found. protobuf_rpc_serializer will not be available.")
 endif()
 
 # Include directories

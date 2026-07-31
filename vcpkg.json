@@ -58,6 +58,10 @@
       "version>=": "3.0.8"
     },
     {
+      "name": "protobuf",
+      "version>=": "5.29.0"
+    },
+    {
       "name": "poco",
       "features": ["net"]
     },

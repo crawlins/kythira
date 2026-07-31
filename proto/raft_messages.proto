@@ -1,0 +1,153 @@
+// Canonical wire schema for kythira::protobuf_rpc_serializer
+// (.kiro/specs/protobuf-rpc-serializer/).
+//
+// One message per kythira Raft RPC request/response struct
+// (include/raft/types.hpp), the same fourteen shapes json_rpc_serializer
+// already supports. Protocol Buffers is used here purely as an encoding
+// library for the existing, transport-agnostic rpc_serializer slot -- there
+// is NO gRPC service/channel/stub machinery in this file, and it is
+// deliberately independent of the (separately specified) grpc-transport's
+// raft.proto: a distinct package name (kythira.raft.serializer.v1 vs.
+// kythira.raft.v1) lets both generated code sets coexist in one build
+// without symbol or proto-package collision.
+
+syntax = "proto3";
+
+package kythira.raft.serializer.v1;
+
+// Wrapper for every field that is generic over NodeId in the kythira structs
+// (candidate_id, leader_id, node_id, requester_id, ...). NodeId may be
+// instantiated as std::uint64_t (the codebase default) or std::string, and a
+// single protobuf field cannot change static type per template instantiation
+// the way a C++ template parameter can -- so the concrete branch is selected
+// at compile time via `if constexpr` in protobuf_serializer.hpp, populating
+// exactly one oneof case. The populated case is checked against the requested
+// NodeId type on decode, throwing serialization_exception on mismatch.
+message NodeIdValue {
+  oneof value {
+    uint64 numeric = 1;
+    string text = 2;
+  }
+}
+
+// Mirrors kythira::entry_type (include/raft/types.hpp). Proto3 enums must have
+// a zero value, which aligns with entry_type::normal == 0.
+enum EntryType {
+  ENTRY_TYPE_NORMAL = 0;
+  ENTRY_TYPE_CONFIGURATION = 1;
+  ENTRY_TYPE_NO_OP = 2;
+}
+
+// Mirrors kythira::log_entry<TermId, LogIndex>. `command` is a native protobuf
+// `bytes` field: arbitrary octets (including 0x00 and non-UTF-8 sequences)
+// round-trip exactly, unlike json_rpc_serializer's base64-in-JSON-string
+// workaround.
+message LogEntry {
+  uint64 term = 1;
+  uint64 index = 2;
+  bytes command = 3;
+  EntryType type = 4;
+}
+
+message RequestVoteRequest {
+  uint64 term = 1;
+  NodeIdValue candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message RequestPreVoteRequest {
+  uint64 term = 1;
+  NodeIdValue candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestPreVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  NodeIdValue leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated LogEntry entries = 5;
+  uint64 leader_commit = 6;
+}
+
+// conflict_index/conflict_term are proto3 `optional` (explicit field presence),
+// present on the wire only when the corresponding std::optional in
+// append_entries_response<> holds a value.
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  optional uint64 conflict_index = 3;
+  optional uint64 conflict_term = 4;
+}
+
+message InstallSnapshotRequest {
+  uint64 term = 1;
+  NodeIdValue leader_id = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
+}
+
+message InstallSnapshotResponse {
+  uint64 term = 1;
+}
+
+// Mirrors kythira::peer_info<NodeId, Address>. Address is always std::string
+// in this codebase, so it maps to a plain protobuf `string`.
+message PeerInfo {
+  NodeIdValue node_id = 1;
+  string address = 2;
+}
+
+message ClusterJoinRequest {
+  NodeIdValue node_id = 1;
+  string contact_address = 2;
+}
+
+// `redirect` is proto3 `optional`, present only when the recipient was not the
+// leader and supplied a redirect hint.
+message ClusterJoinResponse {
+  bool accepted = 1;
+  optional PeerInfo redirect = 2;
+}
+
+message ClusterLeaveRequest {
+  NodeIdValue node_id = 1;
+}
+
+message ClusterLeaveResponse {
+  bool accepted = 1;
+  optional PeerInfo redirect = 2;
+}
+
+message FetchLogEntriesRequest {
+  NodeIdValue requester_id = 1;
+  uint64 from_index = 2;
+  uint64 to_index = 3;
+}
+
+// responder_id is a bare uint64, not a NodeIdValue: kythira's
+// fetch_log_entries_response::_responder_id is a fixed std::uint64_t
+// regardless of the struct's NodeId template parameter (matching
+// json_rpc_serializer's identical static_cast<std::uint64_t> treatment), so
+// there is no generic NodeId field to wrap here.
+message FetchLogEntriesResponse {
+  uint64 responder_id = 1;
+  bool available = 2;
+  uint64 prev_log_term = 3;
+  repeated LogEntry entries = 4;
+}

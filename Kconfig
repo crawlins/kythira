@@ -102,6 +102,25 @@ config GRPC_TRANSPORT
 
 endmenu # Transports
 
+menu "Serialization"
+
+config PROTOBUF_SERIALIZER
+	bool "Protocol Buffers rpc_serializer implementation"
+	default n
+	help
+	  find_package(Protobuf CONFIG). Backs Protobuf_FOUND. vcpkg package:
+	  protobuf. Generates raft_messages.pb.{h,cc} from
+	  proto/raft_messages.proto via protoc at build time. Provides
+	  kythira::protobuf_rpc_serializer (include/raft/protobuf_serializer.hpp)
+	  as an alternative Types::serializer_type for the existing HTTP/CoAP/TCP
+	  transports -- a compact binary wire format with no transport-code
+	  change. Independent of GRPC_TRANSPORT (Transports menu): selecting this
+	  does not require gRPC, and vice versa -- each declares its own .proto
+	  package (kythira.raft.serializer.v1 vs. kythira.raft.v1), so both can be
+	  enabled in one build without symbol collision.
+
+endmenu # Serialization
+
 menu "Peer Discovery"
 
 config DNS_DISCOVERY
