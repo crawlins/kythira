@@ -1566,6 +1566,13 @@ The implementation has been tested with multiple transport layers:
   operator-provisioned credential and automatically cut over to the
   cluster's own CA root once it exists — no operator action beyond
   initial provisioning
+✅ **AWS Quorum Managers & Certificate Provider**: `aws_ec2_quorum_manager`,
+  `aws_asg_quorum_manager`, and `aws_acm_pca_provider` (ACM Private CA)
+✅ **GCP Quorum Managers & Certificate Provider**: `gcp_compute_quorum_manager`
+  (direct Compute Engine instances), `gcp_mig_quorum_manager` (Managed
+  Instance Groups), and `gcp_privateca_certificate_provider` (Certificate
+  Authority Service). See
+  [`doc/gcp_quorum_manager_README.md`](doc/gcp_quorum_manager_README.md).
 ✅ **Peer-to-Peer Log Replication**: opt-in gossip-based catch-up
   (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
   entries from any peer, not just the leader; leader remains sole commit
@@ -1586,15 +1593,15 @@ The implementation has been tested with multiple transport layers:
   Follow-ups, unrelated to any transport)
 ✅ **Azure Quorum Managers & Certificate Provider**: `azure_vm_quorum_manager`,
   `azure_vmss_quorum_manager`, and `azure_key_vault_ca_provider` — see the
-  dedicated section below. AWS and Azure are both implemented today.
+  dedicated section below. AWS, Azure, and GCP are all implemented today.
 
 See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
 [`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
 
 ### What's In Progress
 
-⚠️ **Additional cloud providers**: GCP, OCI, and Alibaba Cloud quorum
-  managers / certificate providers — AWS and Azure are implemented today
+⚠️ **Additional cloud providers**: OCI and Alibaba Cloud quorum
+  managers / certificate providers — AWS, Azure, and GCP are implemented today
 
 ### Production Checklist
 
@@ -1615,8 +1622,8 @@ Before deploying to production:
 Contributions are welcome! See [`doc/TODO.md`](doc/TODO.md) for the full
 outstanding-work list. Areas where help is needed:
 
-1. **Additional cloud providers**: GCP, OCI, and Alibaba Cloud quorum
-   managers / certificate providers
+1. **Additional cloud providers**: OCI and Alibaba Cloud quorum
+   managers / certificate providers (AWS, Azure, and GCP are implemented today)
 2. **Performance Optimization**: Profiling and memory usage optimization
 3. **Documentation**: More examples and tutorials
 
