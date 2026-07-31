@@ -29,7 +29,6 @@
 #include <raft/azure_vmss_quorum_manager.hpp>
 
 #include <azure/core/context.hpp>
-#include <azure/core/diagnostics/logger.hpp>
 #include <azure/core/http/http.hpp>
 #include <azure/core/http/policies/policy.hpp>
 #include <azure/core/internal/client_options.hpp>
@@ -312,23 +311,8 @@ void external_vmss_deallocate(const kythira::azure_client_config& azure,
                                                          << ")");
 }
 
-/// [DIAG] Temporary: dumps every Azure SDK HTTP request/response at Verbose
-/// level to stderr, to see the actual bytes behind a "400 Bad Request" from
-/// a real ARM call that gives no other detail. Remove before finalizing.
-struct AzureDiagLoggerFixture {
-    AzureDiagLoggerFixture() {
-        Azure::Core::Diagnostics::Logger::SetListener(
-            [](Azure::Core::Diagnostics::Logger::Level level, std::string const& message) {
-                std::cerr << "[DIAG][azure-sdk] " << message << "\n";
-            });
-        Azure::Core::Diagnostics::Logger::SetLevel(
-            Azure::Core::Diagnostics::Logger::Level::Verbose);
-    }
-};
-
 }  // namespace
 
-BOOST_GLOBAL_FIXTURE(AzureDiagLoggerFixture);
 BOOST_GLOBAL_FIXTURE(AzureSignalHandlerFixture);
 BOOST_GLOBAL_FIXTURE(CostSummaryFixture);
 

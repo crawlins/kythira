@@ -646,10 +646,19 @@ private:
     /// for the same slot).
     [[nodiscard]] auto next_node_id() const -> NodeId {
         std::uint64_t max_id = 0;
-        auto body = arm_get(
-            "/providers/Microsoft.Compute/virtualMachines?$filter=tagName eq 'kythira:cluster' and "
-            "tagValue eq '" +
-            _cfg.cluster_name + "'&api-version=" + compute_api_version);
+        // The $filter value's spaces/quotes are OData syntax, not part of the
+        // URL grammar -- they must be percent-encoded before this becomes a
+        // request line, or the raw literal spaces make it an invalid HTTP
+        // request that Azure's edge rejects instantly with a generic "400:
+        // the request is badly formed" (observed directly against a real
+        // subscription; do_send()'s Azure::Core::Url(_arm_base + path)
+        // constructor parses path as an already-valid URL string and does
+        // not encode it for you).
+        std::string filter_value =
+            "tagName eq 'kythira:cluster' and tagValue eq '" + _cfg.cluster_name + "'";
+        auto body =
+            arm_get("/providers/Microsoft.Compute/virtualMachines?$filter=" +
+                    Azure::Core::Url::Encode(filter_value) + "&api-version=" + compute_api_version);
         if (body.is_object() && body.as_object().contains("value")) {
             for (const auto& vm : body.at("value").as_array()) {
                 if (!vm.is_object() || !vm.as_object().contains("tags")) {
