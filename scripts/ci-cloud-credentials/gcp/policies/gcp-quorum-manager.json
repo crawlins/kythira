@@ -1,0 +1,18 @@
+[
+  {
+    "role": "roles/compute.instanceAdmin.v1",
+    "reason": "gcp_compute_quorum_manager / gcp_mig_quorum_manager: instances.insert/list/get/delete/setLabels, instanceGroupManagers.get/resize/listManagedInstances/deleteInstances, zoneOperations.get, and (for the heartbeat read) instances.getGuestAttributes"
+  },
+  {
+    "role": "roles/compute.networkAdmin",
+    "reason": "real-GCE fixture: auto-creates and tears down the per-zone test subnetworks when GCP_TEST_SUBNET_PREFIX resources are absent"
+  },
+  {
+    "role": "roles/iam.serviceAccountUser",
+    "reason": "instances.insert attaches GCP_TEST_SERVICE_ACCOUNT to launched instances (actAs on that service account)"
+  },
+  {
+    "role": "roles/storage.admin",
+    "reason": "real-GCE fixture: uploads the KYTHIRA_NODE_BINARY to a per-run Cloud Storage object the startup script fetches, and deletes it at teardown"
+  }
+]

@@ -3093,6 +3093,100 @@ else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider_unit_test will not be built")
 endif()
 
+# ── GCP quorum manager tests ──────────────────────────────────────────────────
+# Built unconditionally: the is_valid_gcp_label / is_valid_gcp_resource_name
+# tests exercise gcp_client_config.hpp, which compiles with no SDK dependency,
+# so this target gives real coverage even on a build without google-cloud-cpp.
+# The construction/fault/pure-function suites are gated behind KYTHIRA_HAS_GCP_SDK
+# (carried by network_simulator's INTERFACE definition when the compute
+# components are present) and become skip-only when the SDK is absent.
+add_executable(gcp_quorum_manager_unit_test gcp_quorum_manager_unit_test.cpp)
+target_link_libraries(gcp_quorum_manager_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET Folly::folly)
+    target_link_libraries(gcp_quorum_manager_unit_test PRIVATE Folly::folly)
+endif()
+if(FIU_FOUND)
+    target_compile_definitions(gcp_quorum_manager_unit_test PRIVATE FIU_ENABLE)
+    target_link_libraries(gcp_quorum_manager_unit_test PRIVATE ${FIU_LDFLAGS})
+    target_include_directories(gcp_quorum_manager_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+endif()
+target_compile_features(gcp_quorum_manager_unit_test PRIVATE cxx_std_23)
+add_test(NAME gcp_quorum_manager_unit_test COMMAND gcp_quorum_manager_unit_test)
+set_tests_properties(gcp_quorum_manager_unit_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;gcp;quorum_manager"
+)
+
+# ── GCP Certificate Authority Service provider tests ──────────────────────────
+if(_KYTHIRA_GCP_PRIVATECA_FOUND)
+    add_executable(gcp_privateca_provider_unit_test gcp_privateca_provider_unit_test.cpp)
+    target_link_libraries(gcp_privateca_provider_unit_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(gcp_privateca_provider_unit_test PRIVATE Folly::folly)
+    endif()
+    if(FIU_FOUND)
+        target_compile_definitions(gcp_privateca_provider_unit_test PRIVATE FIU_ENABLE)
+        target_link_libraries(gcp_privateca_provider_unit_test PRIVATE ${FIU_LDFLAGS})
+        target_include_directories(gcp_privateca_provider_unit_test PRIVATE ${FIU_INCLUDE_DIRS})
+    endif()
+    target_compile_features(gcp_privateca_provider_unit_test PRIVATE cxx_std_23)
+    add_test(NAME gcp_privateca_provider_unit_test COMMAND gcp_privateca_provider_unit_test)
+    set_tests_properties(gcp_privateca_provider_unit_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;gcp;certificate_authority"
+    )
+else()
+    message(STATUS "google-cloud-cpp privateca component not found — gcp_privateca_provider_unit_test will not be built")
+endif()
+
+# ── GCP real-cloud integration tests (opt-in: -DKYTHIRA_GCP_REAL_TESTS=ON) ────
+# Excluded from the default ctest run via the `real-gce`/`real-privateca` labels
+# and SKIP_RETURN_CODE 77 (the fixtures exit 77 when KYTHIRA_GCP_REAL_TESTS!=1 or
+# the required env vars/credentials are absent, so ctest reports "Not Run"
+# rather than "Failed"). Built only when the option is set, so ordinary CI
+# builds don't pay to compile them. See .github/workflows/real-cloud-tests.yml.
+if(KYTHIRA_GCP_REAL_TESTS)
+    add_executable(gcp_quorum_manager_real_gce_test gcp_quorum_manager_real_gce_test.cpp)
+    target_link_libraries(gcp_quorum_manager_real_gce_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(gcp_quorum_manager_real_gce_test PRIVATE Folly::folly)
+    endif()
+    target_compile_features(gcp_quorum_manager_real_gce_test PRIVATE cxx_std_23)
+    add_test(NAME gcp_quorum_manager_real_gce_test COMMAND gcp_quorum_manager_real_gce_test)
+    set_tests_properties(gcp_quorum_manager_real_gce_test PROPERTIES
+        TIMEOUT 3600
+        LABELS "integration;gcp;real-gce;slow"
+        SKIP_RETURN_CODE 77
+    )
+
+    if(TARGET certificate_authority AND _KYTHIRA_GCP_PRIVATECA_FOUND)
+        add_executable(gcp_privateca_provider_real_test gcp_privateca_provider_real_test.cpp)
+        target_link_libraries(gcp_privateca_provider_real_test PRIVATE
+            network_simulator
+            certificate_authority
+            Boost::unit_test_framework
+        )
+        if(TARGET Folly::folly)
+            target_link_libraries(gcp_privateca_provider_real_test PRIVATE Folly::folly)
+        endif()
+        target_compile_features(gcp_privateca_provider_real_test PRIVATE cxx_std_23)
+        add_test(NAME gcp_privateca_provider_real_test COMMAND gcp_privateca_provider_real_test)
+        set_tests_properties(gcp_privateca_provider_real_test PROPERTIES
+            TIMEOUT 900
+            LABELS "integration;gcp;real-privateca;slow"
+            SKIP_RETURN_CODE 77
+        )
+    endif()
+endif()
 # ── Azure quorum manager tests (Azure SDK for C++ required) ───────────────────
 if(azure-core-cpp_FOUND AND azure-identity-cpp_FOUND)
 

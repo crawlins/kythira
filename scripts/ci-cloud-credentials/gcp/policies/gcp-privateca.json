@@ -1,0 +1,14 @@
+[
+  {
+    "role": "roles/privateca.certificateManager",
+    "reason": "gcp_privateca_certificate_provider: CreateCertificate against the CA pool, and RevokeCertificate"
+  },
+  {
+    "role": "roles/privateca.certificateRequester",
+    "reason": "issuance path when a narrower role than certificateManager is preferred; also covers the reused GCP_TEST_SERVICE_ACCOUNT's issuance in the quorum-manager fixture's CAS test path"
+  },
+  {
+    "role": "roles/privateca.caManager",
+    "reason": "real-CAS fixture: creates a CA pool + self-signed root CA when GCP_TEST_CA_POOL is absent, and tears it down afterward (GetCertificateAuthority / ListCertificateAuthorities are covered by this and certificateManager)"
+  }
+]
