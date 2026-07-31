@@ -214,6 +214,8 @@ public:
                                                               : _cfg.azure.arm_endpoint_override) +
                     "/subscriptions/" + _cfg.azure.subscription_id + "/resourceGroups/" +
                     _cfg.azure.resource_group;
+        _resource_id_base = "/subscriptions/" + _cfg.azure.subscription_id + "/resourceGroups/" +
+                            _cfg.azure.resource_group;
 
         auto credential =
             _cfg.azure.credential ? _cfg.azure.credential : make_default_credential_chain();
@@ -422,7 +424,8 @@ public:
             std::string nic_id;
             try {
                 auto nic_result = arm_put(nic_path, nic_body);
-                nic_id = _arm_base + "/providers/Microsoft.Network/networkInterfaces/" + nic_name;
+                nic_id = _resource_id_base + "/providers/Microsoft.Network/networkInterfaces/" +
+                         nic_name;
                 (void)nic_result;
             } catch (const std::exception& ex) {
                 throw std::runtime_error("NIC creation failed: " + std::string(ex.what()));
@@ -636,6 +639,15 @@ private:
     azure_vm_quorum_manager_config _cfg;
     std::shared_ptr<Azure::Core::Http::_internal::HttpPipeline> _pipeline;
     std::string _arm_base;
+    // Same scope as _arm_base (this subscription/resource group), but never
+    // includes the scheme+host -- ARM resource "id" fields (e.g. a NIC
+    // referenced from a VM's networkProfile.networkInterfaces[0].id) must be
+    // the plain resource path starting with "/subscriptions/...", not a full
+    // URL. Confirmed against a real subscription: embedding _arm_base
+    // (scheme+host included) there fails with "LinkedInvalidPropertyId:
+    // ...Expect fully qualified resource Id that start with
+    // '/subscriptions/{subscriptionId}'".
+    std::string _resource_id_base;
 
     /// Scans every VM tagged `kythira:cluster = {cluster_name}` (all power
     /// states — a VM mid-deletion is still counted) and returns
