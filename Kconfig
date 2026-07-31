@@ -100,6 +100,24 @@ config GRPC_TRANSPORT
 	  unaffected, unless KYTHIRA_KCONFIG_STRICT=ON forces a hard failure.
 	  See .kiro/specs/grpc-transport/ for the full design.
 
+config ION_SERIALIZER
+	bool "Amazon Ion RPC serializer (ion-c)"
+	default n
+	help
+	  find_package(ionc CONFIG). Backs KYTHIRA_ION_SERIALIZER_AVAILABLE.
+	  vcpkg feature: ion (vcpkg-overlays/ion-c overlay port; not built by
+	  default). Provides ion_rpc_serializer
+	  (include/raft/ion_serializer.hpp) as an alternative
+	  Types::serializer_type to json_rpc_serializer, using Amazon Ion
+	  instead of JSON as the RPC wire format. Follows the same
+	  always-declared-but-gracefully-optional pattern as COAP_TRANSPORT and
+	  GRPC_TRANSPORT: when ion-c is not found the raft_ion_serializer target
+	  is skipped with a warning and the rest of the project configures
+	  unaffected, unless KYTHIRA_KCONFIG_STRICT=ON forces a hard failure.
+	  Defaults to n because ion-c is an opt-in overlay port not present in a
+	  default install. See .kiro/specs/ion-rpc-serializer/ for the full
+	  design.
+
 endmenu # Transports
 
 menu "Serialization"

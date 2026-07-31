@@ -487,6 +487,16 @@ public:
     auto dispatch(std::string_view target, const std::vector<std::byte>& body,
                   std::string& response_body, unsigned& status_code) -> void;
 
+    /// @brief HTTP Content-Type for a successful (serialized) response body,
+    ///     derived from the active serializer's name() so an Ion serializer's
+    ///     body is labeled "application/ion" rather than "application/json"
+    ///     (ion-rpc-serializer spec, Requirement 6.4). Called by
+    ///     `beast_detail::server_session::handle_and_write`, which sets the
+    ///     header but does not hold the serializer itself. json_rpc_serializer
+    ///     still yields "application/json", unchanged. Defined out-of-line in
+    ///     beast_http_transport_impl.hpp where the name->media-type helper lives.
+    [[nodiscard]] auto success_content_type() const -> std::string;
+
 private:
     net::io_context& _ioc;
     serializer_type _serializer;

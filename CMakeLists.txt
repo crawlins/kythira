@@ -245,6 +245,53 @@ else()
 endif()
 kythira_kconfig_require(GRPC_TRANSPORT GRPC_TRANSPORT_FOUND "grpc")
 
+# ion-rpc-serializer spec: Amazon Ion (via the ion-c C library) backs a second
+# rpc_serializer implementation (ion_rpc_serializer, include/raft/ion_serializer.hpp)
+# alongside json_rpc_serializer. Optional and gracefully degrading, exactly like
+# libcoap/grpc above: probed only when CONFIG_ION_SERIALIZER is wanted, skipped
+# with a warning when ion-c is absent, and a hard configure failure only under
+# KYTHIRA_KCONFIG_STRICT. ion-c is provided by the opt-in vcpkg "ion" feature
+# (vcpkg-overlays/ion-c overlay port) and is not part of a default install, so
+# the common case here is "not found -> Ion serializer unavailable, rest of the
+# project unaffected". See .kiro/specs/ion-rpc-serializer/ for the full design.
+kythira_kconfig_gate(ION_SERIALIZER)
+if(_KYTHIRA_GATE_ION_SERIALIZER)
+    find_package(ionc CONFIG QUIET)
+endif()
+kythira_kconfig_require(ION_SERIALIZER ionc_FOUND "ion-c")
+
+if(ionc_FOUND)
+    # ion_serializer.hpp is header-only (like json_serializer.hpp); this
+    # INTERFACE target exists purely to hand ion-c linkage + include dirs +
+    # the KYTHIRA_ION_SERIALIZER_AVAILABLE define to consuming targets, so a
+    # consumer only needs target_link_libraries(... raft_ion_serializer).
+    add_library(raft_ion_serializer INTERFACE)
+    # ion-c's config package namespaces its imported target as IonC::ionc
+    # (project(IonC)); accept the plausible variants so a future upstream
+    # rename doesn't silently drop the link.
+    if(TARGET IonC::ionc)
+        target_link_libraries(raft_ion_serializer INTERFACE IonC::ionc)
+    elseif(TARGET ionc::ionc)
+        target_link_libraries(raft_ion_serializer INTERFACE ionc::ionc)
+    elseif(TARGET ionc)
+        target_link_libraries(raft_ion_serializer INTERFACE ionc)
+    endif()
+    target_include_directories(raft_ion_serializer INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    )
+    target_compile_definitions(raft_ion_serializer INTERFACE KYTHIRA_ION_SERIALIZER_AVAILABLE)
+    target_compile_features(raft_ion_serializer INTERFACE cxx_std_23)
+    message(STATUS "raft_ion_serializer target: enabled (.kiro/specs/ion-rpc-serializer/)")
+else()
+    # STATUS, not WARNING: ion-c ships behind the opt-in "ion" vcpkg feature and
+    # is absent in a default install, so "not found" is the expected common case
+    # here (unlike the default-present libcoap/grpc), and a per-configure warning
+    # would just be noise. KYTHIRA_KCONFIG_STRICT still hard-fails via the
+    # kythira_kconfig_require() call above when ION_SERIALIZER is explicitly on.
+    message(STATUS "ion-c not found — Ion RPC serializer disabled (opt-in vcpkg feature: ion).")
+endif()
+
 # Find libldns using PkgConfig (system installation; pc file is named "ldns")
 kythira_kconfig_gate(DNS_DISCOVERY)
 if(_KYTHIRA_GATE_DNS_DISCOVERY)
