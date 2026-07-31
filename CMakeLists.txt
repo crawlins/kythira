@@ -896,6 +896,60 @@ else()
     message(STATUS "AWS ACM Private CA SDK component not found — aws_acm_pca_provider disabled")
 endif()
 
+# ── GCP Compute Engine SDK (gcp_compute_quorum_manager, gcp_mig_quorum_manager) ─
+# google-cloud-cpp ships one CMake package per API surface; the two quorum
+# managers need the compute_instances, compute_instance_group_managers, and
+# compute_zone_operations components, all provided by google_cloud_cpp_compute.
+# KYTHIRA_HAS_GCP_SDK is set only when all three imported targets are present,
+# mirroring how KYTHIRA_HAS_AWS_SDK gates aws_ec2/aws_asg_quorum_manager.
+kythira_kconfig_gate(GCP_SDK)
+if(_KYTHIRA_GATE_GCP_SDK)
+    find_package(google_cloud_cpp_compute QUIET COMPONENTS
+        compute_instances compute_instance_group_managers compute_zone_operations)
+endif()
+if(TARGET google-cloud-cpp::compute_instances
+        AND TARGET google-cloud-cpp::compute_instance_group_managers
+        AND TARGET google-cloud-cpp::compute_zone_operations)
+    set(_KYTHIRA_GCP_SDK_FOUND TRUE)
+else()
+    set(_KYTHIRA_GCP_SDK_FOUND FALSE)
+endif()
+kythira_kconfig_require(GCP_SDK _KYTHIRA_GCP_SDK_FOUND "google-cloud-cpp compute components")
+if(_KYTHIRA_GCP_SDK_FOUND)
+    message(STATUS "google-cloud-cpp compute components found — GCP quorum managers enabled")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_GCP_SDK)
+    target_link_libraries(network_simulator INTERFACE
+        google-cloud-cpp::compute_instances
+        google-cloud-cpp::compute_instance_group_managers
+        google-cloud-cpp::compute_zone_operations)
+else()
+    message(STATUS "google-cloud-cpp compute components not found — "
+        "gcp_compute_quorum_manager and gcp_mig_quorum_manager disabled")
+endif()
+
+# ── GCP Certificate Authority Service (gcp_privateca_certificate_provider) ─────
+# Independent of KYTHIRA_HAS_GCP_SDK (mirrors KYTHIRA_HAS_AWS_ACM_PCA's
+# independence from KYTHIRA_HAS_AWS_SDK): an environment with the compute
+# components but without privateca still builds everything except the
+# certificate provider, and vice versa.
+kythira_kconfig_gate(GCP_PRIVATECA)
+if(_KYTHIRA_GATE_GCP_PRIVATECA)
+    find_package(google_cloud_cpp_privateca QUIET)
+endif()
+if(TARGET google-cloud-cpp::privateca)
+    set(_KYTHIRA_GCP_PRIVATECA_FOUND TRUE)
+else()
+    set(_KYTHIRA_GCP_PRIVATECA_FOUND FALSE)
+endif()
+kythira_kconfig_require(GCP_PRIVATECA _KYTHIRA_GCP_PRIVATECA_FOUND "google-cloud-cpp privateca component")
+if(_KYTHIRA_GCP_PRIVATECA_FOUND)
+    message(STATUS "google-cloud-cpp privateca component found — gcp_privateca_certificate_provider enabled")
+    target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_GCP_PRIVATECA)
+    target_link_libraries(network_simulator INTERFACE google-cloud-cpp::privateca)
+else()
+    message(STATUS "google-cloud-cpp privateca component not found — gcp_privateca_certificate_provider disabled")
+endif()
+
 # ── Azure SDK (azure_vm_quorum_manager, azure_vmss_quorum_manager) ───────────
 kythira_find_optional(AZURE_SDK azure-core-cpp CONFIG)
 kythira_find_optional(AZURE_IDENTITY azure-identity-cpp CONFIG)

@@ -259,6 +259,106 @@ jobs:
         if: steps.test.outcome == 'failure'
         run: exit 1
 
+  # ── GCP SDK build (google-cloud-cpp) ────────────────────────────────────────
+  # Isolated to its own job because the google-cloud-cpp `compute` component
+  # builds the entire Compute API surface (large) — forcing it onto every
+  # build-and-test matrix leg would risk timeouts. Enables the vcpkg `gcp`
+  # feature (google-cloud-cpp compute + privateca), which turns on
+  # KYTHIRA_HAS_GCP_SDK / KYTHIRA_HAS_GCP_PRIVATECA, then compiles the GCP
+  # quorum-manager / CAS-provider targets and runs their unit tests. This is
+  # where the SDK-gated code (gcp_compute_quorum_manager, gcp_mig_quorum_manager,
+  # gcp_privateca_certificate_provider) is actually compiled against the SDK;
+  # the main build-and-test jobs only exercise the unconditional validators.
+  gcp-sdk-build:
+    name: GCP SDK Build (clang++-18, x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CCACHE_DIR: /home/runner/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Resolve vcpkg triplet
+        id: triplet
+        run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
+
+      # Distinct cache key ("-gcp" suffix) so this job's vcpkg_installed (which
+      # includes google-cloud-cpp via --x-feature=gcp) never collides with the
+      # main build-and-test jobs' cache, which is built without that feature.
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        id: vcpkg-cache
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-gcp-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies (with gcp feature)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          git -C /tmp/vcpkg checkout 9a7f7340a6c5f11f24c3d59f85e07143feb84e06
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=gcp
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ steps.triplet.outputs.value }}
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ccache
+          key: ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+            ccache-gcp-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: ccache size limit
+        run: ccache --max-size=2G
+
+      - name: Configure (Release, GCP SDK + real-test compile)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
+            -DKYTHIRA_GCP_REAL_TESTS=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build GCP targets
+        run: |
+          cmake --build build -j$(nproc) --target \
+            gcp_quorum_manager_unit_test \
+            gcp_privateca_provider_unit_test \
+            gcp_quorum_manager_real_gce_test \
+            gcp_privateca_provider_real_test \
+            ca_service
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ccache
+          key: ccache-gcp-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Run GCP unit tests
+        run: |
+          ctest --test-dir build --output-on-failure \
+            -R '^(gcp_quorum_manager_unit_test|gcp_privateca_provider_unit_test)$'
+
   # ── Coverage (clang only) ────────────────────────────────────────────────────
   # ENABLE_COVERAGE uses LLVM source-based instrumentation and requires clang.
   # gcovr-based coverage with GCC is not supported by this project's CMakeLists.

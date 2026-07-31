@@ -106,6 +106,18 @@
     }
   ],
   "features": {
+    "gcp": {
+      "description": "GCP quorum managers (Compute Engine + Managed Instance Groups) and the Certificate Authority Service certificate provider. Pulls in google-cloud-cpp's compute and privateca components. Opt-in via --x-feature=gcp: the compute component builds the entire Compute API surface (large), so it is kept out of the default dependency set — only the dedicated GCP CI job and operators who want the GCP backends enable it. Backs KYTHIRA_HAS_GCP_SDK / KYTHIRA_HAS_GCP_PRIVATECA (Requirement 1 AC 6).",
+      "dependencies": [
+        {
+          "name": "google-cloud-cpp",
+          "features": [
+            "compute",
+            "privateca"
+          ]
+        }
+      ]
+    },
     "edhoc": {
       "description": "EDHOC-to-OSCORE credential bootstrap for the CoAP transport (coap-transport-security spec's oscore_bootstrap::edhoc). Opt-in: requires a Rust toolchain (cargo/rustc) to build the lakers overlay port from source, since lakers publishes no pre-built binaries for this platform. Not part of the default install; omitting it just leaves LAKERS_AVAILABLE undefined and oscore_bootstrap::edhoc unavailable.",
       "dependencies": [
