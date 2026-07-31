@@ -644,43 +644,60 @@ All major components are pluggable via template parameters:
 
 - **State Machine**: Your application logic
 - **Network Transport**: HTTP, simulator, or custom
-- **RPC Serializer**: JSON (`json_rpc_serializer`) or CBOR (`cbor_rpc_serializer`), or custom
+- **RPC Serializer**: JSON (`json_rpc_serializer`), CBOR (`cbor_rpc_serializer`), Protocol Buffers (`protobuf_rpc_serializer`), or custom
 - **Persistence**: Memory, disk, or custom
 - **Logger**: Console, file, or custom
 - **Metrics**: Prometheus, StatsD, or custom
 - **Membership Manager**: Default or custom authorization
 
-#### RPC Serializer: JSON or CBOR
+#### RPC Serializer: JSON, CBOR, or Protocol Buffers
 
 Every transport treats `Types::serializer_type` as an opaque byte-in/byte-out
-component, so the wire encoding is a drop-in choice. Two implementations ship
-in-tree, both with zero additional dependencies:
+component, so the wire encoding is a drop-in choice. Three implementations ship
+in-tree:
 
 - `kythira::json_serializer` (`raft/json_serializer.hpp`) — human-readable JSON,
-  the default.
+  the default. Zero additional dependencies.
 - `kythira::cbor_serializer` (`raft/cbor_serializer.hpp`) — CBOR (RFC 8949), a
   binary encoding that drops JSON's text-parsing overhead and carries raw byte
   fields (log-entry commands, snapshot chunks) as CBOR byte strings instead of
   base64 text, avoiding JSON's ~33% inflation on exactly those fields. It uses a
   self-contained, hand-rolled codec covering only the CBOR major types the Raft
   messages need — no new `vcpkg.json` entry.
+- `kythira::protobuf_serializer` (`raft/protobuf_serializer.hpp`) — Protocol
+  Buffers, an optional binary encoding backed by generated message classes from
+  [`proto/raft_messages.proto`](proto/raft_messages.proto). Like CBOR it carries
+  byte fields natively (no base64), and it is measurably smaller and faster than
+  JSON across every `AppendEntries` scenario benchmarked (see
+  [doc/protobuf_serializer_performance_comparison.md](doc/protobuf_serializer_performance_comparison.md)).
+  Unlike CBOR it depends on the `protobuf` package (declared in `vcpkg.json`) and
+  is gated behind the `PROTOBUF_SERIALIZER` Kconfig symbol — when Protobuf is not
+  found the serializer is skipped and the rest of the build is unaffected. It is
+  used purely as an encoding library for the existing transports and does **not**
+  involve gRPC; it is deliberately independent of the separately specified
+  `grpc-transport` (each declares its own `.proto` package). See
+  [`.kiro/specs/protobuf-rpc-serializer/`](.kiro/specs/protobuf-rpc-serializer/)
+  for the full design.
 
-Adopting CBOR is a one-line change to a `Types` bundle:
+Adopting a different serializer is a one-line change to a `Types` bundle:
 
 ```cpp
-#include <raft/cbor_serializer.hpp>
+#include <raft/cbor_serializer.hpp>      // or <raft/protobuf_serializer.hpp>
 
 // Anywhere json_rpc_serializer<std::vector<std::byte>> appears as
-// serializer_type, name cbor_rpc_serializer<std::vector<std::byte>> instead:
+// serializer_type, name the alternative instead:
 using serializer_type = kythira::cbor_rpc_serializer<std::vector<std::byte>>;
+// using serializer_type = kythira::protobuf_rpc_serializer<std::vector<std::byte>>;
 ```
 
 Both transports label the payload correctly on the wire: the CoAP transport tags
 CBOR payloads with the `application/cbor` Content-Format, and the cpp-httplib
 HTTP transport sets its `Content-Type` header (`application/cbor` for CBOR,
-`application/json` for JSON) — both derive the media type from
-`serializer.name()` via `coap_utils::get_content_format_for_serializer`, so no
-transport code changes when you switch serializers.
+`application/json` for JSON, `application/octet-stream` for Protocol Buffers —
+no IANA CoAP content-format is registered for protobuf, so it is labeled as
+generic binary) — both derive the media type from `serializer.name()` via
+`coap_utils::get_content_format_for_serializer`, so no transport code changes
+when you switch serializers.
 
 A runnable end-to-end demonstration lives in
 [`examples/cbor_serializer_example.cpp`](examples/cbor_serializer_example.cpp):
