@@ -232,10 +232,21 @@ coap_client<Types>::coap_client(
     // for why it's a recursive_mutex.
     _io_thread = std::jthread([this](std::stop_token stop_token) {
         while (!stop_token.stop_requested()) {
-            std::lock_guard lock(_mutex);
-            if (_coap_context) {
-                coap_io_process(_coap_context, 20);
+            {
+                std::lock_guard lock(_mutex);
+                if (_coap_context) {
+                    coap_io_process(_coap_context, 20);
+                }
             }
+            // Yield after releasing the lock, before immediately trying to
+            // reacquire it on the next iteration. Without this, a thread
+            // that just unlocked a mutex is often the same thread the OS
+            // schedules to relock it first (cache locality/scheduler bias,
+            // worse still under few CPU cores), so send_rpc()'s own lock
+            // acquisition can be starved for seconds at a time even though
+            // it's a fair contender -- observed directly as multi-second
+            // per-call delays under concurrent load.
+            std::this_thread::yield();
         }
     });
 #else
@@ -5836,22 +5847,28 @@ auto coap_client<Types>::acquire_concurrent_slot() -> bool {
         return true;  // No limit if concurrent processing is disabled
     }
 
+    // A separate load() then fetch_add() is two steps, not one atomic
+    // operation -- under genuine concurrent callers (e.g. many real
+    // threads, now that this actually runs for real), two threads can
+    // both observe current_requests < max and both proceed, letting the
+    // configured limit be exceeded. compare_exchange_weak retries only
+    // when another thread's update raced ahead of this one.
     std::size_t current_requests = _concurrent_requests.load();
-
-    if (current_requests >= _config.max_concurrent_requests) {
-        _metrics.add_dimension("concurrent_limit", "reached");
-        _metrics.add_one();
-        _metrics.emit();
-
-        _logger.warning("Concurrent request limit reached",
-                        {{"current_requests", std::to_string(current_requests)},
-                         {"max_concurrent", std::to_string(_config.max_concurrent_requests)}});
-
-        return false;
+    while (current_requests < _config.max_concurrent_requests) {
+        if (_concurrent_requests.compare_exchange_weak(current_requests, current_requests + 1)) {
+            return true;
+        }
     }
 
-    _concurrent_requests.fetch_add(1);
-    return true;
+    _metrics.add_dimension("concurrent_limit", "reached");
+    _metrics.add_one();
+    _metrics.emit();
+
+    _logger.warning("Concurrent request limit reached",
+                    {{"current_requests", std::to_string(current_requests)},
+                     {"max_concurrent", std::to_string(_config.max_concurrent_requests)}});
+
+    return false;
 }
 
 template<typename Types>
@@ -5871,18 +5888,22 @@ auto coap_server<Types>::acquire_concurrent_slot() -> bool {
         return true;  // No limit if concurrent processing is disabled
     }
 
+    // See coap_client<Types>::acquire_concurrent_slot()'s comment: a plain
+    // load()-then-fetch_add() lets concurrent real callers both pass the
+    // check and exceed the configured limit. compare_exchange_weak makes
+    // the check-and-increment atomic as a whole.
     std::size_t current_requests = _concurrent_requests.load();
-
-    if (current_requests >= _config.max_concurrent_requests) {
-        _metrics.add_dimension("concurrent_limit", "reached");
-        _metrics.add_one();
-        _metrics.emit();
-
-        return false;
+    while (current_requests < _config.max_concurrent_requests) {
+        if (_concurrent_requests.compare_exchange_weak(current_requests, current_requests + 1)) {
+            return true;
+        }
     }
 
-    _concurrent_requests.fetch_add(1);
-    return true;
+    _metrics.add_dimension("concurrent_limit", "reached");
+    _metrics.add_one();
+    _metrics.emit();
+
+    return false;
 }
 
 template<typename Types>
