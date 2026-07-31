@@ -1307,6 +1307,10 @@ if(TARGET raft_ion_serializer)
              COMMAND ion_json_serializer_equivalence_property_test)
 endif()
 
+# CBOR-over-CoAP end-to-end sanity check (task 10.3): real client/server round
+# trip over UDP with cbor_rpc_serializer as Types::serializer_type
+add_network_test(coap_cbor_end_to_end_test coap_cbor_end_to_end_test.cpp)
+
 # Network retry property test needs Boost.JSON and Folly
 add_executable(network_retry_property_test network_retry_property_test.cpp)
 target_link_libraries(network_retry_property_test PRIVATE
