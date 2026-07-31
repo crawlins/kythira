@@ -108,6 +108,11 @@ struct block_transfer_state {
     std::uint32_t block_size{1024};
     bool is_complete{false};
     std::chrono::steady_clock::time_point last_activity;
+    // The session and resource path the initial block was sent on, so
+    // handle_response() can resend subsequent Block1 blocks on the same
+    // session/resource when the server asks for continuation.
+    coap_session_t* session{nullptr};
+    std::string resource_path;
 
     block_transfer_state(std::string tok, std::uint32_t blk_size)
         : token(std::move(tok)),
@@ -449,9 +454,16 @@ private:
     std::unique_ptr<coap_security_provider> _security_provider;
     kythira::coap_client_config _config;
     metrics_type _metrics;
-    logger_type _logger;
+    mutable logger_type _logger;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+    // Pumps coap_io_process() on _coap_context for the lifetime of this
+    // client -- without this, coap_register_response_handler()'s callback
+    // (set up in the constructor) is never invoked by libcoap, and every
+    // future returned by send_rpc() hangs forever regardless of whether the
+    // peer actually responds. Started in the constructor, stopped in the
+    // destructor before coap_free_context() runs.
+    std::jthread _io_thread;
 
     // Message tracking
     std::unordered_map<std::string, std::unique_ptr<pending_message>> _pending_requests;
@@ -476,8 +488,14 @@ private:
     std::unordered_map<std::string, std::chrono::steady_clock::time_point>
         _network_partition_detection;
 
-    // Synchronization
-    mutable std::mutex _mutex;
+    // Synchronization. Recursive: send_rpc()'s outer lock (added alongside
+    // _io_thread above, to serialize libcoap calls against the io-pump
+    // thread's own coap_io_process() calls on the same _coap_context) must
+    // nest safely with handle_response()'s own inner lock, since libcoap
+    // invokes the response callback synchronously from inside
+    // coap_io_process() -- on the io_thread, which already holds this mutex
+    // for that call.
+    mutable std::recursive_mutex _mutex;
     std::atomic<std::uint64_t> _token_counter{1};
     std::atomic<std::uint16_t> _next_message_id{1};
 
@@ -533,9 +551,16 @@ private:
 
     // Enhanced serialization caching methods
     template<typename Request>
-    auto get_cached_or_serialize(const Request& request) -> std::vector<std::uint8_t>;
-    auto cache_serialization_result(std::size_t hash, const std::vector<std::uint8_t>& data)
-        -> void;
+    auto get_cached_or_serialize(const Request& request) -> std::vector<std::byte>;
+    auto cache_serialization_result(std::size_t hash, const std::vector<std::byte>& data) -> void;
+
+    // Adds one Uri-Path option per '/'-delimited segment of resource_path
+    // (e.g. "/raft/request_vote" -> "raft", "request_vote"). A single option
+    // holding the whole path would have its embedded '/' percent-escaped by
+    // the server's coap_get_uri_path() (RFC 7252 Uri-Path option values may
+    // not contain '/'), producing "raft%2Frequest_vote" -- which never
+    // matches any resource registered via coap_resource_init("raft/...").
+    auto add_uri_path_options(coap_pdu_t* pdu, const std::string& resource_path) -> bool;
 
     // Enhanced response handling methods
     auto validate_response_pdu(coap_pdu_t* response) -> bool;
@@ -642,9 +667,17 @@ private:
     port_type _bind_port;
     kythira::coap_server_config _config;
     metrics_type _metrics;
-    logger_type _logger;
+    mutable logger_type _logger;
     std::jthread _auto_reload_thread;
     std::filesystem::file_time_type _last_reloaded_cert_mtime{};
+    // Pumps coap_io_process() on _coap_context while the server is running
+    // -- without this, the resource handlers coap_register_handler() wires
+    // up in setup_resources() are never invoked by libcoap (they only ever
+    // fire as a side effect of coap_io_process() reading an incoming PDU
+    // and dispatching it), so a real client would never get a response no
+    // matter how long it waited. Started in start(), stopped in stop()
+    // before any of that method's own libcoap teardown runs.
+    std::jthread _io_thread;
 
     // Server state
     std::atomic<bool> _running{false};
@@ -663,6 +696,15 @@ private:
     // Performance optimization
     std::unique_ptr<memory_pool> _memory_pool;
     std::unordered_map<std::size_t, cache_entry> _serialization_cache;
+
+    // coap_add_attr() does not copy the value string it is given -- the
+    // caller must keep it alive for the resource's lifetime. These back the
+    // "sz=<max_block_size>" attribute values set in setup_resources(); kept
+    // as separate members (rather than one reused across both resources) so
+    // neither resource's coap_str_const_t can be invalidated by the other's
+    // assignment reallocating the buffer.
+    std::string _ae_block_size_attr_value;
+    std::string _is_block_size_attr_value;
 
     // RPC handlers
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
