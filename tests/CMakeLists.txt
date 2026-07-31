@@ -1170,6 +1170,91 @@ target_link_libraries(cbor_json_size_comparison_property_test PRIVATE
 target_compile_features(cbor_json_size_comparison_property_test PRIVATE cxx_std_23)
 add_test(NAME cbor_json_size_comparison_property_test COMMAND cbor_json_size_comparison_property_test)
 
+# ── protobuf_rpc_serializer tests (.kiro/specs/protobuf-rpc-serializer/) ──────
+# Gated on Protobuf_FOUND: the raft_protobuf_serializer target (built from the
+# protoc-generated raft_messages.pb.cc) only exists when Protobuf was found.
+# Skipped gracefully otherwise (Requirement 9.1), the same conditional-
+# add_executable pattern CoAP-dependent tests use for LIBCOAP_FOUND. Each links
+# raft_protobuf_serializer for the generated message classes plus
+# network_simulator/boost_json for the kythira RPC structs.
+if(Protobuf_FOUND)
+    # Concept conformance + serialize/deserialize smoke test (Requirement 10.1).
+    add_executable(protobuf_rpc_serializer_concept_test protobuf_rpc_serializer_concept_test.cpp)
+    target_link_libraries(protobuf_rpc_serializer_concept_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_rpc_serializer_concept_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_rpc_serializer_concept_test
+             COMMAND protobuf_rpc_serializer_concept_test)
+
+    # Property-based round-trip fidelity, all 14 message types + string NodeId
+    # (Requirements 10.2, and Properties 1 & 2).
+    add_executable(protobuf_rpc_serialization_property_test
+                   protobuf_rpc_serialization_property_test.cpp)
+    target_link_libraries(protobuf_rpc_serialization_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_rpc_serialization_property_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_rpc_serialization_property_test
+             COMMAND protobuf_rpc_serialization_property_test)
+
+    # Malformed / wrong-tag rejection (Requirement 10.3, Properties 3 & 4).
+    add_executable(protobuf_rpc_malformed_message_property_test
+                   protobuf_rpc_malformed_message_property_test.cpp)
+    target_link_libraries(protobuf_rpc_malformed_message_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_rpc_malformed_message_property_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_rpc_malformed_message_property_test
+             COMMAND protobuf_rpc_malformed_message_property_test)
+
+    # protobuf-vs-json size/latency benchmark (Requirement 8.1). Registered as a
+    # CTest for CI visibility; numbers are recorded in
+    # doc/protobuf_serializer_performance_comparison.md (Requirement 8.2).
+    add_executable(protobuf_json_benchmark_test protobuf_json_benchmark_test.cpp)
+    target_link_libraries(protobuf_json_benchmark_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+    )
+    target_compile_features(protobuf_json_benchmark_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_json_benchmark_test COMMAND protobuf_json_benchmark_test)
+    set_tests_properties(protobuf_json_benchmark_test PROPERTIES LABELS "benchmark")
+else()
+    message(STATUS "protobuf_rpc_serializer unit/property tests: skipped (Protobuf not found)")
+endif()
+
+# End-to-end HTTP drop-in test additionally needs Folly and the HTTP transport
+# (Property 5 / Requirement 10.4).
+if(Protobuf_FOUND AND TARGET Folly::folly)
+    add_executable(protobuf_rpc_integration_test protobuf_rpc_integration_test.cpp)
+    target_link_libraries(protobuf_rpc_integration_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        raft_protobuf_serializer
+        Folly::folly
+    )
+    target_compile_features(protobuf_rpc_integration_test PRIVATE cxx_std_23)
+    add_test(NAME protobuf_rpc_integration_test COMMAND protobuf_rpc_integration_test)
+    set_tests_properties(protobuf_rpc_integration_test PROPERTIES
+        TIMEOUT 120
+        LABELS "integration;network"
+    )
+else()
+    message(STATUS "protobuf_rpc_integration_test: skipped (requires Protobuf and Folly)")
+endif()
+
 # Network retry property test needs Boost.JSON and Folly
 add_executable(network_retry_property_test network_retry_property_test.cpp)
 target_link_libraries(network_retry_property_test PRIVATE

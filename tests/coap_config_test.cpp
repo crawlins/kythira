@@ -463,6 +463,13 @@ BOOST_AUTO_TEST_CASE(test_get_content_format_for_serializer) {
     BOOST_CHECK(get_content_format_for_serializer("xml") == coap_content_format::application_xml);
     BOOST_CHECK(get_content_format_for_serializer("text") == coap_content_format::text_plain);
 
+    // Protocol Buffers (protobuf_rpc_serializer::name() == "protobuf") is labeled
+    // as generic binary octet-stream, not mislabeled as CBOR.
+    BOOST_CHECK(get_content_format_for_serializer("protobuf") ==
+                coap_content_format::application_octet_stream);
+    BOOST_CHECK(get_content_format_for_serializer("PROTOBUF") ==
+                coap_content_format::application_octet_stream);
+
     // Unknown serializer defaults to CBOR
     BOOST_CHECK(get_content_format_for_serializer("unknown") ==
                 coap_content_format::application_cbor);
