@@ -624,6 +624,13 @@ jobs:
           AZURE_TEST_SUBNET_ID_ZONE1: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE1 }}
           AZURE_TEST_SUBNET_ID_ZONE2: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE2 }}
           AZURE_TEST_SUBNET_ID_ZONE3: ${{ vars.AZURE_TEST_SUBNET_ID_ZONE3 }}
+          # Standard_D2s_v5 (this test's own hardcoded default) hit
+          # SkuNotAvailable ("Capacity Restrictions") in eastus on a real
+          # run. Standard_B2s is a much more broadly available burstable
+          # SKU, less prone to regional capacity exhaustion, and more than
+          # sufficient for a VM this test creates only to immediately probe
+          # power state and tear down.
+          AZURE_TEST_VM_SIZE: ${{ vars.AZURE_TEST_VM_SIZE }}
         run: |
           ctest --test-dir build -L 'real-azure' -R '^azure_quorum_manager_real_test$' --output-on-failure
 
