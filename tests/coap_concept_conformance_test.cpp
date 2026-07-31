@@ -11,6 +11,8 @@
 // Only include CoAP transport if libcoap is available
 #ifdef LIBCOAP_AVAILABLE
 #include <raft/coap_transport.hpp>
+#include <folly/executors/CPUThreadPoolExecutor.h>  // test_types::executor_type below is folly::Executor directly
+#include <raft/coap_transport_impl.hpp>
 #endif
 
 namespace {
@@ -25,9 +27,30 @@ using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;
 using test_metrics = kythira::noop_metrics;
 
 #ifdef LIBCOAP_AVAILABLE
-using future_type = kythira::future_default<kythira::request_vote_response<>>;
-using test_types = kythira::default_transport_types<future_type, test_serializer, test_metrics,
-                                                    kythira::console_logger>;
+// coap_client has three RPCs with three distinct Response types, so Types::
+// future_template<T> must be genuinely parameterized over T. The deprecated
+// default_transport_types alias always yields the single FutureType it was
+// constructed with regardless of T (see its doc comment in
+// coap_transport.hpp), which only works for request_vote -- send_append_
+// entries()/send_install_snapshot() would return a Future<append_entries_
+// response<>>/Future<install_snapshot_response<>> that can't convert to the
+// fixed Future<request_vote_response<>> the function is declared to return.
+// This local struct matches the pattern used by every other coap_*_test.cpp
+// (e.g. coap_content_format_property_test.cpp).
+struct test_types {
+    using serializer_type = test_serializer;
+    using rpc_serializer_type = test_serializer;
+    using metrics_type = test_metrics;
+    using logger_type = kythira::console_logger;
+    using address_type = std::string;
+    using port_type = std::uint16_t;
+    using executor_type = folly::Executor;
+
+    template<typename T> using future_template = kythira::future_default<T>;
+    template<typename T> using promise_template = kythira::promise_default<T>;
+
+    using future_type = kythira::future_default<kythira::request_vote_response<>>;
+};
 using test_client = kythira::coap_client<test_types>;
 using test_server = kythira::coap_server<test_types>;
 #endif
@@ -39,7 +62,7 @@ BOOST_AUTO_TEST_SUITE(coap_concept_conformance_tests)
 // Test that coap_client satisfies network_client concept
 BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, *boost::unit_test::timeout(15)) {
     // Static assertion to verify concept satisfaction
-    static_assert(kythira::network_client<test_client, future_type>,
+    static_assert(kythira::network_client<test_client>,
                   "coap_client must satisfy network_client concept");
 
     BOOST_TEST_MESSAGE("coap_client satisfies network_client concept");
@@ -49,7 +72,7 @@ BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, *boost::unit_test:
 // Test that coap_server satisfies network_server concept
 BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, *boost::unit_test::timeout(15)) {
     // Static assertion to verify concept satisfaction
-    static_assert(kythira::network_server<test_server, future_type>,
+    static_assert(kythira::network_server<test_server>,
                   "coap_server must satisfy network_server concept");
 
     BOOST_TEST_MESSAGE("coap_server satisfies network_server concept");
@@ -150,12 +173,12 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, *boost::unit_test
     auto is_future = client.send_install_snapshot(target, is_request, timeout);
 
     // Verify return types (these will be checked at compile time)
-    static_assert(
-        std::same_as<decltype(rv_future), folly::Future<kythira::request_vote_response<>>>);
-    static_assert(
-        std::same_as<decltype(ae_future), folly::Future<kythira::append_entries_response<>>>);
-    static_assert(
-        std::same_as<decltype(is_future), folly::Future<kythira::install_snapshot_response<>>>);
+    static_assert(std::same_as<decltype(rv_future),
+                               kythira::future_default<kythira::request_vote_response<>>>);
+    static_assert(std::same_as<decltype(ae_future),
+                               kythira::future_default<kythira::append_entries_response<>>>);
+    static_assert(std::same_as<decltype(is_future),
+                               kythira::future_default<kythira::install_snapshot_response<>>>);
 
     BOOST_TEST_MESSAGE("network_client concept requirements verified");
 #else
@@ -238,8 +261,8 @@ BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, *boost::unit_test::tim
     // Verify that coap_client and coap_server have proper template constraints
 
     // This should compile - valid template parameters
-    using valid_client = kythira::coap_client<test_serializer, test_metrics>;
-    using valid_server = kythira::coap_server<test_serializer, test_metrics>;
+    using valid_client = kythira::coap_client<test_types>;
+    using valid_server = kythira::coap_server<test_types>;
 
     // Verify the types are instantiable
     static_assert(
