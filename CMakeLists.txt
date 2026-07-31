@@ -221,6 +221,23 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT)
     else()
         # Set LIBCOAP_FOUND for consistency with pkg-config path
         set(LIBCOAP_FOUND TRUE)
+        # vcpkg's CONFIG-mode package exports a proper imported target
+        # (libcoap::coap-3), not the pkg-config-style LIBCOAP_LIBRARIES/
+        # LIBCOAP_INCLUDE_DIRS/LIBCOAP_CFLAGS_OTHER variables the
+        # pkg_check_modules() fallback above populates. Setting
+        # LIBCOAP_LIBRARIES to the target name lets the single shared
+        # target_link_libraries() call below work for both paths --
+        # linking an imported target also pulls in its own
+        # INTERFACE_INCLUDE_DIRECTORIES for free, so
+        # LIBCOAP_INCLUDE_DIRS/LIBCOAP_CFLAGS_OTHER don't need setting
+        # here. Without this, every CONFIG-mode (i.e. every vcpkg) build
+        # silently linked nothing at all despite libcoap_FOUND being
+        # true, and every #ifdef LIBCOAP_AVAILABLE code path in
+        # coap_transport_impl.hpp compiled out to its stub branch
+        # instead -- confirmed directly: no coap_*_test.cpp in this
+        # project ever actually exercised the real libcoap-backed
+        # implementation before this fix.
+        set(LIBCOAP_LIBRARIES libcoap::coap-3)
     endif()
 endif()
 kythira_kconfig_require(COAP_TRANSPORT LIBCOAP_FOUND "libcoap")
@@ -698,6 +715,16 @@ if(LIBCOAP_FOUND)
     target_include_directories(network_simulator INTERFACE ${LIBCOAP_INCLUDE_DIRS})
     target_link_libraries(network_simulator INTERFACE ${LIBCOAP_LIBRARIES})
     target_compile_definitions(network_simulator INTERFACE ${LIBCOAP_CFLAGS_OTHER})
+    # Backs LIBCOAP_AVAILABLE project-wide -- COAP_TRANSPORT's own Kconfig
+    # help text already says "Backs LIBCOAP_AVAILABLE", but nothing
+    # actually defined it here; only three individually-flagged test
+    # targets (tests/CMakeLists.txt) turned it on for themselves. Every
+    # other coap_*_test.cpp, and every production call site through
+    # network_simulator, compiled coap_transport_impl.hpp's #ifdef
+    # LIBCOAP_AVAILABLE branches out entirely and ran the stub
+    # implementation instead, regardless of whether libcoap was actually
+    # available.
+    target_compile_definitions(network_simulator INTERFACE LIBCOAP_AVAILABLE)
 endif()
 
 if(LIBLDNS_FOUND)
