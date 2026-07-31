@@ -25,13 +25,13 @@
 #define COAP_RESPONSE_CODE_BAD_OPTION 0x82
 #define COAP_RESPONSE_CODE_FORBIDDEN 0x83
 #define COAP_RESPONSE_CODE_NOT_FOUND 0x84
-#define COAP_RESPONSE_CODE_METHOD_NOT_ALLOWED 0x85
+#define COAP_RESPONSE_CODE_NOT_ALLOWED 0x85
 #define COAP_RESPONSE_CODE_NOT_ACCEPTABLE 0x86
-#define COAP_RESPONSE_CODE_REQUEST_ENTITY_INCOMPLETE 0x88
+#define COAP_RESPONSE_CODE_INCOMPLETE 0x88
 #define COAP_RESPONSE_CODE_PRECONDITION_FAILED 0x8C
-#define COAP_RESPONSE_CODE_REQUEST_ENTITY_TOO_LARGE 0x8D
+#define COAP_RESPONSE_CODE_REQUEST_TOO_LARGE 0x8D
 #define COAP_RESPONSE_CODE_UNSUPPORTED_CONTENT_FORMAT 0x8F
-#define COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR 0xA0
+#define COAP_RESPONSE_CODE_INTERNAL_ERROR 0xA0
 #define COAP_RESPONSE_CODE_NOT_IMPLEMENTED 0xA1
 #define COAP_RESPONSE_CODE_BAD_GATEWAY 0xA2
 #define COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE 0xA3
@@ -157,8 +157,7 @@ coap_client<Types>::coap_client(
             auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
             if (client) {
                 // Extract token from received PDU
-                coap_bin_const_t token;
-                coap_pdu_get_token(received, &token);
+                coap_bin_const_t token = coap_pdu_get_token(received);
                 std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
 
                 // Handle the response
@@ -166,6 +165,25 @@ coap_client<Types>::coap_client(
             }
             return COAP_RESPONSE_OK;
         });
+
+    // Pump libcoap's own I/O for the lifetime of this client. Without this,
+    // coap_register_response_handler()'s callback above is never invoked --
+    // libcoap only reads/writes sockets and dispatches PDUs to registered
+    // handlers from inside coap_io_process(), which nothing else here ever
+    // calls. Every future send_rpc() returns would otherwise hang forever
+    // regardless of what the peer does. Locking around each poll (short,
+    // 20ms chunks rather than one long call) lets send_rpc()'s own libcoap
+    // calls (session creation, coap_send) interleave promptly instead of
+    // queueing behind a single long-held lock -- see _mutex's own comment
+    // for why it's a recursive_mutex.
+    _io_thread = std::jthread([this](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            std::lock_guard lock(_mutex);
+            if (_coap_context) {
+                coap_io_process(_coap_context, 20);
+            }
+        }
+    });
 #else
     // Stub implementation when libcoap is not available
     _coap_context = nullptr;  // NOLINT(cppcoreguidelines-prefer-member-initializer)
@@ -222,6 +240,17 @@ coap_client<Types>::~coap_client() {
         "CoAP client shutting down",
         {{"transport", "coap"}, {"pending_requests", std::to_string(_pending_requests.size())}});
 
+    // Stop the I/O-pump thread before touching _coap_context below -- it
+    // reads _coap_context on every loop iteration, so it must be fully
+    // joined before coap_free_context() runs, or it's a use-after-free.
+    // Not done while holding _mutex: the thread's own loop body needs to
+    // acquire it (briefly, between polls) to notice stop_requested() and
+    // exit, so holding it here first would deadlock the join() below.
+    if (_io_thread.joinable()) {
+        _io_thread.request_stop();
+        _io_thread.join();
+    }
+
     // Cleanup libcoap context
 #ifdef LIBCOAP_AVAILABLE
     if (_coap_context) {
@@ -234,7 +263,7 @@ coap_client<Types>::~coap_client() {
 #endif
 
     // Cancel any pending requests
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     for (auto& [token, pending_msg] : _pending_requests) {
         _logger.warning("Cancelling pending request due to client shutdown",
                         {{"token", token},
@@ -357,41 +386,15 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
     coap_context_set_session_timeout(_coap_context,
                                      static_cast<unsigned int>(_config.session_timeout.count()));
 
-    // Set up request handler for incoming requests
-    coap_register_request_handler(
-        _coap_context, COAP_REQUEST_POST,
-        [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
-           const coap_string_t* query, coap_pdu_t* response) -> void {
-            // Extract server instance from resource user data
-            auto* server = static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
-            if (server) {
-                // Get resource URI path
-                coap_str_const_t* uri_path = coap_resource_get_uri_path(resource);
-                std::string resource_path(reinterpret_cast<const char*>(uri_path->s),
-                                          uri_path->length);
-
-                // Handle the request based on resource path
-                if (resource_path == "raft/request_vote" && server->_request_vote_handler) {
-                    server->handle_rpc_resource<request_vote_request<>, request_vote_response<>>(
-                        resource, session, request, query, response, server->_request_vote_handler);
-                } else if (resource_path == "raft/append_entries" &&
-                           server->_append_entries_handler) {
-                    server
-                        ->handle_rpc_resource<append_entries_request<>, append_entries_response<>>(
-                            resource, session, request, query, response,
-                            server->_append_entries_handler);
-                } else if (resource_path == "raft/install_snapshot" &&
-                           server->_install_snapshot_handler) {
-                    server->handle_rpc_resource<install_snapshot_request<>,
-                                                install_snapshot_response<>>(
-                        resource, session, request, query, response,
-                        server->_install_snapshot_handler);
-                } else {
-                    // Unknown resource or no handler registered
-                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_FOUND);
-                }
-            }
-        });
+    // Per-resource POST handlers (request_vote/append_entries/install_snapshot)
+    // are registered on the real coap_resource_t objects by setup_resources(),
+    // called from start(). There is no generic-dispatch handler here: an
+    // earlier version of this constructor tried to register one directly
+    // against _coap_context via coap_register_request_handler(), but that
+    // function takes a coap_resource_t* (not a coap_context_t*) and the
+    // resulting resource was never attached with coap_add_resource() -- so it
+    // could never have fired even if it had compiled. Removed rather than
+    // fixed, since setup_resources() already covers this dispatch correctly.
 #else
     // Stub implementation when libcoap is not available
     _coap_context = nullptr;  // NOLINT(cppcoreguidelines-prefer-member-initializer)
@@ -474,7 +477,7 @@ requires kythira::transport_types<Types>
 auto coap_server<Types>::register_request_vote_handler(
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)> handler)
     -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (!handler) {
         throw coap_transport_error("RequestVote handler cannot be null");
@@ -495,7 +498,7 @@ requires kythira::transport_types<Types>
 auto coap_server<Types>::register_append_entries_handler(
     std::function<kythira::append_entries_response<>(const kythira::append_entries_request<>&)>
         handler) -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (!handler) {
         throw coap_transport_error("AppendEntries handler cannot be null");
@@ -516,7 +519,7 @@ requires kythira::transport_types<Types>
 auto coap_server<Types>::register_install_snapshot_handler(
     std::function<kythira::install_snapshot_response<>(const kythira::install_snapshot_request<>&)>
         handler) -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (!handler) {
         throw coap_transport_error("InstallSnapshot handler cannot be null");
@@ -535,7 +538,7 @@ auto coap_server<Types>::register_install_snapshot_handler(
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::start() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (_running.load()) {
         throw coap_transport_error("Server is already running");
@@ -639,6 +642,23 @@ auto coap_server<Types>::start() -> void {
     // Mark server as running
     _running = true;
 
+    // Pump libcoap's own I/O for as long as the server is running -- see
+    // _io_thread's own doc comment for why this is necessary at all
+    // (nothing else here ever calls coap_io_process()). No locking needed
+    // around the call itself: register_*_handler() calls only ever happen
+    // before start() in normal usage, and stop() joins this thread before
+    // touching _coap_context/_received_messages/etc. itself, so nothing
+    // else ever touches those concurrently with this thread.
+#ifdef LIBCOAP_AVAILABLE
+    _io_thread = std::jthread([this](std::stop_token stop_token) {
+        while (!stop_token.stop_requested()) {
+            if (_coap_context) {
+                coap_io_process(_coap_context, 20);
+            }
+        }
+    });
+#endif
+
     // Record server start metrics
     _metrics.add_dimension("server_state", "started");
     _metrics.add_dimension("bind_address", _bind_address);
@@ -659,7 +679,18 @@ auto coap_server<Types>::start() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::stop() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    // Stop the I/O-pump thread first, before taking _mutex below or
+    // touching _coap_context further down -- it reads _coap_context on
+    // every loop iteration and holds no lock of its own, so joining it
+    // here (before this function's own libcoap teardown runs) avoids a
+    // use-after-free race between this thread freeing endpoints/sessions
+    // and that one still calling coap_io_process() on them.
+    if (_io_thread.joinable()) {
+        _io_thread.request_stop();
+        _io_thread.join();
+    }
+
+    std::lock_guard lock(_mutex);
 
     if (!_running.load()) {
         _logger.debug("Server is already stopped");
@@ -673,48 +704,15 @@ auto coap_server<Types>::stop() -> void {
 
 #ifdef LIBCOAP_AVAILABLE
     if (_coap_context) {
-        // Stop accepting new connections and gracefully close existing sessions
-
-        // First, close all active sessions gracefully
-        coap_session_t* session = coap_session_get_first(_coap_context);
-        std::size_t closed_sessions = 0;
-
-        while (session) {
-            coap_session_t* next_session = coap_session_get_next(session);
-
-            // Send any pending responses before closing
-            coap_session_send_csm(session);
-
-            // Release the session (this will close it gracefully)
-            coap_session_release(session);
-            closed_sessions++;
-
-            session = next_session;
-        }
-
-        _logger.debug("Closed active sessions",
-                      {{"sessions_closed", std::to_string(closed_sessions)}});
-
-        // Clean up all endpoints
-        coap_endpoint_t* endpoint = coap_get_endpoint(_coap_context);
-        std::size_t freed_endpoints = 0;
-
-        while (endpoint) {
-            coap_endpoint_t* next_endpoint = coap_endpoint_get_next(endpoint);
-
-            // Free the endpoint (this will close the socket)
-            coap_free_endpoint(endpoint);
-            freed_endpoints++;
-
-            endpoint = next_endpoint;
-        }
-
-        _logger.debug("Freed endpoints", {{"endpoints_freed", std::to_string(freed_endpoints)}});
-
-        // Clean up any remaining resources in the context
-        coap_cleanup();
-
-        _logger.debug("libcoap cleanup completed");
+        // Session/endpoint teardown is not done here: libcoap 4.3.5 has no
+        // public API to walk a context's session or endpoint lists (the
+        // coap_session_get_first/get_next, coap_get_endpoint, and
+        // coap_endpoint_get_next names once called here don't exist in this
+        // version). coap_free_context() -- called from the destructor --
+        // already "clears all entries from the receive queue and send
+        // queue and deletes the resources ... and frees the attached
+        // endpoints" per its own documentation, so no manual walk is needed.
+        _logger.debug("libcoap context left intact for destructor cleanup");
     }
 #else
     // Stub implementation when libcoap is not available
@@ -782,6 +780,29 @@ auto coap_client<Types>::get_endpoint_uri(std::uint64_t node_id) const -> std::s
 
 template<typename Types>
 requires kythira::transport_types<Types>
+auto coap_client<Types>::add_uri_path_options(coap_pdu_t* pdu, const std::string& resource_path)
+    -> bool {
+#ifdef LIBCOAP_AVAILABLE
+    std::size_t start = resource_path.front() == '/' ? 1 : 0;
+    while (start < resource_path.size()) {
+        std::size_t end = resource_path.find('/', start);
+        if (end == std::string::npos) {
+            end = resource_path.size();
+        }
+        if (!coap_add_option(pdu, COAP_OPTION_URI_PATH, end - start,
+                             reinterpret_cast<const uint8_t*>(resource_path.data() + start))) {
+            return false;
+        }
+        start = end + 1;
+    }
+    return true;
+#else
+    return true;
+#endif
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
 auto coap_client<Types>::generate_message_token() -> std::string {
     // Generate a unique token for message correlation
     // In a real implementation, this would generate a proper CoAP token
@@ -821,7 +842,6 @@ auto coap_client<Types>::setup_dtls_context() -> void {
         memset(&pki_config, 0, sizeof(pki_config));
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
         pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
-        pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
         pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
         pki_config.allow_expired_certs = 0;
         pki_config.cert_chain_validation = 1;
@@ -1060,7 +1080,6 @@ auto coap_client<Types>::reload_tls_material() -> void {
     memset(&pki_config, 0, sizeof(pki_config));
     pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
     pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
-    pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
     pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
     pki_config.allow_expired_certs = 0;
     pki_config.cert_chain_validation = 1;
@@ -1326,7 +1345,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string& token) -> void {
     // Handle CoAP response and resolve the corresponding future
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     auto it = _pending_requests.find(token);
     if (it == _pending_requests.end()) {
         // Response for unknown token, ignore
@@ -1472,8 +1491,8 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                     // Create PDU for next block
                     coap_pdu_t* next_pdu = coap_pdu_init(
                         _config.use_confirmable_messages ? COAP_MESSAGE_CON : COAP_MESSAGE_NON,
-                        COAP_REQUEST_CODE_POST, coap_new_message_id(session),
-                        coap_session_max_pdu_size(session));
+                        COAP_REQUEST_CODE_POST, coap_new_message_id(state->session),
+                        coap_session_max_pdu_size(state->session));
 
                     if (next_pdu) {
                         // Add token
@@ -1481,9 +1500,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                                        reinterpret_cast<const uint8_t*>(token.c_str()));
 
                         // Add URI path
-                        coap_add_option(
-                            next_pdu, COAP_OPTION_URI_PATH, resource_path.length() - 1,
-                            reinterpret_cast<const uint8_t*>(resource_path.c_str() + 1));
+                        add_uri_path_options(next_pdu, state->resource_path);
 
                         // Add Block1 option for next block
                         kythira::block_option next_block;
@@ -1501,7 +1518,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                             reinterpret_cast<const uint8_t*>(blocks[next_block_num].data()));
 
                         // Send next block
-                        coap_send(session, next_pdu);
+                        coap_send(state->session, next_pdu);
 
                         state->next_block_num = next_block_num;
                         state->last_activity = std::chrono::steady_clock::now();
@@ -1546,7 +1563,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_acknowledgment(std::uint16_t message_id) -> void {
     // Handle CoAP acknowledgment for confirmable messages
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     // Find the pending message with this message ID
     for (auto& _pending_request : _pending_requests) {  // NOLINT(modernize-loop-convert)
@@ -1563,7 +1580,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
     // Check if we've already received this message ID
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     auto it = _received_messages.find(message_id);
     return it != _received_messages.end();
 }
@@ -1572,7 +1589,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::record_received_message(std::uint16_t message_id) -> void {
     // Record that we've received this message ID
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     _received_messages.emplace(message_id, received_message_info{message_id});
 
     // Clean up old entries periodically
@@ -1583,7 +1600,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::retransmit_message(const std::string& token) -> void {
     // Retransmit a message that hasn't been acknowledged
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _pending_requests.find(token);
     if (it == _pending_requests.end()) {
@@ -1662,14 +1679,22 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
     }
 
     // Resolve the address
-    coap_address_t dst_addr;
-    if (!coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0, &dst_addr, 1, 1)) {
+    uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
+    coap_addr_info_t* addr_info = coap_resolve_address_info(
+        &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
+    if (!addr_info) {
         throw coap_network_error("Failed to resolve endpoint address: " + endpoint);
     }
+    coap_address_t dst_addr = addr_info->addr;
+    coap_free_address_info(addr_info);
 
-    // Create DTLS session
+    // Create DTLS session. The context was already configured with the
+    // client's PKI/PSK credentials by setup_dtls_context() (called from the
+    // constructor) via coap_context_set_pki()/coap_context_set_psk(), so a
+    // plain coap_new_client_session() with COAP_PROTO_DTLS picks those up --
+    // there is no coap_new_client_session_dtls() in libcoap's public API.
     coap_session_t* session =
-        coap_new_client_session_dtls(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
+        coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
     if (!session) {
         throw coap_network_error("Failed to create DTLS session to endpoint: " + endpoint);
     }
@@ -1679,8 +1704,9 @@ auto coap_client<Types>::establish_dtls_connection(const std::string& endpoint) 
 
     // Configure DTLS-specific session parameters
     coap_session_set_max_retransmit(session, _config.max_retransmit);
-    coap_session_set_ack_timeout(session,
-                                 static_cast<coap_fixed_point_t>(_config.ack_timeout.count()));
+    coap_session_set_ack_timeout(
+        session, coap_fixed_point_t{static_cast<uint16_t>(_config.ack_timeout.count() / 1000),
+                                    static_cast<uint16_t>(_config.ack_timeout.count() % 1000)});
 
     // Wait for DTLS handshake to complete (with timeout)
     auto handshake_timeout = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -2108,6 +2134,13 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
     try {
 #ifdef LIBCOAP_AVAILABLE
+        // Serializes every libcoap call this function makes (session
+        // creation, coap_send) against _io_thread's own coap_io_process()
+        // calls on the same _coap_context -- libcoap's C API is not safe to
+        // call concurrently from two threads on one context. _mutex is
+        // recursive so this nests safely with get_or_create_session()'s/
+        // create_new_session()'s own inner locks below.
+        std::lock_guard lock(_mutex);
         // Real libcoap implementation
         // Get endpoint URI for target node
         auto endpoint_uri = get_endpoint_uri(target);
@@ -2116,16 +2149,24 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         coap_uri_t uri;
         if (coap_split_uri(reinterpret_cast<const uint8_t*>(endpoint_uri.c_str()),
                            endpoint_uri.length(), &uri) < 0) {
-            _metrics.increment_counter("coap_uri_parse_errors");
+            _metrics.add_dimension("error_type", "coap_uri_parse_errors");
+            _metrics.add_one();
+            _metrics.emit();
             throw coap_network_error("Failed to parse endpoint URI: " + endpoint_uri);
         }
 
         // Resolve the address with proper error handling
-        coap_address_t dst_addr;
-        if (!coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0, &dst_addr, 1, 1)) {
-            _metrics.increment_counter("coap_address_resolution_errors");
+        uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
+        coap_addr_info_t* addr_info = coap_resolve_address_info(
+            &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
+        if (!addr_info) {
+            _metrics.add_dimension("error_type", "coap_address_resolution_errors");
+            _metrics.add_one();
+            _metrics.emit();
             throw coap_network_error("Failed to resolve endpoint address: " + endpoint_uri);
         }
+        coap_address_t dst_addr = addr_info->addr;
+        coap_free_address_info(addr_info);
 
         // Create or reuse session with proper session management
         coap_session_t* session = nullptr;
@@ -2136,7 +2177,9 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         if (!session) {
-            _metrics.increment_counter("coap_session_creation_errors");
+            _metrics.add_dimension("error_type", "coap_session_creation_errors");
+            _metrics.add_one();
+            _metrics.emit();
             throw coap_network_error("Failed to create session to endpoint: " + endpoint_uri);
         }
 
@@ -2144,7 +2187,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         coap_session_set_app_data(session, this);
 
         // Serialize the request with caching if enabled
-        std::vector<std::uint8_t> serialized_request;
+        std::vector<std::byte> serialized_request;
         if (_config.enable_serialization_caching) {
             serialized_request = get_cached_or_serialize(request);
         } else {
@@ -2171,9 +2214,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         }
 
         // Add URI path
-        if (!coap_add_option(pdu, COAP_OPTION_URI_PATH,
-                             resource_path.length() - 1,  // Skip leading '/'
-                             reinterpret_cast<const uint8_t*>(resource_path.c_str() + 1))) {
+        if (!add_uri_path_options(pdu, resource_path)) {
             coap_delete_pdu(pdu);
             coap_session_release(session);
             throw coap_transport_error("Failed to add URI path option");
@@ -2223,11 +2264,13 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
                 // Store remaining blocks for continuation
                 if (blocks.size() > 1) {
-                    std::lock_guard<std::mutex> lock(_mutex);
+                    std::lock_guard lock(_mutex);
                     auto transfer_state =
                         std::make_unique<block_transfer_state>(token, _config.max_block_size);
                     transfer_state->complete_payload = serialized_request;
                     transfer_state->next_block_num = 1;
+                    transfer_state->session = session;
+                    transfer_state->resource_path = resource_path;
                     _active_block_transfers[token] = std::move(transfer_state);
                 }
             }
@@ -2247,7 +2290,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
         // Store pending request
         {
-            std::lock_guard<std::mutex> lock(_mutex);
+            std::lock_guard lock(_mutex);
             auto pending_msg = std::make_unique<pending_message>(
                 token, coap_pdu_get_mid(pdu), timeout,
                 [promise, this](std::vector<std::byte> response_data) {
@@ -2272,7 +2315,7 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         if (mid == COAP_INVALID_MID) {
             // Remove from pending requests
             {
-                std::lock_guard<std::mutex> lock(_mutex);
+                std::lock_guard lock(_mutex);
                 _pending_requests.erase(token);
             }
             coap_session_release(session);
@@ -2339,7 +2382,8 @@ auto coap_server<Types>::setup_resources() -> void {
                 auto* server =
                     static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
                 if (server && server->_request_vote_handler) {
-                    server->handle_rpc_resource<request_vote_request<>, request_vote_response<>>(
+                    server->template handle_rpc_resource<request_vote_request<>,
+                                                         request_vote_response<>>(
                         resource, session, request, query, response, server->_request_vote_handler);
                 } else {
                     coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
@@ -2372,10 +2416,10 @@ auto coap_server<Types>::setup_resources() -> void {
                 auto* server =
                     static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
                 if (server && server->_append_entries_handler) {
-                    server
-                        ->handle_rpc_resource<append_entries_request<>, append_entries_response<>>(
-                            resource, session, request, query, response,
-                            server->_append_entries_handler);
+                    server->template handle_rpc_resource<append_entries_request<>,
+                                                         append_entries_response<>>(
+                        resource, session, request, query, response,
+                        server->_append_entries_handler);
                 } else {
                     coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_IMPLEMENTED);
                     server->_logger.warning("AppendEntries handler not registered");
@@ -2389,9 +2433,11 @@ auto coap_server<Types>::setup_resources() -> void {
             // Set resource attributes to indicate block transfer support
             coap_resource_set_get_observable(ae_resource, 1);
 
-            // Set maximum block size hint
-            coap_str_const_t* block_attr =
-                coap_make_str_const("sz=" + std::to_string(_config.max_block_size));
+            // Set maximum block size hint. coap_add_attr() keeps a raw
+            // pointer into this string for the resource's lifetime, so the
+            // value must live in a persistent member, not a temporary.
+            _ae_block_size_attr_value = "sz=" + std::to_string(_config.max_block_size);
+            coap_str_const_t* block_attr = coap_make_str_const(_ae_block_size_attr_value.c_str());
             coap_add_attr(ae_resource, coap_make_str_const("block"), block_attr, 0);
         }
 
@@ -2418,8 +2464,8 @@ auto coap_server<Types>::setup_resources() -> void {
                 auto* server =
                     static_cast<coap_server<Types>*>(coap_resource_get_userdata(resource));
                 if (server && server->_install_snapshot_handler) {
-                    server->handle_rpc_resource<install_snapshot_request<>,
-                                                install_snapshot_response<>>(
+                    server->template handle_rpc_resource<install_snapshot_request<>,
+                                                         install_snapshot_response<>>(
                         resource, session, request, query, response,
                         server->_install_snapshot_handler);
                 } else {
@@ -2434,9 +2480,11 @@ auto coap_server<Types>::setup_resources() -> void {
         if (_config.enable_block_transfer) {
             coap_resource_set_get_observable(is_resource, 1);
 
-            // Set block transfer attributes for large payloads
-            coap_str_const_t* block_attr =
-                coap_make_str_const("sz=" + std::to_string(_config.max_block_size));
+            // Set block transfer attributes for large payloads. See the
+            // append_entries block above for why this must be a persistent
+            // member rather than a temporary.
+            _is_block_size_attr_value = "sz=" + std::to_string(_config.max_block_size);
+            coap_str_const_t* block_attr = coap_make_str_const(_is_block_size_attr_value.c_str());
             coap_add_attr(is_resource, coap_make_str_const("block"), block_attr, 0);
 
             // Set content type attribute
@@ -2456,19 +2504,14 @@ auto coap_server<Types>::setup_resources() -> void {
         throw coap_transport_error("Failed to create InstallSnapshot resource");
     }
 
-    // Set up global request handler for unknown resources
-    coap_register_request_handler(
-        _coap_context, nullptr,
-        [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
-           const coap_string_t* query, coap_pdu_t* response) -> void {
-            // This handler is called for requests to unknown resources
-            coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_FOUND);
-
-            // Add diagnostic payload
-            const char* error_msg = "Resource not found";
-            coap_add_data(response, strlen(error_msg), reinterpret_cast<const uint8_t*>(error_msg));
-        });
-
+    // No explicit catch-all handler is registered for unknown resources:
+    // libcoap already responds 4.04 Not Found by default when a request's
+    // URI-Path doesn't match any registered resource. An earlier version of
+    // this method tried to register one via coap_register_request_handler(),
+    // but that function takes a coap_resource_t* (not a coap_context_t*), and
+    // there was no resource for it to attach to anyway -- coap_resource_
+    // unknown_init() (the real API for this) is for PUT-based dynamic
+    // resource creation, not for customizing the default 404 response.
 #else
     // Stub implementation when libcoap is not available
     _logger.warning(
@@ -2528,7 +2571,6 @@ auto coap_server<Types>::setup_dtls_context() -> void {
 
         pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
         pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
-        pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
         pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
         pki_config.allow_expired_certs = 0;
         pki_config.cert_chain_validation = 1;
@@ -2604,7 +2646,7 @@ auto coap_server<Types>::setup_dtls_context() -> void {
         spsk_config.psk_info.key.length = _config.psk_key.size();
 
         // Set up PSK callback for client authentication
-        spsk_config.validate_id_call_back = [](coap_str_const_t* identity, coap_session_t* session,
+        spsk_config.validate_id_call_back = [](coap_bin_const_t* identity, coap_session_t* session,
                                                void* arg) -> const coap_bin_const_t* {
             auto* server = static_cast<coap_server<Types>*>(arg);
 
@@ -2747,7 +2789,6 @@ auto coap_server<Types>::reload_tls_material() -> void {
     memset(&pki_config, 0, sizeof(pki_config));
     pki_config.version = COAP_DTLS_PKI_SETUP_VERSION;
     pki_config.verify_peer_cert = _config.verify_peer_cert ? 1 : 0;
-    pki_config.require_peer_cert = _config.verify_peer_cert ? 1 : 0;
     pki_config.allow_self_signed = !_config.verify_peer_cert ? 1 : 0;
     pki_config.allow_expired_certs = 0;
     pki_config.cert_chain_validation = 1;
@@ -3030,7 +3071,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::is_duplicate_message(std::uint16_t message_id) -> bool {
     // Check if we've already received this message ID
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     auto it = _received_messages.find(message_id);
     return it != _received_messages.end();
 }
@@ -3039,7 +3080,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::record_received_message(std::uint16_t message_id) -> void {
     // Record that we've received this message ID
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     _received_messages.emplace(message_id, received_message_info{message_id});
 
     // Clean up old entries periodically
@@ -3422,7 +3463,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             _logger.warning("Request payload too large",
                             {{"payload_size", std::to_string(payload_len)},
                              {"max_size", std::to_string(_config.max_request_size)}});
-            coap_pdu_set_code(response, COAP_RESPONSE_CODE_REQUEST_ENTITY_TOO_LARGE);
+            coap_pdu_set_code(response, COAP_RESPONSE_CODE_REQUEST_TOO_LARGE);
             return;
         }
 
@@ -3430,19 +3471,22 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         std::vector<std::byte> request_data(payload_len);
         std::memcpy(request_data.data(), payload_data, payload_len);
 
-        // Check for malformed message
-        if (detect_malformed_message(request_data)) {
-            reject_malformed_request(response, "Malformed CoAP message");
-            return;
-        }
+        // Note: no detect_malformed_message() call here. That helper checks
+        // CoAP-PDU-header bit patterns (version/type/token-length), which
+        // only make sense applied to a raw PDU -- but coap_get_data() above
+        // already extracted just the RPC serializer's application payload
+        // (CBOR/JSON/whatever Types::serializer_type chose), whose leading
+        // bytes have no relation to those fields. libcoap's own PDU parsing
+        // already rejected any genuinely malformed raw CoAP message before
+        // this handler could ever be invoked; deserialization below (which
+        // does understand the payload's actual format) is what validates it.
 
         // Handle block transfer if present
         coap_opt_iterator_t opt_iter;
         coap_opt_t* block1_option = coap_check_option(request, COAP_OPTION_BLOCK1, &opt_iter);
         if (block1_option && _config.enable_block_transfer) {
             // Extract token for block transfer correlation
-            coap_bin_const_t token;
-            coap_pdu_get_token(request, &token);
+            coap_bin_const_t token = coap_pdu_get_token(request);
             std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
 
             // Parse block option
@@ -3485,7 +3529,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             rpc_response = handler(deserialized_request);
         } catch (const std::exception& e) {
             _logger.error("RPC handler threw exception", {{"error", e.what()}});
-            coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+            coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
             std::string error_msg = "Handler error: " + std::string(e.what());
             coap_add_data(response, error_msg.length(),
                           reinterpret_cast<const uint8_t*>(error_msg.c_str()));
@@ -3498,7 +3542,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             serialized_response = _serializer.serialize(rpc_response);
         } catch (const std::exception& e) {
             _logger.error("Failed to serialize response", {{"error", e.what()}});
-            coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+            coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
             std::string error_msg = "Serialization failed: " + std::string(e.what());
             coap_add_data(response, error_msg.length(),
                           reinterpret_cast<const uint8_t*>(error_msg.c_str()));
@@ -3552,7 +3596,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
                         response, blocks[requested_block].size(),
                         reinterpret_cast<const uint8_t*>(blocks[requested_block].data()))) {
                     _logger.error("Failed to add Block2 response payload to CoAP PDU");
-                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+                    coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
                     return;
                 }
 
@@ -3573,7 +3617,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             if (!coap_add_data(response, serialized_response.size(),
                                reinterpret_cast<const uint8_t*>(serialized_response.data()))) {
                 _logger.error("Failed to add response payload to CoAP PDU");
-                coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+                coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
                 return;
             }
         }
@@ -3601,7 +3645,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
     } catch (const coap_transport_error& e) {
         _logger.error("CoAP transport error in RPC handler", {{"error", e.what()}});
 #ifdef LIBCOAP_AVAILABLE
-        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
         std::string error_msg = "Transport error: " + std::string(e.what());
         coap_add_data(response, error_msg.length(),
                       reinterpret_cast<const uint8_t*>(error_msg.c_str()));
@@ -3609,7 +3653,7 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
     } catch (const std::exception& e) {
         _logger.error("Unexpected error in RPC handler", {{"error", e.what()}});
 #ifdef LIBCOAP_AVAILABLE
-        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR);
+        coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
         std::string error_msg = "Unexpected error: " + std::string(e.what());
         coap_add_data(response, error_msg.length(),
                       reinterpret_cast<const uint8_t*>(error_msg.c_str()));
@@ -3716,7 +3760,7 @@ auto coap_client<Types>::split_payload_into_blocks(const std::vector<std::byte>&
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> coap_session_t* {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     // If pooling is disabled, return nullptr to indicate no pooling
     if (!_config.enable_session_reuse || !_config.enable_connection_pooling) {
@@ -3797,18 +3841,24 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
         }
 
         // Resolve address
-        coap_address_t dst_addr;
-        if (!coap_resolve_address_info(&uri.host, uri.port, uri.port, 0, 0, 0, &dst_addr, 1, 1)) {
+        uint32_t scheme_hint_bits = coap_get_available_scheme_hint_bits(1, 0, COAP_PROTO_NONE);
+        coap_addr_info_t* addr_info = coap_resolve_address_info(
+            &uri.host, uri.port, uri.port, 0, 0, 0, scheme_hint_bits, COAP_RESOLVE_TYPE_REMOTE);
+        if (!addr_info) {
             _logger.error("Failed to resolve endpoint address for session creation",
                           {{"endpoint", endpoint}});
             return nullptr;
         }
+        coap_address_t dst_addr = addr_info->addr;
+        coap_free_address_info(addr_info);
 
-        // Create session based on scheme
+        // Create session based on scheme. The context's PKI/PSK credentials
+        // were already set by setup_dtls_context() (constructor), so a plain
+        // coap_new_client_session() with COAP_PROTO_DTLS picks those up --
+        // there is no coap_new_client_session_dtls() in libcoap's public API.
         coap_session_t* session = nullptr;
         if (uri.scheme == COAP_URI_SCHEME_COAPS && _config.enable_dtls) {
-            session =
-                coap_new_client_session_dtls(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
+            session = coap_new_client_session(_coap_context, nullptr, &dst_addr, COAP_PROTO_DTLS);
         } else {
             // Delegates to the OSCORE-flavored constructor when
             // security.mode == oscore; identical to the previous plain
@@ -3821,7 +3871,9 @@ auto coap_client<Types>::get_or_create_session(const std::string& endpoint) -> c
             // Configure session parameters
             coap_session_set_max_retransmit(session, _config.max_retransmit);
             coap_session_set_ack_timeout(
-                session, static_cast<coap_fixed_point_t>(_config.ack_timeout.count()));
+                session,
+                coap_fixed_point_t{static_cast<uint16_t>(_config.ack_timeout.count() / 1000),
+                                   static_cast<uint16_t>(_config.ack_timeout.count() % 1000)});
 
             _logger.debug("Created new session for pool",
                           {{"endpoint", endpoint},
@@ -3868,7 +3920,7 @@ auto coap_client<Types>::return_session_to_pool(const std::string& endpoint,
         return;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto& pool = _session_pools[endpoint];
 
@@ -3926,7 +3978,7 @@ auto coap_client<Types>::return_session_to_pool(const std::string& endpoint,
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_sessions() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
     constexpr auto session_expiry = std::chrono::minutes(5);
@@ -4015,7 +4067,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_resource_exhaustion() -> void {
     // Handle resource exhaustion by cleaning up old data and enforcing limits
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     _logger.warning("Handling resource exhaustion",
                     {{"pending_requests", std::to_string(_pending_requests.size())},
@@ -4107,7 +4159,7 @@ auto coap_client<Types>::handle_resource_exhaustion() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::enforce_connection_limits() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     std::size_t total_sessions = 0;
     for (const auto& [endpoint, pool] : _session_pools) {
@@ -4594,7 +4646,7 @@ auto coap_client<Types>::get_cached_serialization(std::size_t hash)
         return std::nullopt;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
     auto it = _serialization_cache.find(hash);
     if (it != _serialization_cache.end()) {
         // Update access count and time
@@ -4629,7 +4681,7 @@ auto coap_client<Types>::cache_serialization(std::size_t hash, const std::vector
         return;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     // Check if cache is full
     if (_serialization_cache.size() >= _config.serialization_cache_size) {
@@ -4677,7 +4729,7 @@ auto coap_client<Types>::cleanup_serialization_cache() -> void {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
     constexpr auto cache_expiry = std::chrono::minutes(30);
@@ -4874,7 +4926,7 @@ auto coap_client<Types>::reassemble_blocks(const std::string& token,
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_block_transfers() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
 
@@ -5047,7 +5099,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::handle_resource_exhaustion() -> void {
     // Handle resource exhaustion by cleaning up old data and enforcing limits
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     _logger.warning("Handling server resource exhaustion",
                     {{"active_connections", std::to_string(_active_connections.load())},
@@ -5139,7 +5191,7 @@ auto coap_server<Types>::handle_resource_exhaustion() -> void {
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::enforce_connection_limits() -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     std::size_t current_connections = _active_connections.load();
     if (current_connections >= _config.max_concurrent_sessions) {
@@ -5372,9 +5424,11 @@ auto coap_server<Types>::detect_malformed_message(const std::vector<std::byte>& 
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::cleanup_expired_block_transfers() -> void {
-    // Clean up expired block transfer state
-    std::lock_guard<std::mutex> lock(_mutex);
-
+    // Clean up expired block transfer state. Like cleanup_expired_messages()/
+    // cleanup_expired_multicast_groups(), this assumes the caller already
+    // holds _mutex -- its only caller, handle_resource_exhaustion(), takes
+    // that lock itself. An own lock_guard here would self-deadlock, since
+    // _mutex is a plain (non-recursive) std::mutex.
     auto now = std::chrono::steady_clock::now();
 
     // Different timeouts based on transfer progress
@@ -5470,135 +5524,43 @@ auto coap_server<Types>::setup_multicast_listener() -> void {
         throw coap_network_error("Invalid multicast address: " + _config.multicast_address);
     }
 
-    // Set up multicast address structure
+    // Validate multicast address format up front for a clear error message
+    // (coap_join_mcast_group_intf() below would otherwise just fail with a
+    // generic -1 return).
     coap_address_t multicast_addr;
     coap_address_init(&multicast_addr);
-    multicast_addr.addr.sin.sin_family = AF_INET;
-    multicast_addr.addr.sin.sin_port = htons(_config.multicast_port);
-
     if (inet_pton(AF_INET, _config.multicast_address.c_str(), &multicast_addr.addr.sin.sin_addr) !=
         1) {
         _logger.error("Failed to parse multicast address",
                       {{"address", _config.multicast_address}});
         throw coap_network_error("Failed to parse multicast address: " + _config.multicast_address);
     }
-    multicast_addr.size = sizeof(struct sockaddr_in);
 
-    // Create multicast endpoint
-    coap_endpoint_t* multicast_endpoint =
-        coap_new_endpoint(_coap_context, &multicast_addr, COAP_PROTO_UDP);
-    if (!multicast_endpoint) {
-        _logger.error("Failed to create multicast endpoint",
-                      {{"address", _config.multicast_address},
-                       {"port", std::to_string(_config.multicast_port)}});
-        throw coap_network_error("Failed to create multicast endpoint");
+    // Join the multicast group on the context's already-bound UDP
+    // endpoint(s) (created by start() before this is called). There is no
+    // per-endpoint raw-fd API in libcoap's public headers -- coap_endpoint_t
+    // is opaque and coap_endpoint_get_fd() does not exist -- so group
+    // membership, SO_REUSEADDR, TTL, and loopback are all handled internally
+    // by this one call, matching libcoap's own examples (e.g. coap-server.c).
+    if (coap_join_mcast_group_intf(_coap_context, _config.multicast_address.c_str(), nullptr) < 0) {
+        _logger.error("Failed to join multicast group", {{"address", _config.multicast_address}});
+        throw coap_network_error("Failed to join multicast group: " + _config.multicast_address);
     }
 
-    // Configure multicast socket options
-    int sockfd = coap_endpoint_get_fd(multicast_endpoint);
-    if (sockfd >= 0) {
-        // Enable address reuse
-        int reuse = 1;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
-            _logger.warning("Failed to set SO_REUSEADDR on multicast socket");
-        }
+    _logger.info(
+        "Multicast socket configured successfully",
+        {{"address", _config.multicast_address}, {"port", std::to_string(_config.multicast_port)}});
 
-        // Join multicast group
-        struct ip_mreq mreq;
-        mreq.imr_multiaddr.s_addr = inet_addr(_config.multicast_address.c_str());
-        mreq.imr_interface.s_addr = INADDR_ANY;
-
-        if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
-            _logger.error("Failed to join multicast group",
-                          {{"address", _config.multicast_address}, {"error", strerror(errno)}});
-            coap_free_endpoint(multicast_endpoint);
-            throw coap_network_error("Failed to join multicast group: " +
-                                     _config.multicast_address);
-        }
-
-        // Set multicast TTL
-        int ttl = 1;  // Local network only
-        if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
-            _logger.warning("Failed to set multicast TTL");
-        }
-
-        // Disable multicast loopback (we don't want to receive our own messages)
-        int loopback = 0;
-        if (setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &loopback, sizeof(loopback)) < 0) {
-            _logger.warning("Failed to disable multicast loopback");
-        }
-
-        _logger.info("Multicast socket configured successfully",
-                     {{"address", _config.multicast_address},
-                      {"port", std::to_string(_config.multicast_port)},
-                      {"socket_fd", std::to_string(sockfd)}});
-    } else {
-        _logger.warning("Could not get multicast socket file descriptor");
-    }
-
-    // Set up multicast message handler
-    coap_register_request_handler(
-        _coap_context, nullptr,
-        [](coap_resource_t* resource, coap_session_t* session, const coap_pdu_t* request,
-           const coap_string_t* query, coap_pdu_t* response) -> void {
-            // Check if this is a multicast message by examining the destination address
-            coap_address_t* local_addr = coap_session_get_addr_local(session);
-            if (local_addr && local_addr->addr.sin.sin_addr.s_addr >= inet_addr("224.0.0.0") &&
-                local_addr->addr.sin.sin_addr.s_addr <= inet_addr("239.255.255.255")) {
-                // This is a multicast message
-                // Extract server instance from session or context
-                auto* server = static_cast<coap_server<Types>*>(coap_session_get_app_data(session));
-                if (!server) {
-                    // Try to get from context
-                    server = static_cast<coap_server<Types>*>(
-                        coap_get_app_data(coap_session_get_context(session)));
-                }
-
-                if (server) {
-                    // Extract message data
-                    std::size_t payload_len;
-                    const std::uint8_t* payload_data;
-                    std::vector<std::byte> message_data;
-
-                    if (coap_get_data(request, &payload_len, &payload_data)) {
-                        message_data.resize(payload_len);
-                        std::memcpy(message_data.data(), payload_data, payload_len);
-                    }
-
-                    // Extract resource path from URI-Path options
-                    std::string resource_path;
-                    coap_opt_iterator_t opt_iter;
-                    coap_opt_t* option =
-                        coap_check_option(request, COAP_OPTION_URI_PATH, &opt_iter);
-                    if (option) {
-                        const uint8_t* path_data = coap_opt_value(option);
-                        size_t path_len = coap_opt_length(option);
-                        resource_path =
-                            "/" + std::string(reinterpret_cast<const char*>(path_data), path_len);
-                    }
-
-                    // Get sender address
-                    coap_address_t* remote_addr = coap_session_get_addr_remote(session);
-                    std::string sender_address;
-                    if (remote_addr) {
-                        char addr_str[INET_ADDRSTRLEN];
-                        if (inet_ntop(AF_INET, &remote_addr->addr.sin.sin_addr, addr_str,
-                                      INET_ADDRSTRLEN)) {
-                            sender_address = std::string(addr_str);
-                        }
-                    }
-
-                    // Handle multicast message
-                    server->handle_multicast_message(message_data, resource_path, sender_address);
-
-                    // Don't send response for multicast messages (they expect unicast responses)
-                    return;
-                }
-            }
-
-            // Not a multicast message or no server instance, handle normally
-            coap_pdu_set_code(response, COAP_RESPONSE_CODE_NOT_FOUND);
-        });
+    // Multicast requests to registered resources (e.g. /raft/request_vote)
+    // are already routed by the ordinary per-resource POST handlers that
+    // setup_resources() registers -- libcoap dispatches by URI path
+    // regardless of whether the destination address was unicast or
+    // multicast, so no separate generic dispatch handler is needed here. An
+    // earlier version of this method tried to register one directly against
+    // _coap_context via coap_register_request_handler(), but that function
+    // takes a coap_resource_t* (not a coap_context_t*), and the resulting
+    // handler was never attached to any resource with coap_add_resource() --
+    // so it could never have fired even if it had compiled.
 
     // Set server instance as context user data for multicast handler access
     coap_set_app_data(_coap_context, this);
@@ -5984,7 +5946,7 @@ auto coap_server<Types>::get_cached_serialization(std::size_t hash)
         return std::nullopt;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _serialization_cache.find(hash);
     if (it != _serialization_cache.end()) {
@@ -6013,7 +5975,7 @@ auto coap_server<Types>::cache_serialization(std::size_t hash, const std::vector
         return;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (_serialization_cache.size() >= _config.serialization_cache_size) {
         // Cache full, remove least recently used entry
@@ -6033,7 +5995,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::cleanup_serialization_cache() -> void {
     // Clean up expired cache entries
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
     constexpr auto cache_expiry = std::chrono::minutes(30);
@@ -6268,7 +6230,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::join_multicast_group(const std::string& multicast_address) -> bool {
     // Join a multicast group for receiving multicast messages
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (!is_valid_multicast_address(multicast_address)) {
         _logger.error("Invalid multicast address for group join", {{"address", multicast_address}});
@@ -6381,7 +6343,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::leave_multicast_group(const std::string& multicast_address) -> bool {
     // Leave a multicast group
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     if (_joined_multicast_groups.find(multicast_address) == _joined_multicast_groups.end()) {
         _logger.debug("Not a member of multicast group", {{"address", multicast_address}});
@@ -6478,7 +6440,7 @@ auto coap_client<Types>::leave_multicast_group(const std::string& multicast_addr
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::get_joined_multicast_groups() const -> std::vector<std::string> {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     std::vector<std::string> groups;
     for (const auto& group : _joined_multicast_groups) {
@@ -6494,7 +6456,7 @@ auto coap_client<Types>::handle_multicast_response(const std::string& token,
                                                    const std::vector<std::byte>& response_data,
                                                    const std::string& sender_address) -> void {
     // Handle response from a multicast receiver
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _multicast_requests.find(token);
     if (it == _multicast_requests.end()) {
@@ -6571,7 +6533,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cleanup_expired_multicast_requests() -> void {
     // Clean up expired multicast requests
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto now = std::chrono::steady_clock::now();
 
@@ -6718,7 +6680,7 @@ requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_multicast_error(const std::string& token,
                                                 const std::exception_ptr& error) -> void {
     // Handle multicast-specific errors
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _multicast_requests.find(token);
     if (it == _multicast_requests.end()) {
@@ -7097,7 +7059,7 @@ auto coap_client<Types>::get_or_create_session(std::uint64_t target, coap_addres
 
     // Check if we have a pooled session for this endpoint
     if (_config.enable_session_reuse) {
-        std::lock_guard<std::mutex> lock(_mutex);
+        std::lock_guard lock(_mutex);
         auto pool_it = _session_pools.find(endpoint_key);
         if (pool_it != _session_pools.end() && !pool_it->second.empty()) {
             auto session = pool_it->second.back();
@@ -7132,8 +7094,12 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
     coap_session_t* session = nullptr;
 
     if (_config.enable_dtls && uri->scheme == COAP_URI_SCHEME_COAPS) {
-        // Create DTLS session with enhanced security
-        session = coap_new_client_session_dtls(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
+        // Create DTLS session with enhanced security. The context's PKI/PSK
+        // credentials were already set by setup_dtls_context() (constructor),
+        // so a plain coap_new_client_session() with COAP_PROTO_DTLS picks
+        // those up -- there is no coap_new_client_session_dtls() in
+        // libcoap's public API.
+        session = coap_new_client_session(_coap_context, nullptr, dst_addr, COAP_PROTO_DTLS);
 
         if (session) {
             // Configure DTLS parameters
@@ -7159,15 +7125,21 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
     }
 
     if (!session) {
-        _metrics.increment_counter("coap_session_creation_failures");
+        _metrics.add_dimension("error_type", "coap_session_creation_failures");
+        _metrics.add_one();
+        _metrics.emit();
         throw coap_network_error("Failed to create CoAP session");
     }
 
     // Configure session parameters
     coap_session_set_max_retransmit(session, _config.max_retransmit);
-    coap_session_set_ack_timeout(session, _config.ack_timeout.count() / 1000.0f);
+    coap_session_set_ack_timeout(
+        session, coap_fixed_point_t{static_cast<uint16_t>(_config.ack_timeout.count() / 1000),
+                                    static_cast<uint16_t>(_config.ack_timeout.count() % 1000)});
 
-    _metrics.increment_counter("coap_sessions_created");
+    _metrics.add_dimension("session_event", "coap_sessions_created");
+    _metrics.add_one();
+    _metrics.emit();
     return session;
 #else
     // Stub implementation
@@ -7178,7 +7150,7 @@ auto coap_client<Types>::create_new_session(coap_address_t* dst_addr, coap_uri_t
 
 template<typename Types>
 requires kythira::transport_types<Types>
-auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::vector<std::uint8_t> {
+auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::vector<std::byte> {
     if (!_config.enable_serialization_caching) {
         return _serializer.serialize(request);
     }
@@ -7189,7 +7161,7 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
     request_hash ^= std::hash<std::uint64_t>{}(request.term()) + 0x9e3779b9 + (request_hash << 6) +
                     (request_hash >> 2);
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     // Check cache
     auto cache_it = _serialization_cache.find(request_hash);
@@ -7202,18 +7174,14 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
             entry.access_count++;
             entry.last_accessed = now;
 
-            _metrics.increment_counter("coap_serialization_cache_hits");
+            _metrics.add_dimension("cache_event", "coap_serialization_cache_hits");
+            _metrics.add_one();
+            _metrics.emit();
             _logger.debug("Serialization cache hit",
                           {{"request_hash", std::to_string(request_hash)},
                            {"cached_size", std::to_string(entry.serialized_data.size())}});
 
-            // Convert std::byte to std::uint8_t for return
-            std::vector<std::uint8_t> result;
-            result.reserve(entry.serialized_data.size());
-            for (const auto& b : entry.serialized_data) {
-                result.push_back(static_cast<std::uint8_t>(b));
-            }
-            return result;
+            return entry.serialized_data;
         }
         // Cache entry expired, remove it
         _serialization_cache.erase(cache_it);
@@ -7223,19 +7191,21 @@ auto coap_client<Types>::get_cached_or_serialize(const auto& request) -> std::ve
     auto serialized_data = _serializer.serialize(request);
     cache_serialization_result(request_hash, serialized_data);
 
-    _metrics.increment_counter("coap_serialization_cache_misses");
+    _metrics.add_dimension("cache_event", "coap_serialization_cache_misses");
+    _metrics.add_one();
+    _metrics.emit();
     return serialized_data;
 }
 
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::cache_serialization_result(std::size_t hash,
-                                                    const std::vector<std::uint8_t>& data) -> void {
+                                                    const std::vector<std::byte>& data) -> void {
     if (!_config.enable_serialization_caching) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     // Check cache size limits
     if (_serialization_cache.size() >= _config.max_cache_entries) {
@@ -7257,13 +7227,8 @@ auto coap_client<Types>::cache_serialization_result(std::size_t hash,
         _serialization_cache.erase(oldest_it);
     }
 
-    // Add new cache entry, converting std::uint8_t to std::byte for storage
-    std::vector<std::byte> serialized_bytes;
-    serialized_bytes.reserve(data.size());
-    for (const auto& b : data) {
-        serialized_bytes.push_back(static_cast<std::byte>(b));
-    }
-    _serialization_cache.insert_or_assign(hash, cache_entry{std::move(serialized_bytes), hash});
+    // Add new cache entry
+    _serialization_cache.insert_or_assign(hash, cache_entry{data, hash});
 
     _logger.debug("Cached serialization result",
                   {{"request_hash", std::to_string(hash)},
@@ -7302,8 +7267,7 @@ auto coap_client<Types>::validate_response_pdu(coap_pdu_t* response) -> bool {
     }
 
     // Validate token presence and length
-    coap_bin_const_t token;
-    coap_pdu_get_token(response, &token);
+    coap_bin_const_t token = coap_pdu_get_token(response);
     if (token.length == 0 || token.length > 8) {
         _logger.warning("Response PDU has invalid token length",
                         {{"token_length", std::to_string(token.length)}});
@@ -7360,7 +7324,7 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
             info.description = "Not Found - The requested resource was not found";
             info.is_retryable = false;
             break;
-        case COAP_RESPONSE_CODE_METHOD_NOT_ALLOWED:
+        case COAP_RESPONSE_CODE_NOT_ALLOWED:
             info.error_class = "client_error";
             info.description = "Method Not Allowed - The method is not allowed for the resource";
             info.is_retryable = false;
@@ -7371,7 +7335,7 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
                 "Not Acceptable - The resource cannot generate content acceptable to the client";
             info.is_retryable = false;
             break;
-        case COAP_RESPONSE_CODE_REQUEST_ENTITY_INCOMPLETE:
+        case COAP_RESPONSE_CODE_INCOMPLETE:
             info.error_class = "client_error";
             info.description = "Request Entity Incomplete - Block-wise transfer incomplete";
             info.is_retryable = true;
@@ -7383,7 +7347,7 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
                 "evaluated to false";
             info.is_retryable = false;
             break;
-        case COAP_RESPONSE_CODE_REQUEST_ENTITY_TOO_LARGE:
+        case COAP_RESPONSE_CODE_REQUEST_TOO_LARGE:
             info.error_class = "client_error";
             info.description =
                 "Request Entity Too Large - The request payload is larger than the server can "
@@ -7397,7 +7361,7 @@ auto coap_client<Types>::map_coap_error_code(coap_pdu_code_t code) -> coap_error
             break;
 
         // 5.xx Server Error codes
-        case COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR:
+        case COAP_RESPONSE_CODE_INTERNAL_ERROR:
             info.error_class = "server_error";
             info.description =
                 "Internal Server Error - The server encountered an unexpected condition";
@@ -7467,11 +7431,11 @@ auto coap_client<Types>::should_retry_on_error(const coap_error_info& error_info
             // These errors are often temporary, retry with backoff
             return true;
 
-        case COAP_RESPONSE_CODE_INTERNAL_SERVER_ERROR:
+        case COAP_RESPONSE_CODE_INTERNAL_ERROR:
             // Internal errors might be temporary, but be more conservative
             return attempt_count < (_config.max_retransmissions / 2);
 
-        case COAP_RESPONSE_CODE_REQUEST_ENTITY_INCOMPLETE:
+        case COAP_RESPONSE_CODE_INCOMPLETE:
             // Block transfer issues, retry immediately
             return true;
 
@@ -7483,7 +7447,7 @@ auto coap_client<Types>::should_retry_on_error(const coap_error_info& error_info
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::handle_response_timeout(const std::string& token) -> void {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _pending_requests.find(token);
     if (it == _pending_requests.end()) {
@@ -7538,7 +7502,7 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::correlate_response_with_request(const std::string& token,
                                                          coap_pdu_t* response) -> bool {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::lock_guard lock(_mutex);
 
     auto it = _pending_requests.find(token);
     if (it == _pending_requests.end()) {
