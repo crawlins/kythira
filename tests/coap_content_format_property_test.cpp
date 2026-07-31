@@ -80,8 +80,11 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_te
 
         auto future = client.send_request_vote(1, request, std::chrono::milliseconds{100});
 
-        // Verify the future was created (interface test for stub implementation)
-        BOOST_TEST(future.isReady());
+        // Real transport resolves asynchronously (no server is listening in
+        // this test, so the future resolves via the nack handler once
+        // libcoap reports the delivery failure); wait for it rather than
+        // checking readiness immediately after send.
+        BOOST_TEST(future.wait(test_timeout));
 
         BOOST_TEST_MESSAGE("JSON serializer Content-Format test passed");
 
@@ -163,10 +166,10 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeo
     request._last_log_term = 0;
 
     auto future = client.send_request_vote(1, request, test_timeout);
-    BOOST_TEST(future.isReady());
-
-    // For stub implementation, just verify the interface works
-    // Don't call future.get() as it might hang in the stub implementation
+    // The server here is constructed but never start()-ed, so this request
+    // gets no response; the future resolves via the nack handler once
+    // libcoap reports the delivery failure.
+    BOOST_TEST(future.wait(test_timeout));
 
     // Register a handler on the server
     server.register_request_vote_handler(
@@ -201,7 +204,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(30)
                 request._last_log_term = 0;
 
                 auto future = client.send_request_vote(1, request, test_timeout);
-                BOOST_TEST(future.isReady());
+                BOOST_TEST(future.wait(test_timeout));
 
             } else if (rpc_type == "AppendEntries") {
                 kythira::append_entries_request<> request;
@@ -212,10 +215,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(30)
                 request._leader_commit = 0;
 
                 auto future = client.send_append_entries(1, request, test_timeout);
-                BOOST_TEST(future.isReady());
-
-                // For stub implementation, just verify the interface works
-                // Don't call future.get() as it might hang in the stub implementation
+                BOOST_TEST(future.wait(test_timeout));
 
             } else if (rpc_type == "InstallSnapshot") {
                 kythira::install_snapshot_request<> request;
@@ -227,10 +227,7 @@ BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(30)
                 request._done = true;
 
                 auto future = client.send_install_snapshot(1, request, test_timeout);
-                BOOST_TEST(future.isReady());
-
-                // For stub implementation, just verify the interface works
-                // Don't call future.get() as it might hang in the stub implementation
+                BOOST_TEST(future.wait(test_timeout));
             }
 
             // In a real implementation, this would verify that:
