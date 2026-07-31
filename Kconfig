@@ -178,6 +178,27 @@ config AWS_ACM_PCA
 
 endmenu # AWS Integration
 
+menu "GCP Integration"
+
+config GCP_SDK
+	bool "GCP Compute SDK (Compute Engine / MIG quorum managers)"
+	default y
+	help
+	  find_package(google_cloud_cpp_compute COMPONENTS compute_instances
+	  compute_instance_group_managers compute_zone_operations).
+	  Backs KYTHIRA_HAS_GCP_SDK.
+
+config GCP_PRIVATECA
+	bool "GCP Certificate Authority Service provider"
+	depends on GCP_SDK
+	default y
+	help
+	  find_package(google_cloud_cpp_privateca) — found independently of the
+	  compute components, mirroring AWS_ACM_PCA's independence from AWS_SDK,
+	  so a build with compute but without privateca (or vice versa) still
+	  configures cleanly. Backs KYTHIRA_HAS_GCP_PRIVATECA.
+
+endmenu # GCP Integration
 menu "Azure Integration"
 
 config AZURE_SDK

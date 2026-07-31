@@ -109,6 +109,44 @@ This document lists the dependencies required to build and use the network simul
   `KYTHIRA_HAS_AWS_ACM_PCA`. Environments with the core AWS SDK but without this
   component still build everything except `aws_acm_pca_provider`.
 
+### google-cloud-cpp ≥ 2.20 (compute component) — GCP Compute Engine and Managed Instance Group quorum managers
+- **Status**: Optional — the GCP analogue of the core AWS SDK component set; the
+  two quorum managers are only compiled when detected
+- **Purpose**: `google::cloud::compute_instances_v1::InstancesClient`,
+  `compute_instance_group_managers_v1::InstanceGroupManagersClient`, and
+  `compute_zone_operations_v1::ZoneOperationsClient` calls
+  (`instances.insert`/`.list`/`.get`/`.delete`/`.setLabels`,
+  `instanceGroupManagers.get`/`.resize`/`.listManagedInstances`/
+  `.deleteInstances`, `zoneOperations.get`) backing `gcp_compute_quorum_manager`
+  and `gcp_mig_quorum_manager`
+- **Minimum Version**: google-cloud-cpp ≥ 2.20 (CI builds 2.37.0)
+- **Installation**: `google-cloud-cpp` vcpkg port with the `compute` and
+  `privateca` features, declared in `vcpkg.json` under the opt-in `gcp`
+  manifest feature (`--x-feature=gcp`) rather than the default dependency
+  set. The `compute` component builds the entire Compute API surface (large),
+  so keeping it behind a feature avoids forcing that build onto every CI
+  matrix leg; the dedicated `gcp-sdk-build` CI job enables the feature and
+  compiles the SDK-gated code against it. Operators wanting the GCP backends
+  install with `--x-feature=gcp` (or add it to their own default set).
+- **Notes**: `find_package(google_cloud_cpp_compute QUIET COMPONENTS
+  compute_instances compute_instance_group_managers compute_zone_operations)`
+  defines `KYTHIRA_HAS_GCP_SDK` when all three components are present. Backs the
+  `GCP_SDK` Kconfig symbol. When absent, both GCP quorum managers are simply not
+  defined; the rest of the build is unaffected.
+
+### google-cloud-cpp (privateca component) — GCP Certificate Authority Service certificate provider
+- **Status**: Optional — independent of `KYTHIRA_HAS_GCP_SDK` (mirrors how
+  `KYTHIRA_HAS_AWS_ACM_PCA` is independent of `KYTHIRA_HAS_AWS_SDK`)
+- **Purpose**: `google::cloud::privateca_v1::CertificateAuthorityServiceClient`
+  calls (`CreateCertificate`, `GetCertificateAuthority`,
+  `ListCertificateAuthorities`, `RevokeCertificate`) backing
+  `gcp_privateca_certificate_provider`, the GCP analogue of `aws_acm_pca_provider`
+- **Installation**: `google-cloud-cpp` vcpkg port with the `privateca` feature,
+  declared under the opt-in `gcp` manifest feature (see the compute entry above)
+- **Notes**: `find_package(google_cloud_cpp_privateca QUIET)` defines
+  `KYTHIRA_HAS_GCP_PRIVATECA`. Backs the `GCP_PRIVATECA` Kconfig symbol.
+  Environments with the compute components but without `privateca` still build
+  everything except `gcp_privateca_certificate_provider`, and vice versa.
 ### Azure SDK for C++ (azure-core-cpp, azure-identity-cpp) — azure_vm_quorum_manager, azure_vmss_quorum_manager
 - **Status**: Optional — `find_package(azure-core-cpp CONFIG)` +
   `find_package(azure-identity-cpp CONFIG)`
