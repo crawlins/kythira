@@ -63,14 +63,13 @@ unambiguous at a glance.
 |------|-------|-------|
 | `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
 | `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
-| `ion-rpc-serializer` | 0/45 | Design-only; `ion_rpc_serializer<Data>` over the `ion-c` overlay port |
-| `gcp-cloud-services` | 0/13 | Design-only; `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
 
 ### Partially Implemented
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
+| `gcp-cloud-services` | 12/13 | `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` implemented behind `KYTHIRA_HAS_GCP_SDK`/`KYTHIRA_HAS_GCP_PRIVATECA`, with the shared `gcp_client_config`/validators, `wait_for_zone_operation`, build-system detection (CMake/Kconfig/vcpkg/DEPENDENCIES), `ca_service --provider gcp-privateca`, unit tests, real-GCE/real-CAS integration tests, and CI wiring (`gcp` job + `scripts/ci-cloud-credentials/gcp/`). `google-cloud-cpp` (2.37.0, compute + privateca) is declared in `vcpkg.json` under the opt-in `gcp` manifest feature, and the dedicated `gcp-sdk-build` CI job enables it (`--x-feature=gcp`) and compiles the SDK-gated code + runs the GCP unit tests — so the SDK-gated headers are compile-verified in CI, not just the unconditional validators. Remaining: exercising the real-GCE/real-CAS integration tests against **live** GCP (needs a project + Workload Identity Federation creds via `scripts/ci-cloud-credentials/gcp/`); those runtime paths have not yet been executed against real infrastructure |
 | `ion-rpc-serializer` | ~40/45 | `ion_rpc_serializer<Data>` (`include/raft/ion_serializer.hpp`) over `ion-c`: `ion-c` overlay port (`vcpkg-overlays/ion-c`) + opt-in `ion` vcpkg feature, `ION_SERIALIZER` Kconfig symbol + `raft_ion_serializer` INTERFACE target (graceful degradation like `COAP_TRANSPORT`), all 14 RPC serialize/deserialize pairs with annotation-tagged structs and native `blob` payloads, binary+text encodings with encoding-agnostic deserialize, `application/ion` CoAP Content-Format (65000) + HTTP `Content-Type` (cpp-httplib and Beast), full unit/round-trip/malformed/JSON-equivalence tests, README + example program. Header C++-validated via a faithful `ion-c` API stub (`-fsyntax-only`); ion targets are **not built by default** (opt-in `ion` feature absent in default vcpkg install), so the final compile/run of ion targets and the end-to-end HTTP/CoAP sanity check (`tasks.md` 9.1/9.4) await a build with the `ion` feature enabled. The overlay portfile's `SHA512` is a `0` placeholder to regenerate on first real fetch (see `vcpkg-overlays/ion-c/README.md`). |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
