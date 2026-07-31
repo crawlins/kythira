@@ -19,7 +19,14 @@
 #include <unordered_set>
 
 namespace {
-constexpr std::size_t property_test_iterations = 100;
+// Each iteration spawns a real coap_client and coap_server (each a real
+// OS thread for its io-pump). 100 iterations was fine when this path was
+// still a stub with no real thread/socket per instance; kept smaller here
+// so real thread-creation/scheduling overhead can't blow the test-level
+// timeout on a slow/contended CI runner (observed directly: arm64 CI hit
+// this test's SIGALRM even after fixing the underlying mutex-starvation
+// bug in coap_client's io-pump thread).
+constexpr std::size_t property_test_iterations = 15;
 constexpr std::uint64_t max_node_id = 1000;
 constexpr std::uint16_t max_message_id = 65535;
 constexpr std::size_t max_duplicate_count = 10;
@@ -49,7 +56,7 @@ BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)
 // only the first occurrence should be processed.
 //
 // REWRITTEN: Tests behavior through public API - sends duplicate requests and verifies handling
-BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);

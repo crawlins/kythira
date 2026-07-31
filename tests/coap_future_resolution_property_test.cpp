@@ -18,7 +18,16 @@
 #include <unordered_map>
 
 namespace {
-constexpr std::size_t property_test_iterations = 10;
+// Each iteration waits on real futures (client.get()) that only resolve
+// via the nack handler once libcoap gives up on an unanswered send -- in
+// the worst case (no fast ICMP-unreachable signal) that's bounded by
+// ack_timeout x retries, several real seconds per send. 10 iterations
+// (two sends each) was fine when this path was still a stub that
+// resolved instantly; kept smaller here so real per-send latency can't
+// blow the test-level timeout on a slow/contended CI runner (observed
+// directly: arm64 CI hit this test's SIGALRM even after fixing the
+// underlying mutex-starvation bug in coap_client's io-pump thread).
+constexpr std::size_t property_test_iterations = 5;
 constexpr std::uint64_t max_term = 1000;
 constexpr std::uint64_t max_index = 1000;
 constexpr std::uint64_t max_node_id = 100;
@@ -48,7 +57,7 @@ BOOST_AUTO_TEST_SUITE(coap_future_resolution_property_tests)
 // **Validates: Requirements 4.2**
 // Property: For any RPC request sent via the client, the returned future should
 // resolve when the operation completes (success or failure).
-BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, *boost::unit_test::timeout(150)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);

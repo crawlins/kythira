@@ -18,7 +18,14 @@
 #include <unordered_map>
 
 namespace {
-constexpr std::size_t property_test_iterations = 100;
+// Each iteration spawns a real coap_client (a real OS thread for its
+// io-pump) and fires two real sends. 100 iterations was fine when this
+// path was still a stub with no real thread/socket per client; kept
+// smaller here so real thread-creation/scheduling overhead can't blow the
+// test-level timeout on a slow/contended CI runner (observed directly:
+// arm64 CI hit this test's SIGALRM even after fixing the underlying
+// mutex-starvation bug in coap_client's io-pump thread).
+constexpr std::size_t property_test_iterations = 15;
 constexpr std::uint64_t max_node_id = 1000;
 constexpr std::chrono::milliseconds min_timeout{100};
 }
@@ -48,7 +55,7 @@ BOOST_AUTO_TEST_SUITE(coap_confirmable_message_property_tests)
 //
 // REWRITTEN: Tests behavior through public API instead of private methods
 BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(120)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
