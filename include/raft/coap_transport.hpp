@@ -509,6 +509,13 @@ private:
     auto generate_message_id() -> std::uint16_t;
     auto setup_dtls_context() -> void;
     auto handle_response(coap_pdu_t* response, const std::string& token) -> void;
+    // Rejects the pending request matching token when libcoap gives up on
+    // delivering it (all retries exhausted, RST received, ICMP unreachable,
+    // etc.) -- see the constructor's coap_register_nack_handler() call for
+    // why this must exist: without it, a request that never gets any
+    // response leaves its future unresolved forever, even after libcoap
+    // itself has internally given up.
+    auto handle_nack(const std::string& token, const std::string& reason_description) -> void;
     auto handle_acknowledgment(std::uint16_t message_id) -> void;
     auto is_duplicate_message(std::uint16_t message_id) -> bool;
     auto record_received_message(std::uint16_t message_id) -> void;

@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 // OpenSSL includes for certificate validation
 #include <openssl/x509.h>
@@ -164,6 +165,59 @@ coap_client<Types>::coap_client(
                 client->handle_response(const_cast<coap_pdu_t*>(received), token_str);
             }
             return COAP_RESPONSE_OK;
+        });
+
+    // Set up nack handler: without this, a request libcoap gives up on
+    // (all retries exhausted, RST, ICMP unreachable, etc.) leaves its
+    // pending_message -- and the future send_rpc() returned for it --
+    // unresolved forever, even once libcoap itself has stopped trying.
+    // See handle_nack()'s own comment in coap_transport.hpp for more.
+    coap_register_nack_handler(
+        _coap_context,
+        [](coap_session_t* session, const coap_pdu_t* sent, const coap_nack_reason_t reason,
+           const coap_mid_t /*mid*/) -> void {
+            auto* client = static_cast<coap_client<Types>*>(coap_session_get_app_data(session));
+            if (!client || !sent) {
+                return;
+            }
+            coap_bin_const_t token = coap_pdu_get_token(sent);
+            std::string token_str(reinterpret_cast<const char*>(token.s), token.length);
+
+            std::string reason_description;
+            switch (reason) {
+                case COAP_NACK_TOO_MANY_RETRIES:
+                    reason_description = "too many retries";
+                    break;
+                case COAP_NACK_NOT_DELIVERABLE:
+                    reason_description = "not deliverable";
+                    break;
+                case COAP_NACK_RST:
+                    reason_description = "peer sent RST";
+                    break;
+                case COAP_NACK_TLS_FAILED:
+                    reason_description = "TLS failure";
+                    break;
+                case COAP_NACK_ICMP_ISSUE:
+                    reason_description = "ICMP error";
+                    break;
+                case COAP_NACK_BAD_RESPONSE:
+                    reason_description = "bad response";
+                    break;
+                case COAP_NACK_TLS_LAYER_FAILED:
+                    reason_description = "TLS layer failure";
+                    break;
+                case COAP_NACK_WS_LAYER_FAILED:
+                    reason_description = "WebSocket layer failure";
+                    break;
+                case COAP_NACK_WS_FAILED:
+                    reason_description = "WebSocket failure";
+                    break;
+                default:
+                    reason_description = "unknown failure";
+                    break;
+            }
+
+            client->handle_nack(token_str, reason_description);
         });
 
     // Pump libcoap's own I/O for the lifetime of this client. Without this,
@@ -573,7 +627,19 @@ auto coap_server<Types>::start() -> void {
         bind_addr.addr.sin.sin_port = htons(_bind_port);
 
         if (inet_pton(AF_INET, _bind_address.c_str(), &bind_addr.addr.sin.sin_addr) != 1) {
-            throw coap_network_error("Invalid bind address: " + _bind_address);
+            // Not a numeric IPv4 literal -- resolve it as a hostname (e.g.
+            // "localhost") via getaddrinfo() instead of failing outright.
+            struct addrinfo hints{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+            struct addrinfo* resolved = nullptr;
+            int gai_result = getaddrinfo(_bind_address.c_str(), nullptr, &hints, &resolved);
+            if (gai_result != 0 || !resolved) {
+                throw coap_network_error("Invalid bind address: " + _bind_address);
+            }
+            bind_addr.addr.sin.sin_addr =
+                reinterpret_cast<struct sockaddr_in*>(resolved->ai_addr)->sin_addr;
+            freeaddrinfo(resolved);
         }
         bind_addr.size = sizeof(struct sockaddr_in);
 
@@ -1339,6 +1405,25 @@ auto coap_client<Types>::get_supported_cipher_suites() const -> std::vector<std:
                   {{"cipher_suite_count", std::to_string(supported_ciphers.size())}});
 
     return supported_ciphers;
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_client<Types>::handle_nack(const std::string& token,
+                                     const std::string& reason_description) -> void {
+    std::lock_guard lock(_mutex);
+    auto it = _pending_requests.find(token);
+    if (it == _pending_requests.end()) {
+        // Nack for unknown/already-resolved token, ignore
+        return;
+    }
+
+    _logger.warning("CoAP request delivery failed",
+                    {{"token", token}, {"reason", reason_description}});
+
+    it->second->reject_callback(std::make_exception_ptr(
+        coap_timeout_error("CoAP request delivery failed: " + reason_description)));
+    _pending_requests.erase(it);
 }
 
 template<typename Types>
