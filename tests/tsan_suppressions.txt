@@ -1,8 +1,8 @@
 # ThreadSanitizer suppressions for kythira's Beast/Proxygen concurrency
-# suites (beast_transport_test, proxygen_transport_test -- see
-# .github/workflows/ci.yml's tsan job for why
-# three_way_http_transport_equivalence_test is excluded from this job
-# entirely rather than sharing this suppressions file).
+# suites (the beast_* suites, proxygen_transport_test, and
+# three_way_http_transport_equivalence_test -- the last was formerly excluded
+# from the tsan job over an early SIGSEGV, since fixed by installing a
+# folly::init() fixture; see .github/workflows/ci.yml's tsan job).
 #
 # The vcpkg-vendored Folly/Wangle/Boost binaries linked into these test
 # binaries are prebuilt without -fsanitize=thread. TSan's shadow memory

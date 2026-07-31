@@ -676,19 +676,19 @@ jobs:
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
-      # three_way_http_transport_equivalence_test is deliberately excluded:
-      # two separate real CI runs of this job reproduced an identical
-      # SIGSEGV (~2.1s in, zero output -- not even Boost.Test's own crash
-      # handler fires, meaning it crashes before main()'s test framework
-      # is even running) with no diagnosable stack trace either time. The
-      # same binary passes cleanly under the ordinary (non-TSan)
-      # build-and-test legs, and unlike the beast_* suites/
-      # proxygen_transport_test -- whose own test cases hammer a shared
-      # connection/session with many concurrent RPC threads, exactly what
-      # this job exists to check -- this suite's test cases are entirely
-      # sequential (.get() awaited one call at a time, no per-RPC
-      # threads), so it was never actually exercising a concurrent code
-      # path TSan needed to see in the first place.
+      # three_way_http_transport_equivalence_test was previously excluded from
+      # this job after it reproduced an identical early SIGSEGV (~2.1s in, zero
+      # output -- crashing before Boost.Test's crash handler was installed) on
+      # two separate real runs. Root cause: it was the only Folly-touching
+      # Boost.Test binary in the suite that never called folly::init(), so
+      # Folly's registration-gated singletons (folly::Timekeeper, reached via
+      # future timeouts) could be touched before registrationComplete() ran.
+      # As the only binary combining the Beast (boost::asio) and Proxygen
+      # (Folly) transports, its thread interleavings differ from the sibling
+      # beast_*/proxygen suites, and TSan's perturbed ordering turned that
+      # latent abort into the output-less crash. Fixed by installing the same
+      # FollyInitFixture the ~118 other Folly tests use; re-enabled here so this
+      # job verifies it stays fixed.
       - name: Build (ThreadSanitizer)
         run: |
           cmake --build build-tsan -j$(nproc) \
@@ -697,7 +697,8 @@ jobs:
             --target beast_integration_test \
             --target beast_ssl_test \
             --target beast_cross_transport_equivalence_test \
-            --target proxygen_transport_test
+            --target proxygen_transport_test \
+            --target three_way_http_transport_equivalence_test
 
       - name: Save ccache
         if: always()
@@ -717,7 +718,7 @@ jobs:
           TSAN_OPTIONS: "second_deadlock_stack=1 suppressions=${{ github.workspace }}/tests/tsan_suppressions.txt"
         run: |
           ctest --test-dir build-tsan \
-            -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test' \
+            -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test' \
             --output-on-failure \
             --output-junit ${{ github.workspace }}/tsan-test-results.xml
         continue-on-error: true

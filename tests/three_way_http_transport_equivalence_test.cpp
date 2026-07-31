@@ -36,13 +36,46 @@
 #include <httplib.h>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+#include <folly/init/Init.h>
+#endif
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+// Initialize Folly exactly once for the whole test module, mirroring the
+// FollyInitFixture the ~118 other Folly-touching Boost.Test binaries in this
+// suite install. Proxygen sits on Folly's EventBase/singletons, and several of
+// those (notably folly::Timekeeper, reached via future timeouts) are
+// registration-gated: accessing one before folly::init() has run
+// registrationComplete() aborts the process. This binary is the only one that
+// combines the Beast (boost::asio) and Proxygen (Folly) transports in a single
+// process, and without this fixture it relied on those singletons never being
+// touched -- a fragile assumption that ThreadSanitizer's perturbed thread
+// ordering turned into an early, output-less SIGSEGV before Boost.Test's own
+// crash handler was installed (see doc/TODO.md). Guarded the same way the
+// sibling fixtures are: only the Folly future backend needs (and provides)
+// folly::Init.
+#if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+struct FollyInitFixture {
+    FollyInitFixture() {
+        int argc = 1;
+        char* argv[] = {const_cast<char*>("test"), nullptr};
+        char** argv_ptr = argv;
+        init_obj = std::make_unique<folly::Init>(&argc, &argv_ptr);
+    }
+    ~FollyInitFixture() = default;
+
+    std::unique_ptr<folly::Init> init_obj;
+};
+
+BOOST_GLOBAL_FIXTURE(FollyInitFixture);
+#endif
 
 namespace {
 
