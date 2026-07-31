@@ -143,11 +143,25 @@ enum class coap_content_format : std::uint16_t {  // NOLINT(performance-enum-siz
     application_octet_stream = 42,
     application_exi = 47,
     application_json = 50,
-    application_cbor = 60
+    application_cbor = 60,
+    // No IANA-registered CoAP Content-Format exists for Amazon Ion, so this
+    // uses a value from RFC 7252 §12.3's experimental/private-use range
+    // (65000-65535). A single value covers both binary and text Ion: Ion's
+    // binary version marker makes the two encodings self-describing to a
+    // receiver, so no separate number per encoding is needed
+    // (ion-rpc-serializer spec, Requirement 6.3). If IANA ever registers an
+    // official Ion Content-Format, migrate to it (design.md Future Enhancements).
+    application_ion = 65000
 };
 
 inline auto get_content_format_for_serializer(const std::string& serializer_name)
     -> coap_content_format {
+    // Check for Ion variants ("ion-binary"/"ion-text") first. Checked before
+    // JSON: "json" and "ion" never collide as substrings, so order is safe.
+    if (serializer_name.find("ion") != std::string::npos ||
+        serializer_name.find("ION") != std::string::npos) {
+        return coap_content_format::application_ion;
+    }
     // Check for JSON variants
     if (serializer_name.find("json") != std::string::npos ||
         serializer_name.find("JSON") != std::string::npos) {
@@ -196,6 +210,8 @@ inline auto content_format_to_string(coap_content_format format) -> std::string 
             return "application/json";
         case coap_content_format::application_cbor:
             return "application/cbor";
+        case coap_content_format::application_ion:
+            return "application/ion";
         default:
             return "application/octet-stream";
     }
@@ -204,13 +220,14 @@ inline auto content_format_to_string(coap_content_format format) -> std::string 
 inline auto parse_content_format(std::uint16_t format_value) -> coap_content_format {
     // Validate that the format value is one of the known formats
     switch (format_value) {
-        case 0:   // text_plain
-        case 40:  // application_link_format
-        case 41:  // application_xml
-        case 42:  // application_octet_stream
-        case 47:  // application_exi
-        case 50:  // application_json
-        case 60:  // application_cbor
+        case 0:      // text_plain
+        case 40:     // application_link_format
+        case 41:     // application_xml
+        case 42:     // application_octet_stream
+        case 47:     // application_exi
+        case 50:     // application_json
+        case 60:     // application_cbor
+        case 65000:  // application_ion (private-use range, RFC 7252 §12.3)
             return static_cast<coap_content_format>(format_value);
         default:
             throw coap_protocol_error("Unknown content format value: " +

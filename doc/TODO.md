@@ -63,7 +63,6 @@ unambiguous at a glance.
 |------|-------|-------|
 | `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
 | `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
-| `ion-rpc-serializer` | 0/45 | Design-only; `ion_rpc_serializer<Data>` over the `ion-c` overlay port |
 | `azure-cloud-services` | 0/9 | Design-only; `azure_vm_quorum_manager`/`azure_vmss_quorum_manager`/`azure_key_vault_ca_provider` |
 | `gcp-cloud-services` | 0/13 | Design-only; `gcp_compute_quorum_manager`/`gcp_mig_quorum_manager`/`gcp_privateca_certificate_provider` |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
@@ -73,6 +72,7 @@ unambiguous at a glance.
 | Spec | Tasks | Notes |
 |------|-------|-------|
 | `cbor-rpc-serializer` | 45/49 | `cbor_rpc_serializer<Data>` implemented and tested (unit, round-trip, malformed-input, discriminant-mismatch, CBOR-vs-JSON size-comparison), no `vcpkg.json`/`Kconfig` change needed; own `tasks.md` marks itself "Status: Implemented". Remaining 4 items are optional follow-ups: an example program and a final end-to-end CoAP sanity check |
+| `ion-rpc-serializer` | ~40/45 | `ion_rpc_serializer<Data>` (`include/raft/ion_serializer.hpp`) over `ion-c`: `ion-c` overlay port (`vcpkg-overlays/ion-c`) + opt-in `ion` vcpkg feature, `ION_SERIALIZER` Kconfig symbol + `raft_ion_serializer` INTERFACE target (graceful degradation like `COAP_TRANSPORT`), all 14 RPC serialize/deserialize pairs with annotation-tagged structs and native `blob` payloads, binary+text encodings with encoding-agnostic deserialize, `application/ion` CoAP Content-Format (65000) + HTTP `Content-Type` (cpp-httplib and Beast), full unit/round-trip/malformed/JSON-equivalence tests, README + example program. Header C++-validated via a faithful `ion-c` API stub (`-fsyntax-only`); ion targets are **not built by default** (opt-in `ion` feature absent in default vcpkg install), so the final compile/run of ion targets and the end-to-end HTTP/CoAP sanity check (`tasks.md` 9.1/9.4) await a build with the `ion` feature enabled. The overlay portfile's `SHA512` is a `0` placeholder to regenerate on first real fetch (see `vcpkg-overlays/ion-c/README.md`). |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
 completion (18/18 and 17/17) on July 30, 2026 via

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/beast_http_transport.hpp>
+#include <raft/coap_utils.hpp>
 
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
@@ -23,6 +24,22 @@ namespace {
 constexpr const char* beast_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* beast_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* beast_endpoint_install_snapshot = "/v1/raft/install_snapshot";
+
+// Derive the HTTP Content-Type from the serializer's name(), so a non-JSON
+// serializer (e.g. ion_rpc_serializer -> "application/ion") is labeled
+// correctly on the wire rather than always as "application/json"
+// (ion-rpc-serializer spec, Requirement 6.4). Mirrors
+// http_transport_impl.hpp's content_type_for_serializer, routing through
+// coap_utils' serializer-name detection as the single source of truth for the
+// name -> media-type mapping across all transports; json_rpc_serializer still
+// resolves to "application/json", so this changes nothing for the default
+// serializer. Client and server always share the same serializer_type, so this
+// is advisory labeling only.
+template<typename Serializer>
+auto beast_content_type_for_serializer(const Serializer& serializer) -> std::string {
+    return kythira::coap_utils::content_format_to_string(
+        kythira::coap_utils::get_content_format_for_serializer(serializer.name()));
+}
 
 // ---------------------------------------------------------------------------
 // TLS material validation/configuration. Deliberately duplicated (not
@@ -774,7 +791,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         beast_http::request<beast_http::string_body> http_req{beast_http::verb::post,
                                                               std::string(endpoint), 11};
         http_req.set(beast_http::field::host, conn.host_header);
-        http_req.set(beast_http::field::content_type, "application/json");
+        http_req.set(beast_http::field::content_type,
+                     beast_content_type_for_serializer(_serializer));
         http_req.set(beast_http::field::user_agent, _config.user_agent);
         http_req.body() = std::move(body);
         http_req.prepare_payload();
@@ -1075,8 +1093,11 @@ private:
         // write actually completes.
         auto res = std::make_shared<beast_http::response<beast_http::string_body>>(
             static_cast<beast_http::status>(status_code), _req.version());
+        // A 200 body is a serializer-produced RPC response, so label it with the
+        // serializer's own media type (application/json, application/ion, ...);
+        // non-200 bodies are plain error text, which stays text/plain.
         res->set(beast_http::field::content_type,
-                 status_code == 200 ? "application/json" : "text/plain");
+                 status_code == 200 ? _server->success_content_type() : std::string("text/plain"));
         res->keep_alive(_req.keep_alive());
         res->body() = std::move(response_body);
         res->prepare_payload();
@@ -1363,6 +1384,12 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::is_running() const -> bool {
     return _running.load();
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::success_content_type() const -> std::string {
+    return beast_content_type_for_serializer(_serializer);
 }
 
 template<typename Types>

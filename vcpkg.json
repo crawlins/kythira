@@ -96,6 +96,12 @@
       "dependencies": [
         "lakers"
       ]
+    },
+    "ion": {
+      "description": "Amazon Ion RPC serializer (ion_rpc_serializer, include/raft/ion_serializer.hpp). Builds ion-c from source via the vcpkg-overlays/ion-c overlay port. Opt-in: not part of the default install; omitting it leaves KYTHIRA_ION_SERIALIZER_AVAILABLE undefined and ion_rpc_serializer unavailable.",
+      "dependencies": [
+        "ion-c"
+      ]
     }
   }
 }

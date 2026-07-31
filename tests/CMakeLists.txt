@@ -1255,6 +1255,58 @@ else()
     message(STATUS "protobuf_rpc_integration_test: skipped (requires Protobuf and Folly)")
 endif()
 
+# ── Ion serializer tests (ion-rpc-serializer spec) ───────────────────────────
+# Only built when ion-c was found (raft_ion_serializer INTERFACE target defined
+# in the root CMakeLists.txt), mirroring how COAP_TRANSPORT-gated tests are
+# conditionally registered. ion-c is an opt-in vcpkg feature ("ion"); absent it,
+# these tests are simply not added and the rest of the suite is unaffected
+# (Requirement 7.1). raft_ion_serializer carries ionc linkage, the include dir,
+# and KYTHIRA_ION_SERIALIZER_AVAILABLE; boost_json is pulled in transitively via
+# coap_utils/json_serializer (also used directly by the equivalence test).
+if(TARGET raft_ion_serializer)
+    add_executable(ion_serializer_concept_test ion_serializer_concept_test.cpp)
+    target_link_libraries(ion_serializer_concept_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_serializer_concept_test PRIVATE cxx_std_23)
+    add_test(NAME ion_serializer_concept_test COMMAND ion_serializer_concept_test)
+
+    add_executable(ion_serialization_property_test ion_serialization_property_test.cpp)
+    target_link_libraries(ion_serialization_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_serialization_property_test PRIVATE cxx_std_23)
+    add_test(NAME ion_serialization_property_test COMMAND ion_serialization_property_test)
+
+    add_executable(ion_malformed_message_property_test ion_malformed_message_property_test.cpp)
+    target_link_libraries(ion_malformed_message_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_malformed_message_property_test PRIVATE cxx_std_23)
+    add_test(NAME ion_malformed_message_property_test COMMAND ion_malformed_message_property_test)
+
+    add_executable(ion_json_serializer_equivalence_property_test
+        ion_json_serializer_equivalence_property_test.cpp)
+    target_link_libraries(ion_json_serializer_equivalence_property_test PRIVATE
+        raft_ion_serializer
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+    )
+    target_compile_features(ion_json_serializer_equivalence_property_test PRIVATE cxx_std_23)
+    add_test(NAME ion_json_serializer_equivalence_property_test
+             COMMAND ion_json_serializer_equivalence_property_test)
+endif()
+
 # Network retry property test needs Boost.JSON and Folly
 add_executable(network_retry_property_test network_retry_property_test.cpp)
 target_link_libraries(network_retry_property_test PRIVATE

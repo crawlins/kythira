@@ -644,16 +644,16 @@ All major components are pluggable via template parameters:
 
 - **State Machine**: Your application logic
 - **Network Transport**: HTTP, simulator, or custom
-- **RPC Serializer**: JSON (`json_rpc_serializer`), CBOR (`cbor_rpc_serializer`), Protocol Buffers (`protobuf_rpc_serializer`), or custom
+- **RPC Serializer**: JSON (`json_rpc_serializer`), CBOR (`cbor_rpc_serializer`), Protocol Buffers (`protobuf_rpc_serializer`), Amazon Ion (`ion_rpc_serializer`), or custom
 - **Persistence**: Memory, disk, or custom
 - **Logger**: Console, file, or custom
 - **Metrics**: Prometheus, StatsD, or custom
 - **Membership Manager**: Default or custom authorization
 
-#### RPC Serializer: JSON, CBOR, or Protocol Buffers
+#### RPC Serializer: JSON, CBOR, Protocol Buffers, or Amazon Ion
 
 Every transport treats `Types::serializer_type` as an opaque byte-in/byte-out
-component, so the wire encoding is a drop-in choice. Three implementations ship
+component, so the wire encoding is a drop-in choice. Four implementations ship
 in-tree:
 
 - `kythira::json_serializer` (`raft/json_serializer.hpp`) — human-readable JSON,
@@ -678,6 +678,18 @@ in-tree:
   `grpc-transport` (each declares its own `.proto` package). See
   [`.kiro/specs/protobuf-rpc-serializer/`](.kiro/specs/protobuf-rpc-serializer/)
   for the full design.
+- `kythira::ion_serializer` (`raft/ion_serializer.hpp`) — Amazon Ion, via the
+  [`ion-c`](https://github.com/amazon-ion/ion-c) library. Like CBOR it carries
+  `command`/`data` payloads as native binary (Ion `blob`s, no base64), and it
+  tags each message's RPC type with an Ion **annotation** rather than a `"type"`
+  string field. Its constructor selects the encoding —
+  `ion_encoding::binary` (default, compact and self-identifying via Ion's binary
+  version marker) or `ion_encoding::text` (a JSON-superset text form for logs and
+  manual inspection). Deserialize is encoding-agnostic: a single read path
+  accepts either form, so a binary-writing node and a text-writing node
+  interoperate. `ion-c` is an **opt-in** dependency behind the `ion` vcpkg
+  feature (`vcpkg-overlays/ion-c` overlay port) and the `ION_SERIALIZER` Kconfig
+  symbol; a default build omits it and the rest of the project is unaffected.
 
 Adopting a different serializer is a one-line change to a `Types` bundle:
 
@@ -690,19 +702,33 @@ using serializer_type = kythira::cbor_rpc_serializer<std::vector<std::byte>>;
 // using serializer_type = kythira::protobuf_rpc_serializer<std::vector<std::byte>>;
 ```
 
-Both transports label the payload correctly on the wire: the CoAP transport tags
-CBOR payloads with the `application/cbor` Content-Format, and the cpp-httplib
-HTTP transport sets its `Content-Type` header (`application/cbor` for CBOR,
-`application/json` for JSON, `application/octet-stream` for Protocol Buffers —
-no IANA CoAP content-format is registered for protobuf, so it is labeled as
-generic binary) — both derive the media type from `serializer.name()` via
-`coap_utils::get_content_format_for_serializer`, so no transport code changes
-when you switch serializers.
+Adopting Ion is the same one-line change (plus enabling the `ion` vcpkg
+feature and `ION_SERIALIZER`):
 
-A runnable end-to-end demonstration lives in
-[`examples/cbor_serializer_example.cpp`](examples/cbor_serializer_example.cpp):
-it round-trips each RPC family over CBOR, prints the CBOR-vs-JSON wire sizes, and
-shows the `application/cbor` media type both transports emit.
+```cpp
+#include <raft/ion_serializer.hpp>
+
+using serializer_type = kythira::ion_rpc_serializer<std::vector<std::byte>>;
+// Text encoding for readable logs: pass ion_encoding::text at construction;
+// deserialize accepts either encoding regardless.
+```
+
+All four serializers label the payload correctly on the wire: the CoAP
+transport tags the body with the matching Content-Format (`application/json`,
+`application/cbor`, `application/ion` — the last using the private-use
+Content-Format number 65000, since IANA registers none for Ion — or
+`application/octet-stream` for Protocol Buffers, which likewise has no registered
+CoAP Content-Format), and the cpp-httplib and Boost.Beast HTTP transports set
+their `Content-Type` header from the same mapping. All derive the media type from
+`serializer.name()` via `coap_utils::get_content_format_for_serializer`, so no
+transport code changes when you switch serializers.
+
+Runnable end-to-end demonstrations live in
+[`examples/cbor_serializer_example.cpp`](examples/cbor_serializer_example.cpp)
+and, when built with the `ion` feature,
+[`examples/ion_serializer_example.cpp`](examples/ion_serializer_example.cpp):
+each round-trips the RPC families over its wire format, prints wire sizes versus
+JSON, and shows the media type the transports emit.
 
 ## Test Suite
 

@@ -168,6 +168,34 @@ set_tests_properties(cbor_serializer_example_test PROPERTIES
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
 )
 
+# Ion serializer example (ion-rpc-serializer spec). Only built when the
+# raft_ion_serializer INTERFACE target exists (ion-c found, opt-in "ion" vcpkg
+# feature), mirroring how the gRPC example is gated on raft_grpc_transport.
+# raft_ion_serializer carries ion-c linkage + include dir +
+# KYTHIRA_ION_SERIALIZER_AVAILABLE; boost_json is needed because the example
+# compares Ion against json_serializer (json_serializer.hpp pulls in Boost.JSON).
+if(TARGET raft_ion_serializer)
+    add_executable(ion_serializer_example ion_serializer_example.cpp)
+    target_link_libraries(ion_serializer_example PRIVATE
+        raft_ion_serializer
+        network_simulator
+        boost_json
+    )
+    if(TARGET Folly::folly)
+        target_link_libraries(ion_serializer_example PRIVATE Folly::folly)
+    endif()
+    target_compile_features(ion_serializer_example PRIVATE cxx_std_23)
+    set_target_properties(ion_serializer_example PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+    add_test(NAME ion_serializer_example_test COMMAND ion_serializer_example)
+    set_tests_properties(ion_serializer_example_test PROPERTIES
+        TIMEOUT 60
+        LABELS "example;serializer;ion;unit"
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/examples"
+    )
+endif()
+
 # Concepts usage examples
 add_network_example(concepts_usage_examples concepts_usage_examples.cpp)
 
