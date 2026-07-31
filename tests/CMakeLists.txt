@@ -883,7 +883,11 @@ if(TARGET Folly::folly)
     )
     target_compile_features(coap_confirmable_message_property_test PRIVATE cxx_std_23)
     add_test(NAME coap_confirmable_message_property_test COMMAND coap_confirmable_message_property_test)
-    set_tests_properties(coap_confirmable_message_property_test PROPERTIES TIMEOUT 90 LABELS "coap;property")
+    # TIMEOUT must be >= the test case's own boost::unit_test::timeout(120)
+    # (see coap_confirmable_message_property_test.cpp) -- CTest kills the
+    # process at this value regardless of the internal decorator, so a
+    # smaller CTest TIMEOUT would silently override it.
+    set_tests_properties(coap_confirmable_message_property_test PROPERTIES TIMEOUT 150 LABELS "coap;property")
 
 else()
     message(STATUS "coap_confirmable_message_property_test: skipped (requires Folly)")
@@ -898,7 +902,11 @@ if(TARGET Folly::folly)
     )
     target_compile_features(coap_duplicate_detection_property_test PRIVATE cxx_std_23)
     add_test(NAME coap_duplicate_detection_property_test COMMAND coap_duplicate_detection_property_test)
-    set_tests_properties(coap_duplicate_detection_property_test PROPERTIES TIMEOUT 60 LABELS "coap;property")
+    # TIMEOUT must be >= the test case's own boost::unit_test::timeout(120)
+    # (see coap_duplicate_detection_property_test.cpp) -- CTest kills the
+    # process at this value regardless of the internal decorator, so a
+    # smaller CTest TIMEOUT would silently override it.
+    set_tests_properties(coap_duplicate_detection_property_test PROPERTIES TIMEOUT 150 LABELS "coap;property")
 
 else()
     message(STATUS "coap_duplicate_detection_property_test: skipped (requires Folly)")
