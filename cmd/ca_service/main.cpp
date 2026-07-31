@@ -41,6 +41,11 @@
 #include <aws/core/Aws.h>
 #endif
 
+#ifdef KYTHIRA_HAS_GCP_PRIVATECA
+#include <raft/gcp_privateca_certificate_provider.hpp>
+#include <raft/gcp_privateca_certificate_provider_impl.hpp>
+#endif
+
 #ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
 #include <raft/azure_key_vault_ca_provider.hpp>
 #include <raft/azure_key_vault_ca_provider_impl.hpp>
@@ -99,6 +104,10 @@ struct serve_options {
     std::string acm_pca_arn;
     std::string aws_region;
     std::string aws_endpoint_override;
+    std::string gcp_project;
+    std::string gcp_location;
+    std::string gcp_ca_pool;
+    std::string gcp_endpoint_override;
     std::string key_vault_url;
     std::string key_vault_key_name;
     std::string ca_cert_file;
@@ -115,9 +124,11 @@ struct serve_options {
            "[--service ...]\n"
         << "                  [--domain <suffix>] [--validity-days <n>] [--resolve-ips]\n"
         << "   or: ca_service --serve <bind-address>:<port> [--provider "
-           "local|aws-acm-pca|azure-key-vault]\n"
+           "local|aws-acm-pca|gcp-privateca|azure-key-vault]\n"
         << "                  [--acm-pca-arn <arn>] [--aws-region <region>]\n"
         << "                  [--aws-endpoint-override <url>]\n"
+        << "                  [--gcp-project <id>] [--gcp-location <region>] [--gcp-ca-pool <id>]\n"
+        << "                  [--gcp-endpoint-override <url>]\n"
         << "                  [--key-vault-url <url>] [--key-vault-key-name <name>]\n"
         << "                  [--ca-cert-file <path>] [--auth-token <token>]\n"
         << "                  [--tls-cert <path> --tls-key <path>] [--print-root-fingerprint]\n";
@@ -330,6 +341,14 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
             opts.aws_region = next();
         } else if (arg == "--aws-endpoint-override") {
             opts.aws_endpoint_override = next();
+        } else if (arg == "--gcp-project") {
+            opts.gcp_project = next();
+        } else if (arg == "--gcp-location") {
+            opts.gcp_location = next();
+        } else if (arg == "--gcp-ca-pool") {
+            opts.gcp_ca_pool = next();
+        } else if (arg == "--gcp-endpoint-override") {
+            opts.gcp_endpoint_override = next();
         } else if (arg == "--key-vault-url") {
             opts.key_vault_url = next();
         } else if (arg == "--key-vault-key-name") {
@@ -356,8 +375,9 @@ serve_options parse_serve_args(int argc, char** argv, int start) {
     (void)saw_service;
 
     if (opts.provider != "local" && opts.provider != "aws-acm-pca" &&
-        opts.provider != "azure-key-vault") {
-        usage_error("--provider must be 'local', 'aws-acm-pca', or 'azure-key-vault'");
+        opts.provider != "gcp-privateca" && opts.provider != "azure-key-vault") {
+        usage_error(
+            "--provider must be 'local', 'aws-acm-pca', 'gcp-privateca', or 'azure-key-vault'");
     }
     if (!opts.tls_cert_path.empty() != !opts.tls_key_path.empty()) {
         usage_error("--tls-cert and --tls-key must be given together");
@@ -443,6 +463,9 @@ int run_serve(const serve_options& opts) {
         Aws::InitAPI(aws_sdk_options);
     }
 #endif
+#ifdef KYTHIRA_HAS_GCP_PRIVATECA
+    std::unique_ptr<raft::testing::gcp_privateca_certificate_provider> gcp_provider;
+#endif
 #ifdef KYTHIRA_HAS_AZURE_KEY_VAULT
     std::unique_ptr<raft::testing::azure_key_vault_ca_provider> azure_kv_provider;
 #endif
@@ -467,6 +490,26 @@ int run_serve(const serve_options& opts) {
 #else
         std::cerr << "ca_service: built without KYTHIRA_HAS_AWS_ACM_PCA — --provider aws-acm-pca "
                      "is unavailable\n";
+        return 1;
+#endif
+    } else if (opts.provider == "gcp-privateca") {
+#ifdef KYTHIRA_HAS_GCP_PRIVATECA
+        raft::testing::gcp_privateca_certificate_provider_config cfg;
+        cfg.gcp.project_id = opts.gcp_project;
+        cfg.gcp.endpoint_override = opts.gcp_endpoint_override;
+        cfg.location = opts.gcp_location;
+        cfg.ca_pool_id = opts.gcp_ca_pool;
+        if (cfg.gcp.project_id.empty() || cfg.location.empty() || cfg.ca_pool_id.empty()) {
+            std::cerr << "ca_service: --provider gcp-privateca requires --gcp-project, "
+                         "--gcp-location, and --gcp-ca-pool\n";
+            return 1;
+        }
+        gcp_provider =
+            std::make_unique<raft::testing::gcp_privateca_certificate_provider>(std::move(cfg));
+        provider = std::make_unique<any_certificate_provider>(*gcp_provider);
+#else
+        std::cerr << "ca_service: built without KYTHIRA_HAS_GCP_PRIVATECA — --provider "
+                     "gcp-privateca is unavailable\n";
         return 1;
 #endif
     } else {
