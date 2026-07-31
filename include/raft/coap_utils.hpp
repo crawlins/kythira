@@ -158,6 +158,15 @@ inline auto get_content_format_for_serializer(const std::string& serializer_name
         serializer_name.find("CBOR") != std::string::npos) {
         return coap_content_format::application_cbor;
     }
+    // Check for Protocol Buffers variants (protobuf_rpc_serializer::name() ==
+    // "protobuf"). No IANA CoAP content-format is registered for protobuf, so
+    // label it as the generic binary octet-stream (registered format 42) rather
+    // than mislabeling it as CBOR -- correct and interoperable on both the HTTP
+    // (application/octet-stream Content-Type) and CoAP wire.
+    if (serializer_name.find("protobuf") != std::string::npos ||
+        serializer_name.find("PROTOBUF") != std::string::npos) {
+        return coap_content_format::application_octet_stream;
+    }
     // Check for XML
     if (serializer_name == "xml" || serializer_name == "XML") {
         return coap_content_format::application_xml;
