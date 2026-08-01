@@ -227,21 +227,9 @@ jobs:
           path: ~/.ccache
           key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.compiler }}-${{ github.ref_name }}-${{ github.run_id }}
 
-      # Diagnostics for tests/coap_connection_reuse_property_test.cpp, which
-      # SIGABRTs/SIGSEGVs intermittently on the arm64 legs only (not
-      # reproducible after 148+ local runs across plain/ASan/TSan on x64) --
-      # default Ubuntu core_pattern pipes to apport, which produces nothing
-      # usable here, so a plain core file needs an explicit core_pattern
-      # override plus a raised ulimit in the same shell that runs ctest.
-      - name: Enable core dumps
-        run: |
-          mkdir -p ${{ github.workspace }}/core-dumps
-          sudo sysctl -w kernel.core_pattern="${{ github.workspace }}/core-dumps/core.%e.%p.%t"
-
       - name: Test
         id: test
         run: |
-          ulimit -c unlimited
           ctest --test-dir build \
             -j$(nproc) \
             --output-on-failure \
@@ -249,38 +237,6 @@ jobs:
             --repeat until-pass:3 \
             -LE '^(slow|performance|verbose|benchmark|docker)$'
         continue-on-error: true
-
-      - name: Backtrace any core dumps
-        if: always()
-        run: |
-          shopt -s nullglob
-          cores=(${{ github.workspace }}/core-dumps/core.*)
-          if [ ${#cores[@]} -eq 0 ]; then
-            echo "No core dumps produced."
-            exit 0
-          fi
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends gdb
-          for core in "${cores[@]}"; do
-            # %e in core_pattern is the kernel's comm name, truncated to 15
-            # chars (TASK_COMM_LEN-1) -- match by prefix, not exact name,
-            # since every test binary here has a longer name than that.
-            exe_prefix=$(basename "$core" | cut -d. -f2)
-            exe_path=$(find build -maxdepth 2 -type f -executable -name "${exe_prefix}*" | head -1)
-            echo "::group::Backtrace for $core (executable: ${exe_path:-not found})"
-            if [ -n "$exe_path" ]; then
-              gdb -batch -ex "thread apply all bt full" -ex "quit" "$exe_path" "$core" || true
-            fi
-            echo "::endgroup::"
-          done
-
-      - name: Upload core dumps
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: core-dumps-${{ matrix.compiler }}-${{ matrix.arch_label }}
-          path: core-dumps/
-          if-no-files-found: ignore
 
       - name: Publish test results
         uses: dorny/test-reporter@v1
