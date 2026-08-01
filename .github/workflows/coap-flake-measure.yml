@@ -1,0 +1,148 @@
+name: CoAP Flake Measurement
+
+# Measures the per-test failure rate of the coap suite. Manually dispatched:
+# this is a diagnostic instrument, not a PR gate.
+#
+# It exists because the coap tests have been "fixed" repeatedly by raising
+# timeouts and shrinking iteration counts (92d824b, bc39d04, 9727d38, 5a9c5ff)
+# without any measurement showing the change helped. A fix that cannot be
+# measured cannot be distinguished from luck, so this job establishes the
+# before/after number that every such change should be judged against.
+#
+# Two deliberate differences from the `Test` step in ci.yml:
+#
+#   * `-j` is kept, and defaults to $(nproc), because parallelism is part of
+#     the phenomenon under study — six coap test files bind port 5683 and two
+#     more share 19683, so concurrent execution is exactly when they collide.
+#     Running this serially would hide the effect it is meant to quantify.
+#
+#   * `--repeat until-pass:3` is NOT used. ci.yml retries each failing test up
+#     to three times, so a test it reports as failed had already failed three
+#     times over. That is the right behaviour for a gate and the wrong one for
+#     a measurement: it reports the post-retry rate, not the flake rate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "How many times to run the coap suite"
+        type: string
+        required: false
+        default: "20"
+      jobs:
+        description: "ctest -j value (blank = nproc; 1 = serial, to isolate contention effects)"
+        type: string
+        required: false
+        default: ""
+      label:
+        description: "CTest label to measure"
+        type: string
+        required: false
+        default: "coap"
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure ${{ github.event.inputs.label || 'coap' }} flake rate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          for attempt in 1 2 3; do
+            if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
+                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 autoconf autoconf-archive automake libtool; then
+              exit 0
+            fi
+            echo "::warning::apt-get install failed (attempt ${attempt}/3), retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::apt-get install failed after 3 attempts" >&2
+          exit 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
+
+      - name: Bootstrap vcpkg and install dependencies
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
+          /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Configure (Release)
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Run the suite N times and record every result
+        run: |
+          set -uo pipefail
+          ITER="${{ github.event.inputs.iterations || '20' }}"
+          LABEL="${{ github.event.inputs.label || 'coap' }}"
+          JOBS="${{ github.event.inputs.jobs }}"
+          [ -z "$JOBS" ] && JOBS="$(nproc)"
+          mkdir -p flake-results
+          echo "Measuring label '$LABEL' over $ITER iterations at -j$JOBS"
+          for i in $(seq 1 "$ITER"); do
+            # No --repeat: a retry would measure ci.yml's masking, not the flake.
+            # Failures are expected here, so never let one abort the loop.
+            ctest --test-dir build -L "$LABEL" -j"$JOBS" \
+              --output-junit "flake-results/run-$i.xml" > "flake-results/run-$i.log" 2>&1 || true
+            echo "  iteration $i/$ITER done"
+          done
+
+      - name: Summarise per-test failure rates
+        if: always()
+        run: |
+          python3 - <<'PY' | tee flake-results/summary.md
+          import glob, xml.etree.ElementTree as ET
+          from collections import defaultdict
+          runs = sorted(glob.glob("flake-results/run-*.xml"))
+          fails, seen = defaultdict(int), defaultdict(int)
+          for r in runs:
+              try:
+                  root = ET.parse(r).getroot()
+              except ET.ParseError:
+                  continue
+              for tc in root.iter("testcase"):
+                  name = tc.get("name")
+                  seen[name] += 1
+                  if tc.find("failure") is not None or tc.find("error") is not None:
+                      fails[name] += 1
+          print(f"# CoAP flake measurement\n")
+          print(f"Completed runs parsed: **{len(runs)}**\n")
+          if not fails:
+              print("No failures observed across any run.")
+          else:
+              print("| Test | Failures | Runs | Rate |")
+              print("|---|---:|---:|---:|")
+              for name, n in sorted(fails.items(), key=lambda kv: -kv[1]):
+                  total = seen[name] or len(runs)
+                  print(f"| `{name}` | {n} | {total} | {100.0*n/total:.0f}% |")
+          PY
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coap-flake-results
+          path: flake-results/
