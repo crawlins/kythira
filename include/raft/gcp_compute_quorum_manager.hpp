@@ -116,9 +116,13 @@ template<typename GroupId = std::string> struct gcp_compute_quorum_manager_confi
     std::string boot_disk_image;
     /// Boot persistent-disk size in GiB.
     std::uint32_t boot_disk_size_gb{20};
-    /// VPC network self-link or short name.
+    /// VPC network self-link or short name. A short name is expanded to
+    /// `global/networks/<name>` by `gcp_qualify_network` when the instance
+    /// resource is built; a self-link or `projects/…` reference is used as-is.
     std::string network{"default"};
-    /// GroupId (zone) → subnetwork self-link or short name.
+    /// GroupId (zone) → subnetwork self-link or short name. A short name is
+    /// expanded to `regions/<region>/subnetworks/<name>` by
+    /// `gcp_qualify_subnetwork`, with the region derived from the group's zone.
     std::map<GroupId, std::string> subnetwork_by_group{};
     /// Attached service-account email; empty = no service account attached.
     std::string service_account_email{};
@@ -620,9 +624,11 @@ private:
         // Compute encodes int64 fields like diskSizeGb as decimal strings.
         params->set_disk_size_gb(std::to_string(_config.boot_disk_size_gb));
 
+        // Both fields accept a short name or a reference; `instances.insert`
+        // accepts only the latter, so qualify short names here.
         auto* ni = instance.add_network_interfaces();
-        ni->set_network(_config.network);
-        ni->set_subnetwork(subnetwork);
+        ni->set_network(gcp_qualify_network(_config.network));
+        ni->set_subnetwork(gcp_qualify_subnetwork(subnetwork, target_group));
 
         if (!_config.service_account_email.empty()) {
             auto* sa = instance.add_service_accounts();
