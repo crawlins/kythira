@@ -308,7 +308,8 @@ jobs:
           # id-token: write.
           KYTHIRA_AWS_WEB_IDENTITY_ROLE_ARN: ${{ vars.AWS_CI_ROLE_ARN }}
         run: |
-          ctest --test-dir build -L 'real-ec2' -R '^aws_quorum_manager_real_ec2_test$' --output-on-failure
+          scripts/run-real-cloud-suite.sh 'real-ec2' '^aws_quorum_manager_real_ec2_test$' \
+            "Check that AWS_CI_ROLE_ARN is assumable via OIDC and carries the ec2-quorum-manager policy."
 
       # Both ca-cluster-node bundles need a pre-built AMI with
       # /usr/local/bin/ca_cluster_node already installed (they SSH in and
@@ -344,14 +345,16 @@ jobs:
         env:
           KYTHIRA_EC2_TEST_AMI: ${{ steps.resolve-ca-cluster-ami.outputs.ami_id }}
         run: |
-          ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_real_ec2_test$' --output-on-failure
+          scripts/run-real-cloud-suite.sh 'real-ec2' '^ca_cluster_node_real_ec2_test$' \
+            "Check AWS_CI_ROLE_ARN's ca-cluster-node policy and that the resolved AMI has /usr/local/bin/ca_cluster_node installed."
 
       - name: Run ca-cluster-node-rpc-tls bundle
         if: ${{ env.BUNDLE_CA_CLUSTER_RPC_TLS == 'true' }}
         env:
           KYTHIRA_EC2_TEST_AMI: ${{ steps.resolve-ca-cluster-ami.outputs.ami_id }}
         run: |
-          ctest --test-dir build -L 'real-ec2' -R '^ca_cluster_node_rpc_tls_real_ec2_test$' --output-on-failure
+          scripts/run-real-cloud-suite.sh 'real-ec2' '^ca_cluster_node_rpc_tls_real_ec2_test$' \
+            "Check AWS_CI_ROLE_ARN's ca-cluster-node policy and that the resolved AMI has /usr/local/bin/ca_cluster_node installed."
 
   # ── AWS: ca_cluster_node AMI build (Packer) ─────────────────────────────
   # Independent of the `aws` job above: builds a new AMI (and its backing
@@ -642,7 +645,8 @@ jobs:
           # power state and tear down.
           AZURE_TEST_VM_SIZE: ${{ vars.AZURE_TEST_VM_SIZE }}
         run: |
-          ctest --test-dir build -L 'real-azure' -R '^azure_quorum_manager_real_test$' --output-on-failure
+          scripts/run-real-cloud-suite.sh 'real-azure' '^azure_quorum_manager_real_test$' \
+            "Check the AZURE_CI_* federated-credential variables and that AZURE_TEST_RESOURCE_GROUP still exists in the subscription."
 
       - name: Run key-vault bundle
         if: ${{ env.BUNDLE_KEY_VAULT == 'true' }}
@@ -652,7 +656,8 @@ jobs:
         run: |
           echo "${{ secrets.AZURE_TEST_KEY_VAULT_CA_CERT_PEM }}" > /tmp/azure-test-ca-cert.pem
           AZURE_TEST_KEY_VAULT_CA_CERT_FILE=/tmp/azure-test-ca-cert.pem \
-            ctest --test-dir build -L 'real-azure' -R '^azure_key_vault_ca_provider_real_test$' --output-on-failure
+            scripts/run-real-cloud-suite.sh 'real-azure' '^azure_key_vault_ca_provider_real_test$' \
+              "Check the AZURE_CI_* federated-credential variables, that AZURE_TEST_KEY_VAULT_URL resolves, and that AZURE_TEST_KEY_VAULT_CA_CERT_PEM is set."
 
   gcp:
     name: Real Cloud Tests (GCP)
@@ -782,19 +787,6 @@ jobs:
             fi
           done
 
-      # Both bundle steps below fail closed on a skip. Each suite exits 77 when
-      # its preflight cannot reach GCP (absent credentials, a revoked role, a
-      # disabled API), and CTest reports SKIP_RETURN_CODE as "Not Run" with a
-      # zero exit — printing "100% tests passed" for a suite that ran no
-      # assertions at all. For a real-cloud job that spends money to prove the
-      # integration works, a skip is a misconfigured run, not a passing one, and
-      # must not read as a green tick. --no-tests=error covers the other silent
-      # pass: a -R filter that matches nothing.
-      #
-      # pipefail is set explicitly because GitHub's default shell is `bash -e`,
-      # which does not enable it; without it `ctest | tee` would report tee's
-      # status and a genuine test failure would pass.
-
       - name: Run quorum-manager bundle (Compute Engine + MIG)
         if: ${{ env.BUNDLE_QUORUM_MANAGER == 'true' }}
         env:
@@ -802,13 +794,8 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
           GCP_REGION: ${{ vars.GCP_REAL_CLOUD_TESTS_REGION || 'us-central1' }}
         run: |
-          set -o pipefail
-          ctest --test-dir build -L 'real-gce' -R '^gcp_quorum_manager_real_gce_test$' \
-            --no-tests=error --output-on-failure 2>&1 | tee ctest-gce.log
-          if grep -qE '\*\*\*Skipped|tests did not run' ctest-gce.log; then
-            echo "::error::gcp_quorum_manager_real_gce_test was SKIPPED, not run. Its preflight could not reach GCP — check the workload-identity credentials, the service account's compute roles, and that GCP_REAL_CLOUD_TESTS_PROJECT names a project with the Compute Engine API enabled." >&2
-            exit 1
-          fi
+          scripts/run-real-cloud-suite.sh 'real-gce' '^gcp_quorum_manager_real_gce_test$' \
+            "Check the workload-identity credentials, the service account's compute roles, and that GCP_REAL_CLOUD_TESTS_PROJECT names a project with the Compute Engine API enabled."
 
       - name: Run privateca bundle (Certificate Authority Service)
         if: ${{ env.BUNDLE_PRIVATECA == 'true' }}
@@ -817,13 +804,8 @@ jobs:
           GCP_PROJECT_ID: ${{ vars.GCP_REAL_CLOUD_TESTS_PROJECT }}
           GCP_REGION: ${{ vars.GCP_REAL_CLOUD_TESTS_REGION || 'us-central1' }}
         run: |
-          set -o pipefail
-          ctest --test-dir build -L 'real-privateca' -R '^gcp_privateca_provider_real_test$' \
-            --no-tests=error --output-on-failure 2>&1 | tee ctest-privateca.log
-          if grep -qE '\*\*\*Skipped|tests did not run' ctest-privateca.log; then
-            echo "::error::gcp_privateca_provider_real_test was SKIPPED, not run. The fixture provisions its own CA pool when GCP_TEST_CA_POOL is unset, so a skip here means its preflight could not reach CAS — check the service account's privateca roles and that the Certificate Authority Service API is enabled." >&2
-            exit 1
-          fi
+          scripts/run-real-cloud-suite.sh 'real-privateca' '^gcp_privateca_provider_real_test$' \
+            "The fixture provisions its own CA pool when GCP_TEST_CA_POOL is unset, so a skip means the preflight could not reach CAS — check the service account's privateca roles and that the Certificate Authority Service API is enabled."
 
   oci:
     name: Real Cloud Tests (OCI)
