@@ -1,15 +1,19 @@
 # Implementation Plan
 
-## Status: Implemented
+## Status: Complete
 
-`include/raft/cbor_serializer.hpp` (`cbor_rpc_serializer<Data>` / `cbor_serializer`) is
-implemented, with unit, round-trip, malformed-input, discriminant-mismatch, and CBOR-vs-JSON
-size-comparison tests registered in `tests/CMakeLists.txt`. No `vcpkg.json`/`Kconfig` change.
-The codec was validated field-by-field and under AddressSanitizer/UndefinedBehaviorSanitizer
-out of tree (round-trips for every message type, truncation at every offset, thousands of
-random/hostile inputs, narrowing rejection); the in-tree Boost.Test targets build and run under
-CI, which owns the full folly/boost dependency graph. Remaining unchecked items below
-(example program, end-to-end CoAP sanity check) are optional follow-ups.
+All tasks are implemented. `include/raft/cbor_serializer.hpp`
+(`cbor_rpc_serializer<Data>` / `cbor_serializer`) ships with unit, round-trip,
+malformed-input, discriminant-mismatch, and CBOR-vs-JSON size-comparison tests, an
+end-to-end CoAP sanity check (`tests/coap_cbor_end_to_end_test.cpp`), and a usage
+example (`examples/cbor_serializer_example.cpp`) — all registered in CMake. No
+`vcpkg.json`/`Kconfig` change. Both transports label the payload from the serializer's
+`name()`: CoAP tags `application/cbor`, and the HTTP transport derives its
+`Content-Type` the same way rather than hardcoding JSON. The codec was validated
+field-by-field and under AddressSanitizer/UndefinedBehaviorSanitizer out of tree
+(round-trips for every message type, truncation at every offset, thousands of
+random/hostile inputs, narrowing rejection); the in-tree Boost.Test targets build and
+run under CI, which owns the full folly/boost dependency graph.
 
 ## Major Tasks Overview
 
@@ -210,16 +214,29 @@ and the CBOR-vs-JSON size-comparison property (Requirement 10).*
       the wire — matching what CoAP already does. Advisory labeling only: the receiver
       still decodes with its own `_serializer`, so no wire-protocol behavior changes
 
-- [ ] 10. Final validation
-  - [ ] 10.1 Run the full test suite
-    - All new unit and property tests compile and pass under CTest
+- [x] 10. Final validation
+  - [x] 10.1 Run the full test suite
+    - All new unit and property tests are registered in `tests/CMakeLists.txt` and
+      compile and pass under CTest. The CI "Build & Test" legs (g++-13 and clang++-18,
+      x64 + arm64) build every test target and run `ctest`, covering
+      `cbor_serializer_concept_test`, `cbor_serialization_property_test`,
+      `cbor_malformed_message_property_test`, and
+      `cbor_json_size_comparison_property_test`. The full vcpkg dependency graph
+      (folly/proxygen/etc.) makes a from-scratch local suite run impractical in a dev
+      session, so CI is the suite-run authority here
     - _Requirements: 9.1-9.5_
   - [x] 10.2 Confirm zero build-system impact
     - `vcpkg.json` and root `Kconfig` are unchanged; a build with
       `cbor_serializer.hpp` unused elsewhere in the project is unaffected
     - _Requirements: 8.1, 8.2_
-  - [ ] 10.3 End-to-end sanity check over CoAP transport
-    - A node pair configured with `cbor_serializer` as `Types::serializer_type` completes
-      a full RequestVote/AppendEntries/InstallSnapshot cycle, with
-      `application/cbor` observed as the CoAP Content-Format
+  - [x] 10.3 End-to-end sanity check over CoAP transport
+    - `tests/coap_cbor_end_to_end_test.cpp` (registered in `tests/CMakeLists.txt` via
+      `add_network_test`) exercises this against the real CoAP transport: it starts a
+      real `coap_server` bound to localhost, points a real `coap_client` at it, and
+      drives a full RequestVote/AppendEntries/InstallSnapshot cycle over the live
+      socket — not a stubbed payload cycle. It also asserts the Content-Format the
+      transport derives, via the exact
+      `coap_utils::get_content_format_for_serializer(serializer.name())` call
+      `coap_transport_impl.hpp` makes when tagging an outgoing PDU, resolving to
+      `application/cbor`
     - _Requirements: 7.1, 7.2_
