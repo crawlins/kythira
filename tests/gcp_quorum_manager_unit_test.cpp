@@ -47,6 +47,68 @@ BOOST_AUTO_TEST_CASE(is_valid_gcp_resource_name_rejects) {
 
 BOOST_AUTO_TEST_SUITE_END()
 
+// The network/subnetwork qualifiers also live in gcp_client_config.hpp, so like
+// the validators above they are covered on an SDK-less build too. A bare short
+// name — which `network`'s "default" default value is — must come back as a
+// reference, because `instances.insert` rejects an unqualified name.
+
+BOOST_AUTO_TEST_SUITE(gcp_resource_reference_qualifiers)
+
+BOOST_AUTO_TEST_CASE(zone_to_region_strips_the_zone_suffix) {
+    BOOST_CHECK_EQUAL(kythira::gcp_zone_to_region("us-central1-a"), "us-central1");
+    BOOST_CHECK_EQUAL(kythira::gcp_zone_to_region("europe-west4-b"), "europe-west4");
+    // The input must be a zone: handed a region, this strips a component that
+    // was never a zone suffix. Callers pass `subnetwork_by_group`'s key, which
+    // is always a zone.
+    BOOST_CHECK_EQUAL(kythira::gcp_zone_to_region("us-central1"), "us");
+    // No `-` at all: nothing to strip, returned unchanged.
+    BOOST_CHECK_EQUAL(kythira::gcp_zone_to_region("zone"), "zone");
+}
+
+BOOST_AUTO_TEST_CASE(is_gcp_resource_reference_detects_paths_and_urls) {
+    BOOST_CHECK(kythira::is_gcp_resource_reference("global/networks/default"));
+    BOOST_CHECK(kythira::is_gcp_resource_reference("projects/p/global/networks/default"));
+    BOOST_CHECK(kythira::is_gcp_resource_reference(
+        "https://www.googleapis.com/compute/v1/projects/p/global/networks/default"));
+    BOOST_CHECK(!kythira::is_gcp_resource_reference("default"));
+    BOOST_CHECK(!kythira::is_gcp_resource_reference(""));
+}
+
+BOOST_AUTO_TEST_CASE(qualify_network_expands_a_short_name) {
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network("default"), "global/networks/default");
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network("my-vpc"), "global/networks/my-vpc");
+}
+
+BOOST_AUTO_TEST_CASE(qualify_network_passes_references_through) {
+    // Relative, partial-URL, and full-URL references are all left untouched —
+    // notably the Shared VPC case, where the host project differs from the
+    // request's project and rewriting the value would break it.
+    const std::string relative = "global/networks/default";
+    const std::string shared_vpc = "projects/host-project/global/networks/shared";
+    const std::string full_url =
+        "https://www.googleapis.com/compute/v1/projects/p/global/networks/default";
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network(relative), relative);
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network(shared_vpc), shared_vpc);
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network(full_url), full_url);
+    // Empty stays empty: the API, not us, reports a missing required field.
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_network(""), "");
+}
+
+BOOST_AUTO_TEST_CASE(qualify_subnetwork_expands_using_the_zones_region) {
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_subnetwork("default", "us-central1-a"),
+                      "regions/us-central1/subnetworks/default");
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_subnetwork("app-subnet", "europe-west4-c"),
+                      "regions/europe-west4/subnetworks/app-subnet");
+}
+
+BOOST_AUTO_TEST_CASE(qualify_subnetwork_passes_references_through) {
+    const std::string shared_vpc = "projects/host-project/regions/us-central1/subnetworks/shared";
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_subnetwork(shared_vpc, "us-central1-a"), shared_vpc);
+    BOOST_CHECK_EQUAL(kythira::gcp_qualify_subnetwork("", "us-central1-a"), "");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
 #ifdef KYTHIRA_HAS_GCP_SDK
 
 #include <raft/gcp_compute_quorum_manager.hpp>

@@ -104,4 +104,63 @@ struct gcp_client_config {
     return true;
 }
 
+/// @brief Returns the region a zone belongs to: `us-central1-a` → `us-central1`.
+///
+/// GCE zone names are the region name plus a `-<suffix>`, so the region is the
+/// zone with its final `-`-delimited component removed. A value with no `-` is
+/// returned unchanged — it is already region-shaped (or malformed, in which case
+/// the API rejects it with a clearer message than anything we could synthesize).
+[[nodiscard]] inline std::string gcp_zone_to_region(std::string_view zone) {
+    const auto dash = zone.rfind('-');
+    if (dash == std::string_view::npos) {
+        return std::string{zone};
+    }
+    return std::string{zone.substr(0, dash)};
+}
+
+/// @brief Returns `true` iff `value` is already a resource *reference* — a full
+///        URL, a `projects/…` partial URL, or a relative `global/…`-style path —
+///        rather than a bare short name.
+///
+/// GCE accepts any of those reference forms wherever a resource is named, but a
+/// bare short name only in some contexts. `/` is the discriminator: no resource
+/// short name may contain one (see `is_valid_gcp_resource_name`), so a value
+/// containing `/` is a reference and must be passed through untouched.
+[[nodiscard]] inline bool is_gcp_resource_reference(std::string_view value) noexcept {
+    return value.find('/') != std::string_view::npos;
+}
+
+/// @brief Expands a bare VPC network name to the relative reference
+///        `global/networks/<name>`; passes any existing reference through.
+///
+/// `instances.insert` rejects a bare name in `networkInterfaces[].network` with
+/// "Invalid value … The URL is malformed", so a short name — which the
+/// `network` config field documents as acceptable, and which its `"default"`
+/// default value is — must be qualified before the request is built. The
+/// relative form (rather than `projects/<p>/global/networks/<n>`) matches how
+/// this codebase already references machine types, and resolves against the
+/// project in the request URL. Cross-project Shared VPC callers pass a full
+/// `projects/<host-project>/global/networks/<n>` reference, which is preserved.
+[[nodiscard]] inline std::string gcp_qualify_network(std::string_view network) {
+    if (network.empty() || is_gcp_resource_reference(network)) {
+        return std::string{network};
+    }
+    return "global/networks/" + std::string{network};
+}
+
+/// @brief Expands a bare subnetwork name to the relative reference
+///        `regions/<region>/subnetworks/<name>`, deriving the region from
+///        @p zone; passes any existing reference through.
+///
+/// Subnetworks are regional, so unlike `gcp_qualify_network` this needs the zone
+/// the instance is being created in to name the region. See
+/// `gcp_qualify_network` for why bare names must be expanded at all.
+[[nodiscard]] inline std::string gcp_qualify_subnetwork(std::string_view subnetwork,
+                                                        std::string_view zone) {
+    if (subnetwork.empty() || is_gcp_resource_reference(subnetwork)) {
+        return std::string{subnetwork};
+    }
+    return "regions/" + gcp_zone_to_region(zone) + "/subnetworks/" + std::string{subnetwork};
+}
+
 }  // namespace kythira
