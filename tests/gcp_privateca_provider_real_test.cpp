@@ -142,8 +142,7 @@ struct CasPoolFixture : signal_cleanup_target {
                 disable_req.set_name(ca_name);
                 if (auto disabled = client.DisableCertificateAuthority(disable_req).get();
                     !disabled) {
-                    errors.push_back("DisableCertificateAuthority: " +
-                                     disabled.status().message());
+                    errors.push_back("DisableCertificateAuthority: " + disabled.status().message());
                 }
                 // skip_grace_period avoids leaving the CA in the 30-day
                 // scheduled-deletion window still accruing its monthly charge;
