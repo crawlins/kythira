@@ -233,22 +233,31 @@ BOOST_AUTO_TEST_CASE(handler_exception_maps_to_equivalent_5xx_category_on_both_t
     kythira::request_vote_request<> req{};
     req._term = 1;
 
-    // cpp_httplib_client's own async error path (http_transport_impl.hpp's
-    // make_future_with_exception -> SimpleFuture<Response>(std::
-    // make_exception_ptr(e)), where `e`'s static type at that call site is
-    // `const std::exception&`) slices any http_client_error/http_server_error
-    // down to plain std::exception before it ever reaches this catch --
-    // template argument deduction for make_exception_ptr(E) picks up e's
-    // *static* type there, not its dynamic one, so both the derived type and
-    // its message are lost, not just status_code(). That is a pre-existing
-    // characteristic of http_transport_impl.hpp, which this spec's Non-Goals
-    // explicitly rule out modifying -- so unlike the Beast assertion below,
-    // this side can only check that *some* exception was thrown, not recover
-    // the status code from it.
-    BOOST_CHECK_THROW(std::move(httplib_client.send_request_vote(test_node_id, req,
-                                                                 std::chrono::milliseconds(30000)))
-                          .get(),
-                      std::exception);
+    // cpp_httplib_client's async error path routes through
+    // http_transport_impl.hpp's make_future_with_exception, which used to take
+    // `const std::exception&` and so sliced any http_client_error/
+    // http_server_error down to plain std::exception before it reached this
+    // catch -- template argument deduction for make_exception_ptr(E) picked up
+    // e's *static* type at that call site, not its dynamic one, losing the
+    // derived type and message along with status_code(). This case could then
+    // only check that *some* exception was thrown.
+    //
+    // That helper is now templated on the concrete exception type, so the
+    // derived type survives on this side too and the two transports can be
+    // compared on the assertion that actually matters: identical status codes
+    // recovered from identically-typed exceptions. See Task 15 in
+    // .kiro/specs/boost-beast-http-transport/tasks.md.
+    int httplib_status = 0;
+    try {
+        std::move(
+            httplib_client.send_request_vote(test_node_id, req, std::chrono::milliseconds(30000)))
+            .get();
+        BOOST_FAIL("expected cpp_httplib_client to surface the handler's exception as an error");
+    } catch (const kythira::http_server_error& e) {
+        httplib_status = e.status_code();
+    }
+
+    BOOST_TEST(httplib_status == 500);
 
     // boost_beast_client's send_rpc throws kythira::http_server_error directly
     // inside a thenValue continuation; future_transformable's thenValue/
@@ -266,6 +275,10 @@ BOOST_AUTO_TEST_CASE(handler_exception_maps_to_equivalent_5xx_category_on_both_t
     }
 
     BOOST_TEST(beast_status == 500);
+
+    // The equivalence this case exists to assert, now checkable on both sides
+    // rather than only on Beast's.
+    BOOST_TEST(httplib_status == beast_status);
 
     beast_server.stop();
     httplib_server.stop();
