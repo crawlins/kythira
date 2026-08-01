@@ -52,7 +52,15 @@ BOOST_AUTO_TEST_SUITE(coap_content_format_property_tests)
 // **Validates: Requirements 1.2, 1.3**
 // Property: For any CoAP request or response, the Content-Format option should match
 // the serialization format of the configured RPC_Serializer.
-BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_test::timeout(45)) {
+// Each coap_client/coap_server construction in this file pays for
+// coap_new_context()'s unconditional DTLS/OpenSSL provider
+// initialization (SSL_CTX_new_ex() and friends), even for plain CoAP with
+// no DTLS -- libcoap always sets this up. That cost can grow noticeably
+// under real CPU contention (many coap_*_test binaries doing the same
+// expensive one-time OpenSSL provider scan at once via ctest -j), which
+// is what pushed these test cases past their previous, tighter timeouts
+// on a loaded CI runner; raised here with margin for that.
+BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_test::timeout(90)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);
@@ -104,7 +112,7 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_te
 }
 
 // Test that different serializers would use different Content-Format values
-BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::timeout(60)) {
     // This test verifies the conceptual mapping between serializers and Content-Format values
     // In a real implementation, this would test:
     // - JSON serializer uses Content-Format 50 (application/json)
@@ -139,7 +147,7 @@ BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::
 }
 
 // Test that Content-Format option is set for both requests and responses
-BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeout(60)) {
     kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
@@ -189,7 +197,7 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeo
 }
 
 // Test that Accept option is set correctly for expected response format
-BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(60)) {
     kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
