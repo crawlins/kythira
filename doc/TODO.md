@@ -71,7 +71,6 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `cbor-rpc-serializer` | 45/49 | `cbor_rpc_serializer<Data>` implemented and tested (unit, round-trip, malformed-input, discriminant-mismatch, CBOR-vs-JSON size-comparison), no `vcpkg.json`/`Kconfig` change needed; own `tasks.md` marks itself "Status: Implemented". Remaining 4 items are optional follow-ups: an example program and a final end-to-end CoAP sanity check |
 | `ion-rpc-serializer` | ~40/45 | `ion_rpc_serializer<Data>` (`include/raft/ion_serializer.hpp`) over `ion-c`: `ion-c` overlay port (`vcpkg-overlays/ion-c`) + opt-in `ion` vcpkg feature, `ION_SERIALIZER` Kconfig symbol + `raft_ion_serializer` INTERFACE target (graceful degradation like `COAP_TRANSPORT`), all 14 RPC serialize/deserialize pairs with annotation-tagged structs and native `blob` payloads, binary+text encodings with encoding-agnostic deserialize, `application/ion` CoAP Content-Format (65000) + HTTP `Content-Type` (cpp-httplib and Beast), full unit/round-trip/malformed/JSON-equivalence tests, README + example program. Header C++-validated via a faithful `ion-c` API stub (`-fsyntax-only`); ion targets are **not built by default** (opt-in `ion` feature absent in default vcpkg install), so the final compile/run of ion targets and the end-to-end HTTP/CoAP sanity check (`tasks.md` 9.1/9.4) await a build with the `ion` feature enabled. The overlay portfile's `SHA512` is a `0` placeholder to regenerate on first real fetch (see `vcpkg-overlays/ion-c/README.md`). |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
@@ -80,6 +79,16 @@ completion (18/18 and 17/17) on July 30, 2026 via
 follow-up commit (a second ThreadSanitizer pass against Beast's newly-split
 test binaries caught four further real data races); both are off this
 table entirely now. See `doc/CHANGELOG.md` for those entries.
+
+`cbor-rpc-serializer` is likewise off this table, now 49/49. The two items
+this row previously listed as outstanding optional follow-ups both exist:
+the usage example is `examples/cbor_serializer_example.cpp`, and the
+end-to-end CoAP sanity check (Task 10.3) is
+`tests/coap_cbor_end_to_end_test.cpp`, registered via `add_network_test` and
+exercising a real `coap_server`/`coap_client` pair over a live socket rather
+than a stubbed payload cycle. Both had landed while this row still read
+45/49 — an instance of exactly the drift the note below warns about, found
+by checking the tree rather than the status header.
 
 **A note on how this table stays honest**: `proxygen-http-transport/tasks.md`
 was found, in the same week, drifted in *both* directions in turn — first
