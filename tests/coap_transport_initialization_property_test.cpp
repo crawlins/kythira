@@ -21,10 +21,17 @@ using test_transport_types =
 #include <chrono>
 
 namespace {
-constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
-constexpr const char* test_coaps_endpoint = "coaps://127.0.0.1:5684";
+// Client-only targets -- every coap_server construction in this file is
+// followed only by a construction-succeeded check, never start(), so
+// nothing ever listens here regardless of port number. Fixed literals well
+// outside the ephemeral range (32768-60999) and distinct from every other
+// coap_*_test.cpp's assigned literal are safe.
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61080";
+constexpr const char* test_coaps_endpoint = "coaps://127.0.0.1:61081";
 constexpr std::uint64_t test_node_id = 1;
-constexpr std::uint16_t test_bind_port = 5683;
+// Only used by coap_server constructions below, none of which are ever
+// start()-ed, so no real bind ever occurs; 0 keeps that invariant explicit.
+constexpr std::uint16_t test_bind_port = 0;
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::size_t property_test_iterations = 10;
 }
@@ -58,8 +65,12 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
 
                 kythira::noop_metrics metrics;
 
+                // Client-only target (only the constructor is exercised
+                // below, no real send) -- a fixed literal per iteration,
+                // outside the ephemeral range and this file's other
+                // assigned literals, is safe.
                 std::unordered_map<std::uint64_t, std::string> node_endpoints;
-                node_endpoints[test_node_id + i] = std::format("coap://127.0.0.1:{}", 5683 + i);
+                node_endpoints[test_node_id + i] = std::format("coap://127.0.0.1:{}", 61100 + i);
 
                 // Verify client can be constructed with valid configuration
                 // Note: This test verifies the interface exists and can be instantiated
@@ -95,7 +106,11 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
 
                 kythira::noop_metrics metrics;
 
-                std::uint16_t port = test_bind_port + static_cast<std::uint16_t>(i);
+                // test_bind_port is 0 (see its declaration) and this server is
+                // never start()-ed below, so no real bind occurs regardless of
+                // i; the per-iteration "+i" this used to have is gone since it
+                // no longer serves any purpose.
+                std::uint16_t port = test_bind_port;
 
                 // Verify server can be constructed with valid configuration
                 bool server_created = false;

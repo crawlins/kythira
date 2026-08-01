@@ -18,9 +18,17 @@
 namespace {
 constexpr const char* test_name = "coap_concept_conformance_test";
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port = 5683;
+// Servers built with this port in this file are never start()-ed (only
+// constructed/type-checked), so no real bind ever occurs; 0 keeps that
+// invariant explicit rather than relying on a literal that looks live.
+constexpr std::uint16_t test_bind_port = 0;
 constexpr std::uint64_t test_node_id = 1;
-constexpr const char* test_endpoint = "coap://127.0.0.1:5683";
+// Client-only target -- some tests below do call real send_* methods
+// against this endpoint, but no coap_server anywhere in this file is ever
+// started(), so nothing ever listens here regardless of the port number.
+// A fixed literal well outside the ephemeral range (32768-60999) and
+// distinct from every other coap_*_test.cpp's assigned literal is safe.
+constexpr const char* test_endpoint = "coap://127.0.0.1:61030";
 
 // Test serializer type alias
 using test_serializer = kythira::json_rpc_serializer<std::vector<std::byte>>;

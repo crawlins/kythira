@@ -213,7 +213,11 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, *boost::unit_
         try {
             kythira::noop_metrics metrics;
 
-            kythira::coap_server<test_transport_types> server("0.0.0.0", 5683, config, metrics);
+            // This is the server's own unicast bind port (distinct from
+            // config.multicast_port, the multicast group port, which is left
+            // untouched). Never start()-ed in this test, so no real bind ever
+            // occurs; 0 keeps that invariant explicit.
+            kythira::coap_server<test_transport_types> server("0.0.0.0", 0, config, metrics);
 
             // Test multicast address validation
             bool is_valid = server.is_valid_multicast_address(config.multicast_address);

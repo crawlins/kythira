@@ -155,9 +155,9 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, *boost::unit_test::timeo
         noop_metrics metrics;
 
         std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-            {1, "coap://127.0.0.1:5683"},
-            {2, "coap://127.0.0.1:5684"},
-            {3, "coap://127.0.0.1:5685"}};
+            {1, "coap://127.0.0.1:61070"},
+            {2, "coap://127.0.0.1:61071"},
+            {3, "coap://127.0.0.1:61072"}};
 
         coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 
@@ -226,7 +226,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, *boost::unit_test::timeout(45
     noop_metrics metrics;
 
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-        {test_node_id, "coap://127.0.0.1:5683"}};
+        {test_node_id, "coap://127.0.0.1:61070"}};
 
     coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 
@@ -278,7 +278,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks, *boost::unit_test::ti
     noop_metrics metrics;
 
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
-        {test_node_id, "coap://127.0.0.1:5683"}};
+        {test_node_id, "coap://127.0.0.1:61070"}};
 
     coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
 

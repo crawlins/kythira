@@ -19,7 +19,10 @@
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 5683;
-constexpr const char* test_endpoint = "coap://127.0.0.1:5683";
+// Client-only target -- no coap_server in this file is ever bound to this
+// port, so a fixed literal well outside the ephemeral range (32768-60999)
+// and distinct from every other coap_*_test.cpp's assigned literal is safe.
+constexpr const char* test_endpoint = "coap://127.0.0.1:61050";
 constexpr std::size_t test_node_id = 1;
 constexpr std::size_t property_test_iterations = 10;
 constexpr std::uint16_t min_port = 5000;
@@ -245,7 +248,6 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, *boost::unit_test:
 BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, *boost::unit_test::timeout(60)) {
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<std::uint16_t> port_dist(min_port, max_port);
     std::uniform_int_distribution<std::size_t> sessions_dist(1, 1000);
     std::uniform_int_distribution<int> bool_dist(0, 1);
 
@@ -254,7 +256,6 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, *boost::unit_test::time
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
             // Generate random test parameters
-            auto port = port_dist(rng);
             auto enable_dtls = false;  // Disable DTLS for logging test to avoid credential issues
             auto max_concurrent_sessions = sessions_dist(rng);
 
@@ -266,9 +267,15 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, *boost::unit_test::time
             config.enable_dtls = enable_dtls;
             config.max_concurrent_sessions = max_concurrent_sessions;
 
-            // Create CoAP server - this should generate initialization logs
+            // Create CoAP server - this should generate initialization logs. Bind
+            // to an OS-assigned ephemeral port (0) rather than a random literal in
+            // [min_port, max_port]: this server really does start() below, and a
+            // random-but-real bind can still collide with another coap_*_test
+            // binary's real listener under ctest -j (see bound_port()'s doc
+            // comment in coap_transport.hpp). Nothing here needs to know the
+            // actual port, so 0 is strictly better than "probably free".
             auto server = kythira::coap_server<test_transport_types>{
-                test_bind_address, port, std::move(config), std::move(metrics)};
+                test_bind_address, 0, std::move(config), std::move(metrics)};
 
             // Test server lifecycle operations - these should generate logs
             server.start();
@@ -371,12 +378,12 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, *boost::unit_test::timeout(3
 BOOST_AUTO_TEST_CASE(test_coap_error_logging, *boost::unit_test::timeout(30)) {
     // Test with various endpoint patterns to ensure logging infrastructure handles them
     std::vector<std::string> test_endpoints = {
-        "coap://127.0.0.1:5683",   // Valid endpoint
-        "coaps://127.0.0.1:5684",  // Valid secure endpoint
-        "invalid://malformed",     // Invalid scheme
-        "malformed-endpoint",      // No scheme
-        "coap://",                 // Missing host/port
-        ""                         // Empty endpoint
+        "coap://127.0.0.1:61050",   // Valid endpoint
+        "coaps://127.0.0.1:61051",  // Valid secure endpoint
+        "invalid://malformed",      // Invalid scheme
+        "malformed-endpoint",       // No scheme
+        "coap://",                  // Missing host/port
+        ""                          // Empty endpoint
     };
 
     std::size_t successful_tests = 0;

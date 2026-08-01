@@ -99,7 +99,11 @@ BOOST_AUTO_TEST_CASE(test_server_multicast_validation, *boost::unit_test::timeou
     config.multicast_address = "224.0.1.187";
     config.multicast_port = 5683;
 
-    server_type server("0.0.0.0", 5683, config, test_transport_types::metrics_type{});
+    // This is the server's own unicast bind port (distinct from
+    // config.multicast_port, the multicast group port below, which is left
+    // untouched). Never start()-ed in this test, so no real bind ever
+    // occurs; 0 keeps that invariant explicit.
+    server_type server("0.0.0.0", 0, config, test_transport_types::metrics_type{});
 
     // Test valid multicast addresses
     BOOST_CHECK(server.is_valid_multicast_address("224.0.1.187"));

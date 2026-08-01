@@ -24,8 +24,11 @@ struct test_types {
 };
 
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::timeout(30)) {
-    // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    // Create a CoAP client. This endpoint is a client-only target -- no
+    // coap_server exists anywhere in this file -- so a fixed literal well
+    // outside the ephemeral range (32768-60999) and distinct from every
+    // other coap_*_test.cpp's assigned literal is safe.
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -39,7 +42,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::
 
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -59,7 +62,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_t
 
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -86,7 +89,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_tes
 
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, *boost::unit_test::timeout(30)) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
