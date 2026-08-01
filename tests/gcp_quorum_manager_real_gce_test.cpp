@@ -31,6 +31,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -101,6 +102,34 @@ BOOST_TEST_GLOBAL_FIXTURE(GcpSignalHandlerFixture);
 auto run_id() -> const std::string& {
     static const std::string id = "run-" + std::to_string(::getpid());
     return id;
+}
+
+/// Names of the instances in @p zone carrying this suite's cluster label — the
+/// same `labels.kythira-cluster` filter `assess_quorum` uses. Read directly via
+/// the SDK rather than through the manager so a leak assertion cannot be masked
+/// by the manager's own bookkeeping.
+auto cluster_instance_names(const std::string& project, const std::string& zone,
+                            const std::string& cluster) -> std::vector<std::string> {
+    google::cloud::Options opts;
+    opts.set<google::cloud::UnifiedCredentialsOption>(
+        google::cloud::MakeGoogleDefaultCredentials());
+    google::cloud::compute_instances_v1::InstancesClient client(
+        google::cloud::compute_instances_v1::MakeInstancesConnectionRest(opts));
+
+    google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
+    req.set_project(project);
+    req.set_zone(zone);
+    req.set_filter("labels.kythira-cluster = \"" + cluster + "\"");
+
+    std::vector<std::string> names;
+    for (auto const& maybe_inst : client.ListInstances(req)) {
+        if (!maybe_inst) {
+            throw std::runtime_error("gcp instances.list (" + zone +
+                                     "): " + maybe_inst.status().message());
+        }
+        names.push_back(maybe_inst->name());
+    }
+    return names;
 }
 
 auto base_compute_config() -> gcp_compute_quorum_manager_config<std::string> {
@@ -221,14 +250,44 @@ BOOST_AUTO_TEST_CASE(spot_provision_and_decommission) {
 
 BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
     auto cfg = base_compute_config();
-    cfg.provision_timeout = std::chrono::seconds(1);  // too short to reach RUNNING
+    // Zero budget for reaching RUNNING. `provision_node`'s poll loop evaluates
+    // `steady_clock::now() < deadline` before its first sleep, so a zero
+    // timeout skips the loop entirely and takes the timeout branch every time.
+    //
+    // A small non-zero timeout does NOT work here, and the 1s this case used to
+    // pass is why it failed against real GCE: `provision_timeout` bounds only
+    // the poll-to-RUNNING phase *after* the insert-operation wait (see its
+    // declaration in gcp_compute_quorum_manager_config), and that wait — bounded
+    // separately by `gcp.api_timeout` — does not return until GCE has finished
+    // creating the instance. By then it is already RUNNING, so the very first
+    // poll succeeds and nothing is ever thrown.
+    cfg.provision_timeout = std::chrono::seconds(0);
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
     gcp_compute_quorum_manager<> mgr{cfg};
 
-    // The future is exceptional, and the partially-created instance is deleted
-    // best-effort before it resolves.
+    // Baseline taken first: asserting a delta rather than an absolute count
+    // keeps this independent of anything another case (or an earlier crashed
+    // run) left behind.
+    const auto before = cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name);
+
+    // The future is exceptional...
     BOOST_CHECK_THROW(std::move(mgr.provision_node(zone, std::nullopt)).get(), std::exception);
+
+    // ...and the instance created before the timeout was deleted best-effort
+    // rather than leaked. This is the half of the contract the case is named
+    // for, and it went unasserted before — a leak here passed silently.
+    // delete_best_effort waits on the delete operation, so the instance should
+    // already be gone; the bounded retry only absorbs list eventual-consistency.
+    std::vector<std::string> after;
+    for (int i = 0; i < 15; ++i) {
+        after = cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name);
+        if (after.size() <= before.size()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    BOOST_CHECK_EQUAL(after.size(), before.size());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
