@@ -12,6 +12,8 @@
 
 #include <vector>
 #include <thread>
+
+#include "coap_test_support.hpp"
 #include <atomic>
 #include <chrono>
 
@@ -234,10 +236,10 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, *boost::unit_te
 
     // Try to acquire more slots than the limit, holding them simultaneously
     constexpr std::size_t total_attempts = 20;  // More than the limit
-    std::vector<std::thread> threads;
+    kythira::testing::coap::joining_thread_group threads;
 
     for (std::size_t i = 0; i < total_attempts; ++i) {
-        threads.emplace_back([&]() {
+        threads.spawn([&]() {
             if (client.acquire_concurrent_slot()) {
                 successful_acquisitions.fetch_add(1);
                 currently_held.fetch_add(1);
@@ -254,9 +256,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, *boost::unit_te
     }
 
     // Wait for all attempts
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    threads.join_all();
 
     // Property 1: Total attempts should equal successful + failed
     BOOST_CHECK_EQUAL(successful_acquisitions.load() + failed_acquisitions.load(), total_attempts);

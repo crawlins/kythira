@@ -12,6 +12,8 @@
 
 #include <vector>
 #include <thread>
+
+#include "coap_test_support.hpp"
 #include <atomic>
 #include <chrono>
 
@@ -157,7 +159,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
     std::atomic<std::size_t> failed_requests{0};
     std::atomic<std::size_t> errors{0};
 
-    std::vector<std::thread> threads;
+    kythira::testing::coap::joining_thread_group threads;
     // 10 x 20 (200 real send_request_vote() calls, each doing a real
     // getaddrinfo() lookup while holding send_rpc()'s single recursive
     // mutex -- see test_sequential_request_count's comment) was fine when
@@ -176,7 +178,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
 
     // Launch threads that concurrently send requests
     for (std::size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
+        threads.spawn([&, t]() {
             for (std::size_t i = 0; i < operations_per_thread; ++i) {
                 try {
                     auto future =
@@ -191,9 +193,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
     }
 
     // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    threads.join_all();
 
     // Property 1: No crashes should occur during concurrent access
     BOOST_CHECK_EQUAL(errors.load(), 0);
@@ -228,13 +228,13 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test
     std::atomic<std::size_t> failed_acquires{0};
     std::atomic<std::size_t> errors{0};
 
-    std::vector<std::thread> threads;
+    kythira::testing::coap::joining_thread_group threads;
     constexpr std::size_t num_threads = 20;
     constexpr std::size_t operations_per_thread = 10;
 
     // Launch threads that concurrently acquire and release slots
     for (std::size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&]() {
+        threads.spawn([&]() {
             for (std::size_t i = 0; i < operations_per_thread; ++i) {
                 try {
                     bool acquired = client.acquire_concurrent_slot();
@@ -256,9 +256,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test
     }
 
     // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    threads.join_all();
 
     // Property 1: No errors should occur during concurrent access
     BOOST_CHECK_EQUAL(errors.load(), 0);
