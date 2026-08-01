@@ -659,7 +659,17 @@ auto boost_beast_client<Types>::get_or_create_connection(std::uint64_t target)
         // connection would (Requirement 9.3).
         auto idle_for = std::chrono::steady_clock::now() - it->second.last_used;
         if (idle_for > _config.keep_alive_timeout) {
-            it->second.connection->close();
+            // Retired (not erased): a concurrent in-flight RPC to this same
+            // target may have obtained this connection from an earlier
+            // get_or_create_connection() call before this call acquired
+            // _mutex, and may still hold the raw beast_connection* captured
+            // in send_rpc() -- destroying it out from under that call would
+            // be a use-after-free (Property 7, matching
+            // reload_tls_material()'s retirement of _connections above).
+            // Not closed either, for the same reason: close() from this
+            // (foreign) thread would race the in-flight op's own use of the
+            // stream instead of just letting it fail/complete naturally.
+            _retired_connections.push_back(std::move(it->second.connection));
             _connections.erase(it);
         } else {
             auto metric = _metrics;
@@ -725,7 +735,10 @@ auto boost_beast_client<Types>::get_or_create_connection(std::uint64_t target)
                                        [](const auto& lhs, const auto& rhs) {
                                            return lhs.second.last_used < rhs.second.last_used;
                                        });
-        lru_it->second.connection->close();
+        // Retired (not erased/closed): see the idle-timeout eviction above --
+        // a concurrent in-flight RPC to this (different) target may still
+        // hold a raw beast_connection* into the entry being evicted here.
+        _retired_connections.push_back(std::move(lru_it->second.connection));
         _connections.erase(lru_it);
     }
 
@@ -754,7 +767,13 @@ auto boost_beast_client<Types>::remove_connection(std::uint64_t target) -> void 
     std::lock_guard<std::mutex> lock(_mutex);
     auto it = _connections.find(target);
     if (it != _connections.end()) {
-        it->second.connection->close();
+        // Retired (not erased/closed): called from send_rpc()'s thenError
+        // handler once this call's own use of the connection has failed,
+        // but a *different*, concurrent in-flight RPC to the same target
+        // may still be using the same pooled_connection's raw
+        // beast_connection* -- see the eviction paths above in
+        // get_or_create_connection() for the identical hazard.
+        _retired_connections.push_back(std::move(it->second.connection));
         _connections.erase(it);
     }
 }

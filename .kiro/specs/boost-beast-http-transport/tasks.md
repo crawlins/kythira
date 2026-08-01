@@ -8,13 +8,15 @@ zero findings in this project's own code). Tasks 14 (ThreadSanitizer run) and
 15 (cross-transport equivalence, delivered jointly with
 `.kiro/specs/proxygen-http-transport/`'s own Task 14 as a three-way test) are
 CI-verified via [PR #117](https://github.com/crawlins/kythira/pull/117)
-(`beast-http`-labeled CTest runs, green); a follow-up ThreadSanitizer pass
-against this spec's own (since-split) test binaries found four further real
-bugs beyond what that run surfaced — see `## Known Follow-ups` for the full
-accounting.
+(`beast-http`-labeled CTest runs, green); two further ThreadSanitizer passes
+against this spec's own (since-split) test binaries found five more real
+bugs (one of them still not fully root-caused) beyond what that run
+surfaced — see `## Known Follow-ups` for the full accounting.
 
-**Last Updated**: July 30, 2026 (round-2 ThreadSanitizer findings against the
-split beast-http test binaries; see `## Known Follow-ups`)
+**Last Updated**: August 1, 2026 (round-3 ThreadSanitizer findings: the
+Round 2 segfault fix verified working, one further genuine bug found and
+fixed, and one still-open TSan-confirmed data race affecting most of the
+suite; see `## Known Follow-ups`)
 
 ## Overview
 
@@ -592,11 +594,13 @@ out to be the same class of packaging-mismatch false positive PR #117's own
    links against it, forcing plain blocking `getaddrinfo()` (no extra
    glibc-internal thread, nothing for TSan to lose track of).
 
-All five `beast-http`-labeled CTest binaries pass cleanly under
-`-DKYTHIRA_SANITIZER=thread` locally after these fixes.
+All five `beast-http`-labeled CTest binaries were reported passing cleanly
+under `-DKYTHIRA_SANITIZER=thread` locally after these fixes — see Round 3
+below, which found this was not the whole picture once the suite was rerun
+end-to-end in this same sandbox.
 
-**A caveat, not a sixth bug**: even with all five fixes above, this
-session's own sandbox — 4 CPU cores, heavily loaded from the debugging
+**A caveat, not a sixth bug (at the time)**: even with all five fixes above,
+this session's own sandbox — 4 CPU cores, heavily loaded from the debugging
 session itself — occasionally showed a single request/response that
 completes in milliseconds without TSan instead taking on the order of 180
 seconds and then failing on a timeout that a directly-instrumented repro
@@ -609,3 +613,113 @@ repro isolated from that contention. Whether this reproduces on GitHub
 Actions' own runners (a different, and quite possibly less contended,
 environment) is what the `tsan` job's next real run on this branch will
 show.
+
+### Round 3 (this session): the Round 2 segfault fix verified working, one more genuine bug found and fixed, and one still-open TSan race affecting most of the suite
+
+The Round 2 segfault fix (item 5 above, stripping
+`CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO` under
+`KYTHIRA_SANITIZER STREQUAL "thread"`) was re-verified directly: rerunning
+`beast_cross_transport_equivalence_test` no longer segfaults. It now fails
+with a clean, catchable `boost::system::system_error: end of stream` instead
+of crashing the process — real progress, but it revealed that "all five pass
+cleanly" (above) did not hold up once the full `beast-http`-labeled suite
+was rerun together (`ctest -L beast-http -j1`) in this same sandbox rather
+than as isolated single-binary runs: 4 of the 5 real beast-http binaries
+(`beast_server_test`, `beast_integration_test`, `beast_ssl_test`,
+`beast_cross_transport_equivalence_test`; `beast_client_test` — which never
+exercises a real client/server round trip, only construction/config/TLS
+material reload — passed) failed with dozens of TSan data races each and a
+hard functional failure (`end of stream` or "socket was closed due to a
+timeout") on literally the first RPC round trip issued in the process, with
+no concurrency in the test's own code (e.g.
+`beast_integration_test`'s `request_vote_round_trip_and_connection_reuse`
+fails on its *first* `send_request_vote()` call, before ever reaching the
+second, reuse-focused one).
+
+1. **Fixed: `boost_beast_client`'s connection-pool eviction destroyed a
+   pooled connection while a concurrent in-flight RPC to it might still be
+   using it — the same use-after-free class `reload_tls_material()` already
+   guards against, just not applied to every eviction path.**
+   `get_or_create_connection()`'s idle-timeout eviction (an existing pooled
+   connection found idle longer than `keep_alive_timeout`) and its
+   LRU-over-capacity eviction (making room for a new connection once
+   `connection_pool_size` is reached) both called `close()` then
+   `_connections.erase(it)` directly — actually destroying the
+   `pooled_connection` (and its `beast_connection`) — rather than moving it
+   to `_retired_connections` first the way `reload_tls_material()` already
+   does, with a comment explicitly documenting why: "a concurrent in-flight
+   RPC may still hold a reference to one of these connections obtained from
+   `get_or_create_connection()` before this call acquired the lock —
+   destroying it out from under that call would be a use-after-free."
+   `send_rpc()`'s own `thenError` handler calls `remove_connection(target)`
+   on RPC failure to avoid retrying a broken connection, with the identical
+   hazard: a *different*, concurrent in-flight RPC to the same target could
+   still be using the same pooled entry. Fixed all three sites
+   (`get_or_create_connection()`'s two eviction branches,
+   `remove_connection()`) to retire instead of erase-destroying, matching
+   `reload_tls_material()`'s pattern exactly (including *not* calling
+   `close()` from the evicting thread first, since that itself races the
+   connection's own in-flight operation from a thread that never goes
+   through that connection's strand). This is a real, standalone
+   correctness fix, confirmed by code inspection against the exact pattern
+   this codebase already established and documented for the identical
+   hazard — but it did **not** eliminate the observed test failures (see
+   below), and by itself is not sufficient to close this Known Follow-up.
+2. **Still open: a TSan-confirmed data race between two `io_thread_pool`
+   worker threads touching the same `beast::tcp_stream`'s internal timeout
+   state (`basic_stream::expires_after()`), on the very first RPC issued on
+   a freshly created connection — not an eviction race, and not something
+   fix 1 above touches.** Before-and-after comparison (identical rebuild,
+   identical test binaries, same fatal-error test case names and line
+   numbers) confirmed fix 1 did not change the failure signature at all,
+   ruling out connection-pool eviction as this particular race's cause.
+   Reading the actual TSan report for the `expires_after()` race directly
+   (rather than just its summary line) shows *both* the racing read and the
+   racing write are attributed to two different `io_thread_pool`-created
+   worker threads — never the main/calling thread — meaning two operations
+   on the *same* connection's stream are running concurrently on two
+   different threads despite that stream having been constructed on its own
+   `net::strand` (`net::make_strand(ioc)`), which this class's own design
+   comment (`beast_http_transport.hpp`, `boost_beast_client`'s class-level
+   doc) states should serialize every operation issued on it. A strand only
+   guarantees serialized execution for work actually dispatched *through*
+   it; a direct, synchronous call into a stream member function (as
+   `expires_after()` always is — see `set_timeout()` and the re-arm-before-
+   write call in `send()`) from a thread not currently running "on" that
+   strand is not automatically serialized just because the stream happens
+   to use that strand as its default executor. Every single TSan trace
+   collected across all 4 failing binaries this round includes
+   `folly::InlineExecutor::add`/`folly::Executor::KeepAlive` in the stack —
+   exactly the machinery `folly::Future<T>::via()` introduces to move a
+   `.thenValue()` continuation onto a specific executor — which is a
+   pointed coincidence given this same branch's own prior commit
+   (`f3f70a2`, "fix(future): route `Promise<T>::getFuture()` through
+   `SemiFuture` + `via()`") changed exactly this plumbing. The leading
+   hypothesis, **not yet confirmed**: that `via()` routing change may cause
+   some `.thenValue()` continuations in `beast_http_transport_impl.hpp`'s
+   connect/send/read chain to run on an executor other than the specific
+   connection's own strand, silently breaking the "every op on this stream
+   is serialized" invariant the class design (and `set_timeout()`/`send()`'s
+   re-arm-before-write logic from Round 2 item 4) depends on. Not fixed this
+   round: confirming this would require instrumenting or reading through
+   exactly which executor each `.thenValue()` continuation in that chain
+   actually runs on, and any fix likely touches either the future/promise
+   plumbing shared by every transport in this codebase or every
+   `.thenValue()` call site in this file that touches the stream after an
+   async op completes — both higher-risk changes than this session's
+   available time/scope supported doing carefully. Whether this reproduces
+   on GitHub Actions' own (differently loaded, and non-4-core-sandbox)
+   runners is unknown; the local reproduction here was 100% consistent
+   across two full-suite reruns (identical failing test names both times),
+   so this is very unlikely to be pure scheduling noise the way the
+   Round-2 caveat's 180-second delays were.
+3. **Unrelated, pre-existing, out of scope this round**:
+   `three_way_http_transport_equivalence_test` (labeled
+   `beast-http;proxygen-http`) has no built executable in this sandbox's
+   `build-tsan` — `ctest` reports "Not Run" rather than a failure. Not
+   investigated further; this round's verification scope was specifically
+   the 5 pure-`beast-http` binaries (Round 2's own fix target), and this
+   test's absence looks like a build-configuration gap (likely a
+   proxygen/Folly dependency not enabled in this particular build) rather
+   than anything related to the segfault fix or the connection/strand
+   issues above.
