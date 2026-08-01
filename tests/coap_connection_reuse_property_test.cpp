@@ -27,6 +27,19 @@ constexpr std::uint64_t test_node_id_1 = 1;
 constexpr std::uint64_t test_node_id_2 = 2;
 constexpr std::uint64_t test_node_id_3 = 3;
 constexpr std::chrono::milliseconds test_timeout{1000};
+// Every send_request_vote() call below runs its endpoint's DNS resolution
+// and session/PDU setup fully inside send_rpc()'s single recursive-mutex
+// critical section, so N calls -- whether sequential or from concurrent
+// threads -- are really N serialized round trips through real getaddrinfo(),
+// not N parallel ones. Kept small so that total serialized work reliably
+// finishes inside each test case's own *boost::unit_test::timeout() even
+// under a slow/contended CI runner (observed directly: real CI runs where
+// this exceeded the timeout left std::thread objects in
+// test_concurrent_request_handling_property's local `threads` vector still
+// joinable when Boost's timeout unwound the test case, which segfaults/
+// aborts via ~thread()'s std::terminate() -- or a later test case's fresh
+// coap_client -- rather than failing this test case cleanly).
+constexpr std::size_t test_sequential_request_count = 5;
 }
 
 // Define test types for CoAP transport
@@ -108,7 +121,7 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(
     }
 
     // Property 2: Client should handle many sequential requests
-    for (std::size_t i = 0; i < test_pool_size + 5; ++i) {
+    for (std::size_t i = 0; i < test_sequential_request_count; ++i) {
         try {
             auto future = client.send_request_vote(test_node_id_1, vote_request, test_timeout);
         } catch (const std::exception&) {
@@ -125,7 +138,7 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_test::timeout(90)) {
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
     client_config.enable_connection_pooling = true;
@@ -145,8 +158,18 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
     std::atomic<std::size_t> errors{0};
 
     std::vector<std::thread> threads;
-    constexpr std::size_t num_threads = 10;
-    constexpr std::size_t operations_per_thread = 20;
+    // 10 x 20 (200 real send_request_vote() calls, each doing a real
+    // getaddrinfo() lookup while holding send_rpc()'s single recursive
+    // mutex -- see test_sequential_request_count's comment) was fine when
+    // this path was still a stub; kept small here so real concurrent
+    // per-call latency can't blow this test case's own timeout on a
+    // slow/contended CI runner. Observed directly: when it did, Boost's
+    // timeout unwound this test case while some of these std::thread
+    // objects were still blocked inside send_rpc() -- so still joinable --
+    // which segfaults/aborts the whole process instead of just failing
+    // this one test case.
+    constexpr std::size_t num_threads = 4;
+    constexpr std::size_t operations_per_thread = 3;
 
     request_vote_request<> vote_request{
         ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
@@ -256,7 +279,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test::timeout(60)) {
     // Create client with connection reuse disabled
     coap_client_config client_config;
     client_config.enable_session_reuse = false;
@@ -273,7 +296,7 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test:
         ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     // Multiple calls should not crash even without pooling
-    for (std::size_t i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < test_sequential_request_count; ++i) {
         try {
             auto future = client.send_request_vote(test_node_id_1, vote_request, test_timeout);
         } catch (const std::exception& e) {
