@@ -371,20 +371,30 @@ unverified completion claim.
   now verifies the fix holds, and it shares `tests/tsan_suppressions.txt`
   with the other suites.
 
-- **`.kiro/specs/boost-beast-http-transport/tasks.md`'s Task 13 remains
-  open** (pre-existing, untouched by PR #117's Proxygen-focused work) —
-  two gaps, in priority order: (1) `tests/beast_transport_test.cpp`
-  doesn't yet cover truncated/oversized request bodies or mutual TLS
-  (`require_client_cert`) — the request-body gap is a real implementation
-  gap, not just missing tests: `max_request_body_size` is a config field
-  that isn't actually enforced (`async_read_kf` reads into a plain
-  `beast_http::request<string_body>&` rather than a
-  `beast_http::request_parser` with `.body_limit()` set); (2) splitting
-  that single test file into the one-file-per-concern layout
-  (`beast_client_test.cpp`/`beast_server_test.cpp`/`beast_ssl_*`) the rest
-  of this project's test suite uses — lower priority, purely
-  organizational. See that spec's own "Known Follow-ups" section for the
-  fuller writeup.
+- **`.kiro/specs/boost-beast-http-transport/tasks.md`'s Task 13 is now
+  closed.** Both gaps this entry previously tracked are done:
+  `max_request_body_size` is actually enforced (`server_session` reads
+  through a `beast_http::request_parser` with `.body_limit()` set, returning
+  413, with oversized-body and truncated-request coverage), and
+  `tests/beast_transport_test.cpp` has been split into the
+  one-file-per-concern layout (`beast_client_test.cpp`/
+  `beast_server_test.cpp`/`beast_integration_test.cpp`/`beast_ssl_test.cpp`)
+  the rest of the suite uses. A subsequent ThreadSanitizer pass over the
+  split binaries closed four further pre-existing races.
+
+- **`http_transport_impl.hpp`'s `make_future_with_exception` no longer
+  slices derived exceptions.** It took `const std::exception&`, so
+  `std::make_exception_ptr(e)` deduced `e`'s *static* type and reduced
+  every `http_timeout_error`/`serialization_error`/`http_client_error`/
+  `http_server_error` to a plain `std::exception` — discarding the derived
+  type, its message, and `status_code()` across five call sites. Now
+  templated on the concrete exception type
+  ([PR #114](https://github.com/crawlins/kythira/pull/114)), which also let
+  `tests/beast_cross_transport_equivalence_test.cpp` drop its workaround and
+  assert that both transports surface the same exception type and status
+  code. The trailing `catch (const std::exception&)` fallback still deduces
+  the base type by nature; that is the generic catch-all, not a typed-error
+  path. See that spec's "Known Follow-ups" section for the fuller writeup.
 
 ---
 

@@ -372,19 +372,33 @@ codebase, made possible by defining a canonical `Types` bundle whose
     [PR #117](https://github.com/crawlins/kythira/pull/117).
   - Also kept the narrower, two-transport
     `tests/beast_cross_transport_equivalence_test.cpp` alongside the
-    three-way test rather than deleting it: it documents a genuine,
+    three-way test rather than deleting it: it surfaced a genuine,
     pre-existing asymmetry the three-way test's own design doesn't happen
     to surface — `cpp_httplib_client`'s async error path
     (`http_transport_impl.hpp`'s `make_future_with_exception`, which builds
     a `std::exception_ptr` via `std::make_exception_ptr(e)` where `e`'s
-    *static* type at that call site is `const std::exception&`) slices any
+    *static* type at that call site was `const std::exception&`) sliced any
     `http_client_error`/`http_server_error` down to plain `std::exception`
-    before it reaches a catch block, losing both the derived type and the
-    message. This is a real, separate bug in `http_transport_impl.hpp`
-    unrelated to this feature, and this spec's own Non-Goals rule out
-    modifying that file, so the test works around it (checks only that
-    *some* exception is thrown on the cpp-httplib side) rather than papering
-    over it or fixing out-of-scope code.
+    before it reached a catch block, losing both the derived type and the
+    message. This was a real, separate bug in `http_transport_impl.hpp`
+    unrelated to this feature; the test originally worked around it
+    (checking only that *some* exception is thrown on the cpp-httplib side)
+    rather than fixing out-of-scope code.
+  - **Fixed** in [PR #114](https://github.com/crawlins/kythira/pull/114):
+    `make_future_with_exception` is now templated on the concrete exception
+    type, so the derived type survives on the cpp-httplib side too and the
+    test asserts genuine equivalence — both transports' `status_code()`
+    recovered and compared — instead of working around the asymmetry. Like
+    Task 14's Round 1 `getSemiFuture().via()` fix, this crosses the spec's
+    own Non-Goals boundary into shared infrastructure, done at the user's
+    explicit direction. Five call sites in `http_transport_impl.hpp` passed
+    concrete derived types (`http_timeout_error`, `serialization_error`,
+    `http_client_error`, `http_server_error`) and were all affected. One
+    path is deliberately unchanged: the trailing
+    `catch (const std::exception& e)` fallback still deduces
+    `std::exception`, since a type caught by base reference cannot be
+    recovered without a rethrow — that is the generic catch-all, not a
+    typed-error path.
   - _Requirements: 16.4, 16.5_
 
 ## Phase 9: Documentation (Tasks 16-17)
@@ -430,8 +444,19 @@ codebase, made possible by defining a canonical `Types` bundle whose
 ## Known Follow-ups
 
 All 18 tasks are done. Nothing is open — the items below are a record of
-what the two most recent rounds of work closed, kept for context rather than
-as a to-do list.
+what the three most recent rounds of work closed, kept for context rather
+than as a to-do list.
+
+### Round 3 (PR #114): the exception-slicing bug Task 15 documented
+
+- ~~`http_transport_impl.hpp`'s `make_future_with_exception` slicing derived
+  exceptions~~ — done. Task 15 recorded this as a real bug it had to work
+  around because it sits outside this spec's Non-Goals boundary;
+  [PR #114](https://github.com/crawlins/kythira/pull/114) fixes it by
+  templating the helper on the concrete exception type, and tightens
+  `tests/beast_cross_transport_equivalence_test.cpp` to assert that both
+  transports now surface an identically-typed exception with the same
+  `status_code()`. See Task 15 above for the full accounting.
 
 ### Round 1 (this session, before PR #117 landed)
 
