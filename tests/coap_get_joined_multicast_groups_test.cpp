@@ -23,7 +23,16 @@ struct test_types {
     using future_type = kythira::future_default<std::vector<std::byte>>;
 };
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::timeout(30)) {
+// Every test case here constructs a fresh coap_client, and every
+// coap_client construction pays for coap_new_context()'s unconditional
+// DTLS/OpenSSL provider initialization (SSL_CTX_new_ex() and friends) even
+// though none of these test cases enable DTLS or ever send anything --
+// libcoap always sets this up regardless. That's cheap in isolation but
+// can get noticeably slower under real CPU contention (many coap_*_test
+// binaries doing the same expensive one-time OpenSSL provider scan at
+// once via ctest -j), which is what pushed this file's total runtime
+// past its previous 30s-per-case budget on a loaded CI runner.
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::timeout(60)) {
     // Create a CoAP client. This endpoint is a client-only target -- no
     // coap_server exists anywhere in this file -- so a fixed literal well
     // outside the ephemeral range (32768-60999) and distinct from every
@@ -40,7 +49,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::
     BOOST_CHECK_EQUAL(groups.size(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_test::timeout(60)) {
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
@@ -60,7 +69,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_t
     BOOST_CHECK(std::find(groups.begin(), groups.end(), multicast_address) != groups.end());
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_test::timeout(60)) {
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
@@ -87,7 +96,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_tes
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, *boost::unit_test::timeout(60)) {
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 

@@ -54,8 +54,16 @@ BOOST_AUTO_TEST_SUITE(coap_confirmable_message_property_tests)
 // wait for acknowledgment and handle retransmission according to RFC 7252.
 //
 // REWRITTEN: Tests behavior through public API instead of private methods
+//
+// Raised from 120 -- each iteration's coap_client construction pays for
+// coap_new_context()'s unconditional DTLS/OpenSSL provider
+// initialization, which gets noticeably slower under real CPU
+// contention (many coap_*_test binaries doing the same expensive
+// one-time OpenSSL provider scan at once via ctest -j); observed
+// directly exceeding 120s on a loaded x64 CI runner with no change to
+// this test's own logic.
 BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
-                     *boost::unit_test::timeout(120)) {
+                     *boost::unit_test::timeout(180)) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);
