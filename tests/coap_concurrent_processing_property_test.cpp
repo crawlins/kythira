@@ -20,7 +20,12 @@ using namespace kythira;
 namespace {
 constexpr const char* test_client_id = "test_client";
 constexpr const char* test_server_id = "test_server";
-constexpr const char* test_endpoint = "coap://localhost:5683";
+// Used only by tests below that construct a client with no corresponding
+// real listener in this process (no coap_server is ever bound to this
+// port here) -- a fixed literal well outside both the ephemeral port
+// range (32768-60999 on Linux) and any other coap_*_test.cpp's assigned
+// literal is safe since nothing ever binds it.
+constexpr const char* test_endpoint = "coap://localhost:61010";
 // test_concurrent_request_processing_property does test_concurrent_requests
 // real sequential send/receive round trips against a real local server (each
 // involving real session setup and libcoap I/O). 50 was fine when this path
@@ -68,12 +73,13 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, *boost::unit_t
     server_config.max_concurrent_requests = test_concurrent_requests * 2;  // Server can handle more
     server_config.enable_dtls = false;
 
-    // Create client and server instances
-    std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
-
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
-
-    coap_server<test_transport_types> server("localhost", 5683, server_config, noop_metrics{});
+    // Create server first, bound to an OS-assigned ephemeral port (0)
+    // instead of the previously-hardcoded 5683 -- avoids the SO_REUSEADDR
+    // silent-port-steal hazard when this binary runs concurrently with
+    // other coap_*_test binaries under ctest -j (see bound_port()'s doc
+    // comment in coap_transport.hpp). The client's endpoint is built from
+    // the real bound port below, after start() resolves it.
+    coap_server<test_transport_types> server("localhost", 0, server_config, noop_metrics{});
 
     // Property: Concurrent requests should be processed without blocking
     std::atomic<std::size_t> requests_started{0};
@@ -96,6 +102,13 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, *boost::unit_t
 
     // Start server
     server.start();
+
+    // Build the client's endpoint from the port the OS actually assigned
+    // (bound_port() is only meaningful after start()).
+    std::unordered_map<std::uint64_t, std::string> endpoint_map = {
+        {1, "coap://localhost:" + std::to_string(server.bound_port())}};
+
+    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
     // Launch concurrent requests
     std::vector<kythira::future_default<void>> request_futures;

@@ -21,7 +21,10 @@ constexpr std::size_t property_test_iterations = 10;
 constexpr std::uint64_t max_term = 1000;
 constexpr std::uint64_t max_index = 1000;
 constexpr std::uint64_t max_node_id = 100;
-constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
+// Client-only target -- no coap_server exists anywhere in this file, so a
+// fixed literal well outside the ephemeral range (32768-60999) and distinct
+// from every other coap_*_test.cpp's assigned literal is safe.
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61140";
 constexpr std::chrono::milliseconds test_timeout{5000};
 }
 

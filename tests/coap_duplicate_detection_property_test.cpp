@@ -73,7 +73,11 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::ti
                 // Create endpoint mapping
                 std::unordered_map<std::uint64_t, std::string> endpoints;
                 std::uint64_t target_node = node_dist(rng);
-                endpoints[target_node] = "coap://127.0.0.1:5683";
+                // Client-only target -- server isn't running (see below), so a
+                // fixed literal well outside the ephemeral range (32768-60999)
+                // and distinct from every other coap_*_test.cpp's assigned
+                // literal is safe.
+                endpoints[target_node] = "coap://127.0.0.1:61040";
 
                 // Create client
                 kythira::noop_metrics metrics;
@@ -108,8 +112,10 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::ti
 
                 // Create server
                 kythira::noop_metrics metrics;
-                kythira::coap_server<test_transport_types> server("127.0.0.1", 5683, config,
-                                                                  metrics);
+                // Never started() (see BOOST_CHECK(server.is_running() == false)
+                // below), so no real bind ever occurs; 0 keeps that invariant
+                // explicit rather than relying on a literal that looks live.
+                kythira::coap_server<test_transport_types> server("127.0.0.1", 0, config, metrics);
 
                 // Register a handler that tracks calls
                 std::atomic<int> call_count{0};

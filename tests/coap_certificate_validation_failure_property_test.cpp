@@ -38,7 +38,11 @@ struct TestTypes {
 namespace {
 constexpr std::size_t property_test_iterations = 100;
 constexpr std::uint64_t test_node_id = 1;
-constexpr std::uint16_t test_bind_port = 5684;
+// Servers built with this port in this file are never start()-ed (only
+// constructed, for testing certificate validation through the public API),
+// so no real bind ever occurs; 0 keeps that invariant explicit rather than
+// relying on a literal that looks like a live port but never binds.
+constexpr std::uint16_t test_bind_port = 0;
 constexpr const char* test_bind_address = "127.0.0.1";
 
 // Real, cryptographically valid certificate PEM (replaces the previous
@@ -144,7 +148,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                 client_config.verify_peer_cert = true;  // Enable certificate verification
 
                 std::unordered_map<std::uint64_t, std::string> node_endpoints;
-                node_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
+                node_endpoints[test_node_id] = "coaps://127.0.0.1:61002";
 
                 kythira::noop_metrics metrics;
 
@@ -262,7 +266,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                 no_verify_config.verify_peer_cert = false;  // Disable certificate verification
 
                 std::unordered_map<std::uint64_t, std::string> no_verify_endpoints;
-                no_verify_endpoints[test_node_id] = "coaps://127.0.0.1:5684";
+                no_verify_endpoints[test_node_id] = "coaps://127.0.0.1:61002";
 
                 kythira::noop_metrics no_verify_metrics;
 
@@ -306,7 +310,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
                 no_dtls_config.enable_dtls = false;  // DTLS disabled
 
                 std::unordered_map<std::uint64_t, std::string> no_dtls_endpoints;
-                no_dtls_endpoints[test_node_id] = "coap://127.0.0.1:5683";  // Regular CoAP
+                no_dtls_endpoints[test_node_id] = "coap://127.0.0.1:61001";  // Regular CoAP
 
                 kythira::noop_metrics no_dtls_metrics;
 
@@ -362,7 +366,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios,
         config.verify_peer_cert = true;
 
         std::unordered_map<std::uint64_t, std::string> endpoints;
-        endpoints[1] = "coaps://127.0.0.1:5684";
+        endpoints[1] = "coaps://127.0.0.1:61002";
 
         kythira::noop_metrics metrics;
 
@@ -397,7 +401,7 @@ BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios,
         config.verify_peer_cert = true;
 
         std::unordered_map<std::uint64_t, std::string> endpoints;
-        endpoints[1] = "coaps://127.0.0.1:5684";
+        endpoints[1] = "coaps://127.0.0.1:61002";
 
         kythira::noop_metrics metrics;
 

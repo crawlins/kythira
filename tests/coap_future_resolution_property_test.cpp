@@ -31,7 +31,10 @@ constexpr std::size_t property_test_iterations = 5;
 constexpr std::uint64_t max_term = 1000;
 constexpr std::uint64_t max_index = 1000;
 constexpr std::uint64_t max_node_id = 100;
-constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
+// Client-only target -- no coap_server exists anywhere in this file, so a
+// fixed literal well outside the ephemeral range (32768-60999) and distinct
+// from every other coap_*_test.cpp's assigned literal is safe.
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61130";
 constexpr std::chrono::milliseconds test_timeout{1000};
 }
 
@@ -230,7 +233,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution, *boost::unit_test::timeo
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
-    endpoints[2] = "coap://127.0.0.1:5684";
+    endpoints[2] = "coap://127.0.0.1:61131";
 
     kythira::noop_metrics metrics;
     kythira::coap_client<test_transport_types> client(std::move(endpoints), config, metrics);

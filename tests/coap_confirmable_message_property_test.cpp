@@ -81,7 +81,11 @@ BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
 
             // Create endpoint mapping
             std::unordered_map<std::uint64_t, std::string> endpoints;
-            endpoints[target_node] = "coap://127.0.0.1:5683";
+            // Client-only target -- no coap_server exists anywhere in this
+            // file, so a fixed literal well outside the ephemeral range
+            // (32768-60999) and distinct from every other coap_*_test.cpp's
+            // assigned literal is safe.
+            endpoints[target_node] = "coap://127.0.0.1:61150";
 
             // Create client
             kythira::noop_metrics metrics;

@@ -19,7 +19,10 @@ constexpr std::size_t property_test_iterations = 10;
 constexpr std::uint64_t max_term = 1000;
 constexpr std::uint64_t max_index = 1000;
 constexpr std::uint64_t max_node_id = 100;
-constexpr const char* test_coap_endpoint = "coap://127.0.0.1:5683";
+// Client-only target -- no coap_server in this file is ever started(),
+// so a fixed literal well outside the ephemeral range (32768-60999) and
+// distinct from every other coap_*_test.cpp's assigned literal is safe.
+constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61020";
 constexpr std::chrono::milliseconds test_timeout{5000};
 
 // Define test types for CoAP transport
@@ -147,7 +150,9 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeo
 
     kythira::coap_server_config server_config;
     kythira::noop_metrics server_metrics;
-    kythira::coap_server<test_transport_types> server("127.0.0.1", 5683, server_config,
+    // Never start()-ed (see comment at the send_request_vote() call below),
+    // so no real bind ever occurs; 0 keeps that invariant explicit.
+    kythira::coap_server<test_transport_types> server("127.0.0.1", 0, server_config,
                                                       server_metrics);
 
     // Test that both client and server can be created with the same serializer

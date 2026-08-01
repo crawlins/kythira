@@ -27,7 +27,7 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, *boost::unit_test::timeout(3
     config.enable_serialization_caching = true;
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:5683";
+    endpoints[1] = "coap://localhost:61060";
 
     console_logger logger;
     logger.info("Testing libcoap context creation");
@@ -63,8 +63,8 @@ BOOST_AUTO_TEST_CASE(test_session_management, *boost::unit_test::timeout(30)) {
     config.connection_pool_size = 5;
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:5683";
-    endpoints[2] = "coap://localhost:5684";
+    endpoints[1] = "coap://localhost:61060";
+    endpoints[2] = "coap://localhost:61061";
 
     logger.info("Testing session management");
 
@@ -86,7 +86,7 @@ BOOST_AUTO_TEST_CASE(test_serialization_caching, *boost::unit_test::timeout(30))
     config.cache_ttl = std::chrono::milliseconds{5000};
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:5683";
+    endpoints[1] = "coap://localhost:61060";
 
     logger.info("Testing serialization caching");
 
@@ -111,7 +111,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration, *boost::unit_test::timeout(30)) {
     config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coaps://localhost:5684";
+    endpoints[1] = "coaps://localhost:61061";
 
     logger.info("Testing DTLS configuration");
 
@@ -134,7 +134,9 @@ BOOST_AUTO_TEST_CASE(test_server_context_creation, *boost::unit_test::timeout(30
     logger.info("Testing server context creation");
 
     BOOST_CHECK_NO_THROW({
-        coap_server<test_transport_types> server("127.0.0.1", 5683, config, metrics);
+        // Never start()-ed, so no real bind ever occurs; 0 keeps that
+        // invariant explicit rather than relying on a literal that looks live.
+        coap_server<test_transport_types> server("127.0.0.1", 0, config, metrics);
 
         // Test server initialization
         logger.info("Server context creation test completed");
@@ -151,7 +153,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, *boost::unit_test::timeout(30
 
     // Test with invalid endpoint to trigger error handling
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://invalid-host-name-that-should-not-exist:5683";
+    endpoints[1] = "coap://invalid-host-name-that-should-not-exist:61060";
 
     logger.info("Testing enhanced error handling");
 

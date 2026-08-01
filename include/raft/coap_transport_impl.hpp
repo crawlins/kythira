@@ -4,6 +4,8 @@
 #include <raft/coap_security_impl.hpp>
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cstring>
 
 // Network includes for server binding
 #ifdef LIBCOAP_AVAILABLE
@@ -407,6 +409,7 @@ coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_por
       _coap_context{nullptr},
       _bind_address{std::move(bind_address)},
       _bind_port{bind_port},
+      _actual_bound_port{bind_port},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
     // Resolve the explicit-or-legacy channel-security configuration and
@@ -676,6 +679,27 @@ auto coap_server<Types>::start() -> void {
     // Configure endpoint settings
     coap_endpoint_set_default_mtu(endpoint, 1152);  // Standard CoAP MTU
 
+    // Recover the real bound port for bound_port() -- needed when
+    // _bind_port is 0 (ephemeral: the OS picks any free port). coap_endpoint_t
+    // is opaque and libcoap exposes no direct accessor for its bind
+    // address or underlying fd; coap_endpoint_str() is the only public API
+    // that surfaces it, as a formatted "<ip>:<port> <PROTO>" (or
+    // "[<ipv6>]:<port> <PROTO>") string built from the post-bind address
+    // coap_socket_bind_udp() itself fills in via getsockname(). The port
+    // is always the last ':'-delimited field: no colon appears in the
+    // trailing " UDP"/" DTLS"/" NONE" suffix, even for IPv6 addresses
+    // (whose own colons are inside the preceding "[...]").
+    if (const char* endpoint_str = coap_endpoint_str(endpoint)) {
+        if (const char* port_start = std::strrchr(endpoint_str, ':')) {
+            unsigned long parsed_port = 0;
+            auto [ptr, ec] =
+                std::from_chars(port_start + 1, port_start + std::strlen(port_start), parsed_port);
+            if (ec == std::errc{}) {
+                _actual_bound_port = static_cast<port_type>(parsed_port);
+            }
+        }
+    }
+
     // Set up resources for each RPC type
     setup_resources();
 
@@ -842,6 +866,12 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_server<Types>::is_running() const -> bool {
     return _running.load();
+}
+
+template<typename Types>
+requires kythira::transport_types<Types>
+auto coap_server<Types>::bound_port() const -> port_type {
+    return _actual_bound_port;
 }
 
 // CoAP client helper method implementations

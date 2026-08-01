@@ -634,6 +634,13 @@ public:
     auto stop() -> void;
     auto is_running() const -> bool;
 
+    /// The UDP port actually bound by start(). Differs from the port
+    /// passed to the constructor when that was 0 (ephemeral -- let the OS
+    /// assign any free port, so multiple coap_server instances never need
+    /// to share one hardcoded port). Valid only after start() returns;
+    /// before that, returns the constructor's requested port unchanged.
+    auto bound_port() const -> port_type;
+
     // DTLS support
     auto is_dtls_enabled() const -> bool;
     auto initiate_dtls_handshake(coap_session_t* session) -> bool;
@@ -672,6 +679,11 @@ private:
     std::unique_ptr<coap_security_provider> _security_provider;
     address_type _bind_address;
     port_type _bind_port;
+    // Set from the real bound address in start() -- see bound_port()'s own
+    // comment. Defaults to _bind_port so bound_port() is sensible even
+    // before start() runs (a fixed, non-zero port passed to the
+    // constructor stays correct either way).
+    port_type _actual_bound_port;
     kythira::coap_server_config _config;
     metrics_type _metrics;
     mutable logger_type _logger;
