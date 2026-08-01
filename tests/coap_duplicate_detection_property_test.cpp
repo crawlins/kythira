@@ -11,6 +11,8 @@
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
 
+#include "coap_test_support.hpp"
+
 #include <random>
 #include <vector>
 #include <string>
@@ -75,7 +77,7 @@ BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::ti
             // Test client-side duplicate detection through public API
             {
                 // Create client configuration
-                kythira::coap_client_config config;
+                auto config = kythira::testing::coap::unreachable_endpoint_client_config();
 
                 // Create endpoint mapping
                 std::unordered_map<std::uint64_t, std::string> endpoints;

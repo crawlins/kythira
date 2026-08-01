@@ -85,7 +85,14 @@ BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
             // Create client configuration with confirmable messages
             auto config = kythira::testing::coap::unreachable_endpoint_client_config();
             config.use_confirmable_messages = use_confirmable;
-            config.retransmission_timeout = std::chrono::milliseconds{1000};
+            // These three are the property under test, so they stay explicit
+            // rather than inheriting the helper's values -- but the schedule
+            // they describe is what has to fit inside this case's timeout.
+            // 1000ms x 3 with a 2.0 backoff is 1+2+4 = 7s per message against
+            // an endpoint that never answers, repeated every iteration; 100ms
+            // keeps the same shape (three attempts, doubling) at 0.1+0.2+0.4
+            // = 0.7s.
+            config.retransmission_timeout = std::chrono::milliseconds{100};
             config.exponential_backoff_factor = 2.0;
             config.max_retransmissions = 3;
 
