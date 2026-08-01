@@ -72,7 +72,7 @@ BOOST_AUTO_TEST_SUITE(coap_connection_reuse_property_tests)
  */
 BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(60)) {
     // Create CoAP client configuration with connection reuse enabled
-    coap_client_config client_config;
+    auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
     client_config.enable_session_reuse = true;
     client_config.enable_connection_pooling = true;
     client_config.connection_pool_size = test_pool_size;
@@ -141,7 +141,7 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
 BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_test::timeout(90)) {
-    coap_client_config client_config;
+    auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
     client_config.enable_session_reuse = true;
     client_config.enable_connection_pooling = true;
     client_config.connection_pool_size = test_pool_size;
@@ -213,7 +213,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
 BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test::timeout(60)) {
-    coap_client_config client_config;
+    auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 10;
 
@@ -279,7 +279,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test
  */
 BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test::timeout(60)) {
     // Create client with connection reuse disabled
-    coap_client_config client_config;
+    auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
     client_config.enable_session_reuse = false;
     client_config.enable_connection_pooling = false;
 
@@ -322,7 +322,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::time
 
     // Property: Client should be constructible with memory optimization enabled
     {
-        coap_client_config client_config;
+        auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
         client_config.enable_memory_optimization = true;
         client_config.memory_pool_size = 1024;
 
@@ -332,7 +332,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::time
 
     // Property: Client should be constructible with serialization caching enabled
     {
-        coap_client_config client_config;
+        auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
         client_config.enable_serialization_caching = true;
         client_config.serialization_cache_size = 100;
 
@@ -342,7 +342,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::time
 
     // Property: Client should be constructible with all optimizations enabled
     {
-        coap_client_config client_config;
+        auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
         client_config.enable_session_reuse = true;
         client_config.enable_connection_pooling = true;
         client_config.enable_concurrent_processing = true;
@@ -355,7 +355,7 @@ BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::time
 
     // Property: Client should be constructible with all optimizations disabled
     {
-        coap_client_config client_config;
+        auto client_config = kythira::testing::coap::unreachable_endpoint_client_config();
         client_config.enable_session_reuse = false;
         client_config.enable_connection_pooling = false;
         client_config.enable_concurrent_processing = false;

@@ -7,6 +7,8 @@
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
 
+#include "coap_test_support.hpp"
+
 // Simple test types
 struct test_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
@@ -39,7 +41,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty, *boost::unit_test::
     // other coap_*_test.cpp's assigned literal is safe.
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -53,7 +55,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join, *boost::unit_t
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -73,7 +75,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple, *boost::unit_tes
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -100,7 +102,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave, *boost::unit_
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);

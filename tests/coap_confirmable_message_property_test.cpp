@@ -11,6 +11,8 @@
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
 
+#include "coap_test_support.hpp"
+
 #include <random>
 #include <vector>
 #include <string>
@@ -81,7 +83,7 @@ BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
             bool use_confirmable = bool_dist(rng) == 1;
 
             // Create client configuration with confirmable messages
-            kythira::coap_client_config config;
+            auto config = kythira::testing::coap::unreachable_endpoint_client_config();
             config.use_confirmable_messages = use_confirmable;
             config.retransmission_timeout = std::chrono::milliseconds{1000};
             config.exponential_backoff_factor = 2.0;

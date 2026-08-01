@@ -14,11 +14,51 @@
 /// between CI runs and why it has been reported variously as an "arm64
 /// SEGFAULT" and as unrelated later tests crashing.
 
+#include <chrono>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include <raft/coap_transport.hpp>
+
 namespace kythira::testing::coap {
+
+/// @brief Client settings for a case that deliberately targets an endpoint
+///        with no listener.
+///
+/// Several coap tests point a `coap_client` at an address nothing is bound to
+/// — `coap://127.0.0.1:61150`, `coap://localhost:61120` — to exercise the
+/// failure path. With the default settings that is a race the test can only
+/// win by luck: `ack_timeout` is 2s, `max_retransmit` is 4, and
+/// `exponential_backoff_factor` is 2.0, so a confirmable message is retried
+/// for roughly 2+4+8+16+32 = 62 seconds (plus up to 1s of random factor per
+/// attempt) against a `*boost::unit_test::timeout()` of 15-30s. The case
+/// passes only when an ICMP port-unreachable happens to cut the schedule
+/// short first, which is why these tests fail in bursts on a loaded runner
+/// and why raising their timeouts never fixed them.
+///
+/// This collapses the schedule so the failure is bounded by construction: a
+/// short ack window and a single retransmission, roughly 200ms + 400ms rather
+/// than 62 seconds. The test still exercises the same code path — a request
+/// that gets no response, retransmitted and then given up on — it just stops
+/// depending on the network stack to interrupt a minute-long retry loop.
+///
+/// The retransmission counts are deliberately 1 and not 0.
+/// `coap_confirmable_message_property_test` asserts
+/// `BOOST_CHECK_GT(config.max_retransmissions, 0)` and
+/// `BOOST_CHECK_GT(config.retransmission_timeout.count(), 0)` — the
+/// configuration is part of what it is checking — so a config that zeroed
+/// them would fail the very tests this helper is meant to stabilise, and
+/// would also stop exercising the retransmit path at all.
+[[nodiscard]] inline auto unreachable_endpoint_client_config() -> kythira::coap_client_config {
+    kythira::coap_client_config config;
+    config.ack_timeout = std::chrono::milliseconds{200};
+    config.ack_random_factor_ms = std::chrono::milliseconds{0};
+    config.max_retransmit = 1;
+    config.max_retransmissions = 1;
+    config.retransmission_timeout = std::chrono::milliseconds{200};
+    return config;
+}
 
 /// @brief Owns worker threads and joins them on destruction.
 ///
