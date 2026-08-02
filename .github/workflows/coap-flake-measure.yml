@@ -52,7 +52,11 @@ on:
         required: false
         default: ""
       label:
-        description: "CTest label to measure"
+        description: >
+          CTest label to measure. Use the literal 'all' for no label filter --
+          an empty value does NOT work, because GitHub substitutes this input's
+          default whenever a dispatch passes an empty string, so `-f label=""`
+          silently runs the coap-only selection instead of the full suite.
         type: string
         required: false
         default: "coap"
@@ -127,7 +131,9 @@ jobs:
           JOBS="${{ github.event.inputs.jobs }}"
           [ -z "$JOBS" ] && JOBS="$(nproc)"
           SEL=()
-          [ -n "$LABEL" ] && SEL+=(-L "$LABEL")
+          # 'all' is the explicit no-label-filter sentinel; see the input's
+          # description for why an empty string cannot serve that purpose.
+          [ -n "$LABEL" ] && [ "$LABEL" != "all" ] && SEL+=(-L "$LABEL")
           [ -n "$EXCLUDE" ] && SEL+=(-LE "$EXCLUDE")
           [ ${#SEL[@]} -eq 0 ] && SEL+=(-L coap)
           mkdir -p flake-results
