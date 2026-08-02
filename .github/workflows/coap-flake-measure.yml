@@ -135,8 +135,15 @@ jobs:
           for i in $(seq 1 "$ITER"); do
             # No --repeat: a retry would measure ci.yml's masking, not the flake.
             # Failures are expected here, so never let one abort the loop.
+            # --output-junit is resolved relative to --test-dir, while the >
+            # redirect is relative to the shell's CWD. A relative path here
+            # silently wrote the XML into build/flake-results/ where the upload
+            # never looked, producing an artifact of logs with no JUnit and a
+            # summary reporting "0 runs parsed". Absolute path keeps both in
+            # the directory that actually gets uploaded.
             ctest --test-dir build "${SEL[@]}" -j"$JOBS" \
-              --output-junit "flake-results/run-$i.xml" > "flake-results/run-$i.log" 2>&1 || true
+              --output-junit "$PWD/flake-results/run-$i.xml" \
+              > "flake-results/run-$i.log" 2>&1 || true
             echo "  iteration $i/$ITER done"
           done
 
