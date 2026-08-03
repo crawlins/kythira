@@ -84,9 +84,26 @@ jobs:
           # its own from-scratch vcpkg build if that cache is still live.
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-edhoc-${{ hashFiles('vcpkg.json', 'vcpkg-overlays/**') }}
 
+      # vcpkg's x-gha binary cache talks to the Actions cache API directly, but
+      # ACTIONS_CACHE_URL/ACTIONS_RUNTIME_TOKEN are only exposed to actions, not
+      # to `run:` steps. This re-exports them so the vcpkg invocation below can
+      # reach the cache.
+      - name: Export Actions cache credentials for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Bootstrap vcpkg and install dependencies
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         run: |
+          # Per-package binary cache keyed on vcpkg's own ABI hash (port version,
+          # triplet, compiler, features, patches). Unlike the whole-tree
+          # actions/cache above, jobs with different feature sets share every
+          # package they have in common -- the gcp tree is the edhoc tree plus
+          # google-cloud-cpp, so only the delta is ever built.
+          export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           /tmp/vcpkg/vcpkg install --triplet ${{ steps.triplet.outputs.value }} --no-print-usage --x-feature=edhoc
