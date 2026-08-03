@@ -8,15 +8,15 @@ zero findings in this project's own code). Tasks 14 (ThreadSanitizer run) and
 15 (cross-transport equivalence, delivered jointly with
 `.kiro/specs/proxygen-http-transport/`'s own Task 14 as a three-way test) are
 CI-verified via [PR #117](https://github.com/crawlins/kythira/pull/117)
-(`beast-http`-labeled CTest runs, green); two further ThreadSanitizer passes
-against this spec's own (since-split) test binaries found five more real
-bugs (one of them still not fully root-caused) beyond what that run
-surfaced — see `## Known Follow-ups` for the full accounting.
+(`beast-http`-labeled CTest runs, green); three further ThreadSanitizer
+passes against this spec's own (since-split) test binaries found and fixed
+six more real bugs beyond what that run surfaced — see
+`## Known Follow-ups` for the full accounting.
 
-**Last Updated**: August 1, 2026 (round-3 ThreadSanitizer findings: the
-Round 2 segfault fix verified working, one further genuine bug found and
-fixed, and one still-open TSan-confirmed data race affecting most of the
-suite; see `## Known Follow-ups`)
+**Last Updated**: August 2, 2026 (round-4 ThreadSanitizer findings: the
+Round 2 segfault fix verified working, a connection-pool use-after-free
+found and fixed, and the strand-serialization race root-caused and fixed;
+see `## Known Follow-ups`)
 
 ## Overview
 
@@ -446,7 +446,7 @@ codebase, made possible by defining a canonical `Types` bundle whose
 ## Known Follow-ups
 
 All 18 tasks are done. Nothing is open — the items below are a record of
-what the three most recent rounds of work closed, kept for context rather
+what the four most recent rounds of work closed, kept for context rather
 than as a to-do list.
 
 ### Round 3 (PR #114): the exception-slicing bug Task 15 documented
@@ -595,7 +595,7 @@ out to be the same class of packaging-mismatch false positive PR #117's own
    glibc-internal thread, nothing for TSan to lose track of).
 
 All five `beast-http`-labeled CTest binaries were reported passing cleanly
-under `-DKYTHIRA_SANITIZER=thread` locally after these fixes — see Round 3
+under `-DKYTHIRA_SANITIZER=thread` locally after these fixes — see Round 4
 below, which found this was not the whole picture once the suite was rerun
 end-to-end in this same sandbox.
 
@@ -614,7 +614,7 @@ Actions' own runners (a different, and quite possibly less contended,
 environment) is what the `tsan` job's next real run on this branch will
 show.
 
-### Round 3 (this session): the Round 2 segfault fix verified working, one more genuine bug found and fixed, and one still-open TSan race affecting most of the suite
+### Round 4 (this session): the Round 2 segfault fix verified working, a genuine use-after-free found and fixed, and the strand-serialization race root-caused and fixed
 
 The Round 2 segfault fix (item 5 above, stripping
 `CPPHTTPLIB_USE_NON_BLOCKING_GETADDRINFO` under
@@ -665,55 +665,106 @@ second, reuse-focused one).
    this codebase already established and documented for the identical
    hazard — but it did **not** eliminate the observed test failures (see
    below), and by itself is not sufficient to close this Known Follow-up.
-2. **Still open: a TSan-confirmed data race between two `io_thread_pool`
-   worker threads touching the same `beast::tcp_stream`'s internal timeout
-   state (`basic_stream::expires_after()`), on the very first RPC issued on
-   a freshly created connection — not an eviction race, and not something
-   fix 1 above touches.** Before-and-after comparison (identical rebuild,
-   identical test binaries, same fatal-error test case names and line
-   numbers) confirmed fix 1 did not change the failure signature at all,
-   ruling out connection-pool eviction as this particular race's cause.
-   Reading the actual TSan report for the `expires_after()` race directly
-   (rather than just its summary line) shows *both* the racing read and the
-   racing write are attributed to two different `io_thread_pool`-created
-   worker threads — never the main/calling thread — meaning two operations
-   on the *same* connection's stream are running concurrently on two
-   different threads despite that stream having been constructed on its own
-   `net::strand` (`net::make_strand(ioc)`), which this class's own design
-   comment (`beast_http_transport.hpp`, `boost_beast_client`'s class-level
-   doc) states should serialize every operation issued on it. A strand only
-   guarantees serialized execution for work actually dispatched *through*
-   it; a direct, synchronous call into a stream member function (as
-   `expires_after()` always is — see `set_timeout()` and the re-arm-before-
-   write call in `send()`) from a thread not currently running "on" that
-   strand is not automatically serialized just because the stream happens
-   to use that strand as its default executor. Every single TSan trace
-   collected across all 4 failing binaries this round includes
-   `folly::InlineExecutor::add`/`folly::Executor::KeepAlive` in the stack —
-   exactly the machinery `folly::Future<T>::via()` introduces to move a
-   `.thenValue()` continuation onto a specific executor — which is a
-   pointed coincidence given this same branch's own prior commit
-   (`f3f70a2`, "fix(future): route `Promise<T>::getFuture()` through
-   `SemiFuture` + `via()`") changed exactly this plumbing. The leading
-   hypothesis, **not yet confirmed**: that `via()` routing change may cause
-   some `.thenValue()` continuations in `beast_http_transport_impl.hpp`'s
-   connect/send/read chain to run on an executor other than the specific
-   connection's own strand, silently breaking the "every op on this stream
-   is serialized" invariant the class design (and `set_timeout()`/`send()`'s
-   re-arm-before-write logic from Round 2 item 4) depends on. Not fixed this
-   round: confirming this would require instrumenting or reading through
-   exactly which executor each `.thenValue()` continuation in that chain
-   actually runs on, and any fix likely touches either the future/promise
-   plumbing shared by every transport in this codebase or every
-   `.thenValue()` call site in this file that touches the stream after an
-   async op completes — both higher-risk changes than this session's
-   available time/scope supported doing carefully. Whether this reproduces
-   on GitHub Actions' own (differently loaded, and non-4-core-sandbox)
-   runners is unknown; the local reproduction here was 100% consistent
-   across two full-suite reruns (identical failing test names both times),
-   so this is very unlikely to be pure scheduling noise the way the
-   Round-2 caveat's 180-second delays were.
-3. **Unrelated, pre-existing, out of scope this round**:
+2. **Fixed: a TSan-confirmed data race between two `io_thread_pool` worker
+   threads touching the same `beast::tcp_stream`'s internal state, rooted
+   in `Promise<T>::getFuture()`'s `folly::InlineExecutor` binding letting a
+   continuation run concurrently with Beast's own per-operation cleanup —
+   not an eviction race, and not something fix 1 above touches.**
+   Before-and-after comparison (identical rebuild, identical test binaries,
+   same fatal-error test case names and line numbers) confirmed fix 1 did
+   not change the failure signature at all, ruling out connection-pool
+   eviction as this particular race's cause. Reading the actual TSan report
+   for the `expires_after()` race directly (rather than just its summary
+   line) showed *both* the racing read and the racing write attributed to
+   two different `io_thread_pool`-created worker threads — never the
+   main/calling thread. Reading Boost.Beast's own vendored source
+   (`basic_stream.hpp`'s `connect_op::operator()`) pinned the exact
+   sequence: `pg0_.reset(); pg1_.reset(); this->complete_now(ec, ...);` —
+   Beast resets its own internal `pending_guard` state *before* invoking
+   the operation's completion handler, which is where this codebase's
+   `async_connect_kf` (etc., `beast_http_transport_impl.hpp`) calls
+   `promise.setValue()`/`setException()`. `Promise<T>::getFuture()`
+   (`future.hpp`) routes that promise's future through
+   `SemiFuture::via(&folly::InlineExecutor::instance())`, and Folly's Core
+   resolves the race between "attach a `.thenValue()` continuation" and
+   "fulfill the promise" by running the continuation *inline, immediately,
+   on whichever thread wins* — which can be the main/calling thread,
+   racing far ahead of the io-thread that's still unwinding the very same
+   `connect_op` invocation that just called `setValue()`. Every TSan trace
+   collected included `folly::InlineExecutor::add`/`folly::Executor::
+   KeepAlive` in the stack, consistent with this. **Fixed** with a new
+   `beast_detail::asio_strand_executor` (`beast_http_transport.hpp`): a
+   minimal `folly::Executor` wrapping a stream's own `net::any_io_executor`
+   (its strand), whose `add()` does `net::post(ex, func)`. Every
+   `async_connect_kf`/`async_client_handshake_kf`/
+   `async_server_handshake_kf`/`async_write_kf`/`async_read_kf` helper now
+   takes a `folly::Executor*` and `.via()`'s its returned future onto it
+   before returning, instead of leaving it on `InlineExecutor`; `via()`'s
+   binding persists across every subsequent `.thenValue()` chained onto
+   that future (Folly's own documented behavior), so every continuation
+   that touches the stream is forced through a `net::post()` onto that
+   exact stream's strand — provably serialized after Beast's own internal
+   bookkeeping for the operation that just completed, regardless of which
+   thread fulfills the promise or when. `plain_beast_connection`/
+   `tls_beast_connection` (client) and `server_session` (server) each gained
+   an `asio_strand_executor` member, constructed from their stream's own
+   `get_executor()`/`beast::get_lowest_layer(...).get_executor()`, and pass
+   `&_executor` at every one of the 12 call sites across client and server
+   code. An earlier attempt in this same session — deferring
+   `promise.setValue()` itself via a raw `net::post()` inside the
+   completion handler, rather than `.via()`-ing the future — looked
+   plausible but measurably did **not** close the race (identical failure
+   signature before and after); the difference is that `.via()` binds
+   *every* downstream continuation to the strand, not just the first hop
+   after this specific promise resolves.
+   
+   Confirmed fixed by direct measurement, not just re-reading the
+   suspected code: the specific `expires_after()`/`pending_guard::reset()`
+   race is completely absent (0 occurrences, both with and without
+   `tests/tsan_suppressions.txt` applied) from every one of 4+ full reruns
+   of the previously-failing binaries, and `beast_server_test`,
+   `beast_integration_test`, and `beast_cross_transport_equivalence_test`
+   each went from a hard, reproducible functional failure (`end of stream`)
+   to `*** No errors detected` (Boost.Test's own pass signal) in isolated
+   reruns. **A nuance worth recording**: `tests/tsan_suppressions.txt`
+   already carries blanket `race:boost::beast::`/`race:boost::asio::`
+   patterns (added for a *different*, genuine reason — Boost.Beast/Asio's
+   vcpkg-vendored binaries aren't themselves built with
+   `-fsanitize=thread`, so TSan can't see synchronization *they* perform
+   internally). That blanket pattern happened to also match this bug's own
+   TSan signature (`SUMMARY: ... in boost::beast::basic_stream<...>::
+   expires_after(...)`), even though this specific race is not a packaging
+   artifact — kythira's own calling code (an `InlineExecutor`-scheduled
+   continuation) is one of the two racing accesses. Net effect: the `tsan`
+   CI job was already green before this fix, and still is after it — this
+   fix's real value is eliminating the *functional* failures (`end of
+   stream`, spurious "socket closed due to a timeout") that this race
+   caused under real (non-TSan-instrumented) contention, which the `tsan`
+   suppressions file was never in a position to hide from the `Coverage`/
+   `Build & Test` jobs' own plain (non-TSan) test runs. One remaining,
+   *reproducible-but-intermittent* timeout in `beast_server_test`'s
+   `server_stop_drains_idle_keep_alive_connection` (~182 seconds, a real
+   timeout rather than the fixed race's symptom) is consistent with the
+   pre-existing Round 2 caveat below (severe `io_context` scheduling
+   starvation under this specific 4-core sandbox's load, worse for a test
+   whose own subject is idle-connection timeout behavior) rather than a
+   new bug — `beast_integration_test` (no idle-timeout logic of its own)
+   now passes reliably across repeated full-suite reruns.
+
+   **A scope caveat, not a further bug**: `asio_strand_executor` and every
+   `async_*_kf` helper's new `folly::Executor*` parameter only compile/
+   behave correctly when `future_default<T>` is Folly-backed
+   (`KYTHIRA_DEFAULT_FUTURE_BACKEND`'s default) — narrower than
+   Requirement 19 otherwise implies (see `beast_http_transport.hpp`'s own
+   updated file comment). This does not narrow anything actually exercised
+   today: no CI configuration builds any `beast_*` target under
+   `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`/`=boost` (only
+   `proxygen_transport_test` is built across that matrix). If that ever
+   changes, this gap would need revisiting — the stdexec/boost backends'
+   own `Promise<T>::getFuture()` may or may not share Folly's
+   `InlineExecutor` hazard this closes, and this fix does not attempt to
+   address either possibility for them.
+4. **Unrelated, pre-existing, out of scope this round**:
    `three_way_http_transport_equivalence_test` (labeled
    `beast-http;proxygen-http`) has no built executable in this sandbox's
    `build-tsan` — `ctest` reports "Not Run" rather than a failure. Not
