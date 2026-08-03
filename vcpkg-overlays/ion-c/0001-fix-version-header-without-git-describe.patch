@@ -1,0 +1,43 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -60,6 +60,7 @@
+    ${CMAKE_COMMAND} -D SRC=${CMAKE_CURRENT_SOURCE_DIR}/build_version.h.in
+                     -D DST=${CMAKE_CURRENT_BINARY_DIR}/build_version.h
+                     -D GIT_EXECUTABLE=${GIT_EXECUTABLE}
++                    -D IONC_FALLBACK_VERSION=${CMAKE_PROJECT_VERSION}
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/VersionHeader.cmake
+ )
+ 
+--- a/cmake/VersionHeader.cmake
++++ b/cmake/VersionHeader.cmake
+@@ -14,10 +14,26 @@
+ endif()
+ 
+ string(REGEX MATCH "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)-[0-9]+-g([a-zA-Z0-9-]+)$" IONC_FULL_VERSION_MATCH "${IONC_FULL_VERSION}")
+-set(IONC_VERSION_MAJOR ${CMAKE_MATCH_1})
+-set(IONC_VERSION_MINOR ${CMAKE_MATCH_2})
+-set(IONC_VERSION_PATCH ${CMAKE_MATCH_3})
+-set(IONC_VERSION_HASH ${CMAKE_MATCH_4})
++if (CMAKE_MATCH_1)
++   set(IONC_VERSION_MAJOR ${CMAKE_MATCH_1})
++   set(IONC_VERSION_MINOR ${CMAKE_MATCH_2})
++   set(IONC_VERSION_PATCH ${CMAKE_MATCH_3})
++   set(IONC_VERSION_HASH ${CMAKE_MATCH_4})
++else()
++   # No usable `git describe` output (e.g. building from a source tarball
++   # rather than a git checkout with tag history, as vcpkg's overlay port
++   # does) -- fall back to IONC_FALLBACK_VERSION (this project's own pinned
++   # version, passed in by the `version` custom target below since this
++   # script runs as its own separate `cmake -P` process with no `project()`
++   # call of its own, so CMAKE_PROJECT_VERSION_MAJOR et al. are never set
++   # here) instead of leaving these macros empty, which fails
++   # build_version.h's substitution with invalid C (e.g. `*major = ;`).
++   string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" IONC_FALLBACK_VERSION_MATCH "${IONC_FALLBACK_VERSION}")
++   set(IONC_VERSION_MAJOR ${CMAKE_MATCH_1})
++   set(IONC_VERSION_MINOR ${CMAKE_MATCH_2})
++   set(IONC_VERSION_PATCH ${CMAKE_MATCH_3})
++   set(IONC_VERSION_HASH "unknown")
++endif()
+ set(IONC_VERSION "v${IONC_VERSION_MAJOR}.${IONC_VERSION_MINOR}.${IONC_VERSION_PATCH}")
+ 
+ configure_file(${SRC} ${DST} @ONLY)

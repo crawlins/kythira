@@ -1316,6 +1316,21 @@ if(TARGET raft_ion_serializer)
     target_compile_features(ion_json_serializer_equivalence_property_test PRIVATE cxx_std_23)
     add_test(NAME ion_json_serializer_equivalence_property_test
              COMMAND ion_json_serializer_equivalence_property_test)
+
+    # End-to-end sanity check (task 9.4): real client/server round trips over
+    # both CoAP and HTTP (cpp-httplib) with ion_rpc_serializer as
+    # Types::serializer_type, mirroring coap_cbor_end_to_end_test's own
+    # add_network_test-based registration (kythira_test_pch already carries
+    # coap/http transport deps) plus the raft_ion_serializer link every other
+    # test in this block needs.
+    add_executable(ion_http_coap_end_to_end_test ion_http_coap_end_to_end_test.cpp)
+    target_link_libraries(ion_http_coap_end_to_end_test PRIVATE
+        kythira_test_pch
+        raft_ion_serializer
+    )
+    target_precompile_headers(ion_http_coap_end_to_end_test REUSE_FROM kythira_test_pch)
+    add_test(NAME ion_http_coap_end_to_end_test COMMAND ion_http_coap_end_to_end_test)
+    set_tests_properties(ion_http_coap_end_to_end_test PROPERTIES LABELS "ion" TIMEOUT 60)
 endif()
 
 # CBOR-over-CoAP end-to-end sanity check (task 10.3): real client/server round
