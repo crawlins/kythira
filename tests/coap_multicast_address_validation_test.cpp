@@ -40,7 +40,7 @@ BOOST_FIXTURE_TEST_SUITE(coap_multicast_address_validation_suite, coap_multicast
 // Test valid multicast addresses
 BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
     // Test valid multicast addresses in the 224.0.0.0/4 range
@@ -56,7 +56,7 @@ BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses,
 // Test invalid multicast addresses
 BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
     // Test invalid addresses
@@ -77,7 +77,7 @@ BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses,
 // Test edge cases
 BOOST_AUTO_TEST_CASE(test_multicast_address_edge_cases,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
     // Test boundary values

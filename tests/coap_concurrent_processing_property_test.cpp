@@ -27,7 +27,7 @@ constexpr const char* test_server_id = "test_server";
 // port here) -- a fixed literal well outside both the ephemeral port
 // range (32768-60999 on Linux) and any other coap_*_test.cpp's assigned
 // literal is safe since nothing ever binds it.
-constexpr const char* test_endpoint = "coap://localhost:61010";
+constexpr const char* test_endpoint = "coap://127.0.0.1:61010";
 // test_concurrent_request_processing_property does test_concurrent_requests
 // real sequential send/receive round trips against a real local server (each
 // involving real session setup and libcoap I/O). 50 was fine when this path
@@ -82,7 +82,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     // other coap_*_test binaries under ctest -j (see bound_port()'s doc
     // comment in coap_transport.hpp). The client's endpoint is built from
     // the real bound port below, after start() resolves it.
-    coap_server<test_transport_types> server("localhost", 0, server_config, noop_metrics{});
+    coap_server<test_transport_types> server("127.0.0.1", 0, server_config, noop_metrics{});
 
     // Property: Concurrent requests should be processed without blocking
     std::atomic<std::size_t> requests_started{0};
@@ -109,7 +109,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     // Build the client's endpoint from the port the OS actually assigned
     // (bound_port() is only meaningful after start()).
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
-        {1, "coap://localhost:" + std::to_string(server.bound_port())}};
+        {1, "coap://127.0.0.1:" + std::to_string(server.bound_port())}};
 
     coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
 
