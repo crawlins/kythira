@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_confirmable_message_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -63,7 +64,7 @@ BOOST_AUTO_TEST_SUITE(coap_confirmable_message_property_tests)
 // directly exceeding 120s on a loaded x64 CI runner with no change to
 // this test's own logic.
 BOOST_AUTO_TEST_CASE(property_confirmable_message_acknowledgment_handling,
-                     *boost::unit_test::timeout(180)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);

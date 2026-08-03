@@ -1,8 +1,9 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_message_serialization_property_test
 #include <boost/test/unit_test.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
@@ -28,7 +29,8 @@ BOOST_AUTO_TEST_SUITE(coap_message_serialization_property_tests)
 // **Validates: Requirements 1.2, 1.3, 7.2**
 // Property: For any valid Raft RPC message (request or response), serializing then
 // deserializing should produce an equivalent message.
-BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(property_message_serialization_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     kythira::json_rpc_serializer<std::vector<std::byte>> serializer;
 
     std::random_device rd;

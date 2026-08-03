@@ -15,6 +15,8 @@
 #include <atomic>
 #include <chrono>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -68,7 +70,8 @@ BOOST_AUTO_TEST_SUITE(coap_connection_reuse_property_tests)
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_connection_reuse_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Create CoAP client configuration with connection reuse enabled
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
@@ -138,7 +141,8 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_property, *boost::unit_test::timeout(
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
     client_config.enable_connection_pooling = true;
@@ -212,7 +216,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property, *boost::unit_tes
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 10;
@@ -279,7 +284,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property, *boost::unit_test
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Create client with connection reuse disabled
     coap_client_config client_config;
     client_config.enable_session_reuse = false;
@@ -318,7 +324,8 @@ BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property, *boost::unit_test:
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_client_configuration_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_client_configuration_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
         {test_node_id_1, test_endpoint_1}};
 

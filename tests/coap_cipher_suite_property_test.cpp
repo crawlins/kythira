@@ -10,6 +10,8 @@
 #include <chrono>
 #include <algorithm>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -42,7 +44,8 @@ const std::vector<std::string> legacy_cipher_suites = {
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -166,7 +169,8 @@ BOOST_AUTO_TEST_CASE(test_secure_cipher_suite_configuration, *boost::unit_test::
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -256,7 +260,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_validation_and_filtering, *boost::unit_te
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -375,7 +380,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_compatibility, *boost::unit_test::timeout
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -473,7 +479,8 @@ BOOST_AUTO_TEST_CASE(test_cipher_suite_security_enforcement, *boost::unit_test::
  *
  * **Validates: Requirements 6.4**
  */
-BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cipher_suite_performance_impact,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());

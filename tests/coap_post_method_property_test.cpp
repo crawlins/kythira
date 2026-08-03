@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_post_method_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -50,7 +51,8 @@ BOOST_AUTO_TEST_SUITE(coap_post_method_property_tests)
 // **Validates: Requirements 1.2**
 // Property: For any Raft RPC request (RequestVote, AppendEntries, or InstallSnapshot),
 // the CoAP client should use the POST method.
-BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);
@@ -162,7 +164,8 @@ BOOST_AUTO_TEST_CASE(property_coap_post_method_for_all_rpcs, *boost::unit_test::
 }
 
 // Test that the CoAP client properly constructs resource paths for each RPC type
-BOOST_AUTO_TEST_CASE(test_coap_resource_paths, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_coap_resource_paths,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // This test verifies that the correct resource paths are used for each RPC type
     // In a real implementation, this would verify:
     // - RequestVote uses "/raft/request_vote"
@@ -208,7 +211,8 @@ BOOST_AUTO_TEST_CASE(test_coap_resource_paths, *boost::unit_test::timeout(30)) {
 }
 
 // Test that CoAP client handles invalid endpoints gracefully
-BOOST_AUTO_TEST_CASE(test_invalid_endpoint_handling, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_invalid_endpoint_handling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;

@@ -3510,3 +3510,32 @@ if(TARGET raft_grpc_transport)
 else()
     message(STATUS "gRPC transport tests: skipped (raft_grpc_transport target not available)")
 endif()
+
+# ── Test-timeout scaling for slow build configurations ───────────────────────
+# A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
+# coap suite several times slower than Release, so per-case Boost timeouts
+# sized for Release expire mid-test and fail with SIGALRM. Measured p90 was
+# 3.0x (see doc/coap-flake-investigation.md); the Coverage CI job sets this to
+# 4. Default 1 leaves every other build byte-identical in behaviour.
+#
+# The same knob must drive both mechanisms. Scaling only the Boost budget would
+# let CTest's own TIMEOUT kill a test first -- e.g.
+# coap_duplicate_detection_property_test has TIMEOUT 210 against a Boost budget
+# of 180, so a 4x Boost budget without a 4x CTest budget just moves the failure.
+set(KYTHIRA_TEST_TIMEOUT_SCALE 1 CACHE STRING
+    "Multiplier for test timeouts; raise for instrumented/Debug builds")
+
+if(KYTHIRA_TEST_TIMEOUT_SCALE GREATER 1)
+    add_compile_definitions(KYTHIRA_TEST_TIMEOUT_SCALE=${KYTHIRA_TEST_TIMEOUT_SCALE})
+    get_property(_kythira_tests DIRECTORY PROPERTY TESTS)
+    foreach(_test IN LISTS _kythira_tests)
+        get_test_property(${_test} TIMEOUT _test_timeout)
+        if(_test_timeout)
+            math(EXPR _scaled "${_test_timeout} * ${KYTHIRA_TEST_TIMEOUT_SCALE}")
+            set_tests_properties(${_test} PROPERTIES TIMEOUT ${_scaled})
+        endif()
+    endforeach()
+    message(STATUS
+        "Test timeouts scaled by ${KYTHIRA_TEST_TIMEOUT_SCALE}x "
+        "(Boost per-case budgets and CTest TIMEOUT properties)")
+endif()

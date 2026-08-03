@@ -6,6 +6,8 @@
 
 #include <raft/coap_transport.hpp>
 
+#include "test_timeout_scale.hpp"
+
 namespace {
 constexpr const char* test_multicast_address = "224.0.1.187";
 }
@@ -23,7 +25,7 @@ constexpr const char* test_multicast_address = "224.0.1.187";
  * 4. Clean up associated resources (sockets)
  */
 BOOST_AUTO_TEST_CASE(test_leave_multicast_group_implementation_exists,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // This test verifies that the leave_multicast_group method exists and compiles
     // The actual runtime behavior is tested by integration tests
 
@@ -44,7 +46,7 @@ BOOST_AUTO_TEST_CASE(test_leave_multicast_group_implementation_exists,
  * - Stub implementation for when libcoap is not available
  */
 BOOST_AUTO_TEST_CASE(test_leave_multicast_group_implementation_features,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // This test documents the features that are implemented
     // The actual implementation is in coap_transport_impl.hpp lines 5796-5903
 
@@ -88,7 +90,7 @@ BOOST_AUTO_TEST_CASE(test_leave_multicast_group_implementation_features,
  * Test that verifies the implementation meets all task requirements
  */
 BOOST_AUTO_TEST_CASE(test_leave_multicast_group_meets_requirements,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Requirement 1: Add implementation in coap_transport_impl.hpp
     // ✅ DONE - Implementation is at lines 5796-5903
     BOOST_CHECK(true);

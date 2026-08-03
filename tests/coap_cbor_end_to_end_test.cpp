@@ -25,6 +25,8 @@
 #include <string>
 #include <unordered_map>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -70,7 +72,8 @@ BOOST_AUTO_TEST_CASE(test_cbor_content_format_mapping) {
     BOOST_TEST(coap_utils::content_format_to_string(format) == "application/cbor");
 }
 
-BOOST_AUTO_TEST_CASE(test_cbor_request_vote_round_trip, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cbor_request_vote_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
@@ -101,7 +104,8 @@ BOOST_AUTO_TEST_CASE(test_cbor_request_vote_round_trip, *boost::unit_test::timeo
     server.stop();
 }
 
-BOOST_AUTO_TEST_CASE(test_cbor_append_entries_round_trip, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cbor_append_entries_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
@@ -132,7 +136,8 @@ BOOST_AUTO_TEST_CASE(test_cbor_append_entries_round_trip, *boost::unit_test::tim
     server.stop();
 }
 
-BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;

@@ -5,6 +5,8 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 
+#include "test_timeout_scale.hpp"
+
 // Use the correct transport types for testing
 using test_transport_types =
     kythira::default_transport_types<kythira::future_default<kythira::request_vote_response<>>,
@@ -33,10 +35,11 @@ struct coap_multicast_validation_fixture {
 };
 
 BOOST_FIXTURE_TEST_SUITE(coap_multicast_address_validation_suite, coap_multicast_validation_fixture,
-                         *boost::unit_test::timeout(30))
+                         *boost::unit_test::timeout(kythira::testing::scaled_timeout(30)))
 
 // Test valid multicast addresses
-BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
@@ -51,7 +54,8 @@ BOOST_AUTO_TEST_CASE(test_valid_multicast_addresses, *boost::unit_test::timeout(
 }
 
 // Test invalid multicast addresses
-BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
@@ -71,7 +75,8 @@ BOOST_AUTO_TEST_CASE(test_invalid_multicast_addresses, *boost::unit_test::timeou
 }
 
 // Test edge cases
-BOOST_AUTO_TEST_CASE(test_multicast_address_edge_cases, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_multicast_address_edge_cases,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:5683"}};
     client_type client(endpoints, client_config, test_transport_types::metrics_type{});
 
@@ -92,7 +97,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_edge_cases, *boost::unit_test::timeo
 }
 
 // Test server multicast address validation
-BOOST_AUTO_TEST_CASE(test_server_multicast_validation, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_server_multicast_validation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     kythira::coap_server_config config;
     config.enable_dtls = false;
     config.enable_multicast = true;

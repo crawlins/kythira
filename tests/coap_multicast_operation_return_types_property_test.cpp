@@ -7,6 +7,8 @@
 #include <type_traits>
 #include <vector>
 
+#include "test_timeout_scale.hpp"
+
 namespace {
 constexpr const char* test_multicast_address = "224.0.1.187";
 constexpr std::uint16_t test_multicast_port = 5683;
@@ -18,7 +20,8 @@ BOOST_AUTO_TEST_SUITE(coap_multicast_operation_return_types_property_tests)
 // **Feature: future-conversion, Property 5: Multicast operation return types**
 // **Validates: Requirements 2.5**
 // Property: For any multicast operation, the return type should be FutureType
-BOOST_AUTO_TEST_CASE(property_multicast_operation_return_types, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_multicast_operation_return_types,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test that multicast operations are designed to return templated future types
     // Note: This test validates the concept structure, not runtime behavior
 
@@ -46,7 +49,8 @@ BOOST_AUTO_TEST_CASE(property_multicast_operation_return_types, *boost::unit_tes
 }
 
 // Property: Multicast response type should be well-formed
-BOOST_AUTO_TEST_CASE(property_multicast_response_type_structure, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_multicast_response_type_structure,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test that the multicast response type (vector of byte vectors) is well-formed
     using multicast_response_type = std::vector<std::vector<std::byte>>;
 
@@ -72,7 +76,8 @@ BOOST_AUTO_TEST_CASE(property_multicast_response_type_structure, *boost::unit_te
 }
 
 // Property: Future concept should work with different response types
-BOOST_AUTO_TEST_CASE(property_future_concept_genericity, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(property_future_concept_genericity,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test that the future concept works with various response types that might be used
     // in multicast scenarios
 

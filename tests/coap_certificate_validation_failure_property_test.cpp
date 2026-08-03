@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_certificate_validation_failure_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -126,7 +127,7 @@ BOOST_AUTO_TEST_SUITE(coap_certificate_validation_failure_property_tests)
 // Property: For any invalid certificate presented during DTLS handshake,
 // the transport should reject the connection.
 BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
-                     *boost::unit_test::timeout(90)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -354,7 +355,7 @@ BOOST_AUTO_TEST_CASE(property_certificate_validation_failure_handling,
 
 // Test specific certificate validation scenarios
 BOOST_AUTO_TEST_CASE(test_specific_certificate_validation_scenarios,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     std::size_t failures = 0;
 
     // Test empty certificate handling

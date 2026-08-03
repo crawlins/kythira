@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "test_timeout_scale.hpp"
+
 using namespace std;
 
 // Named constants for test parameters
@@ -22,7 +24,8 @@ constexpr std::size_t test_iterations = 50;
 constexpr std::chrono::milliseconds test_timeout{30000};  // 30 seconds
 }
 
-BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test block option encoding/decoding functionality
     // This tests the core block transfer protocol without requiring full CoAP transport
 
@@ -46,7 +49,8 @@ BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding, *boost::unit_test::tim
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_block_size_calculation, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_size_calculation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test block size calculation and alignment
 
     std::random_device rd;
@@ -84,7 +88,8 @@ BOOST_AUTO_TEST_CASE(test_block_size_calculation, *boost::unit_test::timeout(30)
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_payload_splitting_logic,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Test payload splitting logic without requiring full CoAP transport
 
     std::random_device rd;
@@ -173,7 +178,8 @@ BOOST_AUTO_TEST_CASE(test_payload_splitting_logic, *boost::unit_test::timeout(60
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_block_reassembly_logic, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_block_reassembly_logic,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Test block reassembly logic without requiring full CoAP transport
 
     std::random_device rd;
@@ -249,7 +255,8 @@ BOOST_AUTO_TEST_CASE(test_block_reassembly_logic, *boost::unit_test::timeout(60)
                                   reassembled_as_uint8.begin(), reassembled_as_uint8.end());
 }
 
-BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test error conditions in block transfer logic
 
     // Test empty payload
@@ -290,7 +297,7 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_error_conditions, *boost::unit_test::ti
 }
 
 BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Test performance characteristics of block transfer logic
 
     std::random_device rd;
@@ -359,7 +366,8 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_performance_characteristics,
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_coap_block_option_compliance, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_coap_block_option_compliance,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test compliance with CoAP Block-wise Transfer specification (RFC 7959)
 
     // Test SZX (Size Exponent) encoding/decoding

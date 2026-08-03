@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -74,7 +76,7 @@ auto test_ca_file() -> const std::string& {
  * **Validates: Requirements 6.1, 6.3**
  */
 BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -184,7 +186,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_certificate_authentication,
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -264,7 +267,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_psk_authentication, *boost::unit_test::
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -374,7 +378,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::time
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_session_resumption,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -456,7 +461,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_session_resumption, *boost::unit_test::timeout(30
  *
  * **Validates: Requirements 6.1, 6.3**
  */
-BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_cipher_suite_configuration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());

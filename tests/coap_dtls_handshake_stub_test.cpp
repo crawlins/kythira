@@ -5,6 +5,8 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 // Use the correct transport types for testing
@@ -24,7 +26,8 @@ constexpr const char* test_endpoint = "coaps://127.0.0.1:5684";
  *
  * Validates: Requirements 6.1, 6.3, 6.4, 11.4
  */
-BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Create client configuration with DTLS enabled
     coap_client_config client_config;
     client_config.enable_dtls = true;
@@ -53,7 +56,8 @@ BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs, *boost::unit_test::timeou
  *
  * Validates: Requirements 6.1, 6.3, 6.4, 11.4
  */
-BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs_disabled, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs_disabled,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Create client configuration with DTLS disabled
     coap_client_config client_config;
     client_config.enable_dtls = false;
@@ -80,7 +84,8 @@ BOOST_AUTO_TEST_CASE(test_client_dtls_handshake_stubs_disabled, *boost::unit_tes
  *
  * Validates: Requirements 6.1, 6.3, 6.4, 11.4
  */
-BOOST_AUTO_TEST_CASE(test_server_dtls_handshake_stubs, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_server_dtls_handshake_stubs,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Create server configuration with DTLS enabled
     coap_server_config server_config;
     server_config.enable_dtls = true;
@@ -122,7 +127,8 @@ BOOST_AUTO_TEST_CASE(test_server_dtls_handshake_stubs, *boost::unit_test::timeou
  *
  * Validates: Requirements 6.1, 6.3, 6.4, 11.4
  */
-BOOST_AUTO_TEST_CASE(test_server_dtls_handshake_stubs_disabled, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_server_dtls_handshake_stubs_disabled,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Create server configuration with DTLS disabled
     coap_server_config server_config;
     server_config.enable_dtls = false;

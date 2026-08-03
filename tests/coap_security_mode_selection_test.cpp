@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.1, 9.2**
 // Each of the five coap_auth_mode values selects the correct
 // coap_security_provider implementation; inconsistent mode/credential
@@ -6,7 +7,7 @@
 #define BOOST_TEST_MODULE coap_security_mode_selection_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_security_impl.hpp>
 
@@ -14,7 +15,8 @@ using namespace kythira;
 
 BOOST_AUTO_TEST_SUITE(coap_security_mode_selection_tests)
 
-BOOST_AUTO_TEST_CASE(none_mode_selects_no_auth_provider, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(none_mode_selects_no_auth_provider,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::none;
     auto provider = make_security_provider(config, coap_security_role::client);
@@ -23,7 +25,8 @@ BOOST_AUTO_TEST_CASE(none_mode_selects_no_auth_provider, *boost::unit_test::time
     BOOST_CHECK(dynamic_cast<no_auth_provider*>(provider.get()) != nullptr);
 }
 
-BOOST_AUTO_TEST_CASE(none_provider_hooks_are_identity, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(none_provider_hooks_are_identity,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::none;
     auto provider = make_security_provider(config, coap_security_role::client);
@@ -33,7 +36,8 @@ BOOST_AUTO_TEST_CASE(none_provider_hooks_are_identity, *boost::unit_test::timeou
     BOOST_CHECK_EQUAL(provider->unprotect(pdu), pdu);
 }
 
-BOOST_AUTO_TEST_CASE(dtls_psk_mode_selects_dtls_psk_provider, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(dtls_psk_mode_selects_dtls_psk_provider,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_psk;
     config.credentials = psk_credentials{"node-1", std::vector<std::byte>(16, std::byte{0x42})};
@@ -48,7 +52,8 @@ BOOST_AUTO_TEST_CASE(dtls_psk_mode_selects_dtls_psk_provider, *boost::unit_test:
     BOOST_CHECK_EQUAL(psk_provider->credentials().key.size(), 16u);
 }
 
-BOOST_AUTO_TEST_CASE(dtls_pki_mode_selects_dtls_pki_provider, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(dtls_pki_mode_selects_dtls_pki_provider,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_pki;
     config.credentials = pki_credentials{"/tmp/cert.pem", "/tmp/key.pem", "", true, {}, nullptr};
@@ -61,7 +66,8 @@ BOOST_AUTO_TEST_CASE(dtls_pki_mode_selects_dtls_pki_provider, *boost::unit_test:
     BOOST_CHECK_EQUAL(pki_provider->credentials().key_file, "/tmp/key.pem");
 }
 
-BOOST_AUTO_TEST_CASE(dtls_rpk_mode_selects_dtls_rpk_provider, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(dtls_rpk_mode_selects_dtls_rpk_provider,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_rpk;
     config.credentials = rpk_credentials{std::vector<std::byte>(32, std::byte{0x01}),
@@ -75,7 +81,8 @@ BOOST_AUTO_TEST_CASE(dtls_rpk_mode_selects_dtls_rpk_provider, *boost::unit_test:
     BOOST_CHECK_EQUAL(rpk_provider->credentials().public_key.size(), 32u);
 }
 
-BOOST_AUTO_TEST_CASE(oscore_mode_selects_oscore_provider, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(oscore_mode_selects_oscore_provider,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::oscore;
     oscore_credentials creds;
@@ -92,7 +99,7 @@ BOOST_AUTO_TEST_CASE(oscore_mode_selects_oscore_provider, *boost::unit_test::tim
 }
 
 BOOST_AUTO_TEST_CASE(mismatched_mode_and_credentials_throws_config_error,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     // mode == dtls_pki but credentials holds psk_credentials.
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_pki;
@@ -101,7 +108,8 @@ BOOST_AUTO_TEST_CASE(mismatched_mode_and_credentials_throws_config_error,
                       coap_security_config_error);
 }
 
-BOOST_AUTO_TEST_CASE(mode_with_no_credentials_throws_config_error, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(mode_with_no_credentials_throws_config_error,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::oscore;
     // credentials left as std::monostate.
@@ -109,7 +117,8 @@ BOOST_AUTO_TEST_CASE(mode_with_no_credentials_throws_config_error, *boost::unit_
                       coap_security_config_error);
 }
 
-BOOST_AUTO_TEST_CASE(dtls_psk_rejects_out_of_range_key_length, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(dtls_psk_rejects_out_of_range_key_length,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_psk;
     config.credentials = psk_credentials{"node-1", std::vector<std::byte>(2, std::byte{0x42})};

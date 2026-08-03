@@ -14,6 +14,8 @@
 #include <string>
 #include <thread>
 
+#include "test_timeout_scale.hpp"
+
 using namespace std;
 
 // Helper function to convert std::byte vector to uint8_t vector for Boost.Test compatibility
@@ -365,7 +367,7 @@ constexpr std::size_t test_iterations = 25;
 }
 
 BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_manager_basic_functionality,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     enhanced_block_transfer_manager manager;
 
     // Test should_use_block_transfer
@@ -381,7 +383,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_manager_basic_functionality,
 }
 
 BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     enhanced_block_transfer_manager manager;
 
     std::random_device rd;
@@ -461,7 +463,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_payload_splitting_with_block_options,
 }
 
 BOOST_AUTO_TEST_CASE(test_enhanced_block_reassembly_with_progress_tracking,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     enhanced_block_transfer_manager manager;
 
     std::random_device rd;
@@ -523,7 +525,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_reassembly_with_progress_tracking,
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     enhanced_block_transfer_manager manager;
 
     std::string test_token = "error_test_token";
@@ -567,7 +570,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_error_handling, *boost::unit_t
 }
 
 BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_timeout_and_cleanup,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     enhanced_block_transfer_manager::config cfg;
     cfg.default_timeout = std::chrono::milliseconds(100);  // Very short timeout for testing
     cfg.max_retries = 2;
@@ -602,7 +605,8 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_timeout_and_cleanup,
     BOOST_CHECK_GE(cleaned, 0);  // At least 0 transfers cleaned (might be cleaned in previous call)
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     enhanced_block_transfer_manager manager;
 
     // Start multiple transfers
@@ -637,7 +641,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_statistics, *boost::unit_test:
 }
 
 BOOST_AUTO_TEST_CASE(test_enhanced_block_transfer_concurrent_limits,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     enhanced_block_transfer_manager::config cfg;
     cfg.max_concurrent_transfers = 2;  // Limit to 2 concurrent transfers
 

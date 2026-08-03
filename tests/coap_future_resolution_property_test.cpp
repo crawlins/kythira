@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_future_resolution_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -60,7 +61,8 @@ BOOST_AUTO_TEST_SUITE(coap_future_resolution_property_tests)
 // **Validates: Requirements 4.2**
 // Property: For any RPC request sent via the client, the returned future should
 // resolve when the operation completes (success or failure).
-BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, *boost::unit_test::timeout(150)) {
+BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(150))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);
@@ -201,7 +203,8 @@ BOOST_AUTO_TEST_CASE(property_future_resolution_on_completion, *boost::unit_test
 }
 
 // Test that futures are properly invalidated after resolution
-BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     kythira::coap_client_config config;
     config.ack_timeout = std::chrono::milliseconds{500};
     config.max_retransmit = 1;
@@ -226,7 +229,8 @@ BOOST_AUTO_TEST_CASE(test_future_invalidation_after_resolution, *boost::unit_tes
 }
 
 // Test concurrent future resolution
-BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_future_resolution,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     kythira::coap_client_config config;
     config.ack_timeout = std::chrono::milliseconds{500};
     config.max_retransmit = 1;
