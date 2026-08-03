@@ -28,6 +28,22 @@
 /// pattern already used ad hoc, per test file, in this project's CoAP
 /// property tests, just formalized. `kythira::http_transport_types` itself is
 /// unmodified.
+///
+/// A narrower dependency than Requirement 19 otherwise implies:
+/// `async_connect_kf`/`async_client_handshake_kf`/`async_server_handshake_kf`/
+/// `async_write_kf`/`async_read_kf` (`asio_strand_executor`'s own comment
+/// below has the full why) `.via()` their returned future onto a
+/// `folly::Executor`, so they only compile/behave correctly when
+/// `future_default<T>` is Folly-backed (`KYTHIRA_DEFAULT_FUTURE_BACKEND`'s
+/// default). This does not further narrow what's actually exercised today
+/// -- no CI configuration builds any `beast_*` target under
+/// `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`/`=boost` (only
+/// `proxygen_transport_test` is built across that matrix) -- but it is a
+/// real gap if that ever changes: the stdexec/boost backends' own
+/// `Promise<T>::getFuture()` may or may not share Folly's
+/// `InlineExecutor`-on-an-already-fulfilled-promise hazard this exists to
+/// close, and this code does not attempt to address either possibility for
+/// them.
 
 #include <raft/types.hpp>
 #include <raft/network.hpp>
@@ -35,6 +51,7 @@
 #include <raft/metrics.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
+#include <folly/Executor.h>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -144,19 +161,22 @@ struct boost_beast_server_config {
 ///     handler is what actually fulfills the promise (Property 2).
 namespace beast_detail {
 
-/// @brief `beast::tcp_stream::async_connect`, bridged to a future.
-auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep)
-    -> kythira::future_default<kythira::unit>;
+/// @brief `beast::tcp_stream::async_connect`, bridged to a future, re-via'd
+///     onto `executor` (the calling connection/session's own
+///     `asio_strand_executor`, below) before returning -- see that class's
+///     doc comment for why every async_*_kf helper takes one.
+auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
+                      folly::Executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief TLS client handshake, bridged to a future. Only meaningful on a
 ///     `beast::ssl_stream<beast::tcp_stream>` whose underlying `tcp_stream`
 ///     is already connected.
-auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream)
-    -> kythira::future_default<kythira::unit>;
+auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
+                               folly::Executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief TLS server handshake, bridged to a future.
-auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream)
-    -> kythira::future_default<kythira::unit>;
+auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
+                               folly::Executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_write`, bridged to a future. Templated over
 ///     `Stream` (so the identical adaptor serves both `beast::tcp_stream`
@@ -167,13 +187,13 @@ auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream)
 ///     which is generic over any `beast_http::message<isRequest, Body,
 ///     Fields>`.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
-auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message)
-    -> kythira::future_default<kythira::unit>;
+auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message,
+                    folly::Executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_read`, bridged to a future.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::message<IsRequest, Body, Fields>& message)
+                   beast_http::message<IsRequest, Body, Fields>& message, folly::Executor* executor)
     -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_read`, bridged to a future -- overload taking a
@@ -189,8 +209,45 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 ///     own client, which does not itself cap response body size.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::parser<IsRequest, Body, Fields>& parser)
+                   beast_http::parser<IsRequest, Body, Fields>& parser, folly::Executor* executor)
     -> kythira::future_default<kythira::unit>;
+
+/// @brief Adapts a stream's own executor (`net::any_io_executor`, in
+///     practice always the strand it was constructed on -- see
+///     `boost_beast_client`'s class comment) as a `folly::Executor`, so a
+///     `kythira::future_default<T>` (a Folly future under the hood) can be
+///     `.via()`'d onto it.
+///
+///     `kythira::Promise<T>::getFuture()` (future.hpp) vias its returned
+///     future onto `folly::InlineExecutor::instance()`, a process-wide
+///     singleton with no thread affinity of its own: a `.thenValue()`
+///     continuation attached to such a future runs immediately, inline, on
+///     whichever thread wins the race to attach it *after* the promise is
+///     already fulfilled -- which need not be the thread that fulfilled it,
+///     and need not be "on" the stream's strand at all, even though the
+///     asio operation that fulfilled the promise was itself dispatched
+///     through that strand. A TSan run confirmed this is not hypothetical:
+///     a continuation re-arming a stream's `expires_after()` deadline raced
+///     that same stream's own `pending_guard::reset()` from the connect
+///     operation that had "just completed" -- both touching the identical
+///     `basic_stream::impl_type` state, with no synchronization edge
+///     between them recognized by the compiler, because none actually
+///     existed at the language level. Re-`.via()`-ing every async_*_kf
+///     future onto an `asio_strand_executor` wrapping that same stream's
+///     executor closes this at its root: `add()` posts onto the stream's
+///     own strand, so every continuation chained onto such a future is
+///     forced through the same serialization point as every other
+///     operation Beast itself performs on that stream, regardless of which
+///     thread happens to fulfill the underlying promise or when.
+class asio_strand_executor final : public folly::Executor {
+public:
+    explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
+
+    auto add(folly::Func func) -> void override { net::post(_ex, std::move(func)); }
+
+private:
+    net::any_io_executor _ex;
+};
 
 /// @brief Type-erased connection handle so `boost_beast_client`'s connection
 ///     pool can hold a single map regardless of whether a given node's URL
@@ -231,6 +288,12 @@ public:
 
 private:
     beast::tcp_stream _stream;
+    // Declared after _stream (member init order follows declaration order,
+    // not initializer-list order) so the constructor can build this from
+    // _stream.get_executor() -- see asio_strand_executor's own comment
+    // above for why every async_*_kf future this connection creates needs
+    // to be via()'d onto it.
+    asio_strand_executor _executor;
     // basic_stream's timeout (set via expires_after()) covers only the
     // *next* logical read/write/connect operation issued after it's armed --
     // send_rpc() calls set_timeout() once, before connect(), but connect()
@@ -256,6 +319,8 @@ public:
 
 private:
     beast::ssl_stream<beast::tcp_stream> _stream;
+    // See plain_beast_connection::_executor above -- same reason.
+    asio_strand_executor _executor;
     // See plain_beast_connection::_timeout above -- same reason.
     std::chrono::milliseconds _timeout{};
 };

@@ -280,8 +280,16 @@ auto beast_exceptional_future(std::exception_ptr ex) -> kythira::future_default<
 
 namespace beast_detail {
 
-inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep)
-    -> kythira::future_default<kythira::unit> {
+// Every async_*_kf helper below takes the calling connection/session's own
+// asio_strand_executor (beast_http_transport.hpp) and re-via()s its
+// returned future onto it before returning, rather than leaving the future
+// on the InlineExecutor that Promise<T>::getFuture() attaches by default --
+// see asio_strand_executor's own doc comment for the TSan-confirmed race
+// this closes. The raw completion handlers below stay the simple direct
+// setValue()/setException() form; via() is what makes that safe regardless
+// of which thread ends up calling it.
+inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
+                             folly::Executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     stream.async_connect(
@@ -292,10 +300,11 @@ inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint e
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
-inline auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream)
+inline auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
+                                      folly::Executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
@@ -308,10 +317,11 @@ inline auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stre
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
-inline auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream)
+inline auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
+                                      folly::Executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
@@ -324,12 +334,12 @@ inline auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stre
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
-auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message)
-    -> kythira::future_default<kythira::unit> {
+auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message,
+                    folly::Executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     beast_http::async_write(
@@ -342,13 +352,13 @@ auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, F
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::message<IsRequest, Body, Fields>& response)
-    -> kythira::future_default<kythira::unit> {
+                   beast_http::message<IsRequest, Body, Fields>& response,
+                   folly::Executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     beast_http::async_read(
@@ -361,12 +371,12 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::parser<IsRequest, Body, Fields>& parser)
+                   beast_http::parser<IsRequest, Body, Fields>& parser, folly::Executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
@@ -380,7 +390,7 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                 promise.setValue(kythira::unit{});
             }
         });
-    return future;
+    return std::move(future).via(executor);
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +398,7 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 // ---------------------------------------------------------------------------
 
 inline plain_beast_connection::plain_beast_connection(beast::tcp_stream stream)
-    : _stream(std::move(stream)) {}
+    : _stream(std::move(stream)), _executor(_stream.get_executor()) {}
 
 inline auto plain_beast_connection::is_open() const -> bool {
     return _stream.socket().is_open();
@@ -402,7 +412,7 @@ inline auto plain_beast_connection::set_timeout(std::chrono::milliseconds timeou
 inline auto plain_beast_connection::connect(const net::ip::tcp::endpoint& ep,
                                             const std::string& /*host*/)
     -> kythira::future_default<kythira::unit> {
-    return async_connect_kf(_stream, ep);
+    return async_connect_kf(_stream, ep, &_executor);
 }
 
 inline auto plain_beast_connection::send(beast_http::request<beast_http::string_body> request)
@@ -426,9 +436,9 @@ inline auto plain_beast_connection::send(beast_http::request<beast_http::string_
     // already finished (that completion is what invokes this callback in
     // the first place); `buffer`/`response` are different because *this*
     // callback is what kicks off the still-pending read that needs them.
-    return async_write_kf(_stream, *req)
+    return async_write_kf(_stream, *req, &_executor)
         .thenValue([this, req, buffer, response](kythira::unit) {
-            return async_read_kf(_stream, *buffer, *response);
+            return async_read_kf(_stream, *buffer, *response, &_executor);
         })
         .thenValue([buffer, response](kythira::unit) { return std::move(*response); });
 }
@@ -440,7 +450,7 @@ inline auto plain_beast_connection::close() -> void {
 }
 
 inline tls_beast_connection::tls_beast_connection(beast::ssl_stream<beast::tcp_stream> stream)
-    : _stream(std::move(stream)) {}
+    : _stream(std::move(stream)), _executor(beast::get_lowest_layer(_stream).get_executor()) {}
 
 inline auto tls_beast_connection::is_open() const -> bool {
     return beast::get_lowest_layer(_stream).socket().is_open();
@@ -458,9 +468,9 @@ inline auto tls_beast_connection::connect(const net::ip::tcp::endpoint& ep, cons
             std::make_exception_ptr(kythira::ssl_configuration_error(
                 std::format("Failed to set SNI host name: {}", host))));
     }
-    return async_connect_kf(beast::get_lowest_layer(_stream), ep).thenValue([this](kythira::unit) {
-        return async_client_handshake_kf(_stream);
-    });
+    return async_connect_kf(beast::get_lowest_layer(_stream), ep, &_executor)
+        .thenValue(
+            [this](kythira::unit) { return async_client_handshake_kf(_stream, &_executor); });
 }
 
 inline auto tls_beast_connection::send(beast_http::request<beast_http::string_body> request)
@@ -475,9 +485,9 @@ inline auto tls_beast_connection::send(beast_http::request<beast_http::string_bo
     // recaptured in the second thenValue, not just the first, because of
     // how Folly's future-flattening releases a future-returning callback's
     // captures as soon as it synchronously returns.
-    return async_write_kf(_stream, *req)
+    return async_write_kf(_stream, *req, &_executor)
         .thenValue([this, req, buffer, response](kythira::unit) {
-            return async_read_kf(_stream, *buffer, *response);
+            return async_read_kf(_stream, *buffer, *response, &_executor);
         })
         .thenValue([buffer, response](kythira::unit) { return std::move(*response); });
 }
@@ -962,6 +972,7 @@ public:
     server_session(Stream stream, boost_beast_server<Types>* server,
                    std::chrono::seconds request_timeout, std::size_t max_request_body_size)
         : _stream(std::move(stream)),
+          _executor(beast::get_lowest_layer(_stream).get_executor()),
           _server(server),
           _request_timeout(request_timeout),
           _max_request_body_size(max_request_body_size) {}
@@ -985,7 +996,7 @@ public:
         });
         if constexpr (std::is_same_v<Stream, beast::ssl_stream<beast::tcp_stream>>) {
             auto self = this->shared_from_this();
-            _pending = async_server_handshake_kf(_stream)
+            _pending = async_server_handshake_kf(_stream, &_executor)
                            .thenValue([self](kythira::unit) {
                                self->read_loop();
                                return kythira::unit{};
@@ -1014,7 +1025,7 @@ private:
         _parser.emplace();
         _parser->body_limit(_max_request_body_size);
         beast::get_lowest_layer(_stream).expires_after(_request_timeout);
-        _pending = async_read_kf(_stream, _buffer, *_parser)
+        _pending = async_read_kf(_stream, _buffer, *_parser, &_executor)
                        .thenValue([self](kythira::unit) {
                            self->_req = self->_parser->release();
                            return self->handle_and_write();
@@ -1067,7 +1078,7 @@ private:
             res->prepare_payload();
             // See handle_and_write()'s comment: re-arm before this write too.
             beast::get_lowest_layer(_stream).expires_after(_request_timeout);
-            return async_write_kf(_stream, *res)
+            return async_write_kf(_stream, *res, &_executor)
                 .thenValue([self, res](kythira::unit) {
                     self->finish();
                     return kythira::unit{};
@@ -1132,7 +1143,7 @@ private:
         // never actually got a chance to go out). Same root cause, same fix
         // as boost_beast_client's connection::send() -- see its comment.
         beast::get_lowest_layer(_stream).expires_after(_request_timeout);
-        return async_write_kf(_stream, *res).thenValue([self, res](kythira::unit) {
+        return async_write_kf(_stream, *res, &_executor).thenValue([self, res](kythira::unit) {
             return kythira::unit{};
         });
     }
@@ -1144,6 +1155,12 @@ private:
     }
 
     Stream _stream;
+    // See asio_strand_executor's own doc comment (beast_http_transport.hpp)
+    // for why every async_*_kf call below needs this. Declared right after
+    // _stream (member init order follows declaration order, not
+    // initializer-list order) so the constructor can build it from
+    // beast::get_lowest_layer(_stream).get_executor().
+    asio_strand_executor _executor;
     boost_beast_server<Types>* _server;
     std::size_t _session_id{};
     std::chrono::seconds _request_timeout;
