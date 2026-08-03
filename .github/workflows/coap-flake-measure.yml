@@ -60,6 +60,18 @@ on:
         type: string
         required: false
         default: "coap"
+      profile:
+        description: >
+          Build profile. 'release' matches ci.yml's Build & Test
+          (-DCMAKE_BUILD_TYPE=Release). 'coverage' matches its Coverage job
+          (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug), which is
+          substantially slower — and the leading hypothesis for CI's coap
+          failures is that they are specific to that slower build rather than
+          to the tests themselves.
+        type: choice
+        required: false
+        default: release
+        options: [release, coverage]
       exclude_labels:
         description: >
           CTest -LE exclusion regex. Set to ci.yml's own value
@@ -112,12 +124,21 @@ jobs:
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
-      - name: Configure (Release)
+      - name: Configure
         run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+          if [ "${{ github.event.inputs.profile }}" = "coverage" ]; then
+            # Mirrors ci.yml's Coverage job exactly: instrumented AND Debug.
+            cmake -B build -G Ninja \
+              -DENABLE_COVERAGE=ON \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DCMAKE_CXX_COMPILER=clang++-18 \
+              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+          else
+            cmake -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_CXX_COMPILER=clang++-18 \
+              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+          fi
 
       - name: Build
         run: cmake --build build -j$(nproc)
@@ -147,6 +168,11 @@ jobs:
             # never looked, producing an artifact of logs with no JUnit and a
             # summary reporting "0 runs parsed". Absolute path keeps both in
             # the directory that actually gets uploaded.
+            # Under the coverage profile, set the same profile-file pattern
+            # ci.yml's Coverage job uses, so instrumentation cost is included.
+            if [ "${{ github.event.inputs.profile }}" = "coverage" ]; then
+              export LLVM_PROFILE_FILE="$PWD/build/%p-%m.profraw"
+            fi
             ctest --test-dir build "${SEL[@]}" -j"$JOBS" \
               --output-junit "$PWD/flake-results/run-$i.xml" \
               > "flake-results/run-$i.log" 2>&1 || true

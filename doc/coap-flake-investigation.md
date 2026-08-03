@@ -48,9 +48,57 @@ Nothing else failed once. In particular `coap_connection_reuse_property_test`
 and `coap_cbor_end_to_end_test` — both of which have failed real CI runs —
 failed **zero times in 20 runs**.
 
-So the tests that block CI do not reproduce under the CoAP label alone. The
-conditions that produce CI's failures are still unidentified; measuring the
-full suite under `ci.yml`'s own selection is the open next step.
+So the tests that block CI do not reproduce under the CoAP label alone.
+
+### 1b. Nor do they reproduce under the full suite, in a Release build
+
+`main`, `label=all` with `ci.yml`'s own `-LE
+'^(slow|performance|verbose|benchmark|docker)$'`, 12 complete runs of **401**
+tests, `-j$(nproc)`, `clang++-18` Release:
+
+| Test | Failures | Rate |
+|---|---:|---:|
+| `ca_cluster_node_rpc_tls_restart_test` | 1/12 | 8% |
+| `coap_dtls_connection_establishment_property_test` | 1/12 | 8% |
+| `integration_test` | 1/12 | 8% |
+
+None of the tests that block CI appear at all. Note this configuration omits
+`--repeat until-pass:3`, so it should surface *more* flakiness than CI, not
+less.
+
+(The run was cancelled at the 240-minute job limit after 13 of 20 iterations;
+12 parsed. Use 10 iterations for a full-suite measurement.)
+
+### 1c. The remaining uncontrolled variable is the build profile
+
+Every measurement so far used `-DCMAKE_BUILD_TYPE=Release` — the fastest
+configuration. `ci.yml`'s Coverage job builds `-DENABLE_COVERAGE=ON
+-DCMAKE_BUILD_TYPE=Debug`: instrumented *and* Debug, so substantially slower.
+
+Across the CI failures observed in one session:
+
+| PR | Failing jobs |
+|---|---|
+| #130 | **Coverage**, clang x64 |
+| #134 | **Coverage**, g++ x64, Proxygen |
+| #135 | clang x64, g++ x64 |
+| #137 | **Coverage**, clang x64 |
+| #132 | **Coverage** |
+
+Coverage appears in four of five. CoAP tests are timing-sensitive by
+construction — retransmission schedules, ACK timeouts, SIGALRM limits — so a
+build that runs several times slower is a plausible cause in a way that the
+test logic is not.
+
+**Leading hypothesis: the failures are specific to slow build configurations,
+not to the CoAP tests being inherently unstable.** This is consistent with
+every negative result above, and with why four separate "raise the timeout"
+commits each half-worked.
+
+If it holds, the fix is not in the tests at all: it is either the Coverage
+job's timeout budget or CTest `TIMEOUT` values scaled for instrumented builds.
+The `profile: coverage` input on the measurement job exists to test exactly
+this — dispatch it against `main` and compare with the Release numbers above.
 
 ### 2. Environment fidelity matters more than expected
 
@@ -166,13 +214,16 @@ like a passing result will mislead quietly.
 
 ## Open questions
 
-1. **What conditions actually reproduce CI's failures?** Not `-L coap` on a
-   GitHub runner, and not EC2 at any concurrency. The next measurement to run
-   is the full suite under `ci.yml`'s selection
-   (`label=all`, `exclude_labels='^(slow|performance|verbose|benchmark|docker)$'`).
-   Coverage-instrumented and arm64 legs are slower than the `clang++-18 x64`
-   Release configuration measured so far, and CI failures have appeared on
-   those legs — a timing-sensitivity hypothesis worth testing directly.
+1. **Does the coverage profile reproduce CI's failures?** This is now the
+   specific open question, narrowed from "what conditions reproduce them" by
+   Findings 1, 1b and 1c. Ruled out so far: `-L coap` on a GitHub runner, the
+   full 401-test suite in a Release build, and EC2 at any concurrency. The
+   next measurement is `profile=coverage, label=all, iterations=10` with
+   `ci.yml`'s exclusions, compared against Finding 1b's Release numbers. If
+   the coap tests that block CI fail there and not in Release, the cause is
+   build-configuration timing, and the fix belongs in timeout budgets rather
+   than in the tests. arm64 remains untested — the measurement job runs
+   x64 only.
 2. **What is null at `coap_thread_safety_property_test.cpp:309`,** and is
    `coap_pdu_encode_header: unsupported protocol` cause or symptom?
 3. **Is the ephemeral-port migration worth finishing?** `7edf99b` introduced
