@@ -70,8 +70,20 @@ BOOST_AUTO_TEST_SUITE(coap_connection_reuse_property_tests)
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
+// Per-case budgets here are deliberately larger than the coap suite's norm.
+// Measured under the coverage profile (instrumented + Debug) on GitHub
+// runners, this binary takes 275-353s to complete, and cases budgeted at 60s
+// failed at exactly 240s -- their 4x-scaled ceiling -- in 3 of 6 runs while
+// the runs that passed needed well over that. The cause is this file's own
+// endpoints: node1/2/3.example.com are resolved by a real getaddrinfo() call
+// made inside send_rpc()'s recursive mutex, so every request serialises behind
+// a live DNS lookup whose latency instrumentation multiplies.
+//
+// Raising the base budget is the narrow fix; removing the dependency on public
+// DNS by using numeric literals would be the real one, and is tracked
+// separately (doc/coap-flake-investigation.md, open questions).
 BOOST_AUTO_TEST_CASE(test_connection_reuse_property,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     // Create CoAP client configuration with connection reuse enabled
     coap_client_config client_config;
     client_config.enable_session_reuse = true;
@@ -217,7 +229,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
 BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
     client_config.max_concurrent_requests = 10;
@@ -285,7 +297,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
 BOOST_AUTO_TEST_CASE(test_connection_reuse_disabled_property,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     // Create client with connection reuse disabled
     coap_client_config client_config;
     client_config.enable_session_reuse = false;
