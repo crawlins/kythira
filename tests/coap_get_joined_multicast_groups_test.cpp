@@ -40,7 +40,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty,
     // coap_server exists anywhere in this file -- so a fixed literal well
     // outside the ephemeral range (32768-60999) and distinct from every
     // other coap_*_test.cpp's assigned literal is safe.
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -55,7 +55,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty,
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -76,7 +76,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join,
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple,
 BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Create a CoAP client
-    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://localhost:61120"}};
+    std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
     kythira::coap_client_config config;
     kythira::noop_metrics metrics;

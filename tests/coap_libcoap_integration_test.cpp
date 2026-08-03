@@ -30,7 +30,7 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation,
     config.enable_serialization_caching = true;
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:61060";
+    endpoints[1] = "coap://127.0.0.1:61060";
 
     console_logger logger;
     logger.info("Testing libcoap context creation");
@@ -67,8 +67,8 @@ BOOST_AUTO_TEST_CASE(test_session_management,
     config.connection_pool_size = 5;
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:61060";
-    endpoints[2] = "coap://localhost:61061";
+    endpoints[1] = "coap://127.0.0.1:61060";
+    endpoints[2] = "coap://127.0.0.1:61061";
 
     logger.info("Testing session management");
 
@@ -91,7 +91,7 @@ BOOST_AUTO_TEST_CASE(test_serialization_caching,
     config.cache_ttl = std::chrono::milliseconds{5000};
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://localhost:61060";
+    endpoints[1] = "coap://127.0.0.1:61060";
 
     logger.info("Testing serialization caching");
 
@@ -117,7 +117,7 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration,
     config.psk_key = {std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
 
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coaps://localhost:61061";
+    endpoints[1] = "coaps://127.0.0.1:61061";
 
     logger.info("Testing DTLS configuration");
 
@@ -161,7 +161,7 @@ BOOST_AUTO_TEST_CASE(test_enhanced_error_handling,
 
     // Test with invalid endpoint to trigger error handling
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[1] = "coap://invalid-host-name-that-should-not-exist:61060";
+    endpoints[1] = "coap://host-that-should-not-exist.invalid:61060";
 
     logger.info("Testing enhanced error handling");
 
