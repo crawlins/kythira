@@ -15,6 +15,8 @@
 #include <atomic>
 #include <chrono>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -61,7 +63,8 @@ BOOST_AUTO_TEST_SUITE(coap_concurrent_processing_property_tests)
  * Property: For any set of concurrent requests, the server should process them in parallel without
  * blocking. Validates: Requirements 7.3
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, *boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     // Create CoAP client and server configurations with concurrent processing enabled
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
@@ -217,7 +220,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property, *boost::unit_t
 /**
  * Property test for concurrent processing limits
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     // Create client with limited concurrent processing
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
@@ -274,7 +278,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property, *boost::unit_te
 /**
  * Property test for concurrent processing with disabled optimization
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     // Create client with concurrent processing disabled
     coap_client_config client_config;
     client_config.enable_concurrent_processing = false;

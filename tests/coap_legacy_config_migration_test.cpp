@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 8.3, 9.8**
 // translate_legacy_fields() reproduces today's field-inference behavior
 // exactly when security.mode is left at its default, and rejects
@@ -6,7 +7,7 @@
 #define BOOST_TEST_MODULE coap_legacy_config_migration_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_security_impl.hpp>
 
@@ -15,14 +16,15 @@ using namespace kythira;
 BOOST_AUTO_TEST_SUITE(coap_legacy_config_migration_tests)
 
 BOOST_AUTO_TEST_CASE(no_legacy_fields_and_no_explicit_mode_yields_none,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     auto security = translate_legacy_fields(cfg);
     BOOST_CHECK(security.mode == coap_auth_mode::none);
     BOOST_CHECK(std::holds_alternative<std::monostate>(security.credentials));
 }
 
-BOOST_AUTO_TEST_CASE(legacy_cert_file_infers_dtls_pki, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(legacy_cert_file_infers_dtls_pki,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     cfg.cert_file = "/tmp/node.crt";
     cfg.key_file = "/tmp/node.key";
@@ -46,7 +48,8 @@ BOOST_AUTO_TEST_CASE(legacy_cert_file_infers_dtls_pki, *boost::unit_test::timeou
     BOOST_CHECK(dynamic_cast<dtls_pki_provider*>(provider.get()) != nullptr);
 }
 
-BOOST_AUTO_TEST_CASE(legacy_psk_identity_infers_dtls_psk, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(legacy_psk_identity_infers_dtls_psk,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     cfg.psk_identity = "node-42";
     cfg.psk_key = std::vector<std::byte>(16, std::byte{0x7A});
@@ -63,7 +66,7 @@ BOOST_AUTO_TEST_CASE(legacy_psk_identity_infers_dtls_psk, *boost::unit_test::tim
 }
 
 BOOST_AUTO_TEST_CASE(explicit_mode_with_empty_legacy_fields_passes_through,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     cfg.security.mode = coap_auth_mode::dtls_rpk;
     cfg.security.credentials = rpk_credentials{std::vector<std::byte>(32, std::byte{0x01}),
@@ -75,7 +78,8 @@ BOOST_AUTO_TEST_CASE(explicit_mode_with_empty_legacy_fields_passes_through,
     BOOST_CHECK(std::holds_alternative<rpk_credentials>(security.credentials));
 }
 
-BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_cert_file_throws, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_cert_file_throws,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     cfg.cert_file = "/tmp/node.crt";  // legacy field populated...
     cfg.key_file = "/tmp/node.key";
@@ -87,7 +91,7 @@ BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_cert_file_throws, *boost::unit_te
 }
 
 BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_psk_identity_throws,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_client_config cfg;
     cfg.psk_identity = "node-1";
     cfg.psk_key = std::vector<std::byte>(16, std::byte{0x11});
@@ -99,7 +103,7 @@ BOOST_AUTO_TEST_CASE(explicit_mode_plus_legacy_psk_identity_throws,
 }
 
 BOOST_AUTO_TEST_CASE(server_config_legacy_translation_matches_client,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     coap_server_config cfg;
     cfg.psk_identity = "server-1";
     cfg.psk_key = std::vector<std::byte>(20, std::byte{0x33});

@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.5**
 // Two peers configured with bootstrap_method == edhoc and matching
 // identity/peer credentials complete a handshake and derive a working
@@ -11,7 +12,7 @@
 #define BOOST_TEST_MODULE coap_edhoc_oscore_bootstrap_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_edhoc.hpp>
 
@@ -172,7 +173,7 @@ BOOST_AUTO_TEST_SUITE(coap_edhoc_oscore_bootstrap_tests)
 #ifdef LAKERS_AVAILABLE
 
 BOOST_AUTO_TEST_CASE(matching_credentials_derive_mirrored_oscore_context,
-                     *boost::unit_test::timeout(20)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(20))) {
     blocking_queue i_to_r;
     blocking_queue r_to_i;
     channel_transport initiator_transport(i_to_r, r_to_i);
@@ -216,7 +217,8 @@ BOOST_AUTO_TEST_CASE(matching_credentials_derive_mirrored_oscore_context,
     BOOST_CHECK(!initiator_result.master_secret.empty());
 }
 
-BOOST_AUTO_TEST_CASE(mismatched_peer_credential_fails_handshake, *boost::unit_test::timeout(20)) {
+BOOST_AUTO_TEST_CASE(mismatched_peer_credential_fails_handshake,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(20))) {
     blocking_queue i_to_r;
     blocking_queue r_to_i;
     channel_transport initiator_transport(i_to_r, r_to_i);
@@ -256,7 +258,8 @@ BOOST_AUTO_TEST_CASE(mismatched_peer_credential_fails_handshake, *boost::unit_te
 
 #else
 
-BOOST_AUTO_TEST_CASE(edhoc_unavailable_fails_descriptively, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(edhoc_unavailable_fails_descriptively,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     null_transport transport;
     edhoc_params params;
     params.is_initiator = true;

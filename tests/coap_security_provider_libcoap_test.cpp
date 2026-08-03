@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // Exercises the real-libcoap (LIBCOAP_AVAILABLE) code paths of every
 // coap_security_provider that coap_dtls_rpk_test.cpp / coap_oscore_
 // integration_test.cpp don't already cover directly: no_auth_provider and
@@ -15,7 +16,7 @@
 #define BOOST_TEST_MODULE coap_security_provider_libcoap_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_security_impl.hpp>
 
@@ -117,7 +118,8 @@ auto make_loopback_addr(std::uint16_t port) -> coap_address_t {
 
 BOOST_AUTO_TEST_SUITE(coap_security_provider_libcoap_tests)
 
-BOOST_AUTO_TEST_CASE(no_auth_provider_creates_real_session, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(no_auth_provider_creates_real_session,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     no_auth_provider provider;
     auto* ctx = make_context();
     BOOST_CHECK_NO_THROW(provider.configure_session(ctx));
@@ -125,7 +127,7 @@ BOOST_AUTO_TEST_CASE(no_auth_provider_creates_real_session, *boost::unit_test::t
 }
 
 BOOST_AUTO_TEST_CASE(psk_provider_configures_client_and_server_sessions,
-                     *boost::unit_test::timeout(15)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     psk_credentials creds{"node-1", std::vector<std::byte>(16, std::byte{0x42})};
 
     dtls_psk_provider client_provider(creds, coap_security_role::client);
@@ -139,7 +141,8 @@ BOOST_AUTO_TEST_CASE(psk_provider_configures_client_and_server_sessions,
     coap_free_context(server_ctx);
 }
 
-BOOST_AUTO_TEST_CASE(psk_identity_callback_matches_and_rejects, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(psk_identity_callback_matches_and_rejects,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     psk_credentials creds{"node-1", std::vector<std::byte>(16, std::byte{0x42})};
     dtls_psk_provider provider(creds, coap_security_role::server);
 
@@ -158,7 +161,7 @@ BOOST_AUTO_TEST_CASE(psk_identity_callback_matches_and_rejects, *boost::unit_tes
 }
 
 BOOST_AUTO_TEST_CASE(pki_provider_configures_client_and_server_sessions,
-                     *boost::unit_test::timeout(15)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     self_signed_cert_material material;
     pki_credentials creds{material.cert_file, material.key_file, "", true, {}, nullptr};
 
@@ -177,7 +180,8 @@ BOOST_AUTO_TEST_CASE(pki_provider_configures_client_and_server_sessions,
     coap_free_context(server_ctx);
 }
 
-BOOST_AUTO_TEST_CASE(pki_cn_callback_trusts_tls_result_by_default, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(pki_cn_callback_trusts_tls_result_by_default,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     pki_credentials creds{"unused.pem", "unused.pem", "", true, {}, nullptr};
     dtls_pki_provider provider(creds, coap_security_role::server);
 
@@ -192,7 +196,8 @@ BOOST_AUTO_TEST_CASE(pki_cn_callback_trusts_tls_result_by_default, *boost::unit_
                       0);
 }
 
-BOOST_AUTO_TEST_CASE(pki_cn_callback_invokes_custom_validator, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(pki_cn_callback_invokes_custom_validator,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     self_signed_cert_material material;
     bool validator_called = false;
     pki_credentials creds{
@@ -224,7 +229,8 @@ BOOST_AUTO_TEST_CASE(pki_cn_callback_invokes_custom_validator, *boost::unit_test
     BOOST_CHECK(validator_called);
 }
 
-BOOST_AUTO_TEST_CASE(rpk_create_client_session_and_callback, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(rpk_create_client_session_and_callback,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     EVP_PKEY_CTX* pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
     BOOST_REQUIRE(EVP_PKEY_keygen_init(pctx) == 1);
     BOOST_REQUIRE(EVP_PKEY_CTX_set_ec_paramgen_curve_nid(pctx, NID_X9_62_prime256v1) == 1);
@@ -261,7 +267,7 @@ BOOST_AUTO_TEST_CASE(rpk_create_client_session_and_callback, *boost::unit_test::
 }
 
 BOOST_AUTO_TEST_CASE(oscore_client_role_configure_session_is_noop_and_add_recipient_works,
-                     *boost::unit_test::timeout(15)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     oscore_credentials creds;
     creds.sender_id = {std::byte{0x00}};
     creds.recipient_id = {std::byte{0x01}};

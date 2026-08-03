@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_dtls_connection_establishment_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -69,7 +70,8 @@ BOOST_AUTO_TEST_SUITE(coap_dtls_connection_establishment_property_tests)
 // **Validates: Requirements 1.4, 6.1, 6.3**
 // Property: For any CoAPS endpoint, the transport should establish DTLS connections
 // with proper certificate or PSK validation.
-BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<int> bool_dist(0, 1);
@@ -339,7 +341,8 @@ BOOST_AUTO_TEST_CASE(property_dtls_connection_establishment, *boost::unit_test::
 }
 
 // Test DTLS configuration validation
-BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration_validation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     std::size_t failures = 0;
 
     // Test invalid PSK key sizes

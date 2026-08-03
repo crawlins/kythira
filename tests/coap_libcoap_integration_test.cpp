@@ -10,6 +10,8 @@
 #include <chrono>
 #include <thread>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 // Test transport types using default_transport_types
@@ -18,7 +20,8 @@ using test_transport_types =
                                      kythira::json_rpc_serializer<std::vector<std::byte>>,
                                      kythira::noop_metrics, kythira::console_logger>;
 
-BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_libcoap_context_creation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     noop_metrics metrics;
 
     coap_client_config config;
@@ -54,7 +57,8 @@ BOOST_AUTO_TEST_CASE(test_libcoap_context_creation, *boost::unit_test::timeout(3
 #endif
 }
 
-BOOST_AUTO_TEST_CASE(test_session_management, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_session_management,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -76,7 +80,8 @@ BOOST_AUTO_TEST_CASE(test_session_management, *boost::unit_test::timeout(30)) {
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_serialization_caching, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_serialization_caching,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -98,7 +103,8 @@ BOOST_AUTO_TEST_CASE(test_serialization_caching, *boost::unit_test::timeout(30))
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_dtls_configuration, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_dtls_configuration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -123,7 +129,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_configuration, *boost::unit_test::timeout(30)) {
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_server_context_creation, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_server_context_creation,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     console_logger logger;
     noop_metrics metrics;
 
@@ -143,7 +150,8 @@ BOOST_AUTO_TEST_CASE(test_server_context_creation, *boost::unit_test::timeout(30
     });
 }
 
-BOOST_AUTO_TEST_CASE(test_enhanced_error_handling, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_enhanced_error_handling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     console_logger logger;
     noop_metrics metrics;
 

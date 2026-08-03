@@ -1,8 +1,9 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE CoAPConfigTest
 #include <boost/test/unit_test.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_utils.hpp>
@@ -48,7 +49,8 @@ constexpr std::uint16_t invalid_multicast_port = 0;
 
 BOOST_AUTO_TEST_SUITE(CoAPClientConfigTests)
 
-BOOST_AUTO_TEST_CASE(test_valid_client_config, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_valid_client_config,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     coap_client_config config;
     config.ack_timeout = valid_timeout;
     config.max_retransmit = valid_max_retransmit;
@@ -60,14 +62,16 @@ BOOST_AUTO_TEST_CASE(test_valid_client_config, *boost::unit_test::timeout(15)) {
     BOOST_CHECK_NO_THROW(validate_client_config(config));
 }
 
-BOOST_AUTO_TEST_CASE(test_client_config_invalid_timeout, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_client_config_invalid_timeout,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     coap_client_config config;
     config.ack_timeout = invalid_timeout;
 
     BOOST_CHECK_THROW(validate_client_config(config), coap_transport_error);
 }
 
-BOOST_AUTO_TEST_CASE(test_client_config_invalid_max_retransmit, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_client_config_invalid_max_retransmit,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     coap_client_config config;
     config.max_retransmit = invalid_max_retransmit;
 

@@ -16,6 +16,8 @@
 #include <random>
 #include <chrono>
 
+#include "test_timeout_scale.hpp"
+
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 5683;
@@ -184,7 +186,8 @@ BOOST_AUTO_TEST_SUITE(coap_event_logging_property_tests)
  * Property: For any significant transport operation (message send/receive, connection events,
  * errors), appropriate log entries should be generated.
  */
-BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint16_t> port_dist(min_port, max_port);
@@ -245,7 +248,8 @@ BOOST_AUTO_TEST_CASE(test_coap_client_initialization_logging, *boost::unit_test:
  * Property: For any significant transport operation (server lifecycle events),
  * appropriate log entries should be generated.
  */
-BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::size_t> sessions_dist(1, 1000);
@@ -308,7 +312,8 @@ BOOST_AUTO_TEST_CASE(test_coap_server_lifecycle_logging, *boost::unit_test::time
  * Property: For any RPC request sent via the client, appropriate debug log entries should be
  * generated.
  */
-BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, 1000000);
@@ -375,7 +380,8 @@ BOOST_AUTO_TEST_CASE(test_coap_rpc_request_logging, *boost::unit_test::timeout(3
  * Property: For any error condition encountered during transport operations,
  * appropriate error log entries should be generated.
  */
-BOOST_AUTO_TEST_CASE(test_coap_error_logging, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_coap_error_logging,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Test with various endpoint patterns to ensure logging infrastructure handles them
     std::vector<std::string> test_endpoints = {
         "coap://127.0.0.1:61050",   // Valid endpoint

@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.6**
 // A mock Authorization Server exercises run_ace_token_exchange(): the DTLS
 // profile response populates working psk_credentials, the OSCORE profile
@@ -7,7 +8,7 @@
 #define BOOST_TEST_MODULE coap_ace_oauth_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_ace_oauth.hpp>
 
@@ -87,7 +88,8 @@ private:
 
 BOOST_AUTO_TEST_SUITE(coap_ace_oauth_tests)
 
-BOOST_AUTO_TEST_CASE(dtls_profile_populates_psk_credentials, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(dtls_profile_populates_psk_credentials,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     mock_authorization_server as;
     ace_oauth_config config;
     config.as_token_endpoint = as.token_endpoint();
@@ -103,7 +105,8 @@ BOOST_AUTO_TEST_CASE(dtls_profile_populates_psk_credentials, *boost::unit_test::
     BOOST_CHECK_EQUAL(creds.key.size(), 16u);
 }
 
-BOOST_AUTO_TEST_CASE(oscore_profile_populates_oscore_credentials, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(oscore_profile_populates_oscore_credentials,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     mock_authorization_server as;
     ace_oauth_config config;
     config.as_token_endpoint = as.token_endpoint();
@@ -122,7 +125,8 @@ BOOST_AUTO_TEST_CASE(oscore_profile_populates_oscore_credentials, *boost::unit_t
     BOOST_CHECK_EQUAL(creds.aead_algorithm, "AES-CCM-16-64-128");
 }
 
-BOOST_AUTO_TEST_CASE(denied_scope_throws_bootstrap_error, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(denied_scope_throws_bootstrap_error,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     mock_authorization_server as;
     ace_oauth_config config;
     config.as_token_endpoint = as.token_endpoint();
@@ -134,7 +138,8 @@ BOOST_AUTO_TEST_CASE(denied_scope_throws_bootstrap_error, *boost::unit_test::tim
     BOOST_CHECK_THROW(run_ace_token_exchange(config), coap_credential_bootstrap_error);
 }
 
-BOOST_AUTO_TEST_CASE(malformed_response_throws_bootstrap_error, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(malformed_response_throws_bootstrap_error,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     mock_authorization_server as;
     ace_oauth_config config;
     config.as_token_endpoint = as.token_endpoint();
@@ -146,7 +151,8 @@ BOOST_AUTO_TEST_CASE(malformed_response_throws_bootstrap_error, *boost::unit_tes
     BOOST_CHECK_THROW(run_ace_token_exchange(config), coap_credential_bootstrap_error);
 }
 
-BOOST_AUTO_TEST_CASE(unreachable_as_throws_bootstrap_error, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(unreachable_as_throws_bootstrap_error,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     ace_oauth_config config;
     // Port 1 is reserved and nothing will ever be listening there.
     config.as_token_endpoint = "http://127.0.0.1:1/token";

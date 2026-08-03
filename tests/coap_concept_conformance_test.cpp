@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_concept_conformance_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/json_serializer.hpp>
 #include <raft/network.hpp>
@@ -13,6 +14,7 @@
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
+
 #endif
 
 namespace {
@@ -68,7 +70,8 @@ BOOST_AUTO_TEST_SUITE(coap_concept_conformance_tests)
 
 #ifdef LIBCOAP_AVAILABLE
 // Test that coap_client satisfies network_client concept
-BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Static assertion to verify concept satisfaction
     static_assert(kythira::network_client<test_client>,
                   "coap_client must satisfy network_client concept");
@@ -78,7 +81,8 @@ BOOST_AUTO_TEST_CASE(test_coap_client_network_client_concept, *boost::unit_test:
 }
 
 // Test that coap_server satisfies network_server concept
-BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Static assertion to verify concept satisfaction
     static_assert(kythira::network_server<test_server>,
                   "coap_server must satisfy network_server concept");
@@ -89,7 +93,8 @@ BOOST_AUTO_TEST_CASE(test_coap_server_network_server_concept, *boost::unit_test:
 #endif
 
 // Test RPC serializer integration with coap_client
-BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Verify that the serializer satisfies rpc_serializer concept
     static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>,
                   "json_rpc_serializer must satisfy rpc_serializer concept");
@@ -112,7 +117,8 @@ BOOST_AUTO_TEST_CASE(test_coap_client_rpc_serializer_integration, *boost::unit_t
 }
 
 // Test RPC serializer integration with coap_server
-BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Verify that the serializer satisfies rpc_serializer concept
     static_assert(kythira::rpc_serializer<test_serializer, std::vector<std::byte>>,
                   "json_rpc_serializer must satisfy rpc_serializer concept");
@@ -133,7 +139,8 @@ BOOST_AUTO_TEST_CASE(test_coap_server_rpc_serializer_integration, *boost::unit_t
 }
 
 // Test metrics concept integration
-BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_metrics_concept_integration,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Verify that noop_metrics satisfies metrics concept
     static_assert(kythira::metrics<test_metrics>, "noop_metrics must satisfy metrics concept");
 
@@ -158,7 +165,8 @@ BOOST_AUTO_TEST_CASE(test_metrics_concept_integration, *boost::unit_test::timeou
 }
 
 // Test network_client concept requirements in detail
-BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
 #ifdef LIBCOAP_AVAILABLE
     std::unordered_map<std::uint64_t, std::string> endpoints = {{test_node_id, test_endpoint}};
 
@@ -196,7 +204,8 @@ BOOST_AUTO_TEST_CASE(test_network_client_concept_requirements, *boost::unit_test
 }
 
 // Test network_server concept requirements in detail
-BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
 #ifdef LIBCOAP_AVAILABLE
     kythira::coap_server_config config;
     test_metrics metrics;
@@ -238,7 +247,8 @@ BOOST_AUTO_TEST_CASE(test_network_server_concept_requirements, *boost::unit_test
 }
 
 // Test that non-conforming types do not satisfy concepts
-BOOST_AUTO_TEST_CASE(test_non_conforming_types, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_non_conforming_types,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Test that a non-conforming serializer does not satisfy rpc_serializer concept
     // Make it not satisfy by using a non-byte data type
     class non_serializer {
@@ -264,7 +274,8 @@ BOOST_AUTO_TEST_CASE(test_non_conforming_types, *boost::unit_test::timeout(15)) 
 }
 
 // Test template parameter constraints
-BOOST_AUTO_TEST_CASE(test_template_parameter_constraints, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_template_parameter_constraints,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
 #ifdef LIBCOAP_AVAILABLE
     // Verify that coap_client and coap_server have proper template constraints
 

@@ -539,6 +539,7 @@ jobs:
           cmake -B build-coverage -G Ninja \
             -DENABLE_COVERAGE=ON \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 

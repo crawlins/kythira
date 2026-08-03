@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 /**
  * Property-based test for CoAP multicast message delivery
  * **Feature: coap-transport, Property 11: Multicast message delivery**
@@ -12,7 +13,7 @@
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -57,7 +58,8 @@ struct test_transport_types {
  * Property: For any multicast-enabled configuration, messages sent to multicast
  * addresses should be delivered to all listening nodes.
  */
-BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     BOOST_TEST_MESSAGE("Property test: Multicast message delivery");
 
     // Test with various multicast configurations
@@ -137,7 +139,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_message_delivery_property, *boost::unit_test
 
   * Test multicast address validation property
   */
-BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     BOOST_TEST_MESSAGE("Property test: Multicast address validation");
 
     // Create client for testing address validation
@@ -187,7 +190,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_address_validation_property, *boost::unit_te
 /**
  * Test multicast server configuration property
  */
-BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     BOOST_TEST_MESSAGE("Property test: Multicast server configuration");
 
     // Test various multicast server configurations
@@ -241,7 +245,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_server_configuration_property, *boost::unit_
 /**
  * Test multicast error handling property
  */
-BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_multicast_error_handling_property,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     BOOST_TEST_MESSAGE("Property test: Multicast error handling");
 
     // Create client for error testing

@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.3**
 // RPK peer-key match succeeds; mismatch is rejected (Requirement 3.2).
 // dtls_rpk_provider::is_trusted_peer_key() is exercised directly (see its
@@ -11,7 +12,7 @@
 #define BOOST_TEST_MODULE coap_dtls_rpk_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_security_impl.hpp>
 
@@ -72,7 +73,8 @@ auto generate_ec_keypair() -> ec_keypair {
 
 BOOST_AUTO_TEST_SUITE(coap_dtls_rpk_tests)
 
-BOOST_AUTO_TEST_CASE(peer_key_in_trust_set_is_accepted, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(peer_key_in_trust_set_is_accepted,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     auto peer = generate_ec_keypair();
 
@@ -85,7 +87,8 @@ BOOST_AUTO_TEST_CASE(peer_key_in_trust_set_is_accepted, *boost::unit_test::timeo
     BOOST_CHECK(provider.is_trusted_peer_key(peer.public_key_der));
 }
 
-BOOST_AUTO_TEST_CASE(peer_key_not_in_trust_set_is_rejected, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(peer_key_not_in_trust_set_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     auto trusted_peer = generate_ec_keypair();
     auto untrusted_peer = generate_ec_keypair();
@@ -99,7 +102,8 @@ BOOST_AUTO_TEST_CASE(peer_key_not_in_trust_set_is_rejected, *boost::unit_test::t
     BOOST_CHECK(!provider.is_trusted_peer_key(untrusted_peer.public_key_der));
 }
 
-BOOST_AUTO_TEST_CASE(empty_trust_set_rejects_every_peer, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(empty_trust_set_rejects_every_peer,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     auto peer = generate_ec_keypair();
 
@@ -112,7 +116,8 @@ BOOST_AUTO_TEST_CASE(empty_trust_set_rejects_every_peer, *boost::unit_test::time
     BOOST_CHECK(!provider.is_trusted_peer_key(peer.public_key_der));
 }
 
-BOOST_AUTO_TEST_CASE(mode_selection_via_factory, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(mode_selection_via_factory,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     coap_security_config config;
     config.mode = coap_auth_mode::dtls_rpk;
@@ -123,7 +128,8 @@ BOOST_AUTO_TEST_CASE(mode_selection_via_factory, *boost::unit_test::timeout(15))
 
 #ifdef LIBCOAP_AVAILABLE
 
-BOOST_AUTO_TEST_CASE(configure_session_wires_real_rpk_material, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(configure_session_wires_real_rpk_material,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     auto local = generate_ec_keypair();
     auto peer = generate_ec_keypair();
 

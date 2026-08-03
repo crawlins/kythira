@@ -12,6 +12,8 @@
 #include <vector>
 #include <future>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 
 namespace {
@@ -45,7 +47,8 @@ struct test_transport_types {
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_server_operations,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -130,7 +133,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations, *boost::unit_test::timeo
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     // Test data generation
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -217,7 +221,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations, *boost::unit_test::timeo
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     // Create client configuration
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;
@@ -270,7 +275,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests, *boost::unit_test::timeout(45
  *
  * BLACK-BOX TEST: Tests observable behavior through public API only.
  */
-BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks, *boost::unit_test::timeout(45)) {
+BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(45))) {
     // Create client configuration
     coap_client_config client_config;
     client_config.enable_concurrent_processing = true;

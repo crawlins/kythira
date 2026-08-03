@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_transport_initialization_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
@@ -43,7 +44,7 @@ BOOST_AUTO_TEST_SUITE(coap_transport_initialization_property_tests)
 // Property: For any valid configuration, initializing the CoAP transport should create
 // both client and server components with the specified configuration parameters.
 BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
-                     *boost::unit_test::timeout(60)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // Test multiple configurations to verify initialization robustness
     for (std::size_t i = 0; i < property_test_iterations; ++i) {
         try {
@@ -258,7 +259,8 @@ BOOST_AUTO_TEST_CASE(property_transport_initialization_creates_components,
 }
 
 // Test that the CoAP transport classes are properly instantiable
-BOOST_AUTO_TEST_CASE(test_concept_satisfaction, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_concept_satisfaction,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Note: CoAP client/server are templated and satisfy network_client/network_server
     // concepts when instantiated with appropriate Types parameter.
     // The concept satisfaction is verified at compile-time when the templates are instantiated.
@@ -280,7 +282,8 @@ BOOST_AUTO_TEST_CASE(test_concept_satisfaction, *boost::unit_test::timeout(15)) 
 }
 
 // Test exception types are properly defined
-BOOST_AUTO_TEST_CASE(test_exception_types, *boost::unit_test::timeout(15)) {
+BOOST_AUTO_TEST_CASE(test_exception_types,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(15))) {
     // Test that all CoAP exception types can be constructed and thrown
     try {
         throw kythira::coap_transport_error("Base transport error");

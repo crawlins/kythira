@@ -14,6 +14,8 @@
 #include <chrono>
 #include <unordered_map>
 
+#include "test_timeout_scale.hpp"
+
 namespace {
 constexpr std::size_t property_test_iterations = 10;
 constexpr std::uint64_t max_term = 1000;
@@ -60,7 +62,8 @@ BOOST_AUTO_TEST_SUITE(coap_content_format_property_tests)
 // expensive one-time OpenSSL provider scan at once via ctest -j), which
 // is what pushed these test cases past their previous, tighter timeouts
 // on a loaded CI runner; raised here with margin for that.
-BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> term_dist(1, max_term);
@@ -112,7 +115,8 @@ BOOST_AUTO_TEST_CASE(property_content_format_matches_serializer, *boost::unit_te
 }
 
 // Test that different serializers would use different Content-Format values
-BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     // This test verifies the conceptual mapping between serializers and Content-Format values
     // In a real implementation, this would test:
     // - JSON serializer uses Content-Format 50 (application/json)
@@ -147,7 +151,8 @@ BOOST_AUTO_TEST_CASE(test_serializer_content_format_mapping, *boost::unit_test::
 }
 
 // Test that Content-Format option is set for both requests and responses
-BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_bidirectional_content_format,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     kythira::coap_client_config client_config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;
@@ -197,7 +202,8 @@ BOOST_AUTO_TEST_CASE(test_bidirectional_content_format, *boost::unit_test::timeo
 }
 
 // Test that Accept option is set correctly for expected response format
-BOOST_AUTO_TEST_CASE(test_accept_option_handling, *boost::unit_test::timeout(60)) {
+BOOST_AUTO_TEST_CASE(test_accept_option_handling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
     kythira::coap_client_config config;
     std::unordered_map<std::uint64_t, std::string> endpoints;
     endpoints[1] = test_coap_endpoint;

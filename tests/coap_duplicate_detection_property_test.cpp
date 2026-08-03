@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_duplicate_detection_property_test
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
@@ -63,7 +64,8 @@ BOOST_AUTO_TEST_SUITE(coap_duplicate_detection_property_tests)
 // (many coap_*_test binaries doing the same expensive one-time OpenSSL
 // provider scan at once via ctest -j); observed directly exceeding 120s
 // on a loaded x64 CI runner with no change to this test's own logic.
-BOOST_AUTO_TEST_CASE(property_duplicate_message_detection, *boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(property_duplicate_message_detection,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     std::random_device rd;
     std::mt19937 rng(rd());
     std::uniform_int_distribution<std::uint64_t> node_dist(1, max_node_id);

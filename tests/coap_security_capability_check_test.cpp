@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.7**
 // coap_oscore_is_supported() returning false (here: the "libcoap not
 // compiled into this build" stub path, since LIBCOAP_AVAILABLE is not
@@ -8,7 +9,7 @@
 #define BOOST_TEST_MODULE coap_security_capability_check_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <raft/coap_security_impl.hpp>
 
@@ -32,13 +33,13 @@ BOOST_AUTO_TEST_SUITE(coap_security_capability_check_tests)
 #ifndef LIBCOAP_AVAILABLE
 
 BOOST_AUTO_TEST_CASE(oscore_configure_session_fails_capability_check_before_mutation,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     auto provider = make_security_provider(make_oscore_config(), coap_security_role::server);
     BOOST_CHECK_THROW(provider->configure_session(nullptr), coap_unsupported_security_mode_error);
 }
 
 BOOST_AUTO_TEST_CASE(oscore_create_client_session_fails_capability_check,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     auto provider = make_security_provider(make_oscore_config(), coap_security_role::client);
     BOOST_CHECK_THROW(
         provider->create_client_session(nullptr, nullptr, nullptr, /*COAP_PROTO_UDP=*/0),
@@ -46,7 +47,7 @@ BOOST_AUTO_TEST_CASE(oscore_create_client_session_fails_capability_check,
 }
 
 BOOST_AUTO_TEST_CASE(capability_error_identifies_mode_and_is_distinct_from_security_error,
-                     *boost::unit_test::timeout(10)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     auto provider = make_security_provider(make_oscore_config(), coap_security_role::server);
     try {
         provider->configure_session(nullptr);
@@ -67,7 +68,8 @@ BOOST_AUTO_TEST_CASE(capability_error_identifies_mode_and_is_distinct_from_secur
 // via coap_oscore_is_supported() during design), so this build has nothing
 // to assert about the capability-absent path — see
 // coap_oscore_integration_test.cpp for the real-libcoap OSCORE tests.
-BOOST_AUTO_TEST_CASE(placeholder_when_built_with_libcoap, *boost::unit_test::timeout(10)) {
+BOOST_AUTO_TEST_CASE(placeholder_when_built_with_libcoap,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(10))) {
     BOOST_CHECK(coap_oscore_is_supported());
 }
 

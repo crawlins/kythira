@@ -1,3 +1,4 @@
+#include "test_timeout_scale.hpp"
 // **Feature: coap-transport-security, Requirement 9.4**
 // Client/server round-trip under plain OSCORE, verifying the payload
 // round-trips correctly and that a session with a mismatched master secret
@@ -20,7 +21,7 @@
 #define BOOST_TEST_MODULE coap_oscore_integration_test
 #include <boost/test/unit_test.hpp>
 
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #ifdef LIBCOAP_AVAILABLE
 
@@ -210,7 +211,8 @@ auto make_oscore_credentials(std::vector<std::byte> sender_id, std::vector<std::
 
 BOOST_AUTO_TEST_SUITE(coap_oscore_integration_tests)
 
-BOOST_AUTO_TEST_CASE(oscore_round_trip_echoes_payload, *boost::unit_test::timeout(25)) {
+BOOST_AUTO_TEST_CASE(oscore_round_trip_echoes_payload,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
     auto secret = std::vector<std::byte>(16, std::byte{0x77});
     oscore_server server(make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, secret));
     // Give the server's endpoint a moment to be ready for datagrams.
@@ -224,7 +226,8 @@ BOOST_AUTO_TEST_CASE(oscore_round_trip_echoes_payload, *boost::unit_test::timeou
     BOOST_CHECK_EQUAL(*response, "hello-oscore");
 }
 
-BOOST_AUTO_TEST_CASE(mismatched_master_secret_is_rejected, *boost::unit_test::timeout(25)) {
+BOOST_AUTO_TEST_CASE(mismatched_master_secret_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(25))) {
     auto server_secret = std::vector<std::byte>(16, std::byte{0x11});
     oscore_server server(
         make_oscore_credentials({std::byte{0x01}}, {std::byte{0x00}}, server_secret));

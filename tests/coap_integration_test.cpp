@@ -1,9 +1,10 @@
+#include "test_timeout_scale.hpp"
 #define BOOST_TEST_MODULE coap_integration_test
 
 #include <boost/test/unit_test.hpp>
 
 // Set test timeout to prevent hanging tests
-#define BOOST_TEST_TIMEOUT 30
+#define BOOST_TEST_TIMEOUT (30 * KYTHIRA_TEST_TIMEOUT_SCALE)
 
 #include <thread>
 #include <chrono>
@@ -59,7 +60,8 @@ struct CoAPIntegrationFixture {
 BOOST_FIXTURE_TEST_SUITE(coap_integration_tests, CoAPIntegrationFixture)
 
 // Integration test for client-server communication
-BOOST_AUTO_TEST_CASE(test_client_server_communication, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_client_server_communication,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     BOOST_TEST_MESSAGE("Integration test: Client-server communication");
 
     // Create server configuration
@@ -137,7 +139,8 @@ BOOST_AUTO_TEST_CASE(test_client_server_communication, *boost::unit_test::timeou
 }
 
 // Integration test for DTLS handshake and secure communication
-BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, *boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     BOOST_TEST_MESSAGE("Integration test: DTLS handshake and secure communication");
 
     // Test PSK-based DTLS configuration
@@ -228,7 +231,8 @@ BOOST_AUTO_TEST_CASE(test_dtls_handshake_secure_communication, *boost::unit_test
 }
 
 // Integration test for block transfer with large messages
-BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     BOOST_TEST_MESSAGE("Integration test: Block transfer with large messages");
 
     // Create configurations with block transfer enabled
@@ -312,7 +316,8 @@ BOOST_AUTO_TEST_CASE(test_block_transfer_large_messages, *boost::unit_test::time
 }
 
 // Integration test for multicast communication scenarios
-BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     BOOST_TEST_MESSAGE("Integration test: Multicast communication scenarios");
 
     // Test multicast configuration
@@ -396,7 +401,8 @@ BOOST_AUTO_TEST_CASE(test_multicast_communication_scenarios, *boost::unit_test::
 }
 
 // Integration test for error recovery and resilience
-BOOST_AUTO_TEST_CASE(test_error_recovery_resilience, *boost::unit_test::timeout(90)) {
+BOOST_AUTO_TEST_CASE(test_error_recovery_resilience,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
     BOOST_TEST_MESSAGE("Integration test: Error recovery and resilience");
 
     coap_client_config client_config;
@@ -451,7 +457,8 @@ BOOST_AUTO_TEST_CASE(test_error_recovery_resilience, *boost::unit_test::timeout(
 }
 
 // Integration test for performance and concurrent requests
-BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, *boost::unit_test::timeout(180)) {
+BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(180))) {
     BOOST_TEST_MESSAGE("Integration test: Performance and concurrent requests");
 
     coap_server_config server_config;
@@ -610,7 +617,8 @@ BOOST_AUTO_TEST_CASE(test_performance_concurrent_requests, *boost::unit_test::ti
 }
 
 // Integration test for complete request-response cycles
-BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     BOOST_TEST_MESSAGE("Integration test: Complete request-response cycles");
 
     // Test complete RequestVote cycle
@@ -768,7 +776,8 @@ BOOST_AUTO_TEST_CASE(test_complete_request_response_cycles, *boost::unit_test::t
 }
 
 // Integration test for end-to-end message flow with serialization
-BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow, *boost::unit_test::timeout(120)) {
+BOOST_AUTO_TEST_CASE(test_end_to_end_message_flow,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
     BOOST_TEST_MESSAGE("Integration test: End-to-end message flow with serialization");
 
     // Test message serialization/deserialization cycle

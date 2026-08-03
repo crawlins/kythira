@@ -11,6 +11,8 @@
 #include <fstream>
 #include <thread>
 
+#include "test_timeout_scale.hpp"
+
 using namespace kythira;
 using namespace raft::testing;
 
@@ -37,7 +39,7 @@ auto read_file(const std::string& path) -> std::string {
 // A successful reload_tls_material() call re-invokes coap_context_set_pki() on
 // the live context without tearing it down (Requirement 16.2/16.4).
 BOOST_AUTO_TEST_CASE(coap_server_reload_succeeds_with_valid_material,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     ca_test_fixture fixture;
     const auto& files =
         fixture.bootstrap_client("coap-reload-server", {"localhost"}, {"127.0.0.1"});
@@ -61,7 +63,8 @@ BOOST_AUTO_TEST_CASE(coap_server_reload_succeeds_with_valid_material,
 
 // reload_tls_material() rejects unparseable material and requires cert_file
 // to have been configured in the first place (Requirement 16.3).
-BOOST_AUTO_TEST_CASE(coap_server_reload_rejects_invalid_material, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(coap_server_reload_rejects_invalid_material,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     ca_test_fixture fixture;
     const auto& files =
         fixture.bootstrap_client("coap-reload-invalid", {"localhost"}, {"127.0.0.1"});
@@ -83,7 +86,8 @@ BOOST_AUTO_TEST_CASE(coap_server_reload_rejects_invalid_material, *boost::unit_t
     replace_file(files.cert_path(), original_cert);
 }
 
-BOOST_AUTO_TEST_CASE(coap_server_reload_requires_cert_configured, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(coap_server_reload_requires_cert_configured,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     coap_server_config config;
     config.enable_dtls = false;  // no cert_file/key_file configured
 
@@ -96,7 +100,7 @@ BOOST_AUTO_TEST_CASE(coap_server_reload_requires_cert_configured, *boost::unit_t
 // enable_auto_reload()/disable_auto_reload() start and cleanly stop a
 // background poll thread without disturbing the server (Requirement 16.5/16.6).
 BOOST_AUTO_TEST_CASE(coap_server_auto_reload_starts_and_stops_cleanly,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     ca_test_fixture fixture;
     const auto& files = fixture.bootstrap_client("coap-auto-reload", {"localhost"}, {"127.0.0.1"});
 
@@ -122,7 +126,7 @@ BOOST_AUTO_TEST_CASE(coap_server_auto_reload_starts_and_stops_cleanly,
 
 // Same coverage for coap_client's own presented certificate under mutual DTLS.
 BOOST_AUTO_TEST_CASE(coap_client_reload_succeeds_with_valid_material,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     ca_test_fixture fixture;
     const auto& files = fixture.bootstrap_client("coap-reload-client", {"client.example.com"});
 
