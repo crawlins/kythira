@@ -1,0 +1,38 @@
+--- a/ionc/ion_internal.h
++++ b/ionc/ion_internal.h
+@@ -86,7 +86,35 @@
+ //#define DEFAULT_BLOCK_SIZE (1024*64)
+ 
+ // TODO: static final boolean _debug_on = false;
++#ifdef NDEBUG
++// A failed ASSERT() under NDEBUG must be a true no-op (matching plain
++// assert()'s own NDEBUG semantics), not this file's original unconditional
++// "while (!(x)) { ion_helper_breakpoint(), assert(x); }": assert(x) itself
++// compiles away entirely under NDEBUG, so the loop condition never becomes
++// true and a failed invariant spins forever burning CPU instead of either
++// aborting (debug builds) or being skipped (release builds). Confirmed
++// directly: malformed/truncated input reaching an internal reader-state
++// invariant (e.g. ion_reader_step_out() on a container whose declared
++// length was never fully consumed because the input buffer was truncated
++// mid-container) hung a Release (NDEBUG) build indefinitely at 100% CPU
++// inside this exact macro, for input a caller is fully entitled to reject
++// gracefully rather than have hang the whole process.
++// while (0) {}, not ((void)0) or do {} while (0): several call sites in
++// this codebase invoke ASSERT(x) as a standalone statement with no
++// trailing semicolon (e.g. ion_writer.c's `ASSERT(pwriter)` directly
++// followed by `ASSERT(annotation);` on the next line), relying on the
++// original bare while-loop already being a complete statement with no
++// semicolon needed (unlike a do-while, whose trailing `;` is part of its
++// own grammar). A plain ((void)0) is only an expression (two adjacent
++// expansions with no semicolon between them parse as one calling the
++// other); do {} while (0) needs a semicolon the same call sites don't
++// provide. Both failed to compile here, confirmed directly, before
++// landing on while (0) {} -- the same statement shape as the original
++// macro, just with an always-false condition so the body never runs.
++#define ASSERT( x ) while (0) {}
++#else
+ #define ASSERT( x ) while (!(x)) { ion_helper_breakpoint(), assert( x ); }
++#endif
+ #define STR(x)   #x
+ #define XSTR(x)  STR(x)
+ 

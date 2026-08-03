@@ -297,7 +297,23 @@ if(ionc_FOUND)
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     )
-    target_compile_definitions(raft_ion_serializer INTERFACE KYTHIRA_ION_SERIALIZER_AVAILABLE)
+    # ion-c's own ion_decimal.h #errors ("DECNUMDIGITS must be defined to be
+    # >= DECQUAD_Pmax") unless every translation unit that includes it also
+    # defines DECNUMDIGITS -- decNumber/decQuad values must be laid out
+    # identically between ion-c's own compiled library and any consumer's
+    # includes of its headers. ion-c's own CMakeLists.txt sets this via
+    # add_definitions(-DDECNUMDIGITS=${IONC_DECIMAL_NUM_DIGITS}) with a
+    # default of "34", which is directory-scoped and not exported on
+    # IonC::ionc's usage requirements, so consumers never inherit it
+    # transitively -- confirmed directly (a fresh consumer build failed with
+    # exactly that #error until this was added). vcpkg-overlays/ion-c's
+    # portfile.cmake does not override IONC_DECIMAL_NUM_DIGITS, so 34 (the
+    # value ion-c itself was actually built with here) is correct; bump this
+    # only in lockstep with that portfile if it ever passes a different
+    # -DIONC_DECIMAL_NUM_DIGITS=... value.
+    target_compile_definitions(raft_ion_serializer INTERFACE
+        KYTHIRA_ION_SERIALIZER_AVAILABLE
+        DECNUMDIGITS=34)
     target_compile_features(raft_ion_serializer INTERFACE cxx_std_23)
     message(STATUS "raft_ion_serializer target: enabled (.kiro/specs/ion-rpc-serializer/)")
 else()

@@ -67,9 +67,9 @@ unambiguous at a glance.
 
 ### Partially Implemented
 
-| Spec | Tasks | Notes |
-|------|-------|-------|
-| `ion-rpc-serializer` | ~40/45 | `ion_rpc_serializer<Data>` (`include/raft/ion_serializer.hpp`) over `ion-c`: `ion-c` overlay port (`vcpkg-overlays/ion-c`) + opt-in `ion` vcpkg feature, `ION_SERIALIZER` Kconfig symbol + `raft_ion_serializer` INTERFACE target (graceful degradation like `COAP_TRANSPORT`), all 14 RPC serialize/deserialize pairs with annotation-tagged structs and native `blob` payloads, binary+text encodings with encoding-agnostic deserialize, `application/ion` CoAP Content-Format (65000) + HTTP `Content-Type` (cpp-httplib and Beast), full unit/round-trip/malformed/JSON-equivalence tests, README + example program. Header C++-validated via a faithful `ion-c` API stub (`-fsyntax-only`); ion targets are **not built by default** (opt-in `ion` feature absent in default vcpkg install), so the final compile/run of ion targets and the end-to-end HTTP/CoAP sanity check (`tasks.md` 9.1/9.4) await a build with the `ion` feature enabled. The overlay portfile's `SHA512` is a `0` placeholder to regenerate on first real fetch (see `vcpkg-overlays/ion-c/README.md`). |
+Every spec that used to be tracked in this table has since reached full
+completion; the table is intentionally empty (kept, not deleted, so a
+future genuinely-partial spec has an obvious place to be listed).
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
 completion (18/18 and 17/17) on July 30, 2026 via
@@ -99,6 +99,26 @@ MIGs, or CA pools. That first live run is what surfaced the three defects
 fixed alongside it: a bare network short name rejected by `instances.insert`,
 the CAS suite silently skipping while CTest reported the skip as a pass, and
 `provision_timeout_cleanup` never timing out while leaking its instance.
+
+`ion-rpc-serializer` is off this table too, now 45/45. The row's last open
+items were task 9's final validation (9.1-9.4) — never actually run,
+because the opt-in `ion` vcpkg feature had never actually been built: the
+overlay portfile's `SHA512` was a `0` placeholder, so `ion_rpc_serializer`
+had only ever been validated against a hand-written `ion-c` API stub
+(`-fsyntax-only`), not the real library. Actually installing `ion-c` and
+building the real `ion_*` test targets against it surfaced four genuine
+bugs — three of them in `ion-c` itself, not this codebase (a `git describe`
+version-generation fallback ion-c's own build lacks, a CMake config
+filename-casing mismatch, a missing `DECNUMDIGITS` propagation, and —
+the notable one — `ion-c`'s own `ASSERT()` macro spinning forever under
+`-DNDEBUG` instead of no-op'ing, a real hang on malformed/truncated input
+found by this spec's own "never crashes" property test). All fixed (three
+vcpkg overlay-port patches plus one `CMakeLists.txt` fix); all 6 `ion_*`
+CTest binaries now pass, including a new end-to-end test
+(`tests/ion_http_coap_end_to_end_test.cpp`, task 9.4) driving a real
+RequestVote/AppendEntries/InstallSnapshot cycle over both HTTP and CoAP.
+See `.kiro/specs/ion-rpc-serializer/tasks.md`'s own "Known Follow-ups" for
+the full accounting.
 
 **A note on how this table stays honest**: `proxygen-http-transport/tasks.md`
 was found, in the same week, drifted in *both* directions in turn — first
