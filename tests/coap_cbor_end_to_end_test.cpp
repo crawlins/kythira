@@ -31,7 +31,11 @@ using namespace kythira;
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t test_bind_port = 57831;
+// Servers here bind port 0 and the client endpoint is built from
+// server.bound_port() after start(), so nothing in this file depends on a
+// fixed port being free. A literal would work today -- no other binding coap
+// test uses 57831 -- but it silently assumes both that the port is unoccupied
+// on the runner and that no future test picks the same number.
 constexpr std::uint64_t test_node_id = 1;
 constexpr std::chrono::milliseconds test_timeout{5000};
 
@@ -77,8 +81,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_request_vote_round_trip,
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
-    coap_server<test_transport_types> server(test_bind_address, test_bind_port, server_config,
-                                             server_metrics);
+    coap_server<test_transport_types> server(test_bind_address, 0, server_config, server_metrics);
 
     server.register_request_vote_handler(
         [](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
@@ -89,7 +92,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_request_vote_round_trip,
     kythira::coap_client_config client_config;
     client_config.enable_dtls = false;
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, test_bind_port);
+    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, server.bound_port());
     kythira::noop_metrics client_metrics;
     coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
 
@@ -109,8 +112,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_append_entries_round_trip,
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
-    coap_server<test_transport_types> server(test_bind_address, test_bind_port + 1, server_config,
-                                             server_metrics);
+    coap_server<test_transport_types> server(test_bind_address, 0, server_config, server_metrics);
 
     server.register_append_entries_handler(
         [](const kythira::append_entries_request<>& req) -> kythira::append_entries_response<> {
@@ -121,7 +123,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_append_entries_round_trip,
     kythira::coap_client_config client_config;
     client_config.enable_dtls = false;
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, test_bind_port + 1);
+    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, server.bound_port());
     kythira::noop_metrics client_metrics;
     coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
 
@@ -141,8 +143,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip,
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
-    coap_server<test_transport_types> server(test_bind_address, test_bind_port + 2, server_config,
-                                             server_metrics);
+    coap_server<test_transport_types> server(test_bind_address, 0, server_config, server_metrics);
 
     server.register_install_snapshot_handler(
         [](const kythira::install_snapshot_request<>& req) -> kythira::install_snapshot_response<> {
@@ -153,7 +154,7 @@ BOOST_AUTO_TEST_CASE(test_cbor_install_snapshot_round_trip,
     kythira::coap_client_config client_config;
     client_config.enable_dtls = false;
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, test_bind_port + 2);
+    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, server.bound_port());
     kythira::noop_metrics client_metrics;
     coap_client<test_transport_types> client(std::move(endpoints), client_config, client_metrics);
 
