@@ -277,8 +277,30 @@ like a passing result will mislead quietly.
    0% for the same tests in Release on the same runner and selection. That
    confirmed build-configuration timing as the cause and put the fix in timeout
    budgets rather than test logic. See [The resolution](#the-resolution).
-   **arm64 remains untested** — the measurement job runs x64 only, so whether
-   the slower arm64 runners need a scale above 4 is not known.
+   **Update (2026-08-04): the same problem existed on g++ Release, and the
+   original fix did not cover it.** PR #140 applied the scale only in
+   `ci.yml`'s Coverage job, leaving the four `Build & Test` legs at scale 1.
+   Measured on g++-13 x64 Release, 9 runs of the full suite:
+
+   | test | clang Release | g++ Release |
+   |---|---:|---:|
+   | `coap_confirmable_message_property_test` | 0% | **89%** |
+   | `coap_duplicate_detection_property_test` | 0% | **89%** |
+   | `coap_connection_reuse_property_test` | 0% | **67%** |
+   | `coap_concurrent_processing_property_test` | 0% | **67%** |
+   | `coap_future_resolution_property_test` | 0% | **56%** |
+
+   Same mechanism: g++ Release runs these tests 1.3-5.0x slower than clang
+   (median 1.4x), and the budgets were implicitly sized against clang, the
+   fastest configuration in the matrix. The scale is now applied to every
+   `Build & Test` leg, not only Coverage.
+
+   This is why three consecutive PRs -- #144, #145, #146, two of which changed
+   no test code at all -- failed on `Build & Test (g++-13, x64)` while `main`
+   passed: the leg was genuinely broken, and only ever passed by luck.
+
+   **arm64 remains untested.** It is covered by the same 4x, but whether that
+   is sufficient on those slower runners has not been measured.
 2. **What is null at `coap_thread_safety_property_test.cpp:309`,** and is
    `coap_pdu_encode_header: unsupported protocol` cause or symptom?
 3. **Is the ephemeral-port migration worth finishing?** `7edf99b` introduced
