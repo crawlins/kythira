@@ -59,6 +59,14 @@ using coap_pdu_code_t = std::uint8_t;
 
 namespace kythira {
 
+// kythira::coap_max_token_length is defined in coap_utils.hpp, which is
+// compiled with and without libcoap. Where libcoap really is present, hold it
+// to libcoap's own limit so the two definitions cannot drift apart.
+#ifdef LIBCOAP_AVAILABLE
+static_assert(coap_max_token_length == COAP_TOKEN_DEFAULT_MAX,
+              "kythira::coap_max_token_length must match libcoap's own token limit");
+#endif
+
 // Message tracking structures - using callbacks to work with generic future types
 struct pending_message {
     std::string token;

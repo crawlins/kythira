@@ -631,6 +631,19 @@ target_compile_features(coap_config_test PRIVATE cxx_std_23)
 add_test(NAME coap_config_test COMMAND coap_config_test)
 set_tests_properties(coap_config_test PROPERTIES TIMEOUT 60 LABELS "coap;unit")
 
+# Token length cap (RFC 7252 5.3.1). Pure header logic, so it runs on every
+# build leg regardless of whether libcoap is present -- which matters, because
+# the bug it guards was invisible until libcoap was wired into the non-stub
+# path and could only be seen as a libcoap warning even then.
+add_executable(coap_token_length_test coap_token_length_test.cpp)
+target_link_libraries(coap_token_length_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_token_length_test PRIVATE cxx_std_23)
+add_test(NAME coap_token_length_test COMMAND coap_token_length_test)
+set_tests_properties(coap_token_length_test PROPERTIES TIMEOUT 60 LABELS "coap;unit")
+
 # ── coap-transport-security tests ─────────────────────────────────────────
 
 # Mode selection (Requirement 9.1, 9.2) — no libcoap/OpenSSL dependency,

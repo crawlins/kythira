@@ -284,6 +284,43 @@ This has been latent because nothing exercised the real libcoap path: before
 `d54bc46` (2026-07-31) every `#ifdef LIBCOAP_AVAILABLE` branch compiled out to
 the stub. It is tracked separately from this investigation.
 
+#### Resolved
+
+Fixed by replacing the variable-width decimal token with a fixed-width one:
+eight lowercase hex digits of the request counter, which is exactly
+`coap_max_token_length` bytes for every possible counter value. The width can
+no longer vary with the counter, so the failure is removed by construction
+rather than by a bounds check.
+
+Measured end-to-end against real libcoap, counting
+`coap_send: PDU dropped as token too long` warnings over the 200 requests
+`coap_thread_safety_property_test` issues:
+
+| | Dropped PDUs |
+|---|---:|
+| before | **101** |
+| after | **0** |
+
+101 is exactly the predicted count, which is worth stating because it confirms
+the mechanism rather than merely the outcome: `_token_counter` starts at 1, so
+`token_1` … `token_99` fit in 8 bytes and requests 100 through 200 inclusive —
+101 of them — did not.
+
+Two further changes came with it:
+
+* `send_rpc()` now rejects an over-long token explicitly instead of letting
+  `coap_add_token()` accept it and `coap_send()` discard the result. The
+  original defect was not just the wrong width, it was that exceeding the cap
+  was **silent**; any future regression now raises `coap_transport_error`
+  attributable to the call that caused it.
+* `coap_max_token_length` replaces three separately hardcoded `8`s and is
+  `static_assert`ed against libcoap's own `COAP_TOKEN_DEFAULT_MAX` wherever
+  libcoap is present, so the project constant cannot drift from the library's.
+
+`tests/coap_token_length_test.cpp` covers the boundary directly, and was
+confirmed to fail against the old encoding before being kept — reporting
+`[7 != 8]` for low counters and `[9 != 8]` from 100 onward.
+
 ## What was tried and failed
 
 PR #133 (closed) attempted three changes. A matched before/after measurement —
