@@ -712,6 +712,37 @@ original task descriptions, not oversights:
   real AWS repeatedly — none of these cases have yet executed their real
   assertion logic against a live Azure subscription. Treat the pass/fail
   behavior of each case's actual body as unverified until a real run happens.
+
+  **This claim was re-checked on August 4, 2026 and still holds — but it very
+  nearly stopped being believed for the wrong reason.** The `Real Cloud Tests
+  (Azure)` job has two runs recorded as `success`
+  ([30633133161](https://github.com/crawlins/kythira/actions/runs/30633133161)
+  and
+  [30642873722](https://github.com/crawlins/kythira/actions/runs/30642873722),
+  both July 31, 2026), which read as exactly the "first real run" this
+  paragraph is waiting for. They are not. Querying each job's step statuses
+  shows `Run quorum-manager bundle` and `Run key-vault bundle` both
+  `skipped` in both runs: the job installed dependencies, built
+  `azure_quorum_manager_real_test` and
+  `azure_key_vault_ca_provider_real_test`, authenticated via Workload
+  Identity Federation, ran **zero** test cases, and reported green. The cause
+  is that `BUNDLE_QUORUM_MANAGER`/`BUNDLE_KEY_VAULT` resolve from
+  `REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED`/`..._KEY_VAULT_ENABLED`,
+  neither of which is set, so both steps' `if:` conditions were false.
+
+  `scripts/run-real-cloud-suite.sh`'s fail-closed-on-skip check (August 1,
+  2026) does not catch this and cannot by construction — it fires when the
+  suite runs but skips its cases, whereas here the workflow step itself is
+  disabled and the script never executes. A `Fail closed if no test bundle is
+  enabled` guard was added to the aws, azure and gcp jobs to close it, so a
+  future run in this configuration fails in seconds instead of going green
+  after a full build.
+
+  The lesson generalizes past this spec, and matches
+  `doc/coap-flake-investigation.md`'s own closing note about measurements that
+  fail silently and read as results: a green real-cloud run is **not**
+  evidence that anything ran. Check the step statuses, or the test counts,
+  before treating one as a first live verification.
 - **`AzureIntegrationFixture` creates no network infrastructure itself** —
   it requires `AZURE_TEST_VNET_ID`/`AZURE_TEST_NSG_ID`/
   `AZURE_TEST_SUBNET_ID_ZONE{1,2,3}` to already point at operator-provisioned

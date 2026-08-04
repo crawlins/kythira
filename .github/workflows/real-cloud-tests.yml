@@ -148,6 +148,17 @@ jobs:
           echo "::error::REAL_CLOUD_TESTS_AWS_ENABLED is true but the AWS_CI_ROLE_ARN repository variable is unset. See scripts/ci-cloud-credentials/aws/README.md." >&2
           exit 1
 
+      # A job whose every bundle is disabled still builds, authenticates and
+      # reports success while running zero tests. run-real-cloud-suite.sh's
+      # own skip guard cannot catch this: a step disabled by `if:` never runs
+      # the script at all. See this job's sibling guard in the azure job for
+      # the real occurrence that motivated adding these.
+      - name: Fail closed if no test bundle is enabled
+        if: ${{ env.BUNDLE_EC2_QUORUM != 'true' && env.BUNDLE_CA_CLUSTER != 'true' && env.BUNDLE_CA_CLUSTER_RPC_TLS != 'true' }}
+        run: |
+          echo "::error::The AWS job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set one or more of REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_ENABLED / REAL_CLOUD_TESTS_AWS_CA_CLUSTER_RPC_TLS_ENABLED, or pass the aws_bundle_* workflow_dispatch inputs." >&2
+          exit 1
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -559,6 +570,25 @@ jobs:
           echo "::error::REAL_CLOUD_TESTS_AZURE_ENABLED is true but AZURE_CI_CLIENT_ID/AZURE_CI_TENANT_ID/AZURE_CI_SUBSCRIPTION_ID are not all set. See scripts/ci-cloud-credentials/azure/README.md." >&2
           exit 1
 
+      # This guard exists because the failure it catches actually happened.
+      # Runs 30633133161 and 30642873722 (July 31, 2026) both reported the
+      # Azure job as SUCCESS while "Run quorum-manager bundle" and "Run
+      # key-vault bundle" were each `skipped` — the job installed
+      # dependencies, built both real-Azure binaries, authenticated via
+      # Workload Identity Federation, ran no tests at all, and went green.
+      # Those two runs were then read as evidence that the real-Azure suite
+      # had passed against a live subscription, which it never has.
+      #
+      # run-real-cloud-suite.sh's fail-closed-on-skip check (added August 1,
+      # 2026) cannot catch this case by construction: it fires when the suite
+      # runs but skips its cases, whereas here the workflow step itself is
+      # disabled by `if:` and the script is never invoked.
+      - name: Fail closed if no test bundle is enabled
+        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_KEY_VAULT != 'true' }}
+        run: |
+          echo "::error::The Azure job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_AZURE_QUORUM_MANAGER_ENABLED and/or REAL_CLOUD_TESTS_AZURE_KEY_VAULT_ENABLED, or pass the azure_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/azure/README.md." >&2
+          exit 1
+
       - name: Install system dependencies
         run: |
           for attempt in 1 2 3; do
@@ -742,6 +772,14 @@ jobs:
         if: ${{ vars.GCP_CI_WORKLOAD_IDENTITY_PROVIDER == '' || vars.GCP_CI_SERVICE_ACCOUNT == '' }}
         run: |
           echo "::error::REAL_CLOUD_TESTS_GCP_ENABLED is true but GCP_CI_WORKLOAD_IDENTITY_PROVIDER and/or GCP_CI_SERVICE_ACCOUNT repository variables are unset. See scripts/ci-cloud-credentials/gcp/README.md." >&2
+          exit 1
+
+      # See the azure job's equivalent guard for the real occurrence that
+      # motivated these; the same hole exists in every provider job.
+      - name: Fail closed if no test bundle is enabled
+        if: ${{ env.BUNDLE_QUORUM_MANAGER != 'true' && env.BUNDLE_PRIVATECA != 'true' }}
+        run: |
+          echo "::error::The GCP job was enabled but every test bundle is disabled, so it would run zero tests and still report success. Set REAL_CLOUD_TESTS_GCP_QUORUM_MANAGER_ENABLED and/or REAL_CLOUD_TESTS_GCP_PRIVATECA_ENABLED, or pass the gcp_bundle_* workflow_dispatch inputs. See scripts/ci-cloud-credentials/gcp/README.md." >&2
           exit 1
 
       - name: Authenticate to Google Cloud (Workload Identity Federation)
