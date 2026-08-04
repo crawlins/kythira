@@ -525,8 +525,34 @@ underneath, `folly::Future<T>`.
 
 ## Known Follow-ups
 
-None remain open. Every gap this section has ever listed is now closed
-**and CI-verified** — see Tasks 11-15 above for what each one delivered,
+**One open item (August 4, 2026): `proxygen_transport_test`'s intermittent
+`ingress timeout, streamID=1, timeout=3000ms` in `tls_request_vote_round_trip`
+is reduced but not proven fixed.** `dd041bf` switched both TLS fixtures from
+RSA-2048 to P-256 keys, after measuring that generating an RSA-2048 key via the
+`openssl` CLI cost 741-2966ms on 2 pinned cores under load — a single sample
+consuming essentially the whole 3000ms RPC budget the test hardcodes. Under
+identical load the worst observed case time fell from 2321ms to 192ms (a 15x
+margin against the deadline rather than 1.3x), and CI artifacts confirm the
+test went from 3.09s to 0.72s. The same commit adopted
+`tests/test_timeout_scale.hpp` here — this was the last concurrency-heavy suite
+without it — so the 12 case timeouts and 9 RPC deadlines now scale with
+`KYTHIRA_TEST_TIMEOUT_SCALE` (a no-op at the default of 1).
+
+What this does **not** establish: the failure was never reproduced locally, in
+70 runs across 4, 2 and 1 cores and under heavy CPU load. Reduced fragility is
+not a proven root cause, so this stays open until CI has run clean for a while.
+If it recurs, the shared 2-thread `folly::IOThreadPoolExecutor` between client
+and server (`proxygen_transport_test.cpp:492`, `:500`, `:513` as of `dd041bf`
+— one pool constructed in the case and handed to both the server, via a
+non-owning `shared_ptr`, and the client) is the unexamined candidate. Do **not** re-open the certificate-lifetime theory: the
+`Failed to re-configure TLS: couldn't read cert file` errors that accompany the
+failure are benign noise from `server_reload_tls_material`/
+`client_reload_tls_material` deleting certs on purpose, and appear on passing
+runs too — that was this investigation's first and wrong diagnosis. Full
+accounting in `doc/coap-flake-investigation.md` Finding 6.
+
+Every other gap this section has ever listed is closed **and CI-verified** —
+see Tasks 11-15 above for what each one delivered,
 and [PR #117](https://github.com/crawlins/kythira/pull/117) for the actual
 CI runs. This session's own local development environment could never
 produce a working `vcpkg install` (a from-scratch bootstrap failed
