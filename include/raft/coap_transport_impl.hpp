@@ -911,9 +911,17 @@ auto coap_client<Types>::add_uri_path_options(coap_pdu_t* pdu, const std::string
 template<typename Types>
 requires kythira::transport_types<Types>
 auto coap_client<Types>::generate_message_token() -> std::string {
-    // Generate a unique token for message correlation
-    // In a real implementation, this would generate a proper CoAP token
-    return "token_" + std::to_string(_token_counter.fetch_add(1));
+    // Fixed width, so the token cannot outgrow coap_max_token_length as the
+    // counter climbs -- see format_sequential_token() for the failure this
+    // replaces.
+    //
+    // Truncating the 64-bit counter to 32 bits is deliberate. Tokens only have
+    // to be unique among *outstanding* requests, not for all time:
+    // handle_response() looks each one up in _pending_requests, which is
+    // bounded and evicted. A collision would need one client to issue 2^32
+    // requests between a request being sent and its response arriving.
+    return coap_utils::format_sequential_token(
+        static_cast<std::uint32_t>(_token_counter.fetch_add(1)));
 }
 
 template<typename Types>
@@ -2333,6 +2341,22 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
 
         // Generate and set token
         auto token = generate_message_token();
+        // coap_add_token() accepts an over-long token; it is coap_send() that
+        // drops the PDU, and only to a log warning. That combination hid a
+        // silent send failure for every request past this client's 100th (see
+        // generate_message_token()). Fail loudly here instead, so a token that
+        // ever exceeds the cap surfaces as an error attributable to this call
+        // rather than as a request that simply never completes.
+        if (token.length() > coap_max_token_length) {
+            coap_delete_pdu(pdu);
+            coap_session_release(session);
+            _metrics.add_dimension("error_type", "coap_token_too_long");
+            _metrics.add_one();
+            _metrics.emit();
+            throw coap_transport_error("CoAP token exceeds " +
+                                       std::to_string(coap_max_token_length) +
+                                       " bytes: " + std::to_string(token.length()));
+        }
         if (!coap_add_token(pdu, token.length(), reinterpret_cast<const uint8_t*>(token.c_str()))) {
             coap_delete_pdu(pdu);
             coap_session_release(session);

@@ -10,6 +10,22 @@
 #include <raft/coap_exceptions.hpp>
 
 namespace kythira {
+
+/// @brief Maximum CoAP token length, in bytes.
+///
+/// RFC 7252 §5.3.1 gives the Token Length field 4 bits and reserves values
+/// 9-15, so a token is 0-8 bytes. libcoap enforces this in coap_send(), which
+/// *drops* an over-long PDU rather than failing the call that built it -- so
+/// exceeding this is silent at the point of use and has to be prevented at the
+/// point of generation.
+///
+/// Declared here, rather than used from `coap3/coap_pdu.h`, because the token
+/// helpers below and coap_client::generate_message_token() are all compiled in
+/// the stub build too, where libcoap's headers are not included at all.
+/// coap_transport.hpp static_asserts this against COAP_TOKEN_DEFAULT_MAX
+/// wherever libcoap is actually present, so the two cannot drift.
+inline constexpr std::size_t coap_max_token_length = 8;
+
 namespace coap_utils {
 
 // Endpoint parsing utilities
@@ -113,8 +129,9 @@ inline auto generate_coap_token(std::size_t length = 4) -> std::vector<std::byte
     if (length == 0) {
         throw coap_transport_error("Token length must be at least 1");
     }
-    if (length > 8) {
-        throw coap_transport_error("Token length must be at most 8 bytes");
+    if (length > coap_max_token_length) {
+        throw coap_transport_error("Token length must be at most " +
+                                   std::to_string(coap_max_token_length) + " bytes");
     }
 
     std::vector<std::byte> token(length);
@@ -132,7 +149,36 @@ inline auto generate_coap_token(std::size_t length = 4) -> std::vector<std::byte
 }
 
 inline auto is_valid_coap_token(const std::vector<std::byte>& token) -> bool {
-    return token.size() <= 8;  // CoAP tokens are max 8 bytes
+    return token.size() <= coap_max_token_length;
+}
+
+/// @brief Render a request counter as a fixed-width, printable CoAP token.
+///
+/// The result is *always* exactly `coap_max_token_length` bytes, for every
+/// input. That invariant is the whole point: the previous scheme built tokens
+/// as `"token_" + std::to_string(n)`, which is 7 bytes at n=0 and 9 bytes from
+/// n=100 onward. Nothing rejected the over-long token -- coap_add_token()
+/// accepted it and coap_send() silently dropped the PDU -- so a client stopped
+/// transmitting after its 100th request with only a libcoap warning to show
+/// for it. A width that cannot vary with the counter removes that failure mode
+/// by construction rather than by check.
+///
+/// Lowercase hex keeps tokens printable, which matters because the transport
+/// logs the token on ~45 paths and uses it as an `_pending_requests` map key.
+/// Most-significant nibble first, so lexicographic order matches numeric order
+/// when reading logs.
+inline auto format_sequential_token(std::uint32_t counter) -> std::string {
+    // Eight hex digits carry exactly the 32 bits of `counter`. If the cap ever
+    // changes, this mapping has to be revisited rather than silently truncate.
+    static_assert(coap_max_token_length == 8,
+                  "format_sequential_token encodes a uint32_t as exactly 8 hex digits");
+    static constexpr char hex_digits[] = "0123456789abcdef";
+    std::string token(coap_max_token_length, '0');
+    for (std::size_t i = 0; i < coap_max_token_length; ++i) {
+        const auto shift = 4U * static_cast<unsigned>(coap_max_token_length - 1U - i);
+        token[i] = hex_digits[(counter >> shift) & 0xFU];
+    }
+    return token;
 }
 
 // CoAP option handling utilities
