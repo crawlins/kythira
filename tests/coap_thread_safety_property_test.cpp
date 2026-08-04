@@ -195,7 +195,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
 
         // Heap-owned; see the ownership note at the top of this file.
         auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints,
-                                                                         client_config, metrics);
+                                                                          client_config, metrics);
 
         // Test 1: Concurrent client slot acquisition (public API)
         std::vector<std::thread> threads;
@@ -270,8 +270,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
     // send_rpc() -> get_or_create_session() -> libcoap, all serialized on the
     // client's own recursive mutex, so it is the case most likely to still
     // have threads running when its timeout fires.
-    auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config,
-                                                                      metrics);
+    auto client =
+        std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config, metrics);
 
     // Test: Concurrent RPC requests
     std::vector<std::thread> threads;
@@ -325,8 +325,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
         {test_node_id, "coap://127.0.0.1:61070"}};
 
     // Heap-owned; see the ownership note at the top of this file.
-    auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config,
-                                                                      metrics);
+    auto client =
+        std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config, metrics);
 
     // Test: Concurrent configuration status checks
     std::vector<std::thread> threads;
