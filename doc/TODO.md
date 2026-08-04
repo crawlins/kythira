@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: July 30, 2026
+**Last Updated**: August 4, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -8,25 +8,35 @@ For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
 The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 
-- **395/395 tests passing** on the full `ci_full_defconfig` suite (5 additional
-  tests registered since the Proxygen HTTP transport spec's `proxygen_transport_test`/
-  `http_transport_comparison_benchmark_test` targets landed) — the
-  `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
+- **403/403 tests passing, 0 failures, 0 skipped** on the full
+  `ci_full_defconfig` suite, on all four `Build & Test` legs (`g++-13`/
+  `clang++-18` × x64/arm64). Read off the JUnit artifacts of a specific
+  green run rather than asserted — run
+  [30947491385](https://github.com/crawlins/kythira/actions/runs/30947491385),
+  commit `1a52e1f`, August 4, 2026. Counting note: the `ion_*` binaries are
+  **not** in that 403, since the `ion` vcpkg feature is opt-in and absent
+  from the default CI install; the `grpc_*` binaries **are**, since `grpc`
+  is an unconditional `vcpkg.json` dependency.
+- The `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
   `ca_cluster_node_rpc_tls_restart_test` family's own intermittent SIGTERM-
-  shutdown hang (see "Known Follow-ups" below) is now fixed and verified,
-  not just believed fixed
+  shutdown hang (see "Known Follow-ups" below) is fixed and verified, not
+  just believed fixed
 - All specifications complete across all 8 feature areas (membership change now complete),
   plus peer-to-peer log replication/gossip catch-up, state machine examples, the
   stdexec future backend, the Folly-vs-stdexec performance benchmark suite,
   RPC-internal mTLS for `ca_cluster_node`, Kconfig-based build configuration,
-  and now Boost.Beast and Proxygen as two additional opt-in HTTP transports
+  Boost.Beast and Proxygen as two additional opt-in HTTP transports, a fourth
+  (gRPC/HTTP2) transport, three additional RPC serializers (CBOR, Protocol
+  Buffers, Amazon Ion) alongside the default JSON one, and Azure and GCP
+  joining AWS as supported cloud providers
+- `.kiro/specs/` now holds **45** per-feature spec directories, of which two
+  are outstanding — see "Pending Specifications" below
 - Build clean with no errors or warnings
 - Both Folly-decoupling follow-up gaps closed for `tests/`/`certificate_authority`:
   test-bootstrap backend-conditional gating (PR #93) and per-target rather than
   subdirectory-level Folly CMake gating (PR #94) — see "Known Follow-ups" below
-- Coverage floor: 88.99% (non-decreasing ratchet, see `coverage_floor.txt`;
-  re-baselined July 25, 2026 to match CI's own measurement after ten days of
-  accumulated drift from the prior 89.16% floor)
+- Coverage floor: 89.09% (non-decreasing ratchet, see `coverage_floor.txt` —
+  that file is the authority; this line has drifted from it before)
 
 ---
 
@@ -48,7 +58,7 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 ## Pending Specifications
 
 The table above tracks the original 8 major feature areas; `.kiro/specs/`
-has since grown to 44 per-feature spec directories, most now complete (see
+has since grown to 45 per-feature spec directories, most now complete (see
 `doc/CHANGELOG.md` for their individual completion entries). The specs
 below are the ones that are not, split into two tables since they're
 different kinds of "not done": genuinely never started (only a design/
@@ -61,15 +71,23 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `grpc-transport` | 0/67 | Design-only; new `network_client_type`/`network_server_type` transport pairing over gRPC/HTTP2, see Protocol Completeness/RPC Serializer entries below |
-| `protobuf-rpc-serializer` | 0/44 | Design-only; `.proto`-defined messages, `protobuf_rpc_serializer<Data>` |
+| `transport-multi-serializer` | 0/27 | Design-only; `media_type()` on `rpc_serializer`, a `serializer_registry` concept, `single_`/`multi_serializer_registry`, and HTTP `Accept`/`Content-Type` + CoAP Content-Format negotiation. The natural next feature: four serializers now ship (JSON, CBOR, protobuf, Ion) and no transport can negotiate between them |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
+
+`protobuf-rpc-serializer` came **off** this table on August 4, 2026 — it was
+listed here as "0/44 design-only" long after it had actually shipped. Its
+own `tasks.md` reads 44/44, `include/raft/protobuf_serializer.hpp` exists,
+and five `protobuf_*` test binaries run in CI (present by name in run
+30947491385's JUnit artifacts). Same correction, same day, applied to
+`gcp-cloud-services` (13/13, live-verified), `ion-rpc-serializer` (45/45),
+and `grpc-transport` (see below) — four specs that had all shipped while
+this table still called them unstarted.
 
 ### Partially Implemented
 
-Every spec that used to be tracked in this table has since reached full
-completion; the table is intentionally empty (kept, not deleted, so a
-future genuinely-partial spec has an obvious place to be listed).
+| Spec | Tasks | Notes |
+|------|-------|-------|
+| `grpc-transport` | 12.5/13 phases | Tasks 1–12 are implemented and **CI-verified**: `proto/raft.proto`, the `raft_grpc_transport` target, `include/raft/grpc_transport{,_impl}.hpp`, `grpc_exceptions.hpp`, `grpc_message_conversion.hpp`, plus `grpc_transport_conversion_property_test`, `grpc_transport_integration_test` and `grpc_transport_example_test` — all three of which pass on all four `Build & Test` legs. Its `tasks.md` had flagged Tasks 1.5/13 as needing "a build machine with gRPC/Protobuf present"; CI *is* one, because `grpc` is an unconditional `vcpkg.json` dependency (which is why nothing in `ci.yml` mentions gRPC by name, and why this went unnoticed). What genuinely remains of Task 13 is narrower: the `KYTHIRA_KCONFIG_STRICT` and graceful-degradation configure checks, and a performance sanity pass |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
 completion (18/18 and 17/17) on July 30, 2026 via
@@ -766,11 +784,14 @@ provider's support SHALL ship with at least one example configuration file
 (e.g. a `.env.example`, sample YAML/JSON config, or documented CLI-flag
 set) and accompanying documentation showing how to configure and run it —
 mirroring the existing `docker/ca_cluster_node/ca_cluster_node.env.example`/
-`docker/ca_service/ca_service.env.example` convention. AWS support does not
-yet have this; it's tracked here as an outstanding documentation gap rather
-than a separate checklist entry, since the underlying feature is already
-implemented and this is example/documentation work, not a missing
-capability.
+`docker/ca_service/ca_service.env.example` convention. **All three shipped
+providers — AWS, Azure and GCP — are currently missing it**; those two files
+are still the only `.env.example`s in the tree. Tracked here as an
+outstanding documentation gap rather than three separate checklist entries,
+since the underlying features are implemented and this is
+example/documentation work, not a missing capability. It is the single
+largest unmet *stated requirement* in this document, and grows by one every
+time a provider lands, so it is worth clearing before OCI or Alibaba start.
 
 - [x] **AWS** — `aws_ec2/asg_quorum_manager` (node ID = EC2 instance ID hex,
   `DescribeInstanceStatus` liveness, consistency poll) and
@@ -799,10 +820,24 @@ capability.
   doc's full test list (10 VM + 5 VMSS cases) and compiles/skip-paths
   cleanly, but none of it has run against a live Azure subscription yet —
   treat the real assertion logic as unverified until that first run happens.
-- [ ] **Google Cloud Platform (GCP)** — quorum manager backed by a Managed
-  Instance Group (node ID = GCE instance ID, `instances.get` status for
-  liveness) and a `certificate_provider` backed by Certificate Authority
-  Service (CAS)
+- [x] **Google Cloud Platform (GCP)** — `gcp_compute_quorum_manager` (direct
+  GCE `instances.insert`/`list`/`delete`, node ID = GCE instance ID,
+  `instances.get` status for liveness) and `gcp_mig_quorum_manager` (Managed
+  Instance Group, production-grade) and `gcp_privateca_certificate_provider`
+  (`certificate_provider` backed by Certificate Authority Service);
+  `google-cloud-cpp` with the `compute` and `privateca` components, gated
+  behind the independent `KYTHIRA_HAS_GCP_SDK`/`KYTHIRA_HAS_GCP_PRIVATECA`.
+  Spec at `.kiro/specs/gcp-cloud-services/`, 13/13. **Verified against live
+  GCP**, not just compile-verified: `gcp_quorum_manager_real_gce_test` passes
+  11/11 and `gcp_privateca_provider_real_test` passes while provisioning and
+  tearing down its own CA pool, using Workload Identity Federation
+  credentials provisioned by `scripts/ci-cloud-credentials/gcp/`, with a
+  post-run audit confirming no leaked instances, disks, MIGs, or CA pools.
+  That first live run is what surfaced three real defects (a bare network
+  short name rejected by `instances.insert`, the CAS suite silently skipping
+  while CTest reported the skip as a pass, and `provision_timeout_cleanup`
+  never timing out while leaking its instance). Like AWS and Azure, still
+  missing the example config file documented at the top of this section.
 - [ ] **Oracle Cloud Infrastructure (OCI)** — quorum manager backed by an
   Instance Pool and a `certificate_provider` backed by OCI Certificates
   Service
@@ -821,16 +856,33 @@ RequestPreVote, AppendEntries, InstallSnapshot, ClusterJoin, and their
 responses — see `tests/rpc_serializer_concept_test.cpp` for the exact
 surface a conforming implementation must cover).
 
-- [ ] **Protocol Buffers** — `.proto`-defined messages for the existing RPC
+- [x] **Protocol Buffers** — `.proto`-defined messages for the existing RPC
   request/response types, compiled via `protoc`; a schema-driven alternative
   to today's hand-rolled `boost::json` construction, with generated
-  accessors instead of manual field-by-field (de)serialization
-- [ ] **gRPC / protobuf-binary** — layers gRPC's binary wire format (protobuf
+  accessors instead of manual field-by-field (de)serialization. Implemented
+  as `protobuf_rpc_serializer<Data>` (`include/raft/protobuf_serializer.hpp`);
+  spec at `.kiro/specs/protobuf-rpc-serializer/`, 44/44. Five test binaries
+  (`protobuf_rpc_serializer_concept_test`, `..._serialization_property_test`,
+  `..._malformed_message_property_test`, `protobuf_rpc_integration_test`,
+  `protobuf_json_benchmark_test`) run in CI; wire-size/throughput numbers in
+  `doc/protobuf_serializer_performance_comparison.md`. Deliberately
+  independent of the gRPC transport below — distinct `.proto` packages, no
+  gRPC dependency
+- [x] **gRPC / protobuf-binary** — layers gRPC's binary wire format (protobuf
   payloads over HTTP/2) on top of the Protocol Buffers message definitions
-  above; would need its own `network_client_type`/`network_server_type`
+  above; needs its own `network_client_type`/`network_server_type`
   transport pairing (gRPC owns framing/HTTP/2 itself, unlike the
   serializer-only JSON path used over `tcp_rpc`/`tls_tcp_rpc`), not just a
-  new `serializer_type`
+  new `serializer_type`. Implemented as `grpc_client`/`grpc_server`
+  (`include/raft/grpc_transport{,_impl}.hpp`, `src/grpc_transport_impl.cpp`)
+  over `proto/raft.proto`, with TLS/mTLS, the callback API, metrics and the
+  optional network-concept extensions; `GRPC_TRANSPORT` Kconfig symbol,
+  gracefully degrading when gRPC/Protobuf are absent. Spec at
+  `.kiro/specs/grpc-transport/`; see the "Partially Implemented" table above
+  for the narrow remainder of Task 13 (strict-mode/graceful-degradation
+  configure checks and a performance sanity pass) — the transport itself and
+  its three test binaries are CI-verified. Docs in
+  `doc/grpc_transport_README.md`
 - [x] **CBOR (RFC 8949)** — compact binary JSON-equivalent encoding; same
   logical structure as `json_rpc_serializer`'s `boost::json::object` field
   layout, smaller wire size and no text-parsing overhead, likely the
@@ -840,9 +892,21 @@ surface a conforming implementation must cover).
   array/map/bool subset), byte fields carried as CBOR byte strings (no base64),
   absent optionals omitted, `name()` → `"cbor"` for CoAP `application/cbor`;
   no `vcpkg.json`/`Kconfig` change
-- [ ] **Amazon Ion** — Amazon's self-describing binary/text data format
+- [x] **Amazon Ion** — Amazon's self-describing binary/text data format
   (binary encoding for wire efficiency, with the text encoding available for
-  debugging/logging the same messages)
+  debugging/logging the same messages). Implemented as
+  `ion_rpc_serializer<Data>` (`include/raft/ion_serializer.hpp`) over an
+  `ion-c` vcpkg overlay port (`vcpkg-overlays/ion-c`), behind the **opt-in**
+  `ion` vcpkg feature and `ION_SERIALIZER` Kconfig symbol; binary and text
+  encodings with encoding-agnostic deserialize, `application/ion` CoAP
+  Content-Format (65000) and HTTP `Content-Type`. Spec at
+  `.kiro/specs/ion-rpc-serializer/`, 45/45. All 6 `ion_*` CTest binaries pass
+  against the **real** `ion-c` library — a first, which surfaced four genuine
+  bugs, three of them upstream in `ion-c` itself (notably its `ASSERT()`
+  macro spinning forever under `-DNDEBUG` on malformed input, fixed by an
+  overlay patch). Because the `ion` feature is opt-in, these binaries are
+  **not** part of the default CI build's 403 — enabling them needs
+  `vcpkg install --x-feature=ion`
 
 ### Metrics Backends
 
