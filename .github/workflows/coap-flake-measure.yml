@@ -72,6 +72,23 @@ on:
         required: false
         default: release
         options: [release, coverage]
+      compiler:
+        description: >
+          Compiler to measure. ci.yml builds every leg with both, but every
+          measurement so far used clang++-18 only, so the timeout scale is
+          validated for clang alone.
+        type: choice
+        required: false
+        default: "clang++-18"
+        options: ["clang++-18", "g++-13"]
+      arch:
+        description: >
+          Architecture. arm64 runners are slower than x64, so whether a scale
+          of 4 is sufficient there is untested.
+        type: choice
+        required: false
+        default: x64
+        options: [x64, arm64]
       timeout_scale:
         description: >
           KYTHIRA_TEST_TIMEOUT_SCALE for the build. Must match what the CI job
@@ -96,8 +113,8 @@ permissions:
 
 jobs:
   measure:
-    name: Measure ${{ github.event.inputs.label || 'coap' }} flake rate
-    runs-on: ubuntu-24.04
+    name: Measure ${{ github.event.inputs.label || 'coap' }} @ ${{ github.event.inputs.compiler || 'clang++-18' }}/${{ github.event.inputs.arch || 'x64' }}
+    runs-on: ${{ github.event.inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 240
     steps:
       - name: Checkout
@@ -107,7 +124,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             if sudo apt-get update -q && sudo apt-get install -y --no-install-recommends \
-                 clang-18 cmake ninja-build libfiu-dev ccache \
+                 clang-18 g++-13 cmake ninja-build libfiu-dev ccache \
                  autoconf autoconf-archive automake libtool; then
               exit 0
             fi
@@ -147,7 +164,8 @@ jobs:
           export VCPKG_BINARY_SOURCES='clear;x-gha,readwrite'
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git /tmp/vcpkg
           /tmp/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          /tmp/vcpkg/vcpkg install --triplet x64-linux --no-print-usage --x-feature=edhoc
+          TRIPLET="${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}"
+          /tmp/vcpkg/vcpkg install --triplet "$TRIPLET" --no-print-usage --x-feature=edhoc
         env:
           VCPKG_DEFAULT_TRIPLET: x64-linux
 
@@ -156,7 +174,7 @@ jobs:
           SCALE="${{ github.event.inputs.timeout_scale }}"
           SCALE_ARG=""
           [ -n "$SCALE" ] && SCALE_ARG="-DKYTHIRA_TEST_TIMEOUT_SCALE=$SCALE"
-          echo "configure: profile=${{ github.event.inputs.profile }} ${SCALE_ARG:-<no timeout scale>}"
+          echo "configure: profile=${{ github.event.inputs.profile }} compiler=${{ github.event.inputs.compiler || 'clang++-18' }} arch=${{ github.event.inputs.arch || 'x64' }} ${SCALE_ARG:-<no timeout scale>}"
           if [ "${{ github.event.inputs.profile }}" = "coverage" ]; then
             # Models ci.yml's Coverage job: instrumented AND Debug. Note that
             # job also passes -DKYTHIRA_TEST_TIMEOUT_SCALE; pass the same value
@@ -166,14 +184,14 @@ jobs:
               -DENABLE_COVERAGE=ON \
               -DCMAKE_BUILD_TYPE=Debug \
               $SCALE_ARG \
-              -DCMAKE_CXX_COMPILER=clang++-18 \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+              -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
+              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
           else
             cmake -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               $SCALE_ARG \
-              -DCMAKE_CXX_COMPILER=clang++-18 \
-              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
+              -DCMAKE_CXX_COMPILER=${{ github.event.inputs.compiler || 'clang++-18' }} \
+              -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ github.event.inputs.arch == 'arm64' && 'arm64-linux' || 'x64-linux' }}
           fi
 
       - name: Build
