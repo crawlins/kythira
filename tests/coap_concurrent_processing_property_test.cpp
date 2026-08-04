@@ -10,12 +10,23 @@
 
 #include <boost/test/data/test_case.hpp>
 
+#include <memory>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <chrono>
 
 #include "test_timeout_scale.hpp"
+
+// The transport objects and counters that worker threads touch are heap-owned
+// and captured by value, never by reference to a test case's own frame. A
+// `[&]` capture of a stack-local coap_client is what produced the "memory
+// access violation at address: 0x1ac" crash fixed in
+// coap_thread_safety_property_test.cpp: on Boost timeout, SIGALRM is handled
+// with siglongjmp(), which abandons the frame WITHOUT running destructors, so
+// worker threads are orphaned rather than joined and go on reading a frame the
+// next test case has already reused. See that file's header comment and
+// doc/coap-flake-investigation.md Finding 4 for the full chain.
 
 using namespace kythira;
 
@@ -229,32 +240,34 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property,
 
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
 
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
+    auto client = std::make_shared<coap_client<test_transport_types>>(endpoint_map, client_config,
+                                                                      noop_metrics{});
 
     // Property: Client should enforce concurrent request limits
-    std::atomic<std::size_t> successful_acquisitions{0};
-    std::atomic<std::size_t> failed_acquisitions{0};
-    std::atomic<std::size_t> currently_held{0};
+    auto successful_acquisitions = std::make_shared<std::atomic<std::size_t>>(0);
+    auto failed_acquisitions = std::make_shared<std::atomic<std::size_t>>(0);
+    auto currently_held = std::make_shared<std::atomic<std::size_t>>(0);
 
     // Try to acquire more slots than the limit, holding them simultaneously
     constexpr std::size_t total_attempts = 20;  // More than the limit
     std::vector<std::thread> threads;
 
     for (std::size_t i = 0; i < total_attempts; ++i) {
-        threads.emplace_back([&]() {
-            if (client.acquire_concurrent_slot()) {
-                successful_acquisitions.fetch_add(1);
-                currently_held.fetch_add(1);
+        threads.emplace_back(
+            [client, successful_acquisitions, failed_acquisitions, currently_held]() {
+                if (client->acquire_concurrent_slot()) {
+                    successful_acquisitions->fetch_add(1);
+                    currently_held->fetch_add(1);
 
-                // Hold the slot briefly to ensure concurrent usage
-                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+                    // Hold the slot briefly to ensure concurrent usage
+                    std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
-                currently_held.fetch_sub(1);
-                client.release_concurrent_slot();
-            } else {
-                failed_acquisitions.fetch_add(1);
-            }
-        });
+                    currently_held->fetch_sub(1);
+                    client->release_concurrent_slot();
+                } else {
+                    failed_acquisitions->fetch_add(1);
+                }
+            });
     }
 
     // Wait for all attempts
@@ -263,16 +276,17 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_limits_property,
     }
 
     // Property 1: Total attempts should equal successful + failed
-    BOOST_CHECK_EQUAL(successful_acquisitions.load() + failed_acquisitions.load(), total_attempts);
+    BOOST_CHECK_EQUAL(successful_acquisitions->load() + failed_acquisitions->load(),
+                      total_attempts);
 
     // Property 2: With stub implementation, concurrent processing may not be enforced
     // So we just verify that the mechanism works without strict enforcement
-    BOOST_TEST_MESSAGE("Successful acquisitions: " << successful_acquisitions.load());
-    BOOST_TEST_MESSAGE("Failed acquisitions: " << failed_acquisitions.load());
+    BOOST_TEST_MESSAGE("Successful acquisitions: " << successful_acquisitions->load());
+    BOOST_TEST_MESSAGE("Failed acquisitions: " << failed_acquisitions->load());
 
     // For stub implementation, we accept that all may succeed since there's no real CoAP library
     // The important thing is that the API works correctly
-    BOOST_CHECK(successful_acquisitions.load() > 0);
+    BOOST_CHECK(successful_acquisitions->load() > 0);
 }
 
 /**
