@@ -62,6 +62,46 @@ echo "test payload" | coap-client -m post -T text/plain coap://target_host:5683/
 
 ### Connection Issues
 
+#### Issue: A node goes silent after a period of normal operation
+
+**Symptoms:**
+- A peer that worked at startup stops sending, with **no exception and no
+  error return** — `send_request_vote()` and friends keep returning futures
+  that simply never resolve
+- The only evidence is a libcoap warning on stderr:
+  `WARN coap_send: PDU dropped as token too long (9 > 8)`
+- Onset is tied to a *request count*, not to elapsed time or load
+
+**Diagnosis:**
+```bash
+# Count dropped PDUs in a captured log
+grep -c "PDU dropped as token too long" node.log
+
+# Confirm nothing is on the wire despite the application still sending
+tcpdump -i any -n udp port 5683
+```
+
+**Cause and fix:**
+
+This was a real defect, fixed in `763f43b` (August 4, 2026). CoAP tokens are
+0-8 bytes — RFC 7252 §5.3.1 gives the Token Length field 4 bits — and
+`coap_client::generate_message_token()` built them as
+`"token_" + std::to_string(counter)`, which reaches **9 bytes at counter 100**.
+`coap_add_token()` accepts the over-long token; it is `coap_send()` that drops
+the PDU, and it only warns. So a client stopped transmitting after its 100th
+request while the application saw nothing wrong.
+
+If you see this signature on a build **older than `763f43b`**, that is the
+cause and the fix is to upgrade. On current builds an over-long token raises
+`coap_transport_error` from `send_rpc()` instead of being dropped silently, so
+this failure mode cannot recur unnoticed; `kythira::coap_max_token_length` is
+`static_assert`ed against libcoap's own `COAP_TOKEN_DEFAULT_MAX`.
+
+Note that the same signature is worth checking whenever a *custom* token
+scheme is introduced: any token generator must produce at most
+`coap_max_token_length` bytes for every input it can ever see, not merely for
+the values it was tested with.
+
 #### Issue: "Connection refused" or "Network unreachable"
 
 **Symptoms:**

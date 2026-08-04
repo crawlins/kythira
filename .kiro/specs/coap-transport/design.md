@@ -126,9 +126,18 @@ auto send_rpc(
 ) -> folly::Future<Response>;
 
 auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
-auto generate_message_token() -> std::vector<std::byte>;
+// Returns exactly kythira::coap_max_token_length (8) bytes, always. RFC 7252
+// 5.3.1 gives the Token Length field 4 bits, so 8 is the hard cap, and
+// libcoap enforces it in coap_send() by *dropping* an over-long PDU rather
+// than failing the call that built it -- exceeding it is silent at the point
+// of use and must be prevented at the point of generation. A variable-width
+// token (the original "token_" + std::to_string(n)) crossed the cap at n=100
+// and silently stopped a client transmitting; see doc/coap-flake-investigation.md
+// Finding 5. std::string, not std::vector<std::byte>: the token is a map key
+// in _pending_requests and is logged on ~45 paths, so it is kept printable.
+auto generate_message_token() -> std::string;
 auto setup_dtls_context() -> void;
-auto handle_response(coap_pdu_t* response, const std::vector<std::byte>& token) -> void;
+auto handle_response(coap_pdu_t* response, const std::string& token) -> void;
 
 // Memory pool management
 auto allocate_from_pool(std::size_t size) -> void*;

@@ -151,6 +151,59 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **CoAP/Proxygen test-reliability sweep — four fixes, one item still open
+  (August 4, 2026).** Full investigation record, with every
+  before/after measurement, in
+  [doc/coap-flake-investigation.md](coap-flake-investigation.md).
+  - **`coap_thread_safety_property_test`'s "memory access violation at
+    address: 0x1ac" — fixed** (`121f5ae`). Not a null dereference in the
+    case Boost blames, which only calls `is_dtls_enabled()` (`return
+    _config.enable_dtls;`) and cannot fault. A case that exceeds its
+    `*boost::unit_test::timeout()` is unwound by Boost via `siglongjmp()`
+    (`execution_monitor.ipp:873`), which **runs no destructors**: its worker
+    threads are orphaned rather than joined, and go on reading a
+    `coap_client` whose stack the *next* case has already reused. Fixed by
+    heap-owning the transport and counters and capturing them by value as
+    `shared_ptr`. Measured with the case forced to overrun: 11 crashes in 15
+    runs before, 0 after, with SIGALRM firing in every run of both arms as
+    the control.
+  - **The same pattern in `coap_connection_reuse_property_test` and
+    `coap_concurrent_processing_property_test` — fixed** (`1a52e1f`), 10
+    crashes in 12 runs before, 0 after. These used a `[&]` catch-all
+    capture, which is why an initial grep for `[&client` missed them.
+  - **`coap_client::generate_message_token()` exceeded CoAP's 8-byte token
+    cap — fixed** (`763f43b`). **A production bug, not a test issue.**
+    Tokens were `"token_" + std::to_string(n)`, which reaches 9 bytes at
+    n=100; `coap_add_token()` accepts an over-long token and `coap_send()`
+    then drops the PDU, logging only a warning while `send_rpc()` returns a
+    future that can never complete. A client silently stopped transmitting
+    after its 100th request. Latent because nothing exercised the real
+    libcoap path until `d54bc46` wired it into the non-stub build. Now a
+    fixed-width 8-hex-digit encoding, with `send_rpc()` throwing on any
+    over-long token so the failure can never be silent again, and
+    `coap_max_token_length` `static_assert`ed against libcoap's own
+    `COAP_TOKEN_DEFAULT_MAX`. Verified end-to-end: 101 dropped PDUs before,
+    0 after, over the 200 requests `coap_thread_safety_property_test` issues.
+  - **`proxygen_transport_test` TLS fixtures — reduced, still open**
+    (`dd041bf`). RSA-2048 keygen via the `openssl` CLI cost 741-2966ms under
+    load, against a 3000ms RPC deadline the test hardcodes in nine places;
+    switched to P-256 (worst case 2321ms → 192ms under identical load; 3.09s
+    → 0.72s in CI artifacts) and adopted `tests/test_timeout_scale.hpp`,
+    which this suite uniquely lacked. **The failure was never reproduced
+    locally** across 70 runs, so this reduces fragility rather than proving
+    a root cause — tracked as still open in
+    `.kiro/specs/proxygen-http-transport/tasks.md`.
+  - **A correction worth keeping.** Three places in the tree recorded that an
+    overrunning case aborts via `~std::thread()`'s `std::terminate()` on a
+    still-joinable thread. That is true of a normal exception unwind and
+    false of the signal path that actually occurs, and it drove four previous
+    "fixes" (`92d824b`, `bc39d04`, `9727d38`, `5a9c5ff`) that shrank
+    workloads or raised timeouts — each lowering the odds of the crash
+    without removing it. It also nearly produced a fifth: restoring an RAII
+    thread-joiner, which would have been inert for exactly that reason.
+    Reading Boost's own source rather than the comments in the tree is what
+    broke the cycle.
+
 - **`ca_cluster_node_test` intermittent hang — fixed and verified (July 30,
   2026).** Root cause, found in commit `19b05e2` (July 29, 2026):
   `run_ca_cluster_node()`'s shutdown sequence joined `http_thread`,
