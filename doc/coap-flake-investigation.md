@@ -1,9 +1,15 @@
 # CoAP test flakiness — investigation record
 
-Status as of 2026-08-02. This is a record of what was measured, what was
-tried, and what turned out to be wrong. It exists because the same
-investigation has now been attempted several times from analysis alone, and
-each attempt produced a plausible diagnosis that the data later refuted.
+**Status: root cause identified and fixed** (2026-08-03, PR #140). This is a
+record of what was measured, what was tried, and what turned out to be wrong.
+It exists because the same investigation had been attempted several times from
+analysis alone, and each attempt produced a plausible diagnosis that the data
+later refuted.
+
+**Summary for anyone arriving fresh:** the coap tests were never unstable.
+Their per-case Boost timeouts were sized for a Release build, and CI's Coverage
+job runs an instrumented Debug build several times slower, so budgets expired
+mid-test and cases died with SIGALRM. See [The resolution](#the-resolution).
 
 Read the [Findings](#findings) before proposing a fix, and the
 [What was tried and failed](#what-was-tried-and-failed) section before
@@ -30,6 +36,52 @@ Repo-wide over that period, the last 15 CI runs were 9 failure / 3 success /
 
 Note that CI runs `ctest --repeat until-pass:3`, so any test it reports as
 failed has already failed three times consecutively.
+
+## The resolution
+
+Fixed in [PR #140](https://github.com/crawlins/kythira/pull/140). Two changes,
+both driven by the measurements below:
+
+1. **`KYTHIRA_TEST_TIMEOUT_SCALE`** (`tests/test_timeout_scale.hpp`) scales both
+   the Boost per-case budgets and the CTest `TIMEOUT` properties. `ci.yml`'s
+   Coverage job passes 4; every other build defaults to 1 and is behaviourally
+   identical. One knob drives both, because scaling either alone just moves the
+   kill from Boost to CTest.
+2. **Numeric endpoints** in the coap tests, so requests skip `getaddrinfo()`.
+   `coap_connection_reuse_property_test` used `node1/2/3.example.com` — names
+   that do not exist, under a real delegated domain — and `send_rpc()` resolves
+   inside its recursive mutex, so N requests were N serialised live NXDOMAIN
+   lookups.
+
+Measured under the coverage profile, same runner and selection, no `--repeat`:
+
+| test | before | after |
+|---|---:|---:|
+| `coap_duplicate_detection_property_test` | 80% | **0%** |
+| `coap_concurrent_processing_property_test` | 70% | **0%** |
+| `coap_connection_reuse_property_test` | 70% | **0%** |
+| `coap_confirmable_message_property_test` | 60% | **0%** |
+| `coap_get_joined_multicast_groups_test` | 40% | **0%** |
+| `coap_content_format_property_test` | 40% | **0%** |
+| `coap_cbor_end_to_end_test` | 30% | **0%** |
+| `coap_future_resolution_property_test` | 30% | **0%** |
+| `coap_thread_safety_property_test` | 20% | **0%** |
+| `coap_concept_conformance_test` | 10% | **0%** |
+
+(before n=10, after n=8.)
+
+Two things worth carrying forward:
+
+- **The scaling alone was not sufficient.** With the 4x scale but the hostnames
+  still in place, `connection_reuse` remained at 33%, failing at exactly
+  240.04s — `timeout(60) x 4` to the centisecond. An intermediate commit raised
+  that file's budgets to 120s to cover it; once the DNS cost was removed at
+  source, that bump was reverted rather than left in. Widening a budget to pay
+  for a cost you can delete is how the four commits in
+  [Prior attempts](#prior-attempts-for-context) came about.
+- **`connection_oriented_example_test` showed 1 failure in 8** after runs where
+  it had none before. At n=8 that is a single event and most likely noise, but
+  it is recorded rather than dropped for not fitting.
 
 ## Findings
 
@@ -141,6 +193,12 @@ heap corruption. On GitHub runners the same test fails 10% of the time, where
 This is a genuine bug and is tracked separately from the flakiness work. It is
 *not* the cause of the CI failures above — those tests are different.
 
+Update after PR #140: this test also went from 20% to 0% under coverage, which
+suggests the crash is *triggered* by timing pressure rather than caused by it.
+That makes it harder to reproduce on CI, and means reproducing it deliberately
+(EC2, or a deliberately low `KYTHIRA_TEST_TIMEOUT_SCALE`) is now the practical
+route to investigating it.
+
 ## What was tried and failed
 
 PR #133 (closed) attempted three changes. A matched before/after measurement —
@@ -214,16 +272,13 @@ like a passing result will mislead quietly.
 
 ## Open questions
 
-1. **Does the coverage profile reproduce CI's failures?** This is now the
-   specific open question, narrowed from "what conditions reproduce them" by
-   Findings 1, 1b and 1c. Ruled out so far: `-L coap` on a GitHub runner, the
-   full 401-test suite in a Release build, and EC2 at any concurrency. The
-   next measurement is `profile=coverage, label=all, iterations=10` with
-   `ci.yml`'s exclusions, compared against Finding 1b's Release numbers. If
-   the coap tests that block CI fail there and not in Release, the cause is
-   build-configuration timing, and the fix belongs in timeout budgets rather
-   than in the tests. arm64 remains untested — the measurement job runs
-   x64 only.
+1. ~~**Does the coverage profile reproduce CI's failures?**~~ **Answered: yes.**
+   Under `profile=coverage` the blocking tests failed at 100/90/80/60%, against
+   0% for the same tests in Release on the same runner and selection. That
+   confirmed build-configuration timing as the cause and put the fix in timeout
+   budgets rather than test logic. See [The resolution](#the-resolution).
+   **arm64 remains untested** — the measurement job runs x64 only, so whether
+   the slower arm64 runners need a scale above 4 is not known.
 2. **What is null at `coap_thread_safety_property_test.cpp:309`,** and is
    `coap_pdu_encode_header: unsupported protocol` cause or symptom?
 3. **Is the ephemeral-port migration worth finishing?** `7edf99b` introduced
