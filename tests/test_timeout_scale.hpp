@@ -31,6 +31,7 @@
 /// slower, by a factor taken from that measurement. See
 /// doc/coap-flake-investigation.md.
 
+#include <chrono>
 #include <cstdlib>
 
 #ifndef KYTHIRA_TEST_TIMEOUT_SCALE
@@ -45,6 +46,25 @@ namespace kythira::testing {
 /// CMake, so this is a multiply the optimiser folds away.
 [[nodiscard]] constexpr auto scaled_timeout(unsigned seconds) noexcept -> unsigned {
     return seconds * static_cast<unsigned>(KYTHIRA_TEST_TIMEOUT_SCALE);
+}
+
+/// @brief An in-test deadline in milliseconds, scaled for the current build.
+///
+/// The sibling of scaled_timeout() for deadlines a test passes *into* the code
+/// under test -- an RPC timeout argument, a condition-variable wait -- rather
+/// than the case's own SIGALRM budget. Both need scaling for the same reason:
+/// a fixed millisecond budget is being applied to a build and a machine whose
+/// speed is not fixed.
+///
+/// This exists because proxygen_transport_test hardcoded a 3000ms RPC deadline
+/// in nine places and failed CI with `ingress timeout, streamID=1,
+/// timeout=3000ms`. Scaling the case timeout alone would not have helped
+/// there: the deadline that expired was the one handed to send_request_vote(),
+/// not Boost's.
+[[nodiscard]] constexpr auto scaled_deadline(unsigned milliseconds) noexcept
+    -> std::chrono::milliseconds {
+    return std::chrono::milliseconds{milliseconds *
+                                     static_cast<unsigned>(KYTHIRA_TEST_TIMEOUT_SCALE)};
 }
 
 }  // namespace kythira::testing
