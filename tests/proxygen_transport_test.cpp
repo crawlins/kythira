@@ -10,6 +10,8 @@
 
 #include <folly/executors/IOThreadPoolExecutor.h>
 
+#include "test_timeout_scale.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <concepts>
@@ -129,10 +131,25 @@ struct temp_tls_material {
         auto unique = std::to_string(std::random_device{}());
         cert_path = dir / ("proxygen_test_cert_" + unique + ".pem");
         key_path = dir / ("proxygen_test_key_" + unique + ".pem");
-        std::string cmd = "openssl req -x509 -newkey rsa:2048 -keyout " + key_path.string() +
-                          " -out " + cert_path.string() +
-                          " -days 1 -nodes -subj \"/CN=127.0.0.1\" -addext "
-                          "\"subjectAltName=IP:127.0.0.1\" 2>/dev/null";
+        // P-256 rather than RSA-2048. Both give a genuine handshake, which is
+        // all this fixture is for, but their generation costs are nothing
+        // alike. Measured on 2 pinned cores under 8x busy-loop load, which is
+        // the closest local stand-in for a contended CI runner:
+        //
+        //     rsa:2048      741 - 2966 ms   (one sample alone consumed
+        //                                    essentially the whole 3000ms RPC
+        //                                    deadline these tests use)
+        //     prime256v1     65 -  170 ms
+        //
+        // ~15x faster and, more importantly, a far tighter spread. Keygen is
+        // the dominant cost and the dominant variance source in every TLS case
+        // in this file, and it buys the tests nothing.
+        std::string cmd =
+            "openssl req -x509 -newkey ec -pkeyopt "
+            "ec_paramgen_curve:prime256v1 -keyout " +
+            key_path.string() + " -out " + cert_path.string() +
+            " -days 1 -nodes -subj \"/CN=127.0.0.1\" -addext "
+            "\"subjectAltName=IP:127.0.0.1\" 2>/dev/null";
         int rc = std::system(cmd.c_str());
         BOOST_REQUIRE_MESSAGE(rc == 0,
                               "openssl CLI must be available to generate test TLS material");
@@ -197,14 +214,14 @@ struct temp_mtls_material {
         {
             std::ofstream ext(server_ext_path);
             ext << "basicConstraints=critical,CA:false\n"
-                << "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                << "keyUsage=critical,digitalSignature\n"
                 << "extendedKeyUsage=serverAuth\n"
                 << "subjectAltName=IP:127.0.0.1\n";
         }
         {
             std::ofstream ext(client_ext_path);
             ext << "basicConstraints=critical,CA:false\n"
-                << "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                << "keyUsage=critical,digitalSignature\n"
                 << "extendedKeyUsage=clientAuth\n";
         }
 
@@ -213,21 +230,21 @@ struct temp_mtls_material {
             BOOST_REQUIRE_MESSAGE(rc == 0, "openssl command failed: " << cmd);
         };
 
-        run("openssl genrsa -out " + ca_key_path.string() + " 2048");
+        run("openssl ecparam -genkey -name prime256v1 -out " + ca_key_path.string());
         run("openssl req -x509 -new -key " + ca_key_path.string() + " -out " +
             ca_cert_path.string() +
             " -days 1 -nodes -subj \"/CN=proxygen-test-ca\" "
             "-addext \"basicConstraints=critical,CA:true\" "
             "-addext \"keyUsage=critical,keyCertSign,cRLSign\"");
 
-        run("openssl genrsa -out " + server_key_path.string() + " 2048");
+        run("openssl ecparam -genkey -name prime256v1 -out " + server_key_path.string());
         run("openssl req -new -key " + server_key_path.string() + " -out " +
             server_csr_path.string() + " -subj \"/CN=127.0.0.1\"");
         run("openssl x509 -req -in " + server_csr_path.string() + " -CA " + ca_cert_path.string() +
             " -CAkey " + ca_key_path.string() + " -CAcreateserial -out " +
             server_cert_path.string() + " -days 1 -extfile " + server_ext_path.string());
 
-        run("openssl genrsa -out " + client_key_path.string() + " 2048");
+        run("openssl ecparam -genkey -name prime256v1 -out " + client_key_path.string());
         run("openssl req -new -key " + client_key_path.string() + " -out " +
             client_csr_path.string() + " -subj \"/CN=proxygen-test-client\"");
         run("openssl x509 -req -in " + client_csr_path.string() + " -CA " + ca_cert_path.string() +
@@ -331,7 +348,8 @@ static_assert(
 
 BOOST_AUTO_TEST_SUITE(proxygen_transport_tests)
 
-BOOST_AUTO_TEST_CASE(request_vote_round_trip_and_connection_reuse, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(request_vote_round_trip_and_connection_reuse,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(2);
 
     kythira::proxygen_server<test_transport_types> server(
@@ -347,16 +365,16 @@ BOOST_AUTO_TEST_CASE(request_vote_round_trip_and_connection_reuse, *boost::unit_
 
     kythira::request_vote_request<> req{};
     req._term = 42;
-    auto resp =
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get();
+    auto resp = std::move(client.send_request_vote(test_node_id, req,
+                                                   kythira::testing::scaled_deadline(3000)))
+                    .get();
     BOOST_TEST(resp.term() == 42);
     BOOST_TEST(resp.vote_granted());
 
     // Second RPC to the same node -- exercises connection reuse (Property 5).
-    auto resp2 =
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get();
+    auto resp2 = std::move(client.send_request_vote(test_node_id, req,
+                                                    kythira::testing::scaled_deadline(3000)))
+                     .get();
     BOOST_TEST(resp2.vote_granted());
 
     server.stop();
@@ -379,7 +397,8 @@ BOOST_AUTO_TEST_CASE(request_vote_round_trip_and_connection_reuse, *boost::unit_
 // the very same test then confirms the generic bridge was used instead
 // (Requirement 19.3's other, previously-untested direction) without
 // needing a second, backend-specific test file.
-BOOST_AUTO_TEST_CASE(folly_fast_path_is_taken, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(folly_fast_path_is_taken,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     constexpr bool expects_folly_fast_path =
         std::same_as<test_transport_types::future_template<kythira::request_vote_response<>>,
                      kythira::Future<kythira::request_vote_response<>>>;
@@ -402,9 +421,9 @@ BOOST_AUTO_TEST_CASE(folly_fast_path_is_taken, *boost::unit_test::timeout(30)) {
 
     kythira::request_vote_request<> req{};
     req._term = 1;
-    auto resp =
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get();
+    auto resp = std::move(client.send_request_vote(test_node_id, req,
+                                                   kythira::testing::scaled_deadline(3000)))
+                    .get();
     BOOST_TEST(resp.vote_granted());
 
     auto sent = client_metrics.entries_named("proxygen_http.client.request.sent");
@@ -418,7 +437,8 @@ BOOST_AUTO_TEST_CASE(folly_fast_path_is_taken, *boost::unit_test::timeout(30)) {
 // Property 6: concurrent RPCs to different target nodes run genuinely
 // concurrently, potentially on different EventBase threads of the shared
 // folly::IOThreadPoolExecutor, and each gets the right response back.
-BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(4);
 
     constexpr int node_count = 4;
@@ -447,7 +467,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes, *boost::unit_test::timeo
         rpc_threads.emplace_back([&client, &responses, i, req] {
             responses[static_cast<std::size_t>(i)] =
                 std::move(client.send_request_vote(static_cast<std::uint64_t>(i + 1), req,
-                                                   std::chrono::milliseconds(3000)))
+                                                   kythira::testing::scaled_deadline(3000)))
                     .get();
         });
     }
@@ -466,7 +486,8 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_multiple_nodes, *boost::unit_test::timeo
     }
 }
 
-BOOST_AUTO_TEST_CASE(tls_request_vote_round_trip, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(tls_request_vote_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_tls_material tls;
     folly::IOThreadPoolExecutor io_executor(2);
 
@@ -494,9 +515,9 @@ BOOST_AUTO_TEST_CASE(tls_request_vote_round_trip, *boost::unit_test::timeout(30)
 
     kythira::request_vote_request<> req{};
     req._term = 99;
-    auto resp =
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get();
+    auto resp = std::move(client.send_request_vote(test_node_id, req,
+                                                   kythira::testing::scaled_deadline(3000)))
+                    .get();
     BOOST_TEST(resp.term() == 99);
     BOOST_TEST(resp.vote_granted());
 
@@ -506,7 +527,8 @@ BOOST_AUTO_TEST_CASE(tls_request_vote_round_trip, *boost::unit_test::timeout(30)
 // Requirement 7.2-7.3: reload_tls_material() validates new material
 // all-or-nothing; a server not configured for TLS at all rejects the call
 // outright.
-BOOST_AUTO_TEST_CASE(server_reload_tls_material, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(server_reload_tls_material,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(2);
 
     kythira::proxygen_server<test_transport_types> plain_server(
@@ -533,7 +555,8 @@ BOOST_AUTO_TEST_CASE(server_reload_tls_material, *boost::unit_test::timeout(30))
 
 // Requirement 7.1: the client side of the same all-or-nothing reload
 // contract.
-BOOST_AUTO_TEST_CASE(client_reload_tls_material, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(client_reload_tls_material,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(2);
     std::unordered_map<std::uint64_t, std::string> node_map{{test_node_id, test_server_url}};
 
@@ -551,7 +574,8 @@ BOOST_AUTO_TEST_CASE(client_reload_tls_material, *boost::unit_test::timeout(30))
 
 // Requirement 4.2-4.4: malformed request body -> 400; unregistered path ->
 // 404 (surfaced client-side as http_client_error).
-BOOST_AUTO_TEST_CASE(malformed_request_handling, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(malformed_request_handling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(2);
     auto port = static_cast<std::uint16_t>(test_bind_port + 4);
 
@@ -584,7 +608,8 @@ BOOST_AUTO_TEST_CASE(malformed_request_handling, *boost::unit_test::timeout(30))
 // Each concurrent RPC carries a distinct term value; if two in-flight
 // requests' responses were ever crossed, at least one thread would observe
 // a term that isn't its own.
-BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_same_node, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_same_node,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(4);
     auto port = static_cast<std::uint16_t>(test_bind_port + 5);
 
@@ -669,7 +694,7 @@ BOOST_AUTO_TEST_CASE(concurrent_rpcs_to_same_node, *boost::unit_test::timeout(30
 // handshake through this project's own client and server, not a
 // config-validation-only check.
 BOOST_AUTO_TEST_CASE(mutual_tls_round_trip_with_valid_client_certificate,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls;
     folly::IOThreadPoolExecutor io_executor(2);
     auto port = static_cast<std::uint16_t>(test_bind_port + 6);
@@ -698,9 +723,9 @@ BOOST_AUTO_TEST_CASE(mutual_tls_round_trip_with_valid_client_certificate,
 
     kythira::request_vote_request<> req{};
     req._term = 7;
-    auto resp =
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get();
+    auto resp = std::move(client.send_request_vote(test_node_id, req,
+                                                   kythira::testing::scaled_deadline(3000)))
+                    .get();
     BOOST_TEST(resp.term() == 7);
     BOOST_TEST(resp.vote_granted());
 
@@ -711,7 +736,7 @@ BOOST_AUTO_TEST_CASE(mutual_tls_round_trip_with_valid_client_certificate,
 // all -- the handshake itself must fail (require_client_cert's whole
 // point), not just "the config validates".
 BOOST_AUTO_TEST_CASE(mutual_tls_rejects_client_without_certificate,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     temp_mtls_material mtls;
     folly::IOThreadPoolExecutor io_executor(2);
     auto port = static_cast<std::uint16_t>(test_bind_port + 7);
@@ -742,10 +767,10 @@ BOOST_AUTO_TEST_CASE(mutual_tls_rejects_client_without_certificate,
 
     kythira::request_vote_request<> req{};
     req._term = 1;
-    BOOST_CHECK_THROW(
-        std::move(client.send_request_vote(test_node_id, req, std::chrono::milliseconds(3000)))
-            .get(),
-        std::exception);
+    BOOST_CHECK_THROW(std::move(client.send_request_vote(test_node_id, req,
+                                                         kythira::testing::scaled_deadline(3000)))
+                          .get(),
+                      std::exception);
 
     server.stop();
 }
@@ -757,7 +782,8 @@ BOOST_AUTO_TEST_CASE(mutual_tls_rejects_client_without_certificate,
 // configured. blackhole_listener (above) is deliberately raw sockets, not
 // another kythira transport, so this doesn't depend on any transport's own
 // timeout behavior being correct as a precondition for testing Proxygen's.
-BOOST_AUTO_TEST_CASE(rpc_times_out_against_unresponsive_peer, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(rpc_times_out_against_unresponsive_peer,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     folly::IOThreadPoolExecutor io_executor(2);
     auto port = static_cast<std::uint16_t>(test_bind_port + 8);
     blackhole_listener listener(port);
@@ -807,7 +833,7 @@ BOOST_AUTO_TEST_CASE(rpc_times_out_against_unresponsive_peer, *boost::unit_test:
 // checks; only the metrics-label assertions below are conditioned on which
 // case applies.
 BOOST_AUTO_TEST_CASE(generic_bridge_forced_matches_fast_path_result,
-                     *boost::unit_test::timeout(30)) {
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     constexpr bool expects_forced_call_differs_from_ordinary_call =
         std::same_as<test_transport_types::future_template<kythira::request_vote_response<>>,
                      kythira::Future<kythira::request_vote_response<>>>;
@@ -829,9 +855,9 @@ BOOST_AUTO_TEST_CASE(generic_bridge_forced_matches_fast_path_result,
 
     kythira::request_vote_request<> fast_req{};
     fast_req._term = 11;
-    auto fast_resp =
-        std::move(client.send_request_vote(test_node_id, fast_req, std::chrono::milliseconds(3000)))
-            .get();
+    auto fast_resp = std::move(client.send_request_vote(test_node_id, fast_req,
+                                                        kythira::testing::scaled_deadline(3000)))
+                         .get();
 
     kythira::request_vote_request<> bridged_req{};
     bridged_req._term = 12;
@@ -839,7 +865,7 @@ BOOST_AUTO_TEST_CASE(generic_bridge_forced_matches_fast_path_result,
         std::move(client.send_rpc_via_generic_bridge_for_test<kythira::request_vote_request<>,
                                                               kythira::request_vote_response<>>(
                       test_node_id, kythira::proxygen_detail::proxygen_endpoint_request_vote,
-                      bridged_req, std::chrono::milliseconds(3000)))
+                      bridged_req, kythira::testing::scaled_deadline(3000)))
             .get();
 
     BOOST_TEST(fast_resp.term() == 11);

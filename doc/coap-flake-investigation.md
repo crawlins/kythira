@@ -321,6 +321,70 @@ Two further changes came with it:
 confirmed to fail against the old encoding before being kept — reporting
 `[7 != 8]` for low counters and `[9 != 8]` from 100 onward.
 
+### 6. `proxygen_transport_test`: RSA keygen, not certificate lifetime
+
+Not a CoAP test, but the same investigation and the same class of mistake, so
+it is recorded here.
+
+The observed CI failure was:
+
+```
+proxygen_transport_tests/tls_request_vote_round_trip:
+  std::runtime_error: ingress timeout, streamID=1, timeout=3000ms
+Acceptor.cpp:247] Failed to re-configure TLS: couldn't read cert file:
+  /tmp/proxygen_test_cert_2596113181.pem ... will keep old config
+```
+
+**The first diagnosis from those logs was wrong.** The cert errors look
+damning — a fixture deleting files an acceptor still needs — but they appear on
+*passing* runs too. They come from `server_reload_tls_material` and
+`client_reload_tls_material`, which delete cert files **on purpose** to test
+that `reload_tls_material()` fails all-or-nothing. They are expected noise, and
+glog writes them to stderr unbuffered, so they interleave into whatever Boost
+happens to be printing. Checking whether a symptom also occurs on a green run
+is what separated the two; without that, the wrong lead was entirely plausible.
+
+The real signature is the other half of that message: `timeout=3000ms` is a
+deadline the test hardcodes, in nine places. This suite had **no** timeout
+scaling at all — `scaled_timeout` usage was zero, while the CoAP suite adopted
+it in #140/#147 — so CI had no lever to pull.
+
+What made 3000ms reachable is that the TLS fixtures generated RSA-2048 keys by
+shelling out to the `openssl` CLI, once per TLS case and three times per
+mutual-TLS case. Measured on 2 pinned cores under 8x busy-loop load, the
+closest local stand-in for a contended runner:
+
+| | keygen |
+|---|---|
+| `rsa:2048` | 741 – **2966** ms |
+| `prime256v1` | 65 – 170 ms |
+
+A single RSA keygen sample consumed essentially the whole 3000ms RPC budget.
+Switching to P-256 — the tests want a real handshake, not a specific key type —
+gives the same coverage for a fraction of the cost and, more importantly, a far
+tighter spread:
+
+| case | RSA | EC |
+|---|---:|---:|
+| `tls_request_vote_round_trip` | 124.5 ms | 38.2 ms |
+| `server_reload_tls_material` | 411.4 ms | 25.8 ms |
+| `client_reload_tls_material` | 557.6 ms | 17.2 ms |
+| `mutual_tls_round_trip_with_valid_client_certificate` | 1284.4 ms | 223.3 ms |
+| `mutual_tls_rejects_client_without_certificate` | 1819.3 ms | 260.2 ms |
+| `rpc_times_out_against_unresponsive_peer` | 515.4 ms | 513.4 ms |
+
+The last row is the control: a deliberate timeout, unchanged. Only the
+keygen-heavy cases moved. Under the same 8x load on 2 cores, the worst
+observed `tls_request_vote_round_trip` went from **2321 ms to 192 ms** — a
+15x margin against the 3000ms deadline instead of 1.3x. Whole-suite wall time
+dropped from ~4.8s to ~1.0s.
+
+Honest limit on this one: **the failure was never reproduced locally**, in 70
+runs across 4, 2 and 1 cores and under heavy load. What is demonstrated is that
+the suite was far more CPU-fragile than any other and that the dominant cost
+was avoidable, not that this specific `ingress timeout` is now impossible.
+Whether it recurs needs watching in CI.
+
 ## What was tried and failed
 
 PR #133 (closed) attempted three changes. A matched before/after measurement —
