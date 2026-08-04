@@ -40,19 +40,19 @@ jobs:
           - compiler: g++-13
             os: ubuntu-24.04
             arch_label: x64
-            timeout_minutes: 120
+            timeout_minutes: 180
           - compiler: clang++-18
             os: ubuntu-24.04
             arch_label: x64
-            timeout_minutes: 120
+            timeout_minutes: 180
           - compiler: g++-13
             os: ubuntu-24.04-arm
             arch_label: arm64
-            timeout_minutes: 120
+            timeout_minutes: 180
           - compiler: clang++-18
             os: ubuntu-24.04-arm
             arch_label: arm64
-            timeout_minutes: 120
+            timeout_minutes: 180
 
     steps:
       - name: Checkout
@@ -407,7 +407,7 @@ jobs:
   coverage:
     name: Coverage (clang++-18)
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     # See build-and-test's identical env block above — ccache >=4.0 defaults
     # to ~/.cache/ccache, not ~/.ccache, so without this the Restore/Save
     # ccache steps below never see what ccache actually wrote.
