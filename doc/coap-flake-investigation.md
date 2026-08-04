@@ -199,6 +199,91 @@ That makes it harder to reproduce on CI, and means reproducing it deliberately
 (EC2, or a deliberately low `KYTHIRA_TEST_TIMEOUT_SCALE`) is now the practical
 route to investigating it.
 
+#### Resolved: the crash is orphaned threads reading an abandoned stack frame
+
+Reproduced locally and fixed. The chain, confirmed under gdb:
+
+1. `test_concurrent_rpc_requests` builds its `coap_client` as a local of the
+   test case's own frame and spawns workers capturing it by reference.
+2. The case exceeds its `*boost::unit_test::timeout()`.
+3. Boost handles the resulting SIGALRM in a handler that calls `siglongjmp()`
+   (`boost/test/impl/execution_monitor.ipp:873`) back to a `sigsetjmp()` outside
+   the case, and only then throws. **`siglongjmp` does not unwind** — no
+   destructor in that frame runs, so the workers are neither joined nor
+   detached, just orphaned.
+4. The next case's locals land on those same stack bytes.
+5. An orphaned worker reads `coap_client::_coap_context` out of what is now the
+   next case's data and hands it to libcoap.
+
+The backtrace at the fault names the mechanism outright — the faulting thread is
+a worker belonging to the *previous* test case:
+
+```
+#0 coap_make_session
+#3 kythira::coap_client<...>::create_new_session
+#5 kythira::coap_client<...>::send_rpc
+#6 test_concurrent_rpc_requests::test_method()::$_0   ← previous case's lambda
+```
+
+with a sibling thread blocked in `pthread_mutex_lock (mutex=0x7fffffffc1a0)` —
+a *stack* address, i.e. the abandoned frame's own client mutex.
+
+Two consequences worth carrying forward:
+
+* **The blame in the report is always misdirected.** The case named by Boost is
+  the one that happened to be running, never the one that leaked the threads.
+  `test_concurrent_configuration_checks` only calls `is_dtls_enabled()`, which
+  is `return _config.enable_dtls;` — it cannot fault on its own.
+* **An RAII thread-owner does not fix this**, which is why the
+  `joining_thread_group` helper from the closed PR #133 would not have helped.
+  Destructors are exactly what step 3 skips. Its commit message
+  (`2e9ece2`) asserted `~std::thread()` on a joinable thread calls
+  `std::terminate()`; that is true of a normal unwind and false of the signal
+  path that actually occurs here.
+
+The fix is shared ownership: the transport object and the counters the workers
+touch are heap-allocated and captured **by value** as `shared_ptr`, so an
+orphaned worker keeps its object alive instead of reaching into dead stack. If a
+case does time out, the cost is a bounded leak on an already-failing path rather
+than corruption of the rest of the module.
+
+Measured before/after on the same binary, with the rpc case forced to overrun
+(1s limit against ~500 ops/thread) so that workers are guaranteed to still be in
+flight when the alarm fires:
+
+| Arm | Runs | SIGALRM | Memory access violation |
+|---|---:|---:|---:|
+| before | 15 | 14 | **11** |
+| after  | 15 | 15 | **0** |
+
+SIGALRM firing in every run of the *after* arm is the control: the fix was
+exercised under the failure condition, not bypassed by it. At the real timeouts
+the test passes 5/5.
+
+### 5. `generate_message_token()` silently stops sending after 100 requests
+
+Found while reproducing Finding 4, and unrelated to the flakiness — this one is
+in production code, not tests.
+
+`coap_client::generate_message_token()` returns `"token_" + std::to_string(n)`
+for a per-client counter `n`. That string reaches 9 bytes at `n == 100`
+(`"token_100"`), and CoAP tokens are capped at `COAP_TOKEN_DEFAULT_MAX` = 8. The
+oversized token is accepted by `coap_add_token()` but rejected later by
+`coap_send()`, which drops the PDU and logs only:
+
+```
+WARN coap_send: PDU dropped as token too long (9 > 8)
+```
+
+So after its 100th RPC a `coap_client` stops transmitting entirely, and the only
+symptom is a libcoap warning — `send_rpc()` still returns a future and the
+caller sees no error. In a live cluster this would look like a node silently
+going quiet after a short warm-up period.
+
+This has been latent because nothing exercised the real libcoap path: before
+`d54bc46` (2026-07-31) every `#ifdef LIBCOAP_AVAILABLE` branch compiled out to
+the stub. It is tracked separately from this investigation.
+
 ## What was tried and failed
 
 PR #133 (closed) attempted three changes. A matched before/after measurement —

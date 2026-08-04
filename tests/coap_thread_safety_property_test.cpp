@@ -5,6 +5,7 @@
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <memory>
 #include <random>
 #include <thread>
 #include <chrono>
@@ -13,6 +14,34 @@
 #include <future>
 
 #include "test_timeout_scale.hpp"
+
+// Every case below heap-allocates the transport object and the counters its
+// workers touch, and captures those shared_ptrs *by value*. That is deliberate
+// and load-bearing; a stack local captured by reference reintroduces a process
+// abort. The mechanism, confirmed under gdb:
+//
+//   1. A case here spawns workers that use a coap_client/coap_server which,
+//      written the obvious way, is a local of the test case's own frame.
+//   2. The case exceeds its *boost::unit_test::timeout(). Boost handles the
+//      resulting SIGALRM in a signal handler that calls siglongjmp()
+//      (boost/test/impl/execution_monitor.ipp) back to a sigsetjmp() outside
+//      the case, and only then throws.
+//   3. siglongjmp does NOT unwind: no destructor in this frame ever runs. The
+//      threads are neither joined nor detached -- they are simply orphaned,
+//      still holding pointers into a frame that has been abandoned.
+//   4. The next test case's locals land on those same stack bytes.
+//   5. An orphaned worker reads coap_client::_coap_context out of what is now
+//      the next case's data, hands the result to libcoap, and faults inside
+//      coap_make_session() at a small fixed offset -- the "memory access
+//      violation at address: 0x1ac" that has been reported variously as an
+//      arm64 SEGFAULT and as unrelated later tests crashing.
+//
+// Note what does NOT fix this: an RAII thread-owner that joins in its
+// destructor. Destructors are exactly what step 3 skips. Shared ownership is
+// the fix that works, because it removes the dangling reference rather than
+// relying on cleanup that never runs. If a case does time out, the orphaned
+// workers keep a live object alive and leak it -- a bounded cost on a path
+// that is already failing, instead of corrupting the rest of the module.
 
 using namespace kythira;
 
@@ -71,44 +100,45 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations,
         // Create test types and server
         noop_metrics metrics;
 
-        coap_server<test_transport_types> server(
+        // Heap-owned; see the ownership note at the top of this file.
+        auto server = std::make_shared<coap_server<test_transport_types>>(
             test_bind_address,
             test_bind_port + iteration % 1000,  // Avoid port conflicts
             server_config, metrics);
 
         // Test 1: Concurrent slot acquisition (public API)
         std::vector<std::thread> threads;
-        std::atomic<std::size_t> successful_operations{0};
-        std::atomic<std::size_t> failed_operations{0};
-        std::atomic<bool> start_flag{false};
+        auto successful_operations = std::make_shared<std::atomic<std::size_t>>(0);
+        auto failed_operations = std::make_shared<std::atomic<std::size_t>>(0);
+        auto start_flag = std::make_shared<std::atomic<bool>>(false);
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([&server, &successful_operations, &failed_operations, &start_flag,
+            threads.emplace_back([server, successful_operations, failed_operations, start_flag,
                                   operations_per_thread]() {
                 // Wait for all threads to be ready
-                while (!start_flag.load()) {
+                while (!start_flag->load()) {
                     std::this_thread::yield();
                 }
 
                 for (std::size_t op = 0; op < operations_per_thread; ++op) {
                     try {
-                        bool acquired = server.acquire_concurrent_slot();
+                        bool acquired = server->acquire_concurrent_slot();
                         if (acquired) {
-                            successful_operations.fetch_add(1);
+                            successful_operations->fetch_add(1);
                             std::this_thread::sleep_for(std::chrono::microseconds(10));
-                            server.release_concurrent_slot();
+                            server->release_concurrent_slot();
                         } else {
-                            failed_operations.fetch_add(1);
+                            failed_operations->fetch_add(1);
                         }
                     } catch (const std::exception&) {
-                        failed_operations.fetch_add(1);
+                        failed_operations->fetch_add(1);
                     }
                 }
             });
         }
 
         // Start all threads simultaneously
-        start_flag.store(true);
+        start_flag->store(true);
 
         // Wait for all threads to complete
         for (auto& thread : threads) {
@@ -117,7 +147,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations,
 
         // Verify thread safety: all operations should complete
         std::size_t expected_operations = thread_count * operations_per_thread;
-        std::size_t total_operations = successful_operations.load() + failed_operations.load();
+        std::size_t total_operations = successful_operations->load() + failed_operations->load();
 
         BOOST_CHECK_EQUAL(total_operations, expected_operations);
     }
@@ -163,41 +193,43 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
             {2, "coap://127.0.0.1:61071"},
             {3, "coap://127.0.0.1:61072"}};
 
-        coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
+        // Heap-owned; see the ownership note at the top of this file.
+        auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints,
+                                                                         client_config, metrics);
 
         // Test 1: Concurrent client slot acquisition (public API)
         std::vector<std::thread> threads;
-        std::atomic<std::size_t> successful_operations{0};
-        std::atomic<std::size_t> failed_operations{0};
-        std::atomic<bool> start_flag{false};
+        auto successful_operations = std::make_shared<std::atomic<std::size_t>>(0);
+        auto failed_operations = std::make_shared<std::atomic<std::size_t>>(0);
+        auto start_flag = std::make_shared<std::atomic<bool>>(false);
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([&client, &successful_operations, &failed_operations, &start_flag,
+            threads.emplace_back([client, successful_operations, failed_operations, start_flag,
                                   operations_per_thread]() {
                 // Wait for all threads to be ready
-                while (!start_flag.load()) {
+                while (!start_flag->load()) {
                     std::this_thread::yield();
                 }
 
                 for (std::size_t op = 0; op < operations_per_thread; ++op) {
                     try {
-                        bool acquired = client.acquire_concurrent_slot();
+                        bool acquired = client->acquire_concurrent_slot();
                         if (acquired) {
-                            successful_operations.fetch_add(1);
+                            successful_operations->fetch_add(1);
                             std::this_thread::sleep_for(std::chrono::microseconds(10));
-                            client.release_concurrent_slot();
+                            client->release_concurrent_slot();
                         } else {
-                            failed_operations.fetch_add(1);
+                            failed_operations->fetch_add(1);
                         }
                     } catch (const std::exception&) {
-                        failed_operations.fetch_add(1);
+                        failed_operations->fetch_add(1);
                     }
                 }
             });
         }
 
         // Start all threads simultaneously
-        start_flag.store(true);
+        start_flag->store(true);
 
         // Wait for all threads to complete
         for (auto& thread : threads) {
@@ -206,7 +238,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
 
         // Verify thread safety: all operations should complete
         std::size_t expected_operations = thread_count * operations_per_thread;
-        std::size_t total_operations = successful_operations.load() + failed_operations.load();
+        std::size_t total_operations = successful_operations->load() + failed_operations->load();
 
         BOOST_CHECK_EQUAL(total_operations, expected_operations);
     }
@@ -233,25 +265,31 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
         {test_node_id, "coap://127.0.0.1:61070"}};
 
-    coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
+    // Heap-owned; see the ownership note at the top of this file. This is the
+    // case that actually produced the 0x1ac fault: its workers sit in
+    // send_rpc() -> get_or_create_session() -> libcoap, all serialized on the
+    // client's own recursive mutex, so it is the case most likely to still
+    // have threads running when its timeout fires.
+    auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config,
+                                                                      metrics);
 
     // Test: Concurrent RPC requests
     std::vector<std::thread> threads;
-    std::atomic<std::size_t> successful_requests{0};
-    std::atomic<std::size_t> failed_requests{0};
+    auto successful_requests = std::make_shared<std::atomic<std::size_t>>(0);
+    auto failed_requests = std::make_shared<std::atomic<std::size_t>>(0);
 
     request_vote_request<> vote_request{
         ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     for (std::size_t t = 0; t < 10; ++t) {
-        threads.emplace_back([&client, &successful_requests, &failed_requests, vote_request]() {
+        threads.emplace_back([client, successful_requests, failed_requests, vote_request]() {
             for (std::size_t op = 0; op < 20; ++op) {
                 try {
-                    auto future = client.send_request_vote(test_node_id, vote_request,
-                                                           std::chrono::milliseconds{1000});
-                    successful_requests.fetch_add(1);
+                    auto future = client->send_request_vote(test_node_id, vote_request,
+                                                            std::chrono::milliseconds{1000});
+                    successful_requests->fetch_add(1);
                 } catch (const std::exception&) {
-                    failed_requests.fetch_add(1);
+                    failed_requests->fetch_add(1);
                 }
             }
         });
@@ -263,7 +301,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
     }
 
     // Verify: All operations completed
-    BOOST_CHECK_EQUAL(successful_requests.load() + failed_requests.load(), 200);
+    BOOST_CHECK_EQUAL(successful_requests->load() + failed_requests->load(), 200);
 }
 
 /**
@@ -286,21 +324,23 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
     std::unordered_map<std::uint64_t, std::string> node_endpoints = {
         {test_node_id, "coap://127.0.0.1:61070"}};
 
-    coap_client<test_transport_types> client(node_endpoints, client_config, metrics);
+    // Heap-owned; see the ownership note at the top of this file.
+    auto client = std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config,
+                                                                      metrics);
 
     // Test: Concurrent configuration status checks
     std::vector<std::thread> threads;
-    std::atomic<std::size_t> operations_completed{0};
+    auto operations_completed = std::make_shared<std::atomic<std::size_t>>(0);
 
     for (std::size_t t = 0; t < 5; ++t) {
-        threads.emplace_back([&client, &operations_completed]() {
+        threads.emplace_back([client, operations_completed]() {
             for (std::size_t op = 0; op < 20; ++op) {
                 try {
                     // Test concurrent status checks (all const methods, thread-safe)
-                    bool dtls_enabled = client.is_dtls_enabled();
-                    operations_completed.fetch_add(1);
+                    bool dtls_enabled = client->is_dtls_enabled();
+                    operations_completed->fetch_add(1);
                 } catch (const std::exception&) {
-                    operations_completed.fetch_add(1);
+                    operations_completed->fetch_add(1);
                 }
             }
         });
@@ -312,5 +352,5 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
     }
 
     // Verify: All operations completed
-    BOOST_CHECK_EQUAL(operations_completed.load(), 100);
+    BOOST_CHECK_EQUAL(operations_completed->load(), 100);
 }
