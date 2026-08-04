@@ -10,12 +10,23 @@
 
 #include <boost/test/data/test_case.hpp>
 
+#include <memory>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <chrono>
 
 #include "test_timeout_scale.hpp"
+
+// The transport objects and counters that worker threads touch are heap-owned
+// and captured by value, never by reference to a test case's own frame. A
+// `[&]` capture of a stack-local coap_client is what produced the "memory
+// access violation at address: 0x1ac" crash fixed in
+// coap_thread_safety_property_test.cpp: on Boost timeout, SIGALRM is handled
+// with siglongjmp(), which abandons the frame WITHOUT running destructors, so
+// worker threads are orphaned rather than joined and go on reading a frame the
+// next test case has already reused. See that file's header comment and
+// doc/coap-flake-investigation.md Finding 4 for the full chain.
 
 using namespace kythira;
 
@@ -35,12 +46,15 @@ constexpr std::chrono::milliseconds test_timeout{1000};
 // threads -- are really N serialized round trips through real getaddrinfo(),
 // not N parallel ones. Kept small so that total serialized work reliably
 // finishes inside each test case's own *boost::unit_test::timeout() even
-// under a slow/contended CI runner (observed directly: real CI runs where
-// this exceeded the timeout left std::thread objects in
-// test_concurrent_request_handling_property's local `threads` vector still
-// joinable when Boost's timeout unwound the test case, which segfaults/
-// aborts via ~thread()'s std::terminate() -- or a later test case's fresh
-// coap_client -- rather than failing this test case cleanly).
+// under a slow/contended CI runner.
+//
+// This previously also claimed that overrunning the timeout aborts via
+// ~std::thread()'s std::terminate(). That is not what happens. Boost handles
+// the timeout SIGALRM with siglongjmp(), which unwinds nothing, so no
+// destructor -- ~std::thread() included -- ever runs; the threads are orphaned
+// and corrupt whichever test case runs next. Keeping the workload small only
+// makes the trap rarer. It is now disarmed properly by the shared ownership in
+// the concurrent cases below, and this count stays small purely for runtime.
 constexpr std::size_t test_sequential_request_count = 5;
 }
 
@@ -153,12 +167,13 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
         {test_node_id_1, test_endpoint_1}};
 
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
+    auto client = std::make_shared<coap_client<test_transport_types>>(endpoint_map, client_config,
+                                                                      noop_metrics{});
 
     // Property: Concurrent requests should be handled without crashes
 
-    std::atomic<std::size_t> successful_requests{0};
-    std::atomic<std::size_t> failed_requests{0};
+    auto successful_requests = std::make_shared<std::atomic<std::size_t>>(0);
+    auto failed_requests = std::make_shared<std::atomic<std::size_t>>(0);
     std::atomic<std::size_t> errors{0};
 
     std::vector<std::thread> threads;
@@ -167,11 +182,17 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
     // mutex -- see test_sequential_request_count's comment) was fine when
     // this path was still a stub; kept small here so real concurrent
     // per-call latency can't blow this test case's own timeout on a
-    // slow/contended CI runner. Observed directly: when it did, Boost's
-    // timeout unwound this test case while some of these std::thread
-    // objects were still blocked inside send_rpc() -- so still joinable --
-    // which segfaults/aborts the whole process instead of just failing
-    // this one test case.
+    // slow/contended CI runner.
+    //
+    // Shrinking the workload was originally the *whole* response to a crash
+    // seen when this case did overrun, on the theory that Boost unwound the
+    // case and ~std::thread() on a still-joinable thread called
+    // std::terminate(). That diagnosis was wrong: Boost handles the timeout
+    // SIGALRM with siglongjmp(), which runs no destructors at all, so the
+    // threads are orphaned rather than destroyed and the damage lands in
+    // whichever case runs next. A smaller workload only lowers the odds of
+    // reaching the trap. The shared ownership above is what actually removes
+    // it, and the small size is kept purely for runtime.
     constexpr std::size_t num_threads = 4;
     constexpr std::size_t operations_per_thread = 3;
 
@@ -180,15 +201,15 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
 
     // Launch threads that concurrently send requests
     for (std::size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&, t]() {
+        threads.emplace_back([client, successful_requests, failed_requests, vote_request]() {
             for (std::size_t i = 0; i < operations_per_thread; ++i) {
                 try {
                     auto future =
-                        client.send_request_vote(test_node_id_1, vote_request, test_timeout);
-                    successful_requests.fetch_add(1);
+                        client->send_request_vote(test_node_id_1, vote_request, test_timeout);
+                    successful_requests->fetch_add(1);
                 } catch (const std::exception& e) {
                     // Expected for stub implementation
-                    failed_requests.fetch_add(1);
+                    failed_requests->fetch_add(1);
                 }
             }
         });
@@ -203,11 +224,11 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_handling_property,
     BOOST_CHECK_EQUAL(errors.load(), 0);
 
     // Property 2: All operations should complete
-    BOOST_CHECK_EQUAL(successful_requests.load() + failed_requests.load(),
+    BOOST_CHECK_EQUAL(successful_requests->load() + failed_requests->load(),
                       num_threads * operations_per_thread);
 
-    BOOST_TEST_MESSAGE("Concurrent requests: " << successful_requests.load() << " successful, "
-                                               << failed_requests.load()
+    BOOST_TEST_MESSAGE("Concurrent requests: " << successful_requests->load() << " successful, "
+                                               << failed_requests->load()
                                                << " failed (expected for stub)");
 }
 
@@ -225,13 +246,14 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
         {test_node_id_1, test_endpoint_1}};
 
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
+    auto client = std::make_shared<coap_client<test_transport_types>>(endpoint_map, client_config,
+                                                                      noop_metrics{});
 
     // Property: Concurrent slot acquisition and release should be thread-safe
 
-    std::atomic<std::size_t> successful_acquires{0};
-    std::atomic<std::size_t> failed_acquires{0};
-    std::atomic<std::size_t> errors{0};
+    auto successful_acquires = std::make_shared<std::atomic<std::size_t>>(0);
+    auto failed_acquires = std::make_shared<std::atomic<std::size_t>>(0);
+    auto errors = std::make_shared<std::atomic<std::size_t>>(0);
 
     std::vector<std::thread> threads;
     constexpr std::size_t num_threads = 20;
@@ -239,22 +261,22 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
 
     // Launch threads that concurrently acquire and release slots
     for (std::size_t t = 0; t < num_threads; ++t) {
-        threads.emplace_back([&]() {
+        threads.emplace_back([client, successful_acquires, failed_acquires, errors]() {
             for (std::size_t i = 0; i < operations_per_thread; ++i) {
                 try {
-                    bool acquired = client.acquire_concurrent_slot();
+                    bool acquired = client->acquire_concurrent_slot();
                     if (acquired) {
-                        successful_acquires.fetch_add(1);
+                        successful_acquires->fetch_add(1);
 
                         // Brief delay to increase chance of contention
                         std::this_thread::sleep_for(std::chrono::microseconds(10));
 
-                        client.release_concurrent_slot();
+                        client->release_concurrent_slot();
                     } else {
-                        failed_acquires.fetch_add(1);
+                        failed_acquires->fetch_add(1);
                     }
                 } catch (const std::exception&) {
-                    errors.fetch_add(1);
+                    errors->fetch_add(1);
                 }
             }
         });
@@ -266,17 +288,18 @@ BOOST_AUTO_TEST_CASE(test_concurrent_slot_management_property,
     }
 
     // Property 1: No errors should occur during concurrent access
-    BOOST_CHECK_EQUAL(errors.load(), 0);
+    BOOST_CHECK_EQUAL(errors->load(), 0);
 
     // Property 2: All operations should complete
-    BOOST_CHECK_EQUAL(successful_acquires.load() + failed_acquires.load(),
+    BOOST_CHECK_EQUAL(successful_acquires->load() + failed_acquires->load(),
                       num_threads * operations_per_thread);
 
     // Property 3: Some operations should have succeeded
-    BOOST_CHECK_GT(successful_acquires.load(), 0);
+    BOOST_CHECK_GT(successful_acquires->load(), 0);
 
-    BOOST_TEST_MESSAGE("Concurrent slot management: " << successful_acquires.load() << " acquired, "
-                                                      << failed_acquires.load() << " failed");
+    BOOST_TEST_MESSAGE("Concurrent slot management: " << successful_acquires->load()
+                                                      << " acquired, " << failed_acquires->load()
+                                                      << " failed");
 }
 
 /**
