@@ -22,7 +22,11 @@
 #include "gcp_real_gce_test_support.hpp"
 
 #include <google/cloud/compute/instances/v1/instances_client.h>
+#include <google/cloud/compute/machine_types/v1/machine_types_client.h>
 #include <google/cloud/credentials.h>
+
+#include <algorithm>
+#include <sstream>
 #include <google/cloud/options.h>
 
 #if !defined(KYTHIRA_FUTURE_BACKEND_STDEXEC) && !defined(KYTHIRA_FUTURE_BACKEND_BOOST)
@@ -132,6 +136,75 @@ auto cluster_instance_names(const std::string& project, const std::string& zone,
     return names;
 }
 
+/// Candidate zones for the launch ladder, preferred order irrelevant here (the
+/// ranking applies the caller's preference). `GCP_TEST_ZONES` overrides;
+/// otherwise the region's conventional four suffixes are tried and any that do
+/// not exist simply contribute no machine types.
+auto candidate_zones() -> std::vector<std::string> {
+    const std::string region = env_or("GCP_REGION", "us-central1");
+    const std::string configured = env_or("GCP_TEST_ZONES", "");
+    std::vector<std::string> zones;
+    if (!configured.empty()) {
+        std::stringstream ss(configured);
+        std::string item;
+        while (std::getline(ss, item, ',')) {
+            if (!item.empty()) {
+                zones.push_back(item);
+            }
+        }
+        return zones;
+    }
+    for (const auto* suffix : {"-a", "-b", "-c", "-f"}) {
+        zones.push_back(region + suffix);
+    }
+    return zones;
+}
+
+/// Machine types actually offered in each candidate zone, via
+/// `machineTypes.list`.
+///
+/// Discovered rather than assumed because the ladder's whole purpose is to move
+/// a node to a zone that can take it, and machine-type availability is not
+/// uniform across a region's zones — substituting a zone that does not offer
+/// the type would trade a retryable stockout for a fatal
+/// "does not exist in zone" error, which escalation deliberately does not
+/// retry.
+///
+/// Cached process-wide: this costs one API call per zone and the answer cannot
+/// meaningfully change mid-run. Returns empty (explaining itself on stderr) if
+/// discovery fails, leaving the caller on its configured default.
+auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
+    static const std::vector<gcp_machine_type_info> discovered = [] {
+        std::vector<gcp_machine_type_info> out;
+        try {
+            gcp_client_config gcp;
+            gcp.project_id = env_or("GCP_PROJECT_ID", "");
+            auto client = google::cloud::compute_machine_types_v1::MachineTypesClient(
+                google::cloud::compute_machine_types_v1::MakeMachineTypesConnectionRest(
+                    gcp_compute_detail::make_options(gcp)));
+            for (const auto& zone : candidate_zones()) {
+                for (const auto& mt : client.ListMachineTypes(gcp.project_id, zone)) {
+                    if (!mt) {
+                        break;  // zone absent or not listable; try the next one
+                    }
+                    out.push_back({.name = mt->name(),
+                                   .zone = zone,
+                                   .guest_cpus = static_cast<unsigned>(mt->guest_cpus()),
+                                   .memory_mb = static_cast<unsigned>(mt->memory_mb())});
+                }
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[gcp-spot] machine-type discovery failed (" << ex.what()
+                      << "); falling back to the configured machine type\n";
+            return std::vector<gcp_machine_type_info>{};
+        }
+        std::cerr << "[gcp-spot] discovered " << out.size() << " (machine type, zone) pairs across "
+                  << candidate_zones().size() << " candidate zones\n";
+        return out;
+    }();
+    return discovered;
+}
+
 auto base_compute_config() -> gcp_compute_quorum_manager_config<std::string> {
     gcp_compute_quorum_manager_config<std::string> cfg;
     cfg.gcp.project_id = env_or("GCP_PROJECT_ID", "");
@@ -144,11 +217,113 @@ auto base_compute_config() -> gcp_compute_quorum_manager_config<std::string> {
     cfg.service_account_email = env_or("GCP_TEST_SERVICE_ACCOUNT", "");
     cfg.extra_labels["kythira-test-run"] = run_id();
     cfg.provision_timeout = std::chrono::seconds(300);
-    const std::string region = env_or("GCP_REGION", "us-central1");
     const std::string subnet = env_or("GCP_TEST_SUBNET_PREFIX", "default");
-    cfg.subnetwork_by_group[region + "-a"] = subnet;
+    // Every candidate zone is registered up front, not just the one a case
+    // targets. `zone_for_node()` resolves a node's zone by probing the zones in
+    // `subnetwork_by_group`, so a manager rebuilt onto a later ladder rung can
+    // only still find (and decommission) nodes placed by an earlier rung if
+    // every zone the ladder might use is present here.
+    for (const auto& zone : candidate_zones()) {
+        cfg.subnetwork_by_group[zone] = subnet;
+    }
     return cfg;
 }
+
+/// Wraps `gcp_compute_quorum_manager` with the zone-laddering spot-first
+/// escalation from `gcp_real_gce_test_support.hpp`.
+///
+/// Rebuilding the manager per rung is safe here even for nodes already placed
+/// by an earlier rung, because `zone_for_node()` derives a node's zone by
+/// probing `subnetwork_by_group` rather than from in-memory state — and
+/// `base_compute_config()` registers every candidate zone. `assess_quorum` and
+/// `decommission_node` therefore keep working across an escalation.
+///
+/// `provision()` returns the zone the node actually landed in, which the caller
+/// must record as the node's group: GroupId *is* the zone in this manager, so a
+/// substituted zone changes the node's group membership.
+class escalating_gce_manager {
+public:
+    using manager_type = gcp_compute_quorum_manager<>;
+
+    struct placement {
+        peer_info<std::uint64_t, std::string> peer;
+        std::string zone;
+        std::string machine_type;
+        bool spot{false};
+        double price_per_hr{0.0};
+    };
+
+    explicit escalating_gce_manager(gcp_compute_quorum_manager_config<std::string> cfg)
+        : _cfg(std::move(cfg)) {
+        rebuild(_cfg.machine_type, _cfg.spot);
+    }
+
+    /// Provisions one node, preferring `preferred_zone` and escalating on a
+    /// capacity or quota refusal. Zones already returned by a previous
+    /// `provision()` on this instance are excluded, so a multi-zone case keeps
+    /// getting distinct zones even when it has to substitute one.
+    auto provision(const std::string& preferred_zone) -> placement {
+        auto ladder =
+            rank_gcp_launch_options(available_machine_types(), gcp_machine_type_requirements{},
+                                    preferred_zone, _used_zones);
+        if (ladder.empty()) {
+            // Discovery unavailable: fall back to exactly the pre-escalation
+            // behaviour rather than inventing a rung.
+            ladder.push_back({.machine_type = _cfg.machine_type,
+                              .zone = preferred_zone,
+                              .spot = _cfg.spot,
+                              .price_per_hr = gce_hourly_rate(_cfg.machine_type)});
+        }
+        // Each node walks its own ladder from the top: the ladder is already
+        // rebuilt per call with the zones this case has consumed excluded, so
+        // carrying a rung index across nodes (as the Azure walk does) would
+        // index into a different list than the one it was measured against.
+        std::size_t rung = 0;
+        auto chosen = escalate_gcp_launch(
+            ladder, rung, _escalations,
+            [&](const gcp_launch_option& option) {
+                rebuild(option.machine_type, option.spot);
+                auto peer = std::move(_mgr->provision_node(option.zone, std::nullopt)).get();
+                return placement{.peer = peer,
+                                 .zone = option.zone,
+                                 .machine_type = option.machine_type,
+                                 .spot = option.spot,
+                                 .price_per_hr = option.price_per_hr};
+            },
+            [](const gcp_launch_option& from, const gcp_launch_option& to, const char* message) {
+                BOOST_TEST_MESSAGE("[gcp-spot] " << from.label() << " refused, escalating to "
+                                                 << to.label() << ": " << message);
+            });
+        _used_zones.push_back(chosen.zone);
+        return chosen;
+    }
+
+    auto operator->() -> manager_type* { return &*_mgr; }
+
+    /// How many times a ladder rung was refused across this manager's lifetime.
+    /// Zero on a healthy run; non-zero is what proves escalation actually ran.
+    [[nodiscard]] auto escalations() const -> std::size_t { return _escalations; }
+
+private:
+    void rebuild(const std::string& machine_type, bool spot) {
+        if (_mgr && _current_machine_type == machine_type && _current_spot == spot) {
+            return;  // nothing about the manager's config would change
+        }
+        auto cfg = _cfg;
+        cfg.machine_type = machine_type;
+        cfg.spot = spot;
+        _current_machine_type = machine_type;
+        _current_spot = spot;
+        _mgr.emplace(std::move(cfg));
+    }
+
+    gcp_compute_quorum_manager_config<std::string> _cfg;
+    std::optional<manager_type> _mgr;
+    std::string _current_machine_type;
+    bool _current_spot{false};
+    std::vector<std::string> _used_zones;
+    std::size_t _escalations{0};
+};
 
 }  // namespace
 
@@ -160,17 +335,20 @@ BOOST_AUTO_TEST_CASE(provision_and_assess_single_zone) {
     auto cfg = base_compute_config();
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
-    gcp_compute_quorum_manager<> mgr{cfg};
+    escalating_gce_manager mgr{cfg};
 
-    auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
-    BOOST_TEST_MESSAGE("provisioned node " + std::to_string(peer.node_id) + " at " + peer.address);
+    auto placed = mgr.provision(zone);
+    BOOST_TEST_MESSAGE("provisioned node " + std::to_string(placed.peer.node_id) + " at " +
+                       placed.peer.address + " on " + placed.machine_type + " @ " + placed.zone);
 
+    // placed.zone, not the requested zone: escalation may have substituted one,
+    // and GroupId is the zone, so the node's group is wherever it landed.
     std::vector<node_placement<std::uint64_t, std::string>> cluster{
-        {.node_id = peer.node_id, .group_id = zone}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+        {.node_id = placed.peer.node_id, .group_id = placed.zone}};
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(placed.peer.node_id)).get();
 }
 
 BOOST_AUTO_TEST_CASE(provision_multi_zone_topology) {
@@ -178,21 +356,38 @@ BOOST_AUTO_TEST_CASE(provision_multi_zone_topology) {
     const std::string region = env_or("GCP_REGION", "us-central1");
     const std::string subnet = env_or("GCP_TEST_SUBNET_PREFIX", "default");
     std::vector<std::string> zones{region + "-a", region + "-b", region + "-c"};
-    for (const auto& z : zones) {
+    // Every candidate zone gets a subnetwork and a topology group, not just the
+    // three preferred ones: escalation may place a node in a zone outside this
+    // list, and the manager must be configured for wherever a node can land.
+    for (const auto& z : candidate_zones()) {
         cfg.subnetwork_by_group[z] = subnet;
         cfg.topology.groups.push_back({.group_id = z, .target_count = 1});
     }
-    gcp_compute_quorum_manager<> mgr{cfg};
+    escalating_gce_manager mgr{cfg};
 
+    // This is the case that broke the Aug 3 2026 scheduled run, with
+    // us-central1-c out of capacity. Each node names a preferred zone; the
+    // ladder substitutes another only if that one refuses, and never one
+    // already used by this case, so the topology keeps three distinct zones.
     std::vector<node_placement<std::uint64_t, std::string>> cluster;
+    std::vector<std::string> placed_zones;
     for (const auto& z : zones) {
-        auto peer = std::move(mgr.provision_node(z, std::nullopt)).get();
-        cluster.push_back({.node_id = peer.node_id, .group_id = z});
+        auto placed = mgr.provision(z);
+        cluster.push_back({.node_id = placed.peer.node_id, .group_id = placed.zone});
+        placed_zones.push_back(placed.zone);
     }
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+
+    // The property that matters, and the reason the ladder tracks used zones:
+    // three nodes in three *distinct* zones. Which three is not the point.
+    std::vector<std::string> distinct = placed_zones;
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    BOOST_CHECK_EQUAL(distinct.size(), zones.size());
+
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, zones.size());
     for (const auto& np : cluster) {
-        std::move(mgr.decommission_node(np.node_id)).get();
+        std::move(mgr->decommission_node(np.node_id)).get();
     }
 }
 
