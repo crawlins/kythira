@@ -629,6 +629,53 @@ private:
 /// "external fault injection" role `aws_quorum_manager_real_ec2_test.cpp`'s
 /// direct EC2Client calls play for the AWS suite's
 /// `az_outage_during_rolling_deployment`-style cases).
+/// Polls `vm_name`'s instanceView until it reports no `PowerState/running`
+/// status, or the deadline passes. Returns false on timeout.
+///
+/// This is deliberately the same signal `azure_vm_quorum_manager::assess_quorum`
+/// derives liveness from, so a true result means the manager is guaranteed to
+/// classify the node as unreachable on its next call.
+[[nodiscard]] auto wait_until_not_running(Azure::Core::Http::_internal::HttpPipeline& pipeline,
+                                          const kythira::azure_client_config& azure,
+                                          const std::string& vm_name) -> bool {
+    constexpr auto kTimeout = std::chrono::minutes{5};
+    constexpr auto kPoll = std::chrono::seconds{5};
+    const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        bool running = false;
+        try {
+            Azure::Core::Url url(arm_base_url(azure) +
+                                 "/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                                 "/instanceView?api-version=2024-07-01");
+            Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+            Azure::Core::Context context;
+            auto response = pipeline.Send(request, context);
+            if (static_cast<int>(response->GetStatusCode()) / 100 == 2) {
+                const auto& body = response->GetBody();
+                auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+                if (parsed.is_object() && parsed.as_object().contains("statuses")) {
+                    for (const auto& status : parsed.at("statuses").as_array()) {
+                        if (status.is_object() && status.as_object().contains("code") &&
+                            status.at("code").as_string() == "PowerState/running") {
+                            running = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (const std::exception&) {
+            // Treat a transient read failure as "unknown" and poll again
+            // rather than declaring success, which would reintroduce the race.
+            running = true;
+        }
+        if (!running) {
+            return true;
+        }
+        std::this_thread::sleep_for(kPoll);
+    }
+    return false;
+}
+
 void external_arm_post_action(const kythira::azure_client_config& azure, const std::string& vm_name,
                               const std::string& action) {
     auto pipeline = make_test_arm_pipeline(azure);
@@ -640,6 +687,24 @@ void external_arm_post_action(const kythira::azure_client_config& azure, const s
     auto code = static_cast<int>(response->GetStatusCode());
     BOOST_REQUIRE_MESSAGE(code >= 200 && code < 300, "external ARM " << action << " on " << vm_name
                                                                      << " failed (" << code << ")");
+
+    // ARM answers these with 202 Accepted and finishes the work afterwards, so
+    // returning here would hand the caller a VM that is still running. Every
+    // caller immediately asserts on `assess_quorum`'s live count, which reads
+    // exactly this power state — making the assertion a race against ARM
+    // rather than a test of the manager. It is a race the test usually wins,
+    // which is worse than one it always loses: a full-suite run has been
+    // observed both fully green and failing here with "1 != 0" and "6 != 5",
+    // with no code change in between.
+    //
+    // So wait for the power state the caller is about to assert on. Polling
+    // instanceView is preferred over following the operation's own
+    // Azure-AsyncOperation header because it settles the question the test
+    // actually asks — "does the manager see this node as down yet" — rather
+    // than the adjacent one of whether ARM considers the request finished.
+    BOOST_REQUIRE_MESSAGE(wait_until_not_running(pipeline, azure, vm_name),
+                          "timed out waiting for " << vm_name << " to leave PowerState/running "
+                                                   << "after external ARM " << action);
 }
 
 /// Scans `scale_set_name`'s instance list for the one tagged
