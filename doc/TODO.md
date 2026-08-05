@@ -927,10 +927,31 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   consecutive identical refusals), and confidential-compute SKUs are excluded
   since they reject any create lacking `securityProfile.securityType` with a
   fatal `BadRequest` that aborts the walk.
-  Still open: `provision_timeout_cleanup` leaks the VM it deliberately times
-  out on — its best-effort cleanup removed the NIC but left the VM running
-  (now cascading its own NIC/disk after fix 2, but still needing manual
-  deletion).
+  Two further fixes closed the loop. `provision_timeout_cleanup` leaked the
+  VM it deliberately times out on, every run: the manager *does* call
+  `best_effort_delete_vm` on that path, but with a 1-second timeout the VM is
+  still mid-create, ARM refuses to delete a resource with an operation in
+  flight, and the failure is logged and swallowed by design — so the NIC
+  delete then failed too, the NIC still being attached. Fixed in
+  `AzureIntegrationFixture::teardown()` rather than in the manager, since the
+  manager's delete is necessarily racing an ARM operation it does not control
+  while the fixture runs after the test body, when the create has settled;
+  the sweep matches the fixture's own `kythira:cluster` tag (unique per test
+  case), retries past 409s, and logs every VM it deletes so a future leak
+  stays visible instead of being silently absorbed. Because `teardown()` is
+  also what the signal handler calls, an interrupted run now cleans up too,
+  which it never did before.
+  Separately, `external_arm_post_action` treated ARM's `202 Accepted` as
+  completion. Deallocation is asynchronous, so callers got back a
+  still-running VM and then immediately asserted on `assess_quorum`'s live
+  count — racing ARM rather than testing the manager, and *usually winning*,
+  which is worse than always losing: two consecutive full-suite runs with no
+  code change between them came out green and then failed with `1 != 0` and
+  `6 != 5`. It now polls instanceView until the VM leaves
+  `PowerState/running`. The earlier green run recorded above was therefore
+  weaker evidence than it looked; the suite has since been confirmed green on
+  two consecutive full runs, each ending with the resource group holding
+  nothing but the permanent VNet/NSG/Key Vault.
 - [x] **Google Cloud Platform (GCP)** — `gcp_compute_quorum_manager` (direct
   GCE `instances.insert`/`list`/`delete`, node ID = GCE instance ID,
   `instances.get` status for liveness) and `gcp_mig_quorum_manager` (Managed
