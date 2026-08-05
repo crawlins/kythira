@@ -37,6 +37,8 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -299,6 +301,9 @@ public:
         auto chosen = escalate_gcp_launch(
             ladder, rung, _escalations,
             [&](const gcp_launch_option& option) {
+                if (_fault) {
+                    _fault(option);
+                }
                 rebuild(option.machine_type, option.spot);
                 auto peer = std::move(_mgr->provision_node(option.zone, std::nullopt)).get();
                 return placement{.peer = peer,
@@ -316,6 +321,22 @@ public:
     }
 
     auto operator->() -> manager_type* { return &*_mgr; }
+
+    /// Installs a hook run immediately before each launch attempt, so a test can
+    /// make a chosen rung refuse.
+    ///
+    /// A zone stockout cannot be scheduled — that is the whole difficulty with
+    /// verifying this ladder against real GCE — so the *refusal* is the one part
+    /// of `provision_escalates_past_zone_stockout` that is synthetic. Everything
+    /// downstream of it stays real: the next rung is a genuine
+    /// `instances.insert` against GCE, and the assess/decommission that follow
+    /// run against the VM it actually creates. The hook throws the verbatim
+    /// error text GCE returned on Aug 3 2026, so the classifier
+    /// (`is_gcp_capacity_or_quota_error`) is exercised on a real message rather
+    /// than on one written to match it.
+    void set_launch_fault(std::function<void(const gcp_launch_option&)> fault) {
+        _fault = std::move(fault);
+    }
 
     /// How many times a ladder rung was refused across this manager's lifetime.
     /// Zero on a healthy run; non-zero is what proves escalation actually ran.
@@ -340,7 +361,19 @@ private:
     bool _current_spot{false};
     std::vector<std::string> _used_zones;
     std::size_t _escalations{0};
+    std::function<void(const gcp_launch_option&)> _fault;
 };
+
+/// The verbatim `instances.insert` error text GCE returned on Aug 3 2026, when
+/// `provision_multi_zone_topology` failed on a us-central1-c stockout. Kept
+/// literal, including GCP's own bracketed code and prose, because what the
+/// forced-failure case is really checking is that
+/// `is_gcp_capacity_or_quota_error` matches *this* string.
+auto zone_stockout_message(const std::string& project, const std::string& zone) -> std::string {
+    return "[ZONE_RESOURCE_POOL_EXHAUSTED] The zone 'projects/" + project + "/zones/" + zone +
+           "' does not have enough resources available to fulfill the request.  "
+           "Try a different zone, or try again later.";
+}
 
 }  // namespace
 
@@ -406,6 +439,95 @@ BOOST_AUTO_TEST_CASE(provision_multi_zone_topology) {
     for (const auto& np : cluster) {
         std::move(mgr->decommission_node(np.node_id)).get();
     }
+}
+
+/// Verifies the ladder under the failure condition it exists for, with a
+/// control in the same run proving the precondition is what made the
+/// difference.
+///
+/// The three preceding cases only ever exercise the ladder's happy path: on a
+/// healthy day rung 0 launches and nothing escalates, so a green run says
+/// nothing about whether escalation works. This case forces rung 0 to refuse
+/// with GCE's own stockout text, then — on the same manager, with the fault
+/// removed — provisions again and requires *zero* further escalations. Without
+/// that second half, an escalation count of 1 would be equally consistent with
+/// a harness that always escalates.
+BOOST_AUTO_TEST_CASE(provision_escalates_past_zone_stockout) {
+    auto cfg = base_compute_config();
+    const std::string region = env_or("GCP_REGION", "us-central1");
+    const std::string preferred = region + "-a";
+    // Every candidate zone needs a topology group: escalation places the node
+    // in a zone this case did not name, and GroupId is the zone.
+    for (const auto& z : candidate_zones()) {
+        cfg.topology.groups.push_back({.group_id = z, .target_count = 1});
+    }
+
+    // With machine-type discovery unavailable the ladder degenerates to the
+    // single configured rung, and `escalate_gcp_launch` rethrows rather than
+    // escalating off the end of it. Skip rather than report that as a failure
+    // of the escalation logic, which is not what would have gone wrong.
+    if (available_machine_types().empty()) {
+        BOOST_TEST_MESSAGE(
+            "machine-type discovery unavailable — ladder has a single rung, "
+            "skipping the forced-stockout case");
+        return;
+    }
+
+    escalating_gce_manager mgr{cfg};
+
+    // ── Forced failure ─────────────────────────────────────────────────────
+    // Refuse whatever rung 0 turns out to be, exactly once, and capture it so
+    // the assertions compare against the rung that was actually refused rather
+    // than against an assumption about how the ladder ranked today.
+    std::optional<gcp_launch_option> refused;
+    mgr.set_launch_fault([&](const gcp_launch_option& option) {
+        if (refused.has_value()) {
+            return;  // only the first attempt refuses
+        }
+        refused = option;
+        throw std::runtime_error(zone_stockout_message(cfg.gcp.project_id, option.zone));
+    });
+
+    auto placed = mgr.provision(preferred);
+
+    // The precondition fired at all -- without this the rest could pass
+    // vacuously on a run where the hook was never reached.
+    BOOST_REQUIRE(refused.has_value());
+    BOOST_CHECK_EQUAL(refused->zone, preferred);
+    BOOST_CHECK_EQUAL(mgr.escalations(), 1u);
+    BOOST_TEST_MESSAGE("[gcp-spot] forced refusal of " << refused->label() << "; landed on "
+                                                       << placed.machine_type << " @ "
+                                                       << placed.zone);
+
+    // The ladder's defining property: changing zone is free, growing the
+    // machine type is not, so a zone stockout must move the zone and leave the
+    // machine type (and the spot purchase model) alone.
+    BOOST_CHECK_NE(placed.zone, refused->zone);
+    BOOST_CHECK_EQUAL(placed.machine_type, refused->machine_type);
+    BOOST_CHECK_EQUAL(placed.spot, refused->spot);
+
+    // A real VM in a real, *different* group -- this is the part that would
+    // have caught a GCP analogue of the Azure next_node_id() bug, where the
+    // single-node happy path passed while anything past it was broken.
+    std::vector<node_placement<std::uint64_t, std::string>> cluster{
+        {.node_id = placed.peer.node_id, .group_id = placed.zone}};
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
+    BOOST_CHECK_EQUAL(health.live_node_count, 1u);
+
+    // ── Control ────────────────────────────────────────────────────────────
+    // Same manager, same ladder, fault removed. The preferred zone is still
+    // free (only `placed.zone` was consumed), so a healthy run must take rung 0
+    // and escalate zero further times. If this escalates too, the escalation
+    // above was an artefact of the harness rather than of the injected refusal,
+    // and the case above proves nothing.
+    const std::size_t after_forced = mgr.escalations();
+    mgr.set_launch_fault(nullptr);
+    auto control = mgr.provision(preferred);
+    BOOST_CHECK_EQUAL(mgr.escalations(), after_forced);
+    BOOST_CHECK_EQUAL(control.zone, preferred);
+
+    std::move(mgr->decommission_node(placed.peer.node_id)).get();
+    std::move(mgr->decommission_node(control.peer.node_id)).get();
 }
 
 BOOST_AUTO_TEST_CASE(stopped_instance_marked_unreachable) {
