@@ -37,14 +37,27 @@ namespace kythira::testing::gcp_real_gce {
 // Source: https://cloud.google.com/compute/vm-instance-pricing (2026-07).
 inline auto gce_hourly_rate(const std::string& machine_type) -> double {
     static const std::map<std::string, double> kRates{
-        {"e2-micro", 0.008376},      {"e2-small", 0.016751},      {"e2-medium", 0.033503},
-        {"e2-standard-2", 0.06701},  {"e2-standard-4", 0.134012}, {"e2-standard-8", 0.268024},
-        {"n2-standard-2", 0.097118}, {"n2-standard-4", 0.194236}, {"n1-standard-1", 0.0475},
-        {"n1-standard-2", 0.095},    {"n1-standard-4", 0.19},
+        {"e2-micro", 0.008376},       {"e2-small", 0.016751},      {"e2-medium", 0.033503},
+        {"e2-highcpu-2", 0.024727},   {"e2-highmem-2", 0.045173},  {"e2-standard-2", 0.06701},
+        {"e2-standard-4", 0.134012},  {"e2-standard-8", 0.268024}, {"t2d-standard-1", 0.042248},
+        {"t2d-standard-2", 0.084496}, {"n2d-highcpu-2", 0.062410}, {"n2d-standard-2", 0.084492},
+        {"n2d-highmem-2", 0.114052},  {"n2-highcpu-2", 0.071736},  {"n2-standard-2", 0.097118},
+        {"n2-highmem-2", 0.131102},   {"n2-standard-4", 0.194236}, {"n1-standard-1", 0.0475},
+        {"n1-standard-2", 0.095},     {"n1-highmem-2", 0.118226},  {"n1-standard-4", 0.19},
     };
     auto it = kRates.find(machine_type);
     return (it != kRates.end()) ? it->second : 0.033503;  // default to e2-medium
 }
+
+// The table above covers every machine type the launch ladder can currently
+// select in us-central1 — the eligible set (<= 2 vCPU, >= 2048 MiB,
+// general-purpose families) is 16 types, verified against
+// `gcloud compute machine-types list`. That completeness matters for more than
+// cost reporting: an unpriced type falls back to the e2-medium default, and
+// before these entries were added 10 of those 16 shared that single value, so
+// their order in the ladder was settled by the name tie-break rather than by
+// price. Widening `family_prefixes` without adding the corresponding rates
+// silently reintroduces that.
 
 struct BilledResource {
     std::string label;
