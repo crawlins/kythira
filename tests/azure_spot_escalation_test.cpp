@@ -100,6 +100,9 @@ constexpr const char* kSkus = R"({
     {"resourceType":"virtualMachines","name":"Standard_F1alsx_v7",
      "locationInfo":[{"location":"eastus","zones":[]}],
      "capabilities":[{"name":"vCPUs","value":"1"},{"name":"CpuArchitectureType","value":"x64"},{"name":"HyperVGenerations","value":"V2"}]},
+    {"resourceType":"virtualMachines","name":"Standard_DC2ads_v5",
+     "locationInfo":[{"location":"eastus","zones":["1","2","3"]}],
+     "capabilities":[{"name":"vCPUs","value":"2"},{"name":"CpuArchitectureType","value":"x64"},{"name":"HyperVGenerations","value":"V1,V2"},{"name":"ConfidentialComputingType","value":"SNP"}]},
     {"resourceType":"disks","name":"Premium_LRS","locationInfo":[{"location":"eastus","zones":["1"]}]}
   ]
 })";
@@ -422,6 +425,89 @@ BOOST_AUTO_TEST_CASE(falls_all_the_way_through_to_on_demand) {
     BOOST_TEST(chosen == "on-demand");
     BOOST_TEST(escalations == 3u);
     BOOST_TEST(!kLadder[rung].spot);
+}
+
+BOOST_AUTO_TEST_CASE(spot_quota_refusal_jumps_straight_to_on_demand) {
+    std::size_t rung = 0;
+    std::size_t escalations = 0;
+    std::vector<std::string> attempted;
+
+    // LowPriorityCores is one region-wide counter shared by every spot SKU, so
+    // proving it exhausted once proves it for all of them. Walking the
+    // remaining spot rungs individually is what a live nine-VM case actually
+    // did — 40 consecutive identical refusals before reaching the fallback.
+    auto chosen = escalate_launch(
+        kLadder, rung, escalations,
+        [&](const azure_vm_option& option) -> std::string {
+            attempted.push_back(option.vm_size);
+            if (option.spot) {
+                throw std::runtime_error(
+                    "VM creation failed: OperationNotAllowed: Operation could not be completed "
+                    "as it results in exceeding approved LowPriorityCores quota. Current Limit: "
+                    "3, Current Usage: 3");
+            }
+            return option.vm_size;
+        },
+        noop_escalate);
+
+    BOOST_TEST(chosen == "on-demand");
+    // The whole point: two attempts (first spot rung, then on-demand), not one
+    // per spot rung.
+    BOOST_REQUIRE_EQUAL(attempted.size(), 2u);
+    BOOST_TEST(attempted[0] == "spot-a");
+    BOOST_TEST(attempted[1] == "on-demand");
+    BOOST_TEST(escalations == 1u);
+}
+
+BOOST_AUTO_TEST_CASE(spot_quota_refusal_still_terminates_on_a_spot_only_ladder) {
+    // With no on-demand rung to jump to, the short-circuit must degrade to an
+    // ordinary single step rather than looping or overrunning the ladder.
+    const std::vector<azure_vm_option> spot_only{
+        {.vm_size = "spot-a", .spot = true, .price_per_hr = 0.01},
+        {.vm_size = "spot-b", .spot = true, .price_per_hr = 0.02},
+    };
+    std::size_t rung = 0;
+    std::size_t escalations = 0;
+    std::vector<std::string> attempted;
+
+    BOOST_CHECK_THROW(escalate_launch(
+                          spot_only, rung, escalations,
+                          [&](const azure_vm_option& option) -> std::string {
+                              attempted.push_back(option.vm_size);
+                              throw std::runtime_error(
+                                  "VM creation failed: exceeding approved "
+                                  "LowPriorityCores quota");
+                          },
+                          noop_escalate),
+                      std::runtime_error);
+    BOOST_REQUIRE_EQUAL(attempted.size(), spot_only.size());
+    BOOST_TEST(escalations == 1u);
+}
+
+BOOST_AUTO_TEST_CASE(family_quota_refusal_advances_one_rung_at_a_time) {
+    std::size_t rung = 0;
+    std::size_t escalations = 0;
+    std::vector<std::string> attempted;
+
+    // The control distinguishing the two quota kinds: a *family* core quota is
+    // per-family, so the next spot rung is a genuinely different question and
+    // must still be tried. Only LowPriorityCores short-circuits.
+    auto chosen = escalate_launch(
+        kLadder, rung, escalations,
+        [&](const azure_vm_option& option) -> std::string {
+            attempted.push_back(option.vm_size);
+            if (option.vm_size == "spot-a") {
+                throw std::runtime_error(
+                    "VM creation failed: OperationNotAllowed: exceeding "
+                    "approved standardFSv7Family Cores quota");
+            }
+            return option.vm_size;
+        },
+        noop_escalate);
+
+    BOOST_TEST(chosen == "spot-b");
+    BOOST_REQUIRE_EQUAL(attempted.size(), 2u);
+    BOOST_TEST(escalations == 1u);
 }
 
 BOOST_AUTO_TEST_CASE(rethrows_immediately_on_a_non_capacity_error) {
