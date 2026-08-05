@@ -9,6 +9,8 @@
 #include <proxygen/lib/http/HTTPConstants.h>
 #include <proxygen/lib/http/ProxygenErrorEnum.h>
 
+#include <wangle/acceptor/Acceptor.h>
+
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -1170,16 +1172,69 @@ auto proxygen_server<Types>::reload_tls_material() -> void {
         throw kythira::ssl_configuration_error("SSL is not enabled on this server");
     }
     validate_certificate_files();
-    // Requirement 7.2: proxygen::HTTPServer::updateTLSCredentials() re-reads
-    // the certificate/key paths already configured on the running
-    // acceptors without closing the listener or dropping established
-    // connections -- the direct Proxygen equivalent of Beast/cpp-httplib's
-    // own "swap in a fresh context" reload, just performed in place rather
-    // than by constructing a whole new config object.
+    // Requirement 7.2: re-read the certificate/key paths already configured
+    // on the running acceptors without closing the listener or dropping
+    // established connections -- the direct Proxygen equivalent of
+    // Beast/cpp-httplib's own "swap in a fresh context" reload, just
+    // performed in place rather than by constructing a whole new config
+    // object.
     std::lock_guard<std::mutex> lock(_mutex);
-    if (_http_server) {
-        _http_server->updateTLSCredentials();
+    if (!_http_server) {
+        return;
     }
+    // Deliberately *not* proxygen::HTTPServer::updateTLSCredentials(), which
+    // is fire-and-forget: it posts `acceptor->reloadSSLContextConfigs()` to
+    // each acceptor's EventBase via runInEventBaseThread(), capturing a raw
+    // `wangle::Acceptor*`, and returns immediately without waiting. That
+    // makes reload_tls_material() a lie in two ways, both of which bit:
+    //
+    //  1. It returns before the reload has happened, so a caller that
+    //     rotates material and then retires the old files (or, in
+    //     enable_auto_reload's case, records _last_reloaded_cert_mtime as
+    //     though the reload took effect) races the queued task. When the
+    //     task finally runs, it re-reads a path whose file is already gone
+    //     and logs "Failed to re-configure TLS ... will keep old config" --
+    //     the server silently keeps serving the *old* certificate.
+    //  2. The queued lambda holds a raw Acceptor*. stop() and ~HTTPServer
+    //     destroy the acceptors without draining those tasks, so a reload
+    //     queued shortly before shutdown dereferences a freed Acceptor.
+    //
+    // Both surfaced together as an intermittent (~50% of CI runs) segfault
+    // in proxygen_transport_test: server_reload_tls_material queues a
+    // reload, deletes the cert file, and tears the server down, and the
+    // orphaned task then fired several tests later -- crashing whichever
+    // case happened to be running (concurrent_rpcs_to_same_node, which has
+    // nothing to do with TLS), preceded by exactly those two SSL errors.
+    //
+    // So run proxygen's own per-acceptor logic here, but synchronously.
+    // runImmediatelyOrRunInEventBaseThreadAndWait (rather than
+    // runInEventBaseThreadAndWait) keeps this safe if it is ever reached
+    // from an acceptor's own EventBase thread, where waiting on that thread
+    // would deadlock; inline execution there is equally synchronous.
+    //
+    // This blocks on the acceptor threads while holding _mutex, which is
+    // safe only because no acceptor-thread code path takes _mutex: dispatch()
+    // reads its handlers unlocked, and _mutex is otherwise held only by the
+    // register_*_handler setters and this function, all called from
+    // application threads. Anything added later that acquires _mutex from an
+    // acceptor's EventBase would deadlock against this wait.
+    //
+    // Note this does not make reload failures *throw* -- Acceptor catches
+    // and logs them internally. The all-or-nothing contract (Requirement
+    // 7.2-7.3) comes from validate_certificate_files() above, which runs
+    // before anything is handed to the acceptors; what changes here is that
+    // by the time this returns, the new material is actually in effect.
+    _http_server->forEachAcceptor([](wangle::Acceptor* acceptor) {
+        if (acceptor == nullptr || !acceptor->isSSL()) {
+            return;
+        }
+        auto* evb = acceptor->getEventBase();
+        if (evb == nullptr) {
+            return;
+        }
+        evb->runImmediatelyOrRunInEventBaseThreadAndWait(
+            [acceptor] { acceptor->reloadSSLContextConfigs(); });
+    });
 }
 
 template<typename Types>
