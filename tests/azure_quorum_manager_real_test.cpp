@@ -62,6 +62,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace kythira::testing::azure_real;
@@ -261,6 +262,79 @@ auto random_suffix() -> std::string {
     return ladder;
 }
 
+/// Names of every VM in the resource group tagged `kythira:cluster = cluster`.
+///
+/// Lists unfiltered and matches client-side for the same reason
+/// `azure_vm_quorum_manager::next_node_id()` does: ARM's `tagName`/`tagValue`
+/// `$filter` is only valid on the generic `/resources` endpoint and 400s on
+/// `Microsoft.Compute/virtualMachines` once the group actually holds a VM.
+[[nodiscard]] auto cluster_vm_names(Azure::Core::Http::_internal::HttpPipeline& pipeline,
+                                    const kythira::azure_client_config& azure,
+                                    const std::string& cluster) -> std::vector<std::string> {
+    Azure::Core::Url url(arm_base_url(azure) +
+                         "/providers/Microsoft.Compute/virtualMachines?api-version=2024-07-01");
+    Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Get, url);
+    Azure::Core::Context context;
+    auto response = pipeline.Send(request, context);
+    if (static_cast<int>(response->GetStatusCode()) / 100 != 2) {
+        return {};
+    }
+    const auto& body = response->GetBody();
+    auto parsed = boost::json::parse(std::string(body.begin(), body.end()));
+    std::vector<std::string> names;
+    if (!parsed.is_object() || !parsed.as_object().contains("value")) {
+        return names;
+    }
+    for (const auto& vm : parsed.at("value").as_array()) {
+        if (!vm.is_object()) {
+            continue;
+        }
+        const auto* tags = vm.as_object().if_contains("tags");
+        const auto* name = vm.as_object().if_contains("name");
+        if (tags == nullptr || name == nullptr || !tags->is_object() || !name->is_string()) {
+            continue;
+        }
+        const auto* owner = tags->as_object().if_contains("kythira:cluster");
+        if (owner != nullptr && owner->is_string() && std::string(owner->as_string()) == cluster) {
+            names.push_back(std::string(name->as_string()));
+        }
+    }
+    return names;
+}
+
+/// Deletes `vm_name`, retrying while ARM refuses because an operation is still
+/// in flight on it. Returns false if it never succeeded.
+///
+/// The retry is the whole point: teardown can run while a create started
+/// moments earlier is still settling, and ARM answers a DELETE against a
+/// resource with a pending operation with a 409 rather than queueing it. A
+/// 404 counts as success — the VM is gone, which is all the caller wants.
+[[nodiscard]] auto delete_vm_with_retry(Azure::Core::Http::_internal::HttpPipeline& pipeline,
+                                        const kythira::azure_client_config& azure,
+                                        const std::string& vm_name) -> bool {
+    constexpr int kMaxAttempts = 20;
+    constexpr auto kBackoff = std::chrono::seconds{15};
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        try {
+            Azure::Core::Url url(arm_base_url(azure) +
+                                 "/providers/Microsoft.Compute/virtualMachines/" + vm_name +
+                                 "?api-version=2024-07-01");
+            Azure::Core::Http::Request request(Azure::Core::Http::HttpMethod::Delete, url);
+            Azure::Core::Context context;
+            auto response = pipeline.Send(request, context);
+            const auto code = static_cast<int>(response->GetStatusCode());
+            if (code / 100 == 2 || code == 404) {
+                return true;
+            }
+        } catch (const std::exception&) {
+            // Fall through to the backoff; a transient transport error is no
+            // more fatal here than a 409.
+        }
+        std::this_thread::sleep_for(kBackoff);
+    }
+    return false;
+}
+
 /// RAII fixture: sets up a VNet/3 zonal subnets/NSG for one test run (unless
 /// env-var overrides point at pre-existing ones), tears everything it created
 /// down unconditionally on destruction (best-effort, errors to stderr),
@@ -350,12 +424,57 @@ public:
         teardown();
     }
 
+    /// Deletes any VM still tagged with this fixture's own `cluster_name`.
+    ///
+    /// Most cases decommission their own nodes, so this normally finds
+    /// nothing. It exists because `azure_vm_quorum_manager`'s in-band cleanup
+    /// cannot always win: on the provisioning-timeout path it calls
+    /// `best_effort_delete_vm`, but with a 1-second timeout (which
+    /// `provision_timeout_cleanup` sets deliberately) the VM is still
+    /// mid-create, ARM refuses to delete a resource with an operation in
+    /// flight, and the failure is logged and swallowed by design. That left a
+    /// running VM behind on every single run of that case.
+    ///
+    /// Sweeping here rather than hardening the manager is the right split: the
+    /// manager's delete is racing an ARM operation it does not control, while
+    /// the fixture runs after the test body, by which time the create has
+    /// settled and the delete is simply valid. The retry loop covers the
+    /// remainder — teardown can still land while a create is finishing, so a
+    /// single DELETE attempt is not enough.
+    ///
+    /// Scoped by the `kythira:cluster` tag, which is unique per fixture
+    /// instance (one per test case), so a sweep never touches another case's
+    /// VMs — including when cases are the concurrent kind. Deleting the VM is
+    /// sufficient to reclaim its NIC and OS disk, since both now carry
+    /// `deleteOption: Delete` and cascade.
+    ///
+    /// Also reached from the signal handler via `g_active_azure_fixture`, so an
+    /// interrupted run cleans up too instead of stranding VMs in the
+    /// subscription.
     void teardown() noexcept override {
-        // Best-effort: VMs/VMSS instances this run provisioned are torn down
-        // by each test case's own decommission_node calls; nothing else was
-        // created by this fixture (subnets/NSG/VNet are all pre-existing,
-        // operator-supplied resources per the constructor's env-var check
-        // above), so there is deliberately nothing further to clean up here.
+        if (torn_down || !preflight_ok || cluster_name.empty()) {
+            return;
+        }
+        torn_down = true;
+        try {
+            auto pipeline = make_test_arm_pipeline(azure);
+            for (const auto& vm_name : cluster_vm_names(pipeline, azure, cluster_name)) {
+                // Loud on purpose. A sweep that silently absorbed leaks would
+                // turn "this case leaks a VM every run" back into something
+                // invisible; this way the next leak shows up in the log.
+                std::cerr << "[azure_quorum_manager_real_test] teardown: deleting leaked VM "
+                          << vm_name << " (cluster " << cluster_name << ")\n";
+                if (!delete_vm_with_retry(pipeline, azure, vm_name)) {
+                    std::cerr << "[azure_quorum_manager_real_test] teardown: FAILED to delete "
+                              << vm_name << " — delete it manually\n";
+                }
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[azure_quorum_manager_real_test] teardown sweep failed: " << ex.what()
+                      << "\n";
+        } catch (...) {
+            std::cerr << "[azure_quorum_manager_real_test] teardown sweep failed\n";
+        }
     }
 
     [[nodiscard]] auto vm_config(int zone_count) const -> kythira::azure_vm_quorum_manager_config {
@@ -402,6 +521,9 @@ public:
     }
 
     bool preflight_ok{true};
+    /// Guards against the sweep running twice — the destructor and the signal
+    /// handler can both reach teardown().
+    bool torn_down{false};
     std::string subscription_id, resource_group, test_run, cluster_name;
     kythira::azure_client_config azure{};
     std::optional<std::string> vnet_id, nsg_id;
