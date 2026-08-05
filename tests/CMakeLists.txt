@@ -3296,6 +3296,27 @@ set_tests_properties(azure_spot_escalation_test PROPERTIES
     LABELS "unit;azure;quorum"
 )
 
+# ── GCP spot-first launch escalation (offline) ────────────────────────────────
+# Exercises the pure half of tests/gcp_real_gce_test_support.hpp: machine-type
+# eligibility, (machine_type x zone) ladder ranking, the capacity-vs-fatal error
+# classifier, and the escalation walk. Links neither google-cloud-cpp nor
+# network_simulator, so it builds everywhere — which matters more here than for
+# the other providers, since the compute component is absent from this repo's
+# default vcpkg install and gcp_quorum_manager_real_gce_test therefore does not
+# compile in most environments at all.
+add_executable(gcp_spot_escalation_test gcp_spot_escalation_test.cpp)
+target_link_libraries(gcp_spot_escalation_test PRIVATE Boost::unit_test_framework)
+target_include_directories(gcp_spot_escalation_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_features(gcp_spot_escalation_test PRIVATE cxx_std_23)
+add_test(NAME gcp_spot_escalation_test COMMAND gcp_spot_escalation_test)
+set_tests_properties(gcp_spot_escalation_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;gcp;quorum"
+)
+
 # ── Real-Azure integration tests ──────────────────────────────────────────────
 # Both binaries below always compile (when their respective SDK component is
 # found) regardless of KYTHIRA_AZURE_REAL_TESTS — each falls back to a
