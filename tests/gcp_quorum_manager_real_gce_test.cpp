@@ -165,12 +165,18 @@ auto candidate_zones() -> std::vector<std::string> {
 /// Machine types actually offered in each candidate zone, via
 /// `machineTypes.list`.
 ///
-/// Discovered rather than assumed because the ladder's whole purpose is to move
-/// a node to a zone that can take it, and machine-type availability is not
-/// uniform across a region's zones — substituting a zone that does not offer
-/// the type would trade a retryable stockout for a fatal
+/// Discovered rather than assumed because substituting a zone that does not
+/// offer the requested type would trade a retryable stockout for a fatal
 /// "does not exist in zone" error, which escalation deliberately does not
-/// retry.
+/// retry — turning the fix into a different failure.
+///
+/// Stated precisely, because it would be easy to overclaim: in us-central1
+/// today the eligible set is in fact *uniform* across zones a/b/c/f (16 types,
+/// all four zones, checked against `gcloud compute machine-types list`), so
+/// discovery changes nothing there right now. It earns its place as insurance
+/// rather than as a fix for an observed gap — newer machine families do roll
+/// out zone by zone, and this set is uniform only because it is restricted to
+/// mature general-purpose families.
 ///
 /// Cached process-wide: this costs one API call per zone and the answer cannot
 /// meaningfully change mid-run. Returns empty (explaining itself on stderr) if
