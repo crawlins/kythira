@@ -37,12 +37,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -66,12 +68,36 @@ struct FollyInitFixture {
 BOOST_GLOBAL_FIXTURE(FollyInitFixture);
 #endif
 
+/// Line-buffers stdout and emits an unbuffered progress trace.
+///
+/// The Aug 5 2026 run of this suite hung for the full 3600s ctest timeout and
+/// produced *no output whatsoever* — not even Boost's "Running N test cases".
+/// The suite had genuinely run (the script's own `***Skipped` guard did not
+/// fire), but stdout is block-buffered when it is a pipe rather than a tty, so
+/// everything written was still in the buffer when ctest SIGKILLed the process
+/// on timeout. An hour of execution yielded zero diagnostics, and two separate
+/// hypotheses about where it hung could not be told apart.
+///
+/// `_IOLBF` makes Boost's own output survive a kill, and `trace()` writes to
+/// `std::cerr`, which is unbuffered by default, so the last line printed marks
+/// how far the run actually got.
+struct UnbufferedOutputFixture {
+    UnbufferedOutputFixture() { std::setvbuf(stdout, nullptr, _IOLBF, 0); }
+};
+BOOST_GLOBAL_FIXTURE(UnbufferedOutputFixture);
+
+/// Unbuffered progress marker — survives a SIGKILL, unlike BOOST_TEST_MESSAGE.
+void trace(std::string_view what) {
+    std::cerr << "[gcp-trace] " << what << std::endl;  // NOLINT(performance-avoid-endl)
+}
+
 // Reports the whole suite as skipped (ctest "Not Run", return code 77) when the
 // real-GCP prerequisites are absent — the GCP analogue of the AWS suite's
 // PreflightSkipFixture. Its first action against GCP is a read-only instances
 // list, mirroring the AWS sts:GetCallerIdentity pre-check (Requirement 23 AC 14).
 struct PreflightSkipFixture {
     PreflightSkipFixture() {
+        trace("preflight: start");
         if (!real_tests_enabled()) {
             BOOST_TEST_MESSAGE(
                 "KYTHIRA_GCP_REAL_TESTS!=1 or GCP_PROJECT_ID/GCP_REGION unset — "
@@ -101,6 +127,7 @@ struct PreflightSkipFixture {
             BOOST_TEST_MESSAGE(std::string("GCP pre-flight failed: ") + ex.what() + " — skipping");
             std::exit(77);
         }
+        trace("preflight: ok");
     }
 };
 
@@ -203,12 +230,14 @@ auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
         return out;
 #else
         try {
+            trace("machine-type discovery: constructing client");
             gcp_client_config gcp;
             gcp.project_id = env_or("GCP_PROJECT_ID", "");
             auto client = google::cloud::compute_machine_types_v1::MachineTypesClient(
                 google::cloud::compute_machine_types_v1::MakeMachineTypesConnectionRest(
                     gcp_compute_detail::make_options(gcp)));
             for (const auto& zone : candidate_zones()) {
+                trace("machine-type discovery: listing " + zone);
                 for (const auto& mt : client.ListMachineTypes(gcp.project_id, zone)) {
                     if (!mt) {
                         break;  // zone absent or not listable; try the next one
@@ -224,6 +253,7 @@ auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
                       << "); falling back to the configured machine type\n";
             return std::vector<gcp_machine_type_info>{};
         }
+        trace("machine-type discovery: done");
         std::cerr << "[gcp-spot] discovered " << out.size() << " (machine type, zone) pairs across "
                   << candidate_zones().size() << " candidate zones\n";
         return out;
@@ -309,11 +339,13 @@ public:
         auto chosen = escalate_gcp_launch(
             ladder, rung, _escalations,
             [&](const gcp_launch_option& option) {
+                trace("launch attempt: " + option.label());
                 if (_fault) {
                     _fault(option);
                 }
                 rebuild(option.machine_type, option.spot);
                 auto peer = std::move(_mgr->provision_node(option.zone, std::nullopt)).get();
+                trace("launch ok: " + option.label());
                 return placement{.peer = peer,
                                  .zone = option.zone,
                                  .machine_type = option.machine_type,
