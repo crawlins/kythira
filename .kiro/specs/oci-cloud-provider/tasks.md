@@ -130,17 +130,36 @@ Reference implementations to study before starting:
      investigated in the first pass. Needed before Requirement 14.2 can be
      implemented as designed rather than falling back to a long-lived API
      key (with the explicit sign-off that fallback requires).
+  g. [ ] **Capacity-error shape and preemptible pricing**: STILL OPEN, added
+     2026-08-05 alongside Requirements 13.12–13.15. Record two things the
+     escalation ladder cannot be written without:
+     - The **exact** error code and message text OCI returns when a shape is
+       unavailable in an Availability Domain (expected to be
+       `Out of host capacity` / `OutOfHostCapacity`, but this is the
+       classifier's entire basis and it is a string match — AWS's own
+       `is_insufficient_capacity()` documents that the SDK had no mapped
+       enum for its equivalent, so inspection alone is not sufficient here
+       either). Record whether it arrives as an HTTP status, a structured
+       `code` field, or only in the message body.
+     - Whether OCI publishes preemptible **and** on-demand hourly shape
+       pricing through a queryable API (the analogue of AWS's
+       `DescribeSpotPriceHistory`), or whether the harness must carry a
+       static price table as the Azure work does. This determines whether
+       Requirement 13.12's "cheapest-first" ordering can be computed at
+       runtime or must be maintained by hand.
+     Blocks the escalation portion of Task 6 only; nothing else depends on it.
 
-  - Verify: `spike-notes.md` exists, is dated, and each of (a)–(f) above has
+  - Verify: `spike-notes.md` exists, is dated, and each of (a)–(g) above has
     an explicit "confirmed as documented" or "corrected: <what's different>"
     finding, OR is explicitly still open with a concrete next step recorded
     (as (b)/(d)/(f) are above). Any correction updates
     `requirements.md`/`design.md` in the same commit, per Requirement 1.1 —
     already done for (a)/(c)/(e)/revocation-naming in this pass. A follow-up
-    pass MUST close (b)/(d)/(f) before Task 1 (for (b)) or Task 6 (for (f))
-    reach their respective Instance-Principal/CI-federation code; Tasks 1–5
-    and the rest of Task 6 are not blocked by (b)/(d)/(f).
-  - _Requirements: 1.1, 12.1, 14.2_
+    pass MUST close (b)/(d)/(f)/(g) before Task 1 (for (b)) or Task 6 (for
+    (f) and (g)) reach their respective Instance-Principal / CI-federation /
+    launch-escalation code; Tasks 1–5 and the rest of Task 6 are not blocked
+    by (b)/(d)/(f)/(g).
+  - _Requirements: 1.1, 12.1, 13.14, 14.2_
 
 - [ ] 1. **Shared foundation**: `oci_client_config`, `oci_signing`,
       `oci_http_client`
@@ -328,6 +347,28 @@ Reference implementations to study before starting:
     (`BilledResource`/`TestCostReport`/`CostAccumulator`/
     `CostSummaryFixture`) and signal-driven-cleanup apparatus to an
     OCI-flavored equivalent using published OCI shape pricing (Req 14.4–14.5).
+  - **Preemptible-first launch escalation** (Req 13.12–13.15), porting
+    `tests/aws_quorum_manager_real_ec2_test.cpp`'s
+    `spot_first_launch_options()`/`is_insufficient_capacity()` pair — note
+    those live in the AWS *test file*, not in `aws_asg_quorum_manager`, and
+    this port keeps that split: `oci_instance_pool_quorum_manager` is not
+    touched.
+    - Rank candidates cheapest-first over **(shape, Availability Domain)**
+      pairs, not shape alone (Req 13.13) — OCI stockouts are per-AD, so a
+      shape-only ladder retries into the same shortage.
+    - Truncate the preemptible portion at the cheapest reliably-available
+      on-demand fallback and append that fallback last (Req 13.12).
+    - Walk to the next option on a capacity error; abort immediately on any
+      other error so real defects are not masked as stockouts (Req 13.14).
+      Use the exact `Out of host capacity`/`OutOfHostCapacity` code and
+      message shape Task 0's spike recorded — this classifier is a string
+      match and cannot be written correctly from inspection alone.
+    - Record the chosen shape/AD/market/price in the cost report so a run
+      that degraded to on-demand is visible in the output (Req 13.15).
+    - Verify the way the AWS and CoAP fixes were: exercise the escalation
+      **under the failure condition** (force the first candidate to be
+      unavailable) and confirm it advances, rather than only observing a
+      green run where the first choice happened to succeed.
   - Replace the no-op `oci` job body in
     `.github/workflows/real-cloud-tests.yml` with real steps, following the
     `aws` job's shape: new `REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED` /
@@ -338,7 +379,7 @@ Reference implementations to study before starting:
     sign-off if federation isn't available (Req 14.2–14.3).
   - Verify: when `KYTHIRA_OCI_REAL_TESTS` is unset, both binaries compile
     but are not registered in CTest; all other tests pass unmodified.
-  - _Requirements: 13.8–13.11, 14.1–14.5_
+  - _Requirements: 13.8–13.15, 14.1–14.5_
 
 - [ ] 7. **Documentation and example configuration**
 
