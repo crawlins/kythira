@@ -10,15 +10,21 @@
 /// and `g_active_gcp_fixture` are `inline` so each including *binary* gets one
 /// definition even across several separate test binaries.
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
+#include <cstdlib>
+#include <exception>
 #include <iomanip>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -169,6 +175,233 @@ inline void install_gcp_signal_handlers() {
 struct GcpSignalHandlerFixture {
     GcpSignalHandlerFixture() { install_gcp_signal_handlers(); }
 };
+
+// ── Spot-first launch escalation ───────────────────────────────────────────
+//
+// The GCP counterpart of `spot_first_launch_options()` in
+// `tests/aws_quorum_manager_real_ec2_test.cpp` and the Azure ladder in
+// `tests/azure_real_test_support.hpp`. Like both, it lives in the test support
+// layer only and never leaks into `gcp_compute_quorum_manager`.
+//
+// It differs from those two in the dimension it escalates along, because the
+// failure it exists to fix is different. The Aug 3 2026 scheduled real-cloud
+// run failed with:
+//
+//   [ZONE_RESOURCE_POOL_EXHAUSTED] The zone
+//   'projects/…/zones/us-central1-c' does not have enough resources available
+//   to fulfill the request.  Try a different zone, or try again later.
+//
+// That is a *zone* stockout, not a machine-type one, and GCP's own error text
+// prescribes the remedy. So the ladder's inner dimension is the zone and its
+// outer dimension is the machine type — the opposite emphasis to Azure's,
+// where the zone was fixed and only the SKU varied.
+//
+// The ordering follows from what each move costs. Moving to another zone is
+// free: same machine type, same price. Moving to a larger machine type is not.
+// So every zone is tried for a given (spot, machine type) before the machine
+// type is allowed to grow.
+//
+// One structural consequence, unique to GCP among the three providers: in
+// `gcp_compute_quorum_manager` the topology's GroupId *is* the zone. Escalating
+// across zones therefore changes which group a node belongs to, so the walk has
+// to report the zone it actually landed in and the caller has to record the
+// node under that group — see `excluded_zones` below, and
+// `escalating_gce_manager` in the real test.
+
+/// One rung of the launch ladder: a concrete (machine type, zone, purchase
+/// model) triple to attempt.
+struct gcp_launch_option {
+    std::string machine_type;
+    std::string zone;
+    bool spot{true};
+    double price_per_hr{0.0};
+
+    [[nodiscard]] auto label() const -> std::string {
+        return machine_type + " @ " + zone + (spot ? " (spot)" : " (on-demand)");
+    }
+};
+
+/// One machine type as offered in one zone, from `machineTypes.list`.
+///
+/// A plain struct rather than the SDK's generated proto so the ranking below
+/// stays a pure function of its inputs and can be tested with no project, no
+/// credentials, and — importantly here — no google-cloud-cpp compute component
+/// installed, which most build environments for this repo do not have.
+struct gcp_machine_type_info {
+    std::string name;
+    std::string zone;
+    unsigned guest_cpus{0};
+    unsigned memory_mb{0};
+};
+
+/// What a machine type must satisfy to be a candidate rung.
+///
+/// Defaults keep parity with the size the suite launched before escalation
+/// existed (`e2-small`: 2 vCPU, 2 GiB) so no case loses headroom — the ladder
+/// may only substitute something at least as capable, never something smaller
+/// that happens to be cheaper.
+struct gcp_machine_type_requirements {
+    unsigned max_guest_cpus{2};
+    unsigned min_memory_mb{2048};
+    /// Families to consider, cheapest-first general purpose. Anything outside
+    /// this list is ignored regardless of price: GPU/local-SSD/metal families
+    /// carry extra required fields the quorum manager does not set, so they
+    /// would fail with a hard error the classifier deliberately does not retry.
+    std::vector<std::string> family_prefixes{"e2-", "t2d-", "n2d-", "n2-", "n1-"};
+};
+
+/// GCP's published Spot discount is 60–91% off on-demand depending on machine
+/// family. 0.4 (a 60% discount) is the conservative end, used only for cost
+/// *reporting* and never for ordering: a constant factor cannot reorder rungs
+/// that are already compared within the same purchase model.
+inline constexpr double kGcpSpotPriceFactor = 0.4;
+
+inline auto gcp_to_lower_copy(std::string s) -> std::string {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+/// True when a `instances.insert` failure means "not here, not right now"
+/// rather than "this request is wrong".
+///
+/// Escalation advances on these and aborts on everything else, so this must
+/// stay tight: a bad image, subnetwork, or service account has to fail loudly
+/// on the first rung instead of quietly walking the whole ladder first.
+///
+/// `gcp_compute_quorum_manager` surfaces these as a `std::runtime_error`
+/// carrying the zone operation's error text, so — as on AWS and Azure — the
+/// classifier is a case-insensitive substring match rather than a code lookup.
+inline auto is_gcp_capacity_or_quota_error(std::string_view message) -> bool {
+    const std::string haystack = gcp_to_lower_copy(std::string(message));
+    // In order: the zonal stockout this ladder exists for and its regional
+    // sibling, the generic exhaustion code, GCE's prose form of the same, and
+    // quota refusals (which behave the same way — a different zone or a
+    // smaller machine type may well fit where this one did not).
+    static const std::vector<std::string> kNeedles{
+        "zone_resource_pool_exhausted",
+        "resource_pool_exhausted",
+        "does not have enough resources",
+        "quota",
+        "rate_limit_exceeded",
+        "resource_availability",
+        "stockout",
+    };
+    return std::any_of(kNeedles.begin(), kNeedles.end(), [&](const std::string& needle) {
+        return haystack.find(needle) != std::string::npos;
+    });
+}
+
+/// True when `info` is a machine type this suite could actually launch.
+inline auto gcp_machine_type_is_eligible(const gcp_machine_type_info& info,
+                                         const gcp_machine_type_requirements& req) -> bool {
+    if (info.guest_cpus == 0 || info.guest_cpus > req.max_guest_cpus ||
+        info.memory_mb < req.min_memory_mb) {
+        return false;
+    }
+    return std::any_of(req.family_prefixes.begin(), req.family_prefixes.end(),
+                       [&](const std::string& prefix) { return info.name.rfind(prefix, 0) == 0; });
+}
+
+/// Builds the ordered launch ladder from the machine types available across a
+/// region's zones.
+///
+/// Ordering, outermost first: spot before on-demand; then machine type by
+/// ascending price; then zone, with `preferred_zone` first so an ordinary run
+/// lands exactly where the caller asked and the ladder only matters when
+/// something is actually wrong.
+///
+/// `excluded_zones` drops zones the caller has already placed a node in. That
+/// exists because GroupId is the zone here: a multi-zone case wants N
+/// *distinct* zones, so a substitute must not silently collapse two groups
+/// into one and quietly weaken what the case tests.
+inline auto rank_gcp_launch_options(const std::vector<gcp_machine_type_info>& available,
+                                    const gcp_machine_type_requirements& req,
+                                    const std::string& preferred_zone,
+                                    const std::vector<std::string>& excluded_zones)
+    -> std::vector<gcp_launch_option> {
+    const auto excluded = [&](const std::string& zone) {
+        return std::find(excluded_zones.begin(), excluded_zones.end(), zone) !=
+               excluded_zones.end();
+    };
+
+    // machine type name → the zones offering it (eligible ones only).
+    std::map<std::string, std::vector<std::string>> zones_by_type;
+    for (const auto& info : available) {
+        if (!gcp_machine_type_is_eligible(info, req) || excluded(info.zone)) {
+            continue;
+        }
+        auto& zones = zones_by_type[info.name];
+        if (std::find(zones.begin(), zones.end(), info.zone) == zones.end()) {
+            zones.push_back(info.zone);
+        }
+    }
+
+    std::vector<std::string> types;
+    types.reserve(zones_by_type.size());
+    for (const auto& [name, zones] : zones_by_type) {
+        types.push_back(name);
+    }
+    std::sort(types.begin(), types.end(), [](const std::string& a, const std::string& b) {
+        const double pa = gce_hourly_rate(a);
+        const double pb = gce_hourly_rate(b);
+        // Name is the tie-break so the ladder is reproducible from a CI log;
+        // gce_hourly_rate() returns the same default for unknown types, which
+        // would otherwise leave their relative order unspecified.
+        return (pa != pb) ? pa < pb : a < b;
+    });
+
+    std::vector<gcp_launch_option> ladder;
+    for (const bool spot : {true, false}) {
+        for (const auto& type : types) {
+            auto zones = zones_by_type[type];
+            std::sort(zones.begin(), zones.end());
+            // Preferred zone first, everything else in a stable order after it.
+            std::stable_partition(zones.begin(), zones.end(),
+                                  [&](const std::string& z) { return z == preferred_zone; });
+            for (const auto& zone : zones) {
+                ladder.push_back(
+                    {.machine_type = type,
+                     .zone = zone,
+                     .spot = spot,
+                     .price_per_hr = gce_hourly_rate(type) * (spot ? kGcpSpotPriceFactor : 1.0)});
+            }
+        }
+    }
+    return ladder;
+}
+
+/// Walks `ladder` forward from `rung`, invoking `attempt(ladder[rung])` until
+/// one rung launches.
+///
+/// Advances (incrementing `escalations`) on a capacity or quota refusal;
+/// rethrows immediately on anything else, and rethrows the last refusal once
+/// the ladder is exhausted. `rung` is carried by reference so a caller
+/// provisioning several nodes resumes where the previous one settled instead of
+/// re-failing on rungs already known bad.
+///
+/// Separated from the manager it drives so the walk can be exercised offline
+/// against a stub `attempt`. That matters more here than anywhere else in this
+/// repo: the GCP compute SDK is absent from most build environments for this
+/// project, so the real test does not even compile locally, and a zone stockout
+/// is by definition something you cannot schedule.
+template<typename Attempt, typename OnEscalate>
+auto escalate_gcp_launch(const std::vector<gcp_launch_option>& ladder, std::size_t& rung,
+                         std::size_t& escalations, Attempt&& attempt, OnEscalate&& on_escalate)
+    -> decltype(attempt(ladder.front())) {
+    for (;;) {
+        try {
+            return attempt(ladder.at(rung));
+        } catch (const std::exception& ex) {
+            if (!is_gcp_capacity_or_quota_error(ex.what()) || rung + 1 >= ladder.size()) {
+                throw;
+            }
+            on_escalate(ladder[rung], ladder[rung + 1], ex.what());
+            ++rung;
+            ++escalations;
+        }
+    }
+}
 
 // ── Environment helpers ────────────────────────────────────────────────────
 inline auto env_or(const char* key, const std::string& fallback) -> std::string {
