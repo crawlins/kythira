@@ -897,9 +897,40 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   only way to exercise a path that a healthy live run never reaches; the
   live fetch/rank path was separately confirmed against the real
   subscription (42-rung ladder, cheapest spot `Standard_F1als_v7` at
-  $0.01118/hr vs $0.0605/hr on-demand). What remains unverified is the
-  end-to-end forced-failure run against live ARM, which provisions real VMs
-  — `AZURE_TEST_FORCE_FIRST_VM_SIZE` exists to drive it.
+  $0.01118/hr vs $0.0605/hr on-demand).
+  **The whole VM suite has now run green against live Azure** — the first
+  time any case in this file has executed its real assertion logic, closing
+  the "treat as unverified" caveat above for the 8 VM cases (the 2 needing a
+  pre-provisioned PPG/Availability Set still skip, and the VMSS suite still
+  needs `AZURE_TEST_VMSS_NAME`). Escalation was verified *under the failure
+  condition*: with `AZURE_TEST_FORCE_FIRST_VM_SIZE=Standard_D2s_v5` the run
+  advanced on a real `SkuNotAvailable` and still provisioned, while the
+  control run (variable unset) recorded zero escalations — so the
+  precondition is proven to have fired. Total suite cost: $0.036.
+  Getting there surfaced **four pre-existing bugs**, each fixed in its own
+  commit and none related to escalation: (1) `next_node_id()`'s ARM `$filter`
+  used the `tagName`/`tagValue` form, which is valid only on the generic
+  `/resources` endpoint — and which ARM rejects *only once the resource group
+  contains a VM*, so provisioning worked for a cluster's first node and 400'd
+  for every node after, meaning `azure_vm_quorum_manager` could never have
+  built a multi-node cluster (this supersedes `870cfc0`'s encoding
+  diagnosis: the request 400s identically whether minimally or fully
+  percent-encoded); (2) no `osDisk` was sent on create, so ARM defaulted
+  `deleteOption` to `Detach` and every VM ever provisioned orphaned a
+  permanently-billing managed disk; (3) the fixture set neither
+  `ssh_public_key` nor an `adminPassword`, so ARM refused every VM outright;
+  (4) `provision_and_assess_single_zone` asserted `healthy` on a 1-node
+  topology, which `classify_status()` makes unreachable (`live == majority`
+  → `critical`). Two ladder refinements also came out of the live run: a
+  `LowPriorityCores` refusal now jumps straight to the on-demand rung
+  (region-wide spot quota dooms every spot rung identically — observed as 40
+  consecutive identical refusals), and confidential-compute SKUs are excluded
+  since they reject any create lacking `securityProfile.securityType` with a
+  fatal `BadRequest` that aborts the walk.
+  Still open: `provision_timeout_cleanup` leaks the VM it deliberately times
+  out on — its best-effort cleanup removed the NIC but left the VM running
+  (now cascading its own NIC/disk after fix 2, but still needing manual
+  deletion).
 - [x] **Google Cloud Platform (GCP)** — `gcp_compute_quorum_manager` (direct
   GCE `instances.insert`/`list`/`delete`, node ID = GCE instance ID,
   `instances.get` status for liveness) and `gcp_mig_quorum_manager` (Managed
