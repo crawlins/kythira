@@ -199,6 +199,13 @@ struct azure_sku_facts {
     std::string hyperv_generations{"V1,V2"};
     /// True when the SKU is offered in at least one of availability zones 1-3.
     bool zonal{false};
+    /// True when the SKU advertises a `ConfidentialComputingType` capability
+    /// (the DC-series families). Such SKUs reject any VM create that does not
+    /// also carry a `securityProfile.securityType`, which
+    /// `azure_vm_quorum_manager` does not set — and they reject it as a plain
+    /// `BadRequest`, which escalation treats as fatal, so a single one of these
+    /// reachable on the ladder aborts the whole walk.
+    bool confidential{false};
     /// True when any `restrictions` entry applies (e.g.
     /// `NotAvailableForSubscription`), which makes the SKU unlaunchable here.
     bool restricted{false};
@@ -407,6 +414,8 @@ inline auto parse_compute_skus(const boost::json::value& body)
                     facts.architecture = val;
                 } else if (key == "HyperVGenerations") {
                     facts.hyperv_generations = val;
+                } else if (key == "ConfidentialComputingType") {
+                    facts.confidential = true;
                 }
             }
         }
@@ -418,8 +427,8 @@ inline auto parse_compute_skus(const boost::json::value& body)
 /// True when `facts` describes a SKU this suite could actually launch.
 inline auto sku_is_launchable(const azure_sku_facts& facts, const azure_sku_requirements& req)
     -> bool {
-    return !facts.restricted && facts.zonal && facts.vcpus > 0 && facts.vcpus <= req.max_vcpus &&
-           facts.architecture == req.architecture &&
+    return !facts.restricted && !facts.confidential && facts.zonal && facts.vcpus > 0 &&
+           facts.vcpus <= req.max_vcpus && facts.architecture == req.architecture &&
            facts.hyperv_generations.find(req.hyperv_generation) != std::string::npos;
 }
 
@@ -474,6 +483,23 @@ inline auto rank_spot_first(const std::map<std::string, double>& spot,
     return ladder;
 }
 
+/// True when a refusal is specifically the *subscription-wide spot* quota
+/// (`LowPriorityCores`) rather than a per-SKU or per-family limit.
+///
+/// This distinction is what stops the walk being quadratic in practice. A
+/// capacity shortage or a per-family core quota is specific to the SKU being
+/// asked for, so the next rung is a genuinely different question. The spot
+/// quota is not: it is one region-wide counter shared by every spot SKU, so
+/// once it is exhausted *every* remaining spot rung is guaranteed to fail for
+/// the identical reason. Observed directly — a nine-VM case burned 40
+/// consecutive spot rungs, each rejected with "exceeding approved
+/// LowPriorityCores quota ... Current Limit: 3, Current Usage: 3", before it
+/// could reach the on-demand fallback that was always going to be the answer.
+inline auto is_spot_quota_error(std::string_view message) -> bool {
+    const std::string haystack = to_lower_copy(std::string(message));
+    return haystack.find("lowprioritycores") != std::string::npos;
+}
+
 /// Walks `ladder` forward from `rung`, invoking `attempt(ladder[rung])` until
 /// one rung launches.
 ///
@@ -500,8 +526,22 @@ auto escalate_launch(const std::vector<azure_vm_option>& ladder, std::size_t& ru
             if (!is_capacity_or_quota_error(ex.what()) || rung + 1 >= ladder.size()) {
                 throw;
             }
-            on_escalate(ladder[rung], ladder[rung + 1], ex.what());
-            ++rung;
+            // The region-wide spot quota dooms every remaining spot rung
+            // identically, so jump straight to the first non-spot rung rather
+            // than proving that once per rung. If there is no such rung (a
+            // spot-only ladder), fall through to the ordinary single step so
+            // the walk still terminates by exhausting the ladder.
+            std::size_t next = rung + 1;
+            if (is_spot_quota_error(ex.what())) {
+                for (std::size_t i = next; i < ladder.size(); ++i) {
+                    if (!ladder[i].spot) {
+                        next = i;
+                        break;
+                    }
+                }
+            }
+            on_escalate(ladder[rung], ladder[next], ex.what());
+            rung = next;
             ++escalations;
         }
     }
