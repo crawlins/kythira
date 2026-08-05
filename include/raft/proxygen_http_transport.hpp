@@ -183,6 +183,29 @@ struct http_response {
     std::string body;
 };
 
+/// @brief Collapses concurrent connect attempts for one pooled connection
+///     (Requirement 9: *one* pooled connection per target node).
+///
+/// Without this, `connect_if_needed` checked only whether the slot held a
+/// session, with no record that a connect was already underway -- so N
+/// concurrent RPCs to a cold target each saw a null slot and each started
+/// their own connect, producing N sessions where the pool is documented to
+/// hold one. They then clobbered each other in the slot, and every orphan
+/// still carried a `session_liveness_tracker` aimed at that same slot, so an
+/// orphan's `onDestroy` would null a slot holding a *live* session and the
+/// next caller would connect on top of a session still in use. Tearing
+/// sessions down mid-use is what broke Proxygen's own internal invariants
+/// (`HTTP2PriorityQueue activeCount_ > 0`, `ObserverContainer !iterating_`).
+///
+/// Needs no lock of its own: every task for a given target runs on that
+/// target's own pinned `EventBase` (see `pooled_connection`), so the
+/// check-and-set below is already serialized. It is *only* ever touched from
+/// that thread.
+struct connect_state {
+    bool connecting{false};
+    std::vector<kythira::promise_default<proxygen::HTTPUpstreamSession*>> waiters;
+};
+
 /// @brief Bridges `proxygen::HTTPConnector::Callback` into a
 ///     `kythira::promise_default<proxygen::HTTPUpstreamSession*>`
 ///     (Requirement 14.1) -- the connect-step primitive, the direct analog
@@ -195,9 +218,22 @@ struct http_response {
 ///     handler manages its own lifetime the same way, since
 ///     `HTTPTransaction`/`HTTPConnector` -- not this bridge's creator --
 ///     decide when its job is over).
+///
+/// Owns the pool bookkeeping for the connect it represents -- recording the
+/// session into `slot`, attaching the `session_liveness_tracker`, and
+/// releasing `connect`'s waiters -- rather than leaving that to a future
+/// continuation. `HTTPConnector` invokes `connectSuccess`/`connectError` on
+/// the pinned `EventBase`, whereas a continuation is not guaranteed to run
+/// there at all: under `KYTHIRA_DEFAULT_FUTURE_BACKEND=boost` a promise-backed
+/// `boost::future::then()` has policy `launch::none` and dispatches through
+/// `future_async_continuation_shared_state`, which runs the continuation on a
+/// **freshly spawned detached thread**. Doing this work here is what keeps it
+/// on the one thread allowed to touch session lifetime state.
 class connect_bridge : public proxygen::HTTPConnector::Callback {
 public:
     connect_bridge(folly::EventBase* evb, std::chrono::milliseconds txn_timeout,
+                   std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
+                   std::shared_ptr<connect_state> connect,
                    kythira::promise_default<proxygen::HTTPUpstreamSession*> promise);
 
     [[nodiscard]] auto connector() -> proxygen::HTTPConnector& { return _connector; }
@@ -208,6 +244,8 @@ public:
 private:
     proxygen::WheelTimerInstance _wheel_timer;
     proxygen::HTTPConnector _connector;
+    std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> _slot;
+    std::shared_ptr<connect_state> _connect;
     kythira::promise_default<proxygen::HTTPUpstreamSession*> _promise;
 };
 
@@ -281,14 +319,20 @@ private:
 ///     Architecture section; `spike-notes.md` Finding 4). Self-deletes
 ///     once fired -- `onDestroy` is documented as a last-chance
 ///     notification before the session itself is gone.
+///
+/// Clears the slot only if it still holds *this* tracker's own session, hence
+/// the `_session` member: more than one session can end up pointing a tracker
+/// at the same slot, and an unconditional clear lets a dying one evict a live
+/// one. See `connect_state` below.
 class session_liveness_tracker : public proxygen::HTTPSessionBase::InfoCallback {
 public:
-    explicit session_liveness_tracker(
-        std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot);
+    session_liveness_tracker(std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> slot,
+                             proxygen::HTTPUpstreamSession* session);
     auto onDestroy(const proxygen::HTTPSessionBase& session) -> void override;
 
 private:
     std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> _slot;
+    proxygen::HTTPUpstreamSession* _session;
 };
 
 /// @brief One pooled connection's worth of state. `event_base` is chosen
@@ -308,6 +352,10 @@ struct pooled_connection {
     folly::EventBase* event_base{nullptr};
     std::shared_ptr<std::atomic<proxygen::HTTPUpstreamSession*>> session =
         std::make_shared<std::atomic<proxygen::HTTPUpstreamSession*>>(nullptr);
+    /// Shared with the in-flight `connect_if_needed` chain for the same
+    /// reason `session` is a `shared_ptr`: this pool entry can be evicted
+    /// while that chain is still running on `event_base`'s thread.
+    std::shared_ptr<connect_state> connect = std::make_shared<connect_state>();
     std::chrono::steady_clock::time_point last_used;
 };
 
