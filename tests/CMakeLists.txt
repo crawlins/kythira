@@ -3273,6 +3273,29 @@ else()
     message(STATUS "Azure Key Vault Keys SDK (or certificate_authority target) not found — azure_key_vault_ca_provider_unit_test will not be built")
 endif()
 
+# ── Azure spot-first launch escalation (offline) ──────────────────────────────
+# Exercises the pure half of tests/azure_real_test_support.hpp: Retail Prices /
+# Microsoft.Compute/skus parsing, ladder ranking, the capacity-vs-fatal error
+# classifier, and the escalation walk. Deliberately links neither the Azure SDK
+# nor network_simulator, so KYTHIRA_HAS_AZURE_SDK stays undefined and the
+# header's live-fetch half is not compiled — this runs on every build leg with
+# no credentials, no subscription, and no VMs.
+add_executable(azure_spot_escalation_test azure_spot_escalation_test.cpp)
+target_link_libraries(azure_spot_escalation_test PRIVATE
+    Boost::unit_test_framework
+    Boost::json
+)
+target_include_directories(azure_spot_escalation_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_features(azure_spot_escalation_test PRIVATE cxx_std_23)
+add_test(NAME azure_spot_escalation_test COMMAND azure_spot_escalation_test)
+set_tests_properties(azure_spot_escalation_test PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;azure;quorum"
+)
+
 # ── Real-Azure integration tests ──────────────────────────────────────────────
 # Both binaries below always compile (when their respective SDK component is
 # found) regardless of KYTHIRA_AZURE_REAL_TESTS — each falls back to a

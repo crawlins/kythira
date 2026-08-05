@@ -873,6 +873,33 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   doc's full test list (10 VM + 5 VMSS cases) and compiles/skip-paths
   cleanly, but none of it has run against a live Azure subscription yet —
   treat the real assertion logic as unverified until that first run happens.
+  **Update, August 4, 2026**: those cases now launch through a spot-first SKU
+  escalation ladder (`tests/azure_real_test_support.hpp`), mirroring
+  `aws_quorum_manager_real_ec2_test.cpp`'s `spot_first_launch_options()` and
+  staying, like it, entirely in the test layer — `azure_vm_quorum_manager` is
+  untouched. Live retail prices are joined against `Microsoft.Compute/skus`
+  availability, since ranking on price alone puts SKUs this subscription
+  cannot purchase at the top of the ladder. Two filters the original design
+  didn't anticipate turned out to be load-bearing and were found by probing
+  live eastus data rather than by inspection: **CPU architecture** (the
+  cheapest SKUs in the region are Ampere/Arm64 and undercut every x64 spot
+  price, but cannot boot the suite's x86-64 image) and **Hypervisor
+  generation** (every cheap modern family is Gen2-only, so the fixture's
+  image moved from `22_04-lts` to `22_04-lts-gen2`; that mismatch is a hard
+  `BadRequest`, which escalation deliberately does *not* retry). The image
+  change also un-breaks CI's own `AZURE_TEST_VM_SIZE=Standard_D2s_v7`, which
+  is likewise Gen2-only and could not have booted the Gen1 image. The
+  `Standard_D2s_v5` default that appeared ~10 times in this file is gone; it
+  is `NotAvailableForSubscription` here (confirmed against live ARM) and so
+  could never have launched. Escalation's own logic — parsing, ranking, the
+  capacity/quota-vs-fatal classifier, and the walk — is verified offline and
+  deterministically by `tests/azure_spot_escalation_test.cpp` (19 cases), the
+  only way to exercise a path that a healthy live run never reaches; the
+  live fetch/rank path was separately confirmed against the real
+  subscription (42-rung ladder, cheapest spot `Standard_F1als_v7` at
+  $0.01118/hr vs $0.0605/hr on-demand). What remains unverified is the
+  end-to-end forced-failure run against live ARM, which provisions real VMs
+  — `AZURE_TEST_FORCE_FIRST_VM_SIZE` exists to drive it.
 - [x] **Google Cloud Platform (GCP)** — `gcp_compute_quorum_manager` (direct
   GCE `instances.insert`/`list`/`delete`, node ID = GCE instance ID,
   `instances.get` status for liveness) and `gcp_mig_quorum_manager` (Managed
