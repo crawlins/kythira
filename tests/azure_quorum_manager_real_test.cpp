@@ -16,6 +16,15 @@
 /// `aws_quorum_manager_real_ec2_test.cpp` (run against real AWS repeatedly),
 /// no case here has yet executed its real assertion logic against a live
 /// Azure subscription — treat that as unverified until a real run happens.
+///
+/// Every VM case launches through `escalating_vm_manager`, which walks the
+/// spot-first ladder built by `launch_ladder()` (see
+/// `azure_real_test_support.hpp` for how that ladder is discovered and why the
+/// price feed has to be joined against SKU availability). The ladder's pure
+/// half — parsing, ranking, error classification, and the escalation walk
+/// itself — is covered offline and deterministically by
+/// `tests/azure_spot_escalation_test.cpp`; that is where escalation is
+/// actually established, since a healthy live run never exercises it.
 
 #define BOOST_TEST_MODULE azure_quorum_manager_real_test
 #include <boost/test/unit_test.hpp>
@@ -93,10 +102,75 @@ auto random_suffix() -> std::string {
         std::vector<std::unique_ptr<Azure::Core::Http::Policies::HttpPolicy>>{});
 }
 
+[[nodiscard]] auto arm_endpoint(const kythira::azure_client_config& azure) -> std::string {
+    return azure.arm_endpoint_override.empty() ? "https://management.azure.com"
+                                               : azure.arm_endpoint_override;
+}
+
 [[nodiscard]] auto arm_base_url(const kythira::azure_client_config& azure) -> std::string {
-    return (azure.arm_endpoint_override.empty() ? "https://management.azure.com"
-                                                : azure.arm_endpoint_override) +
-           "/subscriptions/" + azure.subscription_id + "/resourceGroups/" + azure.resource_group;
+    return arm_endpoint(azure) + "/subscriptions/" + azure.subscription_id + "/resourceGroups/" +
+           azure.resource_group;
+}
+
+/// The spot-first launch ladder for this run, discovered once per *process*
+/// rather than once per test case.
+///
+/// Discovery costs ~11 HTTP round trips (10 paginated Retail Prices pages plus
+/// one `Microsoft.Compute/skus` call); `AzureIntegrationFixture` is a
+/// per-case fixture, so without this cache a 15-case run would repeat that 15
+/// times for an answer that cannot meaningfully change mid-run.
+///
+/// Three env vars steer it, in precedence order:
+///
+///  * `AZURE_TEST_VM_SIZE` — pin to exactly this size, trying spot first and
+///    then on-demand for the same size. Set by CI, which wants a fixed,
+///    reviewable SKU rather than whatever is cheapest this hour.
+///  * `AZURE_TEST_FORCE_FIRST_VM_SIZE` — prepend this size as rung 0. Exists
+///    solely to test the escalation path itself: point it at a SKU this
+///    subscription cannot launch (e.g. `Standard_D2s_v5`, which is
+///    `NotAvailableForSubscription` here) and a passing run proves escalation
+///    advanced rather than that nothing ever failed.
+///  * `AZURE_TEST_MAX_VCPUS` — vCPU ceiling for candidates (default 2).
+///
+/// Falls back to a single hardcoded rung if discovery fails, so a Retail
+/// Prices outage degrades the suite to its pre-escalation behaviour instead of
+/// failing it.
+[[nodiscard]] auto launch_ladder(const kythira::azure_client_config& azure)
+    -> const std::vector<azure_vm_option>& {
+    static const std::vector<azure_vm_option> ladder = [&] {
+        std::vector<azure_vm_option> out;
+
+        if (auto forced = env_opt("AZURE_TEST_FORCE_FIRST_VM_SIZE")) {
+            out.push_back({.vm_size = *forced, .spot = true, .price_per_hr = 0.0});
+        }
+
+        if (auto pinned = env_opt("AZURE_TEST_VM_SIZE")) {
+            out.push_back({.vm_size = *pinned, .spot = true, .price_per_hr = 0.0});
+            out.push_back({.vm_size = *pinned, .spot = false, .price_per_hr = 0.0});
+            return out;
+        }
+
+        azure_sku_requirements req;
+        if (auto max_vcpus = env_opt("AZURE_TEST_MAX_VCPUS")) {
+            req.max_vcpus = static_cast<unsigned>(std::stoul(*max_vcpus));
+        }
+        auto pipeline = make_test_arm_pipeline(azure);
+        auto discovered = discover_spot_first_options(pipeline, arm_endpoint(azure),
+                                                      azure.subscription_id, azure.location, req);
+        if (discovered.empty()) {
+            // Chosen over the historical `Standard_D2s_v5` default, which is
+            // `NotAvailableForSubscription` in this subscription and so could
+            // never have launched: v7 is the cheapest currently-available
+            // family here and is Gen2, matching the fixture's `-gen2` image.
+            discovered.push_back(
+                {.vm_size = "Standard_D2als_v7", .spot = true, .price_per_hr = 0.0});
+            discovered.push_back(
+                {.vm_size = "Standard_D2als_v7", .spot = false, .price_per_hr = 0.0});
+        }
+        out.insert(out.end(), discovered.begin(), discovered.end());
+        return out;
+    }();
+    return ladder;
 }
 
 /// RAII fixture: sets up a VNet/3 zonal subnets/NSG for one test run (unless
@@ -202,9 +276,15 @@ public:
         cfg.azure = azure;
         cfg.image_reference.publisher = "Canonical";
         cfg.image_reference.offer = "0001-com-ubuntu-server-jammy";
-        cfg.image_reference.sku = "22_04-lts";
+        // Gen2, not the plain `22_04-lts` Gen1 image: every cheap modern SKU
+        // (the v6/v7 families the spot ladder ranks first) is Gen2-only, and
+        // pairing one with a Gen1 image is a hard BadRequest that escalation
+        // deliberately does not retry. See `azure_sku_requirements`.
+        cfg.image_reference.sku = env_or("AZURE_TEST_IMAGE_SKU", "22_04-lts-gen2");
         cfg.image_reference.version = "latest";
-        cfg.vm_size = env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5");
+        // Overwritten per attempt by escalating_vm_manager; the ladder's first
+        // rung is the starting point rather than a fixed choice.
+        cfg.vm_size = launch_ladder(azure).front().vm_size;
         cfg.node_port = 7000;
         cfg.network_security_group_id = *nsg_id;
         for (int zone = 1; zone <= zone_count; ++zone) {
@@ -235,6 +315,99 @@ public:
     kythira::azure_client_config azure{};
     std::optional<std::string> vnet_id, nsg_id;
     std::map<int, std::optional<std::string>> subnet_id;
+};
+
+/// Wraps `azure_vm_quorum_manager` with spot-first launch escalation.
+///
+/// Each `provision()` starts at the rung the previous one settled on and walks
+/// forward — cheapest spot SKU, next-cheapest spot SKU, …, on-demand fallback
+/// — advancing whenever ARM rejects the launch for capacity or quota and
+/// rethrowing on anything else. It never walks backwards: once a rung has been
+/// rejected in this test case, later nodes in the same case skip it too, which
+/// is what makes the multi-VM cases converge instead of re-failing on every
+/// node.
+///
+/// Advancing rebuilds the underlying manager, because `vm_size`/`priority`
+/// live in its construction-time config. That is safe for nodes already
+/// provisioned by an earlier rung: VM naming derives from `cluster_name` and
+/// the node ID, neither of which changes, so `decommission_node`/
+/// `assess_quorum` on the rebuilt manager still address them correctly.
+class escalating_vm_manager {
+public:
+    using manager_type = kythira::azure_vm_quorum_manager<>;
+
+    escalating_vm_manager(kythira::azure_vm_quorum_manager_config cfg,
+                          std::vector<azure_vm_option> ladder, bool spot_only = false)
+        : _cfg(std::move(cfg)), _ladder(std::move(ladder)) {
+        if (spot_only) {
+            std::erase_if(_ladder, [](const azure_vm_option& o) { return !o.spot; });
+        }
+        BOOST_REQUIRE_MESSAGE(!_ladder.empty(), "launch ladder is empty");
+        rebuild();
+    }
+
+    /// Provisions one node into `group`, escalating on capacity/quota refusal.
+    auto provision(const std::string& group) -> kythira::peer_info<std::uint64_t, std::string> {
+        return escalate_launch(
+            _ladder, _rung, _escalations,
+            [&](const azure_vm_option& option) {
+                rebuild(option);
+                return std::move(_mgr->provision_node(group, std::nullopt)).get();
+            },
+            [](const azure_vm_option& from, const azure_vm_option& to, const char* message) {
+                BOOST_TEST_MESSAGE("[azure-spot] " << from.label() << " refused, escalating to "
+                                                   << to.label() << ": " << message);
+            });
+    }
+
+    auto operator->() -> manager_type* { return &*_mgr; }
+
+    /// The rung currently in use — the SKU whose price should be billed and
+    /// whose name should appear in cost labels.
+    [[nodiscard]] auto option() const -> const azure_vm_option& { return _ladder[_rung]; }
+
+    /// How many times `provision()` has advanced the ladder. Zero on a run
+    /// where the first rung always worked; a forced-failure run asserts this
+    /// is non-zero, which is what distinguishes "escalation works" from
+    /// "escalation was never exercised".
+    [[nodiscard]] auto escalations() const -> std::size_t { return _escalations; }
+
+    /// Hourly rate for one VM at the current rung. Prefers the live retail
+    /// price the ladder carries, falling back to the static table only for
+    /// env-pinned rungs, which have no discovered price.
+    [[nodiscard]] auto hourly_rate() const -> double {
+        const auto& opt = option();
+        return opt.price_per_hr > 0.0 ? opt.price_per_hr
+                                      : azure_vm_hourly_rate(opt.vm_size) * (opt.spot ? 0.2 : 1.0);
+    }
+
+private:
+    void rebuild() { rebuild(_ladder[_rung]); }
+
+    void rebuild(const azure_vm_option& option) {
+        auto cfg = _cfg;
+        cfg.vm_size = option.vm_size;
+        if (option.spot) {
+            cfg.priority = kythira::azure_vm_priority::spot;
+            // max_price -1 means "pay up to the on-demand price", i.e. never
+            // be evicted for price alone — only for capacity. Eviction
+            // deallocates rather than deletes so the manager's own liveness
+            // polling sees an unreachable-but-present VM, which is the state
+            // its assess_quorum path is written against.
+            cfg.spot_options = kythira::azure_spot_options{
+                .max_price = -1.0, .eviction_policy = kythira::azure_eviction_policy::deallocate};
+        } else {
+            cfg.priority = kythira::azure_vm_priority::regular;
+            cfg.spot_options = std::nullopt;
+        }
+        _mgr.emplace(std::move(cfg));
+    }
+
+    kythira::azure_vm_quorum_manager_config _cfg;
+    std::vector<azure_vm_option> _ladder;
+    std::size_t _rung{0};
+    std::size_t _escalations{0};
+    std::optional<manager_type> _mgr;
 };
 
 /// Issues one ARM POST with no body against an arbitrary path — used only to
@@ -325,19 +498,30 @@ BOOST_FIXTURE_TEST_CASE(provision_and_assess_single_zone, AzureIntegrationFixtur
     }
 
     TestCostReport cost{.test_name = "provision_and_assess_single_zone"};
-    kythira::azure_vm_quorum_manager<> mgr{vm_config(1)};
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure)};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    auto peer = mgr.provision("1");
     cost.resources.push_back(
-        {.label = "VM (Standard_D2s_v5)",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+        {.label = "VM (" + mgr.option().label() + ")", .hourly_rate = mgr.hourly_rate()});
+
+    // Escalation is only proven by a run in which the first rung actually
+    // failed. `AZURE_TEST_FORCE_FIRST_VM_SIZE` puts an unlaunchable SKU at the
+    // head of the ladder precisely so this assertion has something to check;
+    // an ordinary run leaves it unset and skips the check, since there the
+    // first rung succeeding is the expected outcome, not a bug.
+    if (env_opt("AZURE_TEST_FORCE_FIRST_VM_SIZE")) {
+        BOOST_CHECK_MESSAGE(mgr.escalations() > 0,
+                            "AZURE_TEST_FORCE_FIRST_VM_SIZE was set but the ladder never "
+                            "advanced — the forced SKU launched, so this run proves nothing "
+                            "about escalation");
+    }
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK(health.status == kythira::quorum_status::healthy);
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -378,24 +562,24 @@ BOOST_FIXTURE_TEST_CASE(provision_multi_zone_topology, AzureIntegrationFixture) 
     }
 
     TestCostReport cost{.test_name = "provision_multi_zone_topology"};
-    kythira::azure_vm_quorum_manager<> mgr{vm_config(3)};
+    escalating_vm_manager mgr{vm_config(3), launch_ladder(azure)};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& group : {"1", "2", "3"}) {
-        auto peer = std::move(mgr.provision_node(group, std::nullopt)).get();
+        auto peer = mgr.provision(group);
         cluster.push_back({peer.node_id, group});
         cost.resources.push_back(
-            {.label = std::string("VM (zone ") + group + ")",
-             .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+            {.label = std::string("VM (zone ") + group + ", " + mgr.option().label() + ")",
+             .hourly_rate = mgr.hourly_rate()});
     }
 
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK(health.status == kythira::quorum_status::healthy);
     BOOST_CHECK_EQUAL(health.live_node_count, 3u);
     BOOST_CHECK_EQUAL(health.groups.size(), 3u);
 
     for (const auto& np : cluster) {
-        std::move(mgr.decommission_node(np.node_id)).get();
+        std::move(mgr->decommission_node(np.node_id)).get();
     }
     for (auto& r : cost.resources) {
         r.finalize();
@@ -410,12 +594,11 @@ BOOST_FIXTURE_TEST_CASE(deallocate_one_node_degraded, AzureIntegrationFixture) {
     }
 
     TestCostReport cost{.test_name = "deallocate_one_node_degraded"};
-    kythira::azure_vm_quorum_manager<> mgr{vm_config(1)};
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure)};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    auto peer = mgr.provision("1");
     cost.resources.push_back(
-        {.label = "VM (Standard_D2s_v5)",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+        {.label = "VM (" + mgr.option().label() + ")", .hourly_rate = mgr.hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
 
     // Simulate an external failure (host maintenance, Spot eviction, operator
@@ -423,14 +606,14 @@ BOOST_FIXTURE_TEST_CASE(deallocate_one_node_degraded, AzureIntegrationFixture) {
     // entirely — assess_quorum must classify it as unreachable without any
     // dedicated "deallocated" code path (Property 5's infrastructure-only
     // liveness signal).
-    external_arm_post_action(azure, mgr.node_id_to_vm_name(peer.node_id), "deallocate");
+    external_arm_post_action(azure, mgr->node_id_to_vm_name(peer.node_id), "deallocate");
 
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     // 1-node topology, 0 live: majority = 1/2+1 = 1, live(0) < majority(1) => lost.
     BOOST_CHECK(health.status == kythira::quorum_status::lost);
     BOOST_CHECK_EQUAL(health.live_node_count, 0u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -451,17 +634,16 @@ BOOST_FIXTURE_TEST_CASE(placement_availability_zone, AzureIntegrationFixture) {
     }
 
     TestCostReport cost{.test_name = "placement_availability_zone"};
-    kythira::azure_vm_quorum_manager<> mgr{vm_config(1)};
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure)};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
-    cost.resources.push_back(
-        {.label = "VM (Availability Zone)",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+    auto peer = mgr.provision("1");
+    cost.resources.push_back({.label = "VM (Availability Zone, " + mgr.option().label() + ")",
+                              .hourly_rate = mgr.hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -481,17 +663,16 @@ BOOST_FIXTURE_TEST_CASE(placement_proximity_placement_group, AzureIntegrationFix
     auto cfg = vm_config(1);
     cfg.placement_by_group["1"] = {.kind = kythira::azure_placement_kind::proximity_placement_group,
                                    .resource_id = *ppg_id};
-    kythira::azure_vm_quorum_manager<> mgr{cfg};
+    escalating_vm_manager mgr{cfg, launch_ladder(azure)};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    auto peer = mgr.provision("1");
     cost.resources.push_back(
-        {.label = "VM (PPG)",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+        {.label = "VM (PPG, " + mgr.option().label() + ")", .hourly_rate = mgr.hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -511,17 +692,16 @@ BOOST_FIXTURE_TEST_CASE(placement_availability_set, AzureIntegrationFixture) {
     auto cfg = vm_config(1);
     cfg.placement_by_group["1"] = {.kind = kythira::azure_placement_kind::availability_set,
                                    .resource_id = *avset_id};
-    kythira::azure_vm_quorum_manager<> mgr{cfg};
+    escalating_vm_manager mgr{cfg, launch_ladder(azure)};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
-    cost.resources.push_back(
-        {.label = "VM (Availability Set)",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+    auto peer = mgr.provision("1");
+    cost.resources.push_back({.label = "VM (Availability Set, " + mgr.option().label() + ")",
+                              .hourly_rate = mgr.hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -535,22 +715,20 @@ BOOST_FIXTURE_TEST_CASE(spot_provision_and_decommission, AzureIntegrationFixture
     }
 
     TestCostReport cost{.test_name = "spot_provision_and_decommission"};
-    auto cfg = vm_config(1);
-    cfg.priority = kythira::azure_vm_priority::spot;
-    cfg.spot_options = kythira::azure_spot_options{
-        .max_price = -1.0, .eviction_policy = kythira::azure_eviction_policy::deallocate};
-    kythira::azure_vm_quorum_manager<> mgr{cfg};
+    // spot_only: this case exists to assert spot VMs specifically work, so it
+    // must never silently succeed by falling through to the on-demand rung the
+    // way the other cases legitimately may.
+    escalating_vm_manager mgr{vm_config(1), launch_ladder(azure), /*spot_only=*/true};
 
-    auto peer = std::move(mgr.provision_node("1", std::nullopt)).get();
+    auto peer = mgr.provision("1");
+    BOOST_CHECK_MESSAGE(mgr.option().spot, "spot_only ladder yielded an on-demand rung");
     cost.resources.push_back(
-        {.label = "Spot VM",
-         .hourly_rate = azure_vm_hourly_rate(env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5")) *
-                        0.2});  // Spot is typically ~80% off on-demand.
+        {.label = "Spot VM (" + mgr.option().vm_size + ")", .hourly_rate = mgr.hourly_rate()});
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
-    auto health = std::move(mgr.assess_quorum(cluster)).get();
+    auto health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
-    std::move(mgr.decommission_node(peer.node_id)).get();
+    std::move(mgr->decommission_node(peer.node_id)).get();
     for (auto& r : cost.resources) {
         r.finalize();
     }
@@ -571,16 +749,16 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
         cfg.placement_by_group[group] = {.kind = kythira::azure_placement_kind::availability_zone,
                                          .zone = group};
     }
-    kythira::azure_vm_quorum_manager<> mgr{cfg};
+    escalating_vm_manager mgr{cfg, launch_ladder(azure)};
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster;
     for (const auto& group : {"1", "2", "3"}) {
         for (int i = 0; i < 3; ++i) {
-            auto peer = std::move(mgr.provision_node(group, std::nullopt)).get();
+            auto peer = mgr.provision(group);
             cluster.push_back({peer.node_id, group});
-            cost.resources.push_back({.label = std::string("VM (zone ") + group + ")",
-                                      .hourly_rate = azure_vm_hourly_rate(
-                                          env_or("AZURE_TEST_VM_SIZE", "Standard_D2s_v5"))});
+            cost.resources.push_back(
+                {.label = std::string("VM (zone ") + group + ", " + mgr.option().label() + ")",
+                 .hourly_rate = mgr.hourly_rate()});
         }
     }
 
@@ -594,17 +772,17 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
         if (!deallocate_this) {
             continue;
         }
-        external_arm_post_action(azure, mgr.node_id_to_vm_name(np.node_id), "deallocate");
+        external_arm_post_action(azure, mgr->node_id_to_vm_name(np.node_id), "deallocate");
         if (np.group_id == "2") {
             ++zone2_deallocated;
         }
     }
 
-    auto pre_health = std::move(mgr.assess_quorum(cluster)).get();
+    auto pre_health = std::move(mgr->assess_quorum(cluster)).get();
     BOOST_CHECK(pre_health.status == kythira::quorum_status::critical);
     BOOST_CHECK_EQUAL(pre_health.live_node_count, 5u);
 
-    auto post_health = std::move(mgr.maintain_quorum(cluster)).get();
+    auto post_health = std::move(mgr->maintain_quorum(cluster)).get();
     (void)post_health;
 
     // maintain_quorum only replaces nodes it itself decommissioned (the
@@ -612,7 +790,7 @@ BOOST_FIXTURE_TEST_CASE(zone_outage_during_rolling_deployment, AzureIntegrationF
     // decommissioned nodes from this test's direct ARM calls are cleaned up
     // explicitly below regardless of what maintain_quorum did with them.
     for (const auto& np : cluster) {
-        std::move(mgr.decommission_node(np.node_id)).get();
+        std::move(mgr->decommission_node(np.node_id)).get();
     }
     for (auto& r : cost.resources) {
         r.finalize();
