@@ -680,19 +680,29 @@ private:
     /// for the same slot).
     [[nodiscard]] auto next_node_id() const -> NodeId {
         std::uint64_t max_id = 0;
-        // The $filter value's spaces/quotes are OData syntax, not part of the
-        // URL grammar -- they must be percent-encoded before this becomes a
-        // request line, or the raw literal spaces make it an invalid HTTP
-        // request that Azure's edge rejects instantly with a generic "400:
-        // the request is badly formed" (observed directly against a real
-        // subscription; do_send()'s Azure::Core::Url(_arm_base + path)
-        // constructor parses path as an already-valid URL string and does
-        // not encode it for you).
-        std::string filter_value =
-            "tagName eq 'kythira:cluster' and tagValue eq '" + _cfg.cluster_name + "'";
+        // Lists the resource group's VMs unfiltered and matches the cluster tag
+        // here rather than server-side.
+        //
+        // The obvious server-side form -- `$filter=tagName eq 'kythira:cluster'
+        // and tagValue eq '<name>'` -- is valid only on ARM's *generic*
+        // `/resources` endpoint. `Microsoft.Compute/virtualMachines` does not
+        // support it, and rejects it with "400 BadRequest: The request URL is
+        // not valid". Worse, it rejects it only once the group actually
+        // contains a VM for the filter to be applied to: against an empty
+        // resource group the same request returns 200, so the bug is invisible
+        // when provisioning a cluster's *first* node and fires on every node
+        // after it. Confirmed against a real subscription -- the same case
+        // passes with the group empty and fails with one VM present, and the
+        // request 400s identically whether the filter is minimally or fully
+        // percent-encoded, so this is the filter being unsupported rather than
+        // the encoding issue that was previously suspected here.
+        //
+        // Client-side matching also keeps the scan correct when a resource
+        // group holds more than one kythira cluster, which the tag-scan
+        // approach otherwise relies on the server to separate.
         auto body =
-            arm_get("/providers/Microsoft.Compute/virtualMachines?$filter=" +
-                    Azure::Core::Url::Encode(filter_value) + "&api-version=" + compute_api_version);
+            arm_get(std::string("/providers/Microsoft.Compute/virtualMachines?api-version=") +
+                    compute_api_version);
         if (body.is_object() && body.as_object().contains("value")) {
             for (const auto& vm : body.at("value").as_array()) {
                 if (!vm.is_object() || !vm.as_object().contains("tags")) {
@@ -700,6 +710,12 @@ private:
                 }
                 const auto& tags = vm.at("tags");
                 if (!tags.is_object() || !tags.as_object().contains("kythira:node-id")) {
+                    continue;
+                }
+                // The cluster match the dropped $filter used to perform.
+                const auto* cluster = tags.as_object().if_contains("kythira:cluster");
+                if (cluster == nullptr || !cluster->is_string() ||
+                    std::string(cluster->as_string()) != _cfg.cluster_name) {
                     continue;
                 }
                 try {
