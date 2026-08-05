@@ -40,8 +40,18 @@ trap 'rm -f "$LOG"' EXIT
 # exit status and a genuine test failure would pass. GitHub's default `run:`
 # shell is `bash -e`, which does not enable pipefail on its own, so this script
 # sets it rather than relying on the caller.
+# -V, not --output-on-failure. These suites cost real money and real minutes,
+# and a pass that shows nothing is not evidence: with --output-on-failure a
+# green run printed no test output at all, so there was no way to tell whether
+# a case had done its work or taken an internal skip path. The whole point of
+# a real-cloud run is the record of what it actually did against the provider.
+#
+# -V also streams as the test runs rather than buffering to the end, which
+# matters on a timeout: ctest SIGKILLs the child, and anything still sitting in
+# a buffer dies with it. A GCP run burned its full 3600s timeout and produced
+# not one line of output for exactly that reason.
 ctest --test-dir "$BUILD_DIR" -L "$LABEL" -R "$TEST_REGEX" \
-    --no-tests=error --output-on-failure 2>&1 | tee "$LOG"
+    --no-tests=error -V 2>&1 | tee "$LOG"
 
 if grep -qE '\*\*\*Skipped|tests did not run' "$LOG"; then
     echo "::error::${TEST_REGEX} was SKIPPED, not run — the suite's preflight could not reach the provider, so nothing was verified. ${HINT}" >&2
