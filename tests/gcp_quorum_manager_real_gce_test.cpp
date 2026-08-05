@@ -42,6 +42,8 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <ranges>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -236,41 +238,60 @@ auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
             auto client = google::cloud::compute_machine_types_v1::MachineTypesClient(
                 google::cloud::compute_machine_types_v1::MakeMachineTypesConnectionRest(
                     gcp_compute_detail::make_options(gcp)));
-            // Bounded, and traced as it goes. The Aug 5 2026 run hung here --
-            // inside the first zone's ListMachineTypes -- for the whole 3600s
-            // ctest timeout. Two explanations remained: the stream stalls
-            // (retrying a page behind google-cloud-cpp's default policy, which
-            // make_options sets no deadline on), or it never terminates
-            // (pagination re-fetching the same page forever). The item counter
-            // separates them on the next run: a stall leaves the count at 0, a
-            // pagination loop drives it past every plausible total. us-central1
-            // zones hold 434-541 machine types each, measured via gcloud, so
-            // kMaxItemsPerZone is roughly four times the real answer -- high
-            // enough never to truncate a legitimate listing, low enough to fail
-            // in seconds instead of burning an hour.
-            constexpr std::size_t kMaxItemsPerZone = 2000;
-            constexpr std::size_t kTraceEvery = 100;
+            // The listing is filtered server-side, and that is a workaround for
+            // an upstream bug rather than an optimisation.
+            //
+            // google-cloud-cpp 2.37.0's `MachineTypesClient::ListMachineTypes`
+            // never applies the page token: any result set larger than one page
+            // (500 items) re-fetches page 1 forever. Measured directly against
+            // this project — 3000 items yielded, 500 distinct, the same page six
+            // times over — for the convenience `(project, zone)` overload, the
+            // request-object overload, and the request-object overload with an
+            // explicit `max_results`, all three identically. The REST API itself
+            // is fine: paginating it by hand returns 541 items over two pages
+            // and a correctly empty `nextPageToken`. This is what hung the Aug 5
+            // 2026 run for its entire 3600s timeout.
+            //
+            // `guestCpus <= N` keeps each zone to ~50 items, comfortably inside
+            // one page, so the broken second fetch never happens. It is also a
+            // strict superset of what the ladder can use — `max_guest_cpus` is
+            // the same bound `gcp_machine_type_is_eligible` applies — so
+            // filtering costs no candidate: 45-48 eligible types survive per
+            // zone, against 46-48 discovered unfiltered before the loop broke.
+            //
+            // The repetition guard stays regardless. The filter avoids the bug
+            // by keeping results inside one page, which is a property of today's
+            // machine-type catalogue rather than a guarantee; if a zone ever
+            // exceeds a page the bug returns, and this fails loudly in seconds
+            // instead of hanging for an hour.
+            const gcp_machine_type_requirements reqs{};
+            const std::string filter = "guestCpus <= " + std::to_string(reqs.max_guest_cpus);
             for (const auto& zone : candidate_zones()) {
-                trace("machine-type discovery: listing " + zone);
+                trace("machine-type discovery: listing " + zone + " (" + filter + ")");
+                google::cloud::cpp::compute::machine_types::v1::ListMachineTypesRequest req;
+                req.set_project(gcp.project_id);
+                req.set_zone(zone);
+                req.set_filter(filter);
+                std::set<std::string> distinct;
                 std::size_t seen = 0;
-                for (const auto& mt : client.ListMachineTypes(gcp.project_id, zone)) {
+                for (const auto& mt : client.ListMachineTypes(req)) {
                     if (!mt) {
                         trace("machine-type discovery: " + zone + " unlistable (" +
                               mt.status().message() + ")");
                         break;  // zone absent or not listable; try the next one
                     }
-                    if (++seen % kTraceEvery == 0) {
-                        trace("machine-type discovery: " + zone + " " + std::to_string(seen) +
-                              " items");
-                    }
-                    if (seen > kMaxItemsPerZone) {
-                        // Loud and fatal to discovery rather than silently
-                        // truncating: a capped listing is not a trustworthy
-                        // ladder input, and pretending otherwise would hide
-                        // whatever is wrong here behind a plausible-looking run.
-                        throw std::runtime_error("machine-type listing for " + zone + " exceeded " +
-                                                 std::to_string(kMaxItemsPerZone) +
-                                                 " items — pagination is not terminating");
+                    ++seen;
+                    if (!distinct.insert(mt->name()).second) {
+                        // Loud and fatal to discovery rather than truncating: a
+                        // repeated name means the page token is being ignored,
+                        // so the listing is neither complete nor terminating,
+                        // and a ladder built from it would be a fiction.
+                        throw std::runtime_error(
+                            "machine-type listing for " + zone + " repeated '" + mt->name() +
+                            "' after " + std::to_string(seen) +
+                            " items — pagination is not terminating (google-cloud-cpp "
+                            "page-token bug); the guestCpus filter should have kept this "
+                            "inside one page");
                     }
                     out.push_back({.name = mt->name(),
                                    .zone = zone,
@@ -356,12 +377,45 @@ public:
             rank_gcp_launch_options(available_machine_types(), gcp_machine_type_requirements{},
                                     preferred_zone, _used_zones);
         if (ladder.empty()) {
-            // Discovery unavailable: fall back to exactly the pre-escalation
-            // behaviour rather than inventing a rung.
-            ladder.push_back({.machine_type = _cfg.machine_type,
-                              .zone = preferred_zone,
-                              .spot = _cfg.spot,
-                              .price_per_hr = gce_hourly_rate(_cfg.machine_type)});
+            // Discovery unavailable. The previous behaviour here was a single
+            // rung — the configured machine type in the preferred zone — which
+            // silently disabled escalation entirely: `escalate_gcp_launch`
+            // rethrows once `rung + 1 >= ladder.size()`, so a one-rung ladder
+            // turns a retryable stockout back into a fatal error.
+            //
+            // That is not hypothetical. On the Aug 5 2026 real-GCE run,
+            // discovery failed, the ladder collapsed to one rung, and both
+            // `provision_multi_zone_topology` and `spot_provision_and_decommission`
+            // then died on genuine `[ZONE_RESOURCE_POOL_EXHAUSTED]` /
+            // `[ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS]` refusals — exactly
+            // the failure this whole ladder exists to survive. The feature was
+            // only ever as good as its discovery step, and nothing said so.
+            //
+            // Zone substitution needs no discovery at all: the configured
+            // machine type is known to exist in the region, and changing zone
+            // is free. So synthesise the zone dimension directly — every
+            // candidate zone, spot before on-demand, preferred zone first —
+            // which is precisely the ladder that would have handled both of
+            // those refusals. Only the machine-type dimension is lost.
+            std::vector<std::string> zones{preferred_zone};
+            for (const auto& z : candidate_zones()) {
+                if (z != preferred_zone && std::ranges::find(_used_zones, z) == _used_zones.end()) {
+                    zones.push_back(z);
+                }
+            }
+            for (bool spot : {true, false}) {
+                for (const auto& z : zones) {
+                    ladder.push_back({.machine_type = _cfg.machine_type,
+                                      .zone = z,
+                                      .spot = spot,
+                                      .price_per_hr = gce_hourly_rate(_cfg.machine_type) *
+                                                      (spot ? kGcpSpotPriceFactor : 1.0)});
+                }
+            }
+            BOOST_TEST_MESSAGE(
+                "[gcp-spot] machine-type discovery unavailable — using a "
+                "zone-only ladder of "
+                << ladder.size() << " rungs on " << _cfg.machine_type);
         }
         // Each node walks its own ladder from the top: the ladder is already
         // rebuilt per call with the zones this case has consumed excluded, so
