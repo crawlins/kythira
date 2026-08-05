@@ -37,6 +37,7 @@
 #include <raft/azure_vm_quorum_manager.hpp>
 #include <raft/azure_vmss_quorum_manager.hpp>
 
+#include <azure/core/base64.hpp>
 #include <azure/core/context.hpp>
 #include <azure/core/http/http.hpp>
 #include <azure/core/http/policies/policy.hpp>
@@ -47,6 +48,10 @@
 
 #include <boost/json.hpp>
 
+#include <openssl/bn.h>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -56,6 +61,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace kythira::testing::azure_real;
@@ -73,6 +79,88 @@ auto env_opt(const char* name) -> std::optional<std::string> {
         return std::nullopt;
     }
     return std::string(v);
+}
+
+/// Serialises one OpenSSH wire "string" (4-byte big-endian length, then bytes).
+void append_ssh_string(std::vector<std::uint8_t>& out, const std::uint8_t* data, std::size_t len) {
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::uint8_t>((len >> shift) & 0xFFU));
+    }
+    out.insert(out.end(), data, data + len);
+}
+
+/// Serialises one OpenSSH wire "mpint": the same length-prefixed form, but with
+/// a leading zero byte when the top bit is set, since mpints are signed.
+void append_ssh_mpint(std::vector<std::uint8_t>& out, const BIGNUM* value) {
+    std::vector<std::uint8_t> buf(static_cast<std::size_t>(BN_num_bytes(value)));
+    BN_bn2bin(value, buf.data());
+    if (!buf.empty() && (buf.front() & 0x80U) != 0) {
+        buf.insert(buf.begin(), 0x00);
+    }
+    append_ssh_string(out, buf.data(), buf.size());
+}
+
+/// Generates a throwaway RSA public key in OpenSSH `authorized_keys` format.
+///
+/// ARM rejects a Linux `osProfile` that supplies neither `adminPassword` nor
+/// `linuxConfiguration.ssh.publicKeys` — "Required parameter
+/// 'osProfile.adminPassword' is missing (null)" — so *some* credential has to
+/// be set or no case in this file can provision at all.
+///
+/// A generated key is used rather than an operator-supplied one because
+/// nothing in this suite ever logs in: liveness comes solely from ARM
+/// `instanceView` power state (see `azure_vm_quorum_manager`'s class comment),
+/// so the key only has to exist and be well-formed. The private half is
+/// discarded immediately and never leaves this function, which makes these VMs
+/// unreachable by design rather than by policy — strictly better than baking a
+/// real key into CI. `AZURE_TEST_SSH_PUBLIC_KEY` overrides it for anyone who
+/// does want to be able to log in and debug a failing run.
+[[nodiscard]] auto make_ephemeral_ssh_public_key() -> std::string {
+    struct ctx_deleter {
+        void operator()(EVP_PKEY_CTX* p) const { EVP_PKEY_CTX_free(p); }
+    };
+    struct key_deleter {
+        void operator()(EVP_PKEY* p) const { EVP_PKEY_free(p); }
+    };
+    struct bn_deleter {
+        void operator()(BIGNUM* p) const { BN_free(p); }
+    };
+
+    std::unique_ptr<EVP_PKEY_CTX, ctx_deleter> ctx{EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr)};
+    BOOST_REQUIRE(ctx != nullptr);
+    BOOST_REQUIRE(EVP_PKEY_keygen_init(ctx.get()) > 0);
+    BOOST_REQUIRE(EVP_PKEY_CTX_set_rsa_keygen_bits(ctx.get(), 2048) > 0);
+    EVP_PKEY* raw_key = nullptr;
+    BOOST_REQUIRE(EVP_PKEY_keygen(ctx.get(), &raw_key) > 0);
+    std::unique_ptr<EVP_PKEY, key_deleter> key{raw_key};
+
+    BIGNUM* raw_e = nullptr;
+    BIGNUM* raw_n = nullptr;
+    BOOST_REQUIRE(EVP_PKEY_get_bn_param(key.get(), "e", &raw_e) > 0);
+    BOOST_REQUIRE(EVP_PKEY_get_bn_param(key.get(), "n", &raw_n) > 0);
+    std::unique_ptr<BIGNUM, bn_deleter> e{raw_e};
+    std::unique_ptr<BIGNUM, bn_deleter> n{raw_n};
+
+    static constexpr std::string_view kType = "ssh-rsa";
+    std::vector<std::uint8_t> blob;
+    append_ssh_string(blob, reinterpret_cast<const std::uint8_t*>(kType.data()), kType.size());
+    append_ssh_mpint(blob, e.get());
+    append_ssh_mpint(blob, n.get());
+    return std::string(kType) + " " + Azure::Core::Convert::Base64Encode(blob) +
+           " kythira-realtest-ephemeral";
+}
+
+/// The one SSH public key used by every VM this process provisions. Generated
+/// once: RSA-2048 keygen costs real time, and there is no reason for VMs in the
+/// same run to differ.
+[[nodiscard]] auto test_ssh_public_key() -> const std::string& {
+    static const std::string key = [] {
+        if (auto supplied = env_opt("AZURE_TEST_SSH_PUBLIC_KEY")) {
+            return *supplied;
+        }
+        return make_ephemeral_ssh_public_key();
+    }();
+    return key;
 }
 
 auto random_suffix() -> std::string {
@@ -285,6 +373,9 @@ public:
         // Overwritten per attempt by escalating_vm_manager; the ladder's first
         // rung is the starting point rather than a fixed choice.
         cfg.vm_size = launch_ladder(azure).front().vm_size;
+        // Required: ARM rejects a Linux osProfile carrying neither an SSH key
+        // nor an adminPassword. See test_ssh_public_key().
+        cfg.ssh_public_key = test_ssh_public_key();
         cfg.node_port = 7000;
         cfg.network_security_group_id = *nsg_id;
         for (int zone = 1; zone <= zone_count; ++zone) {
@@ -518,7 +609,13 @@ BOOST_FIXTURE_TEST_CASE(provision_and_assess_single_zone, AzureIntegrationFixtur
 
     std::vector<kythira::node_placement<std::uint64_t, std::string>> cluster{{peer.node_id, "1"}};
     auto health = std::move(mgr->assess_quorum(cluster)).get();
-    BOOST_CHECK(health.status == kythira::quorum_status::healthy);
+    // `critical`, not `healthy`: for a 1-node topology the majority is
+    // 1/2+1 == 1, and classify_status() returns `critical` whenever
+    // live == majority (one more failure would lose quorum) — which a
+    // single-node cluster satisfies the moment it is fully up. `healthy` is
+    // unreachable at this size, so asserting it (as this case originally did)
+    // could never have passed. The 3-node case covers `healthy` properly.
+    BOOST_CHECK(health.status == kythira::quorum_status::critical);
     BOOST_CHECK_EQUAL(health.live_node_count, 1u);
 
     std::move(mgr->decommission_node(peer.node_id)).get();
