@@ -918,10 +918,16 @@ endif()
 # compute_zone_operations components, all provided by google_cloud_cpp_compute.
 # KYTHIRA_HAS_GCP_SDK is set only when all three imported targets are present,
 # mirroring how KYTHIRA_HAS_AWS_SDK gates aws_ec2/aws_asg_quorum_manager.
+#
+# compute_machine_types is requested alongside them but deliberately excluded
+# from that three-target condition: it is used only by the real-GCE test's
+# launch-ladder discovery, never by the production managers, so a build lacking
+# it should still get working GCP quorum managers rather than none.
 kythira_kconfig_gate(GCP_SDK)
 if(_KYTHIRA_GATE_GCP_SDK)
     find_package(google_cloud_cpp_compute QUIET COMPONENTS
-        compute_instances compute_instance_group_managers compute_zone_operations)
+        compute_instances compute_instance_group_managers compute_zone_operations
+        compute_machine_types)
 endif()
 if(TARGET google-cloud-cpp::compute_instances
         AND TARGET google-cloud-cpp::compute_instance_group_managers
@@ -938,6 +944,18 @@ if(_KYTHIRA_GCP_SDK_FOUND)
         google-cloud-cpp::compute_instances
         google-cloud-cpp::compute_instance_group_managers
         google-cloud-cpp::compute_zone_operations)
+    # Test-only (see the note above). KYTHIRA_HAS_GCP_MACHINE_TYPES lets
+    # gcp_quorum_manager_real_gce_test compile its machine-type discovery out
+    # and fall back to the configured machine type, so the absence of this one
+    # component degrades the launch ladder instead of breaking the build.
+    if(TARGET google-cloud-cpp::compute_machine_types)
+        target_compile_definitions(network_simulator INTERFACE KYTHIRA_HAS_GCP_MACHINE_TYPES)
+        target_link_libraries(network_simulator INTERFACE
+            google-cloud-cpp::compute_machine_types)
+    else()
+        message(STATUS "google-cloud-cpp compute_machine_types not found — "
+            "real-GCE launch ladder will fall back to the configured machine type")
+    endif()
 else()
     message(STATUS "google-cloud-cpp compute components not found — "
         "gcp_compute_quorum_manager and gcp_mig_quorum_manager disabled")
