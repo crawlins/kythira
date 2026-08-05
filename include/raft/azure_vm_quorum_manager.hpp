@@ -450,6 +450,19 @@ public:
                     image_ref["id"] = _cfg.image_reference.shared_gallery_image_id;
                 }
                 storage_profile["imageReference"] = std::move(image_ref);
+                // Cascade the implicitly-created OS disk's lifetime onto the
+                // VM's. Without this ARM defaults `deleteOption` to "Detach",
+                // so `decommission_node`'s VM delete leaves the managed disk
+                // behind forever — a silent, permanently-billing leak of one
+                // disk per node ever provisioned. Deleting it from
+                // `decommission_node` instead would need the disk's generated
+                // name (ARM picks it, and it is only discoverable by reading
+                // the VM back before deleting it), and would still leak
+                // whenever a VM is removed by any other path.
+                boost::json::object os_disk;
+                os_disk["createOption"] = "FromImage";
+                os_disk["deleteOption"] = "Delete";
+                storage_profile["osDisk"] = std::move(os_disk);
 
                 boost::json::object os_profile;
                 os_profile["computerName"] = vm_name;
@@ -469,6 +482,15 @@ public:
 
                 boost::json::object nic_ref;
                 nic_ref["id"] = nic_id;
+                // Same reasoning as the OS disk above. `decommission_node`
+                // does delete the NIC explicitly, but only on the path it
+                // controls and only best-effort (it logs and swallows the
+                // failure); letting ARM cascade the delete makes NIC cleanup
+                // unconditional and ordered correctly against the VM's own
+                // teardown.
+                boost::json::object nic_props;
+                nic_props["deleteOption"] = "Delete";
+                nic_ref["properties"] = std::move(nic_props);
                 boost::json::object network_profile;
                 network_profile["networkInterfaces"] = boost::json::array{std::move(nic_ref)};
 
