@@ -35,9 +35,11 @@
 #include <folly/init/Init.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -48,6 +50,8 @@
 
 using namespace kythira;
 using namespace kythira::testing::gcp_real_gce;
+using kythira::testing::gcp_real_gce::g_active_gcp_fixture;
+using kythira::testing::gcp_real_gce::signal_cleanup_target;
 
 namespace {
 
@@ -112,17 +116,21 @@ auto run_id() -> const std::string& {
     return id;
 }
 
+auto instances_client() -> google::cloud::compute_instances_v1::InstancesClient {
+    google::cloud::Options opts;
+    opts.set<google::cloud::UnifiedCredentialsOption>(
+        google::cloud::MakeGoogleDefaultCredentials());
+    return google::cloud::compute_instances_v1::InstancesClient(
+        google::cloud::compute_instances_v1::MakeInstancesConnectionRest(opts));
+}
+
 /// Names of the instances in @p zone carrying this suite's cluster label — the
 /// same `labels.kythira-cluster` filter `assess_quorum` uses. Read directly via
 /// the SDK rather than through the manager so a leak assertion cannot be masked
 /// by the manager's own bookkeeping.
 auto cluster_instance_names(const std::string& project, const std::string& zone,
                             const std::string& cluster) -> std::vector<std::string> {
-    google::cloud::Options opts;
-    opts.set<google::cloud::UnifiedCredentialsOption>(
-        google::cloud::MakeGoogleDefaultCredentials());
-    google::cloud::compute_instances_v1::InstancesClient client(
-        google::cloud::compute_instances_v1::MakeInstancesConnectionRest(opts));
+    auto client = instances_client();
 
     google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
     req.set_project(project);
@@ -375,7 +383,100 @@ auto zone_stockout_message(const std::string& project, const std::string& zone) 
            "Try a different zone, or try again later.";
 }
 
+/// Deletes any instance still carrying *this run's* `kythira-test-run` label,
+/// in every candidate zone.
+///
+/// Why this exists at all: on Aug 3 2026 the scheduled run failed partway
+/// through `provision_multi_zone_topology` — us-central1-c was out of capacity,
+/// which is the failure the launch ladder was written for — and the case
+/// aborted before reaching its decommission loop. The two nodes it had already
+/// placed in us-central1-a and -b were still running two days later, on-demand,
+/// each with a 20 GB disk. Every case here decommissions its own nodes on the
+/// happy path, so nothing had ever swept the unhappy one. This suite was in
+/// fact the only real-cloud suite that installed `GcpSignalHandlerFixture`
+/// while implementing no `signal_cleanup_target` for it to invoke — the AWS,
+/// Azure and GCP-PrivateCA suites all have one — so the signal handler had
+/// nothing to clean up. The GCP counterpart of the Azure sweep in `76a76d7`.
+///
+/// Scoped by `kythira-test-run`, *not* by `kythira-cluster` as the Azure sweep
+/// is. That difference is deliberate and matters: Azure's `cluster_name` is
+/// unique per fixture instance, whereas `base_compute_config()` hardcodes
+/// `cluster_name = "kythira-it"` for every case *and* every concurrent run, so
+/// sweeping on it would delete a parallel run's instances out from under it.
+/// `kythira-test-run` is `run_id()`, which is per-process.
+///
+/// One consequence, stated because it is a real limitation rather than an
+/// oversight: this cannot adopt leaks from *earlier* runs, since those carry a
+/// different run id. The Aug 3 pair had to be deleted by hand. A sweep broad
+/// enough to reclaim them would be a sweep able to destroy a concurrent run.
+struct GceLeakSweepFixture : signal_cleanup_target {
+    GceLeakSweepFixture() { g_active_gcp_fixture.store(this, std::memory_order_release); }
+
+    ~GceLeakSweepFixture() {
+        g_active_gcp_fixture.store(nullptr, std::memory_order_release);
+        teardown();
+    }
+
+    GceLeakSweepFixture(const GceLeakSweepFixture&) = delete;
+    auto operator=(const GceLeakSweepFixture&) -> GceLeakSweepFixture& = delete;
+    GceLeakSweepFixture(GceLeakSweepFixture&&) = delete;
+    auto operator=(GceLeakSweepFixture&&) -> GceLeakSweepFixture& = delete;
+
+    void teardown() noexcept override {
+        // The destructor and the signal handler can both reach here.
+        if (_torn_down.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        const std::string project = env_or("GCP_PROJECT_ID", "");
+        if (project.empty()) {
+            return;
+        }
+        try {
+            auto client = instances_client();
+            for (const auto& zone : candidate_zones()) {
+                google::cloud::cpp::compute::instances::v1::ListInstancesRequest req;
+                req.set_project(project);
+                req.set_zone(zone);
+                req.set_filter("labels.kythira-test-run = \"" + run_id() + "\"");
+                std::vector<std::string> leaked;
+                for (auto const& maybe : client.ListInstances(req)) {
+                    if (!maybe) {
+                        break;  // zone unreadable; the other zones still matter
+                    }
+                    leaked.push_back(maybe->name());
+                }
+                for (const auto& name : leaked) {
+                    // Loud on purpose, exactly as the Azure sweep is: a sweep
+                    // that quietly absorbed leaks would turn "this case leaks a
+                    // VM every run" back into something invisible. The Aug 3
+                    // pair went unnoticed for two days.
+                    std::cerr << "[gcp_quorum_manager_real_gce_test] teardown: deleting leaked "
+                                 "instance "
+                              << name << " in " << zone << " (run " << run_id() << ")\n";
+                    auto deleted = client.DeleteInstance(project, zone, name).get();
+                    if (!deleted) {
+                        std::cerr << "[gcp_quorum_manager_real_gce_test] teardown: FAILED to "
+                                     "delete "
+                                  << name << " in " << zone << " (" << deleted.status().message()
+                                  << ") — delete it manually\n";
+                    }
+                }
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[gcp_quorum_manager_real_gce_test] teardown sweep failed: " << ex.what()
+                      << "\n";
+        } catch (...) {
+            std::cerr << "[gcp_quorum_manager_real_gce_test] teardown sweep failed\n";
+        }
+    }
+
+private:
+    std::atomic<bool> _torn_down{false};
+};
+
 }  // namespace
+
+BOOST_TEST_GLOBAL_FIXTURE(GceLeakSweepFixture);
 
 // ── gcp_compute_quorum_manager real-GCE cases (Requirement 23 AC 18) ────────
 
