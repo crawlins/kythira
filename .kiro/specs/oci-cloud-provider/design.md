@@ -37,13 +37,36 @@ handful of OCI operations these two components actually call.
   operator-provisioned inputs, exactly as `aws_acm_pca_provider` treats the
   ACM Private CA and as `aws_asg_quorum_manager` treats the ASG's launch
   template.
-- **OCI preemptible instances** (OCI's analogue of AWS spot capacity): no
-  equivalent to `ec2_spot_options` is added in this spec. If wanted later,
-  it is configured on the pre-existing Instance Configuration the same way
-  `aws_asg_quorum_manager` leaves spot/on-demand mix entirely to the ASG's
-  launch template — the quorum manager would need no changes, matching
+- **OCI preemptible instances, in the *quorum manager*** (OCI's analogue of
+  AWS spot capacity): no equivalent to `ec2_spot_options` is added to
+  `oci_instance_pool_quorum_manager`. Preemptible-vs-on-demand is configured
+  on the pre-existing Instance Configuration, exactly as
+  `aws_asg_quorum_manager` leaves the spot/on-demand mix entirely to the
+  ASG's launch template — the quorum manager needs no changes, matching
   `aws_asg_quorum_manager`'s existing spot-agnosticism (Requirement 10.1's
   note in `aws-quorum-manager`).
+
+  **This exclusion is scoped to the manager and does not extend to the
+  real-OCI test harness** (Requirement 13.12–13.14). AWS's own
+  `spot_first_launch_options`/`is_insufficient_capacity` escalation lives in
+  `tests/aws_quorum_manager_real_ec2_test.cpp` and nowhere else — it is a
+  property of the *test harness*, which launches instances directly, not of
+  `aws_asg_quorum_manager`. The OCI harness needs the same capability for
+  the same two reasons, one of which is not about cost at all:
+
+  1. **Capacity.** "Out of host capacity" is a routine OCI failure for a
+     single shape in a single Availability Domain, and a harness that picks
+     one shape in one AD fails the whole suite when that AD is short. The
+     GCP suite demonstrated this failure mode for real on 2026-08-03:
+     `gcp_quorum_manager_real_gce_test` failed outright with
+     `[ZONE_RESOURCE_POOL_EXHAUSTED] The zone 'us-central1-c' does not have
+     enough resources available`. OCI is at least as prone to this.
+  2. **Cost.** Preemptible instances are substantially cheaper, and the
+     harness creates instances purely to observe lifecycle state.
+
+  Note that OCI's stockouts are scoped by **(shape, Availability Domain)**,
+  not by shape alone as on AWS, so the escalation ladder has an extra
+  dimension: see Requirement 13.13.
 - **Per-AD-targeted Instance Pool growth.** Confirmed absent by Task 0's
   spike (`spike-notes.md` Finding 2): `UpdateInstancePool` cannot target a
   specific AD within a multi-AD pool (Requirement 6.2). The one-Instance-

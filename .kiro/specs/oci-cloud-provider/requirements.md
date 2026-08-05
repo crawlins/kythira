@@ -788,6 +788,51 @@ that **no official local OCI emulator equivalent to LocalStack exists**.
     OCI resources have **no** fixture-side auto-creation fallback at all
     (unlike AWS's VPC/subnet auto-creation), since Requirement 2/12 scope
     both components to managing pre-existing pools/CAs only.
+12. The real-OCI fixture SHALL select the shape it launches its own
+    instances with **preemptible-first, cheapest-first**, mirroring
+    `tests/aws_quorum_manager_real_ec2_test.cpp`'s
+    `spot_first_launch_options()`. It SHALL build an ordered list of launch
+    options consisting of every preemptible (shape, Availability Domain)
+    candidate whose hourly price strictly undercuts the cheapest
+    reliably-available on-demand fallback, in ascending price order,
+    terminated by that on-demand fallback. Once a preemptible candidate
+    costs at least as much as the on-demand fallback there is no reason to
+    keep trying preemptible, so the list SHALL stop there.
+
+    Note this requirement binds the **test harness only**, not
+    `oci_instance_pool_quorum_manager`, which stays market-agnostic — see
+    design.md's Non-Goals entry on preemptible instances. AWS's own
+    escalation lives exclusively in its real-EC2 test file and not in
+    `aws_asg_quorum_manager`; this mirrors that split exactly.
+13. The escalation ladder SHALL be keyed on **(shape, Availability Domain)**
+    pairs rather than shape alone. OCI capacity is exhausted per-AD, so a
+    shape that is unavailable in one AD is frequently available in another;
+    an escalation that varies only shape would retry into the same shortage.
+    This is a genuine divergence from the AWS analogue, whose
+    `InsufficientInstanceCapacity` handling varies instance type within one
+    subnet, and from the equivalent Azure work, whose SKU restrictions are
+    subscription-wide rather than zone-scoped.
+14. On a capacity failure the fixture SHALL advance to the next launch
+    option rather than failing the test case, and SHALL fail only once the
+    list is exhausted, reporting the last error. A **non**-capacity error
+    SHALL abort immediately without walking the list, so a real defect is
+    not masked as a stockout — matching
+    `is_insufficient_capacity()`'s contract in the AWS harness.
+
+    OCI signals this condition with an `Out of host capacity` /
+    `OutOfHostCapacity` error rather than AWS's
+    `InsufficientInstanceCapacity`; Task 0's spike SHALL record the exact
+    code and message shape (`spike-notes.md`), since the classifier is a
+    string match and cannot be written correctly from inspection alone.
+    This matters: the GCP suite's first scheduled run after enablement
+    (2026-08-03) failed outright on precisely this class of error —
+    `[ZONE_RESOURCE_POOL_EXHAUSTED] The zone 'us-central1-c' does not have
+    enough resources available to fulfill the request` — with no escalation
+    to absorb it.
+15. The chosen option's shape, Availability Domain, preemptible-vs-on-demand
+    status and hourly price SHALL be recorded in the cost report
+    (Requirement 14.4–14.5), so a run that silently degraded all the way to
+    on-demand is visible in the output rather than only in the bill.
 
 ---
 
