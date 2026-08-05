@@ -22,7 +22,9 @@
 #include "gcp_real_gce_test_support.hpp"
 
 #include <google/cloud/compute/instances/v1/instances_client.h>
+#if defined(KYTHIRA_HAS_GCP_MACHINE_TYPES)
 #include <google/cloud/compute/machine_types/v1/machine_types_client.h>
+#endif
 #include <google/cloud/credentials.h>
 
 #include <algorithm>
@@ -176,6 +178,14 @@ auto candidate_zones() -> std::vector<std::string> {
 auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
     static const std::vector<gcp_machine_type_info> discovered = [] {
         std::vector<gcp_machine_type_info> out;
+#if !defined(KYTHIRA_HAS_GCP_MACHINE_TYPES)
+        // Component absent from this build: the ladder degrades to the single
+        // configured machine type, which is exactly the pre-escalation
+        // behaviour, rather than failing to build.
+        std::cerr << "[gcp-spot] compute_machine_types component unavailable; "
+                     "falling back to the configured machine type\n";
+        return out;
+#else
         try {
             gcp_client_config gcp;
             gcp.project_id = env_or("GCP_PROJECT_ID", "");
@@ -201,6 +211,7 @@ auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
         std::cerr << "[gcp-spot] discovered " << out.size() << " (machine type, zone) pairs across "
                   << candidate_zones().size() << " candidate zones\n";
         return out;
+#endif
     }();
     return discovered;
 }
