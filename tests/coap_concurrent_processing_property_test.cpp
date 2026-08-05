@@ -93,7 +93,12 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     // other coap_*_test binaries under ctest -j (see bound_port()'s doc
     // comment in coap_transport.hpp). The client's endpoint is built from
     // the real bound port below, after start() resolves it.
-    coap_server<test_transport_types> server("127.0.0.1", 0, server_config, noop_metrics{});
+    // Heap-owned, not a frame local: this case's own SIGALRM timeout is what
+    // abandons the frame (see the file header comment), and `server` owns
+    // background I/O threads started by start() below that keep running
+    // afterwards. See this case's trailing comment for the full chain.
+    auto server = std::make_shared<coap_server<test_transport_types>>("127.0.0.1", 0, server_config,
+                                                                      noop_metrics{});
 
     // Property: Concurrent requests should be processed without blocking
     std::atomic<std::size_t> requests_started{0};
@@ -109,20 +114,21 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     std::vector<std::chrono::steady_clock::time_point> request_end_times(test_concurrent_requests);
 
     // Register a handler (though it won't be called in stub implementation)
-    server.register_request_vote_handler(
+    server->register_request_vote_handler(
         [](const request_vote_request<>& req) -> request_vote_response<> {
             return request_vote_response<>{req.term(), false};
         });
 
     // Start server
-    server.start();
+    server->start();
 
     // Build the client's endpoint from the port the OS actually assigned
     // (bound_port() is only meaningful after start()).
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {
-        {1, "coap://127.0.0.1:" + std::to_string(server.bound_port())}};
+        {1, "coap://127.0.0.1:" + std::to_string(server->bound_port())}};
 
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
+    auto client = std::make_shared<coap_client<test_transport_types>>(endpoint_map, client_config,
+                                                                      noop_metrics{});
 
     // Launch concurrent requests
     std::vector<kythira::future_default<void>> request_futures;
@@ -138,7 +144,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
 
         try {
             // Test concurrent slot acquisition - this may fail due to limits
-            if (client.acquire_concurrent_slot()) {
+            if (client->acquire_concurrent_slot()) {
                 successful_acquisitions.fetch_add(1);
 
                 // Track concurrent activity
@@ -159,10 +165,10 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
 
                 // Send request (this will fail in stub implementation, but we're
                 // testing the concurrency control)
-                auto future = client.send_request_vote(1, request, test_timeout);
+                auto future = client->send_request_vote(1, request, test_timeout);
 
                 // Release slot
-                client.release_concurrent_slot();
+                client->release_concurrent_slot();
 
                 // Decrement concurrent activity
                 concurrent_active.fetch_sub(1);
@@ -225,7 +231,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     BOOST_CHECK(true);  // Test passes if we got this far
 
     // Stop server
-    server.stop();
+    server->stop();
 }
 
 /**
@@ -300,7 +306,8 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property,
 
     std::unordered_map<std::uint64_t, std::string> endpoint_map = {{1, test_endpoint}};
 
-    coap_client<test_transport_types> client(endpoint_map, client_config, noop_metrics{});
+    auto client = std::make_shared<coap_client<test_transport_types>>(endpoint_map, client_config,
+                                                                      noop_metrics{});
 
     // Property: When concurrent processing is disabled, all slot acquisitions should succeed
     constexpr std::size_t test_attempts = 100;
@@ -313,9 +320,9 @@ BOOST_AUTO_TEST_CASE(test_concurrent_processing_disabled_property,
         // .thenValue(...) - InlineExecutor runs synchronously, so this synchronous body
         // followed by an already-ready future preserves identical behavior while staying
         // backend-neutral.
-        if (client.acquire_concurrent_slot()) {
+        if (client->acquire_concurrent_slot()) {
             successful_acquisitions.fetch_add(1);
-            client.release_concurrent_slot();
+            client->release_concurrent_slot();
         }
         acquisition_futures.push_back(kythira::future_factory_default::makeFuture());
     }
