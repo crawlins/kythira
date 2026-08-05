@@ -236,17 +236,49 @@ auto available_machine_types() -> const std::vector<gcp_machine_type_info>& {
             auto client = google::cloud::compute_machine_types_v1::MachineTypesClient(
                 google::cloud::compute_machine_types_v1::MakeMachineTypesConnectionRest(
                     gcp_compute_detail::make_options(gcp)));
+            // Bounded, and traced as it goes. The Aug 5 2026 run hung here --
+            // inside the first zone's ListMachineTypes -- for the whole 3600s
+            // ctest timeout. Two explanations remained: the stream stalls
+            // (retrying a page behind google-cloud-cpp's default policy, which
+            // make_options sets no deadline on), or it never terminates
+            // (pagination re-fetching the same page forever). The item counter
+            // separates them on the next run: a stall leaves the count at 0, a
+            // pagination loop drives it past every plausible total. us-central1
+            // zones hold 434-541 machine types each, measured via gcloud, so
+            // kMaxItemsPerZone is roughly four times the real answer -- high
+            // enough never to truncate a legitimate listing, low enough to fail
+            // in seconds instead of burning an hour.
+            constexpr std::size_t kMaxItemsPerZone = 2000;
+            constexpr std::size_t kTraceEvery = 100;
             for (const auto& zone : candidate_zones()) {
                 trace("machine-type discovery: listing " + zone);
+                std::size_t seen = 0;
                 for (const auto& mt : client.ListMachineTypes(gcp.project_id, zone)) {
                     if (!mt) {
+                        trace("machine-type discovery: " + zone + " unlistable (" +
+                              mt.status().message() + ")");
                         break;  // zone absent or not listable; try the next one
+                    }
+                    if (++seen % kTraceEvery == 0) {
+                        trace("machine-type discovery: " + zone + " " + std::to_string(seen) +
+                              " items");
+                    }
+                    if (seen > kMaxItemsPerZone) {
+                        // Loud and fatal to discovery rather than silently
+                        // truncating: a capped listing is not a trustworthy
+                        // ladder input, and pretending otherwise would hide
+                        // whatever is wrong here behind a plausible-looking run.
+                        throw std::runtime_error("machine-type listing for " + zone + " exceeded " +
+                                                 std::to_string(kMaxItemsPerZone) +
+                                                 " items — pagination is not terminating");
                     }
                     out.push_back({.name = mt->name(),
                                    .zone = zone,
                                    .guest_cpus = static_cast<unsigned>(mt->guest_cpus()),
                                    .memory_mb = static_cast<unsigned>(mt->memory_mb())});
                 }
+                trace("machine-type discovery: " + zone + " done, " + std::to_string(seen) +
+                      " items");
             }
         } catch (const std::exception& ex) {
             std::cerr << "[gcp-spot] machine-type discovery failed (" << ex.what()
