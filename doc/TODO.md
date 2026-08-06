@@ -151,6 +151,40 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **Real-GCE suite: two silent no-ops found during the first live run
+  (August 5, 2026).** Both surfaced while verifying the zone-laddering
+  escalation (PR #158) against real GCE, neither affects that verification's
+  result, and both are the same shape as the failures that run kept hitting —
+  machinery that reports nothing and therefore reads as fine.
+  - **`CostSummaryFixture` produces no output.** The
+    `gcp_quorum_manager_real_gce_test` run that provisioned six VMs across
+    three zones (`31055737271`) printed no cost summary at all — not a zero,
+    nothing. So either nothing is registering `cost_report`s into
+    `g_cost_accumulator`, or the fixture's destructor is not running. Note
+    its early-out is `if (reps.empty()) return;`, which makes "no reports"
+    and "fixture never ran" indistinguishable from the outside; whichever it
+    is, real-cloud spend is currently unreported. Requirements 24.4/24.5 of
+    `.kiro/specs/gcp-cloud-services/` are the ones this is supposed to
+    satisfy. Worth checking the AWS/Azure equivalents at the same time — the
+    fixture is modelled on `aws_real_ec2_test_support.hpp`.
+  - **`BOOST_TEST_MESSAGE` output never appears in real-cloud logs.** Boost's
+    default log level suppresses it, so every diagnostic written that way in
+    the real-cloud suites is invisible — including
+    `provision_escalates_past_zone_stockout`'s own record of which rung was
+    refused and which one took over. Only the `std::cerr` `trace()` markers
+    survived, which is the sole reason that case's behaviour could be
+    confirmed. Fix by passing `--log_level=message` (or
+    `BOOST_TEST_LOG_LEVEL=message`) from `scripts/run-real-cloud-suite.sh`,
+    which now runs `ctest -V` and so would actually surface it. Applies to
+    the AWS and Azure real-cloud suites identically.
+  - **Related, larger, and *not* test-only:
+    `gcp_compute_detail::make_options()` sets no retry, backoff or deadline
+    policy on any Compute client**, so every call in
+    `gcp_compute_quorum_manager` inherits whatever google-cloud-cpp's default
+    is. This was a candidate explanation for the hour-long hang before the
+    real cause (an SDK page-token bug) was found, and it remains an unbounded
+    blocking call in production code regardless.
+
 - **CoAP/Proxygen test-reliability sweep — four fixes, one item still open
   (August 4, 2026).** Full investigation record, with every
   before/after measurement, in
