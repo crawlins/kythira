@@ -49,6 +49,7 @@
 #include <raft/network.hpp>
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
+#include <raft/serializer_registry.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <folly/Executor.h>
@@ -91,6 +92,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor>
 struct future_default_http_transport_types {
     template<typename T> using future_template = kythira::future_default<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
 };

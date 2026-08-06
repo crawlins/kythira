@@ -1147,6 +1147,18 @@ add_test(NAME rpc_serializer_concept_test COMMAND rpc_serializer_concept_test)
 # Serializer registry / media-type negotiation. Links no transport on purpose:
 # the negotiation rules are protocol-independent, and only their rendering
 # (HTTP 406 vs CoAP 4.06) is not.
+# Compile-time conformance of the transport `Types` bundles to the
+# registry-carrying `transport_types` concept. All static_asserts: the build is
+# the test.
+add_executable(transport_types_registry_conformance_test transport_types_registry_conformance_test.cpp)
+target_link_libraries(transport_types_registry_conformance_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(transport_types_registry_conformance_test PRIVATE cxx_std_23)
+add_test(NAME transport_types_registry_conformance_test COMMAND transport_types_registry_conformance_test)
+
 add_executable(serializer_registry_unit_test serializer_registry_unit_test.cpp)
 target_link_libraries(serializer_registry_unit_test PRIVATE
     network_simulator

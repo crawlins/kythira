@@ -973,13 +973,29 @@ struct _peer2peer_replicator_type_traits<T, NodeId, Address, LogIndex, true> {
 // ============================================================================
 
 /// @brief Concept for a unified transport-types bundle used by HTTP and CoAP transports.
+///
+/// `serializer_registry_type` is what the transports negotiate through;
+/// `serializer_type` is retained alongside it as the *default* serializer's
+/// type. Both, rather than the registry alone, because every transport still
+/// opens with `using serializer_type = typename Types::serializer_type;` and
+/// uses it throughout — replacing it would turn an additive change into a
+/// migration through five transports for no benefit. A conforming bundle is
+/// expected to keep the two consistent (the registry's default *is*
+/// `serializer_type`), which `single_serializer_registry<S>` makes automatic
+/// for the one-serializer case.
+///
+/// Note this is not `raft_types`, whose own `serializer_type` is the
+/// node-internal one for log entries and snapshots. That bundle negotiates with
+/// nobody and deliberately has no registry.
 template<typename T>
 concept transport_types =
     requires {
         typename T::serializer_type;
+        typename T::serializer_registry_type;
         typename T::metrics_type;
         typename T::executor_type;
     } && kythira::rpc_serializer<typename T::serializer_type, std::vector<std::byte>> &&
+    kythira::serializer_registry<typename T::serializer_registry_type, std::vector<std::byte>> &&
     kythira::metrics<typename T::metrics_type> &&
     requires {
         typename T::template future_template<kythira::request_vote_response<>>;

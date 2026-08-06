@@ -1,6 +1,7 @@
 #pragma once
 
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 #include <raft/metrics.hpp>
 #include <raft/logger.hpp>
 #include <folly/futures/Future.h>
@@ -20,6 +21,7 @@ template<typename Serializer> struct test_transport_types {
     template<typename T> using promise_template = folly::Promise<T>;
 
     using serializer_type = Serializer;
+    using serializer_registry_type = kythira::single_serializer_registry<Serializer>;
     using rpc_serializer_type = Serializer;
     using metrics_type = kythira::noop_metrics;
     using executor_type = folly::InlineExecutor;
