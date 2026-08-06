@@ -61,6 +61,7 @@
 #include <boost/thread/future.hpp>
 #include <boost/thread/executors/basic_thread_pool.hpp>
 #include <boost/thread/executors/executor.hpp>
+#include <boost/thread/executors/generic_executor_ref.hpp>
 #include <boost/exception_ptr.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -91,6 +92,31 @@ template<typename T> class Future;
 class FutureFactory;
 class FutureCollector;
 class executor_shim;
+
+// The executor a Future was via()'d onto, propagated to every continuation
+// chained downstream of that via() -- i.e. via() is *sticky*, matching the
+// Folly backend, whose own via() likewise binds the executor for the whole
+// remaining chain rather than just the next hop.
+//
+// Boost.Thread's then() has two forms: then(F) and then(Ex&, F). The former
+// defaults to boost::launch::async -- a freshly spawned std::thread *per
+// continuation*. Without the stickiness below, only the continuation
+// created by via() itself ran on the requested executor and every one after
+// it got its own thread, so a chain of N continuations both cost N threads
+// and abandoned the executor's serialization guarantee after the first hop.
+// That is not an abstract concern: it corrupted the Beast transport, whose
+// server_session chains thenValue/thenError onto a future via()'d onto the
+// stream's Asio strand specifically so those continuations (and the
+// session's own final release) stay on that strand. Under this backend they
+// instead ran on -- and destroyed the session's beast::ssl_stream from --
+// arbitrary Boost.Thread-spawned threads, segfaulting inside Asio's
+// strand_impl teardown.
+//
+// Held by shared_ptr rather than by value because generic_executor_ref is
+// non-default-constructible; the referenced executor itself is NOT owned
+// (generic_executor_ref stores a reference), the same non-owning contract
+// as the Folly backend's raw folly::Executor*.
+using executor_ref_ptr = std::shared_ptr<boost::executors::generic_executor_ref>;
 
 namespace detail {
 
@@ -404,6 +430,36 @@ public:
 
     explicit Future(boost::future<T>&& f) : _f(std::move(f)) {}
 
+    // Carries the via()'d executor forward -- see executor_ref_ptr's comment.
+    Future(boost::future<T>&& f, executor_ref_ptr executor)
+        : _f(std::move(f)), _executor(std::move(executor)) {}
+
+private:
+    // then() on the sticky executor when via() set one, plain then()
+    // otherwise. Both forms return boost::future<R> for the same R, so the
+    // two branches agree on type. Defined up here rather than with the
+    // other private members: its return type is deduced, so the definition
+    // has to precede every use of it below.
+    //
+    // The continuation captures a shared_ptr copy of _executor purely to
+    // keep it alive. Boost's then(Ex&, F) stores the executor by *reference*
+    // (boost::executors::executor_ref<Ex>), so the generic_executor_ref has
+    // to outlive the continuation state that will later call submit() on it
+    // -- and the Future that owns it is routinely a temporary destroyed as
+    // soon as the chain is built (`.detach()` consumes the last one
+    // outright). Without this capture the chain segfaulted inside
+    // executor_ref<generic_executor_ref>::submit on a freed executor.
+    template<typename F> auto then_on(F&& func) {
+        if (_executor) {
+            return _f.then(*_executor, [inner = std::forward<F>(func), keep_alive = _executor](
+                                           boost::future<T> completed) mutable {
+                return inner(std::move(completed));
+            });
+        }
+        return _f.then(std::forward<F>(func));
+    }
+
+public:
     auto get() && -> T { return std::move(_f).get(); }
     [[nodiscard]] auto isReady() const -> bool { return _f.is_ready(); }
     auto wait(std::chrono::milliseconds timeout) -> bool {
@@ -439,10 +495,10 @@ public:
     {
         using R = std::invoke_result_t<F, T>;
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<T> completed) mutable -> R {
+            then_on([func = std::forward<F>(func)](boost::future<T> completed) mutable -> R {
                 return func(completed.get());
             });
-        return Future<R>(std::move(continuation));
+        return Future<R>(std::move(continuation), _executor);
     }
 
     // Future-returning overload (automatic flattening) — boost::future<T>::
@@ -462,7 +518,8 @@ public:
         using U = typename FutureU::value_type;
         auto bridge = std::make_shared<Promise<U>>();
         Future<U> result = bridge->getFuture();
-        _f.then([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
+        result._executor = _executor;  // inherit the sticky via() executor
+        then_on([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
             T value;
             try {
                 value = completed.get();
@@ -511,10 +568,10 @@ public:
     {
         using R = std::invoke_result_t<F, Try<T>>;
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<T> completed) mutable -> R {
+            then_on([func = std::forward<F>(func)](boost::future<T> completed) mutable -> R {
                 return func(Try<T>(std::move(completed)));
             });
-        return Future<R>(std::move(continuation));
+        return Future<R>(std::move(continuation), _executor);
     }
 
     template<typename F>
@@ -525,7 +582,8 @@ public:
         using U = typename FutureU::value_type;
         auto bridge = std::make_shared<Promise<U>>();
         Future<U> result = bridge->getFuture();
-        _f.then([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
+        result._executor = _executor;  // inherit the sticky via() executor
+        then_on([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
             FutureU inner = func(Try<T>(std::move(completed)));
             std::move(inner).extract_boost_future().then(
                 [bridge](boost::future<U> inner_completed) mutable {
@@ -548,26 +606,71 @@ public:
     // the same then() callback, not a distinct combinator) - inspect
     // has_exception() before calling .get() so the success path passes
     // the value through unchanged and only the error path invokes func.
-    template<typename F> auto thenError(F&& func) -> Future<T> {
+    // Two overloads split on whether func returns a plain T or another
+    // Future<T>, exactly mirroring thenValue's identical split above. The
+    // Future-returning overload was missing until the Beast transport was
+    // made backend-agnostic: its server_session::read_loop() chains a
+    // .thenError() whose handler returns future_default<unit>, which the
+    // Folly and stdexec backends both flatten. Without the overload below
+    // this backend instead tried to convert Future<unit> to unit and failed
+    // to compile -- an asymmetry with thenValue, not a deliberate
+    // narrowing.
+    template<typename F>
+    auto thenError(F&& func) -> Future<T>
+    requires(!detail::is_future_v<std::invoke_result_t<F, std::exception_ptr>>)
+    {
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<T> completed) mutable -> T {
+            then_on([func = std::forward<F>(func)](boost::future<T> completed) mutable -> T {
                 if (completed.has_exception()) {
                     return func(detail::to_std_exception_ptr(completed.get_exception_ptr()));
                 }
                 return completed.get();
             });
-        return Future<T>(std::move(continuation));
+        return Future<T>(std::move(continuation), _executor);
+    }
+
+    // Future-returning overload (automatic flattening). Bridged through a
+    // new Promise<T> the same way thenValue's own flattening overload is,
+    // and for the same reason: boost::future<T>::then() does not auto-unwrap
+    // a future-returning callback.
+    template<typename F>
+    auto thenError(F&& func) -> Future<T>
+    requires(detail::is_future_v<std::invoke_result_t<F, std::exception_ptr>>)
+    {
+        auto bridge = std::make_shared<Promise<T>>();
+        Future<T> result = bridge->getFuture();
+        result._executor = _executor;  // inherit the sticky via() executor
+        then_on([func = std::forward<F>(func), bridge](boost::future<T> completed) mutable {
+            if (!completed.has_exception()) {
+                bridge->setValue(completed.get());
+                return;
+            }
+            auto inner = func(detail::to_std_exception_ptr(completed.get_exception_ptr()));
+            std::move(inner).extract_boost_future().then(
+                [bridge](boost::future<T> inner_completed) mutable {
+                    if (inner_completed.has_exception()) {
+                        bridge->setException(
+                            detail::to_std_exception_ptr(inner_completed.get_exception_ptr()));
+                    } else if constexpr (std::is_void_v<T>) {
+                        inner_completed.get();
+                        bridge->setValue(kythira::unit{});
+                    } else {
+                        bridge->setValue(inner_completed.get());
+                    }
+                });
+        });
+        return result;
     }
 
     // ensure (Requirement 6.6): func runs on both the value and error
     // paths, result (value or exception) passed through unchanged.
     template<typename F> auto ensure(F&& func) -> Future<T> {
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<T> completed) mutable -> T {
+            then_on([func = std::forward<F>(func)](boost::future<T> completed) mutable -> T {
                 func();
                 return completed.get();  // rethrows on the error path, after func() already ran
             });
-        return Future<T>(std::move(continuation));
+        return Future<T>(std::move(continuation), _executor);
     }
 
     // via (Requirement 6.4): then(Ex&, F) overload, requires
@@ -583,7 +686,10 @@ public:
     template<typename Ex> auto via(Ex& ex) -> Future<T> {
         auto continuation =
             _f.then(ex, [](boost::future<T> completed) -> T { return completed.get(); });
-        return Future<T>(std::move(continuation));
+        // Binds ex for the whole remaining chain, not just this hop --
+        // see executor_ref_ptr's comment for why that distinction matters.
+        return Future<T>(std::move(continuation),
+                         std::make_shared<boost::executors::generic_executor_ref>(ex));
     }
     // void* overload: required by the future_continuation concept
     // (`f.via(std::declval<void*>())`), mirroring include/raft/future.hpp's
@@ -600,8 +706,9 @@ public:
     auto delay(std::chrono::milliseconds d) -> Future<T> {
         auto bridge = std::make_shared<Promise<T>>();
         Future<T> result = bridge->getFuture();
+        result._executor = _executor;  // inherit the sticky via() executor
         auto timer_holder = std::make_shared<std::shared_ptr<boost::asio::steady_timer>>();
-        _f.then([bridge, d, timer_holder](boost::future<T> completed) mutable {
+        then_on([bridge, d, timer_holder](boost::future<T> completed) mutable {
             auto shared_completed = std::make_shared<boost::future<T>>(std::move(completed));
             *timer_holder = detail::timer_service::instance().schedule_after(
                 d, [bridge, shared_completed]() mutable {
@@ -626,6 +733,7 @@ public:
     auto within(std::chrono::milliseconds timeout) -> Future<T> {
         auto bridge = std::make_shared<Promise<T>>();
         Future<T> result = bridge->getFuture();
+        result._executor = _executor;  // inherit the sticky via() executor
         auto timer_holder = std::make_shared<std::shared_ptr<boost::asio::steady_timer>>();
         *timer_holder = detail::timer_service::instance().schedule_after(timeout, [bridge]() {
             try {
@@ -636,7 +744,7 @@ public:
                 // Real completion already won the race - harmless.
             }
         });
-        _f.then([bridge, timer_holder](boost::future<T> completed) mutable {
+        then_on([bridge, timer_holder](boost::future<T> completed) mutable {
             (*timer_holder)->cancel();
             try {
                 if (completed.has_exception()) {
@@ -653,7 +761,13 @@ public:
     }
 
 private:
+    // Cross-instantiation access to _executor: thenValue/thenTry/thenError's
+    // flattening overloads build their result from a bridge Promise<U>, so
+    // they have to stamp this future's executor onto a Future<U>.
+    template<typename U> friend class Future;
+
     boost::future<T> _f;
+    executor_ref_ptr _executor{};
 };
 
 template<> class Future<void> {
@@ -662,6 +776,23 @@ public:
 
     explicit Future(boost::future<void>&& f) : _f(std::move(f)) {}
 
+    Future(boost::future<void>&& f, executor_ref_ptr executor)
+        : _f(std::move(f)), _executor(std::move(executor)) {}
+
+private:
+    // Defined up here for the same deduced-return-type reason as Future<T>'s;
+    // keep_alive capture is there for the same executor-lifetime reason.
+    template<typename F> auto then_on(F&& func) {
+        if (_executor) {
+            return _f.then(*_executor, [inner = std::forward<F>(func), keep_alive = _executor](
+                                           boost::future<void> completed) mutable {
+                return inner(std::move(completed));
+            });
+        }
+        return _f.then(std::forward<F>(func));
+    }
+
+public:
     auto get() && -> void { std::move(_f).get(); }
     [[nodiscard]] auto isReady() const -> bool { return _f.is_ready(); }
     auto wait(std::chrono::milliseconds timeout) -> bool {
@@ -680,11 +811,11 @@ public:
     {
         using R = std::invoke_result_t<F>;
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<void> completed) mutable -> R {
+            then_on([func = std::forward<F>(func)](boost::future<void> completed) mutable -> R {
                 completed.get();
                 return func();
             });
-        return Future<R>(std::move(continuation));
+        return Future<R>(std::move(continuation), _executor);
     }
 
     template<typename F>
@@ -695,7 +826,8 @@ public:
         using U = typename FutureU::value_type;
         auto bridge = std::make_shared<Promise<U>>();
         Future<U> result = bridge->getFuture();
-        _f.then([func = std::forward<F>(func), bridge](boost::future<void> completed) mutable {
+        result._executor = _executor;  // inherit the sticky via() executor
+        then_on([func = std::forward<F>(func), bridge](boost::future<void> completed) mutable {
             try {
                 completed.get();
             } catch (...) {
@@ -728,10 +860,10 @@ public:
     {
         using R = std::invoke_result_t<F, Try<void>>;
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<void> completed) mutable -> R {
+            then_on([func = std::forward<F>(func)](boost::future<void> completed) mutable -> R {
                 return func(Try<void>(std::move(completed)));
             });
-        return Future<R>(std::move(continuation));
+        return Future<R>(std::move(continuation), _executor);
     }
 
     template<typename F>
@@ -742,7 +874,8 @@ public:
         using U = typename FutureU::value_type;
         auto bridge = std::make_shared<Promise<U>>();
         Future<U> result = bridge->getFuture();
-        _f.then([func = std::forward<F>(func), bridge](boost::future<void> completed) mutable {
+        result._executor = _executor;  // inherit the sticky via() executor
+        then_on([func = std::forward<F>(func), bridge](boost::future<void> completed) mutable {
             FutureU inner = func(Try<void>(std::move(completed)));
             std::move(inner).extract_boost_future().then(
                 [bridge](boost::future<U> inner_completed) mutable {
@@ -762,29 +895,30 @@ public:
 
     template<typename F> auto thenError(F&& func) -> Future<void> {
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<void> completed) mutable -> void {
+            then_on([func = std::forward<F>(func)](boost::future<void> completed) mutable -> void {
                 if (completed.has_exception()) {
                     func(detail::to_std_exception_ptr(completed.get_exception_ptr()));
                     return;
                 }
                 completed.get();
             });
-        return Future<void>(std::move(continuation));
+        return Future<void>(std::move(continuation), _executor);
     }
 
     template<typename F> auto ensure(F&& func) -> Future<void> {
         auto continuation =
-            _f.then([func = std::forward<F>(func)](boost::future<void> completed) mutable -> void {
+            then_on([func = std::forward<F>(func)](boost::future<void> completed) mutable -> void {
                 func();
                 completed.get();
             });
-        return Future<void>(std::move(continuation));
+        return Future<void>(std::move(continuation), _executor);
     }
 
     template<typename Ex> auto via(Ex& ex) -> Future<void> {
         auto continuation =
             _f.then(ex, [](boost::future<void> completed) -> void { completed.get(); });
-        return Future<void>(std::move(continuation));
+        return Future<void>(std::move(continuation),
+                            std::make_shared<boost::executors::generic_executor_ref>(ex));
     }
     auto via(void* ex) -> Future<void> {
         return via(*static_cast<boost::executors::executor*>(ex));
@@ -793,8 +927,9 @@ public:
     auto delay(std::chrono::milliseconds d) -> Future<void> {
         auto bridge = std::make_shared<Promise<void>>();
         Future<void> result = bridge->getFuture();
+        result._executor = _executor;  // inherit the sticky via() executor
         auto timer_holder = std::make_shared<std::shared_ptr<boost::asio::steady_timer>>();
-        _f.then([bridge, d, timer_holder](boost::future<void> completed) mutable {
+        then_on([bridge, d, timer_holder](boost::future<void> completed) mutable {
             auto shared_completed = std::make_shared<boost::future<void>>(std::move(completed));
             *timer_holder = detail::timer_service::instance().schedule_after(
                 d, [bridge, shared_completed]() mutable {
@@ -812,6 +947,7 @@ public:
     auto within(std::chrono::milliseconds timeout) -> Future<void> {
         auto bridge = std::make_shared<Promise<void>>();
         Future<void> result = bridge->getFuture();
+        result._executor = _executor;  // inherit the sticky via() executor
         auto timer_holder = std::make_shared<std::shared_ptr<boost::asio::steady_timer>>();
         *timer_holder = detail::timer_service::instance().schedule_after(timeout, [bridge]() {
             try {
@@ -821,7 +957,7 @@ public:
             } catch (const boost::promise_already_satisfied&) {
             }
         });
-        _f.then([bridge, timer_holder](boost::future<void> completed) mutable {
+        then_on([bridge, timer_holder](boost::future<void> completed) mutable {
             (*timer_holder)->cancel();
             try {
                 if (completed.has_exception()) {
@@ -838,7 +974,10 @@ public:
     }
 
 private:
+    template<typename U> friend class Future;
+
     boost::future<void> _f;
+    executor_ref_ptr _executor{};
 };
 
 // Promise<T>::getFuture()/getSemiFuture() out-of-line definitions, now
