@@ -4,9 +4,11 @@
 #include <vector>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <chrono>
 #include <stdexcept>
+#include <utility>
 #include <raft/coap_exceptions.hpp>
 
 namespace kythira {
@@ -200,6 +202,122 @@ enum class coap_content_format : std::uint16_t {  // NOLINT(performance-enum-siz
     application_ion = 65000
 };
 
+/// @brief CoAP Content-Format for a media type, or `nullopt` if none is defined.
+///
+/// Supersedes `get_content_format_for_serializer`, which keys off `name()` — a
+/// free-form human/metrics label — via substring search, and answers
+/// `application_cbor` for anything it does not recognise. Both halves of that
+/// are wrong for negotiation. Substring search means a serializer named
+/// `"json-lines"` silently claims Content-Format 50, and the CBOR default means
+/// an unknown serializer does not fail: it puts a confidently wrong number on
+/// the wire and the peer decodes garbage. Returning `std::optional` forces the
+/// caller to have an answer for "no mapping exists" rather than being handed a
+/// plausible one.
+///
+/// Keying off `media_type()` also makes this the same lookup HTTP does — one
+/// negotiated token, two protocol encodings of it — instead of two independent
+/// pieces of guesswork that can disagree about the same serializer.
+///
+/// Note this is *not* the inverse of `content_format_to_string`, which renders
+/// `application_ion` as `"application/ion"`; no serializer reports that string.
+/// Nor is it injective: Ion's binary and text encodings share Content-Format
+/// 65000 (see the enumerator's own comment), which is why
+/// `validate_registry_content_formats` below rejects a registry holding both.
+[[nodiscard]] inline auto media_type_to_coap_content_format(const std::string& media_type)
+    -> std::optional<coap_content_format> {
+    // An explicit table, not substring matching: every entry here is a media
+    // type some serializer actually reports, and an exact-match table is the
+    // only form in which "this media type has no CoAP number" is expressible.
+    if (media_type == "application/json") {
+        return coap_content_format::application_json;
+    }
+    if (media_type == "application/cbor") {
+        return coap_content_format::application_cbor;
+    }
+    if (media_type == "application/x-protobuf") {
+        // No IANA CoAP Content-Format is registered for Protocol Buffers, so it
+        // travels as generic binary (42) rather than being mislabelled. A peer
+        // therefore cannot tell protobuf from any other octet-stream by the
+        // Content-Format alone — acceptable because a CoAP registry that offers
+        // protobuf alongside another octet-stream format is rejected at
+        // construction (see `validate_registry_content_formats`) rather than
+        // left to guess at runtime.
+        return coap_content_format::application_octet_stream;
+    }
+    // Both Ion encodings share the one private-use number; see the enumerator.
+    if (media_type == "application/x-amzn-ion" || media_type == "text/x-amzn-ion") {
+        return coap_content_format::application_ion;
+    }
+    if (media_type == "application/xml") {
+        return coap_content_format::application_xml;
+    }
+    if (media_type == "text/plain") {
+        return coap_content_format::text_plain;
+    }
+    if (media_type == "application/link-format") {
+        return coap_content_format::application_link_format;
+    }
+    if (media_type == "application/octet-stream") {
+        return coap_content_format::application_octet_stream;
+    }
+    if (media_type == "application/exi") {
+        return coap_content_format::application_exi;
+    }
+    return std::nullopt;
+}
+
+/// @brief Reject a serializer registry that CoAP cannot faithfully represent.
+///
+/// Two ways a registry can be unusable over CoAP, both of which are
+/// configuration mistakes that must surface at construction rather than as
+/// mis-decoded payloads on the wire:
+///
+///  1. A registered media type has no CoAP Content-Format at all. There is no
+///     option value to put on the request, and the alternative — omitting the
+///     option — means "default", which is a different encoding.
+///  2. Two registered media types map to the *same* Content-Format. CoAP
+///     negotiates by number, so the receiver cannot tell which of the two the
+///     sender meant. Ion binary + Ion text in one registry is the case that is
+///     reachable with the serializers shipped today; protobuf beside a future
+///     `application/octet-stream` serializer would be the second, which is why
+///     this is a general check rather than an Ion special case.
+///
+/// HTTP has neither problem, since it negotiates on the media-type string
+/// itself — which is why this check is CoAP's and not the registry's own.
+///
+/// @throws coap_unsupported_content_format_error naming the offending media
+///         type — and, for a collision, both of the media types involved.
+template<typename Registry>
+inline void validate_registry_content_formats(const Registry& registry) {
+    const auto media_types = registry.preferred_media_types();
+    std::vector<std::pair<coap_content_format, std::string>> seen;
+    seen.reserve(media_types.size());
+
+    for (const auto& media_type : media_types) {
+        const auto format = media_type_to_coap_content_format(media_type);
+        if (!format) {
+            throw coap_unsupported_content_format_error(media_type);
+        }
+        for (const auto& [prior_format, prior_media_type] : seen) {
+            if (prior_format == *format) {
+                // Names both sides: knowing only the loser makes a collision
+                // between two legitimate-looking entries needlessly hard to act
+                // on, since the fix is to drop one of the *pair*.
+                throw coap_unsupported_content_format_error(
+                    media_type + " collides with " + prior_media_type + " on CoAP Content-Format " +
+                    std::to_string(static_cast<std::uint16_t>(*format)));
+            }
+        }
+        seen.emplace_back(*format, media_type);
+    }
+}
+
+/// @deprecated Superseded by `media_type_to_coap_content_format`. Retained only
+///     for the three call sites that still pass a serializer `name()`
+///     (`coap_transport_impl.hpp`, `beast_http_transport_impl.hpp`); do not
+///     extend it or add entries — add them to the media-type table instead.
+///     Its substring matching and silent `application_cbor` fallback are the
+///     behaviours the replacement exists to remove.
 inline auto get_content_format_for_serializer(const std::string& serializer_name)
     -> coap_content_format {
     // Check for Ion variants ("ion-binary"/"ion-text") first. Checked before
