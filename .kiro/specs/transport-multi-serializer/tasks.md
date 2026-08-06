@@ -49,17 +49,41 @@ transports and is deliberately left as separate work.
     Promote it to a shared header if Tasks 13-16 need it.
   - _Requirements: 11.1_
 
-- [ ] 5. Extend `transport_types` with `serializer_registry_type`
-  - Add `typename T::serializer_registry_type` + `serializer_registry<...>` constraint to
-    `transport_types` (`include/raft/types.hpp`), keeping `serializer_type` as the
-    `Default_Serializer`'s type
-  - Update `http_transport_types`, `std_http_transport_types`,
-    `simple_http_transport_types` (`include/raft/http_transport.hpp`),
-    `coap_transport_types`, `std_coap_transport_types`, `simple_coap_transport_types`,
-    `default_transport_types` (`include/raft/coap_transport.hpp`), and
-    `future_default_http_transport_types` (`include/raft/beast_http_transport.hpp`) to
-    add `using serializer_registry_type = single_serializer_registry<RPC_Serializer>;`
-  - Verify `raft_types` (node-internal bundle) is untouched
+- [x] 5. Extend `transport_types` with `serializer_registry_type`
+  - `transport_types` (`include/raft/types.hpp`) now requires
+    `typename T::serializer_registry_type` *and* checks it against
+    `serializer_registry<..., std::vector<std::byte>>`. `serializer_type` is
+    retained beside it as the default serializer's type, per Requirement 3.2 —
+    dropping it would have turned an additive change into a migration for
+    `raft.hpp`, every transport's own `using serializer_type = ...`, and ~20 test
+    bundles, with nothing gained
+  - Bundles updated: the three in `http_transport.hpp`, the four in
+    `coap_transport.hpp`, `future_default_http_transport_types`
+    (`beast_http_transport.hpp`), **`future_default_proxygen_transport_types`
+    (`proxygen_http_transport.hpp`)** and **`test_transport_types`
+    (`test_types.hpp`)** — the last two are not in the original task text but
+    model `transport_types` and so had to move with it
+  - **Also updated: 16 test-local `Types` bundles.** The blast radius of a hard
+    concept requirement is every model of it, not just the ones the plan named.
+    Worth knowing before Tasks 9-11 add more members: a defaulting trait (the
+    `_peer2peer_replicator_type_traits` idiom already in `types.hpp`) would have
+    avoided this, and was not chosen only because Requirement 3.3 specifies the
+    explicit-alias migration
+  - `raft_types` verified untouched, and that verification is now a
+    `static_assert` rather than an assertion in a commit message
+  - New `tests/transport_types_registry_conformance_test.cpp` pins all of it.
+    Its negative cases are the load-bearing ones and were **mutation-tested**:
+    deleting the requirement fails it, and so does weakening it to a bare
+    `typename T::serializer_registry_type;` — a concept that silently stops
+    constraining anything is exactly the "green while doing nothing" shape this
+    repo keeps hitting, and it leaves no other trace
+  - **Finding, unrelated to this change but exposed by it**:
+    `std_http_transport_types` and `std_coap_transport_types` have *never*
+    satisfied `transport_types`. Both pin `future_template` to `std::future`,
+    which has no `wait(duration)` returning a testable value and so does not
+    model `future`. Confirmed by asserting it against the pre-change tree, not
+    inferred. They are unreachable configurations; the conformance test omits
+    them on purpose and says why. Deleting them is a separate cleanup
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 7.1, 7.2_
 
 - [x] 6. Add `unsupported_media_type_error` and its CoAP analogue
@@ -70,17 +94,50 @@ transports and is deliberately left as separate work.
     payload of a type we *do* support failed to decode. The two map to different
     HTTP statuses (415 vs 400), so a transport must be able to tell them apart
     without inspecting message text
-  - **Not yet done**: the CoAP analogue in `include/raft/coap_exceptions.hpp`.
-    Deferred with the rest of the CoAP wiring (Task 11), since nothing throws it
-    until `coap_server` can respond 4.15
+  - CoAP analogue added: `coap_unsupported_content_format_error :
+    coap_transport_error` (`include/raft/coap_exceptions.hpp`). A separate type
+    rather than a shared one, because the two hierarchies are disjoint all the
+    way up and a CoAP handler catching `const coap_transport_error&` must not
+    miss it. It carries the *media type*, not a `coap_content_format`, because
+    that is what the registry dispatches on and not every media type has a
+    Content-Format number — which is precisely the condition it reports
+  - Distinct from `coap_protocol_error` (malformed PDU → 4.00) for the same
+    reason the HTTP pair is distinct: different response code, and telling them
+    apart must not require inspecting message text
   - _Requirements: 8.1_
 
-- [ ] 7. Add `Media_Type`-keyed CoAP content-format lookup
-  - `include/raft/coap_utils.hpp`: `media_type_to_coap_content_format(media_type) ->
-    std::optional<coap_content_format>`
-  - Document `get_content_format_for_serializer` as superseded, do not extend it further
-  - Reject CoAP registry construction when a registered serializer's `media_type()` has
-    no corresponding `coap_content_format` entry
+- [x] 7. Add `Media_Type`-keyed CoAP content-format lookup
+  - `media_type_to_coap_content_format(media_type) ->
+    std::optional<coap_content_format>` in `include/raft/coap_utils.hpp`: an
+    exact-match table over the media types the shipped serializers actually
+    report
+  - `std::optional`, and an exact table, are both reactions to specific
+    behaviours of the function it supersedes.
+    `get_content_format_for_serializer` substring-matches `name()` — a
+    free-form metrics label — so `"json-lines"` silently claims Content-Format
+    50; and it defaults *unknown* serializers to `application_cbor`, meaning an
+    unrecognised encoding does not fail but puts a confidently wrong number on
+    the wire. `std::optional` makes "no mapping" a value the caller must handle
+    instead of a plausible-looking answer
+  - `get_content_format_for_serializer` marked `@deprecated` with its three
+    remaining call sites named. Not removed here: those sites are Task 9/11's to
+    convert, and deleting it now would mean rewriting them blind
+  - `validate_registry_content_formats(registry)` rejects a registry CoAP cannot
+    represent, throwing `coap_unsupported_content_format_error`
+  - **The task text asked only for the "no entry" case, which is not sufficient
+    on its own.** The mapping is not injective: Ion binary and Ion text both map
+    to 65000 (one private-use number covers both — see the enumerator), and
+    protobuf shares 42 with any raw octet-stream serializer. CoAP negotiates by
+    *number*, so a receiver handed 65000 by a registry holding both Ion
+    encodings cannot tell which was meant and decodes the wrong one. The
+    validator therefore also rejects colliding mappings, and names both sides of
+    the collision since the fix is to the pair. HTTP has neither problem — it
+    negotiates on the media-type string itself — which is why this check belongs
+    to CoAP rather than to the registry
+  - Open for Task 11: the server's Content-Format → media-type direction cannot
+    be a plain inverse of this table for the same non-injectivity reason. It has
+    to resolve against the registry's own `preferred_media_types()`, which
+    `validate_registry_content_formats` has already guaranteed is unambiguous
   - _Requirements: 9.1, 9.2, 9.3_
 
 - [x] 8. Implement shared `Accept`/`Content-Type` header parsing helper
@@ -94,9 +151,13 @@ transports and is deliberately left as separate work.
     would change nothing for them while adding a parser that could disagree
     between the two servers. A `q`-ranking peer still gets a type it accepts,
     just possibly not its first choice
-  - Wildcards (`*/*`) pass through verbatim and so match nothing, falling
-    through to the default — the same outcome as an absent `Accept`, which is
-    the correct answer for "anything will do"
+  - Wildcards (`*/*`, `type/*`) pass through the parser verbatim; matching them
+    is the registry's job, not the parser's (`accept_entry_matches`). This
+    bullet previously claimed they "match nothing, falling through to the
+    default" — true of the first version of the parser, and wrong from the
+    wildcard fix onward. The outcome for `*/*` is the same either way, but the
+    mechanism is not, and `type/*` behaves differently: it selects the first
+    *matching* registered type rather than the default
   - Shared rather than per-server precisely because a `q`-handling bug fixed in
     one copy and not the other would stay invisible until a peer used the
     transport that still had it
