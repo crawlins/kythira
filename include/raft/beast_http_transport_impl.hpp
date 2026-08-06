@@ -25,21 +25,12 @@ constexpr const char* beast_endpoint_request_vote = "/v1/raft/request_vote";
 constexpr const char* beast_endpoint_append_entries = "/v1/raft/append_entries";
 constexpr const char* beast_endpoint_install_snapshot = "/v1/raft/install_snapshot";
 
-// Derive the HTTP Content-Type from the serializer's name(), so a non-JSON
-// serializer (e.g. ion_rpc_serializer -> "application/ion") is labeled
-// correctly on the wire rather than always as "application/json"
-// (ion-rpc-serializer spec, Requirement 6.4). Mirrors
-// http_transport_impl.hpp's content_type_for_serializer, routing through
-// coap_utils' serializer-name detection as the single source of truth for the
-// name -> media-type mapping across all transports; json_rpc_serializer still
-// resolves to "application/json", so this changes nothing for the default
-// serializer. Client and server always share the same serializer_type, so this
-// is advisory labeling only.
-template<typename Serializer>
-auto beast_content_type_for_serializer(const Serializer& serializer) -> std::string {
-    return kythira::coap_utils::content_format_to_string(
-        kythira::coap_utils::get_content_format_for_serializer(serializer.name()));
-}
+// NOTE: `beast_content_type_for_serializer` lived here, deriving the
+// Content-Type from the serializer's `name()` by substring match. Removed with
+// its httplib twin: the media type is now `serializer.media_type()` reached
+// through the registry, which is the token both sides negotiate on. Its
+// premise -- "client and server always share the same serializer_type, so this
+// is advisory labeling only" -- is precisely what negotiation invalidates.
 
 // ---------------------------------------------------------------------------
 // TLS material validation/configuration. Deliberately duplicated (not
@@ -814,14 +805,24 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                                                 // whole chain below, not
                                                 // each step individually.
 
-        auto serialized = _serializer.serialize(request);
+        // Same negotiation as cpp_httplib_client, expressed through Beast's
+        // header API: cached type if the registry still supports it, else the
+        // default (Requirement 6.1-6.3).
+        const std::string content_type =
+            select_request_media_type(_registry, _capability_cache, target);
+        auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
 
         beast_http::request<beast_http::string_body> http_req{beast_http::verb::post,
                                                               std::string(endpoint), 11};
         http_req.set(beast_http::field::host, conn.host_header);
-        http_req.set(beast_http::field::content_type,
-                     beast_content_type_for_serializer(_serializer));
+        http_req.set(beast_http::field::content_type, content_type);
+        // Full Accept list on every request, so a stale cache entry can only
+        // cost a re-choice and never a failed exchange.
+        if (const auto accept = format_accept_header(_registry.preferred_media_types());
+            !accept.empty()) {
+            http_req.set(beast_http::field::accept, accept);
+        }
         http_req.set(beast_http::field::user_agent, _config.user_agent);
         http_req.body() = std::move(body);
         http_req.prepare_payload();
@@ -831,6 +832,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         metric.set_metric_name("beast_http.client.request.sent");
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("media_type", content_type);
         metric.add_one();
         metric.emit();
 
@@ -873,20 +875,49 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 latency_metric.emit();
 
                 if (status == 200) {
+                    // Absent Content-Type means a peer that predates
+                    // negotiation; it gets our default rather than an error
+                    // (Requirement 6.4).
+                    std::string response_media_type = _registry.default_media_type();
+                    if (const auto it = resp.find(beast_http::field::content_type);
+                        it != resp.end()) {
+                        if (auto stripped = strip_media_type_parameters(
+                                std::string_view{it->value().data(), it->value().size()});
+                            !stripped.empty()) {
+                            response_media_type = std::move(stripped);
+                        }
+                    }
+
+                    // Cache stays untouched on an unusable type (Requirement
+                    // 6.5) — recording it would make the next request repeat
+                    // the same doomed choice.
+                    if (!_registry.supports(response_media_type)) {
+                        auto error_metric = _metrics;
+                        error_metric.set_metric_name("beast_http.client.error");
+                        error_metric.add_dimension("error_type", "unsupported_media_type");
+                        error_metric.add_dimension("media_type", response_media_type);
+                        error_metric.add_dimension("target_node_id", std::to_string(target));
+                        error_metric.add_one();
+                        error_metric.emit();
+                        throw kythira::unsupported_media_type_error(response_media_type);
+                    }
+
                     std::vector<std::byte> response_data;
                     response_data.reserve(resp.body().size());
                     for (char c : resp.body()) {
                         response_data.push_back(static_cast<std::byte>(c));
                     }
                     try {
-                        if constexpr (std::is_same_v<Response, kythira::request_vote_response<>>) {
-                            return _serializer.deserialize_request_vote_response(response_data);
-                        } else if constexpr (std::is_same_v<Response,
-                                                            kythira::append_entries_response<>>) {
-                            return _serializer.deserialize_append_entries_response(response_data);
-                        } else {
-                            return _serializer.deserialize_install_snapshot_response(response_data);
-                        }
+                        auto decoded = _registry.template decode_with<Response>(response_media_type,
+                                                                                response_data);
+                        // Only a clean decode earns a cache entry (Requirement 6.6).
+                        _capability_cache.record(target, response_media_type);
+                        return decoded;
+                    } catch (const kythira::unsupported_media_type_error&) {
+                        // Already the right type and already counted above;
+                        // rethrow rather than reclassifying it as a
+                        // serialization_error, which maps to a different status.
+                        throw;
                     } catch (const std::exception& e) {
                         throw kythira::serialization_error(
                             std::format("Failed to deserialize response: {}", e.what()));
@@ -1110,9 +1141,29 @@ private:
             body.push_back(static_cast<std::byte>(c));
         }
 
+        // Header mechanics live here (this owns the request); negotiation
+        // policy lives in dispatch(). An absent Content-Type means a peer that
+        // predates negotiation, so it gets the server's default rather than a
+        // 415 (Requirement 4.1, 4.2).
+        std::string request_media_type = _server->default_media_type();
+        if (const auto it = _req.find(beast_http::field::content_type); it != _req.end()) {
+            if (auto stripped = kythira::strip_media_type_parameters(
+                    std::string_view{it->value().data(), it->value().size()});
+                !stripped.empty()) {
+                request_media_type = std::move(stripped);
+            }
+        }
+        std::vector<std::string> accepted;
+        if (const auto it = _req.find(beast_http::field::accept); it != _req.end()) {
+            accepted = kythira::parse_accept_header(
+                std::string_view{it->value().data(), it->value().size()});
+        }
+
         std::string response_body;
         unsigned status_code = 200;
-        _server->dispatch(target, body, response_body, status_code);
+        std::string response_media_type;
+        _server->dispatch(target, body, request_media_type, accepted, response_body, status_code,
+                          response_media_type);
 
         // Heap-allocated and kept alive via the thenValue continuation's
         // capture, not a stack local: beast_http::async_write (inside
@@ -1123,11 +1174,11 @@ private:
         // write actually completes.
         auto res = std::make_shared<beast_http::response<beast_http::string_body>>(
             static_cast<beast_http::status>(status_code), _req.version());
-        // A 200 body is a serializer-produced RPC response, so label it with the
-        // serializer's own media type (application/json, application/ion, ...);
-        // non-200 bodies are plain error text, which stays text/plain.
-        res->set(beast_http::field::content_type,
-                 status_code == 200 ? _server->success_content_type() : std::string("text/plain"));
+        // dispatch() reports what it actually encoded in, on every path: the
+        // negotiated type for a 200, "text/plain" for the error bodies. Asking
+        // the server for a single "success content type" stopped being
+        // meaningful once the answer could differ per exchange.
+        res->set(beast_http::field::content_type, response_media_type);
         res->keep_alive(_req.keep_alive());
         res->body() = std::move(response_body);
         res->prepare_payload();
@@ -1424,8 +1475,8 @@ auto boost_beast_server<Types>::is_running() const -> bool {
 
 template<typename Types>
 requires kythira::future_default_transport_types<Types>
-auto boost_beast_server<Types>::success_content_type() const -> std::string {
-    return beast_content_type_for_serializer(_serializer);
+auto boost_beast_server<Types>::default_media_type() const -> std::string {
+    return _registry.default_media_type();
 }
 
 template<typename Types>
@@ -1452,11 +1503,17 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::dispatch(std::string_view target,
                                          const std::vector<std::byte>& body,
-                                         std::string& response_body, unsigned& status_code)
-    -> void {
+                                         const std::string& request_media_type,
+                                         const std::vector<std::string>& accepted,
+                                         std::string& response_body, unsigned& status_code,
+                                         std::string& response_media_type) -> void {
+    // Error bodies are plain text on every path below; the success path
+    // overwrites this with whatever was negotiated.
+    response_media_type = "text/plain";
+
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type, auto deserialize) {
+                      std::string_view rpc_type) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
         received_metric.set_metric_name("beast_http.server.request.received");
@@ -1469,9 +1526,41 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
             response_body = "Handler not registered";
             return;
         }
+
+        // 415 before the handler runs (Requirement 4.3, 4.4). Distinct from
+        // the 400 below: 415 means "we do not speak this encoding", 400 means
+        // "we speak it and your bytes were wrong". Collapsing the two would
+        // tell a peer to fix its payload when it needs to change its format.
+        if (!_registry.supports(request_media_type)) {
+            status_code = 415;
+            response_body = "Unsupported Content-Type: " + request_media_type;
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("beast_http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", request_media_type);
+            error_metric.add_one();
+            error_metric.emit();
+            return;
+        }
+
+        // Negotiated before the handler runs, so an unsatisfiable Accept costs
+        // no handler side effects (Requirement 5.2, 5.3).
+        const auto output_media_type = _registry.select_output_media_type(accepted);
+        if (!output_media_type) {
+            status_code = 406;
+            response_body.clear();  // Nothing we could write would be readable.
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("beast_http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", format_accept_header(accepted));
+            error_metric.add_one();
+            error_metric.emit();
+            return;
+        }
+
         Request request;
         try {
-            request = deserialize(body);
+            request = _registry.template decode_with<Request>(request_media_type, body);
         } catch (const std::exception& e) {
             status_code = 400;
             response_body = std::format("Bad Request: {}", e.what());
@@ -1479,10 +1568,13 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
         }
         try {
             Response response = handler(request);
-            auto serialized = _serializer.serialize(response);
+            // Encoded in the negotiated type, which need not match the request's
+            // — a peer may post CBOR and ask for JSON back.
+            auto serialized = _registry.encode_with(*output_media_type, response);
             response_body.assign(reinterpret_cast<const char*>(serialized.data()),
                                  serialized.size());
             status_code = 200;
+            response_media_type = *output_media_type;
         } catch (const std::exception&) {
             status_code = 500;
             response_body = "Internal Server Error";
@@ -1492,6 +1584,7 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
         latency_metric.set_metric_name("beast_http.server.request.latency");
         latency_metric.add_dimension("rpc_type", std::string(rpc_type));
         latency_metric.add_dimension("status_code", std::to_string(status_code));
+        latency_metric.add_dimension("media_type", response_media_type);
         latency_metric.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start_time));
         latency_metric.emit();
@@ -1500,21 +1593,15 @@ auto boost_beast_server<Types>::dispatch(std::string_view target,
     if (target == beast_endpoint_request_vote) {
         handle
             .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
-                _request_vote_handler, "request_vote", [this](const std::vector<std::byte>& b) {
-                    return _serializer.deserialize_request_vote_request(b);
-                });
+                _request_vote_handler, "request_vote");
     } else if (target == beast_endpoint_append_entries) {
         handle.template
         operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
-            _append_entries_handler, "append_entries", [this](const std::vector<std::byte>& b) {
-                return _serializer.deserialize_append_entries_request(b);
-            });
+            _append_entries_handler, "append_entries");
     } else if (target == beast_endpoint_install_snapshot) {
         handle.template
         operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-            _install_snapshot_handler, "install_snapshot", [this](const std::vector<std::byte>& b) {
-                return _serializer.deserialize_install_snapshot_request(b);
-            });
+            _install_snapshot_handler, "install_snapshot");
     } else {
         status_code = 404;
         response_body = "Not Found";
