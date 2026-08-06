@@ -33,11 +33,39 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 namespace kythira {
+
+namespace serializer_registry_detail {
+
+/// @brief Does the `Accept` entry @p pattern match the media type @p candidate?
+///
+/// Handles the two wildcard forms RFC 9110 §12.5.1 defines, which is not
+/// optional pedantry: `Accept: */*` is what curl and a great many HTTP client
+/// libraries send **by default**. Treating it as "matches nothing" would answer
+/// an ordinary request with 406 Not Acceptable — a self-inflicted interop
+/// failure against the most common header value there is.
+///
+/// - `*/*` matches anything.
+/// - `type/*` matches any media type with that top-level type.
+/// - anything else must match exactly.
+[[nodiscard]] inline auto accept_entry_matches(std::string_view pattern, std::string_view candidate)
+    -> bool {
+    if (pattern == "*/*") {
+        return true;
+    }
+    if (pattern.size() > 2 && pattern.ends_with("/*")) {
+        const auto prefix = pattern.substr(0, pattern.size() - 1);  // keep the '/'
+        return candidate.starts_with(prefix);
+    }
+    return pattern == candidate;
+}
+
+}  // namespace serializer_registry_detail
 
 /// @brief A registry holding exactly one serializer.
 /// @tparam S Serializer type; must satisfy `rpc_serializer`.
@@ -66,14 +94,17 @@ public:
     /// the same as "accepts nothing" — so it yields the default rather than
     /// `nullopt`. This matters because a missing `Accept` header is the common
     /// case for a peer that predates negotiation entirely.
+    ///
+    /// Wildcard entries are honoured (see `accept_entry_matches`), so `*/*` also
+    /// yields the default rather than a 406.
     [[nodiscard]] auto select_output_media_type(const std::vector<std::string>& accepted) const
         -> std::optional<std::string> {
         if (accepted.empty()) {
             return default_media_type();
         }
-        for (const auto& media_type : accepted) {
-            if (supports(media_type)) {
-                return media_type;
+        for (const auto& pattern : accepted) {
+            if (serializer_registry_detail::accept_entry_matches(pattern, _s.media_type())) {
+                return _s.media_type();
             }
         }
         return std::nullopt;
@@ -155,17 +186,26 @@ public:
     /// @brief Best supported media type among @p accepted.
     ///
     /// The *peer's* order wins, not ours: `accepted` is scanned in order and
-    /// the first supported entry returned. A client that ranks its preferences
-    /// is entitled to have them honoured, and both sides scanning their own
-    /// order would make the negotiated type depend on which side asked.
+    /// the first entry that matches something we support is returned. A client
+    /// that ranks its preferences is entitled to have them honoured, and both
+    /// sides scanning their own order would make the negotiated type depend on
+    /// which side asked.
+    ///
+    /// Within one wildcard entry the tie is broken by *our* declaration order,
+    /// because the peer expressed no preference among the types that entry
+    /// covers — `Accept: application/*` says "any of them", not "the first one
+    /// you happen to enumerate".
     [[nodiscard]] auto select_output_media_type(const std::vector<std::string>& accepted) const
         -> std::optional<std::string> {
         if (accepted.empty()) {
             return default_media_type();
         }
-        for (const auto& media_type : accepted) {
-            if (supports(media_type)) {
-                return media_type;
+        const auto ours = preferred_media_types();
+        for (const auto& pattern : accepted) {
+            for (const auto& mine : ours) {
+                if (serializer_registry_detail::accept_entry_matches(pattern, mine)) {
+                    return mine;
+                }
             }
         }
         return std::nullopt;
