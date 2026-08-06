@@ -204,20 +204,6 @@ unverified completion claim.
     non-fatal to lose. PrivateCA is gRPC-backed and so gets the retry
     policies but not the REST bounds.
 
-- **Re-test `ListMachineTypes` against a newer google-cloud-cpp, and drop the
-  `guestCpus` workaround if it is fixed.** The real-GCE suite already uses the
-  request-object overload
-  (`tests/gcp_quorum_manager_real_gce_test.cpp`, `ListMachineTypesRequest`);
-  the August 5 2026 measurement found the page-token bug present *identically*
-  across all three overloads in 2.37.0 — the convenience `(project, zone)`
-  form, the request-object form, and the request-object form with an explicit
-  `max_results` — so switching overload is not itself a fix. What remains is
-  to re-measure on a newer SDK and, if the page token is honoured, remove the
-  server-side `guestCpus <= N` filter that currently keeps every result set
-  inside one page. The repetition guard should stay regardless. Still worth
-  reporting upstream: the REST API itself paginates correctly (541 items over
-  two pages, correct empty `nextPageToken`).
-
 - **CoAP/Proxygen test-reliability sweep — four fixes, one item still open
   (August 4, 2026).** Full investigation record, with every
   before/after measurement, in
