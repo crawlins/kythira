@@ -339,15 +339,68 @@ BOOST_AUTO_TEST_CASE(a_single_type_needs_no_comma) {
     BOOST_TEST(types[0] == "application/json");
 }
 
-/// Wildcards pass through verbatim and therefore match nothing, so the caller
-/// falls through to its default — the same outcome as an absent Accept, which
-/// is the right answer for "I'll take anything".
-BOOST_AUTO_TEST_CASE(a_wildcard_falls_through_to_the_default) {
+/// Wildcards pass through the parser verbatim; the registry is what interprets
+/// them. `*/*` is what curl and many HTTP client libraries send by default, so
+/// it must yield a type rather than a 406.
+BOOST_AUTO_TEST_CASE(a_wildcard_passes_through_the_parser_verbatim) {
     const auto types = kythira::parse_accept_header("*/*");
     BOOST_REQUIRE_EQUAL(types.size(), 1u);
     BOOST_TEST(types[0] == "*/*");
     const single_alpha reg;
-    BOOST_TEST(!reg.select_output_media_type(types).has_value());
+    BOOST_TEST(reg.select_output_media_type(types).value() == kAlphaMedia);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Accept wildcards ───────────────────────────────────────────────────────
+//
+// `Accept: */*` is the default header curl and many HTTP client libraries send.
+// An earlier revision of this suite asserted that it matched nothing, which
+// would have made every such request answer 406 Not Acceptable — a
+// self-inflicted interop failure against the most common header value there is.
+
+BOOST_AUTO_TEST_SUITE(accept_wildcards)
+
+BOOST_AUTO_TEST_CASE(match_all_yields_the_default_not_a_406) {
+    const single_alpha single;
+    const multi_ab multi;
+    BOOST_TEST(single.select_output_media_type({"*/*"}).value() == kAlphaMedia);
+    BOOST_TEST(multi.select_output_media_type({"*/*"}).value() == kAlphaMedia);
+    // Real-world shape: curl's default, verbatim.
+    BOOST_TEST(multi.select_output_media_type(kythira::parse_accept_header("*/*")).value() ==
+               kAlphaMedia);
+}
+
+BOOST_AUTO_TEST_CASE(a_subtype_wildcard_matches_within_its_top_level_type) {
+    const multi_ab reg;  // both types are application/x-test-*
+    BOOST_TEST(reg.select_output_media_type({"application/*"}).value() == kAlphaMedia);
+    // A top-level type we serve nothing for still fails, rather than matching
+    // by accident.
+    BOOST_TEST(!reg.select_output_media_type({"text/*"}).has_value());
+    BOOST_TEST(!reg.select_output_media_type({"image/*"}).has_value());
+}
+
+/// An exact entry earlier in the peer's list beats a later wildcard: the peer
+/// ranked them, and honouring the wildcard first would discard that ranking.
+BOOST_AUTO_TEST_CASE(an_earlier_exact_entry_beats_a_later_wildcard) {
+    const multi_ab reg;  // our own order is alpha, then beta
+    BOOST_TEST(reg.select_output_media_type({kBetaMedia, "*/*"}).value() == kBetaMedia);
+}
+
+/// Within a single wildcard entry the peer expressed no preference among the
+/// types it covers, so our declaration order breaks the tie.
+BOOST_AUTO_TEST_CASE(within_one_wildcard_our_declaration_order_breaks_the_tie) {
+    const multi_ab ab;
+    const multi_ba ba;
+    BOOST_TEST(ab.select_output_media_type({"application/*"}).value() == kAlphaMedia);
+    BOOST_TEST(ba.select_output_media_type({"application/*"}).value() == kBetaMedia);
+}
+
+/// A wildcard must not be treated as a literal media type by encode/decode —
+/// those still require a concrete, negotiated token.
+BOOST_AUTO_TEST_CASE(encode_still_rejects_a_wildcard_as_a_literal_type) {
+    const multi_ab reg;
+    BOOST_CHECK_THROW(reg.encode_with("*/*", 7), kythira::unsupported_media_type_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
