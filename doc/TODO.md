@@ -71,7 +71,6 @@ unambiguous at a glance.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `transport-multi-serializer` | 0/27 | Design-only; `media_type()` on `rpc_serializer`, a `serializer_registry` concept, `single_`/`multi_serializer_registry`, and HTTP `Accept`/`Content-Type` + CoAP Content-Format negotiation. The natural next feature: four serializers now ship (JSON, CBOR, protobuf, Ion) and no transport can negotiate between them |
 | `oci-cloud-provider` | 0/8 | Task 0 spike only (`spike-notes.md`); `oci_instance_pool_quorum_manager`/`oci_certificates_provider` |
 
 `protobuf-rpc-serializer` came **off** this table on August 4, 2026 — it was
@@ -83,10 +82,19 @@ and five `protobuf_*` test binaries run in CI (present by name in run
 and `grpc-transport` (see below) — four specs that had all shipped while
 this table still called them unstarted.
 
+`transport-multi-serializer` moved to "Partially Implemented" on August 6,
+2026 — the opposite direction, and while the work was happening rather than
+long after, which is the point. Its `tasks.md` carries the detail, including
+two decisions the design doc left open (an empty `Accept` means "no
+preference", and the peer's ordering wins) and one bug found and fixed inside
+the same change: `Accept: */*` — curl's default header — initially matched
+nothing and would have been answered with 406.
+
 ### Partially Implemented
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
+| `transport-multi-serializer` | 7/16 tasks | Came **off** the "Not Started" table on August 6, 2026. The protocol-independent core is implemented and unit-tested: `media_type()` on the `rpc_serializer` concept and on all four shipped serializers (Task 1), the `serializer_registry` concept (2), `single_`/`multi_serializer_registry` in `include/raft/serializer_registry.hpp` (3), the tagged test serializer (4), `unsupported_media_type_error` (6), `parse_accept_header` in `include/raft/http_content_negotiation.hpp` (8), and 29 cases in `tests/serializer_registry_unit_test.cpp` (12). What remains is all *transport wiring*: extending `transport_types` with `serializer_registry_type` (5), the CoAP Content-Format table and exception (7, and 6's CoAP half), the httplib/Beast/CoAP client+server negotiation paths (9-11), and the regression/interop/negative suites (13-16). Note the old "0/27" denominator here did not match `tasks.md`, which has 16 top-level tasks and 25 leaf items; this row counts top-level tasks |
 | `grpc-transport` | 12.5/13 phases | Tasks 1–12 are implemented and **CI-verified**: `proto/raft.proto`, the `raft_grpc_transport` target, `include/raft/grpc_transport{,_impl}.hpp`, `grpc_exceptions.hpp`, `grpc_message_conversion.hpp`, plus `grpc_transport_conversion_property_test`, `grpc_transport_integration_test` and `grpc_transport_example_test` — all three of which pass on all four `Build & Test` legs. Its `tasks.md` had flagged Tasks 1.5/13 as needing "a build machine with gRPC/Protobuf present"; CI *is* one, because `grpc` is an unconditional `vcpkg.json` dependency (which is why nothing in `ci.yml` mentions gRPC by name, and why this went unnoticed). What genuinely remains of Task 13 is narrower: the `KYTHIRA_KCONFIG_STRICT` and graceful-degradation configure checks, and a performance sanity pass |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
