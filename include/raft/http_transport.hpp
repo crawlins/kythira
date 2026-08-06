@@ -5,6 +5,8 @@
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
+#include <raft/http_content_negotiation.hpp>
+#include <raft/peer_capability_cache.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/types.hpp>
 
@@ -111,6 +113,7 @@ class cpp_httplib_client {
 public:
     // Type aliases for convenience
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -154,6 +157,14 @@ public:
 
 private:
     serializer_type _serializer;
+    /// Negotiation goes through the registry; `_serializer` is retained because
+    /// the surrounding code still names it and, for a single-serializer bundle,
+    /// the two encode identically.
+    serializer_registry_type _registry;
+    /// What each peer last answered in. An optimisation only — every request
+    /// still advertises the full `Accept` list, so a stale entry costs a
+    /// re-choice, never a failure.
+    peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
     std::unordered_map<std::uint64_t, std::unique_ptr<httplib::Client>> _http_clients;
     std::vector<std::unique_ptr<httplib::Client>> _retired_clients;
@@ -183,6 +194,7 @@ class cpp_httplib_server {
 public:
     // Type aliases for convenience
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -229,6 +241,9 @@ public:
 
 private:
     serializer_type _serializer;
+    /// Decoding and encoding both go through the registry, so the server can
+    /// answer a peer in a format it did not itself pick.
+    serializer_registry_type _registry;
     std::unique_ptr<httplib::Server> _http_server;
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
     std::unique_ptr<httplib::SSLServer> _ssl_server;

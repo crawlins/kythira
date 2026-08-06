@@ -1009,6 +1009,24 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "http_integration_test: skipped (requires Folly)")
 endif()
+# End-to-end content negotiation (415/406/wildcards) against a live server.
+# Drives it with a raw httplib::Client so it can send headers cpp_httplib_client
+# would never produce.
+if(TARGET Folly::folly)
+    add_executable(http_negotiation_integration_test http_negotiation_integration_test.cpp)
+    target_link_libraries(http_negotiation_integration_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(http_negotiation_integration_test PRIVATE cxx_std_23)
+    add_test(NAME http_negotiation_integration_test COMMAND http_negotiation_integration_test)
+    set_tests_properties(http_negotiation_integration_test PROPERTIES TIMEOUT 120 LABELS "http;integration")
+else()
+    message(STATUS "http_negotiation_integration_test: skipped (requires Folly)")
+endif()
+
 # HTTP client test
 if(TARGET Folly::folly)
     add_executable(http_client_test http_client_test.cpp)

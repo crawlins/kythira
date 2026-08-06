@@ -35,21 +35,15 @@ constexpr const char* endpoint_install_snapshot = "/v1/raft/install_snapshot";
 constexpr const char* header_content_type = "Content-Type";
 constexpr const char* header_content_length = "Content-Length";
 constexpr const char* header_user_agent = "User-Agent";
+constexpr const char* header_accept = "Accept";
 
-// Derive the HTTP Content-Type from the serializer's name(), so a non-JSON
-// serializer (e.g. cbor_rpc_serializer -> "application/cbor") is labeled
-// correctly on the wire rather than always as "application/json". This reuses
-// the CoAP transport's serializer-name detection
-// (coap_utils::get_content_format_for_serializer) as the single source of truth
-// for the name -> media-type mapping across both transports; an unrecognized
-// serializer resolves to the same default CoAP uses. Client and server always
-// share the same serializer_type, so this is advisory labeling only — the
-// receiver decodes with its own _serializer regardless of this header.
-template<typename Serializer>
-auto content_type_for_serializer(const Serializer& serializer) -> std::string {
-    return coap_utils::content_format_to_string(
-        coap_utils::get_content_format_for_serializer(serializer.name()));
-}
+// NOTE: `content_type_for_serializer` lived here and derived the Content-Type
+// from the serializer's `name()` via substring matching. It is gone, not
+// merely unused: the media type is now `serializer.media_type()`, reached
+// through the registry, which is the token both sides negotiate on. The old
+// helper's premise -- "client and server always share the same
+// serializer_type, so this is advisory labeling only" -- is exactly what
+// content negotiation stops being true.
 
 // SSL certificate validation helpers
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
@@ -744,6 +738,8 @@ cpp_httplib_client<Types>::cpp_httplib_client(
     std::unordered_map<std::uint64_t, std::string> node_id_to_url_map,
     cpp_httplib_client_config config, typename Types::metrics_type metrics)
     : _serializer{},
+      _registry{},
+      _capability_cache{},
       _node_id_to_url{std::move(node_id_to_url_map)},
       _http_clients{},
       _config{std::move(config)},
@@ -1063,8 +1059,16 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         // Get or create HTTP client
         auto* client = this->get_or_create_client(target);
 
-        // Serialize request
-        auto serialized_data = _serializer.serialize(request);
+        // Pick the outgoing media type: what this peer last answered in, if the
+        // registry still supports it, else our default (Requirement 6.1-6.3).
+        const std::string content_type =
+            select_request_media_type(_registry, _capability_cache, target);
+
+        // Serialize request through the registry rather than `_serializer`
+        // directly, so a multi-serializer bundle actually encodes in the
+        // negotiated format. For a single-serializer bundle this is the same
+        // call it always was.
+        auto serialized_data = _registry.encode_with(content_type, request);
 
         // Convert bytes to string for HTTP body
         std::string body;
@@ -1073,11 +1077,16 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             body.push_back(static_cast<char>(b));
         }
 
-        // Set headers. Content-Type is derived from the serializer so a CBOR
-        // (or any non-JSON) serializer is labeled correctly on the wire.
-        const std::string content_type = content_type_for_serializer(_serializer);
         httplib::Headers headers;
         headers.emplace(header_content_type, content_type);
+        // Advertise everything we can decode, in preference order, on *every*
+        // request — not just the first. That is what keeps the capability cache
+        // an optimisation: even when our cached guess is stale, the peer still
+        // has the full list in front of it and can pick a type we both speak.
+        if (const auto accept = format_accept_header(_registry.preferred_media_types());
+            !accept.empty()) {
+            headers.emplace(header_accept, accept);
+        }
         // Let cpp-httplib handle Content-Length automatically
         headers.emplace(header_user_agent, _config.user_agent);
 
@@ -1097,6 +1106,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         metric.set_metric_name("http.client.request.sent");
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("media_type", content_type);
         metric.add_one();
         metric.emit();
 
@@ -1104,6 +1114,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
         metric.set_metric_name("http.client.request.size");
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("target_node_id", std::to_string(target));
+        metric.add_dimension("media_type", content_type);
         metric.add_value(static_cast<double>(body.size()));
         metric.emit();
 
@@ -1146,6 +1157,35 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 std::format("HTTP request failed: {}", httplib::to_string(result.error()))));
         }
         if (result->status == 200) {
+            // What did the peer actually answer in? An absent Content-Type
+            // means a peer that predates negotiation, so it gets our default
+            // rather than an error (Requirement 6.4).
+            std::string response_media_type = _registry.default_media_type();
+            if (result->has_header(header_content_type)) {
+                if (auto stripped =
+                        strip_media_type_parameters(result->get_header_value(header_content_type));
+                    !stripped.empty()) {
+                    response_media_type = std::move(stripped);
+                }
+            }
+
+            // A media type we cannot decode fails the future with a distinct
+            // error, and — importantly — leaves the capability cache untouched
+            // (Requirement 6.5). Caching the type that just failed would make
+            // the next request repeat the mistake.
+            if (!_registry.supports(response_media_type)) {
+                auto error_metric = _metrics;
+                error_metric.set_metric_name("http.client.error");
+                error_metric.add_dimension("error_type", "unsupported_media_type");
+                error_metric.add_dimension("media_type", response_media_type);
+                error_metric.add_dimension("target_node_id", std::to_string(target));
+                error_metric.add_one();
+                error_metric.emit();
+
+                return make_future_with_exception<Types, Response>(
+                    kythira::unsupported_media_type_error(response_media_type));
+            }
+
             // Success - deserialize response
             try {
                 std::vector<std::byte> response_data;
@@ -1154,21 +1194,19 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                     response_data.push_back(static_cast<std::byte>(c));
                 }
 
-                Response response;
-                if constexpr (std::is_same_v<Response, kythira::request_vote_response<>>) {
-                    response = _serializer.deserialize_request_vote_response(response_data);
-                } else if constexpr (std::is_same_v<Response, kythira::append_entries_response<>>) {
-                    response = _serializer.deserialize_append_entries_response(response_data);
-                } else if constexpr (std::is_same_v<Response,
-                                                    kythira::install_snapshot_response<>>) {
-                    response = _serializer.deserialize_install_snapshot_response(response_data);
-                }
+                Response response =
+                    _registry.template decode_with<Response>(response_media_type, response_data);
+
+                // Only now, after a clean decode, is the peer's choice worth
+                // remembering (Requirement 6.6).
+                _capability_cache.record(target, response_media_type);
 
                 // Record response size
                 auto size_metric = _metrics;
                 size_metric.set_metric_name("http.client.response.size");
                 size_metric.add_dimension("rpc_type", rpc_type);
                 size_metric.add_dimension("target_node_id", std::to_string(target));
+                size_metric.add_dimension("media_type", response_media_type);
                 size_metric.add_value(static_cast<double>(result->body.size()));
                 size_metric.emit();
 
@@ -1178,6 +1216,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 latency_metric.add_dimension("rpc_type", rpc_type);
                 latency_metric.add_dimension("target_node_id", std::to_string(target));
                 latency_metric.add_dimension("status", "success");
+                latency_metric.add_dimension("media_type", response_media_type);
                 latency_metric.add_duration(latency);
                 latency_metric.emit();
 
@@ -1286,6 +1325,7 @@ cpp_httplib_server<Types>::cpp_httplib_server(std::string bind_address, std::uin
                                               cpp_httplib_server_config config,
                                               typename Types::metrics_type metrics)
     : _serializer{},
+      _registry{},
       _http_server{},
       _request_vote_handler{},
       _append_entries_handler{},
@@ -1632,6 +1672,11 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("endpoint", endpoint);
         metric.add_one();
+        // NOTE: emitted before Content-Type is read, so this one carries no
+        // media_type dimension. Moving the read earlier would mean parsing a
+        // header before we have counted the request that carried it, which
+        // loses the count for a malformed request entirely.
+
         metric.emit();
 
         // Record request size
@@ -1642,6 +1687,60 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         metric.add_value(static_cast<double>(http_req.body.size()));
         metric.emit();
 
+        // What did the peer encode in? An absent Content-Type means a peer
+        // that predates negotiation, so it gets our default rather than a 415
+        // (Requirement 4.1, 4.2).
+        std::string request_media_type = _registry.default_media_type();
+        if (http_req.has_header(header_content_type)) {
+            if (auto stripped =
+                    strip_media_type_parameters(http_req.get_header_value(header_content_type));
+                !stripped.empty()) {
+                request_media_type = std::move(stripped);
+            }
+        }
+
+        // 415 before the handler runs, not after (Requirement 4.3, 4.4).
+        // Invoking the handler on a body we could not decode is the failure
+        // mode this ordering exists to prevent.
+        if (!_registry.supports(request_media_type)) {
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", request_media_type);
+            error_metric.add_dimension("endpoint", endpoint);
+            error_metric.add_one();
+            error_metric.emit();
+
+            http_resp.status = 415;
+            http_resp.body = "Unsupported Content-Type: " + request_media_type;
+            http_resp.set_header(header_content_type, "text/plain");
+            return;
+        }
+
+        // Negotiate the *response* type before invoking the handler, so an
+        // unsatisfiable Accept costs nothing: answering 406 after running the
+        // handler would do the work and then throw it away, and for a handler
+        // with side effects that difference is observable (Requirement 5.2,
+        // 5.3).
+        const auto accepted = http_req.has_header(header_accept)
+                                  ? parse_accept_header(http_req.get_header_value(header_accept))
+                                  : std::vector<std::string>{};
+        const auto output_media_type = _registry.select_output_media_type(accepted);
+        if (!output_media_type) {
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", format_accept_header(accepted));
+            error_metric.add_dimension("endpoint", endpoint);
+            error_metric.add_one();
+            error_metric.emit();
+
+            // No body: the peer told us it cannot read anything we produce, so
+            // any body we sent would be unreadable by construction.
+            http_resp.status = 406;
+            return;
+        }
+
         // Convert request body to bytes
         std::vector<std::byte> request_data;
         request_data.reserve(http_req.body.size());
@@ -1649,21 +1748,16 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
             request_data.push_back(static_cast<std::byte>(c));
         }
 
-        // Deserialize request
-        Request request;
-        if constexpr (std::is_same_v<Request, kythira::request_vote_request<>>) {
-            request = _serializer.deserialize_request_vote_request(request_data);
-        } else if constexpr (std::is_same_v<Request, kythira::append_entries_request<>>) {
-            request = _serializer.deserialize_append_entries_request(request_data);
-        } else if constexpr (std::is_same_v<Request, kythira::install_snapshot_request<>>) {
-            request = _serializer.deserialize_install_snapshot_request(request_data);
-        }
+        // Deserialize request through the registry, in the media type the peer
+        // declared rather than whichever serializer this server was built with.
+        Request request = _registry.template decode_with<Request>(request_media_type, request_data);
 
         // Invoke handler
         Response response = handler(request);
 
-        // Serialize response
-        auto serialized_response = _serializer.serialize(response);
+        // Encode in the negotiated type, which need not be the type the request
+        // arrived in — a peer may post CBOR and ask for JSON back.
+        auto serialized_response = _registry.encode_with(*output_media_type, response);
 
         // Convert bytes to string for HTTP body
         std::string response_body;
@@ -1672,11 +1766,9 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
             response_body.push_back(static_cast<char>(b));
         }
 
-        // Set response. Content-Type is derived from the serializer so a CBOR
-        // (or any non-JSON) serializer is labeled correctly on the wire.
         http_resp.status = 200;
         http_resp.body = std::move(response_body);
-        http_resp.set_header(header_content_type, content_type_for_serializer(_serializer));
+        http_resp.set_header(header_content_type, *output_media_type);
         // Let cpp-httplib handle Content-Length automatically
 
         // Record response size
@@ -1685,6 +1777,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("endpoint", endpoint);
         metric.add_dimension("status_code", "200");
+        metric.add_dimension("media_type", *output_media_type);
         metric.add_value(static_cast<double>(http_resp.body.size()));
         metric.emit();
 
@@ -1697,6 +1790,7 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
         latency_metric.add_dimension("rpc_type", rpc_type);
         latency_metric.add_dimension("endpoint", endpoint);
         latency_metric.add_dimension("status_code", "200");
+        latency_metric.add_dimension("media_type", *output_media_type);
         latency_metric.add_duration(latency);
         latency_metric.emit();
 
