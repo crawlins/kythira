@@ -151,39 +151,72 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **Real-GCE suite: two silent no-ops found during the first live run
-  (August 5, 2026).** Both surfaced while verifying the zone-laddering
-  escalation (PR #158) against real GCE, neither affects that verification's
-  result, and both are the same shape as the failures that run kept hitting —
-  machinery that reports nothing and therefore reads as fine.
-  - **`CostSummaryFixture` produces no output.** The
+- **Real-GCE suite: three silent no-ops found during the first live run
+  (August 5, 2026) — all three fixed August 6, 2026.** All surfaced while
+  verifying the zone-laddering escalation (PR #158) against real GCE, none
+  affects that verification's result, and all are the same shape as the
+  failures that run kept hitting — machinery that reports nothing and
+  therefore reads as fine.
+  - **`CostSummaryFixture` produced no output — fixed.** The
     `gcp_quorum_manager_real_gce_test` run that provisioned six VMs across
     three zones (`31055737271`) printed no cost summary at all — not a zero,
-    nothing. So either nothing is registering `cost_report`s into
-    `g_cost_accumulator`, or the fixture's destructor is not running. Note
-    its early-out is `if (reps.empty()) return;`, which makes "no reports"
-    and "fixture never ran" indistinguishable from the outside; whichever it
-    is, real-cloud spend is currently unreported. Requirements 24.4/24.5 of
-    `.kiro/specs/gcp-cloud-services/` are the ones this is supposed to
-    satisfy. Worth checking the AWS/Azure equivalents at the same time — the
-    fixture is modelled on `aws_real_ec2_test_support.hpp`.
-  - **`BOOST_TEST_MESSAGE` output never appears in real-cloud logs.** Boost's
-    default log level suppresses it, so every diagnostic written that way in
-    the real-cloud suites is invisible — including
+    nothing. Its early-out was `if (reps.empty()) return;`, which made "no
+    reports registered" and "fixture never ran" indistinguishable. **It was
+    the former**, settled by running a case against live GCE and watching the
+    new warning print: no GCP case ever called `g_cost_accumulator.add()`
+    (Azure's suite does so eleven times, AWS's three, GCP's zero), so the
+    accumulator was always empty. Fixed by an RAII `case_cost_recorder` that
+    files a report per case — RAII so a throwing case still reports, and so a
+    newly added case cannot forget — wired into every provisioning case in
+    both the Compute and MIG suites. The empty branch is now a loud WARNING
+    rather than silence, in all three providers' fixtures. The summary
+    renderer was extracted to a free `format_cost_summary()` so both of its
+    branches are unit-testable offline; seven cases in
+    `gcp_spot_escalation_test.cpp` cover it, needing no credentials.
+  - **`BOOST_TEST_MESSAGE` output never appeared in real-cloud logs — fixed.**
+    Boost's default log level (`error`) suppresses it, so every diagnostic
+    written that way in the real-cloud suites was invisible — including
     `provision_escalates_past_zone_stockout`'s own record of which rung was
     refused and which one took over. Only the `std::cerr` `trace()` markers
     survived, which is the sole reason that case's behaviour could be
-    confirmed. Fix by passing `--log_level=message` (or
-    `BOOST_TEST_LOG_LEVEL=message`) from `scripts/run-real-cloud-suite.sh`,
-    which now runs `ctest -V` and so would actually surface it. Applies to
-    the AWS and Azure real-cloud suites identically.
-  - **Related, larger, and *not* test-only:
-    `gcp_compute_detail::make_options()` sets no retry, backoff or deadline
-    policy on any Compute client**, so every call in
-    `gcp_compute_quorum_manager` inherits whatever google-cloud-cpp's default
-    is. This was a candidate explanation for the hour-long hang before the
-    real cause (an SDK page-token bug) was found, and it remains an unbounded
-    blocking call in production code regardless.
+    confirmed at all. Fixed by exporting `BOOST_TEST_LOG_LEVEL=message` from
+    `scripts/run-real-cloud-suite.sh` — an env var rather than a
+    `--log_level` argument because ctest invokes each test through its
+    registered command line, with no way to append one. Applies to the AWS
+    and Azure real-cloud suites identically. The cost summary itself was
+    additionally moved to `std::cerr`, so the spend record does not depend on
+    a runner flag being set.
+  - **Related, larger, and *not* test-only: `make_options()` set no retry,
+    backoff or deadline policy on any client — fixed.** Every call in
+    `gcp_compute_quorum_manager` inherited whatever google-cloud-cpp's
+    default was, and `gcp_client_config::api_timeout` — documented as
+    "maximum time allowed for a single GCP API call" — was consulted only by
+    `gcp_operation_wait`, never by a client. The identical defect was present
+    in all three copies of `make_options()` (`gcp_compute_detail`,
+    `gcp_mig_detail`, `gcp_privateca_detail`), which were byte-identical; they
+    are now one shared `include/raft/gcp_client_options.hpp`. Each client sets
+    its service-specific `LimitedTimeRetryPolicy` (bounded by `api_timeout`)
+    plus an exponential backoff and, for the LRO clients, a polling policy.
+    Two transport bounds are set for the REST clients: `ServerTimeoutOption`
+    and `rest_internal::TransferStallTimeoutOption` — the latter being the
+    only one that aborts a stalled socket client-side, at the cost of
+    depending on an internal-namespace option, which `__has_include` makes
+    non-fatal to lose. PrivateCA is gRPC-backed and so gets the retry
+    policies but not the REST bounds.
+
+- **Re-test `ListMachineTypes` against a newer google-cloud-cpp, and drop the
+  `guestCpus` workaround if it is fixed.** The real-GCE suite already uses the
+  request-object overload
+  (`tests/gcp_quorum_manager_real_gce_test.cpp`, `ListMachineTypesRequest`);
+  the August 5 2026 measurement found the page-token bug present *identically*
+  across all three overloads in 2.37.0 — the convenience `(project, zone)`
+  form, the request-object form, and the request-object form with an explicit
+  `max_results` — so switching overload is not itself a fix. What remains is
+  to re-measure on a newer SDK and, if the page token is honoured, remove the
+  server-side `guestCpus <= N` filter that currently keeps every result set
+  inside one page. The repetition guard should stay regardless. Still worth
+  reporting upstream: the REST API itself paginates correctly (541 items over
+  two pages, correct empty `nextPageToken`).
 
 - **CoAP/Proxygen test-reliability sweep — four fixes, one item still open
   (August 4, 2026).** Full investigation record, with every
