@@ -200,12 +200,24 @@ public:
         if (accepted.empty()) {
             return default_media_type();
         }
-        const auto ours = preferred_media_types();
+        // Folded over the tuple rather than over `preferred_media_types()`,
+        // which would allocate a vector of strings on every request just to
+        // read it back. The fold visits in declaration order, which is the tie
+        // break this needs anyway. `!hit &&` makes the first match win rather
+        // than the last.
         for (const auto& pattern : accepted) {
-            for (const auto& mine : ours) {
-                if (serializer_registry_detail::accept_entry_matches(pattern, mine)) {
-                    return mine;
-                }
+            std::optional<std::string> hit;
+            std::apply(
+                [&](const auto&... s) {
+                    ((!hit && serializer_registry_detail::accept_entry_matches(pattern,
+                                                                               s.media_type())
+                          ? (hit = s.media_type(), void())
+                          : void()),
+                     ...);
+                },
+                _serializers);
+            if (hit) {
+                return hit;
             }
         }
         return std::nullopt;
