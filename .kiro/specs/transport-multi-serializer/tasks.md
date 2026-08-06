@@ -163,30 +163,55 @@ transports and is deliberately left as separate work.
     transport that still had it
   - _Requirements: 5.1_
 
-- [ ] 9. Wire content negotiation into `cpp_httplib_client`/`cpp_httplib_server`
-  - [ ] 9.1 Client request path: pick output `Media_Type` from `Peer_Capability_Cache`
-    or `default_media_type()`; set `Content-Type`; set `Accept` from
-    `preferred_media_types()`
+- [x] 9. Wire content negotiation into `cpp_httplib_client`/`cpp_httplib_server`
+  - [x] 9.1 Client request path: media type from `peer_capability_cache` when the
+    registry still supports it, else `default_media_type()`; `Content-Type` set to
+    it; `Accept` set from `preferred_media_types()` on **every** request, not just
+    the first. That last part is what makes the cache an optimisation rather than
+    a protocol: a stale entry costs one re-choice by the peer, never a failure
     - _Requirements: 6.1, 6.2, 6.3_
-  - [ ] 9.2 Client response path: read `Content-Type` (absent → default); decode via
-    registry; on mismatch fail the future with `unsupported_media_type_error`; on
-    success update `Peer_Capability_Cache`
+  - [x] 9.2 Client response path: `Content-Type` read and parameter-stripped
+    (absent or empty -> default); unsupported -> future fails with
+    `unsupported_media_type_error` and the cache is left **untouched**; on a
+    clean decode the cache records the peer's choice
     - _Requirements: 6.4, 6.5, 6.6_
-  - [ ] 9.3 Server request path: read `Content-Type` (absent → default); decode via
-    registry; on mismatch return HTTP 415 without invoking the handler
+  - [x] 9.3 Server request path: `Content-Type` read, unsupported -> 415 **before**
+    the handler runs
     - _Requirements: 4.1, 4.2, 4.3, 4.4_
-  - [ ] 9.4 Server response path: parse `Accept`; `select_output_media_type`; on
-    `std::nullopt` return HTTP 406; else encode via registry and set `Content-Type`
+  - [x] 9.4 Server response path: `Accept` parsed, `select_output_media_type`,
+    `std::nullopt` -> 406 with no body. **Also negotiated before the handler runs**,
+    which the task did not specify: answering 406 afterwards produces the same
+    status while having already done the work, and on a handler with side effects
+    that difference is observable
     - _Requirements: 5.1, 5.2, 5.3, 5.4_
-  - [ ] 9.5 Replace the hardcoded `content_type_json` response header with the
-    negotiated `Media_Type` on every response path (success and error)
+  - [x] 9.5 Response `Content-Type` is the negotiated type on the success path;
+    error bodies stay `text/plain`, which is what they actually are.
+    `content_type_for_serializer` is deleted, not merely unused — its premise
+    ("client and server always share the same serializer_type, so this is
+    advisory labeling only") is exactly what negotiation invalidates
     - _Requirements: 9.4_
-  - [ ] 9.6 Add `media_type` dimension to existing request/response metrics; emit
-    `error_type=unsupported_media_type` on negotiation failure
+  - [x] 9.6 `media_type` dimension added to client request/response and server
+    response metrics, and `error_type=unsupported_media_type` on both sides.
+    `http.server.request.received` deliberately carries **no** `media_type`: it is
+    emitted before the header is read, and reading earlier would mean parsing a
+    header before counting the request that carried it, losing the count entirely
+    for a malformed request
     - _Requirements: 10.1, 10.2, 10.3_
 
-- [ ] 10. Wire content negotiation into `boost_beast_client`/`boost_beast_server`
-  - Mirror task 9's client/server request/response paths using Boost.Beast's header API
+- [x] 10. Wire content negotiation into `boost_beast_client`/`boost_beast_server`
+  - Mirrors Task 9 through Beast's header API. The one structural difference:
+    `boost_beast_server::dispatch()` previously took only the body, so the
+    negotiated types are now threaded through it, and `success_content_type()` is
+    replaced by `default_media_type()`. A single "success content type" stopped
+    being a meaningful thing to ask a server for once the answer could differ per
+    exchange; the session now learns what was encoded from `dispatch` itself,
+    on every path including the error ones
+  - The per-endpoint `deserialize` lambdas are gone — `decode_with<Request>` needs
+    only the media type and the `Request` type parameter `handle` already has
+  - Beast distinguishes 415 from 400 explicitly. They are different problems with
+    different fixes: 415 means "we do not speak this encoding", 400 means "we speak
+    it and your bytes were wrong". Collapsing them tells a peer to fix its payload
+    when it needs to change its format
   - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
 
 - [ ] 11. Wire content negotiation into `coap_client`/`coap_server`
@@ -206,6 +231,16 @@ transports and is deliberately left as separate work.
   - [ ] 11.5 Add `media_type` dimension to existing CoAP metrics; emit
     `error_type=unsupported_media_type` on negotiation failure
     - _Requirements: 10.1, 10.2, 10.3_
+
+  - **Interop note recorded by `http_negotiation_integration_test`**: a
+    cpp-httplib peer that POSTs without an explicit `Content-Type` now gets 415.
+    httplib's *client* injects `Content-Type: text/plain` into any POST with a
+    body and no declared type, and this server does not speak text/plain. Before
+    negotiation the server ignored the header and decoded with its own
+    serializer, so such a request succeeded. Node-to-node traffic is unaffected
+    (both clients always set the header explicitly); a hand-rolled third-party
+    caller relying on the old leniency is not. Spec'd behaviour per Requirement
+    4.3, pinned by a test so reversing it has to be deliberate
 
 - [x] 12. Unit tests for the registry and negotiation logic
   - `tests/serializer_registry_unit_test.cpp`, 16 cases, linking no transport —
