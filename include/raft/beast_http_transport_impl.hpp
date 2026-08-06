@@ -280,7 +280,8 @@ namespace beast_detail {
 // setValue()/setException() form; via() is what makes that safe regardless
 // of which thread ends up calling it.
 inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
-                             folly::Executor* executor) -> kythira::future_default<kythira::unit> {
+                             asio_strand_executor* executor)
+    -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     stream.async_connect(
@@ -291,11 +292,11 @@ inline auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint e
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 inline auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
-                                      folly::Executor* executor)
+                                      asio_strand_executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
@@ -308,11 +309,11 @@ inline auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stre
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 inline auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
-                                      folly::Executor* executor)
+                                      asio_strand_executor* executor)
     -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
@@ -325,12 +326,12 @@ inline auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stre
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message,
-                    folly::Executor* executor) -> kythira::future_default<kythira::unit> {
+                    asio_strand_executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     beast_http::async_write(
@@ -343,13 +344,13 @@ auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, F
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                    beast_http::message<IsRequest, Body, Fields>& response,
-                   folly::Executor* executor) -> kythira::future_default<kythira::unit> {
+                   asio_strand_executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     beast_http::async_read(
@@ -362,13 +363,13 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::parser<IsRequest, Body, Fields>& parser, folly::Executor* executor)
-    -> kythira::future_default<kythira::unit> {
+                   beast_http::parser<IsRequest, Body, Fields>& parser,
+                   asio_strand_executor* executor) -> kythira::future_default<kythira::unit> {
     kythira::promise_default<kythira::unit> promise;
     auto future = promise.getFuture();
     beast_http::async_read(
@@ -381,7 +382,7 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
                 promise.setValue(kythira::unit{});
             }
         });
-    return std::move(future).via(executor);
+    return std::move(future).via(executor->handle());
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,15 +1028,16 @@ public:
         });
         if constexpr (std::is_same_v<Stream, beast::ssl_stream<beast::tcp_stream>>) {
             auto self = this->shared_from_this();
-            _pending = async_server_handshake_kf(_stream, &_executor)
-                           .thenValue([self](kythira::unit) {
-                               self->read_loop();
-                               return kythira::unit{};
-                           })
-                           .thenError([self](std::exception_ptr) {
-                               self->finish();
-                               return kythira::unit{};
-                           });
+            async_server_handshake_kf(_stream, &_executor)
+                .thenValue([self](kythira::unit) {
+                    self->read_loop();
+                    return kythira::unit{};
+                })
+                .thenError([self](std::exception_ptr) {
+                    self->finish();
+                    return kythira::unit{};
+                })
+                .detach();
         } else {
             read_loop();
         }
@@ -1056,22 +1058,21 @@ private:
         _parser.emplace();
         _parser->body_limit(_max_request_body_size);
         beast::get_lowest_layer(_stream).expires_after(_request_timeout);
-        _pending = async_read_kf(_stream, _buffer, *_parser, &_executor)
-                       .thenValue([self](kythira::unit) {
-                           self->_req = self->_parser->release();
-                           return self->handle_and_write();
-                       })
-                       .thenValue([self](kythira::unit) {
-                           if (self->_should_keep_alive) {
-                               self->read_loop();
-                           } else {
-                               self->finish();
-                           }
-                           return kythira::unit{};
-                       })
-                       .thenError([self](std::exception_ptr eptr) {
-                           return self->handle_read_error(eptr);
-                       });
+        async_read_kf(_stream, _buffer, *_parser, &_executor)
+            .thenValue([self](kythira::unit) {
+                self->_req = self->_parser->release();
+                return self->handle_and_write();
+            })
+            .thenValue([self](kythira::unit) {
+                if (self->_should_keep_alive) {
+                    self->read_loop();
+                } else {
+                    self->finish();
+                }
+                return kythira::unit{};
+            })
+            .thenError([self](std::exception_ptr eptr) { return self->handle_read_error(eptr); })
+            .detach();
     }
 
     // Requirement 4 (malformed-request handling): a request whose body
@@ -1220,20 +1221,20 @@ private:
     std::optional<beast_http::request_parser<beast_http::string_body>> _parser;
     beast_http::request<beast_http::string_body> _req;
     bool _should_keep_alive{false};
-    // Held as a member, not an orphaned temporary: reassigning it from
-    // within its own continuation (the recursive read_loop() pattern above)
-    // relies only on the future/promise handoff itself staying alive as
-    // long as something references it, not on any particular backend's
-    // "fire and forget if nobody holds the returned Future" behavior, which
-    // future_transformable does not guarantee generically (Requirement 19
-    // pins Types::future_template to future_default, but future_default can
-    // still be any of the three backends depending on
-    // KYTHIRA_DEFAULT_FUTURE_BACKEND). Initialized to an already-ready
-    // future (not default-constructed): kythira::future_default<T> is not
-    // guaranteed default-constructible by the `future` concept, and indeed
-    // isn't under the Folly backend (folly::Future's own default
-    // constructor is deleted).
-    kythira::future_default<kythira::unit> _pending = beast_ready_unit_future();
+    // No _pending member: run()/read_loop() end their chains with .detach()
+    // instead of storing the Future. Storing it was an attempt at exactly
+    // the backend-neutrality .detach() actually provides, but it had the
+    // dependency backwards -- holding a Future alive is what the *eager*
+    // backends (Folly, Boost.Thread) don't need, and is not what the lazy
+    // one needs. stdexec's senders do nothing at all until something starts
+    // the chain, so under KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec both
+    // chains were built, assigned, and silently never run -- every
+    // server-side beast_* test hung. `.detach()` is this project's portable
+    // "start it and discard the result" primitive (a no-op on the eager
+    // backends, exec::start_detached on stdexec); see future_stdexec.hpp's
+    // own detach() comment. Session lifetime across the async gap was never
+    // _pending's job in the first place: every continuation captures
+    // `self`, a shared_from_this() handle.
 };
 
 }  // namespace beast_detail
