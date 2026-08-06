@@ -541,6 +541,31 @@ without it — so the 12 case timeouts and 9 RPC deadlines now scale with
 What this does **not** establish: the failure was never reproduced locally, in
 70 runs across 4, 2 and 1 cores and under heavy CPU load. Reduced fragility is
 not a proven root cause, so this stays open until CI has run clean for a while.
+
+**Evidence added August 6, 2026 — still not enough to close.** The
+`Proxygen transport (boost future backend)` job was re-run 8 times against
+`main` at `2718c06`, plus a full green run at `8979675`. All 8 passed, and
+grepping every job log for `ingress timeout` found **zero** occurrences. The
+run times are the more interesting half: 0.72, 0.73, 0.74, 0.74, 0.74, 0.75,
+0.75 and 0.75 seconds. That is a 4x margin against the 3000ms deadline with
+essentially no variance, which is what the RSA→P-256 change predicted — the
+old failure mode was a load-dependent keygen cost eating the budget, and a
+cost that varied with load could not produce a spread this tight.
+
+Deliberately **not** closing it on this. The failure was never reproduced in
+70 local runs, so its base rate is low enough that 8 consecutive passes is
+weak evidence about a rare event — roughly what you would expect to see even
+if nothing had been fixed. The tight timing distribution is the stronger
+signal, and it is indirect. What would actually close this is a longer stretch
+of scheduled CI, or reproducing the original failure and then showing the fix
+prevents it. Note also that all 8 samples ran on the same runner image on the
+same day, so they are not 8 independent draws from the population of
+conditions that produced the original flake.
+
+Separately confirmed while sampling, since a green job proves nothing if the
+job did not do the work: the leg really is configured with
+`-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost`, and all 12 of
+`proxygen_transport_test`'s cases enter and run rather than being skipped.
 If it recurs, the shared 2-thread `folly::IOThreadPoolExecutor` between client
 and server (`proxygen_transport_test.cpp:492`, `:500`, `:513` as of `dd041bf`
 — one pool constructed in the case and handed to both the server, via a
