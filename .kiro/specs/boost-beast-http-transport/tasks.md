@@ -764,6 +764,53 @@ second, reuse-focused one).
    own `Promise<T>::getFuture()` may or may not share Folly's
    `InlineExecutor` hazard this closes, and this fix does not attempt to
    address either possibility for them.
+
+   **RESOLVED — the transport now works under all three backends.** "If
+   that ever changes" turned out to be already true: CMake configured and
+   built every `beast_*` target under `=stdexec` regardless, so a local
+   stdexec build had five deterministically segfaulting tests that no CI
+   job could see. Three separate defects, none of which were the
+   `InlineExecutor` question this caveat anticipated:
+
+   1. **Silent UB under stdexec.** `future_continuation` requires a
+      `via(void*)` overload; `folly::Executor*` converts implicitly to
+      `void*`, so `asio_strand_executor*` bound to it and the stdexec
+      backend `static_cast`'d it straight to `scheduler_handle*` --
+      reinterpreting a vtable pointer as a `shared_ptr`. Confirmed by
+      instrumenting `via(void*)`: the probe fires, then the fault lands at
+      address `0x1b`. Fixed by making `asio_strand_executor`
+      backend-conditional (three variants with a `handle()` accessor
+      returning the backend-native reference, mirroring
+      `kythira::executor_default`) and typing every `async_*_kf` parameter
+      as `asio_strand_executor*` rather than `folly::Executor*`. The
+      stdexec variant needed a real `stdexec::scheduler` posting to the
+      Asio strand (`asio_strand_scheduler`).
+   2. **Lazy senders never started.** `server_session::run()`/`read_loop()`
+      built continuation chains and assigned them to a `_pending` member.
+      That member existed specifically to avoid depending on any backend's
+      fire-and-forget behaviour, but had the dependency backwards: holding
+      a Future alive is what the *eager* backends don't need, and is not
+      what the lazy one needs. Under stdexec both chains were built and
+      silently never run -- every server-side test hung. Fixed by ending
+      both chains with `.detach()`, this project's portable "start it"
+      primitive, and deleting `_pending` (session lifetime was always
+      carried by the continuations' `self` shared_ptr, not by it).
+   3. **Boost's `via()` was not sticky.** Beast never compiled under
+      `=boost` at all, which hid two backend bugs: `thenError` had no
+      Future-returning flattening overload (`thenValue` did), and `via()`
+      bound its executor for only the next hop -- every continuation after
+      it fell back to bare `then()`, which Boost.Thread runs on a freshly
+      spawned thread. Beast's session state and its final release were
+      therefore touched off-strand. Both fixed in `future_boost.hpp`;
+      `via()` now propagates the executor down the whole chain, matching
+      the Folly semantics the rest of the codebase assumes.
+
+   `.github/workflows/ci.yml`'s `future-backend-compat` job (renamed from
+   "Proxygen transport" to "HTTP transports") now builds and runs the
+   `beast_*` targets under both non-default backends, with a test-count
+   floor so a silently-matching-nothing `ctest -R` cannot report success.
+   Caveat 4 below (`three_way_http_transport_equivalence_test` not built)
+   is covered by that same change.
 4. **Unrelated, pre-existing, out of scope this round**:
    `three_way_http_transport_equivalence_test` (labeled
    `beast-http;proxygen-http`) has no built executable in this sandbox's

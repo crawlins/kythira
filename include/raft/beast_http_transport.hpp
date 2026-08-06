@@ -29,21 +29,25 @@
 /// property tests, just formalized. `kythira::http_transport_types` itself is
 /// unmodified.
 ///
-/// A narrower dependency than Requirement 19 otherwise implies:
-/// `async_connect_kf`/`async_client_handshake_kf`/`async_server_handshake_kf`/
-/// `async_write_kf`/`async_read_kf` (`asio_strand_executor`'s own comment
-/// below has the full why) `.via()` their returned future onto a
-/// `folly::Executor`, so they only compile/behave correctly when
-/// `future_default<T>` is Folly-backed (`KYTHIRA_DEFAULT_FUTURE_BACKEND`'s
-/// default). This does not further narrow what's actually exercised today
-/// -- no CI configuration builds any `beast_*` target under
-/// `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`/`=boost` (only
-/// `proxygen_transport_test` is built across that matrix) -- but it is a
-/// real gap if that ever changes: the stdexec/boost backends' own
-/// `Promise<T>::getFuture()` may or may not share Folly's
-/// `InlineExecutor`-on-an-already-fulfilled-promise hazard this exists to
-/// close, and this code does not attempt to address either possibility for
-/// them.
+/// Requirement 19 pins `future_template<T>` to `future_default<T>`, but does
+/// NOT pin which backend `future_default<T>` itself resolves to: this
+/// transport works under all three of `KYTHIRA_DEFAULT_FUTURE_BACKEND`'s
+/// values (`folly`, `stdexec`, `boost`). `async_connect_kf`/
+/// `async_client_handshake_kf`/`async_server_handshake_kf`/`async_write_kf`/
+/// `async_read_kf` `.via()` their returned future onto an
+/// `asio_strand_executor`, which is backend-conditional in the same
+/// three-way shape as `kythira::executor_default` -- see its own comment
+/// below for the full why, including the silent-UB failure mode that made
+/// this Folly-only until it was fixed.
+///
+/// The `InlineExecutor`-on-an-already-fulfilled-promise hazard that
+/// `asio_strand_executor` exists to close is a Folly-specific mechanism, but
+/// the property it restores -- every continuation runs on the stream's own
+/// strand, never on whichever thread happened to fulfill the promise -- is
+/// one this transport needs from every backend, since it is Beast's
+/// `basic_stream` state (not Folly's) being serialized. Re-`via()`-ing onto
+/// the strand establishes that property uniformly rather than relying on any
+/// backend's default continuation affinity.
 
 #include <raft/types.hpp>
 #include <raft/network.hpp>
@@ -54,7 +58,17 @@
 #include <raft/peer_capability_cache.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
+// Backend-conditional, mirroring include/raft/executor_default.hpp's own
+// three-way split: asio_strand_executor (below) adapts an Asio strand to
+// whichever executor concept the *selected* future backend's `via()` takes,
+// so only that backend's header is needed here.
+#if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC)
+#include <raft/future_stdexec.hpp>
+#elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+#include <boost/thread/executors/generic_executor_ref.hpp>
+#else
 #include <folly/Executor.h>
+#endif
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -165,22 +179,28 @@ struct boost_beast_server_config {
 ///     handler is what actually fulfills the promise (Property 2).
 namespace beast_detail {
 
+/// Defined further down (its definition needs the backend-conditional
+/// machinery), but named in every async_*_kf signature below.
+class asio_strand_executor;
+
 /// @brief `beast::tcp_stream::async_connect`, bridged to a future, re-via'd
 ///     onto `executor` (the calling connection/session's own
 ///     `asio_strand_executor`, below) before returning -- see that class's
 ///     doc comment for why every async_*_kf helper takes one.
 auto async_connect_kf(beast::tcp_stream& stream, net::ip::tcp::endpoint ep,
-                      folly::Executor* executor) -> kythira::future_default<kythira::unit>;
+                      asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief TLS client handshake, bridged to a future. Only meaningful on a
 ///     `beast::ssl_stream<beast::tcp_stream>` whose underlying `tcp_stream`
 ///     is already connected.
 auto async_client_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
-                               folly::Executor* executor) -> kythira::future_default<kythira::unit>;
+                               asio_strand_executor* executor)
+    -> kythira::future_default<kythira::unit>;
 
 /// @brief TLS server handshake, bridged to a future.
 auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
-                               folly::Executor* executor) -> kythira::future_default<kythira::unit>;
+                               asio_strand_executor* executor)
+    -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_write`, bridged to a future. Templated over
 ///     `Stream` (so the identical adaptor serves both `beast::tcp_stream`
@@ -192,13 +212,13 @@ auto async_server_handshake_kf(beast::ssl_stream<beast::tcp_stream>& stream,
 ///     Fields>`.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_write_kf(Stream& stream, const beast_http::message<IsRequest, Body, Fields>& message,
-                    folly::Executor* executor) -> kythira::future_default<kythira::unit>;
+                    asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_read`, bridged to a future.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::message<IsRequest, Body, Fields>& message, folly::Executor* executor)
-    -> kythira::future_default<kythira::unit>;
+                   beast_http::message<IsRequest, Body, Fields>& message,
+                   asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief `beast_http::async_read`, bridged to a future -- overload taking a
 ///     `beast_http::parser` (rather than a bare `message`) so a caller can
@@ -213,14 +233,37 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 ///     own client, which does not itself cap response body size.
 template<typename Stream, bool IsRequest, typename Body, typename Fields>
 auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
-                   beast_http::parser<IsRequest, Body, Fields>& parser, folly::Executor* executor)
-    -> kythira::future_default<kythira::unit>;
+                   beast_http::parser<IsRequest, Body, Fields>& parser,
+                   asio_strand_executor* executor) -> kythira::future_default<kythira::unit>;
 
 /// @brief Adapts a stream's own executor (`net::any_io_executor`, in
 ///     practice always the strand it was constructed on -- see
-///     `boost_beast_client`'s class comment) as a `folly::Executor`, so a
-///     `kythira::future_default<T>` (a Folly future under the hood) can be
-///     `.via()`'d onto it.
+///     `boost_beast_client`'s class comment) as whatever executor type the
+///     *selected* future backend's `via()` accepts, so a
+///     `kythira::future_default<T>` can be `.via()`'d onto it regardless of
+///     which backend `KYTHIRA_DEFAULT_FUTURE_BACKEND` selected.
+///
+///     `via()` is deliberately NOT unified across backends (see
+///     `include/raft/executor_default.hpp`'s own header comment): Folly's
+///     takes a `folly::Executor&`, stdexec's a
+///     `stdexec_backend::scheduler_handle&`, and Boost.Thread's a duck-typed
+///     `Ex&` with a `submit`/`close`/`closed`/`try_executing_one` interface.
+///     So this class is backend-conditional in exactly the same three-way
+///     shape as `kythira::executor_default`, and exposes the same `handle()`
+///     accessor returning the backend-native reference -- callers write
+///     `future.via(executor->handle())` and stay backend-agnostic.
+///
+///     This previously derived from `folly::Executor` unconditionally, which
+///     made the whole Beast transport Folly-only. That was a silent failure
+///     rather than a loud one: `future_continuation` requires a
+///     `via(void*)` overload (`include/concepts/future.hpp`), a
+///     `folly::Executor*` converts implicitly to `void*`, and the stdexec
+///     backend's `via(void*)` `static_cast`s straight to `scheduler_handle*`
+///     -- reinterpreting this object's vtable pointer as a `shared_ptr`.
+///     Every `beast_*` test segfaulted under
+///     `KYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec` for exactly that reason, and
+///     failed to compile under `=boost`. Passing a backend-native handle
+///     rather than a `void*` is what keeps that from being expressible.
 ///
 ///     `kythira::Promise<T>::getFuture()` (future.hpp) vias its returned
 ///     future onto `folly::InlineExecutor::instance()`, a process-wide
@@ -243,15 +286,133 @@ auto async_read_kf(Stream& stream, beast::flat_buffer& buffer,
 ///     forced through the same serialization point as every other
 ///     operation Beast itself performs on that stream, regardless of which
 ///     thread happens to fulfill the underlying promise or when.
+#if defined(KYTHIRA_FUTURE_BACKEND_STDEXEC)
+
+/// @brief An stdexec `scheduler` whose `schedule()` sender completes on an
+///     Asio executor. `stdexec_backend::scheduler_handle` type-erases any
+///     type satisfying stdexec's own `scheduler` concept, so this is all
+///     that is needed to make an Asio strand a valid `via()` target.
+class asio_strand_scheduler {
+public:
+    explicit asio_strand_scheduler(net::any_io_executor ex) : _ex(std::move(ex)) {}
+
+    class schedule_sender {
+    public:
+        using sender_concept = ::stdexec::sender_t;
+        using completion_signatures = ::stdexec::completion_signatures<::stdexec::set_value_t()>;
+
+        explicit schedule_sender(net::any_io_executor ex) : _ex(std::move(ex)) {}
+
+        /// Operation states are pinned once connected, so `start()` may
+        /// capture `this` and complete the receiver in place from the
+        /// posted handler rather than moving the receiver into the lambda.
+        template<typename Receiver> class operation_state {
+        public:
+            operation_state(net::any_io_executor ex, Receiver receiver)
+                : _ex(std::move(ex)), _receiver(std::move(receiver)) {}
+
+            operation_state(const operation_state&) = delete;
+            auto operator=(const operation_state&) -> operation_state& = delete;
+            operation_state(operation_state&&) = delete;
+            auto operator=(operation_state&&) -> operation_state& = delete;
+            ~operation_state() = default;
+
+            auto start() noexcept -> void {
+                net::post(_ex, [this]() { ::stdexec::set_value(std::move(_receiver)); });
+            }
+
+        private:
+            net::any_io_executor _ex;
+            Receiver _receiver;
+        };
+
+        template<typename Receiver>
+        auto connect(Receiver receiver) const -> operation_state<Receiver> {
+            return operation_state<Receiver>(_ex, std::move(receiver));
+        }
+
+        /// stdexec's `scheduler` concept requires
+        /// `get_completion_scheduler<set_value_t>(get_env(schedule(s))) == s`.
+        struct env {
+            net::any_io_executor _ex;
+
+            [[nodiscard]] auto query(::stdexec::get_completion_scheduler_t<::stdexec::set_value_t>)
+                const noexcept -> asio_strand_scheduler {
+                return asio_strand_scheduler(_ex);
+            }
+        };
+
+        [[nodiscard]] auto get_env() const noexcept -> env { return env{_ex}; }
+
+    private:
+        net::any_io_executor _ex;
+    };
+
+    using scheduler_concept = ::stdexec::scheduler_t;
+
+    [[nodiscard]] auto schedule() const noexcept -> schedule_sender { return schedule_sender(_ex); }
+
+    auto operator==(const asio_strand_scheduler& other) const -> bool { return _ex == other._ex; }
+
+private:
+    net::any_io_executor _ex;
+};
+
+class asio_strand_executor {
+public:
+    explicit asio_strand_executor(net::any_io_executor ex)
+        : _handle(asio_strand_scheduler(std::move(ex))) {}
+
+    auto handle() -> kythira::stdexec_backend::scheduler_handle& { return _handle; }
+
+private:
+    kythira::stdexec_backend::scheduler_handle _handle;
+};
+
+#elif defined(KYTHIRA_FUTURE_BACKEND_BOOST)
+
+/// Boost.Thread's `then(Ex&, F)` wraps its executor in
+/// `boost::executors::executor_ref<Ex>`, which duck-types exactly four
+/// members -- it never requires deriving from `boost::executors::executor`.
+/// `try_executing_one()` returns false because work posted here runs on the
+/// caller-owned `io_context` thread(s), never on a thread that has borrowed
+/// this executor to drain it.
+class asio_strand_executor {
+public:
+    explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
+
+    auto handle() -> asio_strand_executor& { return *this; }
+
+    template<typename Work> auto submit(Work&& work) -> void {
+        net::post(_ex, std::forward<Work>(work));
+    }
+
+    auto close() -> void { _closed.store(true, std::memory_order_release); }
+
+    auto closed() -> bool { return _closed.load(std::memory_order_acquire); }
+
+    auto try_executing_one() -> bool { return false; }
+
+private:
+    net::any_io_executor _ex;
+    std::atomic<bool> _closed{false};
+};
+
+#else
+
 class asio_strand_executor final : public folly::Executor {
 public:
     explicit asio_strand_executor(net::any_io_executor ex) : _ex(std::move(ex)) {}
 
     auto add(folly::Func func) -> void override { net::post(_ex, std::move(func)); }
 
+    auto handle() -> folly::Executor& { return *this; }
+
 private:
     net::any_io_executor _ex;
 };
+
+#endif
 
 /// @brief Type-erased connection handle so `boost_beast_client`'s connection
 ///     pool can hold a single map regardless of whether a given node's URL
