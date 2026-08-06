@@ -50,6 +50,8 @@
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
+#include <raft/http_content_negotiation.hpp>
+#include <raft/peer_capability_cache.hpp>
 #include <raft/future_default.hpp>
 #include <concepts/future.hpp>
 #include <folly/Executor.h>
@@ -352,6 +354,7 @@ requires kythira::future_default_transport_types<Types>
 class boost_beast_client {
 public:
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -406,6 +409,13 @@ private:
 
     net::io_context& _ioc;
     serializer_type _serializer;
+    /// Negotiation goes through the registry; `_serializer` stays because the
+    /// surrounding code names it and the two agree for a single-serializer
+    /// bundle.
+    serializer_registry_type _registry;
+    /// What each peer last answered in. Advisory only — the full `Accept` list
+    /// still rides on every request.
+    peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
     boost_beast_client_config _config;
     metrics_type _metrics;
@@ -484,6 +494,7 @@ requires kythira::future_default_transport_types<Types>
 class boost_beast_server {
 public:
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -551,22 +562,36 @@ public:
     /// rather than waiting forever for a request that will never arrive.
     auto register_session(std::function<void()> closer) -> std::size_t;
     auto session_finished(std::size_t session_id) -> void;
+    /// @brief Decodes, dispatches, and encodes one request.
+    ///
+    /// Takes the request's declared media type and its parsed `Accept` list,
+    /// and reports back the media type it actually encoded in. The session
+    /// reads the headers (it owns the request object) but does not hold the
+    /// registry, so negotiation policy stays here and header mechanics stay
+    /// there.
+    ///
+    /// `response_media_type` is set on every path, including the error ones,
+    /// so the caller never has to decide what to label a body it did not
+    /// produce. Error bodies are plain text and say so.
     auto dispatch(std::string_view target, const std::vector<std::byte>& body,
-                  std::string& response_body, unsigned& status_code) -> void;
+                  const std::string& request_media_type, const std::vector<std::string>& accepted,
+                  std::string& response_body, unsigned& status_code,
+                  std::string& response_media_type) -> void;
 
-    /// @brief HTTP Content-Type for a successful (serialized) response body,
-    ///     derived from the active serializer's name() so an Ion serializer's
-    ///     body is labeled "application/ion" rather than "application/json"
-    ///     (ion-rpc-serializer spec, Requirement 6.4). Called by
-    ///     `beast_detail::server_session::handle_and_write`, which sets the
-    ///     header but does not hold the serializer itself. json_rpc_serializer
-    ///     still yields "application/json", unchanged. Defined out-of-line in
-    ///     beast_http_transport_impl.hpp where the name->media-type helper lives.
-    [[nodiscard]] auto success_content_type() const -> std::string;
+    /// @brief The media type used when a peer declares none.
+    ///
+    /// Replaces `success_content_type()`, which derived a single fixed type
+    /// from the serializer's `name()`. A negotiating server has no single
+    /// success content type — it has whichever one this exchange settled on —
+    /// so the session now learns that from `dispatch` instead of asking.
+    [[nodiscard]] auto default_media_type() const -> std::string;
 
 private:
     net::io_context& _ioc;
     serializer_type _serializer;
+    /// Decode and encode both route through here, so this server can answer a
+    /// peer in a format it did not itself choose.
+    serializer_registry_type _registry;
     std::string _bind_address;
     std::uint16_t _bind_port;
     boost_beast_server_config _config;
