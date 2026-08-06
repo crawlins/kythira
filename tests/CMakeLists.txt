@@ -1144,6 +1144,18 @@ target_link_libraries(rpc_serializer_concept_test PRIVATE
 target_compile_features(rpc_serializer_concept_test PRIVATE cxx_std_23)
 add_test(NAME rpc_serializer_concept_test COMMAND rpc_serializer_concept_test)
 
+# Serializer registry / media-type negotiation. Links no transport on purpose:
+# the negotiation rules are protocol-independent, and only their rendering
+# (HTTP 406 vs CoAP 4.06) is not.
+add_executable(serializer_registry_unit_test serializer_registry_unit_test.cpp)
+target_link_libraries(serializer_registry_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(serializer_registry_unit_test PRIVATE cxx_std_23)
+add_test(NAME serializer_registry_unit_test COMMAND serializer_registry_unit_test)
+
 # RPC malformed message property test needs Boost.JSON
 add_executable(rpc_malformed_message_property_test rpc_malformed_message_property_test.cpp)
 target_link_libraries(rpc_malformed_message_property_test PRIVATE

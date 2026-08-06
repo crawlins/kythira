@@ -47,6 +47,25 @@ public:
     explicit serialization_error(const std::string& message) : http_transport_error(message) {}
 };
 
+/// @brief A peer asked for, or sent, a media type no registered serializer
+///        handles.
+///
+/// Distinct from `serialization_error`, which means a payload of a media type
+/// we *do* support failed to decode. The two map to different HTTP responses —
+/// 415 for this, 400 for that — so a transport must be able to tell them apart
+/// without inspecting the message text. Carries the offending media type so the
+/// handler need not re-parse the header to build its response.
+class unsupported_media_type_error : public http_transport_error {
+public:
+    explicit unsupported_media_type_error(const std::string& media_type)
+        : http_transport_error("unsupported media type: " + media_type), _media_type(media_type) {}
+
+    [[nodiscard]] auto media_type() const -> const std::string& { return _media_type; }
+
+private:
+    std::string _media_type;
+};
+
 // Exception for SSL configuration errors
 class ssl_configuration_error : public http_transport_error {
 public:

@@ -478,6 +478,15 @@ public:
     // Provide name method for content format detection
     [[nodiscard]] auto name() const -> std::string { return "protobuf"; }
 
+    /// @brief IANA media type used for HTTP `Content-Type`/`Accept` negotiation
+    ///        and CoAP Content-Format mapping (`rpc_serializer`).
+    ///
+    /// `application/x-protobuf` rather than `application/protobuf`: the former
+    /// is what gRPC-Gateway, Prometheus and the wider ecosystem actually emit,
+    /// and interoperating with existing peers matters more here than preferring
+    /// the later formal registration.
+    [[nodiscard]] auto media_type() const -> std::string { return "application/x-protobuf"; }
+
 private:
     /// @brief One-byte discriminator prepended to every payload, checked before
     /// any protobuf parse. Raw Protocol Buffers bytes are not self-describing --

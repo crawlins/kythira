@@ -495,11 +495,46 @@ concept serialized_data =
 /// @brief Concept for an RPC serializer.
 /// @tparam S    Serializer type.
 /// @tparam Data Must satisfy `serialized_data`.
+///
+/// `media_type()` is the negotiation-facing identifier: the exact token that
+/// goes on the wire as an HTTP `Content-Type`/`Accept` value, and that maps to
+/// a CoAP Content-Format. It is deliberately *not* `name()`, which stays a
+/// free-form human-oriented label used by metrics — the two have different
+/// audiences and different stability requirements, and conflating them would
+/// make a metrics label rename a wire-protocol change.
 template<typename S, typename Data>
-concept rpc_serializer = requires {
+concept rpc_serializer = requires(const S& s) {
     requires serialized_data<Data>;
     typename S;
+    { s.media_type() } -> std::convertible_to<std::string>;
 };
+
+/// @brief Concept for a set of serializers a transport can negotiate between.
+/// @tparam R    Registry type.
+/// @tparam Data Must satisfy `serialized_data`.
+///
+/// A registry, rather than transports holding a serializer directly, is what
+/// lets a transport speak more than one encoding without every transport
+/// growing its own dispatch. `single_serializer_registry<S>` keeps the existing
+/// one-serializer configuration expressible with identical wire behaviour, so
+/// this is an additive change rather than a migration.
+///
+/// `select_output_media_type` returns `std::optional` rather than throwing:
+/// negotiation failure is an ordinary, expected outcome that a server answers
+/// with 406/4.06, and it sits on the per-request path where an exception would
+/// be the wrong cost and the wrong shape.
+template<typename R, typename Data>
+concept serializer_registry =
+    requires(const R& r, const std::string& media_type, const std::vector<std::string>& accepted) {
+        requires serialized_data<Data>;
+        /// Media type used when a peer expresses no preference.
+        { r.default_media_type() } -> std::convertible_to<std::string>;
+        /// All supported media types, most-preferred first.
+        { r.preferred_media_types() } -> std::same_as<std::vector<std::string>>;
+        { r.supports(media_type) } -> std::same_as<bool>;
+        /// Best match for `accepted`, or `nullopt` when none overlaps.
+        { r.select_output_media_type(accepted) } -> std::same_as<std::optional<std::string>>;
+    };
 
 /// @brief Per-operation retry policy with exponential back-off and jitter.
 struct retry_policy_config {

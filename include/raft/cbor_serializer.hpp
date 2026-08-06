@@ -845,6 +845,13 @@ public:
     // Provide name method for content format detection
     [[nodiscard]] auto name() const -> std::string { return "cbor"; }
 
+    /// @brief IANA media type used for HTTP `Content-Type`/`Accept` negotiation
+    ///        and CoAP Content-Format mapping (`rpc_serializer`).
+    ///
+    /// `application/cbor` is the registration from RFC 8949 §9.1, and is the
+    /// name CoAP Content-Format 60 corresponds to.
+    [[nodiscard]] auto media_type() const -> std::string { return "application/cbor"; }
+
 private:
     // ── CBOR major types (RFC 8949 §3), the accepted subset ─────────────────
     static constexpr std::uint8_t major_uint = 0;         ///< unsigned integer
