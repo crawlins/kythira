@@ -44,6 +44,21 @@ struct gcp_client_config {
     /// Maximum time allowed for a single GCP API call.
     std::chrono::seconds api_timeout{30};
 
+    /// Maximum time the SDK's own long-running-operation polling loop may spend
+    /// waiting for a Compute operation (`instances.insert`/`delete`, MIG
+    /// `resize`, CA-pool operations) to finish.
+    ///
+    /// Deliberately a separate, much larger value than `api_timeout`, and not
+    /// derived from it. google-cloud-cpp builds its *default* polling policy
+    /// from whatever retry policy the client is configured with, so setting
+    /// `api_timeout` as the retry bound silently caps LRO polling at the same
+    /// 30s — which is far below what GCE takes to delete an instance. That
+    /// exact mistake made `decommission_node` fail against live GCE with
+    /// "DeleteInstance() - polling loop terminated by polling policy" on 2 of 3
+    /// runs, where the unmodified client passed 2 of 2. The two bounds measure
+    /// different things and must be configured separately.
+    std::chrono::seconds operation_timeout{900};
+
     /// Interval between `zoneOperations.get` polls while waiting for a zone
     /// operation to reach `status == DONE`.
     std::chrono::milliseconds operation_poll_interval{2000};
