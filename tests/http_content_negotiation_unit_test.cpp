@@ -1,0 +1,186 @@
+/// @file http_content_negotiation_unit_test.cpp
+/// @brief The negotiation pieces the HTTP transports share
+///        (`.kiro/specs/transport-multi-serializer/`, Tasks 9 and 10):
+///        `format_accept_header`, `strip_media_type_parameters`, and
+///        `peer_capability_cache`.
+///
+/// Links no transport. `cpp_httplib_server` and `boost_beast_server` differ
+/// only in how they *obtain* a header string; what the string means is decided
+/// here, once, so the two cannot disagree about it. The transports' own suites
+/// cover the wiring; this covers the rules.
+
+#include <raft/http_content_negotiation.hpp>
+#include <raft/peer_capability_cache.hpp>
+#include <raft/serializer_registry.hpp>
+#include <raft/json_serializer.hpp>
+
+#define BOOST_TEST_MODULE http_content_negotiation_unit_test
+#include <boost/test/unit_test.hpp>
+
+#include <cstddef>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+using data_type = std::vector<std::byte>;
+using json_serializer = kythira::json_rpc_serializer<data_type>;
+}  // namespace
+
+BOOST_AUTO_TEST_SUITE(format_accept_header_tests)
+
+BOOST_AUTO_TEST_CASE(joins_in_preference_order_without_q_values) {
+    BOOST_CHECK_EQUAL(kythira::format_accept_header({"application/cbor", "application/json"}),
+                      "application/cbor, application/json");
+}
+
+BOOST_AUTO_TEST_CASE(a_single_type_has_no_separator) {
+    BOOST_CHECK_EQUAL(kythira::format_accept_header({"application/json"}), "application/json");
+}
+
+/// An empty list must yield an empty string, not `""` wrapped in separators —
+/// the clients test for emptiness to decide whether to send the header at all.
+/// Sending `Accept:` with an empty value means "accept nothing" to a strict
+/// peer, which earns a 406 for no reason.
+BOOST_AUTO_TEST_CASE(an_empty_list_yields_an_empty_string) {
+    BOOST_CHECK_EQUAL(kythira::format_accept_header({}), "");
+}
+
+/// The round trip both transports actually perform: what one side formats, the
+/// other must parse back identically. Asserted rather than assumed, because
+/// these are two separate functions that could drift apart.
+BOOST_AUTO_TEST_CASE(round_trips_through_parse_accept_header) {
+    const std::vector<std::string> types{"application/cbor", "application/json",
+                                         "application/x-amzn-ion"};
+    BOOST_TEST(kythira::parse_accept_header(kythira::format_accept_header(types)) == types,
+               boost::test_tools::per_element());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(strip_media_type_parameters_tests)
+
+BOOST_AUTO_TEST_CASE(a_bare_media_type_is_unchanged) {
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("application/json"), "application/json");
+}
+
+/// The case that matters for interop: a peer is entitled to send a charset, and
+/// failing to strip it turns an ordinary spec-legal request into a 415.
+BOOST_AUTO_TEST_CASE(parameters_are_stripped) {
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("application/json; charset=utf-8"),
+                      "application/json");
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("application/json;charset=utf-8"),
+                      "application/json");
+}
+
+BOOST_AUTO_TEST_CASE(surrounding_whitespace_is_trimmed) {
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("  application/cbor  "),
+                      "application/cbor");
+}
+
+/// A header that is entirely empty or entirely parameters yields an empty
+/// string, which both transports treat as "absent" and fall back to their
+/// default. That is deliberately the same outcome as no header at all: a peer
+/// sending `Content-Type: ; charset=utf-8` has told us nothing, and guessing is
+/// better than 415-ing it.
+BOOST_AUTO_TEST_CASE(a_degenerate_value_yields_empty) {
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters(""), "");
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("   "), "");
+    BOOST_CHECK_EQUAL(kythira::strip_media_type_parameters("; charset=utf-8"), "");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(peer_capability_cache_tests)
+
+BOOST_AUTO_TEST_CASE(an_unknown_peer_has_no_entry) {
+    const kythira::peer_capability_cache<std::uint64_t> cache;
+    BOOST_CHECK(!cache.get(42).has_value());
+    BOOST_CHECK_EQUAL(cache.size(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(a_recorded_type_is_returned_and_overwritten_in_place) {
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    cache.record(42, "application/cbor");
+    BOOST_CHECK_EQUAL(cache.get(42).value(), "application/cbor");
+
+    cache.record(42, "application/json");
+    BOOST_CHECK_EQUAL(cache.get(42).value(), "application/json");
+    BOOST_CHECK_EQUAL(cache.size(), 1U);  // corrected, not accumulated
+}
+
+BOOST_AUTO_TEST_CASE(peers_do_not_share_entries) {
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    cache.record(1, "application/json");
+    cache.record(2, "application/cbor");
+    BOOST_CHECK_EQUAL(cache.get(1).value(), "application/json");
+    BOOST_CHECK_EQUAL(cache.get(2).value(), "application/cbor");
+}
+
+BOOST_AUTO_TEST_CASE(forget_removes_only_the_named_peer) {
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    cache.record(1, "application/json");
+    cache.record(2, "application/cbor");
+    cache.forget(1);
+    BOOST_CHECK(!cache.get(1).has_value());
+    BOOST_CHECK_EQUAL(cache.get(2).value(), "application/cbor");
+}
+
+/// The cache is read on the RPC path from whatever thread is sending, and
+/// written from whatever thread completes a response. This does not prove
+/// thread-safety — no test can — but it does exercise the lock under real
+/// contention, so a missing `lock_guard` shows up as a TSan finding in CI
+/// rather than as a rare corruption in production.
+BOOST_AUTO_TEST_CASE(concurrent_record_and_get_do_not_race) {
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    constexpr int iterations = 2000;
+
+    std::thread writer([&] {
+        for (int i = 0; i < iterations; ++i) {
+            cache.record(1, i % 2 == 0 ? "application/json" : "application/cbor");
+        }
+    });
+    std::thread reader([&] {
+        for (int i = 0; i < iterations; ++i) {
+            if (const auto v = cache.get(1)) {
+                // Whatever we read must be one of the two values ever written —
+                // never a torn string.
+                BOOST_TEST((*v == "application/json" || *v == "application/cbor"));
+            }
+        }
+    });
+    writer.join();
+    reader.join();
+    BOOST_CHECK_EQUAL(cache.size(), 1U);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+BOOST_AUTO_TEST_SUITE(select_request_media_type_tests)
+
+BOOST_AUTO_TEST_CASE(with_no_cache_entry_the_default_is_used) {
+    const kythira::single_serializer_registry<json_serializer> registry;
+    const kythira::peer_capability_cache<std::uint64_t> cache;
+    BOOST_CHECK_EQUAL(kythira::select_request_media_type(registry, cache, 7U), "application/json");
+}
+
+BOOST_AUTO_TEST_CASE(a_supported_cached_type_wins) {
+    const kythira::single_serializer_registry<json_serializer> registry;
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    cache.record(7, "application/json");
+    BOOST_CHECK_EQUAL(kythira::select_request_media_type(registry, cache, 7U), "application/json");
+}
+
+/// The case the `registry.supports(...)` guard exists for. A registry can be
+/// reconfigured between calls, and honouring a cached type this client can no
+/// longer decode would break the *response* leg — we would ask for something we
+/// cannot read. Falling back to the default is always safe because the default
+/// is by construction one we speak.
+BOOST_AUTO_TEST_CASE(an_unsupported_cached_type_falls_back_to_the_default) {
+    const kythira::single_serializer_registry<json_serializer> registry;
+    kythira::peer_capability_cache<std::uint64_t> cache;
+    cache.record(7, "application/x-no-longer-configured");
+    BOOST_CHECK_EQUAL(kythira::select_request_media_type(registry, cache, 7U), "application/json");
+}
+
+BOOST_AUTO_TEST_SUITE_END()

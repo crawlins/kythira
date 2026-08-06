@@ -33,10 +33,11 @@ namespace kythira {
 /// top choice. Revisit if a real peer needs strict ranking; the tests pin the
 /// current behaviour so the change would be visible.
 ///
-/// Wildcards (`*/*`, `type/*`) are returned verbatim rather than expanded. A
-/// registry matches on exact tokens, so `*/*` simply matches nothing and the
-/// caller falls through to its default — the same outcome an absent `Accept`
-/// produces, which is the right answer for "I'll take anything".
+/// Wildcards (`*/*`, `type/*`) are returned verbatim rather than expanded;
+/// matching them belongs to the registry (`accept_entry_matches`), which is the
+/// only place that knows what types there are to expand *to*. `*/*` therefore
+/// resolves to the registry's default and `type/*` to its first match within
+/// that top-level type, rather than matching nothing.
 ///
 /// Empty entries (from `"a,,b"` or a trailing comma) are skipped, so a
 /// malformed header degrades to the types it did contain rather than
@@ -64,6 +65,50 @@ namespace kythira {
         pos = comma + 1;
     }
     return result;
+}
+
+/// @brief Renders `preferred_media_types()` as an `Accept` header value.
+///
+/// Comma-separated in preference order, with no `q` values. Emitting no `q` is
+/// the deliberate counterpart to `parse_accept_header` not honouring it: order
+/// alone carries the preference, both sides agree on that reading, and there is
+/// no second encoding of the same intent to fall out of sync. RFC 9110 §12.5.1
+/// treats a list without `q` as all-equally-acceptable, and a peer that reads it
+/// that way still picks something this client can decode — which is the only
+/// guarantee that matters.
+///
+/// An empty list yields an empty string; callers omit the header entirely in
+/// that case rather than sending `Accept:`, since an empty value means "accept
+/// nothing" to a strict peer and would earn a 406.
+[[nodiscard]] inline auto format_accept_header(const std::vector<std::string>& media_types)
+    -> std::string {
+    std::string result;
+    for (const auto& media_type : media_types) {
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += media_type;
+    }
+    return result;
+}
+
+/// @brief Strips parameters from a single `Content-Type` value.
+///
+/// `"application/json; charset=utf-8"` yields `"application/json"`. Servers and
+/// clients both need this: a registry dispatches on the bare media type, and a
+/// peer is entitled to send a charset or boundary parameter alongside it.
+/// Failing to strip would turn an ordinary, spec-legal request into a 415.
+[[nodiscard]] inline auto strip_media_type_parameters(std::string_view content_type)
+    -> std::string {
+    if (const auto semi = content_type.find(';'); semi != std::string_view::npos) {
+        content_type = content_type.substr(0, semi);
+    }
+    const auto first = content_type.find_first_not_of(" \t");
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const auto last = content_type.find_last_not_of(" \t");
+    return std::string{content_type.substr(first, last - first + 1)};
 }
 
 }  // namespace kythira
