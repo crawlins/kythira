@@ -17,22 +17,28 @@
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/gcp_client_config.hpp>
+#include <raft/gcp_client_options.hpp>
 #include <raft/gcp_operation_wait.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_GCP_SDK
 
 #include <google/cloud/compute/instance_group_managers/v1/instance_group_managers_client.h>
+#include <google/cloud/compute/instance_group_managers/v1/instance_group_managers_options.h>
 #include <google/cloud/compute/instances/v1/instances_client.h>
+#include <google/cloud/compute/instances/v1/instances_options.h>
 #include <google/cloud/compute/zone_operations/v1/zone_operations_client.h>
+#include <google/cloud/compute/zone_operations/v1/zone_operations_options.h>
 #include <google/cloud/credentials.h>
 #include <google/cloud/options.h>
+#include <google/cloud/polling_policy.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -45,39 +51,44 @@ namespace kythira {
 
 namespace gcp_mig_detail {
 
+/// Credentials, endpoint override and transport time bounds — see
+/// `gcp_detail::make_base_options`, which this used to duplicate verbatim
+/// alongside `gcp_compute_detail` and `gcp_privateca_detail`.
 inline auto make_options(const gcp_client_config& gcp) -> google::cloud::Options {
-    google::cloud::Options opts;
-    if (!gcp.credentials_json.empty()) {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeServiceAccountCredentials(gcp.credentials_json));
-    } else {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeGoogleDefaultCredentials());
-    }
-    if (!gcp.endpoint_override.empty()) {
-        opts.set<google::cloud::EndpointOption>(gcp.endpoint_override);
-    }
-    return opts;
+    return gcp_detail::make_base_options(gcp);
 }
 
 inline auto make_migs_client(const gcp_client_config& gcp)
     -> google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient {
-    return google::cloud::compute_instance_group_managers_v1::InstanceGroupManagersClient(
-        google::cloud::compute_instance_group_managers_v1::MakeInstanceGroupManagersConnectionRest(
-            make_options(gcp)));
+    namespace ig = google::cloud::compute_instance_group_managers_v1;
+    // MIG `resize` is long-running, and slower than an instance insert/delete —
+    // so the `operation_timeout`-scaled polling policy matters here most of all.
+    auto opts = gcp_detail::with_retry_policies<
+        ig::InstanceGroupManagersRetryPolicyOption, ig::InstanceGroupManagersLimitedTimeRetryPolicy,
+        ig::InstanceGroupManagersBackoffPolicyOption, ig::InstanceGroupManagersPollingPolicyOption>(
+        gcp_detail::make_base_options(gcp), gcp);
+    return ig::InstanceGroupManagersClient(
+        ig::MakeInstanceGroupManagersConnectionRest(std::move(opts)));
 }
 
 inline auto make_instances_client(const gcp_client_config& gcp)
     -> google::cloud::compute_instances_v1::InstancesClient {
-    return google::cloud::compute_instances_v1::InstancesClient(
-        google::cloud::compute_instances_v1::MakeInstancesConnectionRest(make_options(gcp)));
+    namespace ci = google::cloud::compute_instances_v1;
+    auto opts = gcp_detail::with_retry_policies<
+        ci::InstancesRetryPolicyOption, ci::InstancesLimitedTimeRetryPolicy,
+        ci::InstancesBackoffPolicyOption, ci::InstancesPollingPolicyOption>(
+        gcp_detail::make_base_options(gcp), gcp);
+    return ci::InstancesClient(ci::MakeInstancesConnectionRest(std::move(opts)));
 }
 
 inline auto make_zone_operations_client(const gcp_client_config& gcp)
     -> google::cloud::compute_zone_operations_v1::ZoneOperationsClient {
-    return google::cloud::compute_zone_operations_v1::ZoneOperationsClient(
-        google::cloud::compute_zone_operations_v1::MakeZoneOperationsConnectionRest(
-            make_options(gcp)));
+    namespace zo = google::cloud::compute_zone_operations_v1;
+    auto opts = gcp_detail::with_retry_policies_no_lro<zo::ZoneOperationsRetryPolicyOption,
+                                                       zo::ZoneOperationsLimitedTimeRetryPolicy,
+                                                       zo::ZoneOperationsBackoffPolicyOption>(
+        gcp_detail::make_base_options(gcp), gcp);
+    return zo::ZoneOperationsClient(zo::MakeZoneOperationsConnectionRest(std::move(opts)));
 }
 
 /// Returns the last `/`-delimited segment of a GCE self-link/URL — the short

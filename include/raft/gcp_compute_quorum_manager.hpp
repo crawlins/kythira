@@ -17,21 +17,26 @@
 #include <raft/fault_injection.hpp>
 #include <raft/future_default.hpp>
 #include <raft/gcp_client_config.hpp>
+#include <raft/gcp_client_options.hpp>
 #include <raft/gcp_operation_wait.hpp>
 #include <raft/quorum_management.hpp>
 
 #ifdef KYTHIRA_HAS_GCP_SDK
 
 #include <google/cloud/compute/instances/v1/instances_client.h>
+#include <google/cloud/compute/instances/v1/instances_options.h>
 #include <google/cloud/compute/zone_operations/v1/zone_operations_client.h>
+#include <google/cloud/compute/zone_operations/v1/zone_operations_options.h>
 #include <google/cloud/credentials.h>
 #include <google/cloud/options.h>
+#include <google/cloud/polling_policy.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <random>
 #include <stdexcept>
@@ -44,34 +49,38 @@ namespace kythira {
 
 namespace gcp_compute_detail {
 
-/// Builds the shared `google::cloud::Options` (credentials + endpoint override)
-/// used to construct every Compute Engine REST client for one manager.
+/// Builds the shared `google::cloud::Options` used to construct every Compute
+/// Engine REST client for one manager: credentials, endpoint override, and the
+/// transport time bounds documented on `gcp_detail::make_base_options`.
+///
+/// Kept as a named function in this namespace because callers outside the
+/// manager use it directly (the real-GCE suite builds a `MachineTypesClient`
+/// from it), and because the retry policies below are service-specific and so
+/// cannot be folded in here.
 inline auto make_options(const gcp_client_config& gcp) -> google::cloud::Options {
-    google::cloud::Options opts;
-    if (!gcp.credentials_json.empty()) {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeServiceAccountCredentials(gcp.credentials_json));
-    } else {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeGoogleDefaultCredentials());
-    }
-    if (!gcp.endpoint_override.empty()) {
-        opts.set<google::cloud::EndpointOption>(gcp.endpoint_override);
-    }
-    return opts;
+    return gcp_detail::make_base_options(gcp);
 }
 
 inline auto make_instances_client(const gcp_client_config& gcp)
     -> google::cloud::compute_instances_v1::InstancesClient {
-    return google::cloud::compute_instances_v1::InstancesClient(
-        google::cloud::compute_instances_v1::MakeInstancesConnectionRest(make_options(gcp)));
+    namespace ci = google::cloud::compute_instances_v1;
+    // `instances.insert`/`delete` are long-running, so the polling policy here
+    // is load-bearing rather than incidental — see `with_retry_policies`.
+    auto opts = gcp_detail::with_retry_policies<
+        ci::InstancesRetryPolicyOption, ci::InstancesLimitedTimeRetryPolicy,
+        ci::InstancesBackoffPolicyOption, ci::InstancesPollingPolicyOption>(
+        gcp_detail::make_base_options(gcp), gcp);
+    return ci::InstancesClient(ci::MakeInstancesConnectionRest(std::move(opts)));
 }
 
 inline auto make_zone_operations_client(const gcp_client_config& gcp)
     -> google::cloud::compute_zone_operations_v1::ZoneOperationsClient {
-    return google::cloud::compute_zone_operations_v1::ZoneOperationsClient(
-        google::cloud::compute_zone_operations_v1::MakeZoneOperationsConnectionRest(
-            make_options(gcp)));
+    namespace zo = google::cloud::compute_zone_operations_v1;
+    auto opts = gcp_detail::with_retry_policies_no_lro<zo::ZoneOperationsRetryPolicyOption,
+                                                       zo::ZoneOperationsLimitedTimeRetryPolicy,
+                                                       zo::ZoneOperationsBackoffPolicyOption>(
+        gcp_detail::make_base_options(gcp), gcp);
+    return zo::ZoneOperationsClient(zo::MakeZoneOperationsConnectionRest(std::move(opts)));
 }
 
 }  // namespace gcp_compute_detail

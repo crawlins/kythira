@@ -7,14 +7,18 @@
 ///        `KYTHIRA_HAS_GCP_PRIVATECA` is defined.
 
 #include <raft/future_default.hpp>
+#include <raft/gcp_client_options.hpp>
 #include <raft/gcp_privateca_certificate_provider.hpp>
 
 #ifdef KYTHIRA_HAS_GCP_PRIVATECA
 
 #include <google/cloud/credentials.h>
 #include <google/cloud/options.h>
+#include <google/cloud/polling_policy.h>
+#include <google/cloud/privateca/v1/certificate_authority_options.h>
 #include <google/protobuf/duration.pb.h>
 
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -22,25 +26,27 @@ namespace raft::testing {
 
 namespace gcp_privateca_detail {
 
+/// Credentials and endpoint override only.
+///
+/// Unlike the two Compute managers this deliberately does *not* carry the REST
+/// transport time bounds: `MakeCertificateAuthorityServiceConnection` is
+/// gRPC-backed (there is no REST variant), so `ServerTimeoutOption` and the
+/// curl stall timeouts do not apply and would only draw "unexpected option"
+/// warnings. The bound that does apply is the retry policy in `make_client`.
 inline auto make_options(const kythira::gcp_client_config& gcp) -> google::cloud::Options {
-    google::cloud::Options opts;
-    if (!gcp.credentials_json.empty()) {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeServiceAccountCredentials(gcp.credentials_json));
-    } else {
-        opts.set<google::cloud::UnifiedCredentialsOption>(
-            google::cloud::MakeGoogleDefaultCredentials());
-    }
-    if (!gcp.endpoint_override.empty()) {
-        opts.set<google::cloud::EndpointOption>(gcp.endpoint_override);
-    }
-    return opts;
+    return kythira::gcp_detail::make_credential_options(gcp);
 }
 
 inline auto make_client(const kythira::gcp_client_config& gcp)
     -> google::cloud::privateca_v1::CertificateAuthorityServiceClient {
-    return google::cloud::privateca_v1::CertificateAuthorityServiceClient(
-        google::cloud::privateca_v1::MakeCertificateAuthorityServiceConnection(make_options(gcp)));
+    namespace ca = google::cloud::privateca_v1;
+    auto opts = kythira::gcp_detail::with_retry_policies<
+        ca::CertificateAuthorityServiceRetryPolicyOption,
+        ca::CertificateAuthorityServiceLimitedTimeRetryPolicy,
+        ca::CertificateAuthorityServiceBackoffPolicyOption,
+        ca::CertificateAuthorityServicePollingPolicyOption>(make_options(gcp), gcp);
+    return ca::CertificateAuthorityServiceClient(
+        ca::MakeCertificateAuthorityServiceConnection(std::move(opts)));
 }
 
 /// `projects/{project}/locations/{location}/caPools/{pool}`.
