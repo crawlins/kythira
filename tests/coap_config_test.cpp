@@ -11,8 +11,9 @@
 #include <raft/coap_exceptions.hpp>
 
 #include <chrono>
-#include <vector>
+#include <optional>
 #include <string>
+#include <vector>
 
 using namespace kythira;
 using namespace kythira::coap_utils;
@@ -496,6 +497,114 @@ BOOST_AUTO_TEST_CASE(test_parse_content_format) {
     BOOST_CHECK(parse_content_format(41) == coap_content_format::application_xml);
 
     BOOST_CHECK_THROW(parse_content_format(999), coap_protocol_error);
+}
+
+// ---------------------------------------------------------------------------
+// media_type_to_coap_content_format — the negotiation-facing replacement for
+// get_content_format_for_serializer (transport-multi-serializer, Task 7).
+// ---------------------------------------------------------------------------
+
+/// Every media type a shipped serializer reports must map, or that serializer is
+/// unusable over CoAP. Spelt as literals rather than by calling `media_type()`
+/// on the real serializers, so this test does not have to link CBOR/Ion/protobuf
+/// — and so that changing a serializer's media type breaks *here*, loudly,
+/// instead of silently ceasing to be covered.
+BOOST_AUTO_TEST_CASE(test_media_type_to_coap_content_format_covers_shipped_serializers) {
+    BOOST_CHECK(media_type_to_coap_content_format("application/json") ==
+                coap_content_format::application_json);
+    BOOST_CHECK(media_type_to_coap_content_format("application/cbor") ==
+                coap_content_format::application_cbor);
+    BOOST_CHECK(media_type_to_coap_content_format("application/x-protobuf") ==
+                coap_content_format::application_octet_stream);
+    BOOST_CHECK(media_type_to_coap_content_format("application/x-amzn-ion") ==
+                coap_content_format::application_ion);
+    BOOST_CHECK(media_type_to_coap_content_format("text/x-amzn-ion") ==
+                coap_content_format::application_ion);
+}
+
+/// The whole reason this returns `std::optional`: an unmapped media type must be
+/// reported as unmapped, not answered with a plausible default. Contrast
+/// `get_content_format_for_serializer("unknown")`, asserted above to return
+/// `application_cbor` — a confidently wrong number on the wire.
+BOOST_AUTO_TEST_CASE(test_media_type_to_coap_content_format_reports_unknown_as_nullopt) {
+    BOOST_CHECK(media_type_to_coap_content_format("application/x-made-up") == std::nullopt);
+    BOOST_CHECK(media_type_to_coap_content_format("") == std::nullopt);
+    // Exact match only. The superseded helper's substring search would have
+    // answered `application_json` for this.
+    BOOST_CHECK(media_type_to_coap_content_format("application/json-lines") == std::nullopt);
+    // A parameterised header value is the caller's to strip before asking;
+    // `parse_accept_header` already does. Asserted so that stops being an
+    // accident.
+    BOOST_CHECK(media_type_to_coap_content_format("application/json; charset=utf-8") ==
+                std::nullopt);
+}
+
+namespace {
+
+/// Minimal stand-in reporting a fixed media type. `validate_registry_content_formats`
+/// only ever calls `preferred_media_types()`, so nothing here needs to encode
+/// anything — and using stubs keeps this test off the real serializers' link
+/// dependencies.
+struct fake_registry {
+    std::vector<std::string> media_types;
+    [[nodiscard]] auto preferred_media_types() const -> std::vector<std::string> {
+        return media_types;
+    }
+};
+
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(test_validate_registry_content_formats_accepts_distinct_mappings) {
+    BOOST_CHECK_NO_THROW(validate_registry_content_formats(fake_registry{{"application/json"}}));
+    BOOST_CHECK_NO_THROW(validate_registry_content_formats(
+        fake_registry{{"application/json", "application/cbor", "application/x-amzn-ion"}}));
+    // An empty registry is vacuously fine; rejecting it is the transport's call,
+    // not this check's.
+    BOOST_CHECK_NO_THROW(validate_registry_content_formats(fake_registry{{}}));
+}
+
+BOOST_AUTO_TEST_CASE(test_validate_registry_content_formats_rejects_unmapped_media_type) {
+    BOOST_CHECK_THROW(validate_registry_content_formats(
+                          fake_registry{{"application/json", "application/x-nope"}}),
+                      coap_unsupported_content_format_error);
+
+    // The offending media type is carried on the exception, so a caller can say
+    // which entry to remove without re-deriving it.
+    try {
+        validate_registry_content_formats(fake_registry{{"application/x-nope"}});
+        BOOST_FAIL("expected coap_unsupported_content_format_error");
+    } catch (const coap_unsupported_content_format_error& e) {
+        BOOST_CHECK_EQUAL(e.media_type(), "application/x-nope");
+    }
+}
+
+/// The collision case is why "every media type maps" is not on its own a
+/// sufficient check. Both Ion encodings map — to the *same* number — so a CoAP
+/// receiver handed Content-Format 65000 cannot tell which was meant. Caught at
+/// construction, where the fix is to drop one, rather than at decode time, where
+/// the symptom is a corrupt payload.
+BOOST_AUTO_TEST_CASE(test_validate_registry_content_formats_rejects_colliding_mappings) {
+    BOOST_CHECK_THROW(validate_registry_content_formats(
+                          fake_registry{{"application/x-amzn-ion", "text/x-amzn-ion"}}),
+                      coap_unsupported_content_format_error);
+
+    // The check is general, not an Ion special case: protobuf and a future
+    // `application/octet-stream` serializer would collide on 42 the same way.
+    BOOST_CHECK_THROW(validate_registry_content_formats(
+                          fake_registry{{"application/x-protobuf", "application/octet-stream"}}),
+                      coap_unsupported_content_format_error);
+
+    // The message names both sides of the collision, since the fix is to the pair.
+    try {
+        validate_registry_content_formats(
+            fake_registry{{"application/x-amzn-ion", "text/x-amzn-ion"}});
+        BOOST_FAIL("expected coap_unsupported_content_format_error");
+    } catch (const coap_unsupported_content_format_error& e) {
+        const std::string what = e.what();
+        BOOST_CHECK(what.find("application/x-amzn-ion") != std::string::npos);
+        BOOST_CHECK(what.find("text/x-amzn-ion") != std::string::npos);
+        BOOST_CHECK(what.find("65000") != std::string::npos);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
