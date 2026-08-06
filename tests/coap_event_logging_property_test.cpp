@@ -7,6 +7,7 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 
 #include <sstream>
 #include <memory>
@@ -164,6 +165,8 @@ static_assert(kythira::diagnostic_logger<test_logger>,
 // Define test types for CoAP transport
 struct test_transport_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using serializer_registry_type =
+        kythira::single_serializer_registry<kythira::json_rpc_serializer<std::vector<std::byte>>>;
     using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = test_logger;

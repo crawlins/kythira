@@ -10,6 +10,7 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_transport_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 
 #include <random>
 #include <vector>
@@ -32,6 +33,8 @@ constexpr std::chrono::milliseconds test_timeout{5000};
 // Define test types for CoAP transport
 struct test_transport_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using serializer_registry_type =
+        kythira::single_serializer_registry<kythira::json_rpc_serializer<std::vector<std::byte>>>;
     using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;

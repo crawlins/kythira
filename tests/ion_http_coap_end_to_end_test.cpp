@@ -24,6 +24,7 @@
 #include <raft/ion_serializer.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/executor_default.hpp>
+#include <raft/serializer_registry.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -46,6 +47,7 @@ using ion_serializer_type = kythira::ion_rpc_serializer<std::vector<std::byte>>;
 // coap_client has three RPCs with three distinct Response types.
 struct coap_test_transport_types {
     using serializer_type = ion_serializer_type;
+    using serializer_registry_type = kythira::single_serializer_registry<ion_serializer_type>;
     using rpc_serializer_type = ion_serializer_type;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;

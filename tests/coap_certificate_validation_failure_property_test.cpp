@@ -12,6 +12,7 @@
 #include <raft/coap_exceptions.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/certificate_authority.hpp>
+#include <raft/serializer_registry.hpp>
 
 #include <random>
 #include <vector>
@@ -23,6 +24,8 @@
 // Define test types for the transport
 struct TestTypes {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using serializer_registry_type =
+        kythira::single_serializer_registry<kythira::json_rpc_serializer<std::vector<std::byte>>>;
     using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;

@@ -5,6 +5,7 @@
 #include <raft/coap_transport.hpp>
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 #include <memory>
 #include <random>
 #include <thread>
@@ -58,6 +59,8 @@ constexpr std::uint64_t test_node_id = 1;
 // Define test types for CoAP transport
 struct test_transport_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using serializer_registry_type =
+        kythira::single_serializer_registry<kythira::json_rpc_serializer<std::vector<std::byte>>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;
     using executor_type = kythira::console_logger;

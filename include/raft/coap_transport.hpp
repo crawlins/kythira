@@ -12,6 +12,7 @@
 #include <raft/logger.hpp>
 #include <raft/console_logger.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 #include <raft/memory_pool.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/network_simulator.hpp>
@@ -146,6 +147,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor> struct co
     template<typename T> using future_template = network_simulator::SimpleFuture<T>;
 #endif
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
     using logger_type = kythira::console_logger;
@@ -156,6 +158,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor>
 struct std_coap_transport_types {
     template<typename T> using future_template = std::future<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
     using logger_type = kythira::console_logger;
@@ -166,6 +169,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor>
 struct simple_coap_transport_types {
     template<typename T> using future_template = network_simulator::SimpleFuture<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
     using logger_type = kythira::console_logger;
@@ -183,6 +187,7 @@ struct default_transport_types {
     using future_type = FutureType;
     template<typename T> using promise_template = PromiseTemplate<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using logger_type = Logger;
     using executor_type = Logger;  // Use logger as executor for backward compatibility

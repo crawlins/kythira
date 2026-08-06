@@ -6,12 +6,15 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
+#include <raft/serializer_registry.hpp>
 
 #include "test_timeout_scale.hpp"
 
 // Simple test types
 struct test_types {
     using serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
+    using serializer_registry_type =
+        kythira::single_serializer_registry<kythira::json_rpc_serializer<std::vector<std::byte>>>;
     using rpc_serializer_type = kythira::json_rpc_serializer<std::vector<std::byte>>;
     using metrics_type = kythira::noop_metrics;
     using logger_type = kythira::console_logger;

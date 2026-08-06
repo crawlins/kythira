@@ -4,6 +4,7 @@
 #include <raft/network.hpp>
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
+#include <raft/serializer_registry.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/types.hpp>
 
@@ -47,6 +48,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor> struct ht
     template<typename T> using future_template = network_simulator::SimpleFuture<T>;
 #endif
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
 };
@@ -56,6 +58,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor>
 struct std_http_transport_types {
     template<typename T> using future_template = std::future<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
 };
@@ -65,6 +68,7 @@ template<typename RPC_Serializer, typename Metrics, typename Executor>
 struct simple_http_transport_types {
     template<typename T> using future_template = network_simulator::SimpleFuture<T>;
     using serializer_type = RPC_Serializer;
+    using serializer_registry_type = single_serializer_registry<RPC_Serializer>;
     using metrics_type = Metrics;
     using executor_type = Executor;
 };

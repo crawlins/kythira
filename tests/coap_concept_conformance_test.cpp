@@ -14,6 +14,7 @@
 #include <raft/coap_transport.hpp>
 #include <folly/executors/CPUThreadPoolExecutor.h>  // test_types::executor_type below is folly::Executor directly
 #include <raft/coap_transport_impl.hpp>
+#include <raft/serializer_registry.hpp>
 
 #endif
 
@@ -49,6 +50,7 @@ using test_metrics = kythira::noop_metrics;
 // (e.g. coap_content_format_property_test.cpp).
 struct test_types {
     using serializer_type = test_serializer;
+    using serializer_registry_type = kythira::single_serializer_registry<test_serializer>;
     using rpc_serializer_type = test_serializer;
     using metrics_type = test_metrics;
     using logger_type = kythira::console_logger;
