@@ -159,6 +159,195 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **Beast suites segfault under the stdexec future backend, and CI cannot see
+  it (found August 6, 2026 — open).** Five tests fail on unmodified `main` in a
+  local `build/` configured `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`:
+  `beast_ssl_test`, `beast_server_test`, `beast_integration_test`,
+  `beast_cross_transport_equivalence_test` and
+  `three_way_http_transport_equivalence_test`. `beast_ssl_test` fails 5 runs
+  out of 5 — deterministic, not flaky. Found while verifying an unrelated
+  change; **confirmed pre-existing** by rebuilding from `origin/main` and
+  observing an identical failure, so it is not a regression from the HTTP
+  content-negotiation work (PR #167).
+  - **The crash is inside the stdexec backend, not Beast.** Backtrace from a
+    `main`-built binary: `SIGSEGV` in
+    `stdexec::__let::__opstate<...>::__start_next()`, reached from
+    `kythira::stdexec_backend::single_shot_channel<unit>::set_value()`, called
+    from `async_connect_kf`'s Asio connect-completion lambda, running on an
+    `io_thread_pool` thread. A second signature seen on the same binary is a
+    glibc abort — `pthread_mutex_lock.c:94: assertion failed:
+    mutex->__data.__owner == 0` — which together with the above reads like the
+    type-erased operation state being destroyed before its completion fires.
+  - **Why no CI job catches it.** `Build & Test` passes no
+    `-DKYTHIRA_DEFAULT_FUTURE_BACKEND`, so it takes the `CMakeLists.txt:674`
+    default, **folly**. The `[stdexec, boost]` matrix legs exist but build only
+    `--target proxygen_transport_test`. So **no job anywhere runs a Beast test
+    under stdexec**, and Beast's green ticks certify one backend only. Same
+    shape as the recurring theme below: a check that passes without covering
+    the thing it appears to cover.
+  - **Supporting evidence, short of proof.** Every frame in the backtrace is
+    stdexec or Asio, and CI runs the same five tests under **folly** — on both
+    arm64 and x64, PR #167's run `31106119481` — where all five pass. So folly
+    passes and stdexec crashes on the same sources. That comparison is
+    confounded: CI also differs in architecture, OS image and compiler build,
+    so it is strong support for "stdexec-specific" rather than a controlled
+    result.
+  - **Step 1 is therefore a clean local comparison, not a fix.** Configure a
+    folly and a boost build on *this* machine, build `beast_ssl_test` in each,
+    and run it — same host, same compiler, one variable. No existing build
+    directory serves: `build-clang` is folly but stale (it predates the Beast
+    test split and knows only `beast_transport_test`), and neither
+    `build-boost` nor `build-gcp` has any Beast target built. If folly and
+    boost both pass, the bug is stdexec's; if folly also fails locally, the
+    environment is implicated and local-vs-CI becomes the question instead. Do
+    this before reading any stdexec code.
+  - Repro: `cmake -B build-stdexec -DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec
+    -DCMAKE_BUILD_TYPE=Release && cmake --build build-stdexec --target
+    beast_ssl_test && ./build-stdexec/tests/beast_ssl_test`. Under `gdb -batch
+    -ex run -ex "bt 25"` the trace above appears within seconds.
+
+- **CI must matrix every `future_default` backend across the whole suite, not
+  one target.** The Beast × stdexec hole above is a symptom; the hole is much
+  larger than Beast. `future_default<T>` resolves to one of **three** backends
+  (`folly`, `stdexec`, `boost` — `CMakeLists.txt:676`), and **118 of the 390
+  test files** under `tests/` resolve through it: 40 `raft_*`, 21 `coap_*`, 8
+  `kythira_*`, 5 `learner_*`, 5 `beast_*`, 4 `peer2peer_*`, 4 `membership_*`,
+  plus error-handler, quorum-manager, network and performance suites. Today
+  `Build & Test` runs all of them under **folly only** (it passes no backend
+  flag, so it takes the `CMakeLists.txt:674` default), and the
+  `backend: [stdexec, boost]` legs build a single target,
+  `proxygen_transport_test`. So **two of the three backends are certified by
+  one test**, and ~30% of the suite has never run against them.
+  - Widen the backend matrix to build and run the **full** test suite for each
+    of `folly`, `stdexec` and `boost`, rather than adding Beast to the existing
+    narrow legs. Beast × stdexec was simply the first cell anyone happened to
+    land on; adding only that cell fixes one square of a grid that is mostly
+    empty, and the next session would find the next one by accident the same
+    way.
+  - Cheapest correct version if a 3× full matrix is too costly: make the
+    non-default legs run at least the 118 backend-dependent suites, and derive
+    that list mechanically (`grep -l future_default tests/*.cpp`) rather than
+    hand-maintaining it — a hand-listed set silently stops covering new tests,
+    which is the same failure this whole item exists to prevent.
+  - **Expect it to go red immediately**, since the Beast × stdexec bug above is
+    live on `main`, and expect it to surface *more* than that one bug: nothing
+    has ever run the CoAP or raft suites under stdexec or boost either. That is
+    the point, but it orders the work — either land fixes first, or land the
+    matrix with the new legs non-blocking **and a dated note saying why**. Do
+    not merge it silently allowed-to-fail: an ignored red check is the same
+    failure mode as a green one that tests nothing.
+  - Cost check before widening: the current stdexec/boost legs take ~1.5-2
+    minutes because they build one target; a full `Build & Test` leg is ~20-30
+    minutes with ccache warm. Measure a full three-backend matrix before
+    committing to it, and if it is too slow consider running the non-default
+    backends on a schedule (nightly) rather than per-PR — a slower signal is
+    still infinitely better than the current none.
+
+- **Systematise "did the job actually do the work?" as CI jobs.** This repo's
+  single most repeated failure is machinery that reports success while doing
+  nothing — the count is past fifteen, and *every* instance so far was caught by
+  a human reading a log on a hunch. That does not scale and it is not reliable:
+  the ones nobody happened to look at are, by construction, still green. Turn
+  the manual check into automated assertions that fail the build.
+  - **Assert a test-count floor.** `Build & Test` runs 409 tests. A configure
+    change that silently drops a target — an `if(TARGET Folly::folly)` that
+    stops matching, a `find_package` that quietly fails — reduces the count and
+    still reports 100% passed. Record the expected count (or a floor) and fail
+    when the run comes in under it. This alone would have caught several past
+    incidents.
+  - **Assert the skip list, do not just tolerate skips.** CMake emits
+    `message(STATUS "<test>: skipped (requires Folly)")` and ctest reports
+    `Test suite ... is skipped because disabled`. Both currently read as
+    success. Compare the actual skip set against a checked-in allowlist and
+    fail on anything new, so a broken precondition cannot masquerade as a pass.
+  - **Surface first-attempt failures.** `ctest --repeat until-pass:3` hides
+    flakes completely: the summary says passed and only the raw log shows the
+    first attempt failed. **Two live examples found August 6, 2026 in PR #167's
+    run** — `httplib_server_validation_test` failed 4 assertions on attempt 1
+    and passed on attempt 2, and `grpc_transport_example_test` failed all three
+    attempts on a hardcoded-port collision (`51702`, `Address already in use`).
+    Emit a "passed only on retry" report as a job summary, and fail (or open an
+    issue) when it is non-empty. A flake nobody sees is a bug nobody fixes.
+  - **Assert each job's configuration actually took effect.** A previous
+    session verified *by hand* that the `Proxygen transport (boost future
+    backend)` leg really configured
+    `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost` and that all 12 of
+    `proxygen_transport_test`'s cases entered and ran, precisely because a
+    green tick alone did not establish it. Both are one-line greps against the
+    CMake cache and the ctest log; make every matrix leg do them, so the
+    assertion lives in the workflow rather than in whoever last thought to
+    check.
+  - **Fail a "ran nothing" real-cloud run.** `real-cloud-tests.yml` treats
+    `run_real_cloud_tests=true` as a master switch, and omitting it reports
+    `skipped` — success with nothing run. A job that claims to have exercised
+    real cloud resources and registered zero cases should be a failure, not a
+    tick.
+  - Related, and the reason this item sits third: the Beast × stdexec gap above
+    is exactly this class of problem. The fix for that one gap is a wider
+    matrix; the fix for the *class* is making "this job covered what it claims"
+    a checked property rather than an assumption.
+
+- **Decide whether Proxygen is meant to negotiate content, and implement it if
+  so.** `transport-multi-serializer` gave cpp-httplib and Beast full content
+  negotiation (Tasks 9, 10) and left Proxygen untouched — not by decision but
+  by omission: **`requirements.md` and `design.md` mention Proxygen zero
+  times**, and the only two occurrences in `tasks.md` are in this session's own
+  Task 5 write-up. The spec was written around the two HTTP transports that
+  existed when it was drafted, and nobody revisited it when the third landed.
+  - **Proxygen still has the exact bug the spec set out to remove.** Its server
+    response path hardcodes the media type —
+    `proxygen_http_transport_impl.hpp:1135`, `.header(HTTP_HEADER_CONTENT_TYPE,
+    status_code == 200 ? "application/json" : "text/plain")` — and the client
+    hardcodes it twice more (`:472`, `:502`). Requirement 9.4 names precisely
+    this ("replace the hardcoded `content_type_json`"), and it was fixed in
+    httplib and Beast on August 6, 2026 while Proxygen kept it. A Proxygen node
+    configured with `cbor_rpc_serializer` therefore labels every response
+    `application/json` and lies on the wire.
+  - So the first question is not "should it negotiate" but "is Proxygen a
+    first-class transport?" If yes, it needs Tasks 9/10's treatment: registry
+    encode/decode, `Accept` on requests, 415/406 before the handler, negotiated
+    `Content-Type` on responses, `media_type` metrics. If it is
+    experimental/benchmark-only, say so in the spec and fix only the hardcoded
+    label, which is a bug under any answer.
+  - Expect the same structural change Beast needed:
+    `proxygen_server::dispatch(_path, _body, response_body, status_code)` takes
+    no headers, exactly as Beast's did, so it cannot see `Content-Type` or
+    `Accept`. The Beast commit in PR #167 is a direct template for the fix.
+  - Add the spec tasks rather than implementing off-book, so the requirements
+    trace stays intact — this is the second time an unlisted transport has been
+    silently out of scope, and a task numbered in `tasks.md` is what stops a
+    third.
+
+- **Test the client-implementation × server-implementation interop grid.**
+  There is **no test anywhere** that pairs one HTTP implementation's client
+  with a different implementation's server. The two tests whose names suggest
+  otherwise do not:
+  `beast_cross_transport_equivalence_test` runs httplib client → httplib server
+  on port 18220 and Beast client → Beast server on 18221 and compares the
+  *results*; `three_way_http_transport_equivalence_test` says so outright in its
+  header — "against each transport's **own** client/server pair". Three
+  implementations means nine cells; three are covered, all on the diagonal.
+  - Equivalence is not interoperability. Each implementation's client is only
+    ever exercised against a server that shares its assumptions, so two
+    transports can pass every equivalence assertion and still fail to talk to
+    each other. The same grid-with-only-a-diagonal shape as the backend matrix
+    item above, on a different pair of axes.
+  - **The gap widened on August 6, 2026 rather than staying static.**
+    `cpp_httplib_client` and `boost_beast_client` now send `Accept`, expect a
+    negotiated `Content-Type` back, and reject unknown media types with
+    415/406. Proxygen does none of that and hardcodes `application/json`. Any
+    cell involving Proxygen is therefore untested *and* now working from
+    different header assumptions on both sides.
+  - Depends on the Proxygen item above: build the grid after that question is
+    answered, or the Proxygen cells will encode today's accidental behaviour as
+    the expected behaviour. Same caveat as the backend matrix — expect red on
+    day one, so land fixes first or mark the new cells non-blocking with a
+    dated note, never silently allowed-to-fail.
+  - Note spec Task 15 already covers *serializer* interop (multi- ↔
+    single-serializer, both directions, HTTP and CoAP). This item is the
+    orthogonal axis — same serializer, different transport implementation — and
+    the two should not be conflated when writing the tests.
+
 - **Real-GCE suite: three silent no-ops found during the first live run
   (August 5, 2026) — all three fixed August 6, 2026.** All surfaced while
   verifying the zone-laddering escalation (PR #158) against real GCE, none
