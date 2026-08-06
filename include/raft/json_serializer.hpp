@@ -623,6 +623,10 @@ public:
     // Provide name method for content format detection
     [[nodiscard]] auto name() const -> std::string { return "json"; }
 
+    /// @brief IANA media type used for HTTP `Content-Type`/`Accept` negotiation
+    ///        and CoAP Content-Format mapping (`rpc_serializer`).
+    [[nodiscard]] auto media_type() const -> std::string { return "application/json"; }
+
 private:
     // Helper to convert JSON string to bytes
     [[nodiscard]] auto json_to_bytes(const std::string& json_str) const -> Data {

@@ -780,6 +780,18 @@ public:
         return _encoding == ion_encoding::binary ? "ion-binary" : "ion-text";
     }
 
+    /// @brief IANA media type used for HTTP `Content-Type`/`Accept` negotiation
+    ///        and CoAP Content-Format mapping (`rpc_serializer`).
+    ///
+    /// Amazon's own registrations, and encoding-specific like `name()` is: the
+    /// binary and text encodings are not interchangeable on the wire, so a peer
+    /// that negotiated one must not be sent the other. This is the one
+    /// serializer whose media type depends on instance state rather than being
+    /// a constant.
+    [[nodiscard]] auto media_type() const -> std::string {
+        return _encoding == ion_encoding::binary ? "application/x-amzn-ion" : "text/x-amzn-ion";
+    }
+
 private:
     /// Generous per-message baseline; the grow-retry loop in `encode` covers any
     /// shortfall, so this only trims the number of retries in the common case.

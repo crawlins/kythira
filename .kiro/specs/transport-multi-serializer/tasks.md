@@ -1,33 +1,52 @@
 # Implementation Plan
 
-- [ ] 1. Strengthen the `rpc_serializer` concept and add `media_type()`
-  - Add `{ s.media_type() } -> std::convertible_to<std::string>;` to `rpc_serializer`
-    (`include/raft/types.hpp`)
-  - Add `media_type()` returning `"application/json"` to `json_rpc_serializer`
-    (`include/raft/json_serializer.hpp`), leaving `name()` unchanged
-  - Update `tests/rpc_serializer_concept_test.cpp` to assert `media_type()` presence
+**Status (August 6, 2026): Tasks 1-4, 6 and 12 are implemented.** They form the
+protocol-independent core — the concepts, the two registries, the exception, and
+their unit tests — and land as one self-contained change. Everything from Task 5
+onward is transport wiring, which touches every `Types` bundle and all four
+transports and is deliberately left as separate work.
+
+- [x] 1. Strengthen the `rpc_serializer` concept and add `media_type()`
+  - Added `{ s.media_type() } -> std::convertible_to<std::string>;` to
+    `rpc_serializer` (`include/raft/types.hpp`) — note this required adding a
+    `requires(const S& s)` parameter, since the concept had been effectively
+    vacuous (`typename S;` only)
+  - Added `media_type()` to **all four** shipped serializers, not just JSON:
+    strengthening the concept makes it mandatory for every one of them.
+    `application/json`, `application/cbor` (RFC 8949 §9.1),
+    `application/x-protobuf` (what the ecosystem actually emits, over the later
+    formal `application/protobuf` registration), and — uniquely — an
+    encoding-dependent `application/x-amzn-ion` / `text/x-amzn-ion` for Ion,
+    since its two encodings are not interchangeable on the wire
+  - `name()` left unchanged throughout: it is a metrics label, not a wire token
   - _Requirements: 2.1, 2.2, 2.3_
 
-- [ ] 2. Define the `Serializer_Registry` concept
-  - Add `serializer_registry<R, Data>` concept to `include/raft/types.hpp`:
+- [x] 2. Define the `Serializer_Registry` concept
+  - Added `serializer_registry<R, Data>` to `include/raft/types.hpp`:
     `default_media_type()`, `preferred_media_types()`, `supports(media_type)`,
     `select_output_media_type(accepted) -> std::optional<std::string>`
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6_
 
-- [ ] 3. Implement `single_serializer_registry<S>` and `multi_serializer_registry<S...>`
-  - New header `include/raft/serializer_registry.hpp`
-  - `single_serializer_registry<S>`: wraps one serializer; `encode_with`/`decode_with`
-    dispatch trivially, throwing `unsupported_media_type_error` on mismatch
-  - `multi_serializer_registry<S1, ..., SN>` (`N` ≥ 2): `std::tuple<S1,...,SN>` storage;
-    `S1` is the default; `encode_with`/`decode_with` fold over the tuple matching
-    `media_type()` at runtime
-  - `static_assert` both satisfy `serializer_registry`
+- [x] 3. Implement `single_serializer_registry<S>` and `multi_serializer_registry<S...>`
+  - New header `include/raft/serializer_registry.hpp`, as designed
+  - Two decisions worth recording, both tested:
+    - An **empty** `accepted` list yields the default rather than `nullopt`. A
+      missing `Accept` means "no preference", not "accepts nothing", and it is
+      the common case for a peer predating negotiation.
+    - `select_output_media_type` scans in the **peer's** order, not ours.
+      Otherwise the negotiated type would depend on which side asked first.
   - _Requirements: 1.7, 1.8, 1.9, 1.10_
 
-- [ ] 4. Add a minimal test-only second serializer
-  - `tagged_rpc_serializer` (or similar) under `tests/` wrapping
-    `json_rpc_serializer`'s wire bytes with a distinct `media_type()`
-    (e.g. `"application/x-test-alt"`), used only to exercise `N` ≥ 2 registries in tests
+- [x] 4. Add a minimal test-only second serializer
+  - Implemented as `tagged_serializer<Tag, MediaType>` inside
+    `tests/serializer_registry_unit_test.cpp` rather than a shared `tests/`
+    header, and it does **not** wrap `json_rpc_serializer`. Wrapping JSON would
+    have made every registry's output identical bytes, which cannot distinguish
+    "dispatched to the right serializer" from "dispatched to any serializer" —
+    the one property the registry is responsible for. The tagged serializer
+    emits its own tag byte and rejects a foreign tag on decode, so a
+    mis-dispatch fails loudly instead of returning a plausible value.
+    Promote it to a shared header if Tasks 13-16 need it.
   - _Requirements: 11.1_
 
 - [ ] 5. Extend `transport_types` with `serializer_registry_type`
@@ -43,9 +62,17 @@
   - Verify `raft_types` (node-internal bundle) is untouched
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 7.1, 7.2_
 
-- [ ] 6. Add `unsupported_media_type_error` and its CoAP analogue
-  - `include/raft/http_exceptions.hpp`: `unsupported_media_type_error : http_transport_error`
-  - `include/raft/coap_exceptions.hpp`: matching CoAP exception type
+- [x] 6. Add `unsupported_media_type_error` and its CoAP analogue
+  - `include/raft/http_exceptions.hpp`: `unsupported_media_type_error :
+    http_transport_error`, carrying the offending media type so a handler can
+    build its 415/406 response without re-parsing the header it just read
+  - Deliberately distinct from the existing `serialization_error`, which means a
+    payload of a type we *do* support failed to decode. The two map to different
+    HTTP statuses (415 vs 400), so a transport must be able to tell them apart
+    without inspecting message text
+  - **Not yet done**: the CoAP analogue in `include/raft/coap_exceptions.hpp`.
+    Deferred with the rest of the CoAP wiring (Task 11), since nothing throws it
+    until `coap_server` can respond 4.15
   - _Requirements: 8.1_
 
 - [ ] 7. Add `Media_Type`-keyed CoAP content-format lookup
@@ -106,10 +133,19 @@
     `error_type=unsupported_media_type` on negotiation failure
     - _Requirements: 10.1, 10.2, 10.3_
 
-- [ ] 12. Unit tests for the registry and negotiation logic
-  - `select_output_media_type` empty/overlap/no-overlap cases
-  - `encode_with`/`decode_with` dispatch and `unsupported_media_type_error` cases for
-    both `single_serializer_registry` and `multi_serializer_registry`
+- [x] 12. Unit tests for the registry and negotiation logic
+  - `tests/serializer_registry_unit_test.cpp`, 16 cases, linking no transport —
+    the negotiation rules are protocol-independent and only their *rendering*
+    (HTTP 406 vs CoAP 4.06) is not, so they are pinned here once rather than
+    re-tested per transport
+  - Covers: concept conformance for both registries; `select_output_media_type`
+    empty / overlap / partial-overlap / no-overlap; declaration order preserved
+    as preference order; the peer's `Accept` order deciding the result;
+    `encode_with`/`decode_with` dispatching to the *named* serializer (proved by
+    tag byte, not just by round-trip success); decoding under the wrong
+    registered type failing loudly; `unsupported_media_type_error` on both paths
+    for both registries and carrying the offending type; and one real
+    `request_vote_request` round-trip through JSON
   - _Requirements: 11.1, 11.2_
 
 - [ ] 13. Regression property tests: single-serializer configurations unchanged
