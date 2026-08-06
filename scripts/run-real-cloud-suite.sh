@@ -50,6 +50,21 @@ trap 'rm -f "$LOG"' EXIT
 # matters on a timeout: ctest SIGKILLs the child, and anything still sitting in
 # a buffer dies with it. A GCP run burned its full 3600s timeout and produced
 # not one line of output for exactly that reason.
+#
+# BOOST_TEST_LOG_LEVEL=message is the third piece of the same problem, and the
+# one that made -V worth less than it looked. Boost's default log level is
+# `error`, which discards every BOOST_TEST_MESSAGE record — so all the
+# diagnostics these suites write that way (which rung was refused, which zone
+# a node landed in, why a case took an internal skip) were dropped before ctest
+# ever saw them. Only the std::cerr trace() markers survived, and they were the
+# sole reason the Aug 5 2026 escalation run could be interpreted at all.
+#
+# Set as an env var rather than as a `--log_level=message` argument because
+# ctest invokes each test through its registered command line; there is no
+# per-invocation way to append an argument to it. Boost.Test reads this
+# variable itself, so it reaches every case in every real-cloud suite.
+export BOOST_TEST_LOG_LEVEL="${BOOST_TEST_LOG_LEVEL:-message}"
+
 ctest --test-dir "$BUILD_DIR" -L "$LABEL" -R "$TEST_REGEX" \
     --no-tests=error -V 2>&1 | tee "$LOG"
 

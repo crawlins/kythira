@@ -605,8 +605,10 @@ BOOST_AUTO_TEST_CASE(provision_and_assess_single_zone) {
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
     escalating_gce_manager mgr{cfg};
+    case_cost_recorder cost;
 
     auto placed = mgr.provision(zone);
+    cost.add_instance(placed.machine_type, placed.zone, placed.spot);
     BOOST_TEST_MESSAGE("provisioned node " + std::to_string(placed.peer.node_id) + " at " +
                        placed.peer.address + " on " + placed.machine_type + " @ " + placed.zone);
 
@@ -633,6 +635,7 @@ BOOST_AUTO_TEST_CASE(provision_multi_zone_topology) {
         cfg.topology.groups.push_back({.group_id = z, .target_count = 1});
     }
     escalating_gce_manager mgr{cfg};
+    case_cost_recorder cost;
 
     // This is the case that broke the Aug 3 2026 scheduled run, with
     // us-central1-c out of capacity. Each node names a preferred zone; the
@@ -642,6 +645,7 @@ BOOST_AUTO_TEST_CASE(provision_multi_zone_topology) {
     std::vector<std::string> placed_zones;
     for (const auto& z : zones) {
         auto placed = mgr.provision(z);
+        cost.add_instance(placed.machine_type, placed.zone, placed.spot);
         cluster.push_back({.node_id = placed.peer.node_id, .group_id = placed.zone});
         placed_zones.push_back(placed.zone);
     }
@@ -693,6 +697,7 @@ BOOST_AUTO_TEST_CASE(provision_escalates_past_zone_stockout) {
     }
 
     escalating_gce_manager mgr{cfg};
+    case_cost_recorder cost;
 
     // ── Forced failure ─────────────────────────────────────────────────────
     // Refuse whatever rung 0 turns out to be, exactly once, and capture it so
@@ -708,6 +713,7 @@ BOOST_AUTO_TEST_CASE(provision_escalates_past_zone_stockout) {
     });
 
     auto placed = mgr.provision(preferred);
+    cost.add_instance(placed.machine_type, placed.zone, placed.spot);
 
     // The precondition fired at all -- without this the rest could pass
     // vacuously on a run where the hook was never reached.
@@ -742,6 +748,7 @@ BOOST_AUTO_TEST_CASE(provision_escalates_past_zone_stockout) {
     const std::size_t after_forced = mgr.escalations();
     mgr.set_launch_fault(nullptr);
     auto control = mgr.provision(preferred);
+    cost.add_instance(control.machine_type, control.zone, control.spot);
     BOOST_CHECK_EQUAL(mgr.escalations(), after_forced);
     BOOST_CHECK_EQUAL(control.zone, preferred);
 
@@ -754,8 +761,10 @@ BOOST_AUTO_TEST_CASE(stopped_instance_marked_unreachable) {
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
     gcp_compute_quorum_manager<> mgr{cfg};
+    case_cost_recorder cost;
 
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
+    cost.add_instance(cfg.machine_type, zone, cfg.spot);
     // Stop the instance directly via the SDK so assess sees a non-RUNNING status.
     google::cloud::Options opts;
     opts.set<google::cloud::UnifiedCredentialsOption>(
@@ -796,9 +805,40 @@ BOOST_AUTO_TEST_CASE(spot_provision_and_decommission) {
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
     gcp_compute_quorum_manager<> mgr{cfg};
+    case_cost_recorder cost;
 
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
-    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(peer.node_id)).get());
+    const auto billed = cost.add_instance(cfg.machine_type, zone, cfg.spot);
+    const std::string name =
+        gcp_compute_quorum_manager<>::node_id_to_instance_name(cfg.cluster_name, peer.node_id);
+
+    // Report *why* rather than "unexpected exception". BOOST_CHECK_NO_THROW,
+    // which this replaces, discards the message — and when this case really did
+    // fail (an SDK polling policy bounded to `api_timeout`, killing the delete
+    // LRO), the log said only "unexpected exception thrown by ...", with no way
+    // to tell what had gone wrong.
+    bool decommissioned = false;
+    try {
+        std::move(mgr.decommission_node(peer.node_id)).get();
+        decommissioned = true;
+    } catch (const std::exception& ex) {
+        BOOST_ERROR(std::string("decommission_node threw: ") + ex.what());
+    }
+    cost.stop(billed);
+    BOOST_REQUIRE(decommissioned);
+
+    // And the instance is actually gone, read straight from the SDK rather than
+    // through the manager. "did not throw" is not the contract; removing the VM
+    // is, and the two came apart here once already.
+    std::vector<std::string> remaining;
+    for (int i = 0; i < 15; ++i) {
+        remaining = cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name);
+        if (std::ranges::find(remaining, name) == remaining.end()) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+    }
+    BOOST_CHECK(std::ranges::find(remaining, name) == remaining.end());
 }
 
 BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
@@ -818,6 +858,10 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
     cfg.topology.groups.push_back({.group_id = zone, .target_count = 1});
     gcp_compute_quorum_manager<> mgr{cfg};
+    // This case does create a real instance before timing out — briefly, since
+    // `delete_best_effort` removes it — so it bills, and reporting a near-zero
+    // line is more informative than omitting it.
+    case_cost_recorder cost;
 
     // Baseline taken first: asserting a delta rather than an absolute count
     // keeps this independent of anything another case (or an earlier crashed
@@ -825,7 +869,9 @@ BOOST_AUTO_TEST_CASE(provision_timeout_cleanup) {
     const auto before = cluster_instance_names(cfg.gcp.project_id, zone, cfg.cluster_name);
 
     // The future is exceptional...
+    const auto billed = cost.add_instance(cfg.machine_type, zone, cfg.spot);
     BOOST_CHECK_THROW(std::move(mgr.provision_node(zone, std::nullopt)).get(), std::exception);
+    cost.stop(billed);
 
     // ...and the instance created before the timeout was deleted best-effort
     // rather than leaked. This is the half of the contract the case is named
@@ -875,12 +921,19 @@ BOOST_AUTO_TEST_CASE(mig_provision_increments_target_size) {
     }
     gcp_mig_quorum_manager<> mgr{base_mig_config()};
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
+    // The MIG's instance template owns the machine type, so — unlike the
+    // Compute cases — this suite cannot know it without reading the template.
+    // `gce_hourly_rate`'s e2-medium fallback is the estimate used instead;
+    // this line is a floor on MIG spend, not an exact figure.
+    case_cost_recorder cost;
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
+    const auto billed = cost.add_instance("mig-template-default", zone, false);
     std::vector<node_placement<std::uint64_t, std::string>> cluster{
         {.node_id = peer.node_id, .group_id = zone}};
     auto health = std::move(mgr.assess_quorum(cluster)).get();
     BOOST_CHECK_GE(health.live_node_count, 1u);
     std::move(mgr.decommission_node(peer.node_id)).get();
+    cost.stop(billed);
 }
 
 BOOST_AUTO_TEST_CASE(mig_assess_detects_non_running_instance) {
@@ -904,8 +957,11 @@ BOOST_AUTO_TEST_CASE(mig_decommission_decrements_target_size) {
     }
     gcp_mig_quorum_manager<> mgr{base_mig_config()};
     const std::string zone = env_or("GCP_REGION", "us-central1") + "-a";
+    case_cost_recorder cost;  // see mig_provision_increments_target_size on pricing
     auto peer = std::move(mgr.provision_node(zone, std::nullopt)).get();
+    const auto billed = cost.add_instance("mig-template-default", zone, false);
     BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(peer.node_id)).get());
+    cost.stop(billed);
 }
 
 BOOST_AUTO_TEST_CASE(mig_decommission_idempotent) {
