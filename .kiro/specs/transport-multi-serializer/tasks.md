@@ -83,10 +83,23 @@ transports and is deliberately left as separate work.
     no corresponding `coap_content_format` entry
   - _Requirements: 9.1, 9.2, 9.3_
 
-- [ ] 8. Implement shared `Accept`/`Content-Type` header parsing helper
-  - `parse_accept_header(std::string_view) -> std::vector<std::string>`: comma-split,
-    trim, drop `;`-delimited parameters (e.g. `q=`), preserve order
-  - Used by both `cpp_httplib_server` and `boost_beast_server`
+- [x] 8. Implement shared `Accept`/`Content-Type` header parsing helper
+  - `parse_accept_header(std::string_view) -> std::vector<std::string>` in the
+    new `include/raft/http_content_negotiation.hpp`: comma-split, trim, drop
+    `;`-delimited parameters, preserve source order
+  - **`q`-values are stripped, not honoured** — source order is preserved as-is.
+    A deliberate limitation, pinned by its own test so changing it cannot be
+    silent: RFC 9110 §12.5.1 ranks by `q`, but this codebase's clients emit
+    `preferred_media_types()` in preference order with no `q` at all, so ranking
+    would change nothing for them while adding a parser that could disagree
+    between the two servers. A `q`-ranking peer still gets a type it accepts,
+    just possibly not its first choice
+  - Wildcards (`*/*`) pass through verbatim and so match nothing, falling
+    through to the default — the same outcome as an absent `Accept`, which is
+    the correct answer for "anything will do"
+  - Shared rather than per-server precisely because a `q`-handling bug fixed in
+    one copy and not the other would stay invisible until a peer used the
+    transport that still had it
   - _Requirements: 5.1_
 
 - [ ] 9. Wire content negotiation into `cpp_httplib_client`/`cpp_httplib_server`

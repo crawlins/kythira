@@ -9,6 +9,7 @@
 /// what "no acceptable type" *means* is decided here and tested here.
 
 #include <raft/cbor_serializer.hpp>
+#include <raft/http_content_negotiation.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/serializer_registry.hpp>
 
@@ -279,3 +280,74 @@ BOOST_AUTO_TEST_CASE(a_registry_round_trips_a_real_rpc_through_json) {
     BOOST_TEST(decoded.last_log_index() == req.last_log_index());
     BOOST_TEST(decoded.last_log_term() == req.last_log_term());
 }
+
+// ── Accept-header parsing ──────────────────────────────────────────────────
+//
+// Shared by both HTTP servers (Task 8), so tested once here rather than twice
+// per transport. A `q`-value bug fixed in one server's copy but not the other's
+// would be invisible until a peer happened to use the unfixed transport.
+
+BOOST_AUTO_TEST_SUITE(accept_header_parsing)
+
+BOOST_AUTO_TEST_CASE(splits_on_commas_and_trims_whitespace) {
+    const auto types = kythira::parse_accept_header("application/cbor, application/json");
+    BOOST_REQUIRE_EQUAL(types.size(), 2u);
+    BOOST_TEST(types[0] == "application/cbor");
+    BOOST_TEST(types[1] == "application/json");
+}
+
+BOOST_AUTO_TEST_CASE(strips_parameters_including_q_values) {
+    const auto types = kythira::parse_accept_header(
+        "application/cbor;q=0.9, application/json;q=1.0;charset=utf-8");
+    BOOST_REQUIRE_EQUAL(types.size(), 2u);
+    BOOST_TEST(types[0] == "application/cbor");
+    BOOST_TEST(types[1] == "application/json");
+}
+
+/// Pinning the documented limitation rather than the RFC: source order is kept,
+/// `q` does not reorder. If that is ever changed, this test is the thing that
+/// makes the change visible instead of silent.
+BOOST_AUTO_TEST_CASE(q_values_do_not_reorder_the_result) {
+    const auto types =
+        kythira::parse_accept_header("application/cbor;q=0.1, application/json;q=0.9");
+    BOOST_REQUIRE_EQUAL(types.size(), 2u);
+    BOOST_TEST(types[0] == "application/cbor");  // despite the lower q
+}
+
+BOOST_AUTO_TEST_CASE(an_empty_header_yields_no_types) {
+    BOOST_TEST(kythira::parse_accept_header("").empty());
+    BOOST_TEST(kythira::parse_accept_header("   ").empty());
+    // Which is what makes a blank Accept behave as "no preference": the empty
+    // vector is exactly what select_output_media_type treats as the default.
+    const single_alpha reg;
+    BOOST_TEST(reg.select_output_media_type(kythira::parse_accept_header("")).value() ==
+               kAlphaMedia);
+}
+
+/// A malformed header must degrade to the types it did carry, never to an empty
+/// media type that can silently match nothing.
+BOOST_AUTO_TEST_CASE(malformed_entries_are_skipped_not_emitted_as_empty) {
+    const auto types = kythira::parse_accept_header("application/json,,  ,application/cbor,");
+    BOOST_REQUIRE_EQUAL(types.size(), 2u);
+    BOOST_TEST(types[0] == "application/json");
+    BOOST_TEST(types[1] == "application/cbor");
+}
+
+BOOST_AUTO_TEST_CASE(a_single_type_needs_no_comma) {
+    const auto types = kythira::parse_accept_header("application/json");
+    BOOST_REQUIRE_EQUAL(types.size(), 1u);
+    BOOST_TEST(types[0] == "application/json");
+}
+
+/// Wildcards pass through verbatim and therefore match nothing, so the caller
+/// falls through to its default — the same outcome as an absent Accept, which
+/// is the right answer for "I'll take anything".
+BOOST_AUTO_TEST_CASE(a_wildcard_falls_through_to_the_default) {
+    const auto types = kythira::parse_accept_header("*/*");
+    BOOST_REQUIRE_EQUAL(types.size(), 1u);
+    BOOST_TEST(types[0] == "*/*");
+    const single_alpha reg;
+    BOOST_TEST(!reg.select_output_media_type(types).has_value());
+}
+
+BOOST_AUTO_TEST_SUITE_END()
