@@ -19,14 +19,18 @@
 #include <cstdlib>
 #include <exception>
 #include <iomanip>
+#include <iostream>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include <boost/test/framework.hpp>
+#include <boost/test/tree/test_unit.hpp>
 #include <boost/test/unit_test.hpp>
 
 namespace kythira::testing::gcp_real_gce {
@@ -105,6 +109,16 @@ struct TestCostReport {
     }
 };
 
+/// GCP's published Spot discount is 60–91% off on-demand depending on machine
+/// family. 0.4 (a 60% discount) is the conservative end, used only for cost
+/// *reporting* and never for ordering: a constant factor cannot reorder rungs
+/// that are already compared within the same purchase model.
+///
+/// Declared here rather than beside the launch-ladder code it also serves,
+/// because `case_cost_recorder::add_instance` below is a non-template member
+/// function and so needs it already declared.
+inline constexpr double kGcpSpotPriceFactor = 0.4;
+
 struct CostAccumulator {
     std::mutex mtx;
     std::vector<TestCostReport> reports;
@@ -118,34 +132,119 @@ struct CostAccumulator {
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 inline CostAccumulator g_cost_accumulator;
 
+/// Accumulates the resources one test case bills for and files a
+/// `TestCostReport` into `g_cost_accumulator` when the case ends.
+///
+/// This exists because the arrangement it replaces was never wired up. Every
+/// other provider's suite builds a `TestCostReport` by hand in each case (see
+/// `azure_quorum_manager_real_test.cpp`, which does so eleven times); the GCP
+/// suite did so zero times, so `g_cost_accumulator` stayed empty, and
+/// `CostSummaryFixture`'s early-out printed nothing. A run that provisioned six
+/// VMs reported no cost at all, and looked exactly like a run that provisioned
+/// none.
+///
+/// RAII rather than a per-case epilogue for two reasons: a case that throws —
+/// or that Boost unwinds on a `timeout()` overrun, which runs no epilogue —
+/// still reports what it spent, and a newly added case cannot forget to report.
+///
+/// Billing runs from `add()` to either an explicit `stop()` or destruction, so
+/// a case that decommissions and then keeps working slightly over-estimates.
+/// That is the right direction for a cost guard-rail to err in.
+class case_cost_recorder {
+public:
+    explicit case_cost_recorder(std::string test_name) { _report.test_name = std::move(test_name); }
+
+    /// Names the report after the running Boost test case.
+    case_cost_recorder()
+        : case_cost_recorder(
+              std::string{boost::unit_test::framework::current_test_case().p_name.get()}) {}
+
+    case_cost_recorder(const case_cost_recorder&) = delete;
+    auto operator=(const case_cost_recorder&) -> case_cost_recorder& = delete;
+    case_cost_recorder(case_cost_recorder&&) = delete;
+    auto operator=(case_cost_recorder&&) -> case_cost_recorder& = delete;
+
+    /// Starts billing @p label at @p hourly_rate; returns a handle for `stop()`.
+    auto add(std::string label, double hourly_rate) -> std::size_t {
+        _report.resources.push_back({.label = std::move(label), .hourly_rate = hourly_rate});
+        return _report.resources.size() - 1;
+    }
+
+    /// Convenience for the common case: one GCE instance of @p machine_type,
+    /// priced from the published on-demand table and discounted if it is spot.
+    auto add_instance(const std::string& machine_type, const std::string& zone, bool spot)
+        -> std::size_t {
+        const double rate = gce_hourly_rate(machine_type) * (spot ? kGcpSpotPriceFactor : 1.0);
+        return add(machine_type + " @ " + zone + (spot ? " (spot)" : ""), rate);
+    }
+
+    void stop(std::size_t handle) {
+        if (handle < _report.resources.size()) {
+            _report.resources[handle].finalize();
+        }
+    }
+
+    ~case_cost_recorder() {
+        for (auto& r : _report.resources) {
+            r.finalize();
+        }
+        g_cost_accumulator.add(std::move(_report));
+    }
+
+private:
+    TestCostReport _report;
+};
+
+/// Renders the end-of-run summary for @p reps.
+///
+/// A free function on an explicit vector, rather than code inside the fixture
+/// destructor reading a global, so both of its branches are directly testable —
+/// see `gcp_spot_escalation_test.cpp`'s `gcp_cost_accounting` suite. The
+/// previous arrangement was only reachable from a real-GCE run, which is
+/// precisely why nobody noticed it had been printing nothing.
+inline auto format_cost_summary(const std::vector<TestCostReport>& reps) -> std::string {
+    // Deliberately noisy rather than silent. The `return;` this replaces made
+    // "no case registered a cost" and "this fixture never ran"
+    // indistinguishable from the outside, and the first of those was in fact
+    // true for every real-GCE run ever made.
+    if (reps.empty()) {
+        return "\n[gcp-cost] WARNING: no cost reports were registered. Either no case "
+               "provisioned a billable resource, or a case failed to construct a "
+               "case_cost_recorder. Real-cloud spend for this run is UNREPORTED.\n";
+    }
+    double grand = 0.0;
+    for (const auto& r : reps) {
+        grand += r.total_usd();
+    }
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(6);
+    oss << "\n================================================================\n";
+    oss << " GCP Real-GCE Test Cost Estimate Summary\n";
+    oss << "================================================================\n";
+    for (const auto& r : reps) {
+        oss << "  " << std::left << std::setw(52) << r.test_name << "  $" << r.total_usd() << "\n";
+    }
+    oss << "----------------------------------------------------------------\n";
+    oss << "  " << std::left << std::setw(52) << "GRAND TOTAL" << "  $" << grand << "\n";
+    oss << "================================================================\n";
+    oss << " Pricing: on-demand Linux rates (approximate). Actual costs vary\n";
+    oss << " by region and time. Use the GCP Billing console for authoritative\n";
+    oss << " billing data.\n";
+    oss << "================================================================\n";
+    return oss.str();
+}
+
 struct CostSummaryFixture {
     ~CostSummaryFixture() {
         std::lock_guard<std::mutex> lk{g_cost_accumulator.mtx};
-        const auto& reps = g_cost_accumulator.reports;
-        if (reps.empty()) {
-            return;
-        }
-        double grand = 0.0;
-        for (const auto& r : reps) {
-            grand += r.total_usd();
-        }
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(6);
-        oss << "\n================================================================\n";
-        oss << " GCP Real-GCE Test Cost Estimate Summary\n";
-        oss << "================================================================\n";
-        for (const auto& r : reps) {
-            oss << "  " << std::left << std::setw(52) << r.test_name << "  $" << r.total_usd()
-                << "\n";
-        }
-        oss << "----------------------------------------------------------------\n";
-        oss << "  " << std::left << std::setw(52) << "GRAND TOTAL" << "  $" << grand << "\n";
-        oss << "================================================================\n";
-        oss << " Pricing: on-demand Linux rates (approximate). Actual costs vary\n";
-        oss << " by region and time. Use the GCP Billing console for authoritative\n";
-        oss << " billing data.\n";
-        oss << "================================================================\n";
-        BOOST_TEST_MESSAGE(oss.str());
+        // std::cerr, not BOOST_TEST_MESSAGE. Boost's default log level
+        // suppresses `message`-level records entirely, so the summary this
+        // fixture exists to print would be discarded even once cases start
+        // registering costs. The suite runner passes --log_level=message now,
+        // but the cost record should not depend on a runner flag: on the Aug 5
+        // 2026 run the unbuffered std::cerr markers were the only output that
+        // survived at all.
+        std::cerr << format_cost_summary(g_cost_accumulator.reports) << std::flush;
     }
 };
 
@@ -262,12 +361,6 @@ struct gcp_machine_type_requirements {
     /// would fail with a hard error the classifier deliberately does not retry.
     std::vector<std::string> family_prefixes{"e2-", "t2d-", "n2d-", "n2-", "n1-"};
 };
-
-/// GCP's published Spot discount is 60–91% off on-demand depending on machine
-/// family. 0.4 (a 60% discount) is the conservative end, used only for cost
-/// *reporting* and never for ordering: a constant factor cannot reorder rungs
-/// that are already compared within the same purchase model.
-inline constexpr double kGcpSpotPriceFactor = 0.4;
 
 inline auto gcp_to_lower_copy(std::string s) -> std::string {
     std::transform(s.begin(), s.end(), s.begin(),

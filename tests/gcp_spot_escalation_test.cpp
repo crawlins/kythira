@@ -25,8 +25,12 @@
 
 #include "gcp_real_gce_test_support.hpp"
 
+#include <chrono>
+#include <cstddef>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace kythira::testing::gcp_real_gce;
@@ -409,6 +413,152 @@ BOOST_AUTO_TEST_CASE(resumes_from_the_rung_the_previous_call_settled_on) {
                "us-central1-a");
     BOOST_REQUIRE_EQUAL(attempted.size(), 1u);
     BOOST_TEST(escalations == 1u);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Cost accounting ────────────────────────────────────────────────────────
+//
+// These exist because the defect they cover was invisible for the life of the
+// feature: no case in `gcp_quorum_manager_real_gce_test.cpp` ever called
+// `g_cost_accumulator.add()`, so `CostSummaryFixture` found an empty vector and
+// its `if (reps.empty()) return;` printed nothing — indistinguishable, from the
+// outside, from a fixture that never ran. A real-GCE run that provisioned six
+// VMs reported no spend at all.
+//
+// Offline on purpose. Verifying this against real GCE would cost a 20-minute
+// job and real instances to test bookkeeping that involves neither.
+
+BOOST_AUTO_TEST_SUITE(gcp_cost_accounting)
+
+/// Reports filed since the start of this case, so cases stay independent of the
+/// process-wide accumulator's prior contents.
+auto reports_since(std::size_t mark) -> std::vector<TestCostReport> {
+    std::lock_guard<std::mutex> lk{g_cost_accumulator.mtx};
+    const auto& reps = g_cost_accumulator.reports;
+    return {reps.begin() + static_cast<std::ptrdiff_t>(mark), reps.end()};
+}
+
+auto accumulator_size() -> std::size_t {
+    std::lock_guard<std::mutex> lk{g_cost_accumulator.mtx};
+    return g_cost_accumulator.reports.size();
+}
+
+BOOST_AUTO_TEST_CASE(recorder_files_a_report_named_after_the_case) {
+    const auto mark = accumulator_size();
+    {
+        case_cost_recorder cost;
+        cost.add_instance("e2-small", "us-central1-a", false);
+    }
+    auto filed = reports_since(mark);
+    BOOST_REQUIRE_EQUAL(filed.size(), 1u);
+    BOOST_TEST(filed[0].test_name == "recorder_files_a_report_named_after_the_case");
+    BOOST_REQUIRE_EQUAL(filed[0].resources.size(), 1u);
+    BOOST_TEST(filed[0].resources[0].label == "e2-small @ us-central1-a");
+    // Priced from the published table, not the e2-medium fallback.
+    BOOST_TEST(filed[0].resources[0].hourly_rate == gce_hourly_rate("e2-small"));
+}
+
+BOOST_AUTO_TEST_CASE(spot_instances_are_priced_at_the_discounted_rate) {
+    const auto mark = accumulator_size();
+    {
+        case_cost_recorder cost;
+        cost.add_instance("e2-small", "us-central1-b", true);
+    }
+    auto filed = reports_since(mark);
+    BOOST_REQUIRE_EQUAL(filed.size(), 1u);
+    BOOST_REQUIRE_EQUAL(filed[0].resources.size(), 1u);
+    BOOST_TEST(filed[0].resources[0].label == "e2-small @ us-central1-b (spot)");
+    BOOST_TEST(filed[0].resources[0].hourly_rate ==
+               gce_hourly_rate("e2-small") * kGcpSpotPriceFactor);
+}
+
+/// The property that makes the recorder worth having over a per-case epilogue:
+/// a case that leaves by an exception still files what it spent. Boost unwinds
+/// an over-running case with `siglongjmp`, which runs no destructors at all, so
+/// this covers the throw path rather than that one — but the throw path is the
+/// common one and the epilogue form loses it.
+BOOST_AUTO_TEST_CASE(a_throwing_case_still_files_its_report) {
+    const auto mark = accumulator_size();
+    try {
+        case_cost_recorder cost{"synthetic_throwing_case"};
+        cost.add_instance("e2-medium", "us-central1-c", false);
+        throw std::runtime_error("provision failed");
+    } catch (const std::runtime_error&) {  // NOLINT(bugprone-empty-catch)
+    }
+    auto filed = reports_since(mark);
+    BOOST_REQUIRE_EQUAL(filed.size(), 1u);
+    BOOST_TEST(filed[0].test_name == "synthetic_throwing_case");
+    BOOST_TEST(filed[0].total_usd() > 0.0);
+}
+
+BOOST_AUTO_TEST_CASE(stop_freezes_billing_before_destruction) {
+    const auto mark = accumulator_size();
+    double stopped_hours = 0.0;
+    {
+        case_cost_recorder cost{"synthetic_stop_case"};
+        const auto billed = cost.add_instance("e2-small", "us-central1-a", false);
+        cost.stop(billed);
+        // Whatever elapses here must not be billed.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        (void)stopped_hours;
+    }
+    auto filed = reports_since(mark);
+    BOOST_REQUIRE_EQUAL(filed.size(), 1u);
+    BOOST_REQUIRE_EQUAL(filed[0].resources.size(), 1u);
+    // 50ms is 1.4e-5 hours; the stopped resource must be well under that.
+    BOOST_TEST(filed[0].resources[0].hours() < 1.0e-5);
+}
+
+/// An unpriced machine type must fall back rather than report zero — a zero
+/// would read as "this run was free", which is exactly the class of silent
+/// misreport this suite exists to prevent.
+BOOST_AUTO_TEST_CASE(an_unknown_machine_type_still_bills_something) {
+    BOOST_TEST(gce_hourly_rate("z9-nonexistent-64") > 0.0);
+    BOOST_TEST(gce_hourly_rate("z9-nonexistent-64") == gce_hourly_rate("e2-medium"));
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+// ── Summary rendering ──────────────────────────────────────────────────────
+//
+// Both branches of the thing that actually failed. `format_cost_summary` was
+// extracted from `CostSummaryFixture`'s destructor precisely so these could
+// exist: the old code was reachable only from a real-GCE run, which is why it
+// went unnoticed that it printed nothing.
+
+BOOST_AUTO_TEST_SUITE(gcp_cost_summary_rendering)
+
+/// The regression itself. An empty report set used to produce no output at all,
+/// so "nothing was billed" and "the fixture never ran" looked identical.
+BOOST_AUTO_TEST_CASE(an_empty_run_says_so_loudly) {
+    const auto out = format_cost_summary({});
+    BOOST_TEST(!out.empty());
+    BOOST_TEST(out.find("WARNING") != std::string::npos);
+    BOOST_TEST(out.find("UNREPORTED") != std::string::npos);
+}
+
+BOOST_AUTO_TEST_CASE(a_populated_run_reports_every_case_and_a_grand_total) {
+    std::vector<TestCostReport> reps;
+    TestCostReport a;
+    a.test_name = "provision_and_assess_single_zone";
+    a.resources.push_back({.label = "e2-small @ us-central1-a", .hourly_rate = 1.0});
+    a.resources.back().stop = a.resources.back().start + std::chrono::hours(2);
+    reps.push_back(std::move(a));
+
+    TestCostReport b;
+    b.test_name = "provision_multi_zone_topology";
+    b.resources.push_back({.label = "e2-small @ us-central1-b", .hourly_rate = 2.0});
+    b.resources.back().stop = b.resources.back().start + std::chrono::hours(3);
+    reps.push_back(std::move(b));
+
+    const auto out = format_cost_summary(reps);
+    BOOST_TEST(out.find("provision_and_assess_single_zone") != std::string::npos);
+    BOOST_TEST(out.find("provision_multi_zone_topology") != std::string::npos);
+    BOOST_TEST(out.find("GRAND TOTAL") != std::string::npos);
+    // 2h @ $1 + 3h @ $2 = $8.
+    BOOST_TEST(out.find("$8.000000") != std::string::npos);
+    BOOST_TEST(out.find("WARNING") == std::string::npos);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

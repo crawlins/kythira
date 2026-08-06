@@ -127,7 +127,14 @@ struct CostSummaryFixture {
     ~CostSummaryFixture() {
         std::lock_guard<std::mutex> lk{g_cost_accumulator.mtx};
         const auto& reps = g_cost_accumulator.reports;
+        // Loud, not silent — see the same branch in gcp_real_gce_test_support.hpp.
+        // A bare `return` makes "no case registered a cost" indistinguishable
+        // from "this fixture never ran", and in the GCP suite the first of
+        // those was silently true for every run ever made.
         if (reps.empty()) {
+            std::cerr << "\n[azure-cost] WARNING: no cost reports were registered. Either no case "
+                         "provisioned a billable resource, or a case failed to file its "
+                         "TestCostReport. Real-cloud spend for this run is UNREPORTED.\n";
             return;
         }
 
@@ -153,7 +160,10 @@ struct CostSummaryFixture {
         oss << " by region and time. Use Azure Cost Management for authoritative\n";
         oss << " billing data.\n";
         oss << "================================================================\n";
-        BOOST_TEST_MESSAGE(oss.str());
+        // std::cerr, not BOOST_TEST_MESSAGE: Boost's default log level drops
+        // `message`-level records, which is why no real-cloud suite's cost
+        // summary has ever appeared in a CI log.
+        std::cerr << oss.str() << std::flush;
     }
 };
 
