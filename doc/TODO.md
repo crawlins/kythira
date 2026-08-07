@@ -421,37 +421,66 @@ unverified completion claim.
 
 
 
-- **A second, unrelated use-after-free: `simulator_network_client` continuations
-  outlive the `NetworkSimulator` (found August 7, 2026 — open).** Found while
-  verifying the drain above, and **it is not the same bug** — recorded
-  separately because conflating the two would send the next person to the wrong
-  file.
-  - **Measured, not assumed.** With `node`'s drain in place and all 20 guard
-    sites taking tickets, `chaos_state_machine_safety_test` under boost + ASan
-    still reports a heap-use-after-free in **2 of 30** runs (1 of 30 before the
-    18 `raft.hpp` sites were converted — statistically indistinguishable). The
-    conversion did *not* move this number, which is the evidence that the
-    residual was never in those sites.
-  - **What it actually is.** ASan names a different object entirely: the freed
-    allocation is the `network_simulator::NetworkSimulator<...>` the *test*
-    owns (`chaos_state_machine_safety_test.cpp:36`), and the read is at
-    `include/network_simulator/simulator_impl.hpp:487`, reached from a
-    `simulator_network_client` continuation at
-    `include/raft/simulator_network.hpp:205` on a boost `Future<bool>::thenValue`.
-    `node`'s drain cannot cover this by construction: the continuation belongs
-    to the network client and the freed object belongs to the test.
-  - **Likely shapes of the fix**, in preference order: have
-    `simulator_network_client` hold a `shared_ptr` to the simulator so a
-    continuation keeps it alive; or give the simulator its own `async_scope` and
-    drain it in `NetworkSimulator::stop()`. The first is smaller and removes the
-    lifetime question rather than racing it.
-  - **Getting the report at all is the hard part**, so do not repeat the hour
-    this cost: the crash is ~1-in-15 and ASan's report is **truncated to 8
-    lines** on stdout, because the process tears down while the report is being
-    written. Use `log_path`:
-    `ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=/tmp/aslog` writes a
-    complete 163-line report to `/tmp/aslog.<pid>`. `abort_on_error` alone does
-    not fix the truncation.
+- **`simulator_network_client` continuations outlive the `NetworkSimulator`.
+  Root-caused and fixed; the fix is NOT merged because it regresses an
+  unrelated raft test (August 7, 2026 — open).**
+
+  The attempt lives on branch `fix/simulator-node-lifetime` (commit `93703cf`),
+  pushed with no PR because it is not proposable as-is. **This entry is the
+  durable half; that branch is disposable.** Everything needed to redo the work
+  from scratch — the ownership analysis, the measurements, and the dead ends
+  already paid for — is deliberately recorded here rather than there, because a
+  defect documented only on an unmerged branch is one nobody will read about.
+  If the branch is ever pruned, nothing of value is lost.
+
+  **The defect.** `NetworkNode` holds a raw `simulator_type* _simulator` and
+  guards every use with `if (!_simulator)`. Nothing ever nulls that pointer, so
+  the check only ever caught a node built without a simulator — never a
+  simulator since destroyed, which is the case that actually crashes.
+  `receive()` then calls `retrieve_message()`, whose first statement is
+  `std::unique_lock lock(_mutex)` on freed memory. Confirmed by ASan: freed
+  allocation is the `NetworkSimulator` the *test* owns
+  (`chaos_state_machine_safety_test.cpp:36`), read at
+  `include/network_simulator/simulator_impl.hpp:487`, from a
+  `simulator_network_client` continuation on a boost `Future<bool>::thenValue`.
+
+  **Why neither obvious ownership fix works.** A `shared_ptr` back-pointer
+  cycles: `NetworkSimulator::_nodes` owns its nodes by `shared_ptr`. A
+  `weak_ptr` needs `enable_shared_from_this`, but **roughly 130 call sites
+  construct the simulator on the stack**, where `weak_from_this()` is empty and
+  would silently fail every node operation in the suite. Hence the attempt used
+  `async_scope` (which works for either storage duration).
+
+  **The attempt works, and costs too much.** Measured on
+  `chaos_state_machine_safety_test` under boost + ASan: **0/30 use-after-free
+  reports, against 2/30 before.** But `raft_commit_implies_replication_property_test`
+  regresses:
+
+  | configuration | clean runs |
+  | --- | --- |
+  | baseline (no change) | **24/25** |
+  | tickets on, drain off | 20/25 |
+  | tickets on, drain on | **22/35** |
+
+  Baseline vs the full change is statistically solid; the ticket-only arm is
+  ambiguous at this N. **The drain is the main contributor.**
+
+  **Two hypotheses already ruled out by measurement — do not re-run these:**
+  - *CPU starvation.* Reproduces on a fully idle box.
+  - *Mutex contention in `enter()`.* Wall-clock is identical to the tenth of a
+    second (43.3-45.0s vs 43.7-45.0s), and instrumenting the guard recorded
+    **zero** refusals across full runs. The guard neither rejects anything nor
+    costs measurable time, yet the pass rate still moves.
+
+  **Most promising next step**, given the drain is the main contributor:
+  `retrieve_message()` blocks in `_msg_available.wait_for(lock, timeout, pred)`
+  holding its ticket, so a drain waits out that timeout rather than cancelling
+  it. Add a "closing" flag to the wait predicate and `notify_all()` on close, so
+  blocked receives return immediately instead of being waited out. That should
+  remove the teardown stall without weakening the guarantee. Re-measure both
+  arms at N>=25 before believing any of it.
+
+
 - **A PR that does not target `main` runs no CI at all, and reports itself
   green (found August 7, 2026 — open).** `ci.yml` triggers on
   `pull_request: branches: [main]`, so a **stacked PR** — one whose base is
