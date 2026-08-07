@@ -5,9 +5,23 @@
 This document specifies the requirements for extending the `transport_types` concept
 (`include/raft/types.hpp`) and its conforming transports — `cpp_httplib_client`/
 `cpp_httplib_server` (`include/raft/http_transport.hpp`), `boost_beast_client`/
-`boost_beast_server` (`include/raft/beast_http_transport.hpp`), and
+`boost_beast_server` (`include/raft/beast_http_transport.hpp`),
+`proxygen_client`/`proxygen_server` (`include/raft/proxygen_http_transport.hpp`), and
 `coap_client`/`coap_server` (`include/raft/coap_transport.hpp`) — from a single,
 compile-time-fixed `rpc_serializer` to a registry of 1–N `rpc_serializer`s.
+
+**Amended August 7, 2026 to add Proxygen.** This document was drafted around the two
+HTTP transports that existed at the time and named them explicitly throughout; the
+third landed separately and nobody revisited the enumeration, so `proxygen_client`/
+`proxygen_server` appeared nowhere in this spec while Tasks 9 and 10 gave the other two
+full negotiation. That was omission, not decision — Proxygen is a first-class HTTP
+transport, conforms to `transport_types` (hence already carries a
+`serializer_registry_type`), and still contains the exact defect Requirement 9.4 exists
+to remove: it hardcodes `"application/json"` on both client requests and server
+responses, so a Proxygen node configured with `cbor_rpc_serializer` labels every message
+JSON and lies on the wire. Every "…`cpp_httplib_*`/`boost_beast_*`…" enumeration below
+should be read as including the Proxygen pair, and the acceptance criteria that name
+them individually have been amended to say so.
 
 Today every transport is templated on exactly one `serializer_type`, chosen once at
 compile time. A `cpp_httplib_server<Types>` always decodes request bodies with that one
@@ -186,7 +200,7 @@ configured with several serializers can accept requests encoded in any of them.
 
 #### Acceptance Criteria
 
-1. WHEN `cpp_httplib_server`/`boost_beast_server` receives a request THEN the system
+1. WHEN `cpp_httplib_server`/`boost_beast_server`/`proxygen_server` receives a request THEN the system
    SHALL read the request's `Content-Type` header and treat it as the `Content_Declaration`.
 2. WHEN the request has no `Content-Type` header THEN the system SHALL decode using the
    registry's `Default_Serializer`, matching today's behavior for single-serializer
@@ -212,7 +226,7 @@ heterogeneous but overlapping serializer support can interoperate.
 
 #### Acceptance Criteria
 
-1. WHEN `cpp_httplib_server`/`boost_beast_server` builds a response THEN the system
+1. WHEN `cpp_httplib_server`/`boost_beast_server`/`proxygen_server` builds a response THEN the system
    SHALL read the originating request's `Accept` header as the `Accept_Declaration`,
    parsed as an ordered, comma-separated list of `Media_Type` tokens (any `;`-delimited
    parameters, e.g. `q=`, SHALL be ignored for ordering purposes in this version).
@@ -240,7 +254,7 @@ without renegotiating from scratch on every call.
 
 #### Acceptance Criteria
 
-1. WHEN `cpp_httplib_client`/`boost_beast_client`/`coap_client` sends a request THEN the
+1. WHEN `cpp_httplib_client`/`boost_beast_client`/`proxygen_client`/`coap_client` sends a request THEN the
    system SHALL set an `Accept` header (HTTP) or repeated `Accept` options (CoAP) listing
    every `Media_Type` in `preferred_media_types()`, in that order.
 2. WHEN the client has no prior `Peer_Capability_Cache` entry for the target node THEN
@@ -299,12 +313,12 @@ mismatches quickly.
    a dedicated `unsupported_media_type_error` exception (extending `http_transport_error`
    for HTTP/Beast; the CoAP-transport analogue extending the existing CoAP exception
    hierarchy) distinct from `serialization_error`.
-2. WHEN `cpp_httplib_server`/`boost_beast_server` raises this error on the input path
+2. WHEN `cpp_httplib_server`/`boost_beast_server`/`proxygen_server` raises this error on the input path
    THEN the system SHALL translate it to HTTP status 415 as specified in Requirement 4.
-3. WHEN `cpp_httplib_server`/`boost_beast_server` raises this error on the output-
+3. WHEN `cpp_httplib_server`/`boost_beast_server`/`proxygen_server` raises this error on the output-
    negotiation path THEN the system SHALL translate it to HTTP status 406 as specified in
    Requirement 5.
-4. WHEN a client-side (`cpp_httplib_client`/`boost_beast_client`/`coap_client`) content-
+4. WHEN a client-side (`cpp_httplib_client`/`boost_beast_client`/`proxygen_client`/`coap_client`) content-
    negotiation failure occurs on a received response THEN the system SHALL set the
    pending future/promise to an error state carrying `unsupported_media_type_error`
    rather than a generic parse exception.

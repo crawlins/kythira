@@ -4,9 +4,9 @@
 
 This design extends `transport_types` (`include/raft/types.hpp`) and the transports that
 depend on it — `cpp_httplib_client`/`cpp_httplib_server`, `boost_beast_client`/
-`boost_beast_server`, and `coap_client`/`coap_server` — so that a single transport
-instance can hold 1–N `rpc_serializer`s instead of exactly one fixed at compile time, and
-performs standard content negotiation over them:
+`boost_beast_server`, `proxygen_client`/`proxygen_server`, and `coap_client`/`coap_server`
+— so that a single transport instance can hold 1–N `rpc_serializer`s instead of exactly
+one fixed at compile time, and performs standard content negotiation over them:
 
 - **Input** (decoding a received message): determined strictly by the format the message
   *declares itself to be* — the HTTP `Content-Type` header or CoAP `Content-Format`
@@ -304,7 +304,7 @@ and does not participate in wire-level content negotiation.
 
 ### 5. HTTP request/response flow
 
-**Client (`cpp_httplib_client`/`boost_beast_client`), sending:**
+**Client (`cpp_httplib_client`/`boost_beast_client`/`proxygen_client`), sending:**
 
 1. Look up `Peer_Capability_Cache[target]`. If present and still `registry.supports(...)`,
    use it as the output `Media_Type`; otherwise use `registry.default_media_type()`.
@@ -321,7 +321,7 @@ and does not participate in wire-level content negotiation.
 3. Else: fail the future with `unsupported_media_type_error` and leave the cache
    untouched (Requirement 6.5).
 
-**Server (`cpp_httplib_server`/`boost_beast_server`), receiving a request:**
+**Server (`cpp_httplib_server`/`boost_beast_server`/`proxygen_server`), receiving a request:**
 
 1. Read `Content-Type`. Absent → `registry.default_media_type()`.
 2. If unsupported → HTTP 415, do not invoke the handler.
@@ -337,8 +337,8 @@ and does not participate in wire-level content negotiation.
 
 `Accept` header parsing and `q`-value stripping is implemented once as a small free
 function (e.g. `parse_accept_header(std::string_view) -> std::vector<std::string>` in a
-shared header, since `cpp_httplib_server` and `boost_beast_server` both need it) rather
-than duplicated per transport.
+shared header, since `cpp_httplib_server`, `boost_beast_server` and `proxygen_server`
+all need it) rather than duplicated per transport.
 
 ### 6. CoAP request/response flow
 
