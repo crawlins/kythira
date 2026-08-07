@@ -1012,10 +1012,20 @@ jobs:
         if: steps.test-tsan.outcome == 'failure'
         run: exit 1
 
-  # ── Future-backend compatibility (HTTP transports across all 3 backends) ────
+  # ── Future-backend compatibility (whole suite across all 3 backends) ────────
   # Originally proxygen-only (Requirement 19.3, below); boost-beast was added
   # after every beast_* target turned out to be broken under both non-folly
-  # backends precisely because nothing here built them.
+  # backends precisely because nothing here built them. It now builds and runs
+  # the *whole* suite, because that argument never applied only to Beast:
+  # `future_default<T>` resolves through KYTHIRA_DEFAULT_FUTURE_BACKEND in 118
+  # of the 390 files under tests/, and while this job was HTTP-only, 113 of
+  # them — every raft_*, every coap_*, the learner/membership/peer2peer
+  # suites — had never executed under stdexec or boost even once. Beast was
+  # not special; it was just the cell somebody happened to land on. Running
+  # the full suite is also the only version of this that stays correct on its
+  # own: any hand-listed set of targets silently stops covering tests added
+  # after it was written, which is the same "reports success while doing
+  # nothing" failure this file's other assertions exist to prevent.
   # proxygen_client/server's generic bridge (Requirement 14) is designed to
   # work under any KYTHIRA_DEFAULT_FUTURE_BACKEND, with the Folly-native
   # fast path (Requirement 16) layered on top only when that backend is
@@ -1032,9 +1042,12 @@ jobs:
   # populate — no new vcpkg install, just a different
   # -DKYTHIRA_DEFAULT_FUTURE_BACKEND configure flag.
   future-backend-compat:
-    name: HTTP transports (${{ matrix.backend }} future backend)
+    name: Full suite (${{ matrix.backend }} future backend)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # Matches build-and-test's budget. This job used to build one target and
+    # finish in ~2 minutes on a 60-minute budget; it now does the same work a
+    # Build & Test leg does, so it needs the same headroom on a cold ccache.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -1136,10 +1149,18 @@ jobs:
 
       - name: Configure (${{ matrix.backend }} backend)
         run: |
+          # KYTHIRA_TEST_TIMEOUT_SCALE=4 for the same reason build-and-test
+          # sets it: the per-test budgets were implicitly sized against
+          # clang++-18 Release, and this job compiles with g++-13, which runs
+          # the coap suite 1.3-5.0x slower. Without it the coap tests this job
+          # newly runs would fail on timeout rather than on behaviour, and
+          # every one of those failures would be attributed to the backend.
+          # See doc/coap-flake-investigation.md.
           cmake -B build-${{ matrix.backend }} -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
+            -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       # This job's entire value is that it builds under a *non-default*
@@ -1158,23 +1179,13 @@ jobs:
           fi
           echo "confirmed: KYTHIRA_DEFAULT_FUTURE_BACKEND=$actual"
 
-      # boost-beast is built here as well as proxygen: until this was added,
-      # no CI configuration built any beast_* target under a non-folly
-      # backend, and every one of them was in fact broken there --
-      # segfaulting under stdexec (asio_strand_executor was passed to
-      # via(void*) and blind-cast to a scheduler_handle) and failing to
-      # compile under boost. Both are fixed; this is what keeps them fixed.
+      # No --target list. An explicit list is what kept this job HTTP-only for
+      # as long as it was: it covered exactly the targets somebody had already
+      # suspected, and nothing else -- including every target added since.
+      # Building the default target set means a test added tomorrow is covered
+      # under all three backends without anyone remembering to add it here.
       - name: Build
-        run: |
-          cmake --build build-${{ matrix.backend }} -j$(nproc) \
-            --target proxygen_transport_test \
-                     beast_client_test \
-                     beast_server_test \
-                     beast_integration_test \
-                     beast_ssl_test \
-                     beast_cross_transport_equivalence_test \
-                     three_way_http_transport_equivalence_test \
-                     beast_transport_example
+        run: cmake --build build-${{ matrix.backend }} -j$(nproc)
 
       - name: Save ccache
         if: always()
@@ -1183,32 +1194,54 @@ jobs:
           path: ~/.ccache
           key: ccache-futurebackend-${{ matrix.backend }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
-      # Asserts an exact test count as well as a pass. Two distinct failure
-      # modes this catches, both of which otherwise look like success:
-      # a `ctest -R` that silently matches nothing still exits 0, and a
-      # target that matches the filter but was never built is reported
-      # "Not Run" -- which is how beast_transport_example_test was caught
-      # missing from the build list while this job was being written.
+      # Same selection as build-and-test's own Test step -- the whole registered
+      # suite minus the label classes that job also excludes -- so this leg and
+      # the folly legs differ in exactly one variable, the backend. Anything
+      # that fails here and passes there is a backend defect by construction.
       #
-      # The count used to be hardcoded to 8. It is now derived from `ctest -N`
-      # with the same filter, which asserts the same thing without a literal
-      # that goes stale: add a beast_* target and the expectation follows it,
-      # rather than the job quietly continuing to certify only the old eight.
-      - name: Test (generic bridge, not the Folly fast path; Beast under this backend)
+      # `continue-on-error` + an explicit fail step at the end, rather than
+      # letting ctest fail the step directly, so the check-test-run.sh step
+      # below still runs and reports on a red run. It is on a red run that its
+      # output matters most: it distinguishes "N tests failed" from "the job
+      # ran nothing and ctest reported that as a failure".
+      - name: Test (whole suite under the ${{ matrix.backend }} backend)
+        id: test
         run: |
           set -o pipefail
           ctest --test-dir build-${{ matrix.backend }} \
-            -R 'proxygen_transport_test|^beast_|^three_way_http_transport_equivalence_test$' \
+            -j$(nproc) \
+            --output-on-failure \
+            --output-junit ${{ github.workspace }}/test-results-${{ matrix.backend }}.xml \
+            --repeat until-pass:3 \
             --no-tests=error \
-            --output-on-failure 2>&1 | tee ctest-out.txt
+            -LE '^(slow|performance|verbose|benchmark|docker)$' \
+            2>&1 | tee ctest-out.txt
+        continue-on-error: true
 
+      # Asserts the run did the work its exit code implies: that every
+      # registered test actually executed, that the count was not zero, that
+      # nothing skipped, and that no first-attempt failure was absorbed by
+      # --repeat until-pass:3. The expected count is derived from `ctest -N`
+      # with the same filter, so it follows the CMake test registry rather
+      # than a literal that goes stale.
       - name: Check the ${{ matrix.backend }} run did the work
         if: always()
         run: |
           scripts/check-test-run.sh \
             --build-dir build-${{ matrix.backend }} \
             --log ctest-out.txt \
-            -- -R 'proxygen_transport_test|^beast_|^three_way_http_transport_equivalence_test$'
+            -- -LE '^(slow|performance|verbose|benchmark|docker)$'
+
+      - name: Upload ${{ matrix.backend }} test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-future-backend-${{ matrix.backend }}
+          path: test-results-${{ matrix.backend }}.xml
+
+      - name: Fail if tests failed
+        if: steps.test.outcome == 'failure'
+        run: exit 1
 
   # ── Packer template checks (ca_cluster_node AMI) ────────────────────────────
   # Static-only: no AWS credentials, no EC2 spend, no vcpkg/C++ build — cheap
