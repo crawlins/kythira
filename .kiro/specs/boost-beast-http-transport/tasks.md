@@ -809,6 +809,13 @@ second, reuse-focused one).
    "Proxygen transport" to "HTTP transports") now builds and runs the
    `beast_*` targets under both non-default backends, with a test-count
    floor so a silently-matching-nothing `ctest -R` cannot report success.
+   **Superseded on August 7, 2026**: that job was widened again, to build
+   and run the *whole* suite under stdexec and boost, and renamed a third
+   time to "Full suite (<backend> future backend)". The `beast_*` targets
+   are still covered — they are simply no longer named, because the
+   `--target` list they were added to was itself the reason 113 other
+   backend-dependent test files had never run there. Search for the job
+   id `future-backend-compat` rather than for any of its display names.
    Caveat 4 below (`three_way_http_transport_equivalence_test` not built)
    is covered by that same change.
 4. **Unrelated, pre-existing, out of scope this round**:
