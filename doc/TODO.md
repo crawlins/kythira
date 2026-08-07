@@ -160,7 +160,40 @@ unverified completion claim.
 ## Known Follow-ups
 
 - **Beast suites segfault under the stdexec future backend, and CI cannot see
-  it (found August 6, 2026 — open).** Five tests fail on unmodified `main` in a
+  it (found August 6, 2026 — RESOLVED same day, PR #169).** The diagnosis
+  below was right that no CI job covered it and wrong about where the bug
+  lived: the crash was not "inside the stdexec backend", it was Beast handing
+  that backend an executor of the wrong type. Three separate defects, fixed
+  together:
+  1. **Silent UB, not an stdexec bug.** `asio_strand_executor` derived from
+     `folly::Executor` and every `async_*_kf` took a `folly::Executor*`. That
+     should have been a compile error under another backend, but
+     `future_continuation` requires a `via(void*)` overload,
+     `folly::Executor*` converts implicitly to `void*`, and stdexec's
+     `via(void*)` `static_cast`s straight to `scheduler_handle*` —
+     reinterpreting a vtable pointer as a `shared_ptr`. Confirmed by
+     instrumenting `via(void*)`: probe fires, fault lands at `0x1b`.
+     `asio_strand_executor` is now backend-conditional (three variants with a
+     `handle()` accessor, mirroring `kythira::executor_default`).
+  2. **Lazy senders never started.** Once the crash was fixed the same tests
+     *hung*: `server_session` built continuation chains and stored them in a
+     `_pending` member, which was an attempt at backend-neutrality with the
+     dependency backwards — holding a Future alive is what the *eager*
+     backends don't need, and is not what the lazy one needs. Both chains now
+     end in `.detach()`; `_pending` is deleted.
+  3. **Two boost-backend bugs**, hidden because Beast never compiled under
+     `=boost` at all: `thenError` lacked `thenValue`'s Future-flattening
+     overload, and `via()` was not sticky — continuations after the first fell
+     back to bare `then()`, which Boost.Thread runs on a freshly spawned
+     thread, taking Beast's session state off-strand.
+
+  Verified one host / one compiler / one build type, varying only the backend:
+  folly 4/4, stdexec 8/8, boost 8/8 (twice each locally, then confirmed in CI
+  by test name under both non-default backends). The `future-backend-compat`
+  job now builds and runs the `beast_*` targets and asserts an exact test
+  count. Original diagnosis retained below for the reasoning trail.
+
+  Five tests fail on unmodified `main` in a
   local `build/` configured `-DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`:
   `beast_ssl_test`, `beast_server_test`, `beast_integration_test`,
   `beast_cross_transport_equivalence_test` and
@@ -218,6 +251,23 @@ unverified completion claim.
   `backend: [stdexec, boost]` legs build a single target,
   `proxygen_transport_test`. So **two of the three backends are certified by
   one test**, and ~30% of the suite has never run against them.
+
+  **Partially closed by PR #169**, which added the `beast_*` targets, both HTTP
+  equivalence tests and the transport example to those legs — 8 tests per
+  backend instead of 1. That covers the HTTP-transport square only: **113 of
+  the 118 backend-dependent files still never run under stdexec or boost**,
+  including all 40 `raft_*` and 21 `coap_*`. Two notes for whoever widens it:
+  - **A clean compile proves nothing here.** Beast compiled fine under stdexec
+    and still segfaulted; both defects PR #169 fixed were runtime-only. A
+    spot-check of five files (one each from `raft_`, `coap_`, `learner_`,
+    `membership_`, `peer2peer_`) compiles clean under both non-default
+    backends — that is *not* evidence they pass.
+  - **The two known failure shapes look contained, though.** An audit of
+    `include/` and `src/` for (a) statement-initial continuation chains
+    discarded without `.detach()` and (b) `via()` handed a non-native executor
+    found **no further instances** — proxygen's candidates are all inside
+    `send_rpc_folly_fast_path`, so Folly-gated. Beast was the outlier rather
+    than the tip of an iceberg, at least for these two shapes.
   - Widen the backend matrix to build and run the **full** test suite for each
     of `folly`, `stdexec` and `boost`, rather than adding Beast to the existing
     narrow legs. Beast × stdexec was simply the first cell anyone happened to
