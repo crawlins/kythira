@@ -362,39 +362,59 @@ unverified completion claim.
     red check is worth exactly as much as a green one that tests nothing.
     Whoever reads a red compat leg has to act on it or record why not.
 
-- **Two `chaos_*` tests segfault under the boost future backend, and nothing
-  else does (found August 7, 2026 — open).** The first output of the widened
-  matrix above.
-  - `chaos_state_machine_safety_test` — **SegFault on all 3 attempts**, so
-    deterministic rather than flaky.
-  - `chaos_persistence_degradation_recovery_test` — SegFault on attempt 1,
-    passed on retry. **This one is invisible in the job status**: `--repeat
-    until-pass:3` absorbs it completely, and it surfaced only because
-    `scripts/check-test-run.sh` (PR #172) reports first-attempt failures. That
-    is the blind spot this repo documented and then immediately caught a real
-    defect with, on the reporting machinery's first widened run.
-  - **A clean controlled comparison, already available.** Both tests pass under
-    folly (all four `Build & Test` legs green on the same commit) and under
-    stdexec (409/409). Only the backend differs, so this is a boost defect by
-    construction — no second explanation to rule out first.
-  - **Hypothesis, not yet confirmed.** Both tests drive libfiu fault injection
-    hard (20% AppendEntries failure and 30% disk degradation respectively), so
-    both hammer *error* paths through the raft core's future chains. They use
-    `future_default`/`promise_default` over the **simulator** network, so no
-    HTTP transport is involved at all. That places them in the same family as
-    PR #169's two boost fixes — `thenError` missing `thenValue`'s
-    Future-flattening overload, and `via()` not being sticky — but reached
-    through the raft core rather than through Beast. Start by re-reading
-    `future_boost.hpp`'s error paths with that in mind.
-  - **The trap PR #169 recorded still applies** to anything touching
-    `future_boost.hpp`: Boost's `then(Ex&, F)` stores the executor **by
-    reference**, and the owning `Future` is routinely a temporary. The
-    continuation captures a `shared_ptr` keep-alive for that reason, and the
-    first sticky-`via()` attempt broke two previously-passing tests by getting
-    it wrong. Easy to re-break.
-  - Repro locally with `build-boost`
-    (`-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost`, which currently holds only 9
-    built binaries) and the single target, rather than a full-tree build.
+- **Retry continuations outlived their owning `node` — a real use-after-free
+  (found and fixed August 7, 2026 — resolved).** The first output of the
+  widened backend matrix above, and it was not what the symptom suggested.
+
+  **Symptom:** `chaos_state_machine_safety_test` segfaulted 3/3 in CI under
+  boost, and `chaos_persistence_degradation_recovery_test` 1/3. Both passed
+  under folly and stdexec on the same commit.
+
+  **What it actually was:** not a Raft bug and not a boost-backend bug. Both
+  tests *passed* — `*** No errors detected` appears in the log **before** the
+  crash. The fault was in teardown. `error_handler::execute_with_retry_impl`'s
+  `thenTry` continuation captured `this` with no lifetime guard, and the future
+  backend runs it on a thread nothing joins (under Boost.Thread, a freshly
+  spawned detached one). By the time it ran, the owning `node` had been
+  destroyed by its `unique_ptr` at the end of the test, and the continuation
+  read `_rng` out of the freed `error_handler` from `calculate_delay`.
+
+  **Confirmed by AddressSanitizer, not by inference** — a `heap-use-after-free`
+  naming the freed object (`node<chaos_raft_types>`, freed at
+  `chaos_state_machine_safety_test.cpp:96`), the read
+  (`error_handler.hpp:648`), and the thread (`boost … thread_proxy`). Worth the
+  detour: gdb was useless here because each run under it took minutes and the
+  crash is timing-dependent, whereas ASan caught it on the first run because it
+  flags the *access*, not the crash.
+
+  **This was latent under every backend, not just boost.** `delay()` resolves
+  to a process-wide timer under all three — boost's `timer_service::instance()`
+  singleton, stdexec's `global_timed_context()`, folly's `Timekeeper` — and
+  none of them is tied to the owner's lifetime. Only the fault-injection tests
+  generate retries at all, which is why only the chaos suite ever hit it, and
+  boost's scheduling is simply what made it reproducible. Do **not** file this
+  mentally under "boost is flaky".
+
+  **Fix:** `error_handler` now carries the same
+  `shared_ptr<std::atomic<bool>>` stop flag the rest of this codebase uses for
+  async callbacks, and both retry continuations check it *before* touching
+  `this`. `node::start()` shares its own flag with all four handlers, re-shared
+  on each start so continuations pending from a previous run keep seeing the
+  old flag as true.
+
+  **A known limitation, stated rather than glossed:** a stop flag narrows the
+  window, it does not close it. Nothing waits for outstanding continuations, so
+  a continuation that passes the check can still be inside the handler when the
+  owner is freed. Closing it properly means either heap-owning the handlers'
+  state so continuations keep it alive, or draining outstanding continuations
+  in `stop()`. The same caveat applies to every other `_stop_flag` site in
+  `raft.hpp`, which is the pattern this follows.
+
+  **Verified:** ASan reported on run 1 before the fix and 0/8 after; the
+  plain boost binaries went from 1/3 (local) and 3/3 (CI) failing to 10/10
+  clean on each of the two tests; the three `error_handler_*` suites pass and
+  still exercise the full retry ladder (attempts 1→2→3 with backoff), so the
+  guard does not short-circuit retries when the flag is false.
 
 
 - **Systematise "did the job actually do the work?" as CI jobs.** This repo's

@@ -2022,6 +2022,16 @@ auto node<Types>::start() -> void {
     // as true, while new callbacks from this run see false.
     _stop_flag = std::make_shared<std::atomic<bool>>(false);
 
+    // The error handlers' retry continuations capture `this` and are run by the
+    // future backend on threads nothing joins, so they need the same guard every
+    // other async callback here has. Re-shared on every start() for the same
+    // reason the flag itself is replaced: continuations still pending from the
+    // previous run keep the old flag, which is already true.
+    _append_entries_error_handler.set_stop_flag(_stop_flag);
+    _request_vote_error_handler.set_stop_flag(_stop_flag);
+    _request_pre_vote_error_handler.set_stop_flag(_stop_flag);
+    _install_snapshot_error_handler.set_stop_flag(_stop_flag);
+
     _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)

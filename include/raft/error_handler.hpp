@@ -3,8 +3,10 @@
 #include "future_default.hpp"
 #include "types.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -477,12 +479,38 @@ public:
         return network_errors >= (recent_errors.size() * 2 / 3);
     }
 
+    /// @brief Share the owner's stop flag, so retry continuations that outlive
+    ///     the owner become no-ops instead of use-after-frees.
+    ///
+    /// `execute_with_retry_impl`'s continuation captures `this` and is run by
+    /// the future backend on a thread nothing joins -- under Boost.Thread,
+    /// literally a freshly spawned detached thread. If the owning object is
+    /// destroyed first, that continuation reads freed memory. It is not
+    /// hypothetical: `chaos_state_machine_safety_test` reproduced it as an
+    /// AddressSanitizer heap-use-after-free reading `_rng` from
+    /// `calculate_delay`, on a Boost continuation thread, after the owning
+    /// `node` had already been destroyed by its `unique_ptr` at the end of the
+    /// test -- with the test itself having passed.
+    ///
+    /// Callers pass the same flag they use for their own async callbacks and
+    /// set it before destruction. `node::start()` re-shares a fresh flag on
+    /// every start, so continuations from a previous run keep seeing the old
+    /// flag as true.
+    auto set_stop_flag(std::shared_ptr<std::atomic<bool>> flag) -> void {
+        _stop_flag = std::move(flag);
+    }
+
 private:
     // Retry policies for different operations
     std::unordered_map<std::string, retry_policy> _retry_policies;
 
     // Random number generator for jitter
     mutable std::mt19937 _rng{std::random_device{}()};
+
+    /// Owned rather than borrowed so an error_handler that nobody wired a flag
+    /// into still has a valid one to read -- a null check on every continuation
+    /// would be one more thing to forget.
+    std::shared_ptr<std::atomic<bool>> _stop_flag{std::make_shared<std::atomic<bool>>(false)};
 
     /**
      * @brief Internal implementation of retry logic using async delays
@@ -503,9 +531,28 @@ private:
         -> kythira::future_default<Result> {
         return std::forward<Operation>(op)().thenTry([this, operation_name,
                                                       op = std::forward<Operation>(op), policy,
-                                                      attempt](kythira::try_default<Result>
-                                                                   result) mutable
+                                                      attempt, stop_flag = _stop_flag](
+                                                         kythira::try_default<Result>
+                                                             result) mutable
                                                          -> kythira::future_default<Result> {
+            // Before touching `this`. The backend may run this continuation on a
+            // thread nothing joins, so the owner can already be gone -- and every
+            // line below dereferences `this` (classify_error, _retry_policies,
+            // calculate_delay's _rng). Checking a flag captured *by value* is the
+            // only thing that is safe to do first.
+            //
+            // `result` is deliberately still moved out below rather than dropped:
+            // a successful result that arrives after shutdown is a value the
+            // caller may still be waiting on, and failing it would turn a benign
+            // late completion into a spurious error.
+            if (stop_flag->load(std::memory_order_acquire)) {
+                if (result.hasValue()) {
+                    return kythira::future_factory_default::makeFuture(std::move(result).value());
+                }
+                return kythira::future_factory_default::makeExceptionalFuture<Result>(
+                    result.exception());
+            }
+
             // If successful, return the result
             if (result.hasValue()) {
                 return kythira::future_factory_default::makeFuture(std::move(result).value());
@@ -606,9 +653,19 @@ private:
 
                 // Apply async delay and retry - no thread blocking!
                 return kythira::future_factory_default::makeFuture().delay(delay).thenTry(
-                    [this, operation_name, op = std::move(op), policy,
-                     attempt](const kythira::try_default<void>&) mutable
+                    [this, operation_name, op = std::move(op), policy, attempt,
+                     stop_flag = _stop_flag](const kythira::try_default<void>&) mutable
                         -> kythira::future_default<Result> {
+                        // Same guard as above, and it matters more here: this one
+                        // fires on a *timer* thread owned by a process-wide
+                        // singleton (boost's timer_service, stdexec's
+                        // global_timed_context, folly's Timekeeper), none of
+                        // which is tied to the owner's lifetime at all.
+                        if (stop_flag->load(std::memory_order_acquire)) {
+                            return kythira::future_factory_default::makeExceptionalFuture<Result>(
+                                std::make_exception_ptr(
+                                    std::runtime_error("retry abandoned: owner stopped")));
+                        }
                         // Retry by calling execute_with_retry_impl recursively
                         // This returns a Future, which will be automatically flattened
                         return execute_with_retry_impl(operation_name, std::move(op), policy,
