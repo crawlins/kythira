@@ -1810,12 +1810,19 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
                     test_data.push_back(static_cast<std::byte>(c));
                 }
 
+                // The decoded value is deliberately thrown away: this is a probe
+                // asking "do these bytes parse?", and only the throw/no-throw
+                // outcome is wanted. The `static_cast<void>` says so explicitly.
+                // Without it the serializers' `[[nodiscard]]` fires
+                // -Wunused-result three times on every translation unit that
+                // instantiates this, which is noise that trains a reader to
+                // ignore the warning that matters.
                 if constexpr (std::is_same_v<Request, kythira::request_vote_request<>>) {
-                    _serializer.deserialize_request_vote_request(test_data);
+                    static_cast<void>(_serializer.deserialize_request_vote_request(test_data));
                 } else if constexpr (std::is_same_v<Request, kythira::append_entries_request<>>) {
-                    _serializer.deserialize_append_entries_request(test_data);
+                    static_cast<void>(_serializer.deserialize_append_entries_request(test_data));
                 } else if constexpr (std::is_same_v<Request, kythira::install_snapshot_request<>>) {
-                    _serializer.deserialize_install_snapshot_request(test_data);
+                    static_cast<void>(_serializer.deserialize_install_snapshot_request(test_data));
                 }
 
                 // If we get here, deserialization worked, so it's a handler exception
