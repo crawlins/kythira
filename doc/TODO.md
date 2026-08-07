@@ -313,59 +313,89 @@ unverified completion claim.
   and on the artifact quota, not the cache quota — `coverage-report` is
   **2.29 GB across 456 copies, 97% of all 2.37 GB of artifact storage**.
 
-- **CI must matrix every `future_default` backend across the whole suite, not
-  one target.** The Beast × stdexec hole above is a symptom; the hole is much
-  larger than Beast. `future_default<T>` resolves to one of **three** backends
-  (`folly`, `stdexec`, `boost` — `CMakeLists.txt:676`), and **118 of the 390
-  test files** under `tests/` resolve through it: 40 `raft_*`, 21 `coap_*`, 8
-  `kythira_*`, 5 `learner_*`, 5 `beast_*`, 4 `peer2peer_*`, 4 `membership_*`,
-  plus error-handler, quorum-manager, network and performance suites. Today
-  `Build & Test` runs all of them under **folly only** (it passes no backend
-  flag, so it takes the `CMakeLists.txt:674` default), and the
-  `backend: [stdexec, boost]` legs build a single target,
-  `proxygen_transport_test`. So **two of the three backends are certified by
-  one test**, and ~30% of the suite has never run against them.
+- **CI now matrices every `future_default` backend across the whole suite
+  (August 7, 2026 — resolved).** `future_default<T>` resolves to one of three
+  backends (`folly`, `stdexec`, `boost` — `CMakeLists.txt:676`), and **118 of
+  the 390 test files** under `tests/` resolve through it. The
+  `backend: [stdexec, boost]` legs used to build an explicit list of eight
+  HTTP-transport targets, so **113 of those 118 had never executed under
+  stdexec or boost even once** — all 40 `raft_*`, all 21 `coap_*`, plus the
+  `kythira_*`, `learner_*`, `peer2peer_*` and `membership_*` suites. Two of
+  three backends were certified by the HTTP transports alone.
 
-  **Partially closed by PR #169**, which added the `beast_*` targets, both HTTP
-  equivalence tests and the transport example to those legs — 8 tests per
-  backend instead of 1. That covers the HTTP-transport square only: **113 of
-  the 118 backend-dependent files still never run under stdexec or boost**,
-  including all 40 `raft_*` and 21 `coap_*`. Two notes for whoever widens it:
-  - **A clean compile proves nothing here.** Beast compiled fine under stdexec
-    and still segfaulted; both defects PR #169 fixed were runtime-only. A
-    spot-check of five files (one each from `raft_`, `coap_`, `learner_`,
-    `membership_`, `peer2peer_`) compiles clean under both non-default
-    backends — that is *not* evidence they pass.
-  - **The two known failure shapes look contained, though.** An audit of
-    `include/` and `src/` for (a) statement-initial continuation chains
-    discarded without `.detach()` and (b) `via()` handed a non-native executor
-    found **no further instances** — proxygen's candidates are all inside
-    `send_rpc_folly_fast_path`, so Folly-gated. Beast was the outlier rather
-    than the tip of an iceberg, at least for these two shapes.
-  - Widen the backend matrix to build and run the **full** test suite for each
-    of `folly`, `stdexec` and `boost`, rather than adding Beast to the existing
-    narrow legs. Beast × stdexec was simply the first cell anyone happened to
-    land on; adding only that cell fixes one square of a grid that is mostly
-    empty, and the next session would find the next one by accident the same
-    way.
-  - Cheapest correct version if a 3× full matrix is too costly: make the
-    non-default legs run at least the 118 backend-dependent suites, and derive
-    that list mechanically (`grep -l future_default tests/*.cpp`) rather than
-    hand-maintaining it — a hand-listed set silently stops covering new tests,
-    which is the same failure this whole item exists to prevent.
-  - **Expect it to go red immediately**, since the Beast × stdexec bug above is
-    live on `main`, and expect it to surface *more* than that one bug: nothing
-    has ever run the CoAP or raft suites under stdexec or boost either. That is
-    the point, but it orders the work — either land fixes first, or land the
-    matrix with the new legs non-blocking **and a dated note saying why**. Do
-    not merge it silently allowed-to-fail: an ignored red check is the same
-    failure mode as a green one that tests nothing.
-  - Cost check before widening: the current stdexec/boost legs take ~1.5-2
-    minutes because they build one target; a full `Build & Test` leg is ~20-30
-    minutes with ccache warm. Measure a full three-backend matrix before
-    committing to it, and if it is too slow consider running the non-default
-    backends on a schedule (nightly) rather than per-PR — a slower signal is
-    still infinitely better than the current none.
+  The legs now build the default target set — **no `--target` list at all** —
+  and run the whole registered suite with the same `-LE` label exclusions
+  `build-and-test` uses, so a compat leg and a Build & Test leg differ in
+  exactly one variable. A derived list (`grep -l future_default tests/*.cpp`)
+  would have fixed the staleness but not the premise, and would still have
+  needed a source-name → test-name mapping; building everything needs neither
+  and covers a test added tomorrow.
+
+  **Results of the first run, which is the point of the whole exercise:**
+  - **stdexec: 409/409 pass.** The entire suite compiles *and* passes.
+  - **boost: 411/412.** The entire suite compiles; two `chaos_*` tests
+    segfault. See the new follow-up below.
+  - The old prediction that this would "surface *more* than the Beast bug" was
+    right in kind but much smaller in degree than feared: two tests, one
+    backend, both in the same suite.
+
+  **Three things worth knowing before reading these legs' output:**
+  - **The two legs legitimately register different test counts** — 412 under
+    boost, 409 under stdexec. The three extras are
+    `boost_future_concept_compliance_property_test`,
+    `boost_future_continuation_and_collector_property_test` and
+    `boost_backend_migration_guide_example_test`, which
+    `tests/CMakeLists.txt:3505` registers only when the boost backend is
+    enabled. Verified by diffing the two runs' actual `Test #N: <name>` sets,
+    not inferred: the stdexec set is a strict subset, nothing is missing.
+    `check-test-run.sh` derives its expectation per build dir, so this is
+    self-consistent rather than something to special-case.
+  - **Cost, measured cold:** the Build step is **~55 minutes** per leg, against
+    the 4-5 minutes the old eight-target legs took warm. `timeout-minutes`
+    raised 60 → 180 to match `build-and-test`. Both legs run in parallel with
+    the four Build & Test legs, so they set latency only when slower. If this
+    proves too expensive per-PR, move them to a nightly schedule — do **not**
+    narrow the target list again, which is the change that created this hole.
+  - **Neither leg is in `main`'s required status checks**, so a red one reports
+    without blocking. That is deliberate and is the sanctioned ordering, but it
+    is one step from the failure mode this file exists to prevent: an ignored
+    red check is worth exactly as much as a green one that tests nothing.
+    Whoever reads a red compat leg has to act on it or record why not.
+
+- **Two `chaos_*` tests segfault under the boost future backend, and nothing
+  else does (found August 7, 2026 — open).** The first output of the widened
+  matrix above.
+  - `chaos_state_machine_safety_test` — **SegFault on all 3 attempts**, so
+    deterministic rather than flaky.
+  - `chaos_persistence_degradation_recovery_test` — SegFault on attempt 1,
+    passed on retry. **This one is invisible in the job status**: `--repeat
+    until-pass:3` absorbs it completely, and it surfaced only because
+    `scripts/check-test-run.sh` (PR #172) reports first-attempt failures. That
+    is the blind spot this repo documented and then immediately caught a real
+    defect with, on the reporting machinery's first widened run.
+  - **A clean controlled comparison, already available.** Both tests pass under
+    folly (all four `Build & Test` legs green on the same commit) and under
+    stdexec (409/409). Only the backend differs, so this is a boost defect by
+    construction — no second explanation to rule out first.
+  - **Hypothesis, not yet confirmed.** Both tests drive libfiu fault injection
+    hard (20% AppendEntries failure and 30% disk degradation respectively), so
+    both hammer *error* paths through the raft core's future chains. They use
+    `future_default`/`promise_default` over the **simulator** network, so no
+    HTTP transport is involved at all. That places them in the same family as
+    PR #169's two boost fixes — `thenError` missing `thenValue`'s
+    Future-flattening overload, and `via()` not being sticky — but reached
+    through the raft core rather than through Beast. Start by re-reading
+    `future_boost.hpp`'s error paths with that in mind.
+  - **The trap PR #169 recorded still applies** to anything touching
+    `future_boost.hpp`: Boost's `then(Ex&, F)` stores the executor **by
+    reference**, and the owning `Future` is routinely a temporary. The
+    continuation captures a `shared_ptr` keep-alive for that reason, and the
+    first sticky-`via()` attempt broke two previously-passing tests by getting
+    it wrong. Easy to re-break.
+  - Repro locally with `build-boost`
+    (`-DKYTHIRA_DEFAULT_FUTURE_BACKEND=boost`, which currently holds only 9
+    built binaries) and the single target, rather than a full-tree build.
+
 
 - **Systematise "did the job actually do the work?" as CI jobs.** This repo's
   single most repeated failure is machinery that reports success while doing
