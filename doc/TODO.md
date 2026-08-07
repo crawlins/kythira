@@ -239,6 +239,80 @@ unverified completion claim.
     beast_ssl_test && ./build-stdexec/tests/beast_ssl_test`. Under `gdb -batch
     -ex run -ex "bt 25"` the trace above appears within seconds.
 
+- **Possible improvement: split `Build & Test` into one build job feeding N
+  sharded test jobs (measured August 6, 2026 — deliberately deferred, not
+  started).** `Build & Test` currently builds and tests in the same job.
+  Uploading the built test binaries once and fanning them out to parallel
+  `ctest` shards would cut leg latency. The mechanism is ordinary `needs:` +
+  `upload-artifact`/`download-artifact`; sharding is `ctest -I <k>,,<N>`.
+
+  Measured on run `31123519182`, `Build & Test (clang++-18, arm64)`:
+
+  | | measured |
+  | --- | --- |
+  | Build vs Test | test share **35.8%–57.4%** across the four legs (see per-leg table) |
+  | Test binaries | 361 binaries, **7.83 GB** raw |
+  | After `strip` + gzip | **~600 MB** — 12.99× measured on a 40-binary sample (731.5 MB → 56.3 MB, 9% of total bytes) |
+  | Linkage | statically linked, **0** vcpkg/`$HOME` deps → portable across same-image runners |
+  | ctest registry | 12 × `CTestTestfile.cmake`, **204 KB** |
+  | Fixture staging | **none** — 0 `WORKING_DIRECTORY`/`configure_file`/`file(COPY)` in `tests/CMakeLists.txt`, plus 1 MB of data files |
+
+  That last row is what usually kills this pattern and it is clean here: the
+  shippable payload is binaries + 204 KB + 1 MB.
+
+  Per-leg, from run `31123519182` (the whole matrix, not one leg — an earlier
+  draft of this entry generalised from `clang++-18, arm64` alone and got the
+  shape wrong; the legs are not alike):
+
+  | leg | build | test | test share | projected N=4 |
+  | --- | --- | --- | --- | --- |
+  | g++-13, x64 | 912s | 1229s | 57.4% | 2141s → ~1304s (**−39%**) |
+  | clang++-18, x64 | 991s | 553s | 35.8% | 1544s → ~1214s (−21%) |
+  | g++-13, arm64 | 672s | 609s | 47.5% | 1281s → ~909s (−29%) |
+  | clang++-18, arm64 | 592s | 546s | 48.0% | 1138s → ~814s (−28%) |
+
+  **The number that matters is the critical path, not the average.** The four
+  legs run in parallel, so the matrix finishes when the slowest finishes —
+  `g++-13, x64` at 2141s. Sharding takes that long pole to ~1304s, so PR
+  latency drops **~39%** (36 min → 21 min). Total runner minutes go 6104s →
+  ~6743s (**+10%**). Projections assume ~60s strip+upload on the build job and
+  ~25s download per shard.
+
+  There is still a hard floor: no leg goes below its own build time, so ~900s
+  for the slowest.
+
+  Three gotchas specific to this repo:
+  - **It multiplies per matrix cell, not across it.** Binaries are not
+    portable across `x64`/`arm64` or `g++`/`clang++` stdlibs, so you need 4
+    build jobs and the matrix goes 4 → 4 + 4N (20 jobs at N=4).
+  - **`retention-days: 1` is mandatory, not optional.** Without it this adds
+    ~600 MB per run to an artifact store currently holding 2.37 GB total.
+  - **Striding ignores test cost.** The suite has long multi-process tests;
+    naive `-I k,,N` leaves one shard carrying the tail while others idle.
+    Cost-aware partitioning is what makes the 28% real rather than notional.
+
+  **Why deferred.** `ctest -j$(nproc)` is already in use, so this buys
+  cross-machine parallelism on top of intra-machine — a real but modest win. A
+  20-minute leg was not the bottleneck on the day this was measured; a 2-hour
+  Actions queue and cache pressure were, and this change *adds* ~600 MB/run of
+  artifact traffic. It also does nothing about `--repeat until-pass:3` hiding
+  first-attempt failures in these same jobs (see the "did the job actually do
+  the work?" entry below). Revisit when leg latency is the actual complaint.
+
+- **Actions cache is at GitHub's 10 GB per-repository limit (measured
+  August 6, 2026 — open).** `actions/cache/usage` reported **10.44 GB across
+  34 caches**, against a documented 10 GB per-repo ceiling, so GitHub is
+  already evicting entries LRU. Split: **ccache 5.61 GB** (31 entries) and
+  **vcpkg 4.83 GB** (3 entries). vcpkg permanently occupies ~4.8 GB, leaving
+  ~5 GB for 31 ccache entries across four compiler×arch cells plus the
+  backend-matrix legs — they are evicting each other, so some builds start
+  cold, a plausible contributor to 25–40 minute `Build & Test` legs. Note the
+  `future-backend-compat` legs now compile eight targets instead of one
+  (PR #169), which adds pressure. Levers: prune stale `ccache-*` keys, narrow
+  the restore-key fan-out, or scope vcpkg caching more tightly. Separately —
+  and on the artifact quota, not the cache quota — `coverage-report` is
+  **2.29 GB across 456 copies, 97% of all 2.37 GB of artifact storage**.
+
 - **CI must matrix every `future_default` backend across the whole suite, not
   one target.** The Beast × stdexec hole above is a symptom; the hole is much
   larger than Beast. `future_default<T>` resolves to one of **three** backends
