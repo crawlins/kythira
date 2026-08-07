@@ -411,62 +411,71 @@ unverified completion claim.
     matrix; the fix for the *class* is making "this job covered what it claims"
     a checked property rather than an assumption.
 
-- **Decide whether Proxygen is meant to negotiate content, and implement it if
-  so.** `transport-multi-serializer` gave cpp-httplib and Beast full content
-  negotiation (Tasks 9, 10) and left Proxygen untouched — not by decision but
-  by omission: **`requirements.md` and `design.md` mention Proxygen zero
-  times**, and the only two occurrences in `tasks.md` are in this session's own
-  Task 5 write-up. The spec was written around the two HTTP transports that
-  existed when it was drafted, and nobody revisited it when the third landed.
-  - **Proxygen still has the exact bug the spec set out to remove.** Its server
-    response path hardcodes the media type —
-    `proxygen_http_transport_impl.hpp:1135`, `.header(HTTP_HEADER_CONTENT_TYPE,
-    status_code == 200 ? "application/json" : "text/plain")` — and the client
-    hardcodes it twice more (`:472`, `:502`). Requirement 9.4 names precisely
-    this ("replace the hardcoded `content_type_json`"), and it was fixed in
-    httplib and Beast on August 6, 2026 while Proxygen kept it. A Proxygen node
-    configured with `cbor_rpc_serializer` therefore labels every response
-    `application/json` and lies on the wire.
-  - So the first question is not "should it negotiate" but "is Proxygen a
-    first-class transport?" If yes, it needs Tasks 9/10's treatment: registry
-    encode/decode, `Accept` on requests, 415/406 before the handler, negotiated
-    `Content-Type` on responses, `media_type` metrics. If it is
-    experimental/benchmark-only, say so in the spec and fix only the hardcoded
-    label, which is a bug under any answer.
-  - Expect the same structural change Beast needed:
-    `proxygen_server::dispatch(_path, _body, response_body, status_code)` takes
-    no headers, exactly as Beast's did, so it cannot see `Content-Type` or
-    `Accept`. The Beast commit in PR #167 is a direct template for the fix.
-  - Add the spec tasks rather than implementing off-book, so the requirements
-    trace stays intact — this is the second time an unlisted transport has been
-    silently out of scope, and a task numbered in `tasks.md` is what stops a
-    third.
+- **Proxygen content negotiation — answered and implemented (August 7, 2026 —
+  resolved).** The open question was "is Proxygen a first-class transport?"
+  **It is**, so it got Tasks 9/10's full treatment as spec Task 10a rather than
+  the minimal "just fix the hardcoded label" alternative.
+  - The defect was real and exactly as recorded: `application/json` hardcoded
+    on the server response (`rpc_request_handler::onEOM`) and on both client
+    request paths (`send_on_session`, `send_on_session_folly`), so a Proxygen
+    node configured with `cbor_rpc_serializer` labelled every message JSON and
+    lied on the wire. Requirement 9.4 names precisely this.
+  - **The spec was amended before the code was written**, which is what the
+    previous entry asked for. `requirements.md` and `design.md` had mentioned
+    Proxygen zero times; both now enumerate it, the six acceptance criteria
+    that name transports individually now name it, and `tasks.md` carries Task
+    10a with a dated note saying the omission was an omission. Numbered `10a`
+    rather than `17` because 11-16 are referenced by number from this file and
+    from Task 10's own write-up.
+  - **Two findings worth carrying forward, both specific to Proxygen:**
+    - **Proxygen has *two* client send paths**, the generic bridge
+      (Requirement 14) and the Folly fast path (Requirement 16), chosen by an
+      `if constexpr` on the future backend, with separate function bodies and
+      separate transaction bridges. Negotiating in one and not the other would
+      have made a node's wire behaviour depend on which future backend it was
+      compiled with — invisible under the default build, and surfacing only
+      under the backend matrix the item above widens. Anything else that edits
+      a Proxygen client path has the same trap.
+    - **The response `Content-Type` had nowhere to live.** The shared
+      `http_response` struct carried a status code and a body only, so neither
+      bridge could see the header. It now carries the media type, filled by one
+      `message_media_type()` helper that both bridges *and* the server's
+      `RequestHandler` call — three hand-rolled copies of "strip the
+      parameters, treat absent as empty" is the shape that ends up right in two
+      places and subtly wrong in the third.
+  - `tests/proxygen_negotiation_integration_test.cpp` pins the behaviour, and
+    is **the first test anywhere that pairs one HTTP implementation's client
+    with a different implementation's server** (raw `httplib::Client` against a
+    live `proxygen_server`) — see the interop-grid item below, which this
+    partially opens.
 
 - **Test the client-implementation × server-implementation interop grid.**
-  There is **no test anywhere** that pairs one HTTP implementation's client
-  with a different implementation's server. The two tests whose names suggest
-  otherwise do not:
+  Until August 7, 2026 there was **no test anywhere** that paired one HTTP
+  implementation's client with a different implementation's server. The two
+  tests whose names suggest otherwise do not:
   `beast_cross_transport_equivalence_test` runs httplib client → httplib server
   on port 18220 and Beast client → Beast server on 18221 and compares the
   *results*; `three_way_http_transport_equivalence_test` says so outright in its
   header — "against each transport's **own** client/server pair". Three
-  implementations means nine cells; three are covered, all on the diagonal.
+  implementations means nine cells; three were covered, all on the diagonal.
   - Equivalence is not interoperability. Each implementation's client is only
     ever exercised against a server that shares its assumptions, so two
     transports can pass every equivalence assertion and still fail to talk to
     each other. The same grid-with-only-a-diagonal shape as the backend matrix
     item above, on a different pair of axes.
-  - **The gap widened on August 6, 2026 rather than staying static.**
-    `cpp_httplib_client` and `boost_beast_client` now send `Accept`, expect a
-    negotiated `Content-Type` back, and reject unknown media types with
-    415/406. Proxygen does none of that and hardcodes `application/json`. Any
-    cell involving Proxygen is therefore untested *and* now working from
-    different header assumptions on both sides.
-  - Depends on the Proxygen item above: build the grid after that question is
-    answered, or the Proxygen cells will encode today's accidental behaviour as
-    the expected behaviour. Same caveat as the backend matrix — expect red on
-    day one, so land fixes first or mark the new cells non-blocking with a
-    dated note, never silently allowed-to-fail.
+  - **One off-diagonal cell now exists.**
+    `tests/proxygen_negotiation_integration_test.cpp` (Task 10a) drives a live
+    `proxygen_server` with a raw `httplib::Client`. It was written for the
+    negotiation branches rather than for this item — a foreign client is the
+    only way to send the headers that reach 415/406 — but it is the httplib →
+    Proxygen cell, and it is the reason the response-label defect became
+    testable at all. Seven cells remain.
+  - **The Proxygen blocker is gone.** This item used to depend on deciding
+    whether Proxygen negotiates; it does, as of the entry above, so the
+    Proxygen cells can now be written against specified behaviour rather than
+    encoding today's accident as the expectation. Same caveat as the backend
+    matrix — expect red on day one, so land fixes first or mark the new cells
+    non-blocking with a dated note, never silently allowed-to-fail.
   - Note spec Task 15 already covers *serializer* interop (multi- ↔
     single-serializer, both directions, HTTP and CoAP). This item is the
     orthogonal axis — same serializer, different transport implementation — and
