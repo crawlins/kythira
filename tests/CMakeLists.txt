@@ -478,6 +478,12 @@ add_raft_completion_test(raft_replication_majority_acknowledgment_property_test 
 add_raft_completion_test(raft_timeout_handling_collections_property_test raft_timeout_handling_collections_property_test.cpp)
 add_raft_completion_test(raft_collection_cancellation_cleanup_property_test raft_collection_cancellation_cleanup_property_test.cpp)
 
+# async_scope: the drain barrier that shutdown uses to wait for in-flight
+# continuations rather than merely asking them to stop. Backend-independent
+# (plain std::mutex/condition_variable, no future backend involved), so it is a
+# network test rather than a raft-completion one.
+add_network_test(async_scope_unit_test async_scope_unit_test.cpp)
+
 # Raft completion property tests - error handling mechanism
 add_raft_completion_test(error_handler_exponential_backoff_unit_test error_handler_exponential_backoff_unit_test.cpp)
 add_raft_completion_test(error_handler_async_retry_property_test error_handler_async_retry_property_test.cpp)

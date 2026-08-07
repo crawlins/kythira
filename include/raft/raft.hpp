@@ -18,6 +18,7 @@
 #include <raft/future_collector.hpp>
 #include <raft/commit_waiter.hpp>
 #include <raft/configuration_synchronizer.hpp>
+#include <raft/async_scope.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/config_entry.hpp>
 #include <raft/quorum_management.hpp>
@@ -656,6 +657,17 @@ private:
     // old node will lock the OLD shared_ptr (value=true) and exit immediately without
     // touching `this` — preventing both stack corruption and spurious mutex contention.
     std::shared_ptr<std::atomic<bool>> _stop_flag{std::make_shared<std::atomic<bool>>(false)};
+
+    /// Drain barrier for async continuations that capture `this`. `_stop_flag`
+    /// asks them to stop; this waits until the ones already running have. See
+    /// `async_scope.hpp` — and note that only the error handlers participate so
+    /// far, so `stop()`'s drain currently covers retry continuations and not
+    /// the seventeen other guarded sites in this file.
+    std::shared_ptr<kythira::async_scope> _async_scope{std::make_shared<kythira::async_scope>()};
+
+    /// See the definition for the locking contract; called from every `stop()`
+    /// exit path.
+    auto drain_async_continuations() -> void;
 
     // Background thread for reconnection logic (restarting nodes only)
     std::thread _reconnect_thread;
@@ -2032,6 +2044,16 @@ auto node<Types>::start() -> void {
     _request_pre_vote_error_handler.set_stop_flag(_stop_flag);
     _install_snapshot_error_handler.set_stop_flag(_stop_flag);
 
+    // A fresh scope per run, for the same reason the flag is replaced rather
+    // than reset: continuations still pending from the previous run hold the
+    // previous scope, which is closed, so they are refused instead of being
+    // admitted into this run's drain accounting.
+    _async_scope = std::make_shared<kythira::async_scope>();
+    _append_entries_error_handler.set_async_scope(_async_scope);
+    _request_vote_error_handler.set_async_scope(_async_scope);
+    _request_pre_vote_error_handler.set_async_scope(_async_scope);
+    _install_snapshot_error_handler.set_async_scope(_async_scope);
+
     _logger.info("Starting Raft node", {{"node_id", node_id_to_string(_node_id)}});
 
     // Initialize from persistent storage (recover state after crash)
@@ -2111,6 +2133,7 @@ auto node<Types>::stop() -> void {
     if (!_running.load(std::memory_order_acquire)) {
         _logger.warning("Attempted to stop node that is not running",
                         {{"node_id", node_id_to_string(_node_id)}});
+        drain_async_continuations();
         return;
     }
 
@@ -2129,7 +2152,42 @@ auto node<Types>::stop() -> void {
         _peer2peer_replicator.stop();
     }
 
+    // Last, deliberately. Everything above has already been told to stop and the
+    // network server is down, so a guarded body still running cannot be waiting
+    // on work that only a later step would have completed -- draining earlier
+    // would convert a memory bug into a shutdown hang, which is the trade this
+    // whole change exists to avoid making in the other direction.
+    drain_async_continuations();
+
     _logger.info("Raft node stopped successfully", {{"node_id", node_id_to_string(_node_id)}});
+}
+
+/// @brief Refuse new guarded continuations and wait for those already running.
+///
+/// `_stop_flag` asks callbacks to stop; this waits until the ones that were
+/// already inside have left, which is the part a flag cannot do. Until it
+/// returns, a callback that passed its flag check but has not finished can still
+/// be inside this object when the caller destroys it -- PR #177's
+/// AddressSanitizer report is that window being hit for real.
+///
+/// Called from every `stop()` exit path, including the not-running early return,
+/// so a stop/start/stop sequence cannot skip it. `close_and_drain()` is
+/// idempotent, so the repeat costs nothing.
+///
+/// **Must be called holding no lock a guarded body might acquire.** Those bodies
+/// take `_mutex`; draining while holding it would deadlock immediately.
+/// `stop()` holds `_mutex` at neither call site, and that has to stay true.
+///
+/// The wait has no deadline on purpose. Giving up early would hand a live
+/// callback's object back to a caller that is about to destroy it -- trading a
+/// diagnosable hang for memory corruption, which is both the worse failure and
+/// the harder one to attribute. A slow drain says so while it is still stuck.
+template<raft_types Types> auto node<Types>::drain_async_continuations() -> void {
+    _async_scope->close_and_drain([this](std::chrono::milliseconds elapsed) {
+        _logger.warning("Still draining in-flight async continuations during stop()",
+                        {{"node_id", node_id_to_string(_node_id)},
+                         {"elapsed_ms", std::to_string(elapsed.count())}});
+    });
 }
 
 template<raft_types Types>
@@ -2240,8 +2298,12 @@ auto node<Types>::add_server(node_id_type new_node) -> future_type {
     // Return the future from configuration synchronizer
     // It will complete when the configuration change is committed
     return config_future.thenTry([this, new_node, old_config = _configuration, new_config,
-                                  stop_flag = _stop_flag](auto try_result) {
-        if (stop_flag->load(std::memory_order_acquire)) {
+                                  stop_flag = _stop_flag, scope = _async_scope](auto try_result) {
+        // The ticket is what makes this guard load-bearing rather than
+        // advisory: while it is held, stop()'s drain cannot return, so
+        // `this` cannot be destroyed underneath the body below.
+        const auto drain_ticket = scope->enter();
+        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
             throw std::runtime_error("node stopped");
         }
         if (try_result.hasException()) {
@@ -2389,8 +2451,13 @@ auto node<Types>::remove_server(node_id_type old_node) -> future_type {
 
     // Return the future from configuration synchronizer
     return config_future.thenTry([this, old_node, removing_self, old_config = _configuration,
-                                  new_config, stop_flag = _stop_flag](auto try_result) {
-        if (stop_flag->load(std::memory_order_acquire)) {
+                                  new_config, stop_flag = _stop_flag,
+                                  scope = _async_scope](auto try_result) {
+        // The ticket is what makes this guard load-bearing rather than
+        // advisory: while it is held, stop()'s drain cannot return, so
+        // `this` cannot be destroyed underneath the body below.
+        const auto drain_ticket = scope->enter();
+        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
             throw std::runtime_error("node stopped");
         }
         if (try_result.hasException()) {
@@ -2720,8 +2787,12 @@ auto node<Types>::promote_to_voter(node_id_type learner) -> future_type {
     _metrics.emit();
 
     return config_future.thenTry([this, learner, old_config = _configuration, new_config,
-                                  stop_flag = _stop_flag](auto try_result) {
-        if (stop_flag->load(std::memory_order_acquire)) {
+                                  stop_flag = _stop_flag, scope = _async_scope](auto try_result) {
+        // The ticket is what makes this guard load-bearing rather than
+        // advisory: while it is held, stop()'s drain cannot return, so
+        // `this` cannot be destroyed underneath the body below.
+        const auto drain_ticket = scope->enter();
+        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
             throw std::runtime_error("node stopped");
         }
         if (try_result.hasException()) {
@@ -3754,9 +3825,13 @@ template<raft_types Types>
 auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
     // Create a lambda that sends the heartbeat (AppendEntries with empty entries)
     auto send_heartbeat_operation =
-        [this, target,
-         stop_flag = _stop_flag]() -> kythira::future_default<append_entries_response_type> {
-        if (stop_flag->load(std::memory_order_acquire)) {
+        [this, target, stop_flag = _stop_flag,
+         scope = _async_scope]() -> kythira::future_default<append_entries_response_type> {
+        // The ticket is what makes this guard load-bearing rather than
+        // advisory: while it is held, stop()'s drain cannot return, so
+        // `this` cannot be destroyed underneath the body below.
+        const auto drain_ticket = scope->enter();
+        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
             return kythira::future_factory_default::makeExceptionalFuture<
                 append_entries_response_type>(
                 std::make_exception_ptr(std::runtime_error("node stopped")));
@@ -3808,9 +3883,13 @@ auto node<Types>::send_heartbeat_with_retry(node_id_type target) -> void {
         .execute_with_retry("heartbeat", send_heartbeat_operation,
                             std::nullopt  // Use default heartbeat retry policy
                             )
-        .thenTry([this, target, start_time, stop_flag = _stop_flag](
+        .thenTry([this, target, start_time, stop_flag = _stop_flag, scope = _async_scope](
                      kythira::try_default<append_entries_response_type> try_response) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
             std::lock_guard<std::mutex> lock(_mutex);
@@ -4055,9 +4134,13 @@ auto node<Types>::start_election() -> void {
             _request_vote_error_handler
                 .execute_with_retry(
                     "request_vote",
-                    [this, peer_id, vote_request, stop_flag = _stop_flag]()
+                    [this, peer_id, vote_request, stop_flag = _stop_flag, scope = _async_scope]()
                         -> kythira::future_default<request_vote_response_type> {
-                        if (stop_flag->load(std::memory_order_acquire)) {
+                        // The ticket is what makes this guard load-bearing rather than
+                        // advisory: while it is held, stop()'s drain cannot return, so
+                        // `this` cannot be destroyed underneath the body below.
+                        const auto drain_ticket = scope->enter();
+                        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                             return kythira::future_factory_default::makeExceptionalFuture<
                                 request_vote_response_type>(
                                 std::make_exception_ptr(std::runtime_error("node stopped")));
@@ -4082,9 +4165,13 @@ auto node<Types>::start_election() -> void {
                     },
                     vote_retry_policy)
                 .thenTry(
-                    [this, peer_id, stop_flag = _stop_flag](
+                    [this, peer_id, stop_flag = _stop_flag, scope = _async_scope](
                         kythira::try_default<request_vote_response_type> result) -> tagged_vote_t {
-                        if (stop_flag->load(std::memory_order_acquire)) {
+                        // The ticket is what makes this guard load-bearing rather than
+                        // advisory: while it is held, stop()'s drain cannot return, so
+                        // `this` cannot be destroyed underneath the body below.
+                        const auto drain_ticket = scope->enter();
+                        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                             throw std::runtime_error("node stopped");
                         }
                         if (result.hasException()) {
@@ -4148,9 +4235,14 @@ auto node<Types>::start_election() -> void {
     raft_future_collector<tagged_vote_t>::collect_all_with_timeout(std::move(vote_futures),
                                                                    snapshot_election_timeout)
         .thenValue([this, current_term, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag](
-                       std::vector<kythira::try_default<tagged_vote_t>> results) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag,
+                    scope =
+                        _async_scope](std::vector<kythira::try_default<tagged_vote_t>> results) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
             std::lock_guard<std::mutex> lock(_mutex);
@@ -4235,30 +4327,34 @@ auto node<Types>::start_election() -> void {
                 _metrics.emit();
             }
         })
-        .thenError(
-            [this, current_term, node_id, stop_flag = _stop_flag](const std::exception_ptr& ex) {
-                if (stop_flag->load(std::memory_order_acquire)) {
-                    return;
-                }
-                std::lock_guard<std::mutex> lock(_mutex);
+        .thenError([this, current_term, node_id, stop_flag = _stop_flag,
+                    scope = _async_scope](const std::exception_ptr& ex) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
+                return;
+            }
+            std::lock_guard<std::mutex> lock(_mutex);
 
-                try {
-                    std::rethrow_exception(ex);
-                } catch (const kythira::future_collection_exception& e) {
-                    _logger.warning("Failed to collect vote responses",
-                                    {{"node_id", node_id_to_string(node_id)},
-                                     {"operation", e.get_operation()},
-                                     {"failed_count", std::to_string(e.get_failed_count())}});
-                    _metrics.set_metric_name("election_lost");
-                    _metrics.add_dimension("node_id", node_id_to_string(node_id));
-                    _metrics.add_dimension("reason", "collection_failure");
-                    _metrics.add_one();
-                    _metrics.emit();
-                } catch (...) {
-                    _logger.error("Unexpected error during election",
-                                  {{"node_id", node_id_to_string(node_id)}});
-                }
-            })
+            try {
+                std::rethrow_exception(ex);
+            } catch (const kythira::future_collection_exception& e) {
+                _logger.warning("Failed to collect vote responses",
+                                {{"node_id", node_id_to_string(node_id)},
+                                 {"operation", e.get_operation()},
+                                 {"failed_count", std::to_string(e.get_failed_count())}});
+                _metrics.set_metric_name("election_lost");
+                _metrics.add_dimension("node_id", node_id_to_string(node_id));
+                _metrics.add_dimension("reason", "collection_failure");
+                _metrics.add_one();
+                _metrics.emit();
+            } catch (...) {
+                _logger.error("Unexpected error during election",
+                              {{"node_id", node_id_to_string(node_id)}});
+            }
+        })
         // detach() rather than a bare discard - see advertise_progress()'s
         // call above for why. This is the election vote-outcome chain -
         // without detach(), stdexec_backend would never run it at all and
@@ -4352,9 +4448,14 @@ auto node<Types>::start_pre_vote() -> void {
             _request_pre_vote_error_handler
                 .execute_with_retry(
                     "request_pre_vote",
-                    [this, peer_id, pre_vote_request, stop_flag = _stop_flag]()
+                    [this, peer_id, pre_vote_request, stop_flag = _stop_flag,
+                     scope = _async_scope]()
                         -> kythira::future_default<request_pre_vote_response_type> {
-                        if (stop_flag->load(std::memory_order_acquire)) {
+                        // The ticket is what makes this guard load-bearing rather than
+                        // advisory: while it is held, stop()'s drain cannot return, so
+                        // `this` cannot be destroyed underneath the body below.
+                        const auto drain_ticket = scope->enter();
+                        if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                             return kythira::future_factory_default::makeExceptionalFuture<
                                 request_pre_vote_response_type>(
                                 std::make_exception_ptr(std::runtime_error("node stopped")));
@@ -4363,10 +4464,14 @@ auto node<Types>::start_pre_vote() -> void {
                                                                      _config.rpc_timeout());
                     },
                     pre_vote_retry_policy)
-                .thenTry([peer_id, stop_flag = _stop_flag](
+                .thenTry([peer_id, stop_flag = _stop_flag, scope = _async_scope](
                              kythira::try_default<request_pre_vote_response_type> result)
                              -> tagged_pre_vote_t {
-                    if (stop_flag->load(std::memory_order_acquire)) {
+                    // The ticket is what makes this guard load-bearing rather than
+                    // advisory: while it is held, stop()'s drain cannot return, so
+                    // `this` cannot be destroyed underneath the body below.
+                    const auto drain_ticket = scope->enter();
+                    if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                         throw std::runtime_error("node stopped");
                     }
                     if (result.hasException()) {
@@ -4391,9 +4496,14 @@ auto node<Types>::start_pre_vote() -> void {
     raft_future_collector<tagged_pre_vote_t>::collect_all_with_timeout(std::move(pre_vote_futures),
                                                                        snapshot_election_timeout)
         .thenValue([this, node_id, snap_c_new = std::move(snap_c_new),
-                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag](
+                    snap_c_old = std::move(snap_c_old), stop_flag = _stop_flag,
+                    scope = _async_scope](
                        std::vector<kythira::try_default<tagged_pre_vote_t>> results) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
 
@@ -4446,8 +4556,13 @@ auto node<Types>::start_pre_vote() -> void {
             become_candidate();
             start_election();
         })
-        .thenError([this, node_id, stop_flag = _stop_flag](const std::exception_ptr& ex) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+        .thenError([this, node_id, stop_flag = _stop_flag,
+                    scope = _async_scope](const std::exception_ptr& ex) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
             try {
@@ -4748,9 +4863,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
     try {
         // Wrap the RPC call in a lambda for ErrorHandler::execute_with_retry
         auto rpc_operation =
-            [this, target, request, timeout,
-             stop_flag = _stop_flag]() -> kythira::future_default<append_entries_response_type> {
-            if (stop_flag->load(std::memory_order_acquire)) {
+            [this, target, request, timeout, stop_flag = _stop_flag,
+             scope = _async_scope]() -> kythira::future_default<append_entries_response_type> {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return kythira::future_factory_default::makeExceptionalFuture<
                     append_entries_response_type>(
                     std::make_exception_ptr(std::runtime_error("node stopped")));
@@ -4764,9 +4883,13 @@ auto node<Types>::send_append_entries_to(node_id_type target) -> void {
 
         // Handle response asynchronously using thenTry to get folly::Try<response>
         std::move(response_future)
-            .thenTry([this, target, next_idx, entries_to_send, start_time,
-                      stop_flag = _stop_flag](auto try_response) {
-                if (stop_flag->load(std::memory_order_acquire)) {
+            .thenTry([this, target, next_idx, entries_to_send, start_time, stop_flag = _stop_flag,
+                      scope = _async_scope](auto try_response) {
+                // The ticket is what makes this guard load-bearing rather than
+                // advisory: while it is held, stop()'s drain cannot return, so
+                // `this` cannot be destroyed underneath the body below.
+                const auto drain_ticket = scope->enter();
+                if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                     return;
                 }
                 std::unique_lock<std::mutex> lock(_mutex);
@@ -5170,9 +5293,14 @@ auto node<Types>::maybe_gossip_progress() -> void {
     // this project's async-callback convention (guards against dangling `this`
     // if the node is destroyed while the future is still outstanding).
     auto stop_flag = _stop_flag;
+    auto scope = _async_scope;
     _peer2peer_replicator.advertise_progress(self_id, self_address, term, last_log_index)
-        .thenTry([this, stop_flag](auto try_result) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+        .thenTry([this, stop_flag, scope](auto try_result) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
             if (try_result.hasException()) {
@@ -5217,9 +5345,14 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
     _metrics.emit();
 
     auto stop_flag = _stop_flag;
+    auto scope = _async_scope;
     _peer2peer_replicator.find_catch_up_source(from_index, to_index, timeout)
-        .thenTry([this, stop_flag, from_index, to_index, timeout](auto try_result) {
-            if (stop_flag->load(std::memory_order_acquire)) {
+        .thenTry([this, stop_flag, scope, from_index, to_index, timeout](auto try_result) {
+            // The ticket is what makes this guard load-bearing rather than
+            // advisory: while it is held, stop()'s drain cannot return, so
+            // `this` cannot be destroyed underneath the body below.
+            const auto drain_ticket = scope->enter();
+            if (!drain_ticket || stop_flag->load(std::memory_order_acquire)) {
                 return;
             }
 
@@ -5251,10 +5384,15 @@ auto node<Types>::maybe_catch_up_from_peer() -> void {
                                      {"to_index", std::to_string(to_index)}});
 
                 const auto& stop_flag2 = stop_flag;
+                const auto& scope2 = scope;
                 this->_network_client
                     .send_fetch_log_entries(node_id_to_u64(source.node_id), request, timeout)
-                    .thenTry([this, stop_flag2, from_index, source](auto resp_try) {
-                        if (stop_flag2->load(std::memory_order_acquire)) {
+                    .thenTry([this, stop_flag2, scope2, from_index, source](auto resp_try) {
+                        // The ticket is what makes this guard load-bearing rather than
+                        // advisory: while it is held, stop()'s drain cannot return, so
+                        // `this` cannot be destroyed underneath the body below.
+                        const auto drain_ticket = scope2->enter();
+                        if (!drain_ticket || stop_flag2->load(std::memory_order_acquire)) {
                             return;
                         }
                         {
