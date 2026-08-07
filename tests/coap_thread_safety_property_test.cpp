@@ -9,6 +9,8 @@
 #include <memory>
 #include <random>
 #include <thread>
+
+#include "coap_test_support.hpp"
 #include <chrono>
 #include <atomic>
 #include <vector>
@@ -110,14 +112,14 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations,
             server_config, metrics);
 
         // Test 1: Concurrent slot acquisition (public API)
-        std::vector<std::thread> threads;
+        kythira::testing::coap::joining_thread_group threads;
         auto successful_operations = std::make_shared<std::atomic<std::size_t>>(0);
         auto failed_operations = std::make_shared<std::atomic<std::size_t>>(0);
         auto start_flag = std::make_shared<std::atomic<bool>>(false);
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([server, successful_operations, failed_operations, start_flag,
-                                  operations_per_thread]() {
+            threads.spawn([server, successful_operations, failed_operations, start_flag,
+                           operations_per_thread]() {
                 // Wait for all threads to be ready
                 while (!start_flag->load()) {
                     std::this_thread::yield();
@@ -144,9 +146,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_server_operations,
         start_flag->store(true);
 
         // Wait for all threads to complete
-        for (auto& thread : threads) {
-            thread.join();
-        }
+        threads.join_all();
 
         // Verify thread safety: all operations should complete
         std::size_t expected_operations = thread_count * operations_per_thread;
@@ -201,14 +201,14 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
                                                                           client_config, metrics);
 
         // Test 1: Concurrent client slot acquisition (public API)
-        std::vector<std::thread> threads;
+        kythira::testing::coap::joining_thread_group threads;
         auto successful_operations = std::make_shared<std::atomic<std::size_t>>(0);
         auto failed_operations = std::make_shared<std::atomic<std::size_t>>(0);
         auto start_flag = std::make_shared<std::atomic<bool>>(false);
 
         for (std::size_t t = 0; t < thread_count; ++t) {
-            threads.emplace_back([client, successful_operations, failed_operations, start_flag,
-                                  operations_per_thread]() {
+            threads.spawn([client, successful_operations, failed_operations, start_flag,
+                           operations_per_thread]() {
                 // Wait for all threads to be ready
                 while (!start_flag->load()) {
                     std::this_thread::yield();
@@ -235,9 +235,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_client_operations,
         start_flag->store(true);
 
         // Wait for all threads to complete
-        for (auto& thread : threads) {
-            thread.join();
-        }
+        threads.join_all();
 
         // Verify thread safety: all operations should complete
         std::size_t expected_operations = thread_count * operations_per_thread;
@@ -277,7 +275,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
         std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config, metrics);
 
     // Test: Concurrent RPC requests
-    std::vector<std::thread> threads;
+    kythira::testing::coap::joining_thread_group threads;
     auto successful_requests = std::make_shared<std::atomic<std::size_t>>(0);
     auto failed_requests = std::make_shared<std::atomic<std::size_t>>(0);
 
@@ -285,7 +283,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
         ._term = 1, ._candidate_id = 100, ._last_log_index = 0, ._last_log_term = 0};
 
     for (std::size_t t = 0; t < 10; ++t) {
-        threads.emplace_back([client, successful_requests, failed_requests, vote_request]() {
+        threads.spawn([client, successful_requests, failed_requests, vote_request]() {
             for (std::size_t op = 0; op < 20; ++op) {
                 try {
                     auto future = client->send_request_vote(test_node_id, vote_request,
@@ -299,9 +297,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_rpc_requests,
     }
 
     // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    threads.join_all();
 
     // Verify: All operations completed
     BOOST_CHECK_EQUAL(successful_requests->load() + failed_requests->load(), 200);
@@ -332,11 +328,11 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
         std::make_shared<coap_client<test_transport_types>>(node_endpoints, client_config, metrics);
 
     // Test: Concurrent configuration status checks
-    std::vector<std::thread> threads;
+    kythira::testing::coap::joining_thread_group threads;
     auto operations_completed = std::make_shared<std::atomic<std::size_t>>(0);
 
     for (std::size_t t = 0; t < 5; ++t) {
-        threads.emplace_back([client, operations_completed]() {
+        threads.spawn([client, operations_completed]() {
             for (std::size_t op = 0; op < 20; ++op) {
                 try {
                     // Test concurrent status checks (all const methods, thread-safe)
@@ -350,9 +346,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_configuration_checks,
     }
 
     // Wait for all threads to complete
-    for (auto& thread : threads) {
-        thread.join();
-    }
+    threads.join_all();
 
     // Verify: All operations completed
     BOOST_CHECK_EQUAL(operations_completed->load(), 100);

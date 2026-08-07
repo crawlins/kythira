@@ -6,6 +6,8 @@
 #include <raft/coap_transport_impl.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/console_logger.hpp>
+
+#include "coap_test_support.hpp"
 #include <raft/serializer_registry.hpp>
 
 #include "test_timeout_scale.hpp"
@@ -45,7 +47,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_empty,
     // other coap_*_test.cpp's assigned literal is safe.
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -60,7 +62,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_join,
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -81,7 +83,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_multiple,
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
@@ -109,7 +111,7 @@ BOOST_AUTO_TEST_CASE(test_get_joined_multicast_groups_after_leave,
     // Create a CoAP client
     std::unordered_map<std::uint64_t, std::string> endpoints = {{1, "coap://127.0.0.1:61120"}};
 
-    kythira::coap_client_config config;
+    auto config = kythira::testing::coap::unreachable_endpoint_client_config();
     kythira::noop_metrics metrics;
 
     kythira::coap_client<test_types> client(endpoints, config, metrics);
