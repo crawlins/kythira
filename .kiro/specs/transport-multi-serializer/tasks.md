@@ -214,6 +214,47 @@ transports and is deliberately left as separate work.
     when it needs to change its format
   - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
 
+- [ ] 10a. Wire content negotiation into `proxygen_client`/`proxygen_server`
+  - Added August 7, 2026, after the fact. This spec was drafted around the two
+    HTTP transports that existed then and enumerated them by name throughout;
+    Proxygen landed separately and nobody revisited the enumeration, so Tasks 9
+    and 10 gave httplib and Beast full negotiation while Proxygen kept the
+    hardcoded `"application/json"` that Requirement 9.4 exists to remove — on the
+    server response (`proxygen_http_transport_impl.hpp`, `rpc_request_handler::onEOM`)
+    and on both client request paths (`send_on_session`, `send_on_session_folly`).
+    Numbered `10a` rather than appended as `17` because it belongs with 9 and 10,
+    and because 11-16 are referenced by number from `doc/TODO.md` and from Task
+    10's own write-up — renumbering them to make room would break those
+    references to buy nothing
+  - [ ] 10a.1 Client: add `serializer_registry_type _registry` and a
+    `peer_capability_cache<std::uint64_t>`; pick the request `Media_Type` via
+    `select_request_media_type`, encode through the registry, and set both
+    `Content-Type` and the full `Accept` list
+    - _Requirements: 6.1, 6.2, 6.3, 9.4_
+  - [ ] 10a.2 Client: read the response `Content-Type` (absent → registry default),
+    reject an unsupported one with `unsupported_media_type_error` while leaving the
+    cache untouched, decode through the registry, and record the cache entry only
+    on a clean decode
+    - _Requirements: 6.4, 6.5, 6.6_
+  - [ ] 10a.3 Server: thread the request `Media_Type` and parsed `Accept` list into
+    `proxygen_server::dispatch`, and report back the `Media_Type` actually encoded;
+    415 before the handler on an unsupported `Content-Type`, 406 before the handler
+    on an unsatisfiable `Accept`
+    - _Requirements: 4.1-4.4, 5.1-5.4_
+  - [ ] 10a.4 Add the `media_type` dimension to the `proxygen_http.*` metrics and
+    emit `error_type=unsupported_media_type` on negotiation failure
+    - _Requirements: 10.1, 10.2, 10.3_
+  - **Both client paths, not one.** Unlike httplib and Beast, Proxygen has two
+    client send paths — the generic bridge (Requirement 14) and the Folly-native
+    fast path (Requirement 16) — chosen by an `if constexpr` on the future backend.
+    They are separate function bodies with separate transaction bridges
+    (`transaction_bridge` / `folly_transaction_bridge`), so negotiating in one and
+    not the other would make a node's wire behaviour depend on which future backend
+    it was compiled with. Both get the same treatment, and the shared
+    `http_response` struct carries the response `Content-Type` so the two bridges
+    cannot diverge on how they read it
+  - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
+
 - [ ] 11. Wire content negotiation into `coap_client`/`coap_server`
   - [ ] 11.1 Client: set `Content-Format` from cached/default `Media_Type`; set repeated
     `Accept` options from `preferred_media_types()`

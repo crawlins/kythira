@@ -3546,6 +3546,17 @@ if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
 else()
     message(STATUS "proxygen_transport_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
+# transport-multi-serializer Task 10a: content negotiation against a live
+# proxygen_server, driven by a raw httplib::Client. Gated on cpp-httplib as
+# well as Proxygen -- the client has to send headers proxygen_client would
+# never send (an unsupported Content-Type, an unsatisfiable Accept), which is
+# the only way to reach the 415/406 branches at all.
+if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT AND TARGET httplib::httplib)
+    add_proxygen_test(proxygen_negotiation_integration_test
+        proxygen_negotiation_integration_test.cpp)
+else()
+    message(STATUS "proxygen_negotiation_integration_test: skipped (requires KYTHIRA_BUILD_PROXYGEN_TRANSPORT and httplib)")
+endif()
 # Requirement 19.5 (.kiro/specs/proxygen-http-transport/) / Task 15
 # (.kiro/specs/boost-beast-http-transport/, that spec's own stated
 # prerequisite for this one): needs cpp-httplib, Boost.Beast, and Proxygen

@@ -229,6 +229,13 @@ auto proxygen_rpc_type_name(std::string_view endpoint) -> std::string {
     return "unknown";
 }
 
+// The `default` here is a genuine hazard: it labels any status this switch does
+// not name "Internal Server Error", so a correct status code goes out with a
+// contradictory reason phrase rather than an obviously missing one. 406 and 415
+// were added with content negotiation for exactly that reason -- `dispatch` was
+// already returning them and they were already being sent as
+// "415 Internal Server Error". Anything that introduces a new status code here
+// has to add its case too.
 auto proxygen_status_reason(unsigned status_code) -> std::string {
     switch (status_code) {
         case 200:
@@ -237,6 +244,10 @@ auto proxygen_status_reason(unsigned status_code) -> std::string {
             return "Bad Request";
         case 404:
             return "Not Found";
+        case 406:
+            return "Not Acceptable";
+        case 415:
+            return "Unsupported Media Type";
         default:
             return "Internal Server Error";
     }
@@ -317,9 +328,36 @@ inline auto transaction_bridge::detachTransaction() noexcept -> void {
     delete this;
 }
 
+/// @brief The message's `Content-Type` with any parameters stripped, or an
+///     empty string when it declared none.
+///
+/// One helper rather than three call sites doing it by hand: this is read by
+/// both client transaction bridges *and* by the server's `RequestHandler`, and
+/// the interesting cases (header absent, header carrying `; charset=utf-8`) are
+/// exactly the ones a hand-rolled copy gets subtly wrong in only one of them.
+inline auto message_media_type(const proxygen::HTTPMessage& msg) -> std::string {
+    const auto& raw = msg.getHeaders().getSingleOrEmpty(proxygen::HTTP_HEADER_CONTENT_TYPE);
+    if (raw.empty()) {
+        return {};
+    }
+    return kythira::strip_media_type_parameters(raw);
+}
+
+/// @brief The message's `Accept` header parsed into an ordered media-type list,
+///     empty when it declared none (which the registry reads as "no
+///     preference", not "nothing is acceptable").
+inline auto message_accept_list(const proxygen::HTTPMessage& msg) -> std::vector<std::string> {
+    const auto& raw = msg.getHeaders().getSingleOrEmpty(proxygen::HTTP_HEADER_ACCEPT);
+    if (raw.empty()) {
+        return {};
+    }
+    return kythira::parse_accept_header(raw);
+}
+
 inline auto transaction_bridge::onHeadersComplete(
     std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
     _response.status_code = msg->getStatusCode();
+    _response.content_type = message_media_type(*msg);
 }
 
 inline auto transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
@@ -378,6 +416,7 @@ inline auto folly_transaction_bridge::detachTransaction() noexcept -> void {
 inline auto folly_transaction_bridge::onHeadersComplete(
     std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
     _response.status_code = msg->getStatusCode();
+    _response.content_type = message_media_type(*msg);
 }
 
 inline auto folly_transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
@@ -449,7 +488,8 @@ inline auto session_liveness_tracker::onDestroy(const proxygen::HTTPSessionBase&
 ///     future once the response is fully read or an error occurs.
 inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::string& path,
                             const std::string& body, const std::string& host,
-                            const std::string& user_agent, std::chrono::milliseconds timeout)
+                            const std::string& user_agent, std::chrono::milliseconds timeout,
+                            const std::string& content_type, const std::string& accept)
     -> kythira::future_default<http_response> {
     kythira::promise_default<http_response> promise;
     auto future = promise.getFuture();
@@ -469,7 +509,14 @@ inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::s
     msg.setURL(path);
     msg.setHTTPVersion(1, 1);
     msg.getHeaders().set(proxygen::HTTP_HEADER_HOST, host);
-    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, "application/json");
+    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, content_type);
+    // Full `Accept` list on every request, so a stale capability-cache entry can
+    // only cost a re-choice and never a failed exchange. Omitted entirely when
+    // the registry advertises nothing, since an empty `Accept` and an absent one
+    // are not the same thing to a peer.
+    if (!accept.empty()) {
+        msg.getHeaders().set(proxygen::HTTP_HEADER_ACCEPT, accept);
+    }
     msg.getHeaders().set(proxygen::HTTP_HEADER_USER_AGENT, user_agent);
     txn->sendHeaders(msg);
     txn->sendBody(folly::IOBuf::copyBuffer(body));
@@ -479,7 +526,8 @@ inline auto send_on_session(proxygen::HTTPUpstreamSession* session, const std::s
 
 inline auto send_on_session_folly(proxygen::HTTPUpstreamSession* session, const std::string& path,
                                   const std::string& body, const std::string& host,
-                                  const std::string& user_agent, std::chrono::milliseconds timeout)
+                                  const std::string& user_agent, std::chrono::milliseconds timeout,
+                                  const std::string& content_type, const std::string& accept)
     -> folly::Future<http_response> {
     folly::Promise<http_response> promise;
     auto future = promise.getFuture();
@@ -499,7 +547,14 @@ inline auto send_on_session_folly(proxygen::HTTPUpstreamSession* session, const 
     msg.setURL(path);
     msg.setHTTPVersion(1, 1);
     msg.getHeaders().set(proxygen::HTTP_HEADER_HOST, host);
-    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, "application/json");
+    msg.getHeaders().set(proxygen::HTTP_HEADER_CONTENT_TYPE, content_type);
+    // Full `Accept` list on every request, so a stale capability-cache entry can
+    // only cost a re-choice and never a failed exchange. Omitted entirely when
+    // the registry advertises nothing, since an empty `Accept` and an absent one
+    // are not the same thing to a peer.
+    if (!accept.empty()) {
+        msg.getHeaders().set(proxygen::HTTP_HEADER_ACCEPT, accept);
+    }
     msg.getHeaders().set(proxygen::HTTP_HEADER_USER_AGENT, user_agent);
     txn->sendHeaders(msg);
     txn->sendBody(folly::IOBuf::copyBuffer(body));
@@ -774,7 +829,14 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
     try {
         auto& slot = get_or_create_slot(target);
         auto [addr, host, is_https] = resolve_target(target);
-        auto serialized = _serializer.serialize(request);
+        // Cached type if the registry still supports it, else the registry
+        // default (Requirement 6.1-6.3). Identical on both client paths on
+        // purpose: which one runs is decided by the future backend, and a node's
+        // wire behaviour must not depend on that.
+        const std::string content_type =
+            kythira::select_request_media_type(_registry, _capability_cache, target);
+        const std::string accept = kythira::format_accept_header(_registry.preferred_media_types());
+        auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
         auto* evb = slot.event_base;
         auto session_slot = slot.session;
@@ -789,13 +851,15 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("target_node_id", std::to_string(target));
         metric.add_dimension("path", "generic_bridge");
+        metric.add_dimension("media_type", content_type);
         metric.add_one();
         metric.emit();
 
         evb->runInEventBaseThread([this, evb, session_slot, connect_slot, addr, ssl_ctx, is_https,
                                    connection_timeout, host, body = std::move(body),
                                    endpoint = std::string(endpoint), timeout, target, rpc_type,
-                                   start_time, promise = std::move(promise)]() mutable {
+                                   start_time, content_type, accept,
+                                   promise = std::move(promise)]() mutable {
             // The response-transform step below returns Response or
             // throws (Beast's own send_rpc pattern exactly) rather
             // than fulfilling `promise` from two separate
@@ -809,8 +873,8 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                 proxygen_detail::connect_if_needed(session_slot, connect_slot, evb, addr, ssl_ctx,
                                                    is_https, connection_timeout)
                     .thenValue([evb, host, body = std::move(body), endpoint,
-                                user_agent = _config.user_agent,
-                                timeout](proxygen::HTTPUpstreamSession* session) mutable {
+                                user_agent = _config.user_agent, timeout, content_type,
+                                accept](proxygen::HTTPUpstreamSession* session) mutable {
                         // Requirement 16.3 / Property 6: hop back onto the
                         // connection's pinned EventBase before touching the
                         // session. This continuation is *not* already on it --
@@ -829,10 +893,11 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         kythira::promise_default<proxygen_detail::http_response> hop_promise;
                         auto hop_future = hop_promise.getFuture();
                         evb->runInEventBaseThread([session, endpoint, body = std::move(body), host,
-                                                   user_agent, timeout,
+                                                   user_agent, timeout, content_type, accept,
                                                    hop_promise = std::move(hop_promise)]() mutable {
                             proxygen_detail::send_on_session(session, endpoint, body, host,
-                                                             user_agent, timeout)
+                                                             user_agent, timeout, content_type,
+                                                             accept)
                                 .thenTry([hop_promise = std::move(hop_promise)](
                                              kythira::try_default<proxygen_detail::http_response>
                                                  result) mutable {
@@ -861,25 +926,46 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         latency_metric.emit();
 
                         if (resp.status_code == 200) {
+                            // Absent Content-Type means a peer that predates
+                            // negotiation; it gets our default rather than an
+                            // error (Requirement 6.4).
+                            std::string response_media_type = resp.content_type.empty()
+                                                                  ? _registry.default_media_type()
+                                                                  : resp.content_type;
+
+                            // Cache stays untouched on an unusable type
+                            // (Requirement 6.5) -- recording it would make the
+                            // next request repeat the same doomed choice.
+                            if (!_registry.supports(response_media_type)) {
+                                auto error_metric = _metrics;
+                                error_metric.set_metric_name("proxygen_http.client.error");
+                                error_metric.add_dimension("error_type", "unsupported_media_type");
+                                error_metric.add_dimension("media_type", response_media_type);
+                                error_metric.add_dimension("target_node_id",
+                                                           std::to_string(target));
+                                error_metric.add_one();
+                                error_metric.emit();
+                                throw kythira::unsupported_media_type_error(response_media_type);
+                            }
+
                             std::vector<std::byte> response_data;
                             response_data.reserve(resp.body.size());
                             for (char c : resp.body) {
                                 response_data.push_back(static_cast<std::byte>(c));
                             }
                             try {
-                                if constexpr (std::is_same_v<Response,
-                                                             kythira::request_vote_response<>>) {
-                                    return _serializer.deserialize_request_vote_response(
-                                        response_data);
-                                } else if constexpr (std::is_same_v<
-                                                         Response,
-                                                         kythira::append_entries_response<>>) {
-                                    return _serializer.deserialize_append_entries_response(
-                                        response_data);
-                                } else {
-                                    return _serializer.deserialize_install_snapshot_response(
-                                        response_data);
-                                }
+                                auto decoded = _registry.template decode_with<Response>(
+                                    response_media_type, response_data);
+                                // Only a clean decode earns a cache entry
+                                // (Requirement 6.6).
+                                _capability_cache.record(target, response_media_type);
+                                return decoded;
+                            } catch (const kythira::unsupported_media_type_error&) {
+                                // Already the right type and already counted
+                                // above; rethrow rather than reclassifying it as
+                                // a serialization_error, which maps to a
+                                // different status.
+                                throw;
                             } catch (const std::exception& e) {
                                 throw kythira::serialization_error(
                                     std::format("Failed to deserialize response: {}", e.what()));
@@ -944,7 +1030,14 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
     try {
         auto& slot = get_or_create_slot(target);
         auto [addr, host, is_https] = resolve_target(target);
-        auto serialized = _serializer.serialize(request);
+        // Cached type if the registry still supports it, else the registry
+        // default (Requirement 6.1-6.3). Identical on both client paths on
+        // purpose: which one runs is decided by the future backend, and a node's
+        // wire behaviour must not depend on that.
+        const std::string content_type =
+            kythira::select_request_media_type(_registry, _capability_cache, target);
+        const std::string accept = kythira::format_accept_header(_registry.preferred_media_types());
+        auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
         auto* evb = slot.event_base;
         auto session_slot = slot.session;
@@ -958,13 +1051,15 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         metric.add_dimension("rpc_type", rpc_type);
         metric.add_dimension("target_node_id", std::to_string(target));
         metric.add_dimension("path", "folly_fast_path");
+        metric.add_dimension("media_type", content_type);
         metric.add_one();
         metric.emit();
 
         evb->runInEventBaseThread([this, evb, session_slot, connect_slot, addr, ssl_ctx, is_https,
                                    connection_timeout, host, body = std::move(body),
                                    endpoint = std::string(endpoint), timeout, target, rpc_type,
-                                   start_time, promise = std::move(promise)]() mutable {
+                                   start_time, content_type, accept,
+                                   promise = std::move(promise)]() mutable {
             // Requirement 16.3: continuations scheduled via .via(evb) --
             // the connection's own pinned EventBase -- so this chain
             // never hops threads beyond the single initial dispatch onto
@@ -981,10 +1076,11 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                     .get_folly_future()
                     .via(evb)
                     .thenValue([evb, host, body = std::move(body), endpoint,
-                                user_agent = _config.user_agent,
-                                timeout](proxygen::HTTPUpstreamSession* session) {
+                                user_agent = _config.user_agent, timeout, content_type,
+                                accept](proxygen::HTTPUpstreamSession* session) {
                         return proxygen_detail::send_on_session_folly(session, endpoint, body, host,
-                                                                      user_agent, timeout);
+                                                                      user_agent, timeout,
+                                                                      content_type, accept);
                     })
                     .via(evb)
                     .thenValue([this, target, rpc_type,
@@ -1002,25 +1098,46 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                         latency_metric.emit();
 
                         if (resp.status_code == 200) {
+                            // Absent Content-Type means a peer that predates
+                            // negotiation; it gets our default rather than an
+                            // error (Requirement 6.4).
+                            std::string response_media_type = resp.content_type.empty()
+                                                                  ? _registry.default_media_type()
+                                                                  : resp.content_type;
+
+                            // Cache stays untouched on an unusable type
+                            // (Requirement 6.5) -- recording it would make the
+                            // next request repeat the same doomed choice.
+                            if (!_registry.supports(response_media_type)) {
+                                auto error_metric = _metrics;
+                                error_metric.set_metric_name("proxygen_http.client.error");
+                                error_metric.add_dimension("error_type", "unsupported_media_type");
+                                error_metric.add_dimension("media_type", response_media_type);
+                                error_metric.add_dimension("target_node_id",
+                                                           std::to_string(target));
+                                error_metric.add_one();
+                                error_metric.emit();
+                                throw kythira::unsupported_media_type_error(response_media_type);
+                            }
+
                             std::vector<std::byte> response_data;
                             response_data.reserve(resp.body.size());
                             for (char c : resp.body) {
                                 response_data.push_back(static_cast<std::byte>(c));
                             }
                             try {
-                                if constexpr (std::is_same_v<Response,
-                                                             kythira::request_vote_response<>>) {
-                                    return _serializer.deserialize_request_vote_response(
-                                        response_data);
-                                } else if constexpr (std::is_same_v<
-                                                         Response,
-                                                         kythira::append_entries_response<>>) {
-                                    return _serializer.deserialize_append_entries_response(
-                                        response_data);
-                                } else {
-                                    return _serializer.deserialize_install_snapshot_response(
-                                        response_data);
-                                }
+                                auto decoded = _registry.template decode_with<Response>(
+                                    response_media_type, response_data);
+                                // Only a clean decode earns a cache entry
+                                // (Requirement 6.6).
+                                _capability_cache.record(target, response_media_type);
+                                return decoded;
+                            } catch (const kythira::unsupported_media_type_error&) {
+                                // Already the right type and already counted
+                                // above; rethrow rather than reclassifying it as
+                                // a serialization_error, which maps to a
+                                // different status.
+                                throw;
                             } catch (const std::exception& e) {
                                 throw kythira::serialization_error(
                                     std::format("Failed to deserialize response: {}", e.what()));
@@ -1113,6 +1230,15 @@ public:
 
     auto onRequest(std::unique_ptr<proxygen::HTTPMessage> headers) noexcept -> void override {
         _path = headers->getPath();
+        // Header mechanics live here (this owns the HTTPMessage); negotiation
+        // policy lives in dispatch(). An absent Content-Type means a peer that
+        // predates negotiation, so it gets the server's default rather than a
+        // 415 (Requirement 4.1, 4.2).
+        _request_media_type = message_media_type(*headers);
+        if (_request_media_type.empty()) {
+            _request_media_type = _server->default_media_type();
+        }
+        _accepted = message_accept_list(*headers);
         _request_id = _server->register_request();
     }
 
@@ -1129,11 +1255,17 @@ public:
     auto onEOM() noexcept -> void override {
         std::string response_body;
         unsigned status_code = 200;
-        _server->dispatch(_path, _body, response_body, status_code);
+        std::string response_media_type;
+        _server->dispatch(_path, _body, _request_media_type, _accepted, response_body, status_code,
+                          response_media_type);
+        // dispatch() reports what it actually encoded in, on every path: the
+        // negotiated type for a 200, "text/plain" for the error bodies. The
+        // previous `status_code == 200 ? "application/json" : "text/plain"`
+        // labelled every successful response JSON no matter which serializer
+        // produced it, which is the defect Requirement 9.4 exists to remove.
         proxygen::ResponseBuilder(downstream_)
             .status(static_cast<std::uint16_t>(status_code), proxygen_status_reason(status_code))
-            .header(proxygen::HTTP_HEADER_CONTENT_TYPE,
-                    status_code == 200 ? "application/json" : "text/plain")
+            .header(proxygen::HTTP_HEADER_CONTENT_TYPE, response_media_type)
             .body(std::move(response_body))
             .sendWithEOM();
     }
@@ -1151,6 +1283,8 @@ public:
 private:
     proxygen_server<Types>* _server;
     std::string _path;
+    std::string _request_media_type;
+    std::vector<std::string> _accepted;
     std::vector<std::byte> _body;
     std::size_t _request_id{0};
 };
@@ -1514,11 +1648,24 @@ auto proxygen_server<Types>::request_finished(std::size_t /*request_id*/) -> voi
 
 template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::default_media_type() const -> std::string {
+    return _registry.default_media_type();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector<std::byte>& body,
-                                      std::string& response_body, unsigned& status_code) -> void {
+                                      const std::string& request_media_type,
+                                      const std::vector<std::string>& accepted,
+                                      std::string& response_body, unsigned& status_code,
+                                      std::string& response_media_type) -> void {
+    // Error bodies are plain text on every path below; the success path
+    // overwrites this with whatever was negotiated.
+    response_media_type = "text/plain";
+
     auto handle = [&]<typename Request, typename Response>(
                       const std::function<Response(const Request&)>& handler,
-                      std::string_view rpc_type, auto deserialize) {
+                      std::string_view rpc_type) {
         auto start_time = std::chrono::steady_clock::now();
         auto received_metric = _metrics;
         received_metric.set_metric_name("proxygen_http.server.request.received");
@@ -1531,9 +1678,41 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
             response_body = "Handler not registered";
             return;
         }
+
+        // 415 before the handler runs (Requirement 4.3, 4.4). Distinct from the
+        // 400 below: 415 means "we do not speak this encoding", 400 means "we
+        // speak it and your bytes were wrong". Collapsing the two would tell a
+        // peer to fix its payload when it needs to change its format.
+        if (!_registry.supports(request_media_type)) {
+            status_code = 415;
+            response_body = "Unsupported Content-Type: " + request_media_type;
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("proxygen_http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", request_media_type);
+            error_metric.add_one();
+            error_metric.emit();
+            return;
+        }
+
+        // Negotiated before the handler runs, so an unsatisfiable Accept costs
+        // no handler side effects (Requirement 5.2, 5.3).
+        const auto output_media_type = _registry.select_output_media_type(accepted);
+        if (!output_media_type) {
+            status_code = 406;
+            response_body.clear();  // Nothing we could write would be readable.
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("proxygen_http.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", kythira::format_accept_header(accepted));
+            error_metric.add_one();
+            error_metric.emit();
+            return;
+        }
+
         Request request;
         try {
-            request = deserialize(body);
+            request = _registry.template decode_with<Request>(request_media_type, body);
         } catch (const std::exception& e) {
             status_code = 400;
             response_body = std::format("Bad Request: {}", e.what());
@@ -1541,10 +1720,13 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         }
         try {
             Response response = handler(request);
-            auto serialized = _serializer.serialize(response);
+            // Encoded in the negotiated type, which need not match the
+            // request's -- a peer may post CBOR and ask for JSON back.
+            auto serialized = _registry.encode_with(*output_media_type, response);
             response_body.assign(reinterpret_cast<const char*>(serialized.data()),
                                  serialized.size());
             status_code = 200;
+            response_media_type = *output_media_type;
         } catch (const std::exception&) {
             status_code = 500;
             response_body = "Internal Server Error";
@@ -1554,6 +1736,7 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
         latency_metric.set_metric_name("proxygen_http.server.request.latency");
         latency_metric.add_dimension("rpc_type", std::string(rpc_type));
         latency_metric.add_dimension("status_code", std::to_string(status_code));
+        latency_metric.add_dimension("media_type", response_media_type);
         latency_metric.add_duration(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start_time));
         latency_metric.emit();
@@ -1562,21 +1745,15 @@ auto proxygen_server<Types>::dispatch(std::string_view target, const std::vector
     if (target == proxygen_detail::proxygen_endpoint_request_vote) {
         handle
             .template operator()<kythira::request_vote_request<>, kythira::request_vote_response<>>(
-                _request_vote_handler, "request_vote", [this](const std::vector<std::byte>& b) {
-                    return _serializer.deserialize_request_vote_request(b);
-                });
+                _request_vote_handler, "request_vote");
     } else if (target == proxygen_detail::proxygen_endpoint_append_entries) {
         handle.template
         operator()<kythira::append_entries_request<>, kythira::append_entries_response<>>(
-            _append_entries_handler, "append_entries", [this](const std::vector<std::byte>& b) {
-                return _serializer.deserialize_append_entries_request(b);
-            });
+            _append_entries_handler, "append_entries");
     } else if (target == proxygen_detail::proxygen_endpoint_install_snapshot) {
         handle.template
         operator()<kythira::install_snapshot_request<>, kythira::install_snapshot_response<>>(
-            _install_snapshot_handler, "install_snapshot", [this](const std::vector<std::byte>& b) {
-                return _serializer.deserialize_install_snapshot_request(b);
-            });
+            _install_snapshot_handler, "install_snapshot");
     } else {
         status_code = 404;
         response_body = "Not Found";

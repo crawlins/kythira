@@ -41,6 +41,8 @@
 #include <raft/http_exceptions.hpp>
 #include <raft/metrics.hpp>
 #include <raft/serializer_registry.hpp>
+#include <raft/http_content_negotiation.hpp>
+#include <raft/peer_capability_cache.hpp>
 #include <raft/future_default.hpp>
 #include <raft/future.hpp>
 #include <concepts/future.hpp>
@@ -183,6 +185,18 @@ constexpr const char* proxygen_endpoint_install_snapshot = "/v1/raft/install_sna
 struct http_response {
     std::uint16_t status_code{0};
     std::string body;
+    /// @brief The response's declared `Content-Type`, with any parameters
+    ///     (`; charset=...`) already stripped -- empty when the peer sent no
+    ///     such header, which the caller reads as "a peer that predates
+    ///     negotiation" and answers with its own default rather than an error
+    ///     (Requirement 6.4).
+    ///
+    ///     Lives on the shared struct, not in each caller, because Proxygen has
+    ///     *two* client paths (the generic bridge and the Folly fast path) with
+    ///     two separate transaction bridges. Reading the header in one place
+    ///     that both fill is what stops the two paths from disagreeing about
+    ///     what an absent or parameterised `Content-Type` means.
+    std::string content_type;
 };
 
 /// @brief Collapses concurrent connect attempts for one pooled connection
@@ -380,6 +394,7 @@ requires kythira::proxygen_future_default_transport_types<Types>
 class proxygen_client {
 public:
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -446,6 +461,16 @@ public:
 private:
     folly::IOThreadPoolExecutorBase& _io_executor;
     serializer_type _serializer;
+    /// Negotiation goes through the registry; `_serializer` stays because the
+    /// surrounding code names it and the two agree for a single-serializer
+    /// bundle. Same arrangement as `boost_beast_client`.
+    serializer_registry_type _registry;
+    /// What each peer last answered in. Advisory only -- the full `Accept` list
+    /// still rides on every request, so a stale entry costs a re-choice and
+    /// never a failed exchange. Carries its own mutex, which matters more here
+    /// than for the other transports: both client paths touch it from an
+    /// `EventBase` thread that is not the caller's.
+    peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_url;
     proxygen_client_config _config;
     metrics_type _metrics;
@@ -508,6 +533,7 @@ requires kythira::proxygen_future_default_transport_types<Types>
 class proxygen_server {
 public:
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     template<typename T> using future_template = typename Types::template future_template<T>;
@@ -553,8 +579,29 @@ public:
     ///     `proxygen_detail`'s `RequestHandler` implementation, a
     ///     free-standing class rather than a nested template whose second
     ///     parameter would otherwise vary independently of `Types`.
+    ///
+    ///     Takes the request's declared media type and its parsed `Accept`
+    ///     list, and reports back the media type it actually encoded in. The
+    ///     `RequestHandler` reads the headers (it owns the `HTTPMessage`) but
+    ///     does not hold the registry, so header mechanics stay there and
+    ///     negotiation policy stays here -- the same split
+    ///     `boost_beast_server::dispatch` uses.
+    ///
+    ///     `response_media_type` is set on every path, including the error
+    ///     ones, so the caller never has to decide what to label a body it did
+    ///     not produce. Error bodies are plain text and say so.
     auto dispatch(std::string_view target, const std::vector<std::byte>& body,
-                  std::string& response_body, unsigned& status_code) -> void;
+                  const std::string& request_media_type, const std::vector<std::string>& accepted,
+                  std::string& response_body, unsigned& status_code,
+                  std::string& response_media_type) -> void;
+
+    /// @brief The media type used when a peer declares none.
+    ///
+    /// A negotiating server has no single "success content type" -- it has
+    /// whichever one this exchange settled on -- so the `RequestHandler` learns
+    /// that from `dispatch` and asks for this one only to fill in for an absent
+    /// request `Content-Type` (Requirement 4.1, 4.2).
+    [[nodiscard]] auto default_media_type() const -> std::string;
 
     /// @brief Bracket a request's lifetime for `stop()`'s drain (Property
     ///     8) -- mirrors `boost_beast_server::register_session`/
@@ -573,6 +620,9 @@ private:
     proxygen_server_config _config;
     metrics_type _metrics;
     serializer_type _serializer;
+    /// Decode and encode both route through here, so this server can answer a
+    /// peer in a format it did not itself choose.
+    serializer_registry_type _registry;
     std::shared_ptr<folly::IOThreadPoolExecutorBase> _io_executor;
     std::unique_ptr<proxygen::HTTPServer> _http_server;
     std::thread _server_thread;

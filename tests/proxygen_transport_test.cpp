@@ -587,11 +587,18 @@ BOOST_AUTO_TEST_CASE(malformed_request_handling,
 
     std::string response_body;
     unsigned status_code = 0;
-    server.dispatch("/v1/raft/request_vote", std::vector<std::byte>{}, response_body, status_code);
+    std::string response_media_type;
+    // The server's own default media type and an empty Accept list -- what a
+    // peer declaring neither header produces, which is the case these two
+    // assertions were written against. An empty body is still bad *bytes*, not
+    // a bad *format*, so it must reach the 400 and not the new 415.
+    const std::string request_media_type = server.default_media_type();
+    server.dispatch("/v1/raft/request_vote", std::vector<std::byte>{}, request_media_type, {},
+                    response_body, status_code, response_media_type);
     BOOST_TEST(status_code == 400);
 
-    server.dispatch("/v1/raft/unknown_endpoint", std::vector<std::byte>{}, response_body,
-                    status_code);
+    server.dispatch("/v1/raft/unknown_endpoint", std::vector<std::byte>{}, request_media_type, {},
+                    response_body, status_code, response_media_type);
     BOOST_TEST(status_code == 404);
 
     server.stop();
