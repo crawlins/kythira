@@ -402,13 +402,16 @@ unverified completion claim.
   on each start so continuations pending from a previous run keep seeing the
   old flag as true.
 
-  **A known limitation, stated rather than glossed:** a stop flag narrows the
-  window, it does not close it. Nothing waits for outstanding continuations, so
-  a continuation that passes the check can still be inside the handler when the
-  owner is freed. Closing it properly means either heap-owning the handlers'
-  state so continuations keep it alive, or draining outstanding continuations
-  in `stop()`. The same caveat applies to every other `_stop_flag` site in
-  `raft.hpp`, which is the pattern this follows.
+  **The limitation that used to be here is closed for `node`'s own callbacks.**
+  A stop flag is a check, and a check that passes only says the owner was alive
+  a moment ago. `include/raft/async_scope.hpp` adds the missing half: a
+  continuation holds a `ticket` for the duration of its body, and
+  `node::stop()`'s `drain_async_continuations()` refuses new tickets and then
+  waits for outstanding ones. All 18 guarded sites in `raft.hpp` plus both in
+  `error_handler.hpp` take one. The drain runs **last** in every `stop()` exit
+  path — after the network server is down — because draining earlier could
+  block on work a later shutdown step would have completed, which would trade
+  the memory bug for a shutdown hang.
 
   **Verified:** ASan reported on run 1 before the fix and 0/8 after; the
   plain boost binaries went from 1/3 (local) and 3/3 (CI) failing to 10/10
@@ -417,6 +420,38 @@ unverified completion claim.
   guard does not short-circuit retries when the flag is false.
 
 
+
+- **A second, unrelated use-after-free: `simulator_network_client` continuations
+  outlive the `NetworkSimulator` (found August 7, 2026 — open).** Found while
+  verifying the drain above, and **it is not the same bug** — recorded
+  separately because conflating the two would send the next person to the wrong
+  file.
+  - **Measured, not assumed.** With `node`'s drain in place and all 20 guard
+    sites taking tickets, `chaos_state_machine_safety_test` under boost + ASan
+    still reports a heap-use-after-free in **2 of 30** runs (1 of 30 before the
+    18 `raft.hpp` sites were converted — statistically indistinguishable). The
+    conversion did *not* move this number, which is the evidence that the
+    residual was never in those sites.
+  - **What it actually is.** ASan names a different object entirely: the freed
+    allocation is the `network_simulator::NetworkSimulator<...>` the *test*
+    owns (`chaos_state_machine_safety_test.cpp:36`), and the read is at
+    `include/network_simulator/simulator_impl.hpp:487`, reached from a
+    `simulator_network_client` continuation at
+    `include/raft/simulator_network.hpp:205` on a boost `Future<bool>::thenValue`.
+    `node`'s drain cannot cover this by construction: the continuation belongs
+    to the network client and the freed object belongs to the test.
+  - **Likely shapes of the fix**, in preference order: have
+    `simulator_network_client` hold a `shared_ptr` to the simulator so a
+    continuation keeps it alive; or give the simulator its own `async_scope` and
+    drain it in `NetworkSimulator::stop()`. The first is smaller and removes the
+    lifetime question rather than racing it.
+  - **Getting the report at all is the hard part**, so do not repeat the hour
+    this cost: the crash is ~1-in-15 and ASan's report is **truncated to 8
+    lines** on stdout, because the process tears down while the report is being
+    written. Use `log_path`:
+    `ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=/tmp/aslog` writes a
+    complete 163-line report to `/tmp/aslog.<pid>`. `abort_on_error` alone does
+    not fix the truncation.
 - **Systematise "did the job actually do the work?" as CI jobs.** This repo's
   single most repeated failure is machinery that reports success while doing
   nothing — the count is past fifteen, and *every* instance so far was caught by

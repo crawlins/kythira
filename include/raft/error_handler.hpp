@@ -1,5 +1,6 @@
 #pragma once
 
+#include "async_scope.hpp"
 #include "future_default.hpp"
 #include "types.hpp"
 #include <algorithm>
@@ -500,6 +501,19 @@ public:
         _stop_flag = std::move(flag);
     }
 
+    /// @brief Share the owner's drain barrier, so a shutdown can *wait* for a
+    ///     retry continuation that is already running.
+    ///
+    /// The stop flag above is a check, and a check that passes only says the
+    /// owner was alive a moment ago. This closes that window: a continuation
+    /// holds a ticket for the duration of its body, and the owner's
+    /// `close_and_drain()` cannot return until the ticket is dropped. See
+    /// `async_scope.hpp` for why a ticket covers execution rather than the
+    /// whole async chain.
+    auto set_async_scope(std::shared_ptr<kythira::async_scope> scope) -> void {
+        _async_scope = std::move(scope);
+    }
+
 private:
     // Retry policies for different operations
     std::unordered_map<std::string, retry_policy> _retry_policies;
@@ -511,6 +525,11 @@ private:
     /// into still has a valid one to read -- a null check on every continuation
     /// would be one more thing to forget.
     std::shared_ptr<std::atomic<bool>> _stop_flag{std::make_shared<std::atomic<bool>>(false)};
+
+    /// Owned rather than borrowed, for the same reason as the flag: a handler
+    /// nobody wired a scope into still has a usable one, and an open scope
+    /// admits everything, so the un-wired case behaves exactly as before.
+    std::shared_ptr<kythira::async_scope> _async_scope{std::make_shared<kythira::async_scope>()};
 
     /**
      * @brief Internal implementation of retry logic using async delays
@@ -531,9 +550,10 @@ private:
         -> kythira::future_default<Result> {
         return std::forward<Operation>(op)().thenTry([this, operation_name,
                                                       op = std::forward<Operation>(op), policy,
-                                                      attempt, stop_flag = _stop_flag](
-                                                         kythira::try_default<Result>
-                                                             result) mutable
+                                                      attempt, stop_flag = _stop_flag,
+                                                      scope =
+                                                          _async_scope](kythira::try_default<Result>
+                                                                            result) mutable
                                                          -> kythira::future_default<Result> {
             // Before touching `this`. The backend may run this continuation on a
             // thread nothing joins, so the owner can already be gone -- and every
@@ -545,7 +565,14 @@ private:
             // a successful result that arrives after shutdown is a value the
             // caller may still be waiting on, and failing it would turn a benign
             // late completion into a spurious error.
-            if (stop_flag->load(std::memory_order_acquire)) {
+            //
+            // The ticket is what makes the check load-bearing rather than
+            // advisory: while it is held, the owner's close_and_drain() cannot
+            // return, so `this` cannot be destroyed underneath the lines below.
+            // A refused ticket and a set flag mean the same thing here, and both
+            // are handled identically.
+            const auto ticket = scope->enter();
+            if (!ticket || stop_flag->load(std::memory_order_acquire)) {
                 if (result.hasValue()) {
                     return kythira::future_factory_default::makeFuture(std::move(result).value());
                 }
@@ -654,14 +681,16 @@ private:
                 // Apply async delay and retry - no thread blocking!
                 return kythira::future_factory_default::makeFuture().delay(delay).thenTry(
                     [this, operation_name, op = std::move(op), policy, attempt,
-                     stop_flag = _stop_flag](const kythira::try_default<void>&) mutable
+                     stop_flag = _stop_flag,
+                     scope = _async_scope](const kythira::try_default<void>&) mutable
                         -> kythira::future_default<Result> {
                         // Same guard as above, and it matters more here: this one
                         // fires on a *timer* thread owned by a process-wide
                         // singleton (boost's timer_service, stdexec's
                         // global_timed_context, folly's Timekeeper), none of
                         // which is tied to the owner's lifetime at all.
-                        if (stop_flag->load(std::memory_order_acquire)) {
+                        const auto ticket = scope->enter();
+                        if (!ticket || stop_flag->load(std::memory_order_acquire)) {
                             return kythira::future_factory_default::makeExceptionalFuture<Result>(
                                 std::make_exception_ptr(
                                     std::runtime_error("retry abandoned: owner stopped")));
