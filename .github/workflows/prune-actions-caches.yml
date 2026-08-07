@@ -1,0 +1,74 @@
+name: Prune Actions caches
+
+# This repository runs permanently at GitHub's 10 GB per-repository cache
+# ceiling (measured 10.37 GB across 43 entries), so GitHub evicts entries LRU
+# and the victim is arbitrary. A `Build & Test` leg that should have restored a
+# warm ccache starts cold instead, which is a plausible contributor to the
+# 25-40 minute leg times.
+#
+# The cause is accumulation, not size. Every ccache key in ci.yml ends in
+# `-${{ github.ref_name }}-${{ github.run_id }}`, so each run mints a new entry
+# and nothing removes the one it superseded. Only the newest generation per key
+# family is reachable — restore-keys prefixes always resolve to the newest
+# match — so every older generation is dead weight that can still evict a live
+# one. Measured: four retained generations per family, one of them useful.
+#
+# Deleting a cache is safe in the sense that it regenerates on the next run;
+# the risk is deleting a *live* one and forcing a needless cold build. Both
+# rules are therefore conservative, and vcpkg caches (4.49 GB, content-
+# addressed by hashFiles rather than by run id, every one of them live) are
+# never touched by either rule.
+
+on:
+  # A merged PR's ref can never be restored from again, so its caches are dead
+  # the moment it closes. This is where most of the reclaim comes from.
+  pull_request:
+    types: [closed]
+  # Catches superseded generations on main, which accumulate with no PR event
+  # to hang cleanup off.
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Actually delete (unchecked = report only)'
+        type: boolean
+        default: false
+
+permissions:
+  actions: write         # required to DELETE /actions/caches/{id}
+  contents: read
+  pull-requests: read    # the script derives "closed" from the open-PR list
+
+# Two runs deleting the same entry would race and log spurious warnings.
+concurrency:
+  group: prune-actions-caches
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune unreachable caches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # workflow_dispatch defaults to a dry run so the selection can be
+      # reviewed before anything is destroyed; the scheduled and PR-closed
+      # runs are the ones that actually reclaim space.
+      - name: Prune
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apply=--apply
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] \
+             && [ "${{ inputs.apply }}" != "true" ]; then
+            apply=""
+            echo "::notice::dry run — re-dispatch with 'apply' checked to delete"
+          fi
+          scripts/prune-actions-caches.sh \
+            --repo "${{ github.repository }}" \
+            --closed-prs \
+            --superseded \
+            $apply
