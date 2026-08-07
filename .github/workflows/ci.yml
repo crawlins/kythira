@@ -259,6 +259,22 @@ jobs:
           # without it `| tee` would swallow ctest's exit code and report every
           # run as a success -- the exact class of bug the check step below
           # exists to catch.
+          # --timeout: this project calls enable_testing() without
+          # include(CTest), so no DartConfiguration.tcl is generated and there
+          # is therefore **no default ctest timeout at all** -- a hung test runs
+          # until the job's own budget expires. Observed for real on a boost
+          # compat leg: 409 of 413 tests finished in 7 minutes, then one hung
+          # for 2h08m until timeout-minutes killed the job. The Test step then
+          # reports `cancelled`, which `gh pr checks` renders as a bare `fail`
+          # naming nothing; the only clue was the runner's own "Terminate orphan
+          # process" line. Three hours spent, no diagnosis produced.
+          #
+          # A test's own TIMEOUT property still wins where one is set (~122 of
+          # 421 tests have one, scaled by KYTHIRA_TEST_TIMEOUT_SCALE); this only
+          # supplies a ceiling for the rest. Sized from measurement rather than
+          # taste: the slowest test in a real 414-test run took 141s, so 900s is
+          # ~6x the observed worst case. The instrumented jobs (coverage, tsan)
+          # use 1800 for the same headroom against a slower binary.
           set -o pipefail
           ctest --test-dir build \
             -j$(nproc) \
@@ -266,6 +282,7 @@ jobs:
             --output-junit ${{ github.workspace }}/test-results.xml \
             --repeat until-pass:3 \
             --no-tests=error \
+            --timeout 900 \
             -LE '^(slow|performance|verbose|benchmark|docker)$' \
             2>&1 | tee ctest-out.txt
         continue-on-error: true
@@ -594,6 +611,7 @@ jobs:
             --output-junit ${{ github.workspace }}/coverage-test-results.xml \
             --repeat until-pass:3 \
             --no-tests=error \
+            --timeout 1800 \
             -LE '^(slow|performance|verbose|benchmark|docker)$' \
             2>&1 | tee ctest-coverage-out.txt
         continue-on-error: true
@@ -974,6 +992,7 @@ jobs:
             -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test' \
             --output-on-failure \
             --no-tests=error \
+            --timeout 1800 \
             --output-junit ${{ github.workspace }}/tsan-test-results.xml \
             2>&1 | tee ctest-tsan-out.txt
         continue-on-error: true
@@ -1214,6 +1233,7 @@ jobs:
             --output-junit ${{ github.workspace }}/test-results-${{ matrix.backend }}.xml \
             --repeat until-pass:3 \
             --no-tests=error \
+            --timeout 900 \
             -LE '^(slow|performance|verbose|benchmark|docker)$' \
             2>&1 | tee ctest-out.txt
         continue-on-error: true
