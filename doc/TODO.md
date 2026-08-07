@@ -452,6 +452,30 @@ unverified completion claim.
     `ASAN_OPTIONS=detect_leaks=0:abort_on_error=1:log_path=/tmp/aslog` writes a
     complete 163-line report to `/tmp/aslog.<pid>`. `abort_on_error` alone does
     not fix the truncation.
+- **A PR that does not target `main` runs no CI at all, and reports itself
+  green (found August 7, 2026 — open).** `ci.yml` triggers on
+  `pull_request: branches: [main]`, so a **stacked PR** — one whose base is
+  another feature branch — skips the entire workflow. PR #178 was opened that
+  way and showed a single passing check (GitGuardian) with
+  `mergeStateStatus=CLEAN`, because with no required checks present there is
+  nothing to be missing. It looked greener than a PR that had actually built.
+  - This is the house failure mode wearing a new hat: **machinery reporting
+    success while doing nothing.** Worse than usual, because the signal is not
+    merely absent — the absence renders as approval.
+  - Retargeting the base to `main` afterwards does **not** start a run. The
+    workflow's `pull_request` trigger uses the default activity types
+    (`opened`, `synchronize`, `reopened`) and a base change is `edited`. A push
+    is required.
+  - Options, unresolved: widen to `pull_request: branches: ['**']` so stacked
+    PRs are covered — honest, but every stacked PR then pays for the full
+    matrix, which since the backend-matrix widening is ~55 minutes of cold
+    build per compat leg; or add an `edited` type so at least a retarget
+    re-runs; or simply do not stack PRs in this repo and say so somewhere a
+    reader will find it. The first is the only one that removes the trap rather
+    than documenting around it.
+  - Until then: **check `gh pr checks <n>` returns more than one row** before
+    believing a PR is green. One row is not a pass, it is an absence.
+
 - **Systematise "did the job actually do the work?" as CI jobs.** This repo's
   single most repeated failure is machinery that reports success while doing
   nothing — the count is past fifteen, and *every* instance so far was caught by
