@@ -163,6 +163,49 @@ This document lists the dependencies required to build and use the network simul
   option numbers as macros and libnyoci as enumerators, so the two C headers
   cannot coexist. They do not conflict at link time.
 
+### cantcoap (BSD-2-Clause) — codec-only CoAP transport backend
+- **Status**: Optional and **opt-in**. Enabled by the `coap-cantcoap` vcpkg
+  feature and the `COAP_TRANSPORT_CANTCOAP` Kconfig symbol (default `n`).
+  Additive: independent of both `COAP_TRANSPORT` and
+  `COAP_TRANSPORT_LIBNYOCI`, and all three CoAP backends can coexist in one
+  build
+- **Purpose**: a third implementation of the `network_client`/`network_server`
+  concept family — `coap_cantcoap_client`/`coap_cantcoap_server`
+  (`include/raft/coap_transport_cantcoap_impl.hpp`). cantcoap is a CoAP
+  **message codec only**: it builds and parses RFC 7252 PDUs and provides no
+  socket, no retransmission, no duplicate detection, no block-wise state machine
+  and no DTLS. The adapter supplies all of that, reusing kythira's existing
+  `pending_message` / `received_message_info` / `block_option` scaffolding and
+  the transport-neutral OSCORE implementation in `include/raft/oscore.hpp`
+- **Version**: pinned to commit `99e9ed5` (master, 2026-05-09). cantcoap
+  publishes no tags at all, so a commit pin is the only option; unlike libnyoci
+  the project is still maintained, so periodic re-pinning is worthwhile
+- **Installation**: built from source by the `vcpkg-overlays/cantcoap` overlay
+  port. Upstream ships **no build system**, so the port vendors a
+  `CMakeLists.txt` into the source tree and drives it with the standard
+  `vcpkg_cmake_*` helpers:
+  ```bash
+  cmake -S . -B build -DVCPKG_MANIFEST_FEATURES=coap-cantcoap
+  ```
+  No unusual host tooling is required — this is the cheap end of the packaging
+  spectrum, in contrast to libnyoci's autotools port.
+- **Notes**: discovery is `find_package(cantcoap CONFIG)` against the config
+  package the vendored build exports, and backs `CANTCOAP_AVAILABLE`. When
+  absent, the adapter header still compiles with its full concept surface and
+  its integration tests skip rather than fail.
+
+  **Security**: OSCORE works (object security, via `raft/oscore.hpp`); **DTLS is
+  refused at construction**. cantcoap is cleartext-only and, unlike libnyoci,
+  has no DTLS plugin to drive — supplying it would mean implementing the DTLS
+  handshake and record layer over this backend's own socket. The EDHOC bootstrap
+  is likewise not served here yet; static OSCORE credentials work.
+
+  As with libnyoci, a translation unit must include **either**
+  `raft/coap_transport.hpp` **or** `raft/coap_transport_cantcoap_impl.hpp`,
+  never both: libcoap defines the CoAP option numbers as macros and cantcoap as
+  enumerators, so the two headers cannot coexist. Nor can the cantcoap and
+  libnyoci headers, for the same reason.
+
 ### AWS SDK ACM Private CA component — aws_acm_pca_provider
 - **Status**: Optional — independent of the core `KYTHIRA_HAS_AWS_SDK` component set
   already used by `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`

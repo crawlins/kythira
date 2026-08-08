@@ -1,29 +1,34 @@
-# Alternate CoAP backends: libnyoci vs cantcoap
+# Alternate CoAP backends: libnyoci and cantcoap
 
 The CoAP transport (`include/raft/coap_transport.hpp`) is backed by **libcoap**
 by default (vcpkg port with the `dtls` feature, plus OSCORE/EDHOC via the
 `lakers` overlay, block-wise transfer, multicast and ACE-OAuth). This document
 compares two *alternate* backends.
 
-**libnyoci is implemented** (`.kiro/specs/coap-transport-libnyoci/`); cantcoap
-remains a skeleton for comparison (`.kiro/specs/coap-transport-cantcoap/`).
+**Both are now implemented** — `.kiro/specs/coap-transport-libnyoci/` and
+`.kiro/specs/coap-transport-cantcoap/`. This document was written as a paper
+comparison before either existed; the sections below record which of its
+predictions survived contact with the code, because several did not.
 
-| | **libnyoci** (implemented) | **cantcoap** (skeleton) |
+| | **libnyoci** | **cantcoap** |
 |---|---|---|
 | Repo | [darconeous/libnyoci][nyoci] (formerly SMCP) | [staropram/cantcoap][cant] |
 | License | MIT | BSD-2-Clause |
 | Scope | Full RFC 7252 client/server stack | PDU codec only (build/parse one message) |
-| Sockets / event loop | Provided | **You write it** |
-| Retransmission / dedup | Provided | **You write it** (reuse `pending_message`) |
-| Block-wise transfer | **Block2 only** — no Block1 at all | **You write it** (reuse `coap_block_option.hpp`) |
+| Sockets / event loop | Provided | **Written here** (~150 lines) |
+| Retransmission / dedup | Provided | **Written here**, over `pending_message` |
+| Block-wise transfer | **Block2 only** — no Block1 at all | **Written here**: Block1 *and* Block2 |
 | DTLS | **PSK + PKI, via its OpenSSL plugin** (`--enable-tls`); no RPK | **You wire it** (reuse `coap_security.hpp`) |
 | OSCORE / EDHOC | Not built in — supplied by kythira's own `raft/oscore.hpp` | Not built in — could reuse `raft/oscore.hpp` |
 | Build system | **autotools** | **none** (source files only) |
 | vcpkg port shape | `vcpkg_configure_make` (hard) | vendored `CMakeLists` (easy) |
-| Adapter size | Thin (bridge callbacks → futures) | Thick (own the whole transport) |
+| Adapter size | Thin (bridge callbacks → futures) | Thicker, but far less than expected — see below |
+| Tests | 39 cases | 22 cases |
 
 **The trade-off in one line:** libnyoci is a *hard port + easy adapter*;
-cantcoap is an *easy port + hard adapter*. Neither ships OSCORE, so kythira's
+cantcoap is an *easy port + thicker adapter*. That held — but "hard adapter"
+turned out to overstate it, for a reason worth reading: see "What cantcoap
+actually cost" below. Neither ships OSCORE, so kythira's
 existing `coap_security` / `coap_edhoc` security layer stays in place for both —
 which was an argument for keeping security *above* whichever CoAP core is
 chosen rather than delegating it to the library. Fact 3 below is what happened
@@ -196,6 +201,45 @@ including the C.4 request and C.7 response byte for byte. Object security is
 now the one security mode that is genuinely backend-independent, and cantcoap
 would inherit it for free.
 
+## What cantcoap actually cost
+
+The spec predicted the adapter would be "the bulk of the work". It was the bulk,
+but it was *smaller than the libnyoci adapter*, and the reason is instructive:
+**almost everything above the socket already existed.**
+
+| Concern | cantcoap gives | Where it came from |
+|---|---|---|
+| PDU encode/parse | `CoapPDU` | cantcoap |
+| UDP socket + loop | nothing | new, ~150 lines |
+| Retransmit / dedup | nothing | `pending_message`, `received_message_info` |
+| Block-wise | nothing | `block_option` + our own sequencing |
+| OSCORE | nothing | `oscore::security_context` — **inherited free** |
+
+That last row is the payoff of a decision made for the *other* backend.
+`raft/oscore.hpp` was written for libnyoci and made transport-neutral on
+principle, working on CoAP message bytes rather than any library's types. This
+backend picked it up with **no changes at all**, because it already owns the
+bytes on both sides of the socket. The principle paid for itself the first time
+it was tested.
+
+Two structural conveniences also carried over: the `coap_transport_config.hpp`
+split (see fact 1) meant cantcoap had a libcoap-free home for the shared configs
+waiting for it, and `pending_message` / `received_message_info` / `block_option`
+were already the right shapes.
+
+**What cantcoap does *not* get** is DTLS. libnyoci at least had a plugin to
+drive; cantcoap is cleartext-only with nothing behind it, so channel security
+would mean running an OpenSSL DTLS BIO over this backend's own socket —
+handshake, retransmission, cookie exchange — which is a transport in its own
+right. It is refused at construction, pointing at OSCORE instead. That is a
+genuinely different refusal from libnyoci's RPK one: there the surface existed
+and OpenSSL lacked the feature; here the surface does not exist.
+
+One prediction that scored well: cantcoap really can do Block1, and does. That
+is the one capability it has that libnyoci does not, exactly as this document
+guessed — owning the block layer means you can implement the half libnyoci
+omits.
+
 ## Autotools port: what it actually took
 
 The port needs the autotools chain on the host **plus `autoconf-archive`** —
@@ -281,13 +325,15 @@ which is what a container harness would be for.
   least adapter code, DTLS-PSK/PKI is enough security, request payloads stay
   under one datagram, and the autotools port cost is acceptable. It is the
   closer analog to today's libcoap integration and it works today.
-- Pick **cantcoap** if the goal is to *own* the CoAP wire behaviour end to end
-  and reuse kythira's existing retransmission/block-wise/security machinery over
-  a tiny, trivially-vendored codec — accepting that the adapter becomes the bulk
-  of the work. Note that it would inherit fact 1 (its own header collision with
-  libcoap) and would have to solve fact 3 itself, but it would *not* inherit
-  fact 2: owning the block layer means Block1 is implementable. It would also
-  have to solve DTLS from scratch, where libnyoci simply had a plugin.
+- Pick **cantcoap** if you want full control of the wire behaviour, need
+  **Block1** (it has it; libnyoci does not), and object security is enough.
+  It inherited fact 1 exactly as predicted — its option enum collides with
+  libcoap's macros the same way — and it inherited the OSCORE implementation
+  for free. It cannot do DTLS.
+
+**If you need DTLS, that narrows it to libcoap or libnyoci. If you need Block1,
+that narrows it to libcoap or cantcoap.** Only libcoap does both, which is a
+reasonable argument for it remaining the default.
 
 [nyoci]: https://github.com/darconeous/libnyoci
 [cant]: https://github.com/staropram/cantcoap
