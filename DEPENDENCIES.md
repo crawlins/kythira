@@ -137,10 +137,12 @@ This document lists the dependencies required to build and use the network simul
   `coap_security_provider` is not reusable here — it is expressed entirely in
   libcoap types — so DTLS *configuration* forks per backend, though the config
   surface (`coap_client_config`, `translate_legacy_fields()`) is shared.
-  `oscore` and `dtls_rpk` are **refused at construction** rather than silently
-  downgraded: libnyoci ships no OSCORE and kythira has no implementation of its
-  own to lend, and raw public keys need certificate-type extensions that arrived
-  only in OpenSSL 3.2. Note the plugin is upstream-"experimental" and calls
+  `oscore` works too, but through a different route: `include/raft/oscore.hpp`
+  implements RFC 8613 against CoAP message bytes, so object security does not
+  depend on the CoAP library at all. Only `dtls_rpk` and the EDHOC bootstrap are
+  **refused at construction** rather than silently downgraded — raw public keys
+  need certificate-type extensions that arrived only in OpenSSL 3.2, and EDHOC
+  needs a `.well-known/edhoc` exchange this backend does not offer yet. Note the plugin is upstream-"experimental" and calls
   OpenSSL 1.x-era APIs that are deprecated-but-present in 3.x.
 
   **DTLS-PKI needs small certificates.** libnyoci reads every inbound datagram

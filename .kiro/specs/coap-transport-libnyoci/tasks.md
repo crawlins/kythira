@@ -7,8 +7,10 @@ against real loopback sockets. `coap_libnyoci_client`/`coap_libnyoci_server`
 satisfy `network_client`/`network_server` and speak the same wire protocol as
 the libcoap backend. Two limitations are inherent to libnyoci and are handled
 by refusing loudly rather than degrading silently — see Tasks 3.6 and 5.
-DTLS-PSK and DTLS-PKI work over libnyoci's own OpenSSL plugin; OSCORE and
-DTLS-RPK are refused with specific reasons.
+DTLS-PSK and DTLS-PKI work over libnyoci's own OpenSSL plugin, and OSCORE
+works over the transport-neutral RFC 8613 implementation in
+`include/raft/oscore.hpp`. Only DTLS-RPK and the EDHOC bootstrap remain
+refused, each with a specific reason.
 
 **Last Updated**: August 8, 2026
 
@@ -147,7 +149,7 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       own Block2 option, so there is no per-peer transfer state to expire and a
       lost block is simply re-requested.
 
-- [~] 5. Security integration — **DTLS via libnyoci's own plugin; OSCORE/RPK refused**
+- [~] 5. Security integration — **DTLS and OSCORE both work; RPK refused**
   - [x] 5.1 Route DTLS through libnyoci's OpenSSL plugin
     - **Not through `coap_security_provider`, and that is settled rather than
       deferred.** Every method of that interface is expressed in libcoap types
@@ -182,19 +184,40 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       silently truncated and the handshake stalls with no diagnostic. Found by
       writing the test with RSA-2048 and watching it time out; ECDSA P-256 fits
       and passes, and the test fixture says so at its definition.
-  - [ ] 5.2 OSCORE and EDHOC — **refused, and not closable here**
-    - libnyoci ships neither, and kythira has no implementation of its own to
-      fall back on: `oscore_provider` delegates entirely to libcoap
-      (`coap_context_oscore_server`, `coap_new_client_session_oscore`). There
-      is no AES-CCM, no COSE and no key derivation anywhere in the tree, so a
-      byte-level seam would have nothing to lift — closing this is an
-      "acquire an OSCORE implementation" project, not a refactor. Written up
-      in `doc/TODO.md` under Known Follow-ups.
-    - EDHOC itself is already transport-neutral (`edhoc_transport` is an
-      abstract send/receive pair and lakers does the crypto); it is only the
-      OSCORE context consuming its output that is not.
-    - `plan_security()` refuses `oscore` at construction with a message naming
-      the reason, rather than downgrading to plaintext.
+  - [x] 5.2 OSCORE — **implemented, via a transport-neutral RFC 8613**
+    - The blocker was real but not permanent: kythira had no OSCORE of its own
+      to lend (`oscore_provider` delegates entirely to libcoap), so there was
+      nothing to lift behind a seam. `include/raft/oscore.hpp` now implements
+      RFC 8613 against CoAP *message bytes* — context derivation (3.2.1), AEAD
+      nonce (5.2), plaintext (5.3), AAD (5.4), option compression (6.1) and the
+      protect/verify procedures (8.1-8.4) — over OpenSSL, with a small CoAP
+      codec for the Class E / Class U split. No CoAP library involved, which is
+      what makes it usable from this backend at all.
+    - Conformance: every RFC 8613 Appendix C test vector, including the whole
+      protected request of C.4 and protected response of C.7 compared byte for
+      byte (`tests/oscore_rfc8613_vectors_test.cpp`, 27 cases).
+    - The wire shape is why this fits libnyoci without touching it: an OSCORE
+      message *is* an ordinary POST carrying an OSCORE option and a ciphertext,
+      so the adapter protects the inner message itself and hands libnyoci the
+      outer one through the normal API. The client passes `NYOCI_MSG_SKIP_PATH`
+      to `nyoci_outbound_set_uri()` -- the path is Class E and already inside
+      the ciphertext, so emitting it outside would leak exactly what is being
+      hidden. libnyoci's `coap.h` predates RFC 8613 and has no enumerator for
+      option 9, so the number comes from `raft/oscore.hpp`.
+    - Protection happens once, at send time, rather than in the resend
+      trampoline: libnyoci calls that per transmission attempt, and a
+      retransmission must re-send the same protected message rather than burn a
+      fresh Partial IV.
+    - Covered end to end by `tests/coap_libnyoci_oscore_test.cpp` (7 cases): all
+      three RPCs, a wrong Master Secret refused with the handler never running,
+      an unprotected request refused by an OSCORE server, and twelve sequential
+      requests advancing the Partial IV through the replay window.
+  - [ ] 5.2.1 EDHOC bootstrap over this backend — still open, now small
+    - The handshake is already transport-neutral and produces exactly the
+      credentials `oscore::security_context` consumes; what is missing is the
+      `.well-known/edhoc` exchange to carry its messages. `plan_security()`
+      refuses `oscore_bootstrap::edhoc` explicitly rather than silently
+      treating it as static provisioning.
   - [ ] 5.3 DTLS-RPK — **refused; not expressible through this surface**
     - Raw public keys (RFC 7250) need the peer to negotiate a non-X.509
       certificate type. libnyoci's plugin hands the adapter nothing but an
@@ -272,9 +295,10 @@ and a translation unit selects a backend by which header it includes.
   cannot be built in one process. It needs two processes, i.e. the container
   harness Task 6.4 did not require — and that harness must follow the
   Docker/rootless-Podman rules in `CLAUDE.md`.
-- **OSCORE without libcoap** (Task 5.2), if a second backend ever needs it.
-  Written up in `doc/TODO.md` under Known Follow-ups; it is an "acquire an
-  OSCORE implementation" project rather than a refactor.
+- **EDHOC bootstrap over this backend** (Task 5.2.1): the handshake is already
+  transport-neutral, so what is left is the `.well-known/edhoc` exchange.
+- **Observe and block-wise over OSCORE**, both refused today (RFC 8613
+  Sections 8.2.1, 8.3.1, 8.4.1, 8.4.2).
 - **DTLS-RPK** (Task 5.3) would need OpenSSL >= 3.2 and certificate-type
   negotiation the libnyoci plugin does not expose.
 - **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be

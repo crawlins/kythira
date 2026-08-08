@@ -17,7 +17,7 @@ remains a skeleton for comparison (`.kiro/specs/coap-transport-cantcoap/`).
 | Retransmission / dedup | Provided | **You write it** (reuse `pending_message`) |
 | Block-wise transfer | **Block2 only** — no Block1 at all | **You write it** (reuse `coap_block_option.hpp`) |
 | DTLS | **PSK + PKI, via its OpenSSL plugin** (`--enable-tls`); no RPK | **You wire it** (reuse `coap_security.hpp`) |
-| OSCORE / EDHOC | Not built in — and kythira has none of its own to lend | Not built in |
+| OSCORE / EDHOC | Not built in — supplied by kythira's own `raft/oscore.hpp` | Not built in — could reuse `raft/oscore.hpp` |
 | Build system | **autotools** | **none** (source files only) |
 | vcpkg port shape | `vcpkg_configure_make` (hard) | vendored `CMakeLists` (easy) |
 | Adapter size | Thin (bridge callbacks → futures) | Thick (own the whole transport) |
@@ -172,23 +172,29 @@ costs worth knowing:
 
 **What is still refused, with specific reasons rather than a downgrade:**
 
-- **OSCORE.** libnyoci ships none — and, more to the point, *neither does
-  kythira*. `oscore_provider` delegates entirely to libcoap
-  (`coap_context_oscore_server`, `coap_new_client_session_oscore`); there is no
-  AES-CCM, no COSE and no key derivation anywhere in the tree. So the
-  obvious-sounding "lift a byte-level `protect(bytes)`/`unprotect(bytes)` seam
-  out of `coap_security_provider`" has **nothing to lift** — it is an *acquire
-  an OSCORE implementation* project, not a refactor. Written up in
-  `doc/TODO.md`. (EDHOC itself is already transport-neutral: `edhoc_transport`
-  is an abstract send/receive pair and lakers does the crypto. Only the OSCORE
-  context consuming its credentials is not.)
 - **DTLS-RPK.** Raw public keys (RFC 7250) need the peer to negotiate a
   non-X.509 certificate type, and OpenSSL only added the certificate-type
   extensions in 3.2. The plugin exposes nothing but an `SSL_CTX`.
+- **The EDHOC bootstrap**, for now: the handshake is already transport-neutral,
+  but carrying its messages needs a `.well-known/edhoc` exchange this backend
+  does not offer. Static OSCORE provisioning works today.
 
 Refusing at construction is the only safe answer for both: silently downgrading
 a node that asked for encryption to plaintext Raft traffic is strictly worse
 than not starting.
+
+**OSCORE is no longer on that list.** It was, and the reason it came off is
+worth recording, because the first assessment was wrong in an instructive way.
+libnyoci ships no OSCORE — but neither did kythira: `oscore_provider` delegates
+entirely to libcoap, so there was no AES-CCM, COSE or key derivation anywhere in
+the tree. The obvious-sounding "lift a byte-level `protect(bytes)` /
+`unprotect(bytes)` seam out of `coap_security_provider`" therefore had *nothing
+to lift*; it was an acquire-an-implementation project rather than a refactor.
+`include/raft/oscore.hpp` is that implementation: RFC 8613 over CoAP message
+bytes, no CoAP library involved, verified against every Appendix C test vector
+including the C.4 request and C.7 response byte for byte. Object security is
+now the one security mode that is genuinely backend-independent, and cantcoap
+would inherit it for free.
 
 ## Autotools port: what it actually took
 

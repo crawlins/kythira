@@ -169,38 +169,44 @@ unverified completion claim.
 
 ## Known Follow-ups
 
-- **A transport-neutral OSCORE, if a second CoAP backend ever needs it
-  (raised August 8, 2026, while implementing `.kiro/specs/coap-transport-libnyoci/`).**
-  The libnyoci backend now does DTLS-PSK and DTLS-PKI through libnyoci's own
-  OpenSSL plugin, and refuses OSCORE (and DTLS-RPK) rather than downgrading.
-  Closing the OSCORE gap is a bigger job than it first appears, and the reason
-  is worth writing down so nobody re-scopes it optimistically:
+- **A transport-neutral OSCORE — RESOLVED (August 8, 2026), one day after it
+  was raised.** `include/raft/oscore.hpp` now implements RFC 8613 against CoAP
+  *message bytes*, so any backend can speak OSCORE regardless of which CoAP
+  library it uses. The libnyoci backend does, end to end
+  (`tests/coap_libnyoci_oscore_test.cpp`).
 
-  **kythira does not implement OSCORE — it configures libcoap's.**
-  `oscore_provider` (`coap_security_impl.hpp`) is a thin wrapper over
-  `coap_context_oscore_server()` / `coap_new_client_session_oscore()` /
-  `coap_new_oscore_recipient()`. There is no AES-CCM, no COSE, no key
-  derivation anywhere in the tree. So the obvious-sounding fix — "lift a
-  byte-level `protect(bytes) -> bytes` / `unprotect(bytes) -> bytes` seam out of
-  `coap_security_provider` so any backend can call it" — has nothing to lift.
-  It is an *acquire an OSCORE implementation* project (write RFC 8613, or
-  vendor one; libcoap's is entangled with its own session/PDU types, and
-  `uoscore` is the obvious standalone candidate) that happens to unblock the
-  seam, not a refactor.
+  The original entry called this an "acquire an OSCORE implementation" project
+  rather than a refactor, and that was right: kythira does not implement OSCORE,
+  it configures libcoap's (`oscore_provider` wraps
+  `coap_context_oscore_server()` and friends; there is no AES-CCM, COSE or key
+  derivation anywhere else in the tree). So the work was to write RFC 8613 —
+  security-context derivation, the AEAD nonce, plaintext and AAD constructions,
+  OSCORE option compression, and the protect/verify procedures — on top of
+  OpenSSL, plus the small CoAP codec that splits Class E options from Class U
+  ones.
 
-  Two things that are *not* obstacles, for whoever picks this up:
-  - **EDHOC is already transport-neutral.** `edhoc_transport`
-    (`coap_edhoc.hpp`) is an abstract send/receive pair and lakers does the
-    crypto, producing OSCORE credentials. It would port to another backend
-    unchanged the moment there is an OSCORE context to hand them to.
-  - **The config surface is already shared.** `coap_client_config` /
-    `coap_server_config` and `translate_legacy_fields()` live in the
-    libcoap-free `coap_transport_config.hpp`, so both backends already reach
-    the same verdict about a given security config.
+  What makes it trustworthy is `tests/oscore_rfc8613_vectors_test.cpp`: every
+  test vector in RFC 8613 Appendix C, including the whole protected request of
+  C.4 and protected response of C.7 compared byte for byte against the
+  published hex. Do not change the crypto without re-running those.
 
-  DTLS could never use such a seam regardless — it is a handshake plus a record
-  layer, not a per-message transform — which is exactly why the libnyoci
-  backend went to libnyoci's own plugin for it instead.
+  Still open, and deliberately refused rather than approximated:
+  - **Observe and block-wise over OSCORE** (RFC 8613 Sections 8.2.1, 8.3.1,
+    8.4.1, 8.4.2). Neither transport offers Observe, and the libnyoci backend
+    has no Block1 at all.
+  - **The EDHOC bootstrap over this backend.** The handshake itself is already
+    transport-neutral (`edhoc_transport` is an abstract send/receive pair and
+    lakers does the crypto), and it produces exactly the OSCORE credentials
+    `security_context` consumes — but running it needs a `.well-known/edhoc`
+    exchange the libnyoci backend does not offer yet. Static provisioning works
+    today. This is now a small, well-defined piece of work rather than a
+    blocked one.
+  - **Algorithms other than AES-CCM-16-64-128** with HKDF-SHA-256, the
+    mandatory-to-implement pair.
+
+  DTLS still cannot go through a byte-level seam — it is a handshake plus a
+  record layer, not a per-message transform — which is why the libnyoci backend
+  uses libnyoci's own OpenSSL plugin for it.
 
 - **Beast suites segfault under the stdexec future backend, and CI cannot see
   it (found August 6, 2026 — RESOLVED same day, PR #169).** The diagnosis
