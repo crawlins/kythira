@@ -3824,6 +3824,45 @@ add_test(NAME coap_libnyoci_dtls_test COMMAND coap_libnyoci_dtls_test)
 set_tests_properties(coap_libnyoci_dtls_test PROPERTIES
     TIMEOUT 600 LABELS "coap;libnyoci;dtls;integration")
 
+# OSCORE end to end over the libnyoci backend (spec Task 5.2). Separate from
+# the DTLS suite because it proves a different claim: that object security
+# works over a CoAP backend that is not libcoap, which is the whole reason
+# raft/oscore.hpp exists.
+add_executable(coap_libnyoci_oscore_test coap_libnyoci_oscore_test.cpp)
+target_link_libraries(coap_libnyoci_oscore_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libnyoci_oscore_test PRIVATE Folly::folly)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_libnyoci_oscore_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(coap_libnyoci_oscore_test PRIVATE cxx_std_23)
+add_test(NAME coap_libnyoci_oscore_test COMMAND coap_libnyoci_oscore_test)
+set_tests_properties(coap_libnyoci_oscore_test PROPERTIES
+    TIMEOUT 600 LABELS "coap;libnyoci;oscore;security;integration")
+
+# ── OSCORE (RFC 8613) ────────────────────────────────────────────────────────
+# The conformance suite for include/raft/oscore.hpp, checked against every test
+# vector in RFC 8613 Appendix C. Deliberately depends on nothing but OpenSSL and
+# Boost.Test: the whole point of this implementation is that it is neutral
+# between CoAP backends, so its tests must not need one either.
+add_executable(oscore_rfc8613_vectors_test oscore_rfc8613_vectors_test.cpp)
+target_link_libraries(oscore_rfc8613_vectors_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(oscore_rfc8613_vectors_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(oscore_rfc8613_vectors_test PRIVATE cxx_std_23)
+add_test(NAME oscore_rfc8613_vectors_test COMMAND oscore_rfc8613_vectors_test)
+set_tests_properties(oscore_rfc8613_vectors_test PROPERTIES
+    TIMEOUT 60 LABELS "oscore;security;unit")
+
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
 # coap suite several times slower than Release, so per-case Boost timeouts
