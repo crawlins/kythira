@@ -496,18 +496,45 @@ BOOST_AUTO_TEST_CASE(test_replayed_request_is_rejected) {
                       osc::verification_error);
 }
 
-BOOST_AUTO_TEST_CASE(test_unsupported_options_are_refused) {
+BOOST_AUTO_TEST_CASE(test_observe_and_block_options_are_carried_as_inner_options) {
     namespace osc = kythira::oscore;
     osc::security_context client{c1_client_credentials()};
+    osc::security_context server{c1_server_credentials()};
 
+    // Observe (6), Block2 (23) and Block1 (27) are the "E and U" rows of
+    // RFC 8613 Figure 5. This implementation emits only the inner form, so each
+    // must survive a round trip through the ciphertext and never appear outside.
     for (const std::uint16_t number : {std::uint16_t{6}, std::uint16_t{23}, std::uint16_t{27}}) {
         osc::coap_message request;
-        request.code = 0x01;
-        request.options = {{number, {}}};
-        osc::request_binding binding;
-        BOOST_CHECK_THROW((void)client.protect_request(request, binding),
-                          osc::unsupported_feature_error);
+        request.code = 0x02;
+        request.token = from_hex("01");
+        request.options = {{number, from_hex("05")}};
+
+        osc::request_binding sent;
+        const auto protected_request = client.protect_request(request, sent);
+        for (const auto& option : protected_request.options) {
+            BOOST_TEST(option.number == 9U,
+                       "option " << number << " leaked outside the ciphertext");
+        }
+
+        osc::request_binding received;
+        const auto recovered = server.unprotect_request(
+            osc::parse_message(osc::serialize_message(protected_request)), received);
+        BOOST_REQUIRE(recovered.options.size() == 1U);
+        BOOST_TEST(recovered.options[0].number == number);
     }
+}
+
+BOOST_AUTO_TEST_CASE(test_a_message_already_carrying_oscore_is_refused) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+    // OSCORE-in-OSCORE is out of scope and must be refused rather than nested.
+    osc::coap_message request;
+    request.code = 0x02;
+    request.options = {{osc::coap_option_oscore, from_hex("09")}};
+    osc::request_binding binding;
+    BOOST_CHECK_THROW((void)client.protect_request(request, binding),
+                      osc::unsupported_feature_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_identical_sender_and_recipient_ids_are_refused) {
@@ -530,6 +557,152 @@ BOOST_AUTO_TEST_CASE(test_partial_iv_encoding_is_minimum_length) {
     BOOST_TEST(to_hex(osc::detail::encode_partial_iv(255)) == "ff");
     BOOST_TEST(to_hex(osc::detail::encode_partial_iv(256)) == "0100");
     BOOST_TEST(to_hex(osc::detail::encode_partial_iv(0x0102030405ULL)) == "0102030405");
+}
+
+// ── C.8: a response carrying its own Partial IV (the Observe case) ────────
+// The nonce here is built from the *server's* Sender ID and the response's own
+// sequence number, while the AAD still names the request's kid and Partial IV.
+// Getting either of those the wrong way round still produces a valid-looking
+// message that the peer cannot decrypt, which is why the published vector
+// matters.
+
+BOOST_AUTO_TEST_CASE(test_c8_response_with_its_own_partial_iv) {
+    namespace osc = kythira::oscore;
+    osc::security_context server{c1_server_credentials()};
+    server.set_sender_sequence_for_testing(0);  // C.8 uses Sender Sequence Number 0
+
+    osc::request_binding binding;
+    binding.kid = from_hex("");
+    binding.partial_iv = from_hex("14");
+    binding.nonce = from_hex("4622d4dd6d944168eefb549868");
+
+    osc::coap_message response;
+    response.type = 2;  // ACK
+    response.code = 0x45;
+    response.message_id = 0x5d1f;
+    response.token = from_hex("00003974");
+    response.payload = from_hex("48656c6c6f20576f726c6421");
+    response.has_payload = true;
+
+    const auto protected_response = server.protect_response(response, binding, true);
+    BOOST_TEST(to_hex(osc::serialize_message(protected_response)) ==
+               "64445d1f00003974920100ff4d4c13669384b67354b2b6175ff4b8658c666a6cf88e");
+}
+
+BOOST_AUTO_TEST_CASE(test_c8_response_verifies_on_the_client) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+
+    osc::request_binding binding;
+    binding.kid = from_hex("");
+    binding.partial_iv = from_hex("14");
+    binding.nonce = from_hex("4622d4dd6d944168eefb549868");
+
+    const auto protected_response = osc::parse_message(
+        from_hex("64445d1f00003974920100ff4d4c13669384b67354b2b6175ff4b8658c666a6cf88e"));
+    const auto recovered = client.unprotect_response(protected_response, binding);
+    BOOST_TEST(recovered.code == 0x45U);
+    BOOST_TEST(to_hex(recovered.payload) == "48656c6c6f20576f726c6421");
+}
+
+// ── Observe: notification ordering (Section 8.4.2) ─────────────────────────
+
+BOOST_AUTO_TEST_CASE(test_notifications_must_advance) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+    osc::security_context server{c1_server_credentials()};
+
+    osc::request_binding binding;
+    binding.kid = from_hex("");
+    binding.partial_iv = from_hex("14");
+    binding.nonce = from_hex("4622d4dd6d944168eefb549868");
+
+    const auto notify = [&](std::uint64_t sequence, std::uint32_t observe_value) {
+        server.set_sender_sequence_for_testing(sequence);
+        osc::coap_message response;
+        response.code = 0x45;
+        response.options = {{6, {static_cast<std::byte>(observe_value)}}};  // Observe, Class E
+        response.payload = {static_cast<std::byte>(observe_value)};
+        response.has_payload = true;
+        return osc::serialize_message(server.protect_response(response, binding, true));
+    };
+
+    const auto first = notify(1, 1);
+    const auto second = notify(2, 2);
+
+    std::uint64_t last = 0;
+    BOOST_REQUIRE_NO_THROW(
+        (void)client.unprotect_notification(osc::parse_message(first), binding, last));
+    BOOST_TEST(last == 1U);
+
+    const auto accepted = client.unprotect_notification(osc::parse_message(second), binding, last);
+    BOOST_TEST(last == 2U);
+    // The Observe option itself must come back out of the ciphertext.
+    BOOST_REQUIRE(accepted.options.size() == 1U);
+    BOOST_TEST(accepted.options[0].number == 6U);
+
+    // Replaying the first notification authenticates perfectly and must still
+    // be refused: accepting it would roll the observer's view backwards.
+    BOOST_CHECK_THROW((void)client.unprotect_notification(osc::parse_message(first), binding, last),
+                      osc::verification_error);
+    BOOST_TEST(last == 2U, "a rejected notification must not move the window");
+}
+
+BOOST_AUTO_TEST_CASE(test_notification_without_a_partial_iv_is_refused) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+    osc::security_context server{c1_server_credentials()};
+
+    osc::request_binding binding;
+    binding.kid = from_hex("");
+    binding.partial_iv = from_hex("14");
+    binding.nonce = from_hex("4622d4dd6d944168eefb549868");
+
+    osc::coap_message response;
+    response.code = 0x45;
+    response.payload = from_hex("00");
+    response.has_payload = true;
+    // Protected as a plain response: no Partial IV of its own, so it cannot be
+    // ordered against other notifications.
+    const auto wire = osc::serialize_message(server.protect_response(response, binding, false));
+
+    std::uint64_t last = 0;
+    BOOST_CHECK_THROW((void)client.unprotect_notification(osc::parse_message(wire), binding, last),
+                      osc::verification_error);
+}
+
+// ── Inner block options travel inside the ciphertext ───────────────────────
+
+BOOST_AUTO_TEST_CASE(test_inner_block_options_are_protected_not_exposed) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+    osc::security_context server{c1_server_credentials()};
+
+    osc::coap_message request;
+    request.code = 0x02;
+    request.token = from_hex("aa");
+    request.options = {
+        {3, from_hex("6c6f63616c686f7374")},  // Uri-Host, outer
+        {11, from_hex("72616674")},           // Uri-Path, inner
+        {27, from_hex("10")},                 // Block1 num=1 more=0 szx=0, inner
+    };
+    request.payload = from_hex("0badc0de");
+    request.has_payload = true;
+
+    osc::request_binding sent;
+    const auto protected_request = client.protect_request(request, sent);
+
+    // Only Uri-Host and OSCORE may appear outside.
+    for (const auto& option : protected_request.options) {
+        BOOST_TEST((option.number == 3U || option.number == 9U),
+                   "block option leaked to the outer message: " << option.number);
+    }
+
+    osc::request_binding received;
+    const auto recovered = server.unprotect_request(
+        osc::parse_message(osc::serialize_message(protected_request)), received);
+    BOOST_TEST(to_hex(osc::serialize_message(recovered)) ==
+               to_hex(osc::serialize_message(request)));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

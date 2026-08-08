@@ -669,6 +669,57 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
     return path;
 }
 
+/// Inner block size for OSCORE exchanges: 2^(4+4) = 256 bytes.
+///
+/// Chosen against libnyoci's real constraint rather than RFC 7959's maximum. A
+/// 256-byte block plus inner options, the 8-byte AEAD tag and the outer header
+/// lands around 320 bytes, comfortably inside the 1033-byte datagram buffer
+/// libnyoci reads into. szx=6 (1024 bytes) would not fit once protected.
+inline constexpr std::uint8_t oscore_block_szx = 4;
+
+/// Build and protect the next request block of an OSCORE exchange, updating
+/// `rpc` in place. Handles all three shapes: a whole small request, the next
+/// Block1 fragment of a large one, and an empty continuation asking for the
+/// next Block2 fragment of a large response.
+template<typename Rpc> inline auto protect_next_request_block(Rpc& rpc) -> void {
+    const std::size_t block_size = std::size_t{1} << (rpc.block_szx + 4);
+    const std::size_t offset = static_cast<std::size_t>(rpc.request_block) * block_size;
+    const std::size_t remaining =
+        offset < rpc.full_request.size() ? rpc.full_request.size() - offset : 0;
+    const std::size_t chunk = std::min(block_size, remaining);
+    const bool more = (offset + chunk) < rpc.full_request.size();
+    const bool fragmenting = more || rpc.request_block > 0;
+
+    std::span<const std::byte> body{rpc.full_request.data() + offset, chunk};
+    auto inner = build_inner_request(rpc.resource_path_for_blocks, rpc.request_format,
+                                     rpc.accept_formats, body);
+    if (fragmenting) {
+        inner.options.push_back(
+            oscore::coap_option{27, oscore::encode_block_option(oscore::block_option{
+                                        rpc.request_block, more, rpc.block_szx})});
+    }
+    if (rpc.response_block > 0) {
+        // Asking for the next slice of a response we have already started
+        // receiving.
+        inner.options.push_back(
+            oscore::coap_option{23, oscore::encode_block_option(oscore::block_option{
+                                        rpc.response_block, false, rpc.block_szx})});
+    }
+    std::stable_sort(inner.options.begin(), inner.options.end(),
+                     [](const oscore::coap_option& a, const oscore::coap_option& b) {
+                         return a.number < b.number;
+                     });
+
+    const auto outer = rpc.oscore_context->protect_request(inner, rpc.oscore_binding);
+    rpc.oscore_option.clear();
+    for (const auto& option : outer.options) {
+        if (option.number == oscore::coap_option_oscore) {
+            rpc.oscore_option = option.value;
+        }
+    }
+    rpc.payload = outer.payload;  // the ciphertext
+}
+
 }  // namespace libnyoci_detail
 
 // ---------------------------------------------------------------------------
@@ -825,6 +876,22 @@ private:
         oscore::request_binding oscore_binding;
         std::shared_ptr<oscore::security_context> oscore_context;
 
+        // Inner block-wise state (RFC 7959 inside RFC 8613). libnyoci has no
+        // Block1 at all and its Block2 support is outer-only, so under OSCORE
+        // the adapter runs the whole exchange itself -- which is what finally
+        // lets a large InstallSnapshot cross this backend.
+        //
+        // Each block is a separate CoAP transaction under a fresh Partial IV,
+        // so the response trampoline cannot simply settle: it flags
+        // `continuation_pending` and the event loop starts the next one.
+        std::string resource_path_for_blocks;
+        std::uint16_t request_format{0};
+        std::vector<std::byte> full_request;  //!< the unfragmented body
+        std::uint32_t request_block{0};       //!< next Block1 NUM to send
+        std::uint32_t response_block{0};      //!< next Block2 NUM to ask for
+        std::uint8_t block_szx{libnyoci_detail::oscore_block_szx};
+        bool continuation_pending{false};
+
         /// Receives the reassembled response body and the media type the peer
         /// declared, exactly like pending_message::resolve_callback.
         std::function<void(std::vector<std::byte>, const std::string&)> resolve_callback;
@@ -909,22 +976,16 @@ private:
                 promise->setException(error);
             };
             if (_oscore) {
+                rpc->oscore_protected = true;
+                rpc->oscore_context = _oscore;
+                rpc->resource_path_for_blocks = resource_path;
+                rpc->request_format = static_cast<std::uint16_t>(*request_format);
+                rpc->full_request = rpc->payload;
                 // Protect now, on the caller's thread, rather than in the
                 // resend trampoline: libnyoci calls that once per transmission
                 // attempt, and a retransmission must re-send the *same*
                 // protected message, not one under a fresh Partial IV.
-                const auto inner = libnyoci_detail::build_inner_request(
-                    resource_path, static_cast<std::uint16_t>(*request_format), rpc->accept_formats,
-                    rpc->payload);
-                const auto outer = _oscore->protect_request(inner, rpc->oscore_binding);
-                for (const auto& option : outer.options) {
-                    if (option.number == oscore::coap_option_oscore) {
-                        rpc->oscore_option = option.value;
-                    }
-                }
-                rpc->payload = outer.payload;  // the ciphertext
-                rpc->oscore_protected = true;
-                rpc->oscore_context = _oscore;
+                libnyoci_detail::protect_next_request_block(*rpc);
             }
             rpc->media_type_for_format = [this](std::uint16_t format) {
                 return kythira::coap_utils::registry_media_type_for_content_format(
@@ -970,6 +1031,7 @@ private:
             start_queued_transactions();
             nyoci_plat_wait(_instance, libnyoci_poll_interval_ms);
             nyoci_plat_process(_instance);
+            start_block_continuations();
             reap_finished();
         }
         // Cancel everything still in flight so no future is left unresolved
@@ -1024,6 +1086,43 @@ private:
                 raw->finished = true;
                 raw->reject_callback(
                     libnyoci_detail::exception_for_status(status, "failed to start CoAP request"));
+            }
+        }
+    }
+
+    /// Start the next transaction of a block-wise OSCORE exchange.
+    ///
+    /// Deliberately here rather than in the response callback: libnyoci is
+    /// still tearing the previous transaction down while that callback runs,
+    /// and beginning a new one on the same storage from inside it would reuse a
+    /// transaction libnyoci has not finished with. By the time the loop reaches
+    /// this point, nyoci_plat_process() has returned and the old transaction is
+    /// fully retired.
+    auto start_block_continuations() -> void {
+        for (auto& rpc : _live) {
+            if (!rpc || !rpc->continuation_pending) {
+                continue;
+            }
+            rpc->continuation_pending = false;
+            try {
+                libnyoci_detail::protect_next_request_block(*rpc);
+            } catch (...) {
+                rpc->settled = true;
+                rpc->finished = true;
+                rpc->reject_callback(std::current_exception());
+                continue;
+            }
+            rpc->transaction = nyoci_transaction_init(
+                &rpc->transaction_storage, NYOCI_TRANSACTION_ALWAYS_INVALIDATE,
+                &coap_libnyoci_client::on_resend_trampoline,
+                &coap_libnyoci_client::on_response_trampoline, rpc.get());
+            const auto status = nyoci_transaction_begin(
+                _instance, rpc->transaction, static_cast<nyoci_cms_t>(rpc->timeout.count()));
+            if (status != NYOCI_STATUS_OK && !rpc->settled) {
+                rpc->settled = true;
+                rpc->finished = true;
+                rpc->reject_callback(libnyoci_detail::exception_for_status(
+                    status, "failed to continue a block-wise CoAP request"));
             }
         }
     }
@@ -1133,9 +1232,17 @@ private:
         auto* rpc = static_cast<pending_rpc*>(context);
 
         if (statuscode == NYOCI_STATUS_TRANSACTION_INVALIDATED) {
-            // Always the last callback for the transaction. If a response
-            // already settled it this is just the teardown notification;
-            // otherwise the transaction died without one.
+            // A block-wise exchange ends one transaction per block, so this is
+            // the *expected* teardown between blocks rather than a failure.
+            // Settling here would reject a request that is still in progress --
+            // and then the continuation below would resume a record the reaper
+            // had already destroyed.
+            if (rpc->continuation_pending) {
+                return NYOCI_STATUS_OK;
+            }
+            // Otherwise: always the last callback for the transaction. If a
+            // response already settled it this is just the teardown
+            // notification; otherwise the transaction died without one.
             if (!rpc->settled) {
                 rpc->settled = true;
                 rpc->reject_callback(libnyoci_detail::exception_for_status(
@@ -1215,7 +1322,13 @@ private:
         if (rpc->settled) {
             return NYOCI_STATUS_OK;
         }
-        rpc->settled = true;
+        // Note that `settled` is claimed only on a path that actually fulfils
+        // the promise: a block-wise continuation leaves it false, because the
+        // request is still live.
+        const auto settle = [rpc](auto&& action) {
+            rpc->settled = true;
+            action();
+        };
         try {
             if (!options.oscore.has_value()) {
                 throw oscore::verification_error(
@@ -1234,9 +1347,33 @@ private:
             }
 
             const auto inner = rpc->oscore_context->unprotect_response(outer, rpc->oscore_binding);
+
+            // 2.31 Continue: the server has taken this request block and wants
+            // the next one (RFC 7959 Section 2.5, carried inside OSCORE).
+            if (inner.code == 0x5F) {
+                ++rpc->request_block;
+                rpc->continuation_pending = true;
+                return NYOCI_STATUS_OK;
+            }
+            // A response arriving in blocks: accumulate, then ask for the next.
+            const auto block2 = oscore::find_block_option(inner, 23);
+            rpc->accumulated.insert(rpc->accumulated.end(), inner.payload.begin(),
+                                    inner.payload.end());
+            if (block2 && block2->more) {
+                rpc->response_block = block2->number + 1;
+                // Every request block has been delivered by now, so the
+                // continuation carries no body -- only the Block2 ask.
+                rpc->full_request.clear();
+                rpc->request_block = 0;
+                rpc->continuation_pending = true;
+                return NYOCI_STATUS_OK;
+            }
+
             if (inner.code >= COAP_RESULT_400) {
-                rpc->reject_callback(libnyoci_detail::exception_for_status(
-                    inner.code, "CoAP request to " + rpc->uri));
+                settle([&] {
+                    rpc->reject_callback(libnyoci_detail::exception_for_status(
+                        inner.code, "CoAP request to " + rpc->uri));
+                });
                 return NYOCI_STATUS_OK;
             }
 
@@ -1257,9 +1394,9 @@ private:
                     }
                 }
             }
-            rpc->resolve_callback(inner.payload, media_type);
+            settle([&] { rpc->resolve_callback(std::move(rpc->accumulated), media_type); });
         } catch (...) {
-            rpc->reject_callback(std::current_exception());
+            settle([&] { rpc->reject_callback(std::current_exception()); });
         }
         return NYOCI_STATUS_OK;
     }
@@ -1586,6 +1723,35 @@ private:
             const auto inner = _oscore->unprotect_request(outer, binding);
             const auto resource_path = libnyoci_detail::path_from_options(inner);
 
+            // Inner Block1: accumulate the request body across transactions and
+            // answer 2.31 Continue until the last block arrives. Keyed by path
+            // alone, which is enough here -- this backend runs one OSCORE
+            // Security Context per peer, so there is exactly one client.
+            std::vector<std::byte> request_body = inner.payload;
+            if (const auto block1 = oscore::find_block_option(inner, 27)) {
+                if (block1->number == 0) {
+                    _block1_assembly.clear();
+                }
+                const auto expected = static_cast<std::size_t>(block1->number) * block1->size();
+                if (expected != _block1_assembly.size()) {
+                    // Out-of-order or lost block: RFC 7959 Section 2.9.2 asks
+                    // for 4.08 Request Entity Incomplete.
+                    _block1_assembly.clear();
+                    return respond_oscore(binding, 0x88, 0, {});
+                }
+                if (_block1_assembly.size() + inner.payload.size() > _config.max_request_size) {
+                    _block1_assembly.clear();
+                    return respond_oscore(binding, 0x8D, 0, {});  // 4.13 too large
+                }
+                _block1_assembly.insert(_block1_assembly.end(), inner.payload.begin(),
+                                        inner.payload.end());
+                if (block1->more) {
+                    return respond_oscore(binding, 0x5F, 0, {}, block1);  // 2.31 Continue
+                }
+                request_body = std::move(_block1_assembly);
+                _block1_assembly.clear();
+            }
+
             // Negotiation, read from the inner (protected) options rather than
             // anything an attacker could have rewritten on the wire.
             std::string request_media_type = _registry.default_media_type();
@@ -1625,7 +1791,7 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::request_vote_request<>>(
-                        request_media_type, inner.payload)));
+                        request_media_type, request_body)));
             } else if (resource_path == libnyoci_append_entries_path) {
                 auto handler = copy_handler(_append_entries_handler);
                 if (!handler) {
@@ -1634,7 +1800,7 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::append_entries_request<>>(
-                        request_media_type, inner.payload)));
+                        request_media_type, request_body)));
             } else if (resource_path == libnyoci_install_snapshot_path) {
                 auto handler = copy_handler(_install_snapshot_handler);
                 if (!handler) {
@@ -1643,7 +1809,7 @@ private:
                 body = _registry.encode_with(
                     response_media_type,
                     handler(_registry.template decode_with<kythira::install_snapshot_request<>>(
-                        request_media_type, inner.payload)));
+                        request_media_type, request_body)));
             } else {
                 return respond_oscore(binding, 0x84, 0, {});  // 4.04
             }
@@ -1653,7 +1819,9 @@ private:
             if (!format) {
                 return respond_oscore(binding, 0x8F, 0, {});
             }
-            return respond_oscore(binding, 0x45, static_cast<std::uint16_t>(*format), body);
+            const auto block2 = oscore::find_block_option(inner, 23);
+            return respond_oscore(binding, 0x45, static_cast<std::uint16_t>(*format), body,
+                                  std::nullopt, block2 ? block2->number : 0);
         } catch (const oscore::verification_error&) {
             // RFC 8613 Section 8.2: a request that fails verification gets 4.01
             // and, deliberately, no detail about why it failed.
@@ -1668,16 +1836,48 @@ private:
     /// the error codes: an OSCORE peer must not be able to tell 4.04 from 5.01
     /// without holding the key.
     auto respond_oscore(const oscore::request_binding& binding, std::uint8_t inner_code,
-                        std::uint16_t content_format, std::span<const std::byte> body)
-        -> nyoci_status_t {
+                        std::uint16_t content_format, std::span<const std::byte> body,
+                        std::optional<oscore::block_option> echo_block1 = std::nullopt,
+                        std::uint32_t block2_number = 0) -> nyoci_status_t {
         oscore::coap_message inner;
         inner.code = inner_code;
+        if (echo_block1) {
+            // RFC 7959: a 2.31 Continue echoes the Block1 option it is
+            // acknowledging, so the client knows which block landed.
+            inner.options.push_back(
+                oscore::coap_option{27, oscore::encode_block_option(*echo_block1)});
+        }
         if (!body.empty()) {
             inner.options.push_back(
                 oscore::coap_option{12, libnyoci_detail::encode_uint_option(content_format)});
-            inner.payload.assign(body.begin(), body.end());
+
+            // Inner Block2: slice the response so each protected message fits a
+            // datagram. Stateless, like the non-OSCORE path -- the block number
+            // comes from the request, so nothing has to be remembered between
+            // transactions.
+            const std::size_t block_size = std::size_t{1}
+                                           << (libnyoci_detail::oscore_block_szx + 4);
+            if (body.size() > block_size) {
+                const std::size_t offset = static_cast<std::size_t>(block2_number) * block_size;
+                if (offset >= body.size()) {
+                    return NYOCI_STATUS_NOT_FOUND;
+                }
+                const std::size_t chunk = std::min(block_size, body.size() - offset);
+                const bool more = (offset + chunk) < body.size();
+                inner.options.push_back(oscore::coap_option{
+                    23, oscore::encode_block_option(oscore::block_option{
+                            block2_number, more, libnyoci_detail::oscore_block_szx})});
+                inner.payload.assign(body.begin() + static_cast<std::ptrdiff_t>(offset),
+                                     body.begin() + static_cast<std::ptrdiff_t>(offset + chunk));
+            } else {
+                inner.payload.assign(body.begin(), body.end());
+            }
             inner.has_payload = true;
         }
+        std::stable_sort(inner.options.begin(), inner.options.end(),
+                         [](const oscore::coap_option& a, const oscore::coap_option& b) {
+                             return a.number < b.number;
+                         });
         const auto outer = _oscore->protect_response(inner, binding);
 
         auto status = nyoci_outbound_begin_response(COAP_RESULT_204_CHANGED);
@@ -1829,6 +2029,9 @@ private:
     /// Non-null exactly when plan_security() chose channel::oscore. Shared
     /// because the request trampoline is static and reaches it through `this`.
     std::shared_ptr<oscore::security_context> _oscore;
+    /// Partial inner-Block1 request body. Touched only from the event thread,
+    /// inside libnyoci's request dispatch, so it needs no lock.
+    std::vector<std::byte> _block1_assembly;
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;

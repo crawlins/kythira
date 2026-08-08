@@ -528,14 +528,21 @@ struct coap_message {
     }
 }
 
-/// Options this implementation refuses to protect, because handling them
-/// correctly needs machinery RFC 8613 describes and this does not implement.
-/// Refusing is the point: silently protecting an Observe registration whose
-/// Partial IV handling is wrong would be worse than not sending it.
-[[nodiscard]] inline constexpr auto is_unsupported_option(std::uint16_t number) -> bool {
+/// Observe (6) and the Block options (23, 27) are Class E here, which is the
+/// *inner* half of RFC 8613 Figure 5's "E and U" entry for them.
+///
+/// Inner block options give end-to-end fragmentation: the blocks are formed
+/// before protection, so each one is individually authenticated and a proxy
+/// splitting the outer message cannot reach them (Section 4.1.3.4.1). Inner
+/// Observe likewise travels inside the ciphertext (Section 4.1.3.5).
+///
+/// The *outer* forms of both are hop-by-hop hints for proxies, and this
+/// implementation emits neither: it has no proxy to talk to, and an outer block
+/// option would leak the message's fragmentation structure for nothing.
+[[nodiscard]] inline constexpr auto is_inner_only_option(std::uint16_t number) -> bool {
     switch (number) {
-        case 6:   // Observe        -- RFC 8613 Sections 8.3.1 / 8.4.2
-        case 23:  // Block2         -- Sections 8.2.1 / 8.4.1
+        case 6:   // Observe
+        case 23:  // Block2
         case 27:  // Block1
             return true;
         default:
@@ -691,6 +698,67 @@ inline auto decode_options(std::span<const std::byte> bytes, std::vector<coap_op
     return out;
 }
 
+// ── Block options (RFC 7959), as carried inside OSCORE ─────────────────────
+// Only the *inner* form is produced here: the blocks are formed before
+// protection, so each is individually authenticated and end-to-end
+// (RFC 8613 Section 4.1.3.4.1).
+
+struct block_option {
+    std::uint32_t number{0};  //!< block sequence number (NUM)
+    bool more{false};         //!< M bit: another block follows
+    std::uint8_t szx{6};      //!< size exponent; block size is 2^(szx+4), max 1024
+
+    [[nodiscard]] auto size() const -> std::size_t {
+        return std::size_t{1} << (static_cast<std::size_t>(szx) + 4);
+    }
+};
+
+[[nodiscard]] inline auto encode_block_option(const block_option& block) -> std::vector<std::byte> {
+    if (block.szx > 6) {
+        throw unsupported_feature_error("block szx above 6 (1024 bytes) is not defined");
+    }
+    const std::uint32_t value =
+        (block.number << 4U) | (block.more ? 0x08U : 0x00U) | (block.szx & 0x07U);
+    // CoAP unsigned option values are minimum-length big-endian.
+    std::vector<std::byte> out;
+    for (int shift = 16; shift >= 0; shift -= 8) {
+        const auto byte = static_cast<std::uint8_t>((value >> shift) & 0xFFU);
+        if (!out.empty() || byte != 0 || shift == 0) {
+            out.push_back(static_cast<std::byte>(byte));
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] inline auto decode_block_option(std::span<const std::byte> value) -> block_option {
+    if (value.size() > 3) {
+        throw verification_error("block option value longer than three bytes");
+    }
+    std::uint32_t raw = 0;
+    for (const auto b : value) {
+        raw = (raw << 8U) | static_cast<std::uint32_t>(b);
+    }
+    block_option block;
+    block.szx = static_cast<std::uint8_t>(raw & 0x07U);
+    block.more = (raw & 0x08U) != 0;
+    block.number = raw >> 4U;
+    if (block.szx == 7) {
+        throw verification_error("reserved block szx value 7");
+    }
+    return block;
+}
+
+/// Find a Block1 (27) or Block2 (23) option in a message, if present.
+[[nodiscard]] inline auto find_block_option(const coap_message& message, std::uint16_t number)
+    -> std::optional<block_option> {
+    for (const auto& option : message.options) {
+        if (option.number == number) {
+            return decode_block_option(option.value);
+        }
+    }
+    return std::nullopt;
+}
+
 // ── Security context and the protect / verify procedures (Section 8) ───────
 
 /// Everything a response needs from the request it answers. RFC 8613 binds the
@@ -736,12 +804,6 @@ struct split_options {
 [[nodiscard]] inline auto split_by_class(std::span<const coap_option> options) -> split_options {
     split_options split;
     for (const auto& option : options) {
-        if (is_unsupported_option(option.number)) {
-            throw unsupported_feature_error(
-                "option " + std::to_string(option.number) +
-                " (Observe or a Block option) needs OSCORE processing this implementation does "
-                "not provide; see RFC 8613 Sections 8.2.1, 8.3.1, 8.4.1 and 8.4.2");
-        }
         if (option.number == coap_option_oscore) {
             throw unsupported_feature_error("the message already carries an OSCORE option");
         }
@@ -865,6 +927,33 @@ public:
         return rebuild(message, plaintext);
     }
 
+    /// As `unprotect_response`, plus the notification ordering check of
+    /// RFC 8613 Section 8.4.2.
+    ///
+    /// Observe turns one request into a stream of responses, so a valid AEAD
+    /// tag is no longer enough: an attacker can replay an *old* notification,
+    /// which authenticates perfectly and rolls the observer's view backwards.
+    /// The Partial IV is what orders them, so each notification's must exceed
+    /// the last accepted one for this observation.
+    [[nodiscard]] auto unprotect_notification(const coap_message& message,
+                                              const request_binding& binding,
+                                              std::uint64_t& last_partial_iv) -> coap_message {
+        const auto fields = extract_option(message);
+        if (fields.partial_iv.empty()) {
+            throw verification_error(
+                "an Observe notification must carry a Partial IV (RFC 8613 Section 8.4.2)");
+        }
+        const auto sequence = detail::decode_partial_iv(fields.partial_iv);
+        // Verify first, then order: an unauthenticated message must never be
+        // able to move the window.
+        auto plaintext_message = unprotect_response(message, binding);
+        if (sequence <= last_partial_iv) {
+            throw verification_error("replayed or reordered Observe notification");
+        }
+        last_partial_iv = sequence;
+        return plaintext_message;
+    }
+
     // ── Server side ────────────────────────────────────────────────────────
 
     /// RFC 8613 Section 8.2, including the replay check of Section 7.4.
@@ -892,19 +981,38 @@ public:
         return rebuild(message, plaintext);
     }
 
-    /// RFC 8613 Section 8.3. Reuses the request's nonce, which is the
-    /// recommended behaviour for a single (non-Observe) response and is what
-    /// the Appendix C.7 vector does.
-    [[nodiscard]] auto protect_response(const coap_message& message,
-                                        const request_binding& binding) const -> coap_message {
+    /// RFC 8613 Section 8.3.
+    ///
+    /// `with_own_partial_iv` selects between the two legal nonce choices for a
+    /// response. False reuses the request's nonce, which is the recommended
+    /// behaviour for a single response and is what Appendix C.7 does. True
+    /// consumes a fresh Sender Sequence Number and carries it in the OSCORE
+    /// option, which is *required* for Observe notifications -- there are many
+    /// responses to one request, so reusing the request's nonce would reuse a
+    /// nonce under one key -- and is what Appendix C.8 does. It is also the
+    /// answer when the server cannot do replay protection (Appendix B.1.2).
+    [[nodiscard]] auto protect_response(const coap_message& message, const request_binding& binding,
+                                        bool with_own_partial_iv = false) const -> coap_message {
         if (message.is_request()) {
             throw unsupported_feature_error("protect_response() called with a request");
         }
         const auto split = detail::split_by_class(message.options);
         const auto plaintext = detail::build_plaintext(message, split.inner);
 
+        std::vector<std::byte> own_partial_iv;
+        std::vector<std::byte> nonce = binding.nonce;
+        if (with_own_partial_iv) {
+            own_partial_iv = detail::encode_partial_iv(next_sequence());
+            // Built from *this* endpoint's Sender ID, not the request's kid:
+            // the nonce must be unique per (key, sender), and the responder is
+            // the sender here.
+            nonce = compute_nonce(_common_iv, _sender_id, own_partial_iv);
+        }
+
+        // The AAD still names the *request's* kid and Partial IV either way --
+        // that is what binds the notification to the observation it answers.
         const auto aad = build_aad(_alg, binding.kid, binding.partial_iv, {});
-        const auto ciphertext = aead_encrypt(_sender_key, binding.nonce, aad, plaintext);
+        const auto ciphertext = aead_encrypt(_sender_key, nonce, aad, plaintext);
 
         coap_message out;
         out.version = message.version;
@@ -914,9 +1022,12 @@ public:
         out.message_id = message.message_id;
         out.token = message.token;
         out.options = split.outer;
-        // No Partial IV and no kid, so the option value is empty -- exactly
-        // what Appendix C.7 shows.
-        out.options.push_back(coap_option{coap_option_oscore, encode_option(option_fields{})});
+        // A response never carries a kid. Without its own Partial IV the option
+        // value is empty (Appendix C.7); with one it is flags || PIV
+        // (Appendix C.8).
+        option_fields fields;
+        fields.partial_iv = own_partial_iv;
+        out.options.push_back(coap_option{coap_option_oscore, encode_option(fields)});
         std::stable_sort(
             out.options.begin(), out.options.end(),
             [](const coap_option& a, const coap_option& b) { return a.number < b.number; });
