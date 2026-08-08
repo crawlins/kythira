@@ -16,8 +16,8 @@ remains a skeleton for comparison (`.kiro/specs/coap-transport-cantcoap/`).
 | Sockets / event loop | Provided | **You write it** |
 | Retransmission / dedup | Provided | **You write it** (reuse `pending_message`) |
 | Block-wise transfer | **Block2 only** — no Block1 at all | **You write it** (reuse `coap_block_option.hpp`) |
-| DTLS | Optional OpenSSL plugin (`--enable-tls`) | **You wire it** (reuse `coap_security.hpp`) |
-| OSCORE / EDHOC | Not built in | Not built in |
+| DTLS | **PSK + PKI, via its OpenSSL plugin** (`--enable-tls`); no RPK | **You wire it** (reuse `coap_security.hpp`) |
+| OSCORE / EDHOC | Not built in — and kythira has none of its own to lend | Not built in |
 | Build system | **autotools** | **none** (source files only) |
 | vcpkg port shape | `vcpkg_configure_make` (hard) | vendored `CMakeLists` (easy) |
 | Adapter size | Thin (bridge callbacks → futures) | Thick (own the whole transport) |
@@ -25,9 +25,10 @@ remains a skeleton for comparison (`.kiro/specs/coap-transport-cantcoap/`).
 **The trade-off in one line:** libnyoci is a *hard port + easy adapter*;
 cantcoap is an *easy port + hard adapter*. Neither ships OSCORE, so kythira's
 existing `coap_security` / `coap_edhoc` security layer stays in place for both —
-which is an argument for keeping security *above* whichever CoAP core is chosen
-rather than delegating it to the library. See "Security" below for how that
-argument survived contact with the code.
+which was an argument for keeping security *above* whichever CoAP core is
+chosen rather than delegating it to the library. Fact 3 below is what happened
+to that argument on contact with the code: it is not implementable, and DTLS
+ended up delegated to libnyoci's plugin after all.
 
 ## What shipped
 
@@ -125,7 +126,7 @@ That matters most for InstallSnapshot, which is the one Raft RPC with an
 unbounded request body. A deployment that ships large snapshots should use the
 libcoap backend.
 
-### 3. The security layer has no transport-neutral seam
+### 3. The security layer has no transport-neutral seam — so DTLS came from libnyoci
 
 The plan was to keep kythira's `coap_security_provider` *above* a plain-CoAP
 libnyoci core. That is not possible as the interface stands: every method is
@@ -141,32 +142,53 @@ virtual auto create_client_session(coap_context_t*, const coap_address_t*, ...) 
 mode (DTLS, OSCORE, EDHOC) is implemented below libcoap's PDU API rather than as
 a byte-level transform the adapter could call.
 
-What the libnyoci backend does instead:
+**What closed the gap for DTLS was libnyoci's own OpenSSL plugin**, which turned
+out to be richer than the comparison table suggested:
 
-- plain CoAP works (Requirement 5.3);
-- `translate_legacy_fields()` is shared verbatim, so a `cert_file` still infers
-  `dtls_pki` and the same `coap_security_config_error` is raised for the same
-  malformed configs (Requirement 5.4, for configuration errors);
-- **any mode that would have to encrypt bytes is refused at construction** with
-  a `coap_security_error` naming the reason.
+- `nyoci_plat_tls_set_context()` takes a raw `SSL_CTX*` — the type really is
+  `typedef struct ssl_ctx_st* nyoci_plat_tls_context_t` — so **PKI is reachable
+  by configuring the context directly**, rather than needing per-mode plugin
+  support.
+- **PSK is first-class**: `set_client_psk_callback`, `set_server_psk_callback`,
+  `set_psk_hint`.
+- The `coaps://` scheme selects the DTLS session type by itself, through
+  `nyoci_session_type_from_uri_scheme()`.
 
-Refusing is the only safe answer. Silently downgrading a node that asked for
-DTLS to plaintext Raft traffic is strictly worse than not starting.
+So `dtls_psk` and `dtls_pki` work, end to end, over a real handshake. Three
+costs worth knowing:
 
-Closing the gap means one of two things, and it is a decision for whoever needs
-secured CoAP on a second backend:
+- DTLS *configuration* forks per backend. The config surface does not —
+  `coap_client_config` and `translate_legacy_fields()` are shared, which is half
+  of why fact 1's refactor was worth doing.
+- Upstream labels its TLS support experimental, defaults it off, and calls
+  OpenSSL 1.x-era APIs that are deprecated-but-present in 3.x.
+- **DTLS-PKI needs small certificates.** libnyoci reads every inbound datagram
+  into a fixed `char packet[NYOCI_MAX_PACKET_LENGTH+1]` — 1033 bytes by default
+  — and that buffer applies to DTLS handshake records too. An RSA-2048
+  certificate flight overruns it, is silently truncated, and the handshake
+  stalls: the request just times out, with nothing in any log to say why. ECDSA
+  P-256 is a few hundred bytes and works. This was found the hard way, by
+  writing the PKI test with RSA-2048 first.
 
-1. **Lift a byte-level seam out of `coap_security_provider`** — a
-   `protect(bytes) -> bytes` / `unprotect(bytes) -> bytes` pair that OSCORE can
-   genuinely implement (it is a COSE transform over the message, so it can), and
-   that both backends call. DTLS cannot go through such a seam; it would remain
-   libcoap-only or move to libnyoci's own plugin.
-2. **Enable libnyoci's OpenSSL DTLS plugin** (`--enable-tls` in the port) and
-   accept that DTLS configuration forks per backend while OSCORE/EDHOC stay
-   libcoap-only.
+**What is still refused, with specific reasons rather than a downgrade:**
 
-Neither is in scope for this spec; both are recorded in
-`.kiro/specs/coap-transport-libnyoci/tasks.md` under Task 5.
+- **OSCORE.** libnyoci ships none — and, more to the point, *neither does
+  kythira*. `oscore_provider` delegates entirely to libcoap
+  (`coap_context_oscore_server`, `coap_new_client_session_oscore`); there is no
+  AES-CCM, no COSE and no key derivation anywhere in the tree. So the
+  obvious-sounding "lift a byte-level `protect(bytes)`/`unprotect(bytes)` seam
+  out of `coap_security_provider`" has **nothing to lift** — it is an *acquire
+  an OSCORE implementation* project, not a refactor. Written up in
+  `doc/TODO.md`. (EDHOC itself is already transport-neutral: `edhoc_transport`
+  is an abstract send/receive pair and lakers does the crypto. Only the OSCORE
+  context consuming its credentials is not.)
+- **DTLS-RPK.** Raw public keys (RFC 7250) need the peer to negotiate a
+  non-X.509 certificate type, and OpenSSL only added the certificate-type
+  extensions in 3.2. The plugin exposes nothing but an `SSL_CTX`.
+
+Refusing at construction is the only safe answer for both: silently downgrading
+a node that asked for encryption to plaintext Raft traffic is strictly worse
+than not starting.
 
 ## Autotools port: what it actually took
 
@@ -250,15 +272,16 @@ which is what a container harness would be for.
 ## Recommendation
 
 - Pick **libnyoci** if the goal is a genuine second *full* CoAP stack with the
-  least adapter code, plain CoAP is acceptable, request payloads stay under one
-  datagram, and the autotools port cost is acceptable. It is the closer analog
-  to today's libcoap integration and it works today.
+  least adapter code, DTLS-PSK/PKI is enough security, request payloads stay
+  under one datagram, and the autotools port cost is acceptable. It is the
+  closer analog to today's libcoap integration and it works today.
 - Pick **cantcoap** if the goal is to *own* the CoAP wire behaviour end to end
   and reuse kythira's existing retransmission/block-wise/security machinery over
   a tiny, trivially-vendored codec — accepting that the adapter becomes the bulk
   of the work. Note that it would inherit fact 1 (its own header collision with
   libcoap) and would have to solve fact 3 itself, but it would *not* inherit
-  fact 2: owning the block layer means Block1 is implementable.
+  fact 2: owning the block layer means Block1 is implementable. It would also
+  have to solve DTLS from scratch, where libnyoci simply had a plugin.
 
 [nyoci]: https://github.com/darconeous/libnyoci
 [cant]: https://github.com/staropram/cantcoap

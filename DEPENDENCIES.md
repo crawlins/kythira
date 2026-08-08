@@ -132,15 +132,29 @@ This document lists the dependencies required to build and use the network simul
   `CONFIG_COAP_TRANSPORT_LIBNYOCI=y` with libnyoci missing is a hard configure
   error.
 
-  Two limitations are inherent to the library and documented rather than worked
-  around: libnyoci implements **Block2 but no Block1**, so an over-large
-  *request* is rejected with a descriptive error instead of being split (this
-  bounds InstallSnapshot); and the backend serves **plain CoAP only** —
-  `coap_security_provider` is expressed in libcoap types with no
-  transport-neutral seam, so a non-`none` security mode is refused at
-  construction rather than silently downgraded. See
-  `.kiro/specs/coap-transport-libnyoci/` and
-  `doc/coap_library_alternatives.md`.
+  **Security**: the port enables libnyoci's OpenSSL DTLS plugin
+  (`--enable-tls`), which backs `dtls_psk` and `dtls_pki`. kythira's own
+  `coap_security_provider` is not reusable here — it is expressed entirely in
+  libcoap types — so DTLS *configuration* forks per backend, though the config
+  surface (`coap_client_config`, `translate_legacy_fields()`) is shared.
+  `oscore` and `dtls_rpk` are **refused at construction** rather than silently
+  downgraded: libnyoci ships no OSCORE and kythira has no implementation of its
+  own to lend, and raw public keys need certificate-type extensions that arrived
+  only in OpenSSL 3.2. Note the plugin is upstream-"experimental" and calls
+  OpenSSL 1.x-era APIs that are deprecated-but-present in 3.x.
+
+  **DTLS-PKI needs small certificates.** libnyoci reads every inbound datagram
+  into a fixed `char packet[NYOCI_MAX_PACKET_LENGTH+1]` — 1033 bytes by default
+  — and that applies to DTLS handshake records too. An RSA-2048 certificate
+  flight overruns it and is silently truncated, so the handshake stalls and the
+  request times out with no diagnostic. ECDSA P-256 fits comfortably; use it, or
+  build libnyoci with a larger `NYOCI_MAX_CONTENT_LENGTH`. PSK is unaffected.
+
+  **Block-wise**: libnyoci implements **Block2 but no Block1**, so an over-large
+  *request* is rejected with a descriptive error instead of being split — this
+  bounds InstallSnapshot. See `.kiro/specs/coap-transport-libnyoci/`,
+  `doc/coap_library_alternatives.md`, and `doc/TODO.md` for the OSCORE
+  follow-up.
 
   A translation unit must include **either** `raft/coap_transport.hpp` **or**
   `raft/coap_transport_libnyoci_impl.hpp`, never both: libcoap defines the CoAP

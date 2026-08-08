@@ -169,6 +169,39 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **A transport-neutral OSCORE, if a second CoAP backend ever needs it
+  (raised August 8, 2026, while implementing `.kiro/specs/coap-transport-libnyoci/`).**
+  The libnyoci backend now does DTLS-PSK and DTLS-PKI through libnyoci's own
+  OpenSSL plugin, and refuses OSCORE (and DTLS-RPK) rather than downgrading.
+  Closing the OSCORE gap is a bigger job than it first appears, and the reason
+  is worth writing down so nobody re-scopes it optimistically:
+
+  **kythira does not implement OSCORE — it configures libcoap's.**
+  `oscore_provider` (`coap_security_impl.hpp`) is a thin wrapper over
+  `coap_context_oscore_server()` / `coap_new_client_session_oscore()` /
+  `coap_new_oscore_recipient()`. There is no AES-CCM, no COSE, no key
+  derivation anywhere in the tree. So the obvious-sounding fix — "lift a
+  byte-level `protect(bytes) -> bytes` / `unprotect(bytes) -> bytes` seam out of
+  `coap_security_provider` so any backend can call it" — has nothing to lift.
+  It is an *acquire an OSCORE implementation* project (write RFC 8613, or
+  vendor one; libcoap's is entangled with its own session/PDU types, and
+  `uoscore` is the obvious standalone candidate) that happens to unblock the
+  seam, not a refactor.
+
+  Two things that are *not* obstacles, for whoever picks this up:
+  - **EDHOC is already transport-neutral.** `edhoc_transport`
+    (`coap_edhoc.hpp`) is an abstract send/receive pair and lakers does the
+    crypto, producing OSCORE credentials. It would port to another backend
+    unchanged the moment there is an OSCORE context to hand them to.
+  - **The config surface is already shared.** `coap_client_config` /
+    `coap_server_config` and `translate_legacy_fields()` live in the
+    libcoap-free `coap_transport_config.hpp`, so both backends already reach
+    the same verdict about a given security config.
+
+  DTLS could never use such a seam regardless — it is a handshake plus a record
+  layer, not a per-message transform — which is exactly why the libnyoci
+  backend went to libnyoci's own plugin for it instead.
+
 - **Beast suites segfault under the stdexec future backend, and CI cannot see
   it (found August 6, 2026 — RESOLVED same day, PR #169).** The diagnosis
   below was right that no CI job covered it and wrong about where the bug

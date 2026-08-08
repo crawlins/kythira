@@ -1,12 +1,14 @@
 # Implementation Plan — CoAP Transport (libnyoci backend)
 
-## Status: Implemented (Tasks 1-4, 6, 7 complete; Task 5 deliberately partial)
+## Status: Implemented (Tasks 1-4, 6, 7 complete; Task 5 partial by necessity)
 
 The overlay port is pinned and builds; the adapter is written and tested
 against real loopback sockets. `coap_libnyoci_client`/`coap_libnyoci_server`
 satisfy `network_client`/`network_server` and speak the same wire protocol as
 the libcoap backend. Two limitations are inherent to libnyoci and are handled
 by refusing loudly rather than degrading silently — see Tasks 3.6 and 5.
+DTLS-PSK and DTLS-PKI work over libnyoci's own OpenSSL plugin; OSCORE and
+DTLS-RPK are refused with specific reasons.
 
 **Last Updated**: August 8, 2026
 
@@ -145,43 +147,69 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       own Block2 option, so there is no per-peer transfer state to expire and a
       lost block is simply re-requested.
 
-- [~] 5. Security integration — **plain CoAP only; other modes refused**
-  - [ ] 5.1 Route DTLS through `coap_security_provider` above a plain-CoAP libnyoci core
-    - **Not possible as the interface stands, and not faked.** Every
-      `coap_security_provider` method is expressed in libcoap types
+- [~] 5. Security integration — **DTLS via libnyoci's own plugin; OSCORE/RPK refused**
+  - [x] 5.1 Route DTLS through libnyoci's OpenSSL plugin
+    - **Not through `coap_security_provider`, and that is settled rather than
+      deferred.** Every method of that interface is expressed in libcoap types
       (`coap_context_t*`, `coap_session_t*`, `coap_pdu_t*`,
-      `coap_address_t*`), and `protect`/`unprotect` are identity passthroughs
-      precisely *because* every mode is implemented below libcoap's PDU API
-      rather than as a byte-level transform an adapter could call. There is no
-      seam a libnyoci core can plug into.
-    - What the backend does instead: refuse any non-`none` mode at construction
-      with a `coap_security_error` naming the reason. Silently downgrading a
-      node that asked for DTLS to plaintext Raft traffic is strictly worse than
-      not starting.
-    - Closing this needs one of two decisions, for whoever needs secured CoAP
-      on a second backend:
-      1. **Lift a byte-level seam out of `coap_security_provider`** — a
-         `protect(bytes) -> bytes` / `unprotect(bytes) -> bytes` pair. OSCORE
-         can genuinely implement that (it is a COSE transform over the
-         message); DTLS cannot, and would stay libcoap-only or move to
-         libnyoci's own plugin.
-      2. **Enable libnyoci's OpenSSL DTLS plugin** (`--enable-tls` in the
-         port), accepting that DTLS configuration forks per backend while
-         OSCORE/EDHOC stay libcoap-only.
-  - [ ] 5.2 Reuse `coap_edhoc`/OSCORE exactly as the libcoap path
-    - Blocked on 5.1 for the same reason. `coap_security_impl.hpp` — where
-      `make_security_provider()` lives — includes `<coap3/coap.h>`, so the
-      libnyoci translation unit cannot even name it.
-  - [x] 5.3 Plain CoAP works when security is disabled
-  - [x] 5.4 Invalid configuration surfaces the same errors as libcoap
+      `coap_address_t*`), and its `protect`/`unprotect` hooks are identity
+      passthroughs precisely *because* every mode is implemented below
+      libcoap's PDU API rather than as a byte-level transform an adapter could
+      call. There is no seam to sit above.
+    - What works instead: libnyoci's OpenSSL DTLS plugin, enabled by
+      `--enable-tls` in the port. It turned out to be richer than the spec
+      assumed — `nyoci_plat_tls_set_context()` takes a raw `SSL_CTX*`
+      (`typedef struct ssl_ctx_st* nyoci_plat_tls_context_t`), so PKI is
+      reachable by configuring the context directly, and PSK has first-class
+      hooks (`set_client_psk_callback` / `set_server_psk_callback` /
+      `set_psk_hint`). The `coaps://` URI scheme selects the DTLS session type
+      on its own, via `nyoci_session_type_from_uri_scheme()`.
+    - **dtls_psk** and **dtls_pki** are implemented and covered end to end by
+      `tests/coap_libnyoci_dtls_test.cpp`.
+    - The adapter always builds and owns its own `SSL_CTX`: libnyoci never
+      frees one (there is no `SSL_CTX_free` anywhere in the plugin, and
+      `nyoci_plat_finalize()` only closes file descriptors), so passing
+      `NYOCI_PLAT_TLS_DEFAULT_CONTEXT` would both leak and leave no handle to
+      configure PKI through.
+    - Three costs, recorded rather than hidden. DTLS *configuration* now forks
+      per backend (the config surface does not — `coap_client_config` and
+      `translate_legacy_fields()` are shared). Upstream still labels its TLS
+      support experimental, defaults it off, and calls OpenSSL 1.x-era APIs
+      that are deprecated-but-present in 3.x. And **DTLS-PKI needs small
+      certificates**: libnyoci reads every inbound datagram into a fixed
+      `char packet[NYOCI_MAX_PACKET_LENGTH+1]` (1033 bytes by default), which
+      applies to handshake records too, so an RSA-2048 certificate flight is
+      silently truncated and the handshake stalls with no diagnostic. Found by
+      writing the test with RSA-2048 and watching it time out; ECDSA P-256 fits
+      and passes, and the test fixture says so at its definition.
+  - [ ] 5.2 OSCORE and EDHOC — **refused, and not closable here**
+    - libnyoci ships neither, and kythira has no implementation of its own to
+      fall back on: `oscore_provider` delegates entirely to libcoap
+      (`coap_context_oscore_server`, `coap_new_client_session_oscore`). There
+      is no AES-CCM, no COSE and no key derivation anywhere in the tree, so a
+      byte-level seam would have nothing to lift — closing this is an
+      "acquire an OSCORE implementation" project, not a refactor. Written up
+      in `doc/TODO.md` under Known Follow-ups.
+    - EDHOC itself is already transport-neutral (`edhoc_transport` is an
+      abstract send/receive pair and lakers does the crypto); it is only the
+      OSCORE context consuming its output that is not.
+    - `plan_security()` refuses `oscore` at construction with a message naming
+      the reason, rather than downgrading to plaintext.
+  - [ ] 5.3 DTLS-RPK — **refused; not expressible through this surface**
+    - Raw public keys (RFC 7250) need the peer to negotiate a non-X.509
+      certificate type. libnyoci's plugin hands the adapter nothing but an
+      `SSL_CTX`, and OpenSSL only grew the certificate-type extensions in 3.2
+      (this toolchain has 3.0.13). Refused with that reason; `dtls_pki` is the
+      supported alternative.
+  - [x] 5.4 Plain CoAP still works, and invalid configuration surfaces the
+        same errors as libcoap
     - `translate_legacy_fields()` is shared *verbatim* (it moved to
       `coap_transport_config.hpp` for exactly this reason), so a populated
       `cert_file` still infers `dtls_pki` and the same
-      `coap_security_config_error` is raised for the same malformed configs.
-      Covered by `test_legacy_dtls_fields_are_refused`.
-    - Partial: *file-level* cert/key validation happens inside
-      `make_security_provider()`, which this backend cannot call. It never gets
-      that far, because such a config is refused first.
+      `coap_security_config_error` is raised for the same malformed configs —
+      including the "both security.mode and legacy fields set" case. Bad
+      certificate/key *material* now fails at `start()` with a
+      `coap_security_error`, where before it could not fail at all.
 
 - [x] 6. Tests (skipped when `LIBNYOCI_AVAILABLE` is undefined)
   - [x] 6.1 Concept-conformance test
@@ -244,7 +272,10 @@ and a translation unit selects a backend by which header it includes.
   cannot be built in one process. It needs two processes, i.e. the container
   harness Task 6.4 did not require — and that harness must follow the
   Docker/rootless-Podman rules in `CLAUDE.md`.
-- **Secured CoAP on a second backend** (Task 5.1): pick one of the two options
-  recorded there.
+- **OSCORE without libcoap** (Task 5.2), if a second backend ever needs it.
+  Written up in `doc/TODO.md` under Known Follow-ups; it is an "acquire an
+  OSCORE implementation" project rather than a refactor.
+- **DTLS-RPK** (Task 5.3) would need OpenSSL >= 3.2 and certificate-type
+  negotiation the libnyoci plugin does not expose.
 - **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
   implemented in the adapter, since libnyoci has no support to build on.
