@@ -91,6 +91,22 @@ config COAP_TRANSPORT_LIBNYOCI
 	  if you select y without libnyoci installed. See
 	  .kiro/specs/coap-transport-libnyoci/ for the full design.
 
+config COAP_TRANSPORT_CANTCOAP
+	bool "Alternate CoAP transport backend (cantcoap)"
+	default n
+	help
+	  find_package(cantcoap CONFIG). Backs CANTCOAP_AVAILABLE, enabling
+	  coap_cantcoap_client/coap_cantcoap_server
+	  (include/raft/coap_transport_cantcoap_impl.hpp) — a third
+	  implementation of the network_client/network_server concepts.
+	  cantcoap is a CoAP *message codec* only: it builds and parses PDUs
+	  and provides no socket, no retransmission, no block-wise and no
+	  DTLS, so this backend supplies all of that itself around it. vcpkg
+	  feature: coap-cantcoap (vcpkg-overlays/cantcoap overlay port; not
+	  built by default). Additive, not a replacement: independent of
+	  COAP_TRANSPORT and COAP_TRANSPORT_LIBNYOCI. See
+	  .kiro/specs/coap-transport-cantcoap/ for the full design.
+
 config EDHOC
 	bool "EDHOC-to-OSCORE credential bootstrap (lakers)"
 	depends on COAP_TRANSPORT

@@ -271,6 +271,22 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT_LIBNYOCI)
 endif()
 kythira_kconfig_require(COAP_TRANSPORT_LIBNYOCI LIBNYOCI_FOUND "libnyoci")
 
+# coap-transport-cantcoap spec: a *third* implementation of the same
+# network_client/network_server concepts, this one over cantcoap
+# (include/raft/coap_transport_cantcoap_impl.hpp). Unlike libcoap and libnyoci,
+# cantcoap is a message codec only -- no socket, no reliability, no block-wise,
+# no DTLS -- so the adapter supplies all of that itself.
+#
+# Discovery is find_package(... CONFIG) against the config package the overlay
+# port's vendored CMakeLists exports, not pkg-config: cantcoap ships no build
+# system at all, so the port supplies both. Defaults OFF and does not depend on
+# COAP_TRANSPORT; all three backends are additive.
+kythira_kconfig_gate(COAP_TRANSPORT_CANTCOAP)
+if(_KYTHIRA_GATE_COAP_TRANSPORT_CANTCOAP)
+    find_package(cantcoap QUIET CONFIG)
+endif()
+kythira_kconfig_require(COAP_TRANSPORT_CANTCOAP cantcoap_FOUND "cantcoap")
+
 # grpc-transport spec: gRPC + Protocol Buffers back a third full-concept-family
 # transport (.kiro/specs/grpc-transport/). Optional and gracefully degrading,
 # exactly like libcoap above: probed only when CONFIG_GRPC_TRANSPORT is wanted,
@@ -788,6 +804,19 @@ if(LIBNYOCI_FOUND)
 else()
     message(STATUS "libnyoci not found — alternate CoAP backend disabled "
                    "(opt in with --x-feature=coap-libnyoci)")
+endif()
+
+if(cantcoap_FOUND)
+    target_link_libraries(network_simulator INTERFACE cantcoap::cantcoap)
+    # Backs CANTCOAP_AVAILABLE project-wide, as the two blocks above do for
+    # their libraries. Without it coap_transport_cantcoap_impl.hpp compiles to
+    # its stub and every cantcoap test silently skips.
+    target_compile_definitions(network_simulator INTERFACE CANTCOAP_AVAILABLE)
+    message(STATUS "cantcoap found — codec-only CoAP backend enabled "
+                   "(.kiro/specs/coap-transport-cantcoap/)")
+else()
+    message(STATUS "cantcoap not found — codec-only CoAP backend disabled "
+                   "(opt in with --x-feature=coap-cantcoap)")
 endif()
 
 if(LIBLDNS_FOUND)
