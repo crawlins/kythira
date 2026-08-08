@@ -255,23 +255,56 @@ transports and is deliberately left as separate work.
     cannot diverge on how they read it
   - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
 
-- [ ] 11. Wire content negotiation into `coap_client`/`coap_server`
-  - [ ] 11.1 Client: set `Content-Format` from cached/default `Media_Type`; set repeated
+- [x] 11. Wire content negotiation into `coap_client`/`coap_server`
+  - [x] 11.1 Client: set `Content-Format` from cached/default `Media_Type`; set repeated
     `Accept` options from `preferred_media_types()`
     - _Requirements: 6.1, 6.2, 6.3_
-  - [ ] 11.2 Client: read response `Content-Format` (absent → default); decode via
+  - [x] 11.2 Client: read response `Content-Format` (absent → default); decode via
     registry; on mismatch set error state; on success update `Peer_Capability_Cache`
     - _Requirements: 6.4, 6.5, 6.6_
-  - [ ] 11.3 Server: read request `Content-Format` (absent → default); decode via
+  - [x] 11.3 Server: read request `Content-Format` (absent → default); decode via
     registry; on mismatch respond 4.15 without invoking the handler
     - _Requirements: 4.5, 4.6_
-  - [ ] 11.4 Server: collect request's `Accept` options; `select_output_media_type`; on
+  - [x] 11.4 Server: collect request's `Accept` options; `select_output_media_type`; on
     `std::nullopt` respond 4.06; else encode via registry and set one `Content-Format`
     option
     - _Requirements: 5.5_
-  - [ ] 11.5 Add `media_type` dimension to existing CoAP metrics; emit
+  - [x] 11.5 Add `media_type` dimension to existing CoAP metrics; emit
     `error_type=unsupported_media_type` on negotiation failure
     - _Requirements: 10.1, 10.2, 10.3_
+
+  - **Two things specific to CoAP that HTTP did not have**, and that will trap
+    the next person editing this transport:
+    1. **The Content-Format option was being written wrong, everywhere.** Every
+       site used `coap_add_option(..., sizeof(uint16_t), (const uint8_t*)&value)`,
+       which puts the host-order bytes of the integer on the wire — on a
+       little-endian box Content-Format 60 (CBOR) went out as 15360. Nothing
+       noticed because nothing ever *read* the option; both ends assumed their
+       own single serializer. Reading it is exactly what negotiation does, so
+       11.1/11.4 switch to `coap_encode_var_safe`. Note CoAP strips leading zero
+       bytes, so Content-Format 0 (`text/plain`) is a legitimately *zero-length*
+       option value — an assertion of `len > 0` is wrong.
+    2. **The inverse mapping has to be resolved through the registry**, not by a
+       second table. `media_type_to_coap_content_format` is not injective (Ion
+       binary and text share 65000; protobuf and octet-stream share 42), so a
+       standalone reverse table would have to invent an answer. Scanning the
+       registry cannot, because `validate_registry_content_formats` has already
+       rejected any registry holding a collision — within a validated registry
+       the mapping is a bijection.
+  - **Negotiation is scoped to unicast RPC.** The multicast paths and the
+    serialization cache still use the fixed `_serializer`: multicast has no
+    per-peer negotiation to do, and the cache is keyed by request content alone,
+    so serving a cached body for a negotiated type would mislabel it. The cache
+    is therefore consulted only for the default media type, which is every
+    single-serializer deployment.
+  - **Coverage, checked by mutation rather than assumed**: putting a bogus
+    Content-Format on the client's request makes `coap_cbor_end_to_end_test`
+    fail, so that suite really does round-trip the negotiation — while
+    `coap_integration_test`, `coap_post_method_property_test` and
+    `coap_content_format_property_test` all still pass, i.e. they do not
+    negotiate. `coap_content_negotiation_unit_test` was added for the pieces
+    those leave uncovered. The 4.15/4.06 wire branches remain uncovered by any
+    test; they belong to Tasks 13-16.
 
   - **Interop note recorded by `http_negotiation_integration_test`**: a
     cpp-httplib peer that POSTs without an explicit `Content-Type` now gets 415.

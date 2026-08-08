@@ -882,6 +882,19 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "coap_future_resolution_property_test: skipped (requires Folly)")
 endif()
+# CoAP content-negotiation unit test: registry <-> Content-Format mapping and
+# the CoAP varint option encoding. Protocol-independent, so unlike the rest of
+# the CoAP suite it needs neither Folly nor a libcoap client/server -- the one
+# case that does touch libcoap is guarded by LIBCOAP_AVAILABLE in the source.
+add_executable(coap_content_negotiation_unit_test coap_content_negotiation_unit_test.cpp)
+target_link_libraries(coap_content_negotiation_unit_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+target_compile_features(coap_content_negotiation_unit_test PRIVATE cxx_std_23)
+add_test(NAME coap_content_negotiation_unit_test COMMAND coap_content_negotiation_unit_test)
+
 # CoAP Content-Format property test needs Boost.JSON
 if(TARGET Folly::folly)
     add_executable(coap_content_format_property_test coap_content_format_property_test.cpp)

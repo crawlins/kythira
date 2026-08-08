@@ -104,10 +104,18 @@ coap_client<Types>::coap_client(
     std::unordered_map<std::uint64_t, std::string> node_id_to_endpoint_map,
     coap_client_config config, metrics_type metrics)
     : _serializer{},
+      _registry{},
+      _capability_cache{},
       _node_id_to_endpoint{std::move(node_id_to_endpoint_map)},
       _coap_context{nullptr},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // Reject a registry CoAP cannot faithfully put on the wire before any
+    // libcoap resource is allocated: a media type with no Content-Format
+    // number, or two that collide on one. Both are configuration mistakes
+    // that would otherwise surface as mis-decoded payloads at a peer rather
+    // than as a failure attributable to this constructor.
+    coap_utils::validate_registry_content_formats(_registry);
     // Resolve the explicit-or-legacy channel-security configuration and
     // construct its provider up front (coap-transport-security spec,
     // Requirement 1.2/1.3) — before any libcoap resource is allocated, so
@@ -406,12 +414,16 @@ requires kythira::transport_types<Types>
 coap_server<Types>::coap_server(std::string bind_address, std::uint16_t bind_port,
                                 coap_server_config config, metrics_type metrics)
     : _serializer{},
+      _registry{},
       _coap_context{nullptr},
       _bind_address{std::move(bind_address)},
       _bind_port{bind_port},
       _actual_bound_port{bind_port},
       _config{std::move(config)},
       _metrics{std::move(metrics)} {
+    // See the client's constructor: a registry CoAP cannot represent is a
+    // configuration error, and must fail here rather than on the wire.
+    coap_utils::validate_registry_content_formats(_registry);
     // Resolve the explicit-or-legacy channel-security configuration and
     // construct its provider up front (coap-transport-security spec,
     // Requirement 1.2/1.3) — before any libcoap resource is allocated.
@@ -1545,6 +1557,46 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
             return;
         }
 
+        // Resolve the response's declared encoding before touching the payload.
+        // Three cases, all of Requirement 6.4-6.6:
+        //   option absent      -> default media type, today's behaviour
+        //   option we can read -> that media type
+        //   option we cannot   -> error the future, do NOT cache the type
+        std::string response_media_type = _registry.default_media_type();
+        {
+            coap_opt_iterator_t format_iter;
+            if (coap_opt_t* format_option =
+                    coap_check_option(response, COAP_OPTION_CONTENT_FORMAT, &format_iter)) {
+                const auto wire_format =
+                    static_cast<coap_utils::coap_content_format>(coap_decode_var_bytes(
+                        coap_opt_value(format_option), coap_opt_length(format_option)));
+                const auto resolved =
+                    coap_utils::registry_media_type_for_content_format(_registry, wire_format);
+                if (!resolved) {
+                    // The peer answered in something we cannot decode. Failing
+                    // the future is the honest outcome: decoding with the
+                    // default would hand the caller a garbage message that
+                    // looks like a successful RPC.
+                    auto error_metric = _metrics;
+                    error_metric.set_metric_name("coap.client.error");
+                    error_metric.add_dimension("error_type", "unsupported_media_type");
+                    error_metric.add_dimension(
+                        "content_format", std::to_string(static_cast<std::uint16_t>(wire_format)));
+                    error_metric.add_one();
+                    error_metric.emit();
+
+                    it->second->reject_callback(
+                        std::make_exception_ptr(coap_unsupported_content_format_error(
+                            "response Content-Format " +
+                            std::to_string(static_cast<std::uint16_t>(wire_format)) +
+                            " has no registered serializer")));
+                    _pending_requests.erase(it);
+                    return;
+                }
+                response_media_type = *resolved;
+            }
+        }
+
         // Extract response payload
         size_t payload_len;
         const uint8_t* payload_data;
@@ -1575,7 +1627,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                 auto complete_payload = reassemble_blocks(token, response_data, block_opt);
                 if (complete_payload) {
                     // Block transfer complete
-                    it->second->resolve_callback(std::move(*complete_payload));
+                    it->second->resolve_callback(std::move(*complete_payload), response_media_type);
                     _pending_requests.erase(it);
                 } else {
                     // Request next block
@@ -1590,10 +1642,10 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
                 // Final block - complete the reassembly
                 auto complete_payload = reassemble_blocks(token, response_data, block_opt);
                 if (complete_payload) {
-                    it->second->resolve_callback(std::move(*complete_payload));
+                    it->second->resolve_callback(std::move(*complete_payload), response_media_type);
                 } else {
                     // Just use the current block if reassembly fails
-                    it->second->resolve_callback(std::move(response_data));
+                    it->second->resolve_callback(std::move(response_data), response_media_type);
                 }
                 _pending_requests.erase(it);
                 return;
@@ -1671,7 +1723,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
         }
 
         // Single block or final block - resolve the future
-        it->second->resolve_callback(std::move(response_data));
+        it->second->resolve_callback(std::move(response_data), response_media_type);
         _pending_requests.erase(it);
 
         _logger.debug("CoAP response processed successfully",
@@ -1681,7 +1733,7 @@ auto coap_client<Types>::handle_response(coap_pdu_t* response, const std::string
 #else
         // Stub implementation when libcoap is not available
         std::vector<std::byte> response_data;
-        it->second->resolve_callback(std::move(response_data));
+        it->second->resolve_callback(std::move(response_data), response_media_type);
         _pending_requests.erase(it);
 #endif
 
@@ -2320,12 +2372,28 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // Set client instance as session user data for response handling
         coap_session_set_app_data(session, this);
 
-        // Serialize the request with caching if enabled
+        // Pick the request encoding before serializing: the default on first
+        // contact, or whatever this peer last answered in, provided we still
+        // have a serializer for it (Requirements 6.2, 6.3).
+        const std::string request_media_type =
+            kythira::select_request_media_type(_registry, _capability_cache, target);
+
+        // Serialize the request with caching if enabled.
+        //
+        // The cache is only consulted for the default media type. It is keyed
+        // by request content alone, so serving a cached body for a negotiated
+        // type would hand back bytes in whichever encoding happened to be
+        // cached first while the Content-Format option below advertises the
+        // negotiated one — a payload that is mislabelled rather than merely
+        // stale. Correctness first; a media-type-keyed cache is a later
+        // optimisation, and the default path (which is every single-serializer
+        // deployment) keeps its cache.
         std::vector<std::byte> serialized_request;
-        if (_config.enable_serialization_caching) {
+        if (_config.enable_serialization_caching &&
+            request_media_type == _registry.default_media_type()) {
             serialized_request = get_cached_or_serialize(request);
         } else {
-            serialized_request = _serializer.serialize(request);
+            serialized_request = _registry.encode_with(request_media_type, request);
         }
 
         // Create CoAP PDU with proper size calculation
@@ -2370,14 +2438,54 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             throw coap_transport_error("Failed to add URI path option");
         }
 
-        // Add Content-Format option based on serializer
-        auto content_format = coap_utils::get_content_format_for_serializer(_serializer.name());
-        uint16_t format_value = static_cast<uint16_t>(content_format);
-        if (!coap_add_option(pdu, COAP_OPTION_CONTENT_FORMAT, sizeof(format_value),
-                             reinterpret_cast<const uint8_t*>(&format_value))) {
+        // Content-Format for the type we actually encoded in, keyed off
+        // media_type() rather than the serializer's free-form name(). The
+        // registry was validated at construction, so a media type with no CoAP
+        // number cannot reach this point.
+        const auto request_format =
+            coap_utils::media_type_to_coap_content_format(request_media_type);
+        if (!request_format) {
+            coap_delete_pdu(pdu);
+            coap_session_release(session);
+            throw coap_unsupported_content_format_error(request_media_type);
+        }
+        // coap_encode_var_safe(), not a raw uint16_t memcpy. CoAP option values
+        // are network-order minimum-length integers; writing the host-order
+        // bytes of a uint16_t put 60 (CBOR) on the wire as 15360 on a
+        // little-endian box. That went unnoticed because nothing ever *read*
+        // this option -- both ends assumed their own single serializer. Reading
+        // it is exactly what negotiation does, so the encoding has to be right
+        // now, and both sides of this change decode with coap_decode_var_bytes,
+        // which handles any length correctly.
+        std::array<std::uint8_t, 2> format_buf{};
+        const auto format_len = coap_encode_var_safe(format_buf.data(), format_buf.size(),
+                                                     static_cast<unsigned int>(*request_format));
+        if (!coap_add_option(pdu, COAP_OPTION_CONTENT_FORMAT, format_len, format_buf.data())) {
             coap_delete_pdu(pdu);
             coap_session_release(session);
             throw coap_transport_error("Failed to add Content-Format option");
+        }
+
+        // Advertise everything we can decode, in preference order, on *every*
+        // request rather than only the first. That is what keeps the capability
+        // cache an optimisation: when our cached guess is stale the peer still
+        // has the full list and can pick something we both speak
+        // (Requirement 6.1). CoAP carries this as repeated Accept options,
+        // where HTTP uses one comma-joined header.
+        for (const auto& accepted_media_type : _registry.preferred_media_types()) {
+            const auto accepted_format =
+                coap_utils::media_type_to_coap_content_format(accepted_media_type);
+            if (!accepted_format) {
+                continue;  // unreachable: validated at construction
+            }
+            std::array<std::uint8_t, 2> accept_buf{};
+            const auto accept_len = coap_encode_var_safe(
+                accept_buf.data(), accept_buf.size(), static_cast<unsigned int>(*accepted_format));
+            if (!coap_add_option(pdu, COAP_OPTION_ACCEPT, accept_len, accept_buf.data())) {
+                coap_delete_pdu(pdu);
+                coap_session_release(session);
+                throw coap_transport_error("Failed to add Accept option");
+            }
         }
 
         // Handle block-wise transfer for large payloads
@@ -2443,11 +2551,22 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             std::lock_guard lock(_mutex);
             auto pending_msg = std::make_unique<pending_message>(
                 token, coap_pdu_get_mid(pdu), timeout,
-                [promise, this](std::vector<std::byte> response_data) {
+                [promise, this, target](std::vector<std::byte> response_data,
+                                        const std::string& response_media_type) {
                     try {
-                        // Deserialize response
-                        Response response =
-                            _serializer.template deserialize<Response>(response_data);
+                        // Decode in the type the peer declared, not whichever
+                        // serializer this client was built with.
+                        // `handle_response` has already rejected anything this
+                        // registry cannot decode, so this lookup cannot fail.
+                        Response response = _registry.template decode_with<Response>(
+                            response_media_type, response_data);
+                        // Remember what worked, so the next call to this peer
+                        // starts from a format it has actually spoken
+                        // (Requirement 6.4). Recorded only on a successful
+                        // decode: caching a type we could not read would make
+                        // every subsequent request to this peer fail the same
+                        // way.
+                        _capability_cache.record(target, response_media_type);
                         promise->setValue(std::move(response));
                     } catch (const std::exception& e) {
                         promise->setException(std::make_exception_ptr(coap_transport_error(
@@ -2477,6 +2596,23 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                        {"resource_path", resource_path},
                        {"token", token},
                        {"message_id", std::to_string(mid)}});
+
+        // Per-RPC request metric carrying the negotiated media type
+        // (Requirement 10.1). Emitted as a new metric name rather than by
+        // adding a dimension to the transport's base `coap_client` metric:
+        // Requirement 10.3 forbids changing the dimensions of what this
+        // transport already emits, and this transport had no success-path
+        // per-RPC metric to extend. The name mirrors the HTTP transports'
+        // `http.client.request.sent` so the two read the same way.
+        {
+            auto request_metric = _metrics;
+            request_metric.set_metric_name("coap.client.request.sent");
+            request_metric.add_dimension("resource_path", resource_path);
+            request_metric.add_dimension("target_node_id", std::to_string(target));
+            request_metric.add_dimension("media_type", request_media_type);
+            request_metric.add_one();
+            request_metric.emit();
+        }
 
         return std::move(future);
 #else
@@ -3661,14 +3797,96 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             request_data = std::move(*complete_payload);
         }
 
-        // Deserialize the request
+        // Resolve the request's declared encoding. Absent option means the
+        // registry default, matching today's behaviour (Requirement 4.6).
+        std::string request_media_type = _registry.default_media_type();
+        {
+            coap_opt_iterator_t format_iter;
+            if (coap_opt_t* format_option =
+                    coap_check_option(request, COAP_OPTION_CONTENT_FORMAT, &format_iter)) {
+                const auto wire_format =
+                    static_cast<coap_utils::coap_content_format>(coap_decode_var_bytes(
+                        coap_opt_value(format_option), coap_opt_length(format_option)));
+                const auto resolved =
+                    coap_utils::registry_media_type_for_content_format(_registry, wire_format);
+                if (!resolved) {
+                    // 4.15 before the handler runs, not after. Invoking a
+                    // handler on a body we could not decode is the failure this
+                    // ordering exists to prevent (Requirement 4.5).
+                    auto error_metric = _metrics;
+                    error_metric.set_metric_name("coap.server.error");
+                    error_metric.add_dimension("error_type", "unsupported_media_type");
+                    error_metric.add_dimension(
+                        "content_format", std::to_string(static_cast<std::uint16_t>(wire_format)));
+                    error_metric.add_one();
+                    error_metric.emit();
+
+                    coap_pdu_set_code(response, static_cast<coap_pdu_code_t>(
+                                                    COAP_RESPONSE_CODE_UNSUPPORTED_CONTENT_FORMAT));
+                    return;
+                }
+                request_media_type = *resolved;
+            }
+        }
+
+        // Negotiate the *response* encoding before invoking the handler, so an
+        // unsatisfiable Accept costs nothing: answering 4.06 afterwards would
+        // do the handler's work and throw it away, and for a handler with side
+        // effects that difference is observable (Requirement 5.5).
+        //
+        // CoAP repeats the Accept option rather than comma-joining one header,
+        // so this walks every instance in wire order -- which is the client's
+        // preference order, and therefore the order select_output_media_type
+        // expects.
+        std::vector<std::string> accepted_media_types;
+        {
+            coap_opt_iterator_t accept_iter;
+            coap_option_iterator_init(request, &accept_iter, COAP_OPT_ALL);
+            while (coap_opt_t* accept_option = coap_option_next(&accept_iter)) {
+                if (accept_iter.number != COAP_OPTION_ACCEPT) {
+                    continue;
+                }
+                const auto wire_format =
+                    static_cast<coap_utils::coap_content_format>(coap_decode_var_bytes(
+                        coap_opt_value(accept_option), coap_opt_length(accept_option)));
+                // An Accept naming something we do not speak is not an error on
+                // its own -- the client lists everything it can read, and we
+                // pick from the intersection. Only an empty intersection is a
+                // failure, which select_output_media_type reports below.
+                if (auto resolved = coap_utils::registry_media_type_for_content_format(
+                        _registry, wire_format)) {
+                    accepted_media_types.push_back(*std::move(resolved));
+                }
+            }
+        }
+
+        const auto output_media_type = _registry.select_output_media_type(accepted_media_types);
+        if (!output_media_type) {
+            auto error_metric = _metrics;
+            error_metric.set_metric_name("coap.server.error");
+            error_metric.add_dimension("error_type", "unsupported_media_type");
+            error_metric.add_dimension("media_type", request_media_type);
+            error_metric.add_one();
+            error_metric.emit();
+
+            // No payload: the peer told us it cannot read anything we produce,
+            // so any body would be unreadable by construction.
+            coap_pdu_set_code(response,
+                              static_cast<coap_pdu_code_t>(COAP_RESPONSE_CODE_NOT_ACCEPTABLE));
+            return;
+        }
+
+        // Deserialize the request in the media type the peer declared, rather
+        // than whichever serializer this server was built with.
         Request deserialized_request;
         try {
-            deserialized_request = _serializer.template deserialize<Request>(request_data);
+            deserialized_request =
+                _registry.template decode_with<Request>(request_media_type, request_data);
         } catch (const std::exception& e) {
-            _logger.error(
-                "Failed to deserialize request",
-                {{"error", e.what()}, {"payload_size", std::to_string(request_data.size())}});
+            _logger.error("Failed to deserialize request",
+                          {{"error", e.what()},
+                           {"payload_size", std::to_string(request_data.size())},
+                           {"media_type", request_media_type}});
             reject_malformed_request(response, "Deserialization failed: " + std::string(e.what()));
             return;
         }
@@ -3686,12 +3904,14 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             return;
         }
 
-        // Serialize the response
+        // Encode in the negotiated type, which need not be the type the request
+        // arrived in -- a peer may POST CBOR and ask for JSON back.
         std::vector<std::byte> serialized_response;
         try {
-            serialized_response = _serializer.serialize(rpc_response);
+            serialized_response = _registry.encode_with(*output_media_type, rpc_response);
         } catch (const std::exception& e) {
-            _logger.error("Failed to serialize response", {{"error", e.what()}});
+            _logger.error("Failed to serialize response",
+                          {{"error", e.what()}, {"media_type", *output_media_type}});
             coap_pdu_set_code(response, COAP_RESPONSE_CODE_INTERNAL_ERROR);
             std::string error_msg = "Serialization failed: " + std::string(e.what());
             coap_add_data(response, error_msg.length(),
@@ -3702,11 +3922,16 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // Set success response code
         coap_pdu_set_code(response, COAP_RESPONSE_CODE_CONTENT);
 
-        // Add Content-Format option based on serializer
-        auto content_format = coap_utils::get_content_format_for_serializer(_serializer.name());
-        uint16_t format_value = static_cast<uint16_t>(content_format);
-        coap_add_option(response, COAP_OPTION_CONTENT_FORMAT, sizeof(format_value),
-                        reinterpret_cast<const uint8_t*>(&format_value));
+        // Exactly one Content-Format option, naming the type we encoded in
+        // (Requirement 5.5). See the client's send path for why this uses
+        // coap_encode_var_safe rather than a raw uint16_t memcpy.
+        if (const auto response_format =
+                coap_utils::media_type_to_coap_content_format(*output_media_type)) {
+            std::array<std::uint8_t, 2> format_buf{};
+            const auto format_len = coap_encode_var_safe(
+                format_buf.data(), format_buf.size(), static_cast<unsigned int>(*response_format));
+            coap_add_option(response, COAP_OPTION_CONTENT_FORMAT, format_len, format_buf.data());
+        }
 
         // Handle block transfer for large responses
         if (_config.enable_block_transfer && should_use_block_transfer(serialized_response)) {

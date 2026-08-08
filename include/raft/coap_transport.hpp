@@ -13,6 +13,7 @@
 #include <raft/console_logger.hpp>
 #include <raft/json_serializer.hpp>
 #include <raft/serializer_registry.hpp>
+#include <raft/peer_capability_cache.hpp>
 #include <raft/memory_pool.hpp>
 #include <concepts/future.hpp>
 #include <network_simulator/network_simulator.hpp>
@@ -75,7 +76,12 @@ struct pending_message {
     std::chrono::steady_clock::time_point send_time;
     std::chrono::milliseconds timeout;
     std::size_t retransmission_count{0};
-    std::function<void(std::vector<std::byte>)> resolve_callback;
+    /// Takes the media type the response actually arrived in alongside the
+    /// bytes, because only `handle_response` can see the PDU's Content-Format
+    /// option and only this callback knows the `Response` type to decode into.
+    /// Passing it explicitly keeps that one fact from becoming mutable state
+    /// shared between the two (Requirement 6.4).
+    std::function<void(std::vector<std::byte>, const std::string&)> resolve_callback;
     std::function<void(std::exception_ptr)> reject_callback;
     std::vector<std::byte> original_payload;
     std::string target_endpoint;
@@ -83,7 +89,7 @@ struct pending_message {
     bool is_confirmable{true};
 
     pending_message(std::string tok, std::uint16_t msg_id, std::chrono::milliseconds to,
-                    std::function<void(std::vector<std::byte>)> resolve_cb,
+                    std::function<void(std::vector<std::byte>, const std::string&)> resolve_cb,
                     std::function<void(std::exception_ptr)> reject_cb,
                     std::vector<std::byte> payload, std::string endpoint, std::string path,
                     bool confirmable)
@@ -373,6 +379,7 @@ public:
     // hardcoded-Folly kythira::FutureFactory it used to fall back to.
     template<typename T> using promise_template = typename Types::template promise_template<T>;
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     using logger_type = typename Types::logger_type;
@@ -461,7 +468,19 @@ public:
     [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
 
 private:
+    /// Retained alongside `_registry` because the multicast and
+    /// serialization-cache paths still encode with a fixed serializer;
+    /// negotiation covers unicast RPC only, which is what Requirement 6
+    /// scopes. Every negotiated path goes through `_registry`.
     serializer_type _serializer;
+    /// The negotiation surface: what this client can encode and decode, in
+    /// preference order. `single_serializer_registry<RPC_Serializer>` by
+    /// default, so a client built the old way behaves exactly as before.
+    serializer_registry_type _registry;
+    /// Last media type each peer answered in, so repeat calls converge on a
+    /// format that worked instead of renegotiating from the default every
+    /// time (Requirement 6.3).
+    peer_capability_cache<std::uint64_t> _capability_cache;
     std::unordered_map<std::uint64_t, std::string> _node_id_to_endpoint;
     coap_context_t* _coap_context;
     std::unique_ptr<coap_security_provider> _security_provider;
@@ -617,6 +636,7 @@ public:
     // hardcoded-Folly kythira::FutureFactory it used to fall back to.
     template<typename T> using promise_template = typename Types::template promise_template<T>;
     using serializer_type = typename Types::serializer_type;
+    using serializer_registry_type = typename Types::serializer_registry_type;
     using metrics_type = typename Types::metrics_type;
     using executor_type = typename Types::executor_type;
     using logger_type = typename Types::logger_type;
@@ -687,7 +707,13 @@ public:
     [[nodiscard]] auto security_provider() const -> const coap_security_provider*;
 
 private:
+    /// See the client's own note: retained for the paths negotiation does not
+    /// cover. Every negotiated request/response goes through `_registry`.
     serializer_type _serializer;
+    /// What this server can decode requests in and encode responses in.
+    /// `single_serializer_registry<RPC_Serializer>` by default, so a server
+    /// built the old way behaves exactly as before.
+    serializer_registry_type _registry;
     coap_context_t* _coap_context;
     std::unique_ptr<coap_security_provider> _security_provider;
     address_type _bind_address;
