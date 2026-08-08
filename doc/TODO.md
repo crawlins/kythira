@@ -422,16 +422,10 @@ unverified completion claim.
 
 
 - **`simulator_network_client` continuations outlive the `NetworkSimulator`.
-  Root-caused and fixed; the fix is NOT merged because it regresses an
-  unrelated raft test (August 7, 2026 — open).**
-
-  The attempt lives on branch `fix/simulator-node-lifetime` (commit `93703cf`),
-  pushed with no PR because it is not proposable as-is. **This entry is the
-  durable half; that branch is disposable.** Everything needed to redo the work
-  from scratch — the ownership analysis, the measurements, and the dead ends
-  already paid for — is deliberately recorded here rather than there, because a
-  defect documented only on an unmerged branch is one nobody will read about.
-  If the branch is ever pruned, nothing of value is lost.
+  Root-caused and FIXED (August 7, 2026 — closed).** The blocking "regression"
+  recorded against the first attempt did not survive re-measurement; see
+  *Why this was previously rejected* below, which is the more useful half of
+  this entry.
 
   **The defect.** `NetworkNode` holds a raw `simulator_type* _simulator` and
   guards every use with `if (!_simulator)`. Nothing ever nulls that pointer, so
@@ -448,38 +442,68 @@ unverified completion claim.
   cycles: `NetworkSimulator::_nodes` owns its nodes by `shared_ptr`. A
   `weak_ptr` needs `enable_shared_from_this`, but **roughly 130 call sites
   construct the simulator on the stack**, where `weak_from_this()` is empty and
-  would silently fail every node operation in the suite. Hence the attempt used
-  `async_scope` (which works for either storage duration).
+  would silently fail every node operation in the suite. Hence `async_scope`,
+  which works for either storage duration.
 
-  **The attempt works, and costs too much.** Measured on
-  `chaos_state_machine_safety_test` under boost + ASan: **0/30 use-after-free
-  reports, against 2/30 before.** But `raft_commit_implies_replication_property_test`
-  regresses:
+  **The fix, in two halves.** Neither is sufficient alone:
+  1. **A ticket before the pointer.** Every `NetworkNode` method that
+     dereferences `_simulator` takes an `async_scope` ticket first, and
+     `~NetworkSimulator` calls `close_and_drain()` before any member is
+     destroyed. This is what makes the pointer safe.
+  2. **A `_closing` flag inside `retrieve_message`'s wait predicate**, set by
+     the destructor with a `notify_all()` before the drain. Without it the
+     drain is correct but slow: a receive parked in
+     `_msg_available.wait_for(lock, timeout, pred)` holds its ticket for the
+     whole caller-supplied timeout, so destroying a simulator while any node is
+     waiting stalls for that timeout. A close reports to the caller as a
+     `TimeoutException`, which every caller of that overload already handles.
 
-  | configuration | clean runs |
-  | --- | --- |
-  | baseline (no change) | **24/25** |
-  | tickets on, drain off | 20/25 |
-  | tickets on, drain on | **22/35** |
+  **Deliberately not cancelled:** the latency `sleep_for` in `route_message`
+  also runs under a ticket, so a drain still waits out an in-flight `send`'s
+  link latency. That is the guarantee working as intended — the call is
+  genuinely running, not parked — and it is what
+  `destructor_waits_for_an_in_flight_node_call` pins.
 
-  Baseline vs the full change is statistically solid; the ticket-only arm is
-  ambiguous at this N. **The drain is the main contributor.**
+  **Verified:**
 
-  **Two hypotheses already ruled out by measurement — do not re-run these:**
+  | measurement | before | after |
+  | --- | --- | --- |
+  | `chaos_state_machine_safety_test`, boost + ASan | 2/30 report a UAF | **45/45 clean** |
+  | all 27 `*simulator*` suites, boost | — | 27/27, ×4 (once serial, 3× at `-j4`) |
+  | `network_simulator_node_lifetime_unit_test` | — | 30/30 boost, 10/10 boost + ASan |
+
+  The new unit test was mutation-tested, and each half of the fix is caught by
+  its own case: deleting `close_and_drain()` takes
+  `destructor_waits_for_an_in_flight_node_call` from ~1700ms to **0ms**;
+  deleting the `_closing` check from the wait predicate takes
+  `destructor_cancels_a_blocked_receive` from ~0ms to **4695ms**, i.e. exactly
+  the receive timeout it should have cancelled.
+
+  **Why this was previously rejected, and why that was wrong.** The first
+  attempt (`fix/simulator-node-lifetime`, `93703cf`) was backed out because
+  `raft_commit_implies_replication_property_test` appeared to regress from
+  24/25 to 22/35. Re-measured with the two arms **interleaved** — alternating
+  binaries run-by-run so machine-load drift hits both equally — the difference
+  disappears:
+
+  | arm | clean runs | |
+  | --- | --- | --- |
+  | baseline (unmodified binary) | 13/25 | |
+  | with the fix | 11/25 | McNemar exact *p* = 0.79, Fisher *p* = 0.78 |
+
+  **The instrument was noisier than the effect it was used to reject.** The
+  *same unmodified baseline binary* scored 19/25 in one sequential session and
+  13/25 an hour later under load (*p* = 0.14) — a larger swing, at higher
+  confidence, than anything separating the two arms. The original 24/25 figure
+  does not reproduce at all. The lesson is not "the fix is innocent" but
+  **calibrate the instrument before using a pass rate as a gate**: run the arms
+  interleaved, and check baseline-against-baseline first.
+
+  **Two hypotheses ruled out earlier and still ruled out — do not re-run:**
   - *CPU starvation.* Reproduces on a fully idle box.
-  - *Mutex contention in `enter()`.* Wall-clock is identical to the tenth of a
-    second (43.3-45.0s vs 43.7-45.0s), and instrumenting the guard recorded
-    **zero** refusals across full runs. The guard neither rejects anything nor
-    costs measurable time, yet the pass rate still moves.
-
-  **Most promising next step**, given the drain is the main contributor:
-  `retrieve_message()` blocks in `_msg_available.wait_for(lock, timeout, pred)`
-  holding its ticket, so a drain waits out that timeout rather than cancelling
-  it. Add a "closing" flag to the wait predicate and `notify_all()` on close, so
-  blocked receives return immediately instead of being waited out. That should
-  remove the teardown stall without weakening the guarantee. Re-measure both
-  arms at N>=25 before believing any of it.
-
+  - *Mutex contention in `enter()`.* Wall-clock identical to the tenth of a
+    second, and instrumenting the guard recorded **zero** refusals across full
+    runs.
 
 - **A PR that does not target `main` runs no CI at all, and reports itself
   green (found August 7, 2026 — open).** `ci.yml` triggers on

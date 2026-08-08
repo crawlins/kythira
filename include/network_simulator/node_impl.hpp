@@ -9,6 +9,8 @@
 #include <random>
 #include <sstream>
 
+#include <optional>
+
 namespace network_simulator {
 
 // Ephemeral port allocation implementation
@@ -59,7 +61,14 @@ template<typename Types> auto NetworkNode<Types>::release_port(port_type port) -
 
 // Connectionless send operations
 template<typename Types> auto NetworkNode<Types>::send(message_type msg) -> future_bool_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<bool>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
     }
@@ -84,7 +93,14 @@ auto NetworkNode<Types>::send(message_type msg, std::chrono::milliseconds timeou
 
 // Connectionless receive operations
 template<typename Types> auto NetworkNode<Types>::receive() -> future_message_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
     }
@@ -94,7 +110,14 @@ template<typename Types> auto NetworkNode<Types>::receive() -> future_message_ty
 
 template<typename Types>
 auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_message_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(TimeoutException()));
     }
@@ -105,7 +128,14 @@ auto NetworkNode<Types>::receive(std::chrono::milliseconds timeout) -> future_me
 template<typename Types>
 auto NetworkNode<Types>::receive(port_type port, std::chrono::milliseconds timeout)
     -> future_message_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(TimeoutException()));
     }
@@ -125,7 +155,14 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port)
 template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port_type src_port)
     -> future_connection_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
@@ -144,7 +181,14 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port, port
 template<typename Types>
 auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
                                  std::chrono::milliseconds timeout) -> future_connection_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<connection_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
@@ -160,7 +204,14 @@ auto NetworkNode<Types>::connect(address_type dst_addr, port_type dst_port,
 
 // Connection-oriented server operations
 template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
@@ -170,7 +221,14 @@ template<typename Types> auto NetworkNode<Types>::bind() -> future_listener_type
 }
 
 template<typename Types> auto NetworkNode<Types>::bind(port_type port) -> future_listener_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));
@@ -188,7 +246,14 @@ template<typename Types> auto NetworkNode<Types>::bind(port_type port) -> future
 template<typename Types>
 auto NetworkNode<Types>::bind(port_type port, std::chrono::milliseconds timeout)
     -> future_listener_type {
-    if (!_simulator) {
+    // A ticket before the pointer, not merely a null check. Nothing ever
+    // nulls `_simulator`, so the bare check only caught a node built
+    // without a simulator -- never a simulator that had since been
+    // destroyed, which is the case that actually crashed. While the
+    // ticket is held the simulator's drain cannot finish, so the
+    // pointer stays valid for the call below.
+    const auto sim_ticket = _scope ? _scope->enter() : std::nullopt;
+    if (!_simulator || !sim_ticket) {
         return kythira::future_factory_default::makeExceptionalFuture<
             std::shared_ptr<listener_type>>(
             std::make_exception_ptr(std::runtime_error("Simulator not available")));

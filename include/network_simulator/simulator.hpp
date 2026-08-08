@@ -20,6 +20,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <raft/async_scope.hpp>
+
 namespace network_simulator {
 
 // Forward declarations
@@ -74,7 +76,14 @@ public:
           _listener_manager(std::make_unique<ListenerManager<Types>>()),
           _connection_tracker(std::make_unique<ConnectionTracker<Types>>()) {}
 
-    ~NetworkSimulator() = default;
+    /// Drains before any member is destroyed. `NetworkNode` holds a raw
+    /// back-pointer here, and roughly 130 call sites construct this on the
+    /// stack, so a node call already in flight would otherwise read freed
+    /// members -- observed as an AddressSanitizer heap-use-after-free in
+    /// `retrieve_message`'s very first line, `std::unique_lock lock(_mutex)`.
+    ///
+    /// Declared out-of-line rather than `= default` purely so this can run.
+    ~NetworkSimulator();
 
     // Topology configuration
     auto add_node(address_type address) -> void;
@@ -210,6 +219,10 @@ private:
     // Active nodes
     std::unordered_map<address_type, std::shared_ptr<node_type>> _nodes;
 
+    /// Admission barrier for node calls that dereference this simulator. Held
+    /// by `shared_ptr` so a node outliving it still has something valid to ask.
+    std::shared_ptr<kythira::async_scope> _scope{std::make_shared<kythira::async_scope>()};
+
     // Message queues per node, keyed by destination address.
     // Using deque instead of queue to allow port-filtered linear scan.
     std::unordered_map<address_type, std::deque<message_type>> _message_queues;
@@ -250,6 +263,15 @@ private:
     // Signalled by deliver_message whenever a new message is enqueued.
     // Allows retrieve_message(address, timeout) to block instead of busy-poll.
     std::condition_variable_any _msg_available;
+
+    /// Set by the destructor, before the drain, so a `retrieve_message` already
+    /// blocked in `_msg_available.wait_for` gives up *now* instead of sitting
+    /// out its caller-supplied timeout. It holds a scope ticket while it waits,
+    /// so without this the drain below is as slow as the longest receive
+    /// timeout in flight -- which is what made the first version of this fix
+    /// too expensive to merge. Guarded by `_mutex`, like the queues it is
+    /// waited on alongside.
+    bool _closing{false};
 };
 
 }  // namespace network_simulator

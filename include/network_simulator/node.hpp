@@ -4,6 +4,8 @@
 #include "types.hpp"
 #include "exceptions.hpp"
 
+#include <raft/async_scope.hpp>
+
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -30,8 +32,21 @@ public:
     using future_connection_type = typename Types::future_connection_type;
     using future_listener_type = typename Types::future_listener_type;
 
-    explicit NetworkNode(address_type addr, simulator_type* simulator)
-        : _address(std::move(addr)), _simulator(simulator) {}
+    /// @param scope The owning simulator's drain barrier. Every method that
+    ///     dereferences `_simulator` takes a ticket from it first, so the
+    ///     simulator's destructor can wait for in-flight calls instead of
+    ///     pulling the object out from under them.
+    ///
+    ///     `_simulator` stays a raw pointer deliberately. A `shared_ptr` would
+    ///     cycle -- `NetworkSimulator::_nodes` owns its nodes by `shared_ptr`
+    ///     -- and a `weak_ptr` would need `enable_shared_from_this`, which is
+    ///     unavailable here: roughly 130 call sites construct the simulator on
+    ///     the stack, and `weak_from_this()` on those would be empty, silently
+    ///     failing every node operation in the suite. The scope works for both
+    ///     storage durations.
+    explicit NetworkNode(address_type addr, simulator_type* simulator,
+                         std::shared_ptr<kythira::async_scope> scope)
+        : _address(std::move(addr)), _simulator(simulator), _scope(std::move(scope)) {}
 
     // Node identity
     auto address() const -> address_type { return _address; }
@@ -59,6 +74,9 @@ public:
 private:
     address_type _address;
     simulator_type* _simulator;
+    /// Held by `shared_ptr` so it outlives the simulator: a node that is still
+    /// running when the simulator dies needs the scope to tell it so.
+    std::shared_ptr<kythira::async_scope> _scope;
 
     // Ephemeral port allocation
     auto allocate_ephemeral_port() -> port_type;
