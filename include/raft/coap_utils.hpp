@@ -312,6 +312,33 @@ inline void validate_registry_content_formats(const Registry& registry) {
     }
 }
 
+/// @brief The registry's media type for a Content-Format seen on the wire, or
+///     `nullopt` if this registry has no serializer for it.
+///
+/// The inverse of `media_type_to_coap_content_format`, resolved *through the
+/// registry* rather than by a second hardcoded table. That is deliberate: the
+/// forward table is not injective — Ion binary and Ion text share 65000,
+/// protobuf and octet-stream share 42 — so a standalone reverse table would
+/// have to invent an answer for those numbers. Scanning the registry cannot,
+/// because `validate_registry_content_formats` has already rejected any
+/// registry holding two media types that collide on one number. Within a
+/// registry that passed construction, the mapping is a bijection, and this
+/// returns the one media type that registry can actually decode.
+///
+/// `nullopt` is the negotiation-failure case, not an error to swallow: on the
+/// server it is CoAP 4.15, on the client it is `Unsupported_Media_Type_Error`.
+template<typename Registry>
+[[nodiscard]] inline auto registry_media_type_for_content_format(const Registry& registry,
+                                                                 coap_content_format format)
+    -> std::optional<std::string> {
+    for (const auto& media_type : registry.preferred_media_types()) {
+        if (media_type_to_coap_content_format(media_type) == format) {
+            return media_type;
+        }
+    }
+    return std::nullopt;
+}
+
 /// @deprecated Superseded by `media_type_to_coap_content_format`. Retained only
 ///     for the three call sites that still pass a serializer `name()`
 ///     (`coap_transport_impl.hpp`, `beast_http_transport_impl.hpp`); do not
