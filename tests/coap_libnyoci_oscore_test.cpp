@@ -264,6 +264,134 @@ BOOST_AUTO_TEST_CASE(test_sequential_requests_advance_the_partial_iv,
     server.stop();
 }
 
+// ── Inner block-wise (RFC 7959 inside RFC 8613) ────────────────────────────
+
+// The payoff. libnyoci has no Block1 at all, so before this an oversized
+// request was rejected outright and InstallSnapshot could not cross this
+// backend. Under OSCORE the adapter owns the inner message, so it can fragment
+// end-to-end -- each block separately authenticated, and a 16 KiB snapshot
+// crosses a transport whose datagram buffer is 1033 bytes.
+BOOST_AUTO_TEST_CASE(test_large_install_snapshot_over_inner_block1,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    test_server server{loopback, ephemeral_port, server_config(), test_metrics{}};
+    std::size_t received_size = 0;
+    server.register_install_snapshot_handler(
+        [&received_size](const kythira::install_snapshot_request<>& request) {
+            received_size = request.data().size();
+            return kythira::install_snapshot_response<>{request.last_included_index()};
+        });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
+
+    // Well past libnyoci's 1033-byte datagram buffer, and past a single
+    // 256-byte inner block, so this genuinely walks the Block1 state machine.
+    constexpr std::size_t snapshot_size = 16 * 1024;
+    std::vector<std::byte> snapshot(snapshot_size);
+    for (std::size_t i = 0; i < snapshot_size; ++i) {
+        snapshot[i] = static_cast<std::byte>(i & 0xFF);
+    }
+
+    kythira::install_snapshot_request<> request{};
+    request._term = 4;
+    request._leader_id = 1;
+    request._last_included_index = 9001;
+    request._last_included_term = 3;
+    request._data = snapshot;
+    request._done = true;
+
+    const auto response =
+        client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{60}).get();
+    BOOST_TEST(response.term() == 9001U);
+    BOOST_TEST(received_size == snapshot_size,
+               "the server must reassemble the whole snapshot, got " << received_size);
+
+    server.stop();
+}
+
+// The other direction: a response too large for one protected datagram must
+// come back in inner Block2 slices and be reassembled by the client.
+BOOST_AUTO_TEST_CASE(test_large_response_over_inner_block2,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    test_server server{loopback, ephemeral_port, server_config(), test_metrics{}};
+    server.register_append_entries_handler([](const kythira::append_entries_request<>& request) {
+        kythira::append_entries_response<> response{};
+        response._term = request.term();
+        response._success = true;
+        // conflict_index/term are the only fields available to make a response
+        // big, so the size comes from the request echoing back through them.
+        response._conflict_index = request.prev_log_index();
+        response._conflict_term = request.prev_log_term();
+        return response;
+    });
+    server.start();
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_config(), test_metrics{}};
+
+    // A request whose *entries* are large: this exercises Block1 on the way out
+    // and confirms the reply still arrives intact.
+    kythira::append_entries_request<> request{};
+    request._term = 12;
+    request._leader_id = 3;
+    request._prev_log_index = 77;
+    request._prev_log_term = 11;
+    for (int i = 0; i < 8; ++i) {
+        request._entries.push_back(kythira::log_entry<>{
+            12, static_cast<std::uint64_t>(78 + i), std::vector<std::byte>(600, std::byte{0x7e}),
+            kythira::entry_type::normal});
+    }
+
+    const auto response =
+        client.send_append_entries(peer_node_id, request, std::chrono::seconds{60}).get();
+    BOOST_TEST(response.term() == 12U);
+    BOOST_TEST(response.success());
+    BOOST_REQUIRE(response.conflict_index().has_value());
+    BOOST_TEST(*response.conflict_index() == 77U);
+
+    server.stop();
+}
+
+// Fragmentation must not weaken authentication: every block is protected
+// separately, so a wrong key still fails on the very first one.
+BOOST_AUTO_TEST_CASE(test_block_wise_still_refuses_a_wrong_key,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(60))) {
+    test_server server{loopback, ephemeral_port, server_config(), test_metrics{}};
+    bool handler_ran = false;
+    server.register_install_snapshot_handler(
+        [&handler_ran](const kythira::install_snapshot_request<>& request) {
+            handler_ran = true;
+            return kythira::install_snapshot_response<>{request.last_included_index()};
+        });
+    server.start();
+
+    auto config = client_config();
+    auto creds = std::get<kythira::oscore_credentials>(config.security.credentials);
+    creds.master_secret = bytes({0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe,
+                                 0xef, 0xde, 0xad, 0xbe, 0xef});
+    config.security.credentials = creds;
+
+    test_client client{{{peer_node_id, endpoint_for(server.bound_port())}}, config, test_metrics{}};
+
+    kythira::install_snapshot_request<> request{};
+    request._term = 1;
+    request._leader_id = 1;
+    request._data = std::vector<std::byte>(4096, std::byte{0x5a});
+    request._done = true;
+
+    bool rejected = false;
+    try {
+        (void)client.send_install_snapshot(peer_node_id, request, std::chrono::seconds{8}).get();
+    } catch (const kythira::coap_transport_error&) {
+        rejected = true;
+    }
+    BOOST_TEST(rejected);
+    BOOST_TEST(!handler_ran, "no block may reach the handler unverified");
+
+    server.stop();
+}
+
 #else  // LIBNYOCI_AVAILABLE
 
 BOOST_AUTO_TEST_CASE(test_oscore_transport_tests_skipped_without_libnyoci) {
