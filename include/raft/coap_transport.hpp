@@ -532,9 +532,15 @@ private:
     std::atomic<std::uint16_t> _next_message_id{1};
 
     // Helper methods
+    /// @param attempted Media types this peer has already refused with 4.15 for
+    ///        this call. Empty on first entry; the retry path re-enters with it
+    ///        extended (Requirement 7.3). CoAP needs this for the same reason
+    ///        HTTP does — the request `Content-Format` is chosen before the peer
+    ///        has said anything, so a wrong first guess has to be recoverable.
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
-                  std::chrono::milliseconds timeout) -> future_template<Response>;
+                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
+        -> future_template<Response>;
 
     auto get_endpoint_uri(std::uint64_t node_id) const -> std::string;
     auto generate_message_token() -> std::string;

@@ -631,9 +631,18 @@ private:
     auto get_or_create_connection(std::uint64_t target) -> pooled_connection&;
     auto remove_connection(std::uint64_t target) -> void;
 
+    /// @param attempted Media types already refused by this peer for this call.
+    ///        Empty on the caller's first entry; the 415 retry path re-enters
+    ///        with it extended (Requirement 7.3, see
+    ///        `next_request_media_type_after_rejection`). Threading it through
+    ///        the ordinary send path — rather than giving the retry its own —
+    ///        is what keeps a retried attempt identical to a first one in every
+    ///        respect except the encoding: same connect, same pooling, same
+    ///        metrics, same timeout handling.
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
-                  std::chrono::milliseconds timeout) -> future_template<Response>;
+                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
+        -> future_template<Response>;
 };
 
 /// @brief `network_server` implementation backed by Boost.Beast's

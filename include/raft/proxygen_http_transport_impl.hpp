@@ -802,17 +802,70 @@ template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
 template<typename Request, typename Response>
 auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
-                                      const Request& request, std::chrono::milliseconds timeout)
+                                      const Request& request, std::chrono::milliseconds timeout,
+                                      std::vector<std::string> attempted)
     -> future_template<Response> {
+    // Chosen here, once, and handed to whichever path runs. On a 415 re-entry
+    // `attempted` is non-empty and the next unrefused type is used; the retry
+    // below has already established one exists.
+    const std::string content_type =
+        attempted.empty()
+            ? kythira::select_request_media_type(_registry, _capability_cache, target)
+            : kythira::next_request_media_type_after_rejection(_registry, attempted).value();
+
     // Requirement 16.1: compile-time dispatch purely on Types's own
     // future_template member type -- not a KYTHIRA_DEFAULT_FUTURE_BACKEND
     // macro check (see design.md / this file's own comment on
     // send_rpc_folly_fast_path for why that distinction matters).
-    if constexpr (std::same_as<future_template<Response>, kythira::Future<Response>>) {
-        return send_rpc_folly_fast_path<Request, Response>(target, endpoint, request, timeout);
-    } else {
-        return send_rpc_generic_bridge<Request, Response>(target, endpoint, request, timeout);
-    }
+    auto attempt = [&]() -> future_template<Response> {
+        if constexpr (std::same_as<future_template<Response>, kythira::Future<Response>>) {
+            return send_rpc_folly_fast_path<Request, Response>(target, endpoint, request, timeout,
+                                                               content_type);
+        } else {
+            return send_rpc_generic_bridge<Request, Response>(target, endpoint, request, timeout,
+                                                              content_type);
+        }
+    }();
+
+    // One retry wrapper covering both paths (Requirement 7.3). Attached here
+    // rather than inside either body precisely because there are two bodies:
+    // Task 10a's write-up records how the hardcoded `application/json` came to
+    // differ between them, and a per-path retry is the same shape of mistake
+    // waiting to happen. Safe because 415 precedes the handler, and bounded
+    // because `attempted` only grows.
+    return std::move(attempt).thenError(
+        [this, target, endpoint = std::string(endpoint), request, timeout, content_type,
+         attempted](std::exception_ptr e) mutable -> future_template<Response> {
+            try {
+                std::rethrow_exception(e);
+            } catch (const kythira::http_client_error& client_error) {
+                if (client_error.status_code() == 415) {
+                    attempted.push_back(content_type);
+                    if (auto next = kythira::next_request_media_type_after_rejection(_registry,
+                                                                                     attempted)) {
+                        auto retry_metric = _metrics;
+                        retry_metric.set_metric_name("proxygen_http.client.media_type_retry");
+                        retry_metric.add_dimension("target_node_id", std::to_string(target));
+                        retry_metric.add_dimension("rejected_media_type", content_type);
+                        retry_metric.add_dimension("media_type", *next);
+                        retry_metric.add_one();
+                        retry_metric.emit();
+                        return send_rpc<Request, Response>(target, endpoint, request, timeout,
+                                                           std::move(attempted));
+                    }
+                }
+            } catch (...) {  // NOLINT(bugprone-empty-catch)
+                // Not a negotiation failure; fall through to propagation.
+            }
+            // Returned rather than thrown, for the same reason as the other two
+            // transports: throwing out of a Future-returning `thenError`
+            // leaves the promise unfulfilled and reports a BrokenPromise in
+            // place of the 415.
+            kythira::promise_default<Response> error_promise;
+            auto error_future = error_promise.getFuture();
+            error_promise.setException(e);
+            return error_future;
+        });
 }
 
 template<typename Types>
@@ -821,7 +874,8 @@ template<typename Request, typename Response>
 auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                                                      std::string_view endpoint,
                                                      const Request& request,
-                                                     std::chrono::milliseconds timeout)
+                                                     std::chrono::milliseconds timeout,
+                                                     const std::string& content_type)
     -> future_template<Response> {
     std::string rpc_type = proxygen_rpc_type_name(endpoint);
     kythira::promise_default<Response> promise;
@@ -833,8 +887,6 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
         // default (Requirement 6.1-6.3). Identical on both client paths on
         // purpose: which one runs is decided by the future backend, and a node's
         // wire behaviour must not depend on that.
-        const std::string content_type =
-            kythira::select_request_media_type(_registry, _capability_cache, target);
         const std::string accept = kythira::format_accept_header(_registry.preferred_media_types());
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
@@ -1020,7 +1072,8 @@ template<typename Request, typename Response>
 auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                                                       std::string_view endpoint,
                                                       const Request& request,
-                                                      std::chrono::milliseconds timeout)
+                                                      std::chrono::milliseconds timeout,
+                                                      const std::string& content_type)
     -> kythira::Future<Response> {
     std::string rpc_type = proxygen_rpc_type_name(endpoint);
     // Raw folly::Promise<T>, not kythira::promise_default<T> -- no generic
@@ -1034,8 +1087,6 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
         // default (Requirement 6.1-6.3). Identical on both client paths on
         // purpose: which one runs is decided by the future backend, and a node's
         // wire behaviour must not depend on that.
-        const std::string content_type =
-            kythira::select_request_media_type(_registry, _capability_cache, target);
         const std::string accept = kythira::format_accept_header(_registry.preferred_media_types());
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());

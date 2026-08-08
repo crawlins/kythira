@@ -784,7 +784,8 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 template<typename Request, typename Response>
 auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
-                                         const Request& request, std::chrono::milliseconds timeout)
+                                         const Request& request, std::chrono::milliseconds timeout,
+                                         std::vector<std::string> attempted)
     -> future_template<Response> {
     std::string rpc_type;
     if (endpoint == beast_endpoint_request_vote) {
@@ -808,9 +809,13 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
 
         // Same negotiation as cpp_httplib_client, expressed through Beast's
         // header API: cached type if the registry still supports it, else the
-        // default (Requirement 6.1-6.3).
+        // default (Requirement 6.1-6.3). On a 415 re-entry, `attempted` is
+        // non-empty and the next unrefused type is used instead; the caller
+        // below has already established that one exists.
         const std::string content_type =
-            select_request_media_type(_registry, _capability_cache, target);
+            attempted.empty()
+                ? select_request_media_type(_registry, _capability_cache, target)
+                : next_request_media_type_after_rejection(_registry, attempted).value();
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
 
@@ -947,6 +952,55 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 // establishes a fresh one instead of retrying a broken one.
                 remove_connection(target);
                 std::rethrow_exception(e);
+            })
+            // The 415 retry sits *outside* the teardown above rather than
+            // inside the success continuation, so a retried attempt re-enters
+            // `send_rpc` by the front door and gets a fresh connection, the
+            // same metrics and the same timeout treatment as a first attempt.
+            // It has to be the outermost link: the teardown rethrows, and this
+            // is what turns that rethrow back into a new exchange.
+            //
+            // Safe because 415 is answered before the handler runs
+            // (Requirement 4.4), so the peer provably did no work and there is
+            // nothing to double-apply. Bounded because `attempted` only ever
+            // grows and `next_request_media_type_after_rejection` never returns
+            // a type already in it -- a single-serializer registry gets
+            // `nullopt` on the first rejection and rethrows unchanged.
+            .thenError([this, target, endpoint = std::string(endpoint), request, timeout,
+                        content_type,
+                        attempted](std::exception_ptr e) mutable -> future_template<Response> {
+                try {
+                    std::rethrow_exception(e);
+                } catch (const kythira::http_client_error& client_error) {
+                    if (client_error.status_code() == 415) {
+                        attempted.push_back(content_type);
+                        if (auto next =
+                                next_request_media_type_after_rejection(_registry, attempted)) {
+                            auto retry_metric = _metrics;
+                            retry_metric.set_metric_name("beast_http.client.media_type_retry");
+                            retry_metric.add_dimension("target_node_id", std::to_string(target));
+                            retry_metric.add_dimension("rejected_media_type", content_type);
+                            retry_metric.add_dimension("media_type", *next);
+                            retry_metric.add_one();
+                            retry_metric.emit();
+                            return send_rpc<Request, Response>(target, endpoint, request, timeout,
+                                                               std::move(attempted));
+                        }
+                    }
+                } catch (...) {  // NOLINT(bugprone-empty-catch)
+                    // Anything else is not a negotiation failure; fall through
+                    // to the propagation below rather than swallowing it.
+                }
+                // **Returned, not thrown.** This is the Future-returning
+                // (flattening) `thenError` overload, and throwing out of it
+                // destroys the promise without ever fulfilling it -- the caller
+                // then sees "The associated promise has been destructed prior
+                // to the associated state becoming ready" instead of the 415.
+                // That path is every single-serializer deployment, since a
+                // registry with one type has nothing to retry with, so getting
+                // it wrong would have broken the common case while the
+                // multi-serializer case looked fine.
+                return beast_exceptional_future<Response>(e);
             });
     } catch (const std::exception& e) {
         return beast_exceptional_future<Response>(std::current_exception());
