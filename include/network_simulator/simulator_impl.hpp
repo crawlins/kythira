@@ -149,7 +149,7 @@ auto NetworkSimulator<Types>::create_node(address_type address) -> std::shared_p
         _message_queues[address] = std::deque<message_type>{};
     }
 
-    auto node = std::make_shared<node_type>(address, this);
+    auto node = std::make_shared<node_type>(address, this, _scope);
     _nodes[address] = node;
     return node;
 }
@@ -207,6 +207,28 @@ template<typename Types> auto NetworkSimulator<Types>::start() -> void {
 
     // Note: Using synchronous delivery for both messages and connection data
     // to avoid threading complexity while maintaining correct behavior
+}
+
+template<typename Types> NetworkSimulator<Types>::~NetworkSimulator() {
+    // Refuse new node calls and wait for those already inside. Deliberately not
+    // in stop(): most tests never call stop(), and the destructor is the only
+    // point every user is guaranteed to reach.
+    //
+    // Cancel blocked receives *before* draining, not after. A `retrieve_message`
+    // parked in `_msg_available.wait_for` holds its scope ticket for the whole
+    // wait, so a drain that did not wake it would take as long as the longest
+    // caller-supplied receive timeout still in flight -- seconds, per simulator,
+    // in the tests that construct one per property-test iteration. Waking them
+    // turns the drain into a wait on work that is genuinely running.
+    {
+        std::unique_lock lock(_mutex);
+        _closing = true;
+    }
+    // Notified outside the lock: a woken waiter re-acquires `_mutex` on the way
+    // out of `wait_for`, and would only block again on the thread notifying it.
+    _msg_available.notify_all();
+
+    _scope->close_and_drain();
 }
 
 template<typename Types> auto NetworkSimulator<Types>::stop() -> void {
@@ -483,12 +505,23 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address,
     -> future_message_type {
     std::unique_lock lock(_mutex);
 
+    // `_closing` in the predicate, not merely around the wait: the destructor
+    // sets it and notifies, and a waiter that only re-tested the queue would go
+    // straight back to sleep for the rest of its timeout while still holding
+    // the scope ticket the destructor is draining on.
     bool got = _msg_available.wait_for(lock, timeout, [&] {
+        if (_closing) {
+            return true;
+        }
         auto it = _message_queues.find(address);
         return it != _message_queues.end() && !it->second.empty();
     });
 
-    if (!got) {
+    // A close reports as a timeout rather than delivering: the caller's
+    // simulator is being destroyed, so there is no useful next operation to
+    // hand it a message for, and every caller of this overload already has a
+    // TimeoutException path.
+    if (!got || _closing) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(TimeoutException()));
     }
@@ -505,7 +538,12 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, port_type p
     -> future_message_type {
     std::unique_lock lock(_mutex);
 
+    // See the two-argument overload: `_closing` belongs inside the predicate so
+    // the destructor's notify actually ends the wait instead of restarting it.
     auto try_dequeue = [&]() -> bool {
+        if (_closing) {
+            return true;
+        }
         auto it = _message_queues.find(address);
         return it != _message_queues.end() &&
                std::any_of(it->second.begin(), it->second.end(),
@@ -514,7 +552,7 @@ auto NetworkSimulator<Types>::retrieve_message(address_type address, port_type p
 
     bool got = _msg_available.wait_for(lock, timeout, try_dequeue);
 
-    if (!got) {
+    if (!got || _closing) {
         return kythira::future_factory_default::makeExceptionalFuture<message_type>(
             std::make_exception_ptr(TimeoutException()));
     }
