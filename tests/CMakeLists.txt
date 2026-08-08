@@ -3757,6 +3757,52 @@ else()
     message(STATUS "gRPC transport tests: skipped (raft_grpc_transport target not available)")
 endif()
 
+# ── coap-transport-libnyoci spec: the alternate libnyoci-backed CoAP backend ──
+# Both targets link `network_simulator`, which carries LIBNYOCI_AVAILABLE and
+# libnyoci's include/link flags when the root probe found it (root
+# CMakeLists.txt). Neither target is conditional on LIBNYOCI_FOUND: the adapter
+# header keeps its full concept surface with or without the C library, so the
+# conformance test's static_asserts stay meaningful in a default build and the
+# integration test compiles down to a single "skipped" case (Requirement 7.5).
+#
+# These two are the only targets in the tree that must NOT also pull in
+# raft/coap_transport.hpp -- <coap3/coap.h> and <libnyoci/libnyoci.h> cannot
+# share a translation unit. That is a source-level constraint, enforced by the
+# includes in the two .cpp files rather than by anything here.
+add_executable(coap_libnyoci_concept_conformance_test coap_libnyoci_concept_conformance_test.cpp)
+target_link_libraries(coap_libnyoci_concept_conformance_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libnyoci_concept_conformance_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_libnyoci_concept_conformance_test PRIVATE cxx_std_23)
+add_test(NAME coap_libnyoci_concept_conformance_test
+         COMMAND coap_libnyoci_concept_conformance_test)
+set_tests_properties(coap_libnyoci_concept_conformance_test PROPERTIES
+    TIMEOUT 60 LABELS "coap;libnyoci;unit")
+
+# Real loopback sockets, so this one needs a generous CTest budget: the
+# block-wise case walks a couple of hundred bytes of JSON sixteen bytes at a
+# time, and the cancellation cases deliberately wait on peers that never
+# answer. The per-case boost::unit_test::timeout values inside the file are
+# what actually bound each test; TIMEOUT here must stay above their sum.
+add_executable(coap_libnyoci_integration_test coap_libnyoci_integration_test.cpp)
+target_link_libraries(coap_libnyoci_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libnyoci_integration_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_libnyoci_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_libnyoci_integration_test COMMAND coap_libnyoci_integration_test)
+set_tests_properties(coap_libnyoci_integration_test PROPERTIES
+    TIMEOUT 600 LABELS "coap;libnyoci;integration")
+
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
 # coap suite several times slower than Release, so per-case Boost timeouts
