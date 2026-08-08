@@ -3557,8 +3557,15 @@ endif()
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND TARGET httplib::httplib)
     add_beast_test(beast_cross_transport_equivalence_test
         beast_cross_transport_equivalence_test.cpp)
+    # The interop axis the equivalence test above does *not* cover: one
+    # implementation's client against a different implementation's server.
+    # Both suites instantiate both transports; only this one pairs them
+    # off-diagonal. Same dependency pair, so it is gated identically.
+    add_beast_test(http_implementation_interop_test
+        http_implementation_interop_test.cpp)
 else()
     message(STATUS "beast_cross_transport_equivalence_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
+    message(STATUS "http_implementation_interop_test: skipped (requires KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and httplib)")
 endif()
 # ── proxygen-http-transport (.kiro/specs/proxygen-http-transport/) ───────────
 if(KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
