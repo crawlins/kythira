@@ -3621,6 +3621,10 @@ endif()
 # these can safely run concurrently under `ctest -j` alongside each other and
 # alongside beast_cross_transport_equivalence_test below.
 if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT)
+    # Requirement 7.3's 415 retry, over Beast. Each transport implements the
+    # retry itself, so each needs its own runtime evidence; Beast's is the chain
+    # where the retry sits outside the connection-teardown handler.
+    add_beast_test(beast_negotiation_retry_test beast_negotiation_retry_test.cpp)
     add_beast_test(beast_client_test beast_client_test.cpp)
     add_beast_test(beast_server_test beast_server_test.cpp)
     add_beast_test(beast_integration_test beast_integration_test.cpp)

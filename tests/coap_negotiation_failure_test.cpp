@@ -44,8 +44,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "test_timeout_scale.hpp"
@@ -88,6 +90,16 @@ using json_only_types =
 using json_first_types =
     coap_test_types<json_serializer,
                     kythira::multi_serializer_registry<json_serializer, cbor_serializer>>;
+// A client that prefers CBOR but can also speak JSON: the configuration whose
+// first guess a JSON-only peer refuses, and therefore the one the 4.15 retry
+// exists for (Requirement 7.3).
+using cbor_first_types =
+    coap_test_types<cbor_serializer,
+                    kythira::multi_serializer_registry<cbor_serializer, json_serializer>>;
+// A client with exactly one format the server does not speak: the exhaustion
+// case, and also every single-serializer deployment shipping today.
+using cbor_only_types =
+    coap_test_types<cbor_serializer, kythira::single_serializer_registry<cbor_serializer>>;
 
 /// What the raw client observed coming back.
 struct raw_response {
@@ -373,6 +385,88 @@ BOOST_AUTO_TEST_CASE(an_unsatisfiable_accept_is_4_06_before_the_handler,
     BOOST_TEST(observed.code == code_not_acceptable);
     BOOST_TEST(fixture.handler_invocations.load() == 0);
     BOOST_TEST(observed.payload_size == 0u);
+}
+
+/// @brief Requirement 7.3 over CoAP: a multi-serializer client whose preferred
+///        Content-Format the peer refuses retries in one the peer speaks.
+///
+/// The CoAP twin of `multi_serializer_interop_test`'s HTTP cell. Uses our own
+/// `coap_client` rather than the raw libcoap peer the cases above need, because
+/// the behaviour under test *is* the client's — a raw peer has no retry logic to
+/// exercise.
+///
+/// Before the retry landed this pairing was permanently broken in exactly the
+/// way the HTTP one was: the client sent `application/cbor`, the JSON-only
+/// server answered 4.15, and nothing revised the guess. The assertion that
+/// matters is `handler_invocations == 1` — the handler ran once, on the retry,
+/// which is what distinguishes "recovered" from both "never got through" and
+/// "got through twice".
+BOOST_AUTO_TEST_CASE(a_multi_serializer_client_retries_after_4_15,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    server_fixture<json_only_types> fixture;
+
+    kythira::coap_client_config client_config;
+    client_config.enable_dtls = false;
+    std::unordered_map<std::uint64_t, std::string> endpoints;
+    endpoints[1] = std::format("coap://{}:{}", bind_address, fixture.port());
+    kythira::noop_metrics client_metrics;
+    kythira::coap_client<cbor_first_types> client(std::move(endpoints), client_config,
+                                                  client_metrics);
+
+    kythira::request_vote_request<> request{7, 42, 3, 6};
+    auto future = client.send_request_vote(1, request, exchange_timeout);
+
+    BOOST_REQUIRE(future.wait(exchange_timeout));
+    auto response = std::move(future).get();
+    BOOST_TEST(response.term() == 7);
+    BOOST_TEST(response.vote_granted());
+    BOOST_TEST(fixture.handler_invocations.load() == 1);
+}
+
+/// @brief Exhaustion over CoAP: a client with no alternative format fails
+///        cleanly rather than hanging or reporting a broken promise.
+///
+/// The single-serializer client has nothing to retry with, so the retry must
+/// stop at once and surface the 4.15 the peer actually sent. This case exists
+/// because the first version of the retry got it wrong in a way the
+/// multi-serializer case could not reveal: the exhausted path *threw* out of a
+/// Future-returning `thenError` continuation, which leaves the promise
+/// unfulfilled, and the caller saw "The associated promise has been destructed
+/// prior to the associated state becoming ready" instead of the refusal. That
+/// is the common configuration, not an exotic one — so the bug would have
+/// shipped affecting every single-serializer node while the new
+/// multi-serializer path looked healthy.
+BOOST_AUTO_TEST_CASE(a_client_with_no_alternative_format_fails_cleanly,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    server_fixture<json_only_types> fixture;
+
+    kythira::coap_client_config client_config;
+    client_config.enable_dtls = false;
+    std::unordered_map<std::uint64_t, std::string> endpoints;
+    endpoints[1] = std::format("coap://{}:{}", bind_address, fixture.port());
+    kythira::noop_metrics client_metrics;
+    kythira::coap_client<cbor_only_types> client(std::move(endpoints), client_config,
+                                                 client_metrics);
+
+    kythira::request_vote_request<> request{7, 42, 3, 6};
+    auto future = client.send_request_vote(1, request, exchange_timeout);
+
+    // Completes rather than hangs -- a retry loop that never terminated, or a
+    // promise never fulfilled, would fail here first.
+    BOOST_REQUIRE(future.wait(exchange_timeout));
+
+    int code = 0;
+    std::string what;
+    try {
+        std::move(future).get();
+    } catch (const kythira::coap_client_error& e) {
+        code = e.response_code();
+    } catch (const std::exception& e) {
+        what = e.what();
+    }
+    BOOST_TEST(code == code_unsupported_content_format,
+               "expected a typed 4.15; other exception was: " << what);
+    BOOST_TEST(fixture.handler_invocations.load() == 0);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

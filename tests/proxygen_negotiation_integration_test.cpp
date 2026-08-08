@@ -27,7 +27,10 @@
 
 #include <raft/proxygen_http_transport.hpp>
 #include <raft/proxygen_http_transport_impl.hpp>
+#include <raft/cbor_serializer.hpp>
+#include <raft/http_exceptions.hpp>
 #include <raft/json_serializer.hpp>
+#include <raft/serializer_registry.hpp>
 #include <raft/executor_default.hpp>
 
 #include <folly/executors/IOThreadPoolExecutor.h>
@@ -36,6 +39,7 @@
 #include "test_timeout_scale.hpp"
 
 #include <atomic>
+#include <unordered_map>
 #include <chrono>
 #include <cstddef>
 #include <memory>
@@ -55,6 +59,25 @@ using serializer_type = kythira::json_rpc_serializer<data_type>;
 using test_types =
     kythira::future_default_proxygen_transport_types<serializer_type, kythira::noop_metrics,
                                                      kythira::executor_default>;
+
+/// A bundle whose registry is a parameter, derived from the shipped one so it
+/// differs in exactly that. Used only by the retry case at the bottom of this
+/// file, which needs a *client* that prefers a format this JSON-only server
+/// refuses.
+template<typename Default_Serializer, typename Registry>
+struct proxygen_negotiating_types
+    : kythira::future_default_proxygen_transport_types<Default_Serializer, kythira::noop_metrics,
+                                                       kythira::executor_default> {
+    using serializer_registry_type = Registry;
+};
+
+using cbor_serializer_type = kythira::cbor_rpc_serializer<data_type>;
+using multi_cbor_first_types = proxygen_negotiating_types<
+    cbor_serializer_type,
+    kythira::multi_serializer_registry<cbor_serializer_type, serializer_type>>;
+using cbor_only_types =
+    proxygen_negotiating_types<cbor_serializer_type,
+                               kythira::single_serializer_registry<cbor_serializer_type>>;
 
 /// A well-formed request body in the server's own default media type, so any
 /// rejection observed below is attributable to the *headers* rather than to the
@@ -251,6 +274,74 @@ BOOST_AUTO_TEST_CASE(a_malformed_body_in_a_supported_type_is_400_not_415,
 
     BOOST_REQUIRE(res);
     BOOST_CHECK_EQUAL(res->status, 400);
+}
+
+/// @brief Requirement 7.3 over Proxygen: a client whose preferred encoding this
+///        JSON-only server refuses retries in one it speaks.
+///
+/// Uses `proxygen_client` rather than the raw `httplib::Client` the rest of this
+/// file needs, because the behaviour under test is the client's. Proxygen is the
+/// transport where this matters most to verify at runtime: it has **two**
+/// independent send paths chosen by an `if constexpr` on the future backend, and
+/// the retry is attached once at the `send_rpc` dispatch point so both inherit
+/// it. This case exercises whichever path this build selected; the other is
+/// compile-checked by building the suite under the opposite backend.
+BOOST_AUTO_TEST_CASE(a_multi_serializer_proxygen_client_retries_after_415) {
+    folly::IOThreadPoolExecutor client_io(2);
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {1, std::string("http://") + bind_address + ":" + std::to_string(bind_port)}};
+    kythira::proxygen_client<multi_cbor_first_types> client(client_io, node_map, {},
+                                                            kythira::noop_metrics{});
+
+    const auto before = handler_invocations.load();
+    kythira::request_vote_request<> req{};
+    req._term = 5;
+    req._candidate_id = 42;
+
+    bool succeeded = false;
+    try {
+        auto resp =
+            std::move(client.send_request_vote(1, req, kythira::testing::scaled_deadline(5000)))
+                .get();
+        succeeded = resp.term() == 6 && resp.vote_granted();
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE("retry did not recover: " << e.what());
+    }
+
+    BOOST_TEST(succeeded);
+    // Exactly one handler entry: the CBOR attempt was refused before the
+    // handler, and only the JSON retry reached it.
+    BOOST_TEST(handler_invocations.load() == before + 1);
+}
+
+/// @brief Exhaustion over Proxygen: nothing left to offer fails cleanly.
+///
+/// The path that first shipped a `BrokenPromise` in the other two transports —
+/// throwing out of a Future-returning `thenError` rather than returning an
+/// exceptional future. It is also every single-serializer deployment, which is
+/// why each transport pins it rather than assuming the shared shape is enough.
+BOOST_AUTO_TEST_CASE(a_proxygen_client_with_no_alternative_fails_cleanly) {
+    folly::IOThreadPoolExecutor client_io(2);
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {1, std::string("http://") + bind_address + ":" + std::to_string(bind_port)}};
+    kythira::proxygen_client<cbor_only_types> client(client_io, node_map, {},
+                                                     kythira::noop_metrics{});
+
+    const auto before = handler_invocations.load();
+    kythira::request_vote_request<> req{};
+    req._term = 5;
+
+    int status = 0;
+    std::string what;
+    try {
+        std::move(client.send_request_vote(1, req, kythira::testing::scaled_deadline(5000))).get();
+    } catch (const kythira::http_client_error& e) {
+        status = e.status_code();
+    } catch (const std::exception& e) {
+        what = e.what();
+    }
+    BOOST_TEST(status == 415, "expected a typed 415; other exception was: " << what);
+    BOOST_TEST(handler_invocations.load() == before);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
