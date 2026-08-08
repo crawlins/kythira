@@ -458,15 +458,26 @@ the headers, and that distinction is the entire subject of these tasks.
     it had heard anything from the server; there is no mechanism by which a
     client learns a peer's formats in advance, so the request leg is not
     negotiated at all. It is guessed, from the registry default
-  - **Defect found: a multi-serializer client whose default the single-serializer
-    server does not speak is permanently broken.** Measured — the client sends
-    `application/cbor`, the JSON-only server answers 415, the handler is never
-    entered, and nothing recovers: there is no retry, and the capability cache
-    is deliberately not written on failure, so every subsequent request repeats
-    the identical mistake. Requirement 7.3 says these two SHALL interoperate.
-    Recorded in `doc/TODO.md`; the cell asserts today's behaviour and says so in
-    its name, so **it will fail when someone implements the fix**, which is how
-    they will find out it is there
+  - **Defect found and since fixed: a multi-serializer client whose default the
+    single-serializer server does not speak was permanently broken.** Measured —
+    the client sent `application/cbor`, the JSON-only server answered 415, the
+    handler was never entered, and nothing recovered: no retry, and the
+    capability cache is deliberately not written on failure, so every subsequent
+    request repeated the identical mistake. Requirement 7.3 says these two SHALL
+    interoperate
+  - **Fixed August 8, 2026 by a blind retry**: on 415/4.15 the client walks the
+    rest of `preferred_media_types()` and caches whichever works. `Accept-Post`
+    (W3C Linked Data Platform 1.0 §7.1) would converge in one retry instead of
+    up to N, but it requires the *peer* to emit a header and 7.3 promises
+    interoperation without the peer changing — and it has no CoAP analogue,
+    while this policy has to hold across all four transports. It is an
+    optimisation to layer on later, not the mechanism. Full reasoning in
+    `doc/TODO.md`
+  - The cell is now `..._interoperates_with_a_single_json_server` and asserts
+    the *shape* of the recovery rather than a uniform success: four attempts for
+    three RPCs — CBOR refused, JSON accepted, then two more straight out in JSON
+    from the cache the retry populated. A client that retried on every request
+    would show six, and one that never retried would show three failures
   - Mutation-tested with a mutation the other suites' mutations do not catch —
     the server ignoring the request's `Accept` entirely. It kills the two cells
     where the client's and server's preferences differ and leaves the three that
