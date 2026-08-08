@@ -74,6 +74,23 @@ config COAP_TRANSPORT
 	  find_package(libcoap CONFIG) or PkgConfig fallback (libcoap-3).
 	  Backs LIBCOAP_AVAILABLE. vcpkg package: libcoap (feature: dtls).
 
+config COAP_TRANSPORT_LIBNYOCI
+	bool "Alternate CoAP transport backend (libnyoci)"
+	default n
+	help
+	  pkg_check_modules(LIBNYOCI libnyoci). Backs LIBNYOCI_AVAILABLE,
+	  enabling coap_libnyoci_client/coap_libnyoci_server
+	  (include/raft/coap_transport_libnyoci_impl.hpp) — a second
+	  implementation of the network_client/network_server concepts
+	  speaking CoAP over libnyoci instead of libcoap. vcpkg feature:
+	  coap-libnyoci (vcpkg-overlays/libnyoci overlay port; not built by
+	  default). Additive, not a replacement: it does not depend on
+	  COAP_TRANSPORT and the two backends coexist at link time.
+	  Defaults to n because the overlay port needs the autotools chain
+	  plus autoconf-archive on the host; strict mode will fail configure
+	  if you select y without libnyoci installed. See
+	  .kiro/specs/coap-transport-libnyoci/ for the full design.
+
 config EDHOC
 	bool "EDHOC-to-OSCORE credential bootstrap (lakers)"
 	depends on COAP_TRANSPORT

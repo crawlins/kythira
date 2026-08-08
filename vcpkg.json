@@ -129,6 +129,12 @@
       "dependencies": [
         "ion-c"
       ]
+    },
+    "coap-libnyoci": {
+      "description": "Alternate libnyoci-backed CoAP transport (coap_libnyoci_client/coap_libnyoci_server, include/raft/coap_transport_libnyoci_impl.hpp) alongside the default libcoap-backed one. Builds libnyoci from source via the vcpkg-overlays/libnyoci overlay port. Opt-in and additive: it does not replace libcoap, and omitting it leaves LIBNYOCI_AVAILABLE undefined with everything else unaffected. Building it needs the autotools chain plus autoconf-archive on the host — see vcpkg-overlays/libnyoci/README.md.",
+      "dependencies": [
+        "libnyoci"
+      ]
     }
   }
 }
