@@ -2466,21 +2466,36 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             throw coap_transport_error("Failed to add Content-Format option");
         }
 
-        // Advertise everything we can decode, in preference order, on *every*
-        // request rather than only the first. That is what keeps the capability
-        // cache an optimisation: when our cached guess is stale the peer still
-        // has the full list and can pick something we both speak
-        // (Requirement 6.1). CoAP carries this as repeated Accept options,
-        // where HTTP uses one comma-joined header.
-        for (const auto& accepted_media_type : _registry.preferred_media_types()) {
-            const auto accepted_format =
-                coap_utils::media_type_to_coap_content_format(accepted_media_type);
-            if (!accepted_format) {
-                continue;  // unreachable: validated at construction
-            }
+        // **Exactly one Accept option, not one per registered serializer.**
+        //
+        // CoAP's Accept is not a repeatable option (RFC 7252 Table 4 has no "R"
+        // for option 17): a request may name exactly one acceptable
+        // Content-Format, where HTTP's Accept carries a comma-joined list. This
+        // code previously looped over `preferred_media_types()` adding an option
+        // each, on the assumption that CoAP repeats options where HTTP joins
+        // them -- which is true of Uri-Path but not of Accept. libcoap enforces
+        // the distinction: the second `coap_add_option(..., COAP_OPTION_ACCEPT,
+        // ...)` returns 0 regardless of the order of the values, while two
+        // Uri-Path options both succeed. That made this throw
+        // "Failed to add Accept option" on *every* send from a multi-serializer
+        // client, so multi-serializer CoAP did not work at all -- latent only
+        // because no such client existed in the tree until Task 15/16's suites,
+        // and a single-serializer registry adds exactly one option and is fine.
+        //
+        // We advertise the type we are sending in. It is the one we have just
+        // decided we can handle, and asking for the response in the same
+        // encoding as the request is the behaviour a peer is least likely to
+        // find surprising. The cost is real and inherent to the protocol rather
+        // than to this choice: a CoAP client cannot express a *ranked* list, so
+        // it gets one guess at the response format where an HTTP client gets a
+        // preference order. The 4.15 retry moves this along with the request
+        // type, so a client that guesses wrong still converges.
+        const auto accept_format =
+            coap_utils::media_type_to_coap_content_format(request_media_type);
+        if (accept_format) {
             std::array<std::uint8_t, 2> accept_buf{};
-            const auto accept_len = coap_encode_var_safe(
-                accept_buf.data(), accept_buf.size(), static_cast<unsigned int>(*accepted_format));
+            const auto accept_len = coap_encode_var_safe(accept_buf.data(), accept_buf.size(),
+                                                         static_cast<unsigned int>(*accept_format));
             if (!coap_add_option(pdu, COAP_OPTION_ACCEPT, accept_len, accept_buf.data())) {
                 coap_delete_pdu(pdu);
                 coap_session_release(session);
@@ -3834,10 +3849,15 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // do the handler's work and throw it away, and for a handler with side
         // effects that difference is observable (Requirement 5.5).
         //
-        // CoAP repeats the Accept option rather than comma-joining one header,
-        // so this walks every instance in wire order -- which is the client's
-        // preference order, and therefore the order select_output_media_type
-        // expects.
+        // Walks every Accept instance in wire order. In practice a conforming
+        // peer sends **at most one**: CoAP's Accept is not repeatable (RFC 7252
+        // Table 4, option 17 has no "R"), unlike HTTP's comma-joined header.
+        // The loop is kept rather than reduced to a single lookup because it
+        // costs nothing and a non-conforming peer that sends several should be
+        // read in its stated order rather than rejected outright -- but do not
+        // read it as evidence that a list is expected here. Our own client
+        // sends one; it briefly tried to send several and every such request
+        // failed to build.
         std::vector<std::string> accepted_media_types;
         // Whether the peer stated *any* preference, which is not the same as
         // whether we could satisfy one. Tracked separately because the loop
