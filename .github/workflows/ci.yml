@@ -299,6 +299,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build \
             --log ctest-out.txt \
+            --floor 400 \
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
       - name: Publish test results
@@ -625,6 +626,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-coverage \
             --log ctest-coverage-out.txt \
+            --floor 395 \
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
       - name: Publish coverage test results
@@ -999,15 +1001,24 @@ jobs:
 
       # This job's `-R` is an explicit list of seven target names, which is the
       # shape most prone to silent decay: rename or drop any one of them and
-      # ctest matches six, runs six, and still exits 0. Deriving the expectation
-      # from `ctest -N` with the same filter makes that mismatch fail loudly
-      # without hardcoding a number that itself goes stale.
+      # ctest matches six, runs six, and still exits 0.
+      #
+      # This comment used to claim that deriving the expectation from `ctest -N`
+      # made that mismatch fail loudly. It does not, and the claim was the
+      # dangerous part: `ctest -N` applies the same `-R` to the same registry,
+      # so it also answers six, the derived expectation becomes six, six run,
+      # and the check passes. The protection being relied on did not exist.
+      #
+      # `--floor 7` is what actually holds the list to its length, because 7 is
+      # written here rather than read from the build. Adding a target to the
+      # `-R` list means raising it in the same edit.
       - name: Check the ThreadSanitizer run did the work
         if: always()
         run: |
           scripts/check-test-run.sh \
             --build-dir build-tsan \
             --log ctest-tsan-out.txt \
+            --floor 7 \
             -- -R 'beast_client_test|beast_server_test|beast_integration_test|beast_ssl_test|beast_cross_transport_equivalence_test|proxygen_transport_test|three_way_http_transport_equivalence_test'
 
       - name: Publish ThreadSanitizer test results
@@ -1250,6 +1261,7 @@ jobs:
           scripts/check-test-run.sh \
             --build-dir build-${{ matrix.backend }} \
             --log ctest-out.txt \
+            --floor 400 \
             -- -LE '^(slow|performance|verbose|benchmark|docker)$'
 
       - name: Upload ${{ matrix.backend }} test results
