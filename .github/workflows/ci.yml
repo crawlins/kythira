@@ -4,7 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # Every base branch, not just `main`. A **stacked** PR -- one whose base is
+    # another feature branch -- used to match no trigger at all and so ran this
+    # workflow zero times. That is worse than an absent signal: with no required
+    # checks present there is nothing for GitHub to report as missing, so such a
+    # PR rendered with a single passing check and `mergeStateStatus=CLEAN`. It
+    # looked *greener* than a PR that had actually built. PR #178 was opened
+    # that way on August 7, 2026 and is what surfaced this.
+    #
+    # Retargeting the base to `main` afterwards does not rescue it, which is why
+    # the fix has to be here rather than in a habit: this trigger uses the
+    # default activity types (`opened`, `synchronize`, `reopened`) and changing
+    # a base is `edited`, so a retargeted PR keeps its empty result until
+    # something is pushed.
+    #
+    # The cost is real and accepted: a stacked PR now pays for the full matrix,
+    # which since the backend-matrix widening is ~55 minutes of cold build per
+    # compat leg. Adding `edited` to the activity types was the cheaper
+    # alternative and was not taken -- it would only re-run on a retarget,
+    # leaving a PR that is never retargeted still silently uncovered, and it
+    # would also fire on every title and description edit.
+    branches: ['**']
 
 permissions:
   contents: read
