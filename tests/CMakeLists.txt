@@ -1499,6 +1499,13 @@ endif()
 # trip over UDP with cbor_rpc_serializer as Types::serializer_type
 add_network_test(coap_cbor_end_to_end_test coap_cbor_end_to_end_test.cpp)
 
+# CoAP content-negotiation branches (spec Tasks 15/16, CoAP half). Drives a real
+# coap_server with a raw libcoap client, because coap_client always sends a
+# Content-Format and Accept drawn from its own registry -- so 4.15 and 4.06 are
+# unreachable from it by construction.
+add_network_test(coap_negotiation_failure_test coap_negotiation_failure_test.cpp)
+set_tests_properties(coap_negotiation_failure_test PROPERTIES TIMEOUT 180 LABELS "coap;integration")
+
 # Network retry property test needs Boost.JSON and Folly
 add_executable(network_retry_property_test network_retry_property_test.cpp)
 target_link_libraries(network_retry_property_test PRIVATE

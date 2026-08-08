@@ -3839,6 +3839,13 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
         // preference order, and therefore the order select_output_media_type
         // expects.
         std::vector<std::string> accepted_media_types;
+        // Whether the peer stated *any* preference, which is not the same as
+        // whether we could satisfy one. Tracked separately because the loop
+        // below drops the entries it cannot resolve, so `accepted_media_types`
+        // alone cannot distinguish "the peer sent no Accept" from "the peer sent
+        // an Accept naming only things we do not speak" -- and those two demand
+        // opposite answers: the default, versus 4.06.
+        bool peer_stated_a_preference = false;
         {
             coap_opt_iterator_t accept_iter;
             coap_option_iterator_init(request, &accept_iter, COAP_OPT_ALL);
@@ -3846,13 +3853,14 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
                 if (accept_iter.number != COAP_OPTION_ACCEPT) {
                     continue;
                 }
+                peer_stated_a_preference = true;
                 const auto wire_format =
                     static_cast<coap_utils::coap_content_format>(coap_decode_var_bytes(
                         coap_opt_value(accept_option), coap_opt_length(accept_option)));
                 // An Accept naming something we do not speak is not an error on
                 // its own -- the client lists everything it can read, and we
                 // pick from the intersection. Only an empty intersection is a
-                // failure, which select_output_media_type reports below.
+                // failure, reported just below.
                 if (auto resolved = coap_utils::registry_media_type_for_content_format(
                         _registry, wire_format)) {
                     accepted_media_types.push_back(*std::move(resolved));
@@ -3860,8 +3868,17 @@ auto coap_server<Types>::handle_rpc_resource(coap_resource_t* resource, coap_ses
             }
         }
 
+        // Every surviving entry resolved *through the registry*, so it is a
+        // media type we support by construction and `select_output_media_type`
+        // can never reject it. That is why the second half of this condition is
+        // load-bearing rather than defensive: without it the 4.06 branch is
+        // unreachable, and a peer that can read only formats we lack gets 2.05
+        // and a body it cannot decode -- a silent wrong answer where the spec
+        // requires a clean refusal (Requirement 5.5). HTTP does not have the
+        // problem because `parse_accept_header` keeps unsupported entries, so
+        // its list stays non-empty and the registry does the rejecting.
         const auto output_media_type = _registry.select_output_media_type(accepted_media_types);
-        if (!output_media_type) {
+        if (!output_media_type || (peer_stated_a_preference && accepted_media_types.empty())) {
             auto error_metric = _metrics;
             error_metric.set_metric_name("coap.server.error");
             error_metric.add_dimension("error_type", "unsupported_media_type");
