@@ -64,6 +64,9 @@
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
 #include <raft/coap_utils.hpp>
+// The transport-neutral OSCORE implementation (RFC 8613). Deliberately usable
+// from here: it works on CoAP message bytes and needs no CoAP library.
+#include <raft/oscore.hpp>
 #include <raft/peer_capability_cache.hpp>
 #include <raft/serializer_registry.hpp>
 #include <raft/future_default.hpp>
@@ -132,6 +135,8 @@ struct inbound_options {
     std::optional<std::uint16_t> content_format;
     std::vector<std::uint16_t> accepted_formats;
     std::optional<std::uint32_t> block2;
+    /// Present (possibly empty) when the message carries an OSCORE option.
+    std::optional<std::vector<std::byte>> oscore;
 };
 
 /// Walk the inbound packet's options once, picking out the three the transport
@@ -158,6 +163,11 @@ struct inbound_options {
                 break;
             case COAP_OPTION_BLOCK2:
                 result.block2 = coap_decode_uint32(value, static_cast<std::uint8_t>(value_len));
+                break;
+            case static_cast<coap_option_key_t>(oscore::coap_option_oscore):
+                result.oscore =
+                    std::vector<std::byte>(reinterpret_cast<const std::byte*>(value),
+                                           reinterpret_cast<const std::byte*>(value) + value_len);
                 break;
             default:
                 break;
@@ -261,7 +271,8 @@ inline auto add_content_format_option(coap_option_key_t key, std::uint16_t forma
 /// Which wire channel this backend will run `config` over.
 enum class channel {
     plain,  //!< CoAP over UDP.
-    dtls    //!< CoAP over DTLS, via libnyoci's OpenSSL plugin.
+    dtls,   //!< CoAP over DTLS, via libnyoci's OpenSSL plugin.
+    oscore  //!< Object security over plain UDP, via raft/oscore.hpp.
 };
 
 /// Decide the channel for `config`, or refuse it (Requirement 5).
@@ -315,18 +326,28 @@ template<typename Config>
                 ".kiro/specs/coap-transport-libnyoci/ Task 5.");
 
         case coap_auth_mode::oscore:
-            // Not a libnyoci gap so much as a kythira one: kythira does not
-            // implement OSCORE, it configures libcoap's
-            // (coap_context_oscore_server / coap_new_client_session_oscore).
-            // There is no backend-neutral OSCORE to reach for. Same for the
-            // EDHOC bootstrap that feeds it -- the handshake itself is already
-            // transport-neutral, but the OSCORE context consuming its output is
-            // not. See doc/TODO.md.
-            throw coap_security_error(
-                std::string("the libnyoci CoAP backend cannot provide OSCORE for this ") + role +
-                ". libnyoci ships no OSCORE, and kythira has no implementation of its own to "
-                "fall back on -- oscore_provider delegates entirely to libcoap. Use the "
-                "libcoap-backed coap_client/coap_server for OSCORE and EDHOC. See doc/TODO.md.");
+            // Object security rather than channel security, so it rides on
+            // plain UDP: the protected message *is* an ordinary CoAP POST
+            // carrying an OSCORE option and a ciphertext payload. libnyoci
+            // ships no OSCORE, but it does not need to -- raft/oscore.hpp
+            // implements RFC 8613 against message bytes, so the adapter
+            // protects before handing libnyoci the outer message and verifies
+            // after receiving one.
+            if (std::holds_alternative<oscore_credentials>(effective.credentials) &&
+                std::get<oscore_credentials>(effective.credentials).bootstrap_method ==
+                    oscore_bootstrap::edhoc) {
+                // The EDHOC handshake itself is transport-neutral (lakers does
+                // the crypto behind an abstract edhoc_transport), but running
+                // it needs a `.well-known/edhoc` exchange this backend does not
+                // yet offer. Static provisioning works today.
+                throw coap_security_error(
+                    std::string("the libnyoci CoAP backend cannot run the EDHOC bootstrap for "
+                                "this ") +
+                    role +
+                    " yet; supply static OSCORE credentials (oscore_bootstrap::static_provisioned) "
+                    "or use the libcoap backend. See .kiro/specs/coap-transport-libnyoci/ Task 5.");
+            }
+            return {channel::oscore, std::move(effective)};
     }
     throw coap_security_config_error("unknown coap_auth_mode");
 }
@@ -558,6 +579,96 @@ inline auto configure_dtls(nyoci_t instance, const coap_security_config& securit
 
 #endif  // LIBNYOCI_AVAILABLE
 
+/// Split "/raft/append_entries" into the Uri-Path options a CoAP message
+/// carries. Needed for the OSCORE path specifically: the path is a Class E
+/// option, so it has to be built into the *inner* message by hand rather than
+/// left to nyoci_outbound_set_uri(), which would put it in the clear.
+[[nodiscard]] inline auto uri_path_options(const std::string& resource_path)
+    -> std::vector<oscore::coap_option> {
+    std::vector<oscore::coap_option> options;
+    std::size_t start = 0;
+    while (start < resource_path.size()) {
+        if (resource_path[start] == '/') {
+            ++start;
+            continue;
+        }
+        const auto end = resource_path.find('/', start);
+        const auto segment =
+            resource_path.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        oscore::coap_option option;
+        option.number = 11;  // Uri-Path
+        option.value.reserve(segment.size());
+        for (const char c : segment) {
+            option.value.push_back(static_cast<std::byte>(c));
+        }
+        options.push_back(std::move(option));
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return options;
+}
+
+/// Encode a Content-Format or Accept option value: a CoAP minimum-length
+/// unsigned integer, same rule the outer options follow.
+[[nodiscard]] inline auto encode_uint_option(std::uint16_t value) -> std::vector<std::byte> {
+    if (value == 0) {
+        return {};
+    }
+    if (value <= 0xFF) {
+        return {static_cast<std::byte>(value)};
+    }
+    return {static_cast<std::byte>((value >> 8U) & 0xFFU), static_cast<std::byte>(value & 0xFFU)};
+}
+
+[[nodiscard]] inline auto decode_uint_option(std::span<const std::byte> value) -> std::uint32_t {
+    std::uint32_t out = 0;
+    for (const auto b : value) {
+        out = (out << 8U) | static_cast<std::uint32_t>(b);
+    }
+    return out;
+}
+
+/// The inner (plaintext) CoAP request an OSCORE exchange protects: POST to the
+/// RPC's resource, carrying the negotiated Content-Format, the Accept list and
+/// the serialized body. Everything here ends up inside the ciphertext.
+[[nodiscard]] inline auto build_inner_request(const std::string& resource_path,
+                                              std::uint16_t content_format,
+                                              std::span<const std::uint16_t> accept_formats,
+                                              std::span<const std::byte> payload)
+    -> oscore::coap_message {
+    oscore::coap_message message;
+    message.code = 0x02;  // POST
+    message.options = uri_path_options(resource_path);
+    message.options.push_back(oscore::coap_option{12, encode_uint_option(content_format)});
+    for (const auto format : accept_formats) {
+        message.options.push_back(oscore::coap_option{17, encode_uint_option(format)});
+    }
+    std::stable_sort(message.options.begin(), message.options.end(),
+                     [](const oscore::coap_option& a, const oscore::coap_option& b) {
+                         return a.number < b.number;
+                     });
+    message.payload.assign(payload.begin(), payload.end());
+    message.has_payload = !payload.empty();
+    return message;
+}
+
+/// Pull the "/a/b" path back out of an inner message's Uri-Path options, so the
+/// server can dispatch on it exactly as it does for an unprotected request.
+[[nodiscard]] inline auto path_from_options(const oscore::coap_message& message) -> std::string {
+    std::string path;
+    for (const auto& option : message.options) {
+        if (option.number == 11) {
+            path.push_back('/');
+            for (const auto b : option.value) {
+                path.push_back(static_cast<char>(b));
+            }
+        }
+    }
+    return path;
+}
+
 }  // namespace libnyoci_detail
 
 // ---------------------------------------------------------------------------
@@ -589,6 +700,10 @@ public:
         kythira::coap_utils::validate_registry_content_formats(_registry);
         const auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "client");
         _secure = selected_channel == libnyoci_detail::channel::dtls;
+        if (selected_channel == libnyoci_detail::channel::oscore) {
+            _oscore = std::make_shared<oscore::security_context>(
+                std::get<oscore_credentials>(security.credentials));
+        }
 #ifdef LIBNYOCI_AVAILABLE
         _instance = nyoci_create();
         if (_instance == nullptr) {
@@ -700,6 +815,15 @@ private:
         std::vector<std::uint16_t> accept_formats;
         std::chrono::milliseconds timeout{5000};
         bool confirmable{true};
+        /// Set when the exchange is OSCORE-protected. `payload` then holds the
+        /// ciphertext and these carry the outer OSCORE option value plus what
+        /// verifying the response will need. Protection happens once, at send
+        /// time, so a libnyoci retransmission re-sends byte-identical bytes
+        /// rather than burning a fresh Partial IV per attempt.
+        bool oscore_protected{false};
+        std::vector<std::byte> oscore_option;
+        oscore::request_binding oscore_binding;
+        std::shared_ptr<oscore::security_context> oscore_context;
 
         /// Receives the reassembled response body and the media type the peer
         /// declared, exactly like pending_message::resolve_callback.
@@ -784,6 +908,24 @@ private:
             rpc->reject_callback = [promise](std::exception_ptr error) {
                 promise->setException(error);
             };
+            if (_oscore) {
+                // Protect now, on the caller's thread, rather than in the
+                // resend trampoline: libnyoci calls that once per transmission
+                // attempt, and a retransmission must re-send the *same*
+                // protected message, not one under a fresh Partial IV.
+                const auto inner = libnyoci_detail::build_inner_request(
+                    resource_path, static_cast<std::uint16_t>(*request_format), rpc->accept_formats,
+                    rpc->payload);
+                const auto outer = _oscore->protect_request(inner, rpc->oscore_binding);
+                for (const auto& option : outer.options) {
+                    if (option.number == oscore::coap_option_oscore) {
+                        rpc->oscore_option = option.value;
+                    }
+                }
+                rpc->payload = outer.payload;  // the ciphertext
+                rpc->oscore_protected = true;
+                rpc->oscore_context = _oscore;
+            }
             rpc->media_type_for_format = [this](std::uint16_t format) {
                 return kythira::coap_utils::registry_media_type_for_content_format(
                     _registry, kythira::coap_utils::parse_content_format(format));
@@ -929,21 +1071,42 @@ private:
         // still-pending option before handing over the content buffer, which is
         // why appending the body below is what actually emits it, and why the
         // options here (12, 17) may be written before it despite being lower.
-        status = nyoci_outbound_set_uri(rpc->uri.c_str(), 0);
+        //
+        // Under OSCORE the path is a Class E option and already lives inside
+        // the ciphertext, so SKIP_PATH keeps it off the wire -- emitting it
+        // here would leak exactly what the ciphertext is hiding.
+        status = nyoci_outbound_set_uri(rpc->uri.c_str(),
+                                        rpc->oscore_protected ? NYOCI_MSG_SKIP_PATH : 0);
         if (status != NYOCI_STATUS_OK) {
             return status;
         }
-        status = libnyoci_detail::add_content_format_option(
-            COAP_OPTION_CONTENT_TYPE,
-            static_cast<std::uint16_t>(
-                *kythira::coap_utils::media_type_to_coap_content_format(rpc->request_media_type)));
-        if (status != NYOCI_STATUS_OK) {
-            return status;
-        }
-        for (const auto format : rpc->accept_formats) {
-            status = libnyoci_detail::add_content_format_option(COAP_OPTION_ACCEPT, format);
+        if (rpc->oscore_protected) {
+            // Content-Format and Accept are Class E too; the only outer option
+            // this message carries is OSCORE itself.
+            // libnyoci's coap.h predates RFC 8613 and has no enumerator for
+            // option 9, so the number comes from raft/oscore.hpp. libnyoci
+            // writes unknown option keys perfectly well -- it only cares that
+            // they ascend, and 9 follows the Uri-Host/Uri-Port set_uri emitted.
+            status = nyoci_outbound_add_option(
+                static_cast<coap_option_key_t>(oscore::coap_option_oscore),
+                reinterpret_cast<const char*>(rpc->oscore_option.data()),
+                static_cast<coap_size_t>(rpc->oscore_option.size()));
             if (status != NYOCI_STATUS_OK) {
                 return status;
+            }
+        } else {
+            status = libnyoci_detail::add_content_format_option(
+                COAP_OPTION_CONTENT_TYPE,
+                static_cast<std::uint16_t>(*kythira::coap_utils::media_type_to_coap_content_format(
+                    rpc->request_media_type)));
+            if (status != NYOCI_STATUS_OK) {
+                return status;
+            }
+            for (const auto format : rpc->accept_formats) {
+                status = libnyoci_detail::add_content_format_option(COAP_OPTION_ACCEPT, format);
+                if (status != NYOCI_STATUS_OK) {
+                    return status;
+                }
             }
         }
         // libnyoci has no Block1, so an over-large body cannot be split.
@@ -992,6 +1155,13 @@ private:
         }
 
         const auto options = libnyoci_detail::scan_inbound_options();
+
+        if (rpc->oscore_protected) {
+            // An OSCORE exchange never uses Block2 (the adapter refuses the
+            // option outright), so the whole protected response is here.
+            return settle_oscore_response(rpc, options);
+        }
+
         if (!rpc->response_format.has_value() && options.content_format.has_value()) {
             rpc->response_format = options.content_format;
         }
@@ -1034,6 +1204,66 @@ private:
         rpc->resolve_callback(std::move(rpc->accumulated), response_media_type);
         return NYOCI_STATUS_OK;
     }
+
+    /// Verify an OSCORE-protected response and settle the promise from the
+    /// recovered inner message. A failed verification rejects: there is no
+    /// "fall back to the outer message", because the outer message is a 2.04
+    /// Changed with no application content in it at all.
+    static auto settle_oscore_response(pending_rpc* rpc,
+                                       const libnyoci_detail::inbound_options& options)
+        -> nyoci_status_t {
+        if (rpc->settled) {
+            return NYOCI_STATUS_OK;
+        }
+        rpc->settled = true;
+        try {
+            if (!options.oscore.has_value()) {
+                throw oscore::verification_error(
+                    "response to an OSCORE request carried no OSCORE option");
+            }
+            oscore::coap_message outer;
+            outer.code = static_cast<std::uint8_t>(nyoci_inbound_get_code());
+            outer.options.push_back(
+                oscore::coap_option{oscore::coap_option_oscore, *options.oscore});
+            const coap_size_t length = nyoci_inbound_get_content_len();
+            const char* content = nyoci_inbound_get_content_ptr();
+            if (content != nullptr && length > 0) {
+                const auto* bytes = reinterpret_cast<const std::byte*>(content);
+                outer.payload.assign(bytes, bytes + length);
+                outer.has_payload = true;
+            }
+
+            const auto inner = rpc->oscore_context->unprotect_response(outer, rpc->oscore_binding);
+            if (inner.code >= COAP_RESULT_400) {
+                rpc->reject_callback(libnyoci_detail::exception_for_status(
+                    inner.code, "CoAP request to " + rpc->uri));
+                return NYOCI_STATUS_OK;
+            }
+
+            // The inner Content-Format is the authoritative one: it is the
+            // media type the peer actually encoded in, and it is integrity
+            // protected, unlike anything in the outer message.
+            std::string media_type = rpc->request_media_type;
+            for (const auto& option : inner.options) {
+                if (option.number == 12) {
+                    const auto format = static_cast<std::uint16_t>(
+                        libnyoci_detail::decode_uint_option(option.value));
+                    if (const auto resolved = rpc->media_type_for_format(format)) {
+                        media_type = *resolved;
+                    } else {
+                        throw coap_unsupported_content_format_error(
+                            "CoAP Content-Format " + std::to_string(format) +
+                            " (OSCORE response from " + rpc->uri + ")");
+                    }
+                }
+            }
+            rpc->resolve_callback(inner.payload, media_type);
+        } catch (...) {
+            rpc->reject_callback(std::current_exception());
+        }
+        return NYOCI_STATUS_OK;
+    }
+
 #endif  // LIBNYOCI_AVAILABLE
 
     /// See coap_client's own note: retained for parity with the libcoap
@@ -1053,6 +1283,11 @@ private:
     /// True when plan_security() chose DTLS. Decides the socket type, and the
     /// URI scheme every request is built with.
     bool _secure{false};
+
+    /// Non-null exactly when plan_security() chose channel::oscore. Shared
+    /// rather than owned outright because the response trampoline needs it and
+    /// only sees the pending_rpc.
+    std::shared_ptr<oscore::security_context> _oscore;
 
 #ifdef LIBNYOCI_AVAILABLE
     // Outlives _instance's use of it; destroyed after nyoci_release().
@@ -1093,6 +1328,10 @@ public:
         // it does on the libcoap side.
         auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "server");
         _secure = selected_channel == libnyoci_detail::channel::dtls;
+        if (selected_channel == libnyoci_detail::channel::oscore) {
+            _oscore = std::make_shared<oscore::security_context>(
+                std::get<oscore_credentials>(security.credentials));
+        }
         _security = std::move(security);
     }
 
@@ -1234,12 +1473,19 @@ private:
             return NYOCI_STATUS_NOT_ALLOWED;
         }
 
+        const auto options = libnyoci_detail::scan_inbound_options();
+
+        if (_oscore) {
+            // Everything the dispatch needs -- path, Content-Format, Accept,
+            // body -- is inside the ciphertext, so it has to be recovered
+            // before any of it can be looked at.
+            return handle_oscore_request(options);
+        }
+
         std::array<char, 256> path_buffer{};
         nyoci_inbound_get_path(path_buffer.data(), path_buffer.size(),
                                NYOCI_GET_PATH_LEADING_SLASH);
         const std::string resource_path{path_buffer.data()};
-
-        const auto options = libnyoci_detail::scan_inbound_options();
 
         const coap_size_t length = nyoci_inbound_get_content_len();
         const char* content = nyoci_inbound_get_content_ptr();
@@ -1311,6 +1557,146 @@ private:
             return NYOCI_STATUS_FAILURE;
         }
         return NYOCI_STATUS_NOT_FOUND;
+    }
+
+    /// Verify an OSCORE-protected request, dispatch on the *inner* message,
+    /// and protect the reply. The outer message carries nothing but the OSCORE
+    /// option and a ciphertext, so every routing decision below is made on
+    /// content that was integrity protected.
+    auto handle_oscore_request(const libnyoci_detail::inbound_options& options) -> nyoci_status_t {
+        if (!options.oscore.has_value()) {
+            // An unprotected request to an OSCORE-only server. RFC 8613
+            // Section 8.2 asks for 4.01 when no Security Context matches.
+            return NYOCI_STATUS_UNAUTHORIZED;
+        }
+        try {
+            oscore::coap_message outer;
+            outer.code = static_cast<std::uint8_t>(nyoci_inbound_get_code());
+            outer.options.push_back(
+                oscore::coap_option{oscore::coap_option_oscore, *options.oscore});
+            const coap_size_t length = nyoci_inbound_get_content_len();
+            const char* content = nyoci_inbound_get_content_ptr();
+            if (content != nullptr && length > 0) {
+                const auto* bytes = reinterpret_cast<const std::byte*>(content);
+                outer.payload.assign(bytes, bytes + length);
+                outer.has_payload = true;
+            }
+
+            oscore::request_binding binding;
+            const auto inner = _oscore->unprotect_request(outer, binding);
+            const auto resource_path = libnyoci_detail::path_from_options(inner);
+
+            // Negotiation, read from the inner (protected) options rather than
+            // anything an attacker could have rewritten on the wire.
+            std::string request_media_type = _registry.default_media_type();
+            std::vector<std::string> accepted;
+            for (const auto& option : inner.options) {
+                if (option.number != 12 && option.number != 17) {
+                    continue;
+                }
+                const auto value =
+                    static_cast<std::uint16_t>(libnyoci_detail::decode_uint_option(option.value));
+                const auto resolved = kythira::coap_utils::registry_media_type_for_content_format(
+                    _registry, kythira::coap_utils::parse_content_format(value));
+                if (option.number == 12) {
+                    if (!resolved) {
+                        return respond_oscore(binding, 0x8F, 0, {});  // 4.15
+                    }
+                    request_media_type = *resolved;
+                } else if (resolved) {
+                    accepted.push_back(*resolved);
+                }
+            }
+            std::string response_media_type = request_media_type;
+            if (!accepted.empty()) {
+                const auto selected = _registry.select_output_media_type(accepted);
+                if (!selected) {
+                    return respond_oscore(binding, 0x86, 0, {});  // 4.06
+                }
+                response_media_type = *selected;
+            }
+
+            std::vector<std::byte> body;
+            if (resource_path == libnyoci_request_vote_path) {
+                auto handler = copy_handler(_request_vote_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});  // 5.01
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::request_vote_request<>>(
+                        request_media_type, inner.payload)));
+            } else if (resource_path == libnyoci_append_entries_path) {
+                auto handler = copy_handler(_append_entries_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::append_entries_request<>>(
+                        request_media_type, inner.payload)));
+            } else if (resource_path == libnyoci_install_snapshot_path) {
+                auto handler = copy_handler(_install_snapshot_handler);
+                if (!handler) {
+                    return respond_oscore(binding, 0xA1, 0, {});
+                }
+                body = _registry.encode_with(
+                    response_media_type,
+                    handler(_registry.template decode_with<kythira::install_snapshot_request<>>(
+                        request_media_type, inner.payload)));
+            } else {
+                return respond_oscore(binding, 0x84, 0, {});  // 4.04
+            }
+
+            const auto format =
+                kythira::coap_utils::media_type_to_coap_content_format(response_media_type);
+            if (!format) {
+                return respond_oscore(binding, 0x8F, 0, {});
+            }
+            return respond_oscore(binding, 0x45, static_cast<std::uint16_t>(*format), body);
+        } catch (const oscore::verification_error&) {
+            // RFC 8613 Section 8.2: a request that fails verification gets 4.01
+            // and, deliberately, no detail about why it failed.
+            return NYOCI_STATUS_UNAUTHORIZED;
+        } catch (const std::exception&) {
+            return NYOCI_STATUS_FAILURE;
+        }
+    }
+
+    /// Build the inner response, protect it, and emit the outer 2.04 Changed
+    /// that carries it. Note that *every* reply goes through here, including
+    /// the error codes: an OSCORE peer must not be able to tell 4.04 from 5.01
+    /// without holding the key.
+    auto respond_oscore(const oscore::request_binding& binding, std::uint8_t inner_code,
+                        std::uint16_t content_format, std::span<const std::byte> body)
+        -> nyoci_status_t {
+        oscore::coap_message inner;
+        inner.code = inner_code;
+        if (!body.empty()) {
+            inner.options.push_back(
+                oscore::coap_option{12, libnyoci_detail::encode_uint_option(content_format)});
+            inner.payload.assign(body.begin(), body.end());
+            inner.has_payload = true;
+        }
+        const auto outer = _oscore->protect_response(inner, binding);
+
+        auto status = nyoci_outbound_begin_response(COAP_RESULT_204_CHANGED);
+        if (status != NYOCI_STATUS_OK) {
+            return status;
+        }
+        for (const auto& option : outer.options) {
+            if (option.number != oscore::coap_option_oscore) {
+                continue;
+            }
+            status = nyoci_outbound_add_option(
+                static_cast<coap_option_key_t>(oscore::coap_option_oscore),
+                reinterpret_cast<const char*>(option.value.data()),
+                static_cast<coap_size_t>(option.value.size()));
+            if (status != NYOCI_STATUS_OK) {
+                return status;
+            }
+        }
+        return append_and_send(outer.payload.data(), outer.payload.size());
     }
 
     template<typename Handler> auto copy_handler(const Handler& handler) -> Handler {
@@ -1440,6 +1826,9 @@ private:
     /// context from it.
     coap_security_config _security{};
     bool _secure{false};
+    /// Non-null exactly when plan_security() chose channel::oscore. Shared
+    /// because the request trampoline is static and reaches it through `this`.
+    std::shared_ptr<oscore::security_context> _oscore;
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
