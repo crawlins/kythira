@@ -16,11 +16,13 @@
 /// peer that changes its formats has its entry corrected by its next successful
 /// response, and in the meantime its own `Accept`-driven choice still wins.
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace kythira {
 
@@ -88,6 +90,54 @@ template<typename Registry, typename Cache, typename Key>
         return *cached;
     }
     return registry.default_media_type();
+}
+
+/// @brief The next request `Media_Type` to try after a peer rejected the
+///        previous one, or `nullopt` when this client has nothing left to offer.
+///
+/// **Why a blind retry rather than asking the peer.** HTTP negotiates the
+/// *response* through `Accept`, which the server reads before answering; the
+/// request has no equivalent, so a client must commit to an encoding before it
+/// has heard anything from the peer. When that first guess is one the peer does
+/// not speak, the peer answers 415 (4.15 in CoAP) and — before this — nothing
+/// ever revised the guess, so the pairing stayed broken forever. Requirement 7.3
+/// says a multi-serializer node and a single-serializer node SHALL interoperate
+/// whenever they share a format, which is precisely this case.
+///
+/// `Accept-Post` (W3C Linked Data Platform 1.0 §7.1) would let the rejecting
+/// server say what it *would* take, converging in one retry instead of up to N.
+/// It was not chosen as the mechanism because it requires the **peer** to change,
+/// and Requirement 7.3 promises interoperation "without requiring the
+/// single-serializer node to change" — an unmodified peer emits no such header,
+/// which is exactly the case the requirement is about. It also has no CoAP
+/// analogue, and this policy has to hold across all four transports. Adding
+/// `Accept-Post` later as an *optimisation* composes with this rather than
+/// replacing it: use it when present, fall back to this when absent.
+///
+/// @param registry      Supplies `preferred_media_types()`, in preference order.
+/// @param already_tried Every type already sent to this peer for this call,
+///                      including the original. Passed in rather than tracked
+///                      here so the caller — which owns the retry loop and its
+///                      threading — remains the only thing that needs to be
+///                      correct about ordering.
+///
+/// Bounded by construction: each call returns a type not in @p already_tried, so
+/// a caller that appends every result terminates after at most
+/// `preferred_media_types().size()` attempts. A single-serializer registry
+/// returns `nullopt` immediately, since its one type is always the one that was
+/// just rejected — which is what keeps this change free for every configuration
+/// that ships today.
+template<typename Registry>
+[[nodiscard]] auto next_request_media_type_after_rejection(
+    const Registry& registry, const std::vector<std::string>& already_tried)
+    -> std::optional<std::string> {
+    for (const auto& candidate : registry.preferred_media_types()) {
+        if (std::find(already_tried.begin(), already_tried.end(), candidate) ==
+            already_tried.end()) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
 }
 
 }  // namespace kythira

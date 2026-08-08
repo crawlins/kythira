@@ -2314,8 +2314,8 @@ template<typename Types>
 requires kythira::transport_types<Types>
 template<typename Request, typename Response>
 auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resource_path,
-                                  const Request& request, std::chrono::milliseconds timeout)
-    -> future_template<Response> {
+                                  const Request& request, std::chrono::milliseconds timeout,
+                                  std::vector<std::string> attempted) -> future_template<Response> {
     // Generic RPC sending implementation with comprehensive error handling
 
     try {
@@ -2375,8 +2375,12 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
         // Pick the request encoding before serializing: the default on first
         // contact, or whatever this peer last answered in, provided we still
         // have a serializer for it (Requirements 6.2, 6.3).
+        // On a 4.15 re-entry `attempted` is non-empty and the next unrefused
+        // type is used; the retry path below has already established one exists.
         const std::string request_media_type =
-            kythira::select_request_media_type(_registry, _capability_cache, target);
+            attempted.empty()
+                ? kythira::select_request_media_type(_registry, _capability_cache, target)
+                : kythira::next_request_media_type_after_rejection(_registry, attempted).value();
 
         // Serialize the request with caching if enabled.
         //
@@ -2629,7 +2633,53 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             request_metric.emit();
         }
 
-        return std::move(future);
+        // 4.15 retry, the CoAP twin of the HTTP transports' 415 retry. Attached
+        // here rather than inside the libcoap response handler because the
+        // handler runs on _io_thread while holding this client's context, and
+        // re-entering send_rpc from it would take _mutex recursively *and*
+        // issue a fresh coap_send from inside a callback. Chaining on the
+        // future instead means the retry runs wherever the continuation runs,
+        // by the same front door a first attempt uses.
+        //
+        // Safe because 4.15 is answered before the handler runs (Requirement
+        // 4.5, pinned by coap_negotiation_failure_test), so the peer did no
+        // work. Bounded because `attempted` only grows.
+        return std::move(future).thenError(
+            [this, target, resource_path, request, timeout, request_media_type,
+             attempted](std::exception_ptr e) mutable -> future_template<Response> {
+                try {
+                    std::rethrow_exception(e);
+                } catch (const kythira::coap_client_error& client_error) {
+                    if (client_error.response_code() ==
+                        COAP_RESPONSE_CODE_UNSUPPORTED_CONTENT_FORMAT) {
+                        attempted.push_back(request_media_type);
+                        if (auto next = kythira::next_request_media_type_after_rejection(
+                                _registry, attempted)) {
+                            auto retry_metric = _metrics;
+                            retry_metric.set_metric_name("coap.client.media_type_retry");
+                            retry_metric.add_dimension("resource_path", resource_path);
+                            retry_metric.add_dimension("target_node_id", std::to_string(target));
+                            retry_metric.add_dimension("rejected_media_type", request_media_type);
+                            retry_metric.add_dimension("media_type", *next);
+                            retry_metric.add_one();
+                            retry_metric.emit();
+                            return send_rpc<Request, Response>(target, resource_path, request,
+                                                               timeout, std::move(attempted));
+                        }
+                    }
+                } catch (...) {  // NOLINT(bugprone-empty-catch)
+                    // Not a negotiation failure; fall through to propagation.
+                }
+                // Returned rather than thrown: this is the Future-returning
+                // `thenError` overload, and throwing out of it leaves the
+                // promise unfulfilled, surfacing a BrokenPromise instead of the
+                // 4.15. The exhausted path is every single-serializer
+                // deployment, so this is the common case, not the exotic one.
+                promise_template<Response> error_promise;
+                auto error_future = error_promise.getFuture();
+                error_promise.setException(e);
+                return error_future;
+            });
 #else
         // Stub implementation when libcoap is not available
         _logger.trace("Stub implementation returning successful future",

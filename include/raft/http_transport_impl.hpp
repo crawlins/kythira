@@ -1061,34 +1061,7 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
 
         // Pick the outgoing media type: what this peer last answered in, if the
         // registry still supports it, else our default (Requirement 6.1-6.3).
-        const std::string content_type =
-            select_request_media_type(_registry, _capability_cache, target);
-
-        // Serialize request through the registry rather than `_serializer`
-        // directly, so a multi-serializer bundle actually encodes in the
-        // negotiated format. For a single-serializer bundle this is the same
-        // call it always was.
-        auto serialized_data = _registry.encode_with(content_type, request);
-
-        // Convert bytes to string for HTTP body
-        std::string body;
-        body.reserve(serialized_data.size());
-        for (auto b : serialized_data) {
-            body.push_back(static_cast<char>(b));
-        }
-
-        httplib::Headers headers;
-        headers.emplace(header_content_type, content_type);
-        // Advertise everything we can decode, in preference order, on *every*
-        // request — not just the first. That is what keeps the capability cache
-        // an optimisation: even when our cached guess is stale, the peer still
-        // has the full list in front of it and can pick a type we both speak.
-        if (const auto accept = format_accept_header(_registry.preferred_media_types());
-            !accept.empty()) {
-            headers.emplace(header_accept, accept);
-        }
-        // Let cpp-httplib handle Content-Length automatically
-        headers.emplace(header_user_agent, _config.user_agent);
+        std::string content_type = select_request_media_type(_registry, _capability_cache, target);
 
         // Determine RPC type for metrics
         std::string rpc_type;
@@ -1100,26 +1073,105 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             rpc_type = "install_snapshot";
         }
 
-        // Record request metrics
+        // Latency is measured across the whole operation, retries included: it
+        // is what the caller actually waited, and reporting only the successful
+        // attempt would hide the cost of a mis-guessed encoding entirely.
         auto start_time = std::chrono::steady_clock::now();
-        auto metric = _metrics;
-        metric.set_metric_name("http.client.request.sent");
-        metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
-        metric.add_dimension("media_type", content_type);
-        metric.add_one();
-        metric.emit();
 
-        metric = _metrics;
-        metric.set_metric_name("http.client.request.size");
-        metric.add_dimension("rpc_type", rpc_type);
-        metric.add_dimension("target_node_id", std::to_string(target));
-        metric.add_dimension("media_type", content_type);
-        metric.add_value(static_cast<double>(body.size()));
-        metric.emit();
+        // The request encoding is not negotiated -- there is no mechanism by
+        // which a client learns a peer's formats before sending -- so the first
+        // attempt is a guess from the cache or the registry default. A peer that
+        // does not speak it answers 415, and this loop then walks the rest of
+        // `preferred_media_types()` (Requirement 7.3). Bounded by construction:
+        // `next_request_media_type_after_rejection` never returns a type already
+        // in `attempted`, so this terminates after at most one attempt per
+        // registered serializer.
+        //
+        // Retrying is safe *because* 415 is answered before the handler runs
+        // (Requirement 4.4, and `http_negotiation_integration_test` pins it):
+        // the peer provably did no work, so there is nothing to double-apply.
+        // A single-serializer registry exits after the first attempt, since its
+        // only type is the one just rejected -- so every configuration shipping
+        // today pays nothing.
+        std::vector<std::string> attempted;
+        httplib::Result result;
+        while (true) {
+            attempted.push_back(content_type);
 
-        // Send POST request
-        auto result = client->Post(endpoint, headers, body, content_type);
+            // Serialize request through the registry rather than `_serializer`
+            // directly, so a multi-serializer bundle actually encodes in the
+            // negotiated format. For a single-serializer bundle this is the same
+            // call it always was.
+            auto serialized_data = _registry.encode_with(content_type, request);
+
+            // Convert bytes to string for HTTP body
+            std::string body;
+            body.reserve(serialized_data.size());
+            for (auto b : serialized_data) {
+                body.push_back(static_cast<char>(b));
+            }
+
+            httplib::Headers headers;
+            headers.emplace(header_content_type, content_type);
+            // Advertise everything we can decode, in preference order, on
+            // *every* request — not just the first. That is what keeps the
+            // capability cache an optimisation: even when our cached guess is
+            // stale, the peer still has the full list in front of it and can
+            // pick a type we both speak.
+            if (const auto accept = format_accept_header(_registry.preferred_media_types());
+                !accept.empty()) {
+                headers.emplace(header_accept, accept);
+            }
+            // Let cpp-httplib handle Content-Length automatically
+            headers.emplace(header_user_agent, _config.user_agent);
+
+            // Per attempt, so the counts reflect what actually went on the wire
+            // rather than only the encoding that happened to succeed.
+            auto metric = _metrics;
+            metric.set_metric_name("http.client.request.sent");
+            metric.add_dimension("rpc_type", rpc_type);
+            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_dimension("media_type", content_type);
+            metric.add_one();
+            metric.emit();
+
+            metric = _metrics;
+            metric.set_metric_name("http.client.request.size");
+            metric.add_dimension("rpc_type", rpc_type);
+            metric.add_dimension("target_node_id", std::to_string(target));
+            metric.add_dimension("media_type", content_type);
+            metric.add_value(static_cast<double>(body.size()));
+            metric.emit();
+
+            // Send POST request
+            result = client->Post(endpoint, headers, body, content_type);
+
+            // Only 415 triggers a retry. 400 means "we speak this encoding and
+            // your bytes were wrong" and re-encoding would send the same bytes
+            // in a format the peer likes even less; 5xx is the peer's problem,
+            // not the encoding's. The two are already distinguished server-side
+            // for exactly this reason (Task 10's write-up).
+            if (!result || result->status != 415) {
+                break;
+            }
+            auto next = next_request_media_type_after_rejection(_registry, attempted);
+            if (!next) {
+                // Nothing left to offer: fall through and surface the 415 as the
+                // error it is, rather than inventing a different one.
+                break;
+            }
+
+            auto retry_metric = _metrics;
+            retry_metric.set_metric_name("http.client.media_type_retry");
+            retry_metric.add_dimension("rpc_type", rpc_type);
+            retry_metric.add_dimension("target_node_id", std::to_string(target));
+            retry_metric.add_dimension("rejected_media_type", content_type);
+            retry_metric.add_dimension("media_type", *next);
+            retry_metric.add_one();
+            retry_metric.emit();
+
+            content_type = *std::move(next);
+        }
 
         // Record latency
         auto end_time = std::chrono::steady_clock::now();

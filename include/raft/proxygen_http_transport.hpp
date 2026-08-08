@@ -455,7 +455,9 @@ public:
                                               const Request& request,
                                               std::chrono::milliseconds timeout)
         -> future_template<Response> {
-        return send_rpc_generic_bridge<Request, Response>(target, endpoint, request, timeout);
+        return send_rpc_generic_bridge<Request, Response>(
+            target, endpoint, request, timeout,
+            kythira::select_request_media_type(_registry, _capability_cache, target));
     }
 
 private:
@@ -487,9 +489,16 @@ private:
     auto resolve_target(std::uint64_t target) const
         -> std::tuple<folly::SocketAddress, std::string, bool>;
 
+    /// @param attempted Media types this peer has already refused with 415 for
+    ///        this call (Requirement 7.3). Empty on first entry; the retry path
+    ///        re-enters with it extended. The retry lives here, at the dispatch
+    ///        point, rather than in either path body -- both paths would
+    ///        otherwise need their own copy, which is exactly how Task 10a's
+    ///        hardcoded `application/json` came to differ between them.
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
-                  std::chrono::milliseconds timeout) -> future_template<Response>;
+                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
+        -> future_template<Response>;
 
     /// @brief The generic (any-future-backend) bridge body (Requirement 14)
     ///     -- `send_rpc`'s `else` branch delegates here unconditionally;
@@ -497,10 +506,14 @@ private:
     ///     below) sole implementation, so there is exactly one copy of the
     ///     generic-bridge chain-composition logic regardless of which entry
     ///     point reaches it.
+    /// @param content_type The request encoding, chosen once by `send_rpc` and
+    ///        passed in rather than re-derived here. Both paths taking it as a
+    ///        parameter is what makes it structurally impossible for them to
+    ///        disagree about which encoding a given call used.
     template<typename Request, typename Response>
     auto send_rpc_generic_bridge(std::uint64_t target, std::string_view endpoint,
-                                 const Request& request, std::chrono::milliseconds timeout)
-        -> future_template<Response>;
+                                 const Request& request, std::chrono::milliseconds timeout,
+                                 const std::string& content_type) -> future_template<Response>;
 
     /// @brief Requirement 16: the Folly-native fast path, taken instead of
     ///     `send_rpc` above when `future_template<Response>` is
@@ -514,8 +527,8 @@ private:
     ///     bridge does not itself guarantee avoiding.
     template<typename Request, typename Response>
     auto send_rpc_folly_fast_path(std::uint64_t target, std::string_view endpoint,
-                                  const Request& request, std::chrono::milliseconds timeout)
-        -> kythira::Future<Response>;
+                                  const Request& request, std::chrono::milliseconds timeout,
+                                  const std::string& content_type) -> kythira::Future<Response>;
 };
 
 /// @brief `network_server` implementation backed by
