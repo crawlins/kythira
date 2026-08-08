@@ -1,63 +1,250 @@
 # Implementation Plan — CoAP Transport (libnyoci backend)
 
-## Status: Proposed (0/N tasks) — skeleton only
+## Status: Implemented (Tasks 1-4, 6, 7 complete; Task 5 deliberately partial)
 
-The overlay port and adapter headers exist as **skeletons**
-(`vcpkg-overlays/libnyoci/`, `include/raft/coap_transport_libnyoci_impl.hpp`)
-with placeholder `REF`/`SHA512` and `TODO` method bodies. Nothing is wired into
-the default build. This plan tracks turning the skeleton into a working,
-tested backend. See `doc/coap_library_alternatives.md` for the design rationale.
+The overlay port is pinned and builds; the adapter is written and tested
+against real loopback sockets. `coap_libnyoci_client`/`coap_libnyoci_server`
+satisfy `network_client`/`network_server` and speak the same wire protocol as
+the libcoap backend. Two limitations are inherent to libnyoci and are handled
+by refusing loudly rather than degrading silently — see Tasks 3.6 and 5.
 
-**Last Updated**: August 8, 2026 (spec created alongside the skeletons)
+**Last Updated**: August 8, 2026
 
 ## Major Tasks Overview
 
 ### Tasks 1-2: Overlay port and build gating
-*Stand up the autotools overlay port and the `LIBNYOCI_AVAILABLE` gating before
-any adapter body is written, so later tasks can assume libnyoci is linkable.*
+*The autotools overlay port and the `LIBNYOCI_AVAILABLE` gating, so later tasks
+can assume libnyoci is linkable.*
 
 ### Tasks 3-5: Adapter (bridge libnyoci ↔ futures)
-*Client transaction path, server handler path, and security wiring — thin,
-because libnyoci owns sockets/retransmit/block-wise.*
+*Client transaction path, server handler path, and security — thin, because
+libnyoci owns sockets/retransmit/dedup/Block2.*
 
 ### Tasks 6-7: Testing and documentation
 
 ## Detailed Task List
 
-- [ ] 1. Finalize the `vcpkg-overlays/libnyoci` port
-  - [ ] 1.1 Pin a real `REF` (release tag or commit) and regenerate `SHA512` per the port README
-  - [ ] 1.2 Verify `vcpkg_configure_make AUTOCONFIG` builds from the archive tarball on x64 and arm64 Linux
-  - [ ] 1.3 Add any patches surfaced by the first real build (e.g. version-header fallback), documented in the portfile like ion-c's patches
-  - [ ] 1.4 Confirm `vcpkg_fixup_pkgconfig` yields a discoverable `libnyoci.pc`
+- [x] 1. Finalize the `vcpkg-overlays/libnyoci` port
+  - [x] 1.1 Pin a real `REF` and regenerate `SHA512`
+    - Pinned to `11a6e1b107cb1577cb0fffca7e3fd261f26da94a` (master, 2019-04-15),
+      **not** the sole tag. `refs/tags/latest-release` → `0.07.00rc1` is the
+      2017 *initial* release; the 35 commits since it carry the fuzzing fixes
+      (null deref in `nyoci-list`, a missing-parens option-length bug), the URI
+      corruption fix in `nyoci_outbound_set_uri()`, and the signature change
+      that added the maximum-length argument to `nyoci_inbound_get_path()` —
+      which the adapter calls, so it does not compile against the tag at all.
+  - [x] 1.2 Verify `vcpkg_configure_make AUTOCONFIG` builds from the archive tarball
+    - Verified on **x64 Linux** by extracting the pinned GitHub archive tarball
+      (no `.git`, exactly what vcpkg fetches), applying the patch, and running
+      `autoreconf -fi && ./configure && make && make install` with the port's
+      own flags. Produces `libnyoci.a`, the headers under `include/libnyoci/`,
+      and `lib/pkgconfig/libnyoci.pc`.
+    - **arm64 Linux is not verified** — no cross toolchain on the development
+      host. Nothing in the port or the adapter is architecture-specific
+      (libnyoci is portable C; the adapter touches no intrinsics), but this is
+      an untested claim, not a verified one. Verifying it needs an arm64 runner.
+  - [x] 1.3 Add the patches surfaced by the first real build
+    - `0001-drop-CODE_COVERAGE_RULES-substitution.patch`: libnyoci was written
+      against a pre-2018 autoconf-archive whose `AX_CODE_COVERAGE` `AC_SUBST`'d
+      a `CODE_COVERAGE_RULES` make fragment. Modern autoconf-archive (serial
+      ≥ 25) emits those rules through `AX_ADD_AM_MACRO_STATIC` /
+      `aminclude_static.am` and never substitutes the variable, so all eleven
+      `@CODE_COVERAGE_RULES@` interpolations survive into the generated
+      Makefiles and `make` dies with `*** missing separator`. `configure.ac`'s
+      `m4_ifdef` fallback does not save it: that only fires when the macro is
+      *absent*, and it cannot be absent on a host that has the archive
+      installed — which the port requires anyway, for `AX_PTHREAD`.
+    - Two further corrections to the skeleton's guesses, in the portfile rather
+      than a patch: the configure flags are `--disable-examples
+      --disable-nyocictl --disable-plugtest` (there is no `--disable-tests` and
+      no `--without-examples`), and `--disable-dependency-tracking` is
+      **mandatory** — automake's depfile bootstrap fails otherwise, which is
+      why upstream's own CI passes it (commit `1330755`).
+  - [x] 1.4 Confirm `vcpkg_fixup_pkgconfig` yields a discoverable `libnyoci.pc`
+    - `pkg-config --cflags --libs libnyoci` resolves, and the root
+      `CMakeLists.txt` probe finds it (`-- libnyoci found: 0.07.00rc1`).
 
-- [ ] 2. Build gating (opt-in, gracefully degrading)
-  - [ ] 2.1 Add the `coap-libnyoci` feature to the root `vcpkg.json`
-  - [ ] 2.2 Add the `pkg_check_modules(LIBNYOCI ...)` probe + `LIBNYOCI_AVAILABLE` definition to the root `CMakeLists.txt`, mirroring the `LIBCOAP_FOUND` block
-  - [ ] 2.3 Verify a default build (feature off) neither fetches nor links libnyoci and still succeeds
+- [x] 2. Build gating (opt-in, gracefully degrading)
+  - [x] 2.1 Add the `coap-libnyoci` feature to the root `vcpkg.json`
+  - [x] 2.2 Add the `pkg_check_modules(LIBNYOCI ...)` probe + `LIBNYOCI_AVAILABLE`
+        definition to the root `CMakeLists.txt`, mirroring the `LIBCOAP_FOUND` block
+    - Plus a `COAP_TRANSPORT_LIBNYOCI` Kconfig symbol (default `n`) so the probe
+      participates in the same gate/require machinery every other optional
+      dependency does. It deliberately does **not** `depend on COAP_TRANSPORT`:
+      the backends are additive, and a build may want either, both or neither.
+    - Requirement 2.4 (the two backends must not conflict at link time) was
+      verified, not assumed: a program calling into both archives links and
+      runs. Caveat recorded in the CMakeLists comment — they export exactly one
+      name in common, `coap_insert_option`, survivable only because these are
+      static archives (the linker pulls an object solely to satisfy an
+      undefined symbol, and no translation unit can reference both libraries).
+      A shared build, or a second overlapping name, would change that.
+  - [x] 2.3 Verify a default build neither fetches nor links libnyoci and still succeeds
+    - The feature is opt-in and the Kconfig default is `n`. Both new test
+      targets are unconditional and compile without libnyoci present, because
+      the adapter keeps its full concept surface either way; the integration
+      test then collapses to a single "skipped" case.
 
-- [ ] 3. Client adapter (`coap_libnyoci_client<Types>`)
-  - [ ] 3.1 Construct one `nyoci_t` and drive its process loop on a `std::jthread`
-  - [ ] 3.2 Implement `send_rpc<Request,Response>`: serialize → begin transaction → return `future_template<Response>`
-  - [ ] 3.3 Implement the `on_response` C trampoline bridging into the `pending_message` resolve/reject callbacks
-  - [ ] 3.4 Translate libnyoci status codes into the existing `coap_exceptions.hpp` types
-  - [ ] 3.5 Wire `send_request_vote`/`send_append_entries`/`send_install_snapshot` onto `send_rpc`
+- [x] 3. Client adapter (`coap_libnyoci_client<Types>`)
+  - [x] 3.1 Construct one `nyoci_t` and drive its process loop on a `std::jthread`
+    - libnyoci's API is not thread-safe, most of it is only legal from inside
+      one of its own callbacks, and its "current instance" is a pthread-key
+      thread-local. So *every* libnyoci call happens on the one event thread;
+      `send_*` only serializes, queues and returns. The loop's 20 ms
+      `nyoci_plat_wait()` budget is what bounds both send latency and shutdown
+      latency — libnyoci offers no way to interrupt its `poll()` from another
+      thread.
+  - [x] 3.2 Implement `send_rpc<Request,Response>`
+    - Including the same Content-Format/Accept negotiation the libcoap client
+      does, through `serializer_registry` + `peer_capability_cache`, so the two
+      backends are wire-interoperable rather than merely concept-compatible.
+  - [x] 3.3 Implement the `on_response` C trampoline
+    - Correlation is by context pointer: libnyoci hands back the transaction's
+      own context, and only after matching message-id/token *and* remote
+      address, so exactly one future is resolved per response and duplicates
+      never reach the adapter (Requirements 4.2, 4.4).
+    - The transaction carries `NYOCI_TRANSACTION_ALWAYS_INVALIDATE`. That is
+      not decoration: libnyoci only continues a Block2 sequence when the flag is
+      set, and it is also what guarantees a final callback to reject a
+      transaction that ends without a response. The cost is that the callback
+      can fire more than once, so every settle path is guarded by a `settled`
+      flag.
+  - [x] 3.4 Translate libnyoci status codes into `coap_exceptions.hpp` types
+  - [x] 3.5 Wire the three `send_*` methods onto `send_rpc`
+  - [x] 3.6 Reject over-large requests with a descriptive error
+    - *Not in the original plan; forced by the library.* libnyoci implements
+      **Block2 and no Block1** — `COAP_OPTION_BLOCK1` appears only in its
+      option-name/type tables. A request that does not fit one datagram cannot
+      be split, so the adapter checks
+      `nyoci_outbound_get_space_remaining()` (the live packet, not a
+      compile-time constant) and rejects the future with an error naming the
+      missing Block1 support, rather than truncating the payload or hanging
+      until the timeout. This bounds InstallSnapshot; large-snapshot
+      deployments should use the libcoap backend.
 
-- [ ] 4. Server adapter (`coap_libnyoci_server<Types>`)
-  - [ ] 4.1 Register one inbound resource/handler per RPC path
-  - [ ] 4.2 Deserialize → invoke the stored `std::function` (guarded by `mutex_`) → emit response echoing the token
-  - [ ] 4.3 `start`/`stop`/`is_running` with clean socket + thread teardown; reject in-flight futures on shutdown
+- [x] 4. Server adapter (`coap_libnyoci_server<Types>`)
+  - [x] 4.1 Register one inbound handler per RPC path
+    - libnyoci routes through a single default request handler, so dispatch is
+      on the URI path from `nyoci_inbound_get_path()`. Paths are identical to
+      the libcoap server's (`/raft/request_vote` etc.).
+  - [x] 4.2 Deserialize → invoke the stored `std::function` (guarded by `mutex_`) → respond
+    - The handler is *copied* under the lock and invoked outside it, so a
+      blocking handler cannot stall `register_*_handler`. Content negotiation
+      matches the libcoap server: 4.15 for a Content-Format this registry
+      cannot decode, 4.06 for an Accept list it cannot satisfy.
+  - [x] 4.3 `start`/`stop`/`is_running` with clean teardown; reject in-flight futures
+    - On shutdown the event thread ends every live transaction, which fires
+      libnyoci's invalidate callback and rejects the corresponding future; the
+      destructor then drains anything still queued that never reached libnyoci.
+      No future is left unresolved (Requirement 6.4), covered by
+      `test_destroying_the_client_rejects_in_flight_requests`.
+  - [x] 4.4 Serve Block2 responses
+    - *Not in the original plan.* libnyoci gives the **client** side of Block2
+      for free but nothing on the server side, so the adapter slices responses
+      itself — statelessly, serving each block straight out of the request's
+      own Block2 option, so there is no per-peer transfer state to expire and a
+      lost block is simply re-requested.
 
-- [ ] 5. Security integration
+- [~] 5. Security integration — **plain CoAP only; other modes refused**
   - [ ] 5.1 Route DTLS through `coap_security_provider` above a plain-CoAP libnyoci core
-  - [ ] 5.2 Reuse `coap_edhoc`/OSCORE exactly as the libcoap path (libnyoci ships neither)
-  - [ ] 5.3 Confirm invalid cert/key material surfaces the same errors as libcoap
+    - **Not possible as the interface stands, and not faked.** Every
+      `coap_security_provider` method is expressed in libcoap types
+      (`coap_context_t*`, `coap_session_t*`, `coap_pdu_t*`,
+      `coap_address_t*`), and `protect`/`unprotect` are identity passthroughs
+      precisely *because* every mode is implemented below libcoap's PDU API
+      rather than as a byte-level transform an adapter could call. There is no
+      seam a libnyoci core can plug into.
+    - What the backend does instead: refuse any non-`none` mode at construction
+      with a `coap_security_error` naming the reason. Silently downgrading a
+      node that asked for DTLS to plaintext Raft traffic is strictly worse than
+      not starting.
+    - Closing this needs one of two decisions, for whoever needs secured CoAP
+      on a second backend:
+      1. **Lift a byte-level seam out of `coap_security_provider`** — a
+         `protect(bytes) -> bytes` / `unprotect(bytes) -> bytes` pair. OSCORE
+         can genuinely implement that (it is a COSE transform over the
+         message); DTLS cannot, and would stay libcoap-only or move to
+         libnyoci's own plugin.
+      2. **Enable libnyoci's OpenSSL DTLS plugin** (`--enable-tls` in the
+         port), accepting that DTLS configuration forks per backend while
+         OSCORE/EDHOC stay libcoap-only.
+  - [ ] 5.2 Reuse `coap_edhoc`/OSCORE exactly as the libcoap path
+    - Blocked on 5.1 for the same reason. `coap_security_impl.hpp` — where
+      `make_security_provider()` lives — includes `<coap3/coap.h>`, so the
+      libnyoci translation unit cannot even name it.
+  - [x] 5.3 Plain CoAP works when security is disabled
+  - [x] 5.4 Invalid configuration surfaces the same errors as libcoap
+    - `translate_legacy_fields()` is shared *verbatim* (it moved to
+      `coap_transport_config.hpp` for exactly this reason), so a populated
+      `cert_file` still infers `dtls_pki` and the same
+      `coap_security_config_error` is raised for the same malformed configs.
+      Covered by `test_legacy_dtls_fields_are_refused`.
+    - Partial: *file-level* cert/key validation happens inside
+      `make_security_provider()`, which this backend cannot call. It never gets
+      that far, because such a config is refused first.
 
-- [ ] 6. Tests (skipped when `LIBNYOCI_AVAILABLE` is undefined)
-  - [ ] 6.1 Concept-conformance test (`static_assert` both concepts); uncomment the asserts in the adapter header
-  - [ ] 6.2 Loopback end-to-end test for all three RPCs
-  - [ ] 6.3 Block-wise transfer end-to-end test
-  - [ ] 6.4 Any container harness follows the Docker/rootless-Podman rules in `CLAUDE.md`
+- [x] 6. Tests (skipped when `LIBNYOCI_AVAILABLE` is undefined)
+  - [x] 6.1 Concept-conformance test
+    - `tests/coap_libnyoci_concept_conformance_test.cpp`, 5 cases. Compiles and
+      passes *with or without* libnyoci, which is the point: conformance is a
+      property of the adapter, not of whether the C library was found.
+  - [x] 6.2 Loopback end-to-end test for all three RPCs
+    - `tests/coap_libnyoci_integration_test.cpp`, 14 cases, all on ephemeral
+      ports. Beyond the three round trips: concurrent-request correlation
+      (16 in flight, each response identifiable), unreachable-peer timeout,
+      unknown-target rejection, in-flight cancellation on destruction,
+      server restart on the same port, and unregistered-handler rejection.
+  - [x] 6.3 Block-wise transfer end-to-end test
+    - `test_block_wise_response_reassembly` forces a 16-byte block size (the
+      smallest RFC 7959 defines) so an ordinary Raft response spans a dozen
+      blocks — a sharper test of reassembly than a single 1024-byte boundary.
+      `test_oversized_request_is_rejected_with_a_descriptive_error` covers the
+      Block1 gap from Task 3.6.
+  - [x] 6.4 No container harness was added
+    - Nothing here needs one, so the Docker/rootless-Podman rules in `CLAUDE.md`
+      are not yet exercised by this spec. They *would* be needed for the one
+      thing no in-process test can cover: a libcoap client against a libnyoci
+      server. See "Follow-ups" below.
 
-- [ ] 7. Documentation
-  - [ ] 7.1 Update `DEPENDENCIES.md` with libnyoci (opt-in, autotools, MIT)
-  - [ ] 7.2 Cross-link this spec from `doc/coap_library_alternatives.md`
+- [x] 7. Documentation
+  - [x] 7.1 `DEPENDENCIES.md` — libnyoci (opt-in, autotools, MIT), the host
+        `autoconf-archive` requirement, both limitations, and the
+        one-backend-per-translation-unit rule
+  - [x] 7.2 `doc/coap_library_alternatives.md` — rewritten from a paper
+        comparison into a record of what building it actually took, including
+        the three facts the skeleton got wrong
+
+## Design change forced by the implementation
+
+`include/raft/coap_transport_config.hpp` is new and was not in the design
+document. It exists because **libcoap's and libnyoci's C headers cannot share a
+translation unit**: libcoap spells the CoAP option numbers as object-like macros
+(`#define COAP_OPTION_IF_MATCH 1`) and libnyoci as enumerators
+(`COAP_OPTION_IF_MATCH = 1,`), so including libcoap first rewrites the middle of
+libnyoci's enum into `1 = 1,`. No include order fixes it.
+
+The design assumed the adapter would reuse `pending_message`,
+`block_transfer_state` and the config structs straight out of
+`coap_transport.hpp` — which includes `<coap3/coap.h>` whenever
+`LIBCOAP_AVAILABLE` is defined, and therefore cannot be included here. The
+library-neutral declarations (`coap_client_config`, `coap_server_config`,
+`pending_message`, `received_message_info`, `translate_legacy_fields()`) moved
+into the new header, which `coap_transport.hpp` now includes; every existing
+call site is unchanged. What stayed behind is what is genuinely libcoap-shaped:
+`block_transfer_state` (holds a `coap_session_t*`), `coap_error_info` (keyed by
+`coap_pdu_code_t`), and the `*_transport_types` bundles.
+
+Requirement 2.4 is still met — the two libraries do not conflict at *link* time,
+and a translation unit selects a backend by which header it includes.
+
+## Follow-ups
+
+- **arm64 port verification** (Task 1.2). Needs an arm64 runner.
+- **Cross-backend interop test**: a libcoap client against a libnyoci server
+  cannot be built in one process. It needs two processes, i.e. the container
+  harness Task 6.4 did not require — and that harness must follow the
+  Docker/rootless-Podman rules in `CLAUDE.md`.
+- **Secured CoAP on a second backend** (Task 5.1): pick one of the two options
+  recorded there.
+- **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
+  implemented in the adapter, since libnyoci has no support to build on.

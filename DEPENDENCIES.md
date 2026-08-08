@@ -99,6 +99,54 @@ This document lists the dependencies required to build and use the network simul
   hard configure error. See `.kiro/specs/grpc-transport/` and
   `doc/grpc_transport_README.md`.
 
+### libnyoci (MIT) — alternate CoAP transport backend
+- **Status**: Optional and **opt-in** — not part of a default install. Enabled by
+  the `coap-libnyoci` vcpkg feature and the `COAP_TRANSPORT_LIBNYOCI` Kconfig
+  symbol (default `n`). Additive rather than a replacement: it does *not* depend
+  on `COAP_TRANSPORT`, and both CoAP backends can be built into one tree
+- **Purpose**: a second implementation of the `network_client`/`network_server`
+  concept family speaking CoAP —
+  `coap_libnyoci_client`/`coap_libnyoci_server`
+  (`include/raft/coap_transport_libnyoci_impl.hpp`) — over
+  [libnyoci][libnyoci] instead of libcoap. libnyoci is a full RFC 7252 stack, so
+  it owns the socket, the message/token layer, retransmission of confirmable
+  messages, duplicate suppression and Block2 transfer; the adapter only bridges
+  its C callbacks into `future_template<...>` promises
+- **Version**: pinned to commit `11a6e1b` (master, 2019-04-15), **not** the
+  `0.07.00rc1` tag — that tag is the 2017 initial release and predates both the
+  fuzzing/robustness fixes and the `nyoci_inbound_get_path()` signature the
+  adapter calls
+- **Installation**: built from source by the `vcpkg-overlays/libnyoci` overlay
+  port. Because libnyoci is **autotools**, the port uses `vcpkg_configure_make`
+  + `vcpkg_install_make` + `vcpkg_fixup_pkgconfig`, and the host needs the
+  autotools chain *plus* `autoconf-archive` (`configure.ac` calls `AX_PTHREAD`):
+  ```bash
+  sudo apt install autoconf automake libtool autoconf-archive pkg-config
+  cmake -S . -B build -DVCPKG_MANIFEST_FEATURES=coap-libnyoci
+  ```
+- **Notes**: discovery is `pkg_check_modules(LIBNYOCI QUIET libnyoci)` — libnyoci
+  ships no CMake config package — and backs `LIBNYOCI_AVAILABLE`. When absent,
+  the adapter header still compiles (keeping its full concept surface, so the
+  conformance test's `static_assert`s stay meaningful) and its integration tests
+  skip rather than fail. Under `-DKYTHIRA_KCONFIG_STRICT=ON`,
+  `CONFIG_COAP_TRANSPORT_LIBNYOCI=y` with libnyoci missing is a hard configure
+  error.
+
+  Two limitations are inherent to the library and documented rather than worked
+  around: libnyoci implements **Block2 but no Block1**, so an over-large
+  *request* is rejected with a descriptive error instead of being split (this
+  bounds InstallSnapshot); and the backend serves **plain CoAP only** —
+  `coap_security_provider` is expressed in libcoap types with no
+  transport-neutral seam, so a non-`none` security mode is refused at
+  construction rather than silently downgraded. See
+  `.kiro/specs/coap-transport-libnyoci/` and
+  `doc/coap_library_alternatives.md`.
+
+  A translation unit must include **either** `raft/coap_transport.hpp` **or**
+  `raft/coap_transport_libnyoci_impl.hpp`, never both: libcoap defines the CoAP
+  option numbers as macros and libnyoci as enumerators, so the two C headers
+  cannot coexist. They do not conflict at link time.
+
 ### AWS SDK ACM Private CA component — aws_acm_pca_provider
 - **Status**: Optional — independent of the core `KYTHIRA_HAS_AWS_SDK` component set
   already used by `aws_ec2_quorum_manager`/`aws_asg_quorum_manager`
@@ -275,3 +323,5 @@ Folly-dependent targets, same as always.
 1. Install folly library for async operations support
 2. Install property-based testing framework for comprehensive testing
 3. Verify all dependencies are correctly linked
+
+[libnyoci]: https://github.com/darconeous/libnyoci
