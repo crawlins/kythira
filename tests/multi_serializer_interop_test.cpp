@@ -111,65 +111,89 @@ BOOST_AUTO_TEST_CASE(multi_client_preferring_json_against_single_json_server) {
     check_interoperates(obs, json_media);
 }
 
-/// @brief **Pins a known Requirement 7.3 violation — this cell asserts the
-///        behaviour the code has, which is NOT the behaviour the spec requires.**
+/// @brief Exhaustion: a client with nothing else to offer fails cleanly.
 ///
-/// The client supports JSON and CBOR and prefers CBOR; the server is an
-/// unmodified JSON-only node. JSON is "a serializer the multi-serializer node
-/// also supports", so Requirement 7.3 says these two SHALL interoperate in this
-/// direction. **They do not.** Measured August 8, 2026:
-///
-///     RPC failed: HTTP client error 415: Unsupported Content-Type: application/cbor
-///
-/// all three RPCs, handler never entered.
-///
-/// The cause is structural rather than a missing branch. HTTP negotiates the
-/// *response* through `Accept`, which the server reads before answering — that
-/// is why the three cells above pass. The *request* has no such mechanism: the
-/// client must choose a format before it has heard anything from the server, so
-/// it sends `select_request_media_type`'s answer, which on a cold cache is the
-/// registry default. When that default is a type the peer does not speak, the
-/// server answers 415 and there is nothing that recovers — the client does not
-/// retry, and the capability cache is deliberately not written on failure, so
-/// every subsequent request repeats the identical mistake. The pairing is
-/// permanently broken, not slow to converge.
-///
-/// Fixing it is a design decision rather than a bug fix, which is why this cell
-/// pins the defect instead of quietly expecting a pass: the server's 415 does
-/// not say what it *would* accept, so a client retry needs either `Accept-Post`
-/// (W3C Linked Data Platform 1.0) on the rejection or a fixed "try the next
-/// preferred type" policy,
-/// and either one is a wire-behaviour change across all four transports. Logged
-/// in `doc/TODO.md`.
-///
-/// What this cell therefore asserts is the *quality* of the failure, which is
-/// itself a Requirement 8 obligation: a clean, typed, immediate 415 naming the
-/// offending type — no crash, no hang, no unresolved future, and no handler
-/// side effects. **When someone implements the fix this test will fail**, which
-/// is the intent: it should be updated to `check_interoperates(obs, json_media)`
-/// at that point, and the failure is how they find out this cell exists.
-BOOST_AUTO_TEST_CASE(multi_client_preferring_cbor_against_single_json_server_is_a_known_415) {
-    const auto obs = run_exchange<multi_cbor_first_types, single_json_types>(18264);
+/// A `single_serializer_registry<cbor>` client against a JSON-only server has
+/// no second format to fall back to, so the retry loop must terminate
+/// immediately rather than re-sending the only type it has. This is the case
+/// that proves the loop is bounded rather than merely usually short — and it is
+/// also every single-serializer deployment shipping today, which is why it must
+/// cost exactly one attempt and not two.
+BOOST_AUTO_TEST_CASE(a_client_with_no_alternative_format_fails_after_one_attempt) {
+    const auto obs = run_exchange<single_cbor_types, single_json_types>(18265);
 
-    // Every RPC fails, and fails the same way -- not one flaky one.
     BOOST_TEST(obs.failed_rpcs == 3);
     BOOST_TEST(obs.first_error.find("415") != std::string::npos,
                "expected a 415, got: " << obs.first_error);
-    BOOST_TEST(obs.first_error.find(cbor_media) != std::string::npos,
-               "the error should name the offending type: " << obs.first_error);
-
-    // Rejected before the handler, so no side effects were paid for a request
-    // that was never going to be answered (Requirement 4.4).
     BOOST_TEST(obs.handler_invocations == 0);
 
-    // The client kept sending its own default all three times: the cache is
-    // untouched by a failure, so there is no convergence and no self-repair.
-    // This is what makes the breakage permanent rather than first-request-only.
+    // Exactly one attempt per RPC -- three, not six. A retry loop that re-tried
+    // the type it had just been refused would show six here and still
+    // eventually fail, which is the shape this asserts against.
     BOOST_REQUIRE_EQUAL(obs.client_request_types.size(), 3u);
     for (const auto& t : obs.client_request_types) {
         BOOST_TEST(t == cbor_media);
     }
-
-    // Nothing was ever decoded, because nothing ever came back successfully.
     BOOST_TEST(obs.client_response_types.empty());
+}
+
+/// @brief **The cell Requirement 7.3 turns on**, and the one that drove the
+///        blind-retry fix.
+///
+/// The client supports JSON and CBOR and prefers CBOR; the server is an
+/// unmodified JSON-only node. JSON is "a serializer the multi-serializer node
+/// also supports", so Requirement 7.3 says these two SHALL interoperate in this
+/// direction, "without requiring the single-serializer node to change".
+///
+/// **Before the fix they did not.** Measured August 8, 2026:
+///
+///     RPC failed: HTTP client error 415: Unsupported Content-Type: application/cbor
+///
+/// on all three RPCs, handler never entered, and *permanently* — the client did
+/// not retry, and the capability cache is deliberately not written on failure
+/// (correctly: caching the type that just failed would repeat the mistake with
+/// more confidence), so every later request re-sent the same default.
+///
+/// The cause was structural rather than a missing branch, and still is: HTTP
+/// negotiates the *response* through `Accept`, which the server reads before
+/// answering — that is why the three cells above always passed. The *request*
+/// has no such mechanism, so the client must commit to an encoding before it has
+/// heard anything from the peer.
+///
+/// What changed is what happens **after** the rejection. The client now walks
+/// the rest of `preferred_media_types()` on a 415 and caches whichever works.
+/// `Accept-Post` (W3C Linked Data Platform 1.0 §7.1) would converge in one retry
+/// instead of up to N, but it requires the *peer* to emit a header, and 7.3
+/// promises interoperation without the peer changing — so it is an optimisation
+/// to layer on later, not the mechanism.
+///
+/// The assertions below are deliberately not `check_interoperates`: the whole
+/// point is that the first exchange costs **two** attempts and the rest cost
+/// one, which a uniform "every request used JSON" check would hide.
+BOOST_AUTO_TEST_CASE(multi_client_preferring_cbor_interoperates_with_a_single_json_server) {
+    const auto obs = run_exchange<multi_cbor_first_types, single_json_types>(18264);
+
+    BOOST_TEST(obs.failed_rpcs == 0, "RPC failed: " << obs.first_error);
+    BOOST_TEST(obs.round_trips_correct);
+    BOOST_TEST(obs.handler_invocations == 3);
+
+    // Four attempts for three RPCs: the first RPC guessed CBOR, was refused,
+    // and retried in JSON; the second and third went straight out in JSON from
+    // the cache the retry populated. This exact shape is the evidence that the
+    // retry happened *and* that it converged -- a client that retried on every
+    // request would show six attempts, and one that never retried would show
+    // three failures.
+    BOOST_REQUIRE_EQUAL(obs.client_request_types.size(), 4u);
+    BOOST_TEST(obs.client_request_types[0] == cbor_media);
+    BOOST_TEST(obs.client_request_types[1] == json_media);
+    BOOST_TEST(obs.client_request_types[2] == json_media);
+    BOOST_TEST(obs.client_request_types[3] == json_media);
+
+    // Three successful responses, all decoded as JSON -- one per RPC, so the
+    // refused attempt produced no response leg at all.
+    BOOST_REQUIRE_EQUAL(obs.client_response_types.size(), 3u);
+    for (const auto& t : obs.client_response_types) {
+        BOOST_TEST(t == json_media);
+    }
+    BOOST_TEST(obs.server_response_type == json_media);
 }
