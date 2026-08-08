@@ -212,12 +212,28 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
       three RPCs, a wrong Master Secret refused with the handler never running,
       an unprotected request refused by an OSCORE server, and twelve sequential
       requests advancing the Partial IV through the replay window.
-  - [ ] 5.2.1 EDHOC bootstrap over this backend — still open, now small
-    - The handshake is already transport-neutral and produces exactly the
-      credentials `oscore::security_context` consumes; what is missing is the
-      `.well-known/edhoc` exchange to carry its messages. `plan_security()`
-      refuses `oscore_bootstrap::edhoc` explicitly rather than silently
-      treating it as static provisioning.
+  - [x] 5.2.1 EDHOC bootstrap — **implemented over `/.well-known/edhoc`**
+    - `include/raft/coap_edhoc_bootstrap.hpp` carries the three-message EDHOC
+      exchange (RFC 9528 Appendix A.2) over CoAP POSTs. Unprotected by design:
+      EDHOC authenticates and key-agrees on its own, and bootstrapping the
+      protection that follows is its entire purpose.
+    - The roles are awkwardly asymmetric. The Initiator drives, so its transport
+      is trivial. The Responder is driven *by* inbound requests while
+      `run_edhoc_handshake()` blocks in `receive()`, so it runs on its own
+      thread and rendezvouses with libnyoci's request handler through a
+      condition-variable channel. The handshake's completion pushes one empty
+      reply, which is what releases the handler still holding message_3.
+    - The client bootstraps lazily, on the first RPC to a peer, rather than in
+      its constructor: the peer may not be listening yet, and a constructor is
+      the wrong place to block on the network.
+    - An OSCORE server serves `/.well-known/edhoc` in the clear and *nothing
+      else* — every other unprotected request still gets 4.01.
+    - Covered by three cases in `tests/coap_libnyoci_oscore_test.cpp`: a full
+      RPC after a bootstrap with no Master Secret configured anywhere, five
+      sequential RPCs proving the handshake runs once, and mismatched peer
+      credentials failing rather than hanging.
+    - Still gated on lakers. Without it the request is refused with that
+      reason rather than silently treated as static provisioning.
   - [ ] 5.3 DTLS-RPK — **refused; not expressible through this surface**
     - Raw public keys (RFC 7250) need the peer to negotiate a non-X.509
       certificate type. libnyoci's plugin hands the adapter nothing but an
@@ -295,10 +311,14 @@ and a translation unit selects a backend by which header it includes.
   cannot be built in one process. It needs two processes, i.e. the container
   harness Task 6.4 did not require — and that harness must follow the
   Docker/rootless-Podman rules in `CLAUDE.md`.
-- **EDHOC bootstrap over this backend** (Task 5.2.1): the handshake is already
-  transport-neutral, so what is left is the `.well-known/edhoc` exchange.
-- **Observe and block-wise over OSCORE**, both refused today (RFC 8613
-  Sections 8.2.1, 8.3.1, 8.4.1, 8.4.2).
+- **Observe at the transport level.** OSCORE now carries notifications
+  (`protect_response` with its own Partial IV, `unprotect_notification` with
+  the Section 8.4.2 ordering check, verified against Appendix C.8), but neither
+  transport exposes an observe/subscribe API — `network_client` has no such
+  method. Adding one changes the concepts, which is a larger decision than
+  OSCORE support and deliberately not taken here.
+- **Outer block options and proxy support.** Only the inner (end-to-end) form
+  is emitted; a CoAP proxy in the path would need the outer form too.
 - **DTLS-RPK** (Task 5.3) would need OpenSSL >= 3.2 and certificate-type
   negotiation the libnyoci plugin does not expose.
 - **Block1**, if InstallSnapshot over libnyoci ever matters: it would have to be
