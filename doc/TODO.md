@@ -662,52 +662,87 @@ unverified completion claim.
     support change behaviour, from a silent wrong-format 2.05 to a clean 4.06.
     All 12 CoAP suites currently built pass against it.
 
-- **A multi-serializer client cannot talk to a single-serializer peer that does
-  not speak its default — a Requirement 7.3 violation, open (found August 8,
-  2026).** Found by writing spec Task 15's interop suite to the requirement and
+- **A multi-serializer client could not talk to a single-serializer peer that
+  does not speak its default — Requirement 7.3 violation, FIXED August 8,
+  2026.** Found by writing spec Task 15's interop suite to the requirement and
   measuring what happened, rather than to the code and asserting it back.
-  - **Measured**, `tests/multi_serializer_interop_test.cpp`: a client with
-    `multi_serializer_registry<cbor, json>` against a server with
-    `single_serializer_registry<json>` gets
-    `HTTP client error 415: Unsupported Content-Type: application/cbor` on
-    every RPC, and the handler is never entered. Requirement 7.3 says a
-    multi-serializer node and a single-serializer node **SHALL** interoperate in
-    both directions whenever the single node's format is one the multi node also
-    supports — and JSON is. This direction does not.
-  - **It is permanent, not first-request-only.** There is no retry, and the
-    capability cache is deliberately not written on a failure (Requirement 6.5,
-    and correctly so — caching the type that just failed would make the next
-    request repeat the mistake with more confidence). So every subsequent
-    request re-sends the same default and gets the same 415. The pairing never
-    recovers.
-  - **The cause is structural, not a missing branch.** HTTP negotiates the
-    *response* through `Accept`, which the server reads before answering — which
-    is why the reverse direction works and why the three other interop cells
-    pass. The *request* has no equivalent: the client must choose a format
-    before it has heard anything from the server, so it sends
-    `select_request_media_type`'s answer, which on a cold cache is the registry
-    default. Nothing in HTTP tells a client a peer's formats in advance.
-  - **Fixing it is a design decision, which is why it is filed here rather than
-    fixed in passing.** The server's 415 does not say what it *would* accept, so
-    a client-side retry needs either `Accept-Post` (W3C Linked Data Platform
-    1.0 §7.1; IANA-registered, and there is an expired IETF draft,
-    `draft-wilde-accept-post`) on the rejection,
-    or a fixed "on 415, try the next preferred type" policy. Either is a
-    wire-behaviour change and would have to land in all four transports at once,
-    for the same reason Task 10a's write-up gives about Proxygen's two client
-    paths: negotiating differently in one transport than another makes a node's
-    behaviour depend on how it was built. The capability cache is already the
-    right home for the outcome — a successful retry would record the working
-    type and every later request would be one round trip again.
-  - **Until then the constraint is on configuration**: a multi-serializer node's
-    *first* declared serializer must be one every peer it will meet can decode.
-    That is a real deployment constraint and it is written down nowhere else.
-  - The interop cell asserts today's behaviour, names itself
-    `..._is_a_known_415`, and says in its comment that **it will fail when the
-    fix lands** — which is how whoever fixes this finds out the cell exists and
-    updates it to `check_interoperates(obs, json_media)`. It is not marked
-    allowed-to-fail, and it does check something real meanwhile: that the
-    failure is clean, typed, immediate, and costs no handler side effects.
+  - **The defect, as measured** (`tests/multi_serializer_interop_test.cpp`): a
+    `multi_serializer_registry<cbor, json>` client against a
+    `single_serializer_registry<json>` server got
+    `HTTP client error 415: Unsupported Content-Type: application/cbor` on every
+    RPC, handler never entered — and *permanently*, since there was no retry and
+    the capability cache is deliberately not written on failure.
+  - **The cause is structural and remains so.** HTTP negotiates the *response*
+    through `Accept`, read before answering; the request has no equivalent, so a
+    client must commit to an encoding before hearing anything from the peer.
+    What changed is what happens *after* the rejection.
+  - **The fix is a blind retry**: on 415 (4.15 in CoAP) the client walks the rest
+    of `preferred_media_types()` and caches whichever works, so a mismatched
+    pairing costs one extra round trip on first contact and nothing thereafter.
+    The shared policy is one function,
+    `next_request_media_type_after_rejection` in `peer_capability_cache.hpp`;
+    each transport owns its own loop because each has a different async shape.
+  - **Why blind retry and not `Accept-Post`.** `Accept-Post` (W3C Linked Data
+    Platform 1.0 §7.1) would let the rejecting server say what it *would* take,
+    converging in one retry rather than up to N. It was rejected as the
+    mechanism for two reasons. First, Requirement 7.3 promises interoperation
+    "without requiring the single-serializer node to change" — an unmodified
+    peer emits no such header, which is exactly the case the requirement is
+    about. Second, it has no CoAP analogue, and the policy has to hold across
+    all four transports. It remains worth adding later as an *optimisation*
+    layered on top: use it when present, fall back to the blind walk when absent.
+  - **Retrying is safe because 415/4.15 is answered before the handler runs.**
+    That ordering was specified for side-effect reasons in Tasks 9/10/11 and is
+    what makes a retry provably not double-apply. A fix predating it would have
+    been far riskier.
+  - **Single-serializer configurations pay nothing**: the one registered type is
+    always the one just refused, so the helper returns `nullopt` on the first
+    rejection and the original error surfaces unchanged. Pinned per transport,
+    because that is the path that broke first — see below.
+  - **The bug the fix nearly shipped with.** The first version *threw* out of
+    the Future-returning `thenError` continuation on the exhausted path, which
+    leaves the promise unfulfilled: callers saw "The associated promise has been
+    destructed prior to the associated state becoming ready" instead of the 415.
+    That path is every single-serializer deployment — i.e. everything shipping
+    today — while the new multi-serializer path looked healthy. Caught by the
+    Beast exhaustion case, then fixed in all three async transports by returning
+    an exceptional future rather than throwing. **The lesson generalises: a
+    Future-returning continuation must return, not throw.**
+  - Covered per transport rather than once, because each implements its own
+    loop: `multi_serializer_interop_test` (httplib),
+    `beast_negotiation_retry_test`, `coap_negotiation_failure_test`,
+    `proxygen_negotiation_integration_test`, plus the policy itself in
+    `http_content_negotiation_unit_test`. Every one of them covers *both* the
+    retry and the exhaustion path.
+  - The deployment constraint this used to imply — a multi-serializer node's
+    first declared serializer had to be one every peer could decode — no longer
+    applies.
+
+- **CoAP's `Accept` option is not repeatable, and the client was sending several
+  — FIXED August 8, 2026.** Found while adding the retry above, because that was
+  the first time a *multi-serializer CoAP client* had ever run.
+  - `coap_client` looped over `preferred_media_types()` adding one
+    `COAP_OPTION_ACCEPT` per registered serializer, on the assumption that CoAP
+    repeats options where HTTP comma-joins them. That is true of `Uri-Path` and
+    **false of `Accept`**: RFC 7252 Table 4 marks option 17 without "R", so a
+    request may name exactly one acceptable Content-Format.
+  - **libcoap enforces it, and the failure was total.** A standalone probe
+    against the linked libcoap shows the second `coap_add_option(...,
+    COAP_OPTION_ACCEPT, ...)` returning 0 *regardless of the order of the
+    values*, while two `Uri-Path` options both succeed. So every send from a
+    multi-serializer CoAP client threw
+    `coap_transport_error("Failed to add Accept option")` — multi-serializer
+    CoAP did not work at all, rather than working suboptimally.
+  - Latent because nothing in the tree had a multi-serializer CoAP client until
+    Tasks 15/16's suites, and a single-serializer registry adds exactly one
+    option and is fine. The same false premise is why the *server* walks a list
+    of Accept options; that loop is harmless and is kept for tolerance, but its
+    comment now says a conforming peer sends at most one.
+  - The client now sends one `Accept`, naming the type it is encoding in. The
+    cost is inherent to CoAP rather than to that choice: a CoAP client cannot
+    express a ranked list, so it gets one guess at the response format where an
+    HTTP client gets a preference order. The 4.15 retry moves it along with the
+    request type, so a wrong guess still converges.
 
 - **Proxygen content negotiation — answered and implemented (August 7, 2026 —
   resolved).** The open question was "is Proxygen a first-class transport?"
