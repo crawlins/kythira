@@ -74,6 +74,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -84,6 +85,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #ifdef LIBNYOCI_AVAILABLE
@@ -92,6 +94,17 @@ extern "C" {
 #include <libnyoci/libnyoci.h>
 #include <libnyoci/nyoci-transaction.h>
 }
+// libnyoci's DTLS plugin only forward-declares struct ssl_ctx_st; the adapter
+// builds and owns the SSL_CTX itself (see dtls_state), so it needs the real
+// OpenSSL headers. network_simulator already links OpenSSL::SSL/Crypto, so this
+// costs consumers nothing.
+#include <openssl/ssl.h>
+// For reserve_ephemeral_port() — see its comment for why libnyoci leaves us to
+// find a DTLS port ourselves.
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace kythira {
@@ -245,53 +258,305 @@ inline auto add_content_format_option(coap_option_key_t key, std::uint16_t forma
 
 #endif  // LIBNYOCI_AVAILABLE
 
-/// The effective security mode for `config`, and a hard error if this backend
-/// cannot honour it (Requirement 5).
+/// Which wire channel this backend will run `config` over.
+enum class channel {
+    plain,  //!< CoAP over UDP.
+    dtls    //!< CoAP over DTLS, via libnyoci's OpenSSL plugin.
+};
+
+/// Decide the channel for `config`, or refuse it (Requirement 5).
 ///
-/// kythira's coap_security_provider is the right place for DTLS/OSCORE/EDHOC —
-/// forking security per CoAP backend is exactly the maintenance trap the spec
-/// set out to avoid — but its whole interface is expressed in libcoap types
-/// (coap_context_t*, coap_session_t*, coap_pdu_t*), and its protect/unprotect
-/// hooks are identity passthroughs because every mode is implemented *below*
-/// libcoap's PDU API. There is no seam a libnyoci core can plug into today, and
-/// libnyoci itself ships only an optional OpenSSL DTLS plugin with no OSCORE
-/// and no EDHOC.
+/// The spec's original plan was to keep kythira's `coap_security_provider`
+/// above a plain-CoAP libnyoci core. That is not achievable: every method of
+/// that interface is expressed in libcoap types (`coap_context_t*`,
+/// `coap_session_t*`, `coap_pdu_t*`), and its `protect`/`unprotect` hooks are
+/// identity passthroughs precisely *because* every mode is implemented below
+/// libcoap's PDU API rather than as a byte-level transform an adapter could
+/// call. There is no seam to sit above.
 ///
-/// So: plain CoAP works (Requirement 5.3), config-level mistakes still raise
-/// the same coap_security_config_error the libcoap path raises
-/// (translate_legacy_fields is shared verbatim — Requirement 5.4 for
-/// configuration errors), and any mode that would actually have to encrypt
-/// bytes is refused loudly. Refusing is the only safe answer: silently
-/// downgrading a node that asked for DTLS to plaintext Raft traffic is worse
-/// than not starting.
+/// What is achievable is libnyoci's own OpenSSL DTLS plugin, which turns out to
+/// be enough for two of the four secured modes. The refusals below are
+/// deliberate and specific: silently downgrading a node that asked for
+/// encryption to plaintext Raft traffic is strictly worse than not starting.
+///
+/// Configuration handling stays shared with the libcoap backend either way —
+/// `translate_legacy_fields()` is the same function, so the same malformed
+/// configs raise the same `coap_security_config_error` (Requirement 5.4).
 template<typename Config>
-inline auto resolve_security_mode(const Config& config, const char* role) -> coap_auth_mode {
-    const coap_security_config effective = kythira::translate_legacy_fields(config);
-    if (effective.mode != coap_auth_mode::none) {
-        throw coap_security_error(
-            std::string("the libnyoci CoAP backend supports plain CoAP only; this ") + role +
-            " was configured for a channel-security mode it cannot provide. kythira's "
-            "coap_security_provider (DTLS-PSK/PKI/RPK, OSCORE, EDHOC) is implemented against "
-            "libcoap's context/session/PDU types and has no transport-neutral seam, and libnyoci "
-            "ships neither OSCORE nor EDHOC. Use the libcoap-backed coap_client/coap_server for "
-            "secured deployments. See .kiro/specs/coap-transport-libnyoci/ Requirement 5.");
+[[nodiscard]] inline auto plan_security(const Config& config, const char* role)
+    -> std::pair<channel, coap_security_config> {
+    coap_security_config effective = kythira::translate_legacy_fields(config);
+    switch (effective.mode) {
+        case coap_auth_mode::none:
+            return {channel::plain, std::move(effective)};
+
+        case coap_auth_mode::dtls_psk:
+        case coap_auth_mode::dtls_pki:
+#ifdef LIBNYOCI_AVAILABLE
+            return {channel::dtls, std::move(effective)};
+#else
+            throw coap_security_error(
+                std::string("DTLS was requested for this libnyoci CoAP ") + role +
+                ", but the backend was built without libnyoci. Rebuild with the vcpkg "
+                "'coap-libnyoci' feature.");
+#endif
+
+        case coap_auth_mode::dtls_rpk:
+            // RFC 7250 raw public keys need the peer to negotiate a non-X.509
+            // certificate type. libnyoci's plugin hands us nothing but an
+            // SSL_CTX, and OpenSSL only grew raw-public-key support in 3.2
+            // (SSL_CTX_set1_client_cert_type and friends) -- there is no way to
+            // express RPK through the surface available here.
+            throw coap_security_error(
+                std::string("the libnyoci CoAP backend cannot provide DTLS-RPK for this ") + role +
+                ". Raw public keys (RFC 7250) require the certificate-type extensions OpenSSL "
+                "only added in 3.2, and libnyoci's DTLS plugin exposes nothing but an SSL_CTX. "
+                "Use dtls_pki here, or the libcoap-backed coap_client/coap_server for RPK. See "
+                ".kiro/specs/coap-transport-libnyoci/ Task 5.");
+
+        case coap_auth_mode::oscore:
+            // Not a libnyoci gap so much as a kythira one: kythira does not
+            // implement OSCORE, it configures libcoap's
+            // (coap_context_oscore_server / coap_new_client_session_oscore).
+            // There is no backend-neutral OSCORE to reach for. Same for the
+            // EDHOC bootstrap that feeds it -- the handshake itself is already
+            // transport-neutral, but the OSCORE context consuming its output is
+            // not. See doc/TODO.md.
+            throw coap_security_error(
+                std::string("the libnyoci CoAP backend cannot provide OSCORE for this ") + role +
+                ". libnyoci ships no OSCORE, and kythira has no implementation of its own to "
+                "fall back on -- oscore_provider delegates entirely to libcoap. Use the "
+                "libcoap-backed coap_client/coap_server for OSCORE and EDHOC. See doc/TODO.md.");
     }
-    return effective.mode;
+    throw coap_security_config_error("unknown coap_auth_mode");
 }
 
 /// Join an endpoint ("coap://127.0.0.1:5683", with or without scheme or a
 /// trailing slash) and a resource path ("/raft/append_entries") into the
 /// absolute URI nyoci_outbound_set_uri() wants.
-[[nodiscard]] inline auto build_request_uri(std::string endpoint, const std::string& resource_path)
-    -> std::string {
-    if (endpoint.rfind("coap://", 0) != 0 && endpoint.rfind("coaps://", 0) != 0) {
-        endpoint.insert(0, "coap://");
+///
+/// The scheme is forced to match `secure` rather than taken from the endpoint
+/// string, and that is the point: nyoci_outbound_set_uri() picks the session
+/// type straight out of the scheme (via nyoci_session_type_from_uri_scheme), so
+/// an endpoint left as "coap://" in a DTLS-configured client would quietly send
+/// the request in the clear.
+[[nodiscard]] inline auto build_request_uri(std::string endpoint, const std::string& resource_path,
+                                            bool secure) -> std::string {
+    for (const auto* scheme : {"coaps://", "coap://"}) {
+        if (endpoint.rfind(scheme, 0) == 0) {
+            endpoint.erase(0, std::strlen(scheme));
+            break;
+        }
     }
     while (!endpoint.empty() && endpoint.back() == '/') {
         endpoint.pop_back();
     }
-    return endpoint + resource_path;
+    return (secure ? "coaps://" : "coap://") + endpoint + resource_path;
 }
+
+#ifdef LIBNYOCI_AVAILABLE
+
+/// Everything a DTLS-secured nyoci_t needs kept alive for as long as it lives.
+///
+/// libnyoci never frees the SSL_CTX it is given -- there is no SSL_CTX_free
+/// anywhere in its plugin and nyoci_plat_finalize() only closes file
+/// descriptors -- so the adapter always builds its own and owns it. Passing
+/// NYOCI_PLAT_TLS_DEFAULT_CONTEXT would make libnyoci allocate one it then
+/// leaks, on top of leaving us no handle to configure PKI through.
+struct dtls_state {
+    // Held for the PSK callbacks, which libnyoci invokes with this object as
+    // their void* context from inside the handshake.
+    std::string psk_identity;
+    std::vector<unsigned char> psk_key;
+    std::string psk_hint;
+    SSL_CTX* ssl_ctx{nullptr};
+
+    dtls_state() = default;
+    dtls_state(const dtls_state&) = delete;
+    auto operator=(const dtls_state&) -> dtls_state& = delete;
+    dtls_state(dtls_state&&) = delete;
+    auto operator=(dtls_state&&) -> dtls_state& = delete;
+
+    ~dtls_state() {
+        if (ssl_ctx != nullptr) {
+            SSL_CTX_free(ssl_ctx);
+        }
+    }
+};
+
+extern "C" inline auto libnyoci_client_psk_trampoline(void* context, const char* /*hint*/,
+                                                      char* identity, unsigned int max_identity_len,
+                                                      unsigned char* psk, unsigned int max_psk_len)
+    -> unsigned int {
+    const auto* state = static_cast<const dtls_state*>(context);
+    if (state == nullptr || state->psk_identity.size() + 1 > max_identity_len ||
+        state->psk_key.size() > max_psk_len) {
+        return 0;  // Aborts the handshake.
+    }
+    std::memcpy(identity, state->psk_identity.c_str(), state->psk_identity.size() + 1);
+    std::memcpy(psk, state->psk_key.data(), state->psk_key.size());
+    return static_cast<unsigned int>(state->psk_key.size());
+}
+
+extern "C" inline auto libnyoci_server_psk_trampoline(void* context, const char* identity,
+                                                      unsigned char* psk, unsigned int max_psk_len)
+    -> unsigned int {
+    const auto* state = static_cast<const dtls_state*>(context);
+    if (state == nullptr || identity == nullptr || state->psk_identity != identity ||
+        state->psk_key.size() > max_psk_len) {
+        return 0;  // Unknown identity: abort rather than offer a wrong key.
+    }
+    std::memcpy(psk, state->psk_key.data(), state->psk_key.size());
+    return static_cast<unsigned int>(state->psk_key.size());
+}
+
+/// A DTLS context with the same defaults libnyoci's own would use, but owned by
+/// us. PSK ciphersuites stay in the list for the dtls_psk path; dtls_pki
+/// narrows the verification settings afterwards.
+[[nodiscard]] inline auto make_dtls_context() -> SSL_CTX* {
+    SSL_CTX* ctx = SSL_CTX_new(DTLS_method());
+    if (ctx == nullptr) {
+        throw coap_security_error("failed to allocate a DTLS context for the libnyoci backend");
+    }
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+    if (SSL_CTX_set_cipher_list(ctx, "ALL:!EXPORT:!LOW:!aNULL:!eNULL:!SSLv2:PSK") != 1) {
+        SSL_CTX_free(ctx);
+        throw coap_security_error("failed to set the DTLS cipher list for the libnyoci backend");
+    }
+    return ctx;
+}
+
+/// Apply PKI credentials to `ctx`. Deliberately mirrors what the libcoap
+/// backend's dtls_pki_provider asks libcoap for, so a config that works there
+/// means the same thing here: own certificate and key, optional CA bundle, and
+/// peer verification unless explicitly disabled.
+inline auto apply_pki_credentials(SSL_CTX* ctx, const pki_credentials& creds,
+                                  coap_security_role role) -> void {
+    if (creds.cert_file.empty() || creds.key_file.empty()) {
+        throw coap_security_config_error(
+            "dtls_pki requires both cert_file and key_file for the libnyoci backend");
+    }
+    if (SSL_CTX_use_certificate_chain_file(ctx, creds.cert_file.c_str()) != 1) {
+        throw coap_security_error("failed to load the DTLS certificate: " + creds.cert_file);
+    }
+    if (SSL_CTX_use_PrivateKey_file(ctx, creds.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
+        throw coap_security_error("failed to load the DTLS private key: " + creds.key_file);
+    }
+    if (SSL_CTX_check_private_key(ctx) != 1) {
+        throw coap_security_error("the DTLS private key does not match the certificate: " +
+                                  creds.key_file);
+    }
+    if (!creds.ca_file.empty()) {
+        if (SSL_CTX_load_verify_locations(ctx, creds.ca_file.c_str(), nullptr) != 1) {
+            throw coap_security_error("failed to load the DTLS CA bundle: " + creds.ca_file);
+        }
+    }
+    if (creds.verify_peer_cert) {
+        // A server also demanding a client certificate is what makes this
+        // mutual, matching the libcoap path's require_peer_cert behaviour.
+        const int mode = (role == coap_security_role::server)
+                             ? (SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT)
+                             : SSL_VERIFY_PEER;
+        SSL_CTX_set_verify(ctx, mode, nullptr);
+    }
+    if (!creds.cipher_suites.empty()) {
+        std::string list;
+        for (const auto& suite : creds.cipher_suites) {
+            if (!list.empty()) {
+                list += ':';
+            }
+            list += suite;
+        }
+        if (SSL_CTX_set_cipher_list(ctx, list.c_str()) != 1) {
+            throw coap_security_error("failed to apply the configured DTLS cipher suites: " + list);
+        }
+    }
+}
+
+/// Build the dtls_state for `security` and install it on `instance`.
+///
+/// Order matters: nyoci_plat_tls_set_context() must run before the PSK setters,
+/// because those install their callbacks onto whichever SSL_CTX the instance is
+/// holding at the time.
+inline auto configure_dtls(nyoci_t instance, const coap_security_config& security,
+                           coap_security_role role) -> std::unique_ptr<dtls_state> {
+    auto state = std::make_unique<dtls_state>();
+    state->ssl_ctx = make_dtls_context();
+
+    if (security.mode == coap_auth_mode::dtls_pki) {
+        if (!std::holds_alternative<pki_credentials>(security.credentials)) {
+            throw coap_security_config_error(
+                "security.mode == dtls_pki requires pki_credentials in security.credentials");
+        }
+        apply_pki_credentials(state->ssl_ctx, std::get<pki_credentials>(security.credentials),
+                              role);
+    }
+
+    if (nyoci_plat_tls_set_context(instance, state->ssl_ctx) != NYOCI_STATUS_OK) {
+        throw coap_security_error("libnyoci rejected the DTLS context");
+    }
+
+    if (security.mode == coap_auth_mode::dtls_psk) {
+        if (!std::holds_alternative<psk_credentials>(security.credentials)) {
+            throw coap_security_config_error(
+                "security.mode == dtls_psk requires psk_credentials in security.credentials");
+        }
+        const auto& creds = std::get<psk_credentials>(security.credentials);
+        if (creds.identity.empty() || creds.key.empty()) {
+            throw coap_security_config_error(
+                "dtls_psk requires a non-empty identity and key for the libnyoci backend");
+        }
+        state->psk_identity = creds.identity;
+        state->psk_key.reserve(creds.key.size());
+        for (const auto byte : creds.key) {
+            state->psk_key.push_back(static_cast<unsigned char>(byte));
+        }
+        if (role == coap_security_role::server) {
+            // The hint is what the client's callback sees; libnyoci keeps only
+            // the pointer's contents at call time, so it lives in dtls_state.
+            state->psk_hint = creds.identity;
+            nyoci_plat_tls_set_psk_hint(instance, state->psk_hint.c_str());
+            nyoci_plat_tls_set_server_psk_callback(instance, &libnyoci_server_psk_trampoline,
+                                                   state.get());
+        } else {
+            nyoci_plat_tls_set_client_psk_callback(instance, &libnyoci_client_psk_trampoline,
+                                                   state.get());
+        }
+    }
+
+    return state;
+}
+
+/// A free UDP port, obtained by binding one and letting it go.
+///
+/// Needed because nyoci_plat_get_port() reads plat.fd_udp only, so a DTLS
+/// listener bound to port 0 has no way to report where it landed. Racy in
+/// principle; in practice the kernel does not hand the same ephemeral port out
+/// twice in quick succession, and this only runs when the caller asked for "any
+/// port" in the first place.
+[[nodiscard]] inline auto reserve_ephemeral_port() -> std::uint16_t {
+    const int fd = ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) {
+        throw coap_network_error("failed to open a socket to reserve a DTLS port");
+    }
+    sockaddr_in6 addr{};
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;
+    std::uint16_t port = 0;
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+        socklen_t length = sizeof(addr);
+        if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &length) == 0) {
+            port = ntohs(addr.sin6_port);
+        }
+    }
+    ::close(fd);
+    if (port == 0) {
+        throw coap_network_error("failed to reserve an ephemeral port for the DTLS listener");
+    }
+    return port;
+}
+
+#endif  // LIBNYOCI_AVAILABLE
 
 }  // namespace libnyoci_detail
 
@@ -322,20 +587,38 @@ public:
           _config{std::move(config)},
           _metrics{std::move(metrics)} {
         kythira::coap_utils::validate_registry_content_formats(_registry);
-        libnyoci_detail::resolve_security_mode(_config, "client");
+        const auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "client");
+        _secure = selected_channel == libnyoci_detail::channel::dtls;
 #ifdef LIBNYOCI_AVAILABLE
         _instance = nyoci_create();
         if (_instance == nullptr) {
             throw coap_transport_error("failed to create libnyoci instance for CoAP client");
         }
-        // Port 0: the client only ever originates requests, so any ephemeral
-        // source port will do.
-        if (nyoci_plat_bind_to_port(_instance, NYOCI_SESSION_TYPE_UDP, 0) != NYOCI_STATUS_OK) {
+        try {
+            if (_secure) {
+                // Must precede the bind: the PSK setters attach their callbacks
+                // to whichever SSL_CTX the instance holds at the time.
+                _dtls = libnyoci_detail::configure_dtls(_instance, security,
+                                                        coap_security_role::client);
+            }
+            // Port 0: the client only ever originates requests, so any
+            // ephemeral source port will do.
+            const auto session_type = _secure ? NYOCI_SESSION_TYPE_DTLS : NYOCI_SESSION_TYPE_UDP;
+            if (nyoci_plat_bind_to_port(_instance, session_type, 0) != NYOCI_STATUS_OK) {
+                throw coap_network_error(std::string("failed to bind a ") +
+                                         (_secure ? "DTLS" : "UDP") +
+                                         " socket for the libnyoci CoAP client");
+            }
+            // nyoci_plat_get_port() reads plat.fd_udp only, so it says nothing
+            // useful about a DTLS-only instance. The client's source port is of
+            // no interest to callers either way.
+            _bound_port = _secure ? 0 : nyoci_plat_get_port(_instance);
+        } catch (...) {
+            _dtls.reset();
             nyoci_release(_instance);
             _instance = nullptr;
-            throw coap_network_error("failed to bind a UDP socket for the libnyoci CoAP client");
+            throw;
         }
-        _bound_port = nyoci_plat_get_port(_instance);
         _event_thread = std::jthread([this](std::stop_token stop) { run_event_loop(stop); });
 #endif
     }
@@ -353,6 +636,9 @@ public:
             nyoci_release(_instance);
             _instance = nullptr;
         }
+        // After nyoci_release(), never before: libnyoci holds the SSL_CTX
+        // pointer and tears its sessions down inside release.
+        _dtls.reset();
 #endif
     }
 
@@ -468,7 +754,7 @@ private:
             }
 
             auto rpc = std::make_unique<pending_rpc>();
-            rpc->uri = libnyoci_detail::build_request_uri(endpoint->second, resource_path);
+            rpc->uri = libnyoci_detail::build_request_uri(endpoint->second, resource_path, _secure);
             rpc->resource_path = resource_path;
             rpc->target = target;
             rpc->payload = _registry.encode_with(request_media_type, request);
@@ -764,8 +1050,13 @@ private:
     std::deque<std::unique_ptr<pending_rpc>> _queued;
     bool _shutting_down{false};
     std::uint16_t _bound_port{0};
+    /// True when plan_security() chose DTLS. Decides the socket type, and the
+    /// URI scheme every request is built with.
+    bool _secure{false};
 
 #ifdef LIBNYOCI_AVAILABLE
+    // Outlives _instance's use of it; destroyed after nyoci_release().
+    std::unique_ptr<libnyoci_detail::dtls_state> _dtls;
     nyoci_t _instance{nullptr};
     // Touched only by the event thread, so it needs no lock.
     std::vector<std::unique_ptr<pending_rpc>> _live;
@@ -797,7 +1088,12 @@ public:
           _config{std::move(config)},
           _metrics{std::move(metrics)} {
         kythira::coap_utils::validate_registry_content_formats(_registry);
-        libnyoci_detail::resolve_security_mode(_config, "server");
+        // Resolved (and refused, where it must be) at construction rather than
+        // in start(), so a config this backend cannot honour fails as early as
+        // it does on the libcoap side.
+        auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "server");
+        _secure = selected_channel == libnyoci_detail::channel::dtls;
+        _security = std::move(security);
     }
 
     ~coap_libnyoci_server() { stop(); }
@@ -839,20 +1135,40 @@ public:
         if (_instance == nullptr) {
             throw coap_transport_error("failed to create libnyoci instance for CoAP server");
         }
-        // libnyoci's POSIX backend binds one AF_INET6 socket per instance and
-        // accepts v4-mapped peers through it; it exposes a port but not a
-        // per-address bind, so _bind_address is recorded for parity with the
-        // libcoap server and for diagnostics rather than narrowing the bind.
-        if (nyoci_plat_bind_to_port(_instance, NYOCI_SESSION_TYPE_UDP, _bind_port) !=
-            NYOCI_STATUS_OK) {
+        try {
+            if (_secure) {
+                // Must precede the bind: the PSK setters attach their callbacks
+                // to whichever SSL_CTX the instance holds at the time.
+                _dtls = libnyoci_detail::configure_dtls(_instance, _security,
+                                                        coap_security_role::server);
+            }
+            // libnyoci's POSIX backend binds one AF_INET6 socket per instance
+            // and accepts v4-mapped peers through it; it exposes a port but not
+            // a per-address bind, so _bind_address is recorded for parity with
+            // the libcoap server and for diagnostics rather than narrowing the
+            // bind.
+            auto port = _bind_port;
+            if (_secure && port == 0) {
+                // nyoci_plat_get_port() reads plat.fd_udp only, so a DTLS
+                // listener bound to port 0 could never report where it landed.
+                // Pick the port up front so bound_port() stays meaningful.
+                port = libnyoci_detail::reserve_ephemeral_port();
+            }
+            const auto session_type = _secure ? NYOCI_SESSION_TYPE_DTLS : NYOCI_SESSION_TYPE_UDP;
+            if (nyoci_plat_bind_to_port(_instance, session_type, port) != NYOCI_STATUS_OK) {
+                throw coap_network_error(std::string("failed to bind libnyoci CoAP server ") +
+                                         (_secure ? "DTLS" : "UDP") + " socket to port " +
+                                         std::to_string(port));
+            }
+            // Non-zero only after the bind, which is the point of bound_port():
+            // constructing with port 0 means "any free port".
+            _actual_bound_port = _secure ? port : nyoci_plat_get_port(_instance);
+        } catch (...) {
+            _dtls.reset();
             nyoci_release(_instance);
             _instance = nullptr;
-            throw coap_network_error("failed to bind libnyoci CoAP server to port " +
-                                     std::to_string(_bind_port));
+            throw;
         }
-        // Non-zero only after the bind, which is the point of bound_port():
-        // constructing with port 0 means "any free port".
-        _actual_bound_port = nyoci_plat_get_port(_instance);
         nyoci_set_default_request_handler(_instance, &coap_libnyoci_server::on_request_trampoline,
                                           this);
         _running.store(true);
@@ -881,6 +1197,10 @@ public:
             nyoci_release(_instance);
             _instance = nullptr;
         }
+        // After nyoci_release(), never before: libnyoci holds the SSL_CTX
+        // pointer and tears its DTLS sessions down inside release. Cleared so a
+        // restart builds a fresh context rather than reusing a torn-down one.
+        _dtls.reset();
 #endif
         _running.store(false);
     }
@@ -1115,6 +1435,11 @@ private:
     port_type _actual_bound_port;
     kythira::coap_server_config _config;
     metrics_type _metrics;
+    /// Resolved once at construction (so an unsupportable mode is refused
+    /// there), and re-applied on every start() — a restart rebuilds the DTLS
+    /// context from it.
+    coap_security_config _security{};
+    bool _secure{false};
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
@@ -1128,6 +1453,8 @@ private:
 
 #ifdef LIBNYOCI_AVAILABLE
     nyoci_t _instance{nullptr};
+    // Outlives _instance's use of it; destroyed after nyoci_release().
+    std::unique_ptr<libnyoci_detail::dtls_state> _dtls;
     std::jthread _event_thread;
 #endif
 };

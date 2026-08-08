@@ -4,5 +4,8 @@
   "description": "libnyoci (darconeous/libnyoci, formerly SMCP): a full-stack RFC 7252 CoAP client/server library in C, with observe, async responses and Block2 transfer. Built from source via an overlay port since no official vcpkg registry port exists. Backs the alternate CoAP transport (include/raft/coap_transport_libnyoci_impl.hpp) that sits alongside the libcoap-backed one, gated behind the opt-in \"coap-libnyoci\" feature.",
   "homepage": "https://github.com/darconeous/libnyoci",
   "license": "MIT",
-  "supports": "!windows"
+  "supports": "!windows",
+  "dependencies": [
+    "openssl"
+  ]
 }

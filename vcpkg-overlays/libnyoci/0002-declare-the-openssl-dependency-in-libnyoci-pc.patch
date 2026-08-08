@@ -1,0 +1,23 @@
+Declare the OpenSSL dependency in libnyoci.pc
+
+With --enable-tls, libnyoci's DTLS plugin links against OpenSSL and
+libnyoci.a is left with ~36 undefined SSL_*/EVP_*/HMAC_* symbols. The
+installed libnyoci.pc says only "Libs: -L${libdir} -lnyoci" and declares
+no Requires/Libs.private, so every static consumer that discovers the
+library through pkg-config fails to link.
+
+configure.ac already AC_SUBSTs OPENSSL_INCLUDES / OPENSSL_LDFLAGS /
+OPENSSL_LIBS (AX_CHECK_OPENSSL does the substitution), so wiring them
+into the .pc template is enough. All three expand to nothing when TLS is
+disabled, which is why this is unconditional rather than guarded.
+
+--- a/src/libnyoci/libnyoci.pc.in
++++ b/src/libnyoci/libnyoci.pc.in
+@@ -7,5 +7,6 @@
+ Description: Not Your Ordinary CoAP Implementation
+ URL: http://libnyoci.org/
+ Version: @VERSION@
+-Cflags: -I${includedir}
++Cflags: -I${includedir} @OPENSSL_INCLUDES@
+ Libs: -L${libdir} -lnyoci
++Libs.private: @OPENSSL_LDFLAGS@ @OPENSSL_LIBS@

@@ -43,6 +43,10 @@ vcpkg_from_github(
         # installed -- and the archive must be installed, since configure.ac
         # also calls AX_PTHREAD.)
         0001-drop-CODE_COVERAGE_RULES-substitution.patch
+        # libnyoci.pc declares no OpenSSL dependency, so with --enable-tls below
+        # every static consumer that discovers the library through pkg-config
+        # fails to link against ~36 undefined SSL_*/EVP_*/HMAC_* symbols.
+        0002-declare-the-openssl-dependency-in-libnyoci-pc.patch
 )
 
 # libnyoci's release tarballs would normally include a pre-generated
@@ -66,13 +70,18 @@ vcpkg_configure_make(
         # wrapper; upstream's own CI passes this flag for the same reason
         # (commit 1330755, "travis: configure with --disable-dependency-tracking").
         --disable-dependency-tracking
-        # DTLS in libnyoci is an opt-in OpenSSL plugin (--enable-tls) that
-        # ships neither OSCORE nor EDHOC. kythira owns all three through
-        # coap_security.hpp/coap_edhoc.hpp, so the plugin is deliberately left
-        # off and the backend builds a plain-CoAP core -- see
-        # doc/coap_library_alternatives.md for why security is not forked per
-        # backend, and coap_transport_libnyoci_impl.hpp for the error a
-        # non-plain security mode raises.
+        # DTLS. libnyoci's OpenSSL plugin is what lets the backend offer
+        # dtls_psk and dtls_pki at all: kythira's own coap_security_provider is
+        # expressed entirely in libcoap types and has no seam another backend
+        # can plug into (see coap_transport_libnyoci_impl.hpp's plan_security()
+        # and doc/coap_library_alternatives.md).
+        #
+        # Upstream still labels this "experimental" and defaults it off, and the
+        # plugin calls OpenSSL 1.x-era APIs (HMAC_CTX_new, ERR_load_BIO_strings,
+        # ERR_remove_state) that are deprecated-but-present in OpenSSL 3.x, so
+        # it builds with deprecation warnings. It is exercised end to end by
+        # tests/coap_libnyoci_dtls_test.cpp.
+        --enable-tls
 )
 
 vcpkg_install_make()

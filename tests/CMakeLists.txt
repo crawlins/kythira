@@ -3803,6 +3803,27 @@ add_test(NAME coap_libnyoci_integration_test COMMAND coap_libnyoci_integration_t
 set_tests_properties(coap_libnyoci_integration_test PROPERTIES
     TIMEOUT 600 LABELS "coap;libnyoci;integration")
 
+# DTLS over libnyoci's OpenSSL plugin (spec Task 5). Split from the integration
+# test because it needs OpenSSL directly, to generate the self-signed material
+# the PKI case loads. Real handshakes on loopback, so the budget is generous;
+# the PSK-mismatch case deliberately waits out a failed handshake.
+add_executable(coap_libnyoci_dtls_test coap_libnyoci_dtls_test.cpp)
+target_link_libraries(coap_libnyoci_dtls_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libnyoci_dtls_test PRIVATE Folly::folly)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_libnyoci_dtls_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(coap_libnyoci_dtls_test PRIVATE cxx_std_23)
+add_test(NAME coap_libnyoci_dtls_test COMMAND coap_libnyoci_dtls_test)
+set_tests_properties(coap_libnyoci_dtls_test PROPERTIES
+    TIMEOUT 600 LABELS "coap;libnyoci;dtls;integration")
+
 # ── Test-timeout scaling for slow build configurations ───────────────────────
 # A coverage build (-DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug) runs the
 # coap suite several times slower than Release, so per-case Boost timeouts

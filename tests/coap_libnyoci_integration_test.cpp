@@ -422,10 +422,9 @@ BOOST_AUTO_TEST_CASE(test_libnyoci_backend_unavailable_is_skipped) {
 
 #endif  // LIBNYOCI_AVAILABLE
 
-// ── Requirement 5: security modes this backend cannot honour are refused ───
-// Compiled in either way: this is a property of the adapter's constructor, not
-// of libnyoci, and refusing loudly is what keeps a node that asked for DTLS
-// from silently sending Raft traffic in the clear.
+// ── Requirement 5: security ────────────────────────────────────────────────
+// Plain CoAP here; the DTLS modes and the two refusals live in
+// coap_libnyoci_dtls_test.cpp, which needs OpenSSL fixtures.
 
 BOOST_AUTO_TEST_CASE(test_plain_coap_is_accepted,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
@@ -435,28 +434,35 @@ BOOST_AUTO_TEST_CASE(test_plain_coap_is_accepted,
         (test_server{loopback, ephemeral_port, kythira::coap_server_config{}, test_metrics{}}));
 }
 
-BOOST_AUTO_TEST_CASE(test_explicit_security_mode_is_refused,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    kythira::coap_client_config config;
-    config.security.mode = kythira::coap_auth_mode::dtls_psk;
-    config.security.credentials =
-        kythira::psk_credentials{"identity", std::vector<std::byte>{std::byte{0x01}}};
-
-    BOOST_CHECK_THROW((test_client{{}, config, test_metrics{}}), kythira::coap_security_error);
-}
-
-BOOST_AUTO_TEST_CASE(test_legacy_dtls_fields_are_refused,
+BOOST_AUTO_TEST_CASE(test_legacy_dtls_fields_still_select_dtls,
                      *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     // Legacy field inference is shared verbatim with the libcoap backend
     // (translate_legacy_fields), so a populated cert_file still means dtls_pki
-    // here — and dtls_pki is exactly what this backend must refuse rather than
-    // quietly ignore (Requirement 5.4).
+    // here — which this backend now provides through libnyoci's OpenSSL plugin
+    // rather than refusing. Construction plans the channel and succeeds; the
+    // material is only loaded by start(), and these paths do not exist, so that
+    // is where it fails (Requirement 5.4).
     kythira::coap_server_config config;
     config.cert_file = "/nonexistent/server.pem";
     config.key_file = "/nonexistent/server.key";
 
-    BOOST_CHECK_THROW((test_server{loopback, ephemeral_port, config, test_metrics{}}),
-                      kythira::coap_security_error);
+    test_server server{loopback, ephemeral_port, config, test_metrics{}};
+    BOOST_CHECK_THROW(server.start(), kythira::coap_security_error);
+}
+
+BOOST_AUTO_TEST_CASE(test_mixing_security_mode_and_legacy_fields_is_rejected,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    // Shared with the libcoap backend, and the reason translate_legacy_fields()
+    // had to move into the neutral header: both backends must reach the same
+    // verdict about the same config.
+    kythira::coap_client_config config;
+    config.security.mode = kythira::coap_auth_mode::dtls_psk;
+    config.security.credentials =
+        kythira::psk_credentials{"identity", std::vector<std::byte>{std::byte{0x01}}};
+    config.cert_file = "/also/set.pem";
+
+    BOOST_CHECK_THROW((test_client{{}, config, test_metrics{}}),
+                      kythira::coap_security_config_error);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
