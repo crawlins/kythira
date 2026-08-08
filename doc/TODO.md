@@ -505,6 +505,29 @@ unverified completion claim.
     second, and instrumenting the guard recorded **zero** refusals across full
     runs.
 
+- **`raft_commit_implies_replication_property_test` is unstable on its own
+  terms, independent of any simulator change (found August 7, 2026 — open).**
+
+  Measured on an unmodified `main` binary under boost: **13/25 to 19/25 clean**
+  depending only on machine load. Every observed failure is the same assertion,
+  `BOOST_CHECK(leader->is_leader())` at
+  `tests/raft_commit_implies_replication_property_test.cpp:265`, reached after
+  ten heartbeat rounds and a 500ms sleep.
+
+  The test asserts that the node elected leader is *still* leader after a window
+  in which the logs show live `request_vote` / `request_pre_vote` retries — so a
+  legitimate re-election during that window fails the check. The property being
+  tested (committed entries are replicated to a majority) does not actually
+  require the original leader to retain leadership; the assertion is a proxy
+  that is stricter than the property.
+
+  This matters beyond the test itself: **this suite's pass rate was used as the
+  gate that rejected the simulator use-after-free fix above** for a session.
+  Any future use of it as a regression signal needs the interleaved-arms
+  protocol described there, or the assertion needs weakening to match the
+  property first.
+
+
 - **A PR that does not target `main` runs no CI at all, and reports itself
   green (found August 7, 2026 — open).** `ci.yml` triggers on
   `pull_request: branches: [main]`, so a **stacked PR** — one whose base is
