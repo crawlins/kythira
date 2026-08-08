@@ -190,17 +190,17 @@ unverified completion claim.
   C.4 and protected response of C.7 compared byte for byte against the
   published hex. Do not change the crypto without re-running those.
 
-  Still open, and deliberately refused rather than approximated:
-  - **Observe and block-wise over OSCORE** (RFC 8613 Sections 8.2.1, 8.3.1,
-    8.4.1, 8.4.2). Neither transport offers Observe, and the libnyoci backend
-    has no Block1 at all.
-  - **The EDHOC bootstrap over this backend.** The handshake itself is already
-    transport-neutral (`edhoc_transport` is an abstract send/receive pair and
-    lakers does the crypto), and it produces exactly the OSCORE credentials
-    `security_context` consumes — but running it needs a `.well-known/edhoc`
-    exchange the libnyoci backend does not offer yet. Static provisioning works
-    today. This is now a small, well-defined piece of work rather than a
-    blocked one.
+  Observe, block-wise and the EDHOC bootstrap were listed here as still-open
+  and have since been implemented (August 8, 2026): notifications with their
+  own Partial IV verified against Appendix C.8, inner Block1/Block2 that finally
+  lets a 16 KiB InstallSnapshot cross libnyoci, and a `/.well-known/edhoc`
+  exchange that derives the context instead of being handed one.
+
+  Still open:
+  - **Observe at the transport level.** The OSCORE half is done, but neither
+    transport exposes a subscribe API — `network_client` has no such method,
+    and adding one changes the concepts.
+  - **Outer block options**, needed only if a CoAP proxy is ever in the path.
   - **Algorithms other than AES-CCM-16-64-128** with HKDF-SHA-256, the
     mandatory-to-implement pair.
 

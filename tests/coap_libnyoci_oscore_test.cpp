@@ -77,6 +77,53 @@ constexpr std::uint16_t ephemeral_port = 0;
     return config;
 }
 
+[[nodiscard]] auto hex(std::string_view s) -> std::vector<std::byte> {
+    const auto nibble = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+    std::vector<std::byte> out;
+    out.reserve(s.size() / 2);
+    for (std::size_t i = 0; i + 1 < s.size(); i += 2) {
+        out.push_back(static_cast<std::byte>((nibble(s[i]) << 4) | nibble(s[i + 1])));
+    }
+    return out;
+}
+
+// The RFC 9529 test credentials the existing coap_edhoc_oscore_bootstrap_test
+// uses. Reused deliberately: they are known-good against lakers, so a failure
+// here is this file's plumbing rather than the credentials.
+[[nodiscard]] auto cred_i() -> std::vector<std::byte> {
+    return hex(
+        "A2027734322D35302D33312D46462D45462D33372D33322D333908A101A5010202412B2001215820AC75E9EC"
+        "E3E50BFC8ED60399889522405C47BF16DF96660A41298CB4307F7EB62258206E5DE611388A4B8A8211334AC7D"
+        "37ECB52A387D257E6DB3C2A93DF21FF3AFFC8");
+}
+[[nodiscard]] auto cred_r() -> std::vector<std::byte> {
+    return hex(
+        "A2026008A101A5010202410A2001215820BBC34960526EA4D32E940CAD2A234148DDC21791A12AFBCBAC93622"
+        "046DD44F02258204519E257236B2A0CE2023F0931F1F386CA7AFDA64FCDE0108C224C51EABF6072");
+}
+[[nodiscard]] auto i_key() -> std::vector<std::byte> {
+    return hex("fb13adeb6518cee5f88417660841142e830a81fe334380a953406a1305e8706b");
+}
+[[nodiscard]] auto r_key() -> std::vector<std::byte> {
+    return hex("72cc4761dbd4c78f758931aa589d348d1ef874a7e303ede2f140dcf3e6aa4aac");
+}
+
+/// OSCORE credentials whose context is to be *derived* by EDHOC rather than
+/// supplied: no master secret here at all, which is the point.
+[[nodiscard]] auto edhoc_security(bool is_client) -> kythira::coap_security_config {
+    kythira::oscore_credentials creds;
+    creds.bootstrap_method = kythira::oscore_bootstrap::edhoc;
+    creds.edhoc.is_initiator = is_client;
+    creds.edhoc.identity_credential = is_client ? cred_i() : cred_r();
+    creds.edhoc.identity_private_key = is_client ? i_key() : r_key();
+    creds.edhoc.peer_credential = is_client ? cred_r() : cred_i();
+
+    kythira::coap_security_config config;
+    config.mode = kythira::coap_auth_mode::oscore;
+    config.credentials = creds;
+    return config;
+}
+
 [[nodiscard]] auto client_config() -> kythira::coap_client_config {
     kythira::coap_client_config config;
     config.security = oscore_security(true);
@@ -403,18 +450,127 @@ BOOST_AUTO_TEST_CASE(test_oscore_transport_tests_skipped_without_libnyoci) {
 
 #endif  // LIBNYOCI_AVAILABLE
 
-// Compiled either way: a property of plan_security(), not of libnyoci.
-BOOST_AUTO_TEST_CASE(test_edhoc_bootstrap_is_still_refused,
-                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
-    // EDHOC's handshake is transport-neutral, but running it needs a
-    // .well-known/edhoc exchange this backend does not offer yet, so it must
-    // be refused rather than silently treated as static provisioning.
-    auto config = client_config();
-    auto creds = std::get<kythira::oscore_credentials>(config.security.credentials);
-    creds.bootstrap_method = kythira::oscore_bootstrap::edhoc;
-    config.security.credentials = creds;
+#if defined(LIBNYOCI_AVAILABLE) && defined(LAKERS_AVAILABLE)
 
+// ── EDHOC bootstrap over /.well-known/edhoc ────────────────────────────────
+
+// Neither side is given a Master Secret. The OSCORE context is derived by a
+// real EDHOC handshake carried over CoAP, and only then can an RPC succeed --
+// so a passing round trip here proves the whole chain: unprotected handshake on
+// /.well-known/edhoc, mirrored contexts, then object-secured RPCs under keys
+// that were never configured.
+BOOST_AUTO_TEST_CASE(test_rpc_after_an_edhoc_bootstrap,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_cfg;
+    server_cfg.security = edhoc_security(false);
+
+    test_server server{loopback, ephemeral_port, server_cfg, test_metrics{}};
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
+        return kythira::request_vote_response<>{request.term(), request.candidate_id() == 7};
+    });
+    server.start();
+
+    kythira::coap_client_config client_cfg;
+    client_cfg.security = edhoc_security(true);
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_cfg, test_metrics{}};
+
+    const kythira::request_vote_request<> request{42, 7, 1, 41};
+    const auto response =
+        client.send_request_vote(peer_node_id, request, std::chrono::seconds{60}).get();
+    BOOST_TEST(response.term() == 42U);
+    BOOST_TEST(response.vote_granted());
+
+    server.stop();
+}
+
+// The handshake runs once; later RPCs reuse the derived context rather than
+// re-bootstrapping. If they did re-run it, the second call would deadlock
+// against the responder thread or derive a fresh context the server no longer
+// matches -- either way this fails.
+BOOST_AUTO_TEST_CASE(test_edhoc_bootstrap_happens_once,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_cfg;
+    server_cfg.security = edhoc_security(false);
+
+    test_server server{loopback, ephemeral_port, server_cfg, test_metrics{}};
+    server.register_request_vote_handler([](const kythira::request_vote_request<>& request) {
+        return kythira::request_vote_response<>{request.candidate_id(), true};
+    });
+    server.start();
+
+    kythira::coap_client_config client_cfg;
+    client_cfg.security = edhoc_security(true);
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_cfg, test_metrics{}};
+
+    for (std::uint64_t i = 1; i <= 5; ++i) {
+        const kythira::request_vote_request<> request{1, i, 0, 0};
+        const auto response =
+            client.send_request_vote(peer_node_id, request, std::chrono::seconds{60}).get();
+        BOOST_TEST(response.term() == i, "RPC " << i << " after bootstrap came back wrong");
+    }
+
+    server.stop();
+}
+
+// A peer presenting the wrong credential must fail the handshake, and the
+// failure must surface rather than leaving the client hung on a context that
+// never arrives.
+BOOST_AUTO_TEST_CASE(test_mismatched_edhoc_credentials_fail_the_bootstrap,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(120))) {
+    kythira::coap_server_config server_cfg;
+    server_cfg.security = edhoc_security(false);
+
+    test_server server{loopback, ephemeral_port, server_cfg, test_metrics{}};
+    bool handler_ran = false;
+    server.register_request_vote_handler(
+        [&handler_ran](const kythira::request_vote_request<>& request) {
+            handler_ran = true;
+            return kythira::request_vote_response<>{request.term(), true};
+        });
+    server.start();
+
+    // The client expects the *initiator's* own credential back from the peer,
+    // which the server will not present.
+    auto client_cfg = kythira::coap_client_config{};
+    auto security = edhoc_security(true);
+    auto creds = std::get<kythira::oscore_credentials>(security.credentials);
+    creds.edhoc.peer_credential = cred_i();
+    security.credentials = creds;
+    client_cfg.security = security;
+
+    test_client client{
+        {{peer_node_id, endpoint_for(server.bound_port())}}, client_cfg, test_metrics{}};
+
+    const kythira::request_vote_request<> request{1, 1, 0, 0};
+    bool rejected = false;
+    try {
+        (void)client.send_request_vote(peer_node_id, request, std::chrono::seconds{40}).get();
+    } catch (const kythira::coap_security_error&) {
+        rejected = true;
+    } catch (const kythira::coap_transport_error&) {
+        rejected = true;
+    }
+    BOOST_TEST(rejected, "a failed EDHOC handshake must surface, not hang");
+    BOOST_TEST(!handler_ran);
+
+    server.stop();
+}
+
+#endif  // LIBNYOCI_AVAILABLE && LAKERS_AVAILABLE
+
+#if !defined(LAKERS_AVAILABLE)
+// Without lakers the bootstrap cannot run, and asking for it must say so
+// rather than quietly behaving as though static credentials were supplied.
+BOOST_AUTO_TEST_CASE(test_edhoc_is_refused_without_lakers,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    kythira::coap_client_config config;
+    config.security = edhoc_security(true);
     BOOST_CHECK_THROW((test_client{{}, config, test_metrics{}}), kythira::coap_security_error);
 }
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()

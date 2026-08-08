@@ -67,6 +67,9 @@
 // The transport-neutral OSCORE implementation (RFC 8613). Deliberately usable
 // from here: it works on CoAP message bytes and needs no CoAP library.
 #include <raft/oscore.hpp>
+// EDHOC-over-CoAP bootstrap: the /.well-known/edhoc exchange that derives an
+// OSCORE Security Context instead of being handed one.
+#include <raft/coap_edhoc_bootstrap.hpp>
 #include <raft/peer_capability_cache.hpp>
 #include <raft/serializer_registry.hpp>
 #include <raft/future_default.hpp>
@@ -333,20 +336,19 @@ template<typename Config>
             // implements RFC 8613 against message bytes, so the adapter
             // protects before handing libnyoci the outer message and verifies
             // after receiving one.
+#ifndef LAKERS_AVAILABLE
             if (std::holds_alternative<oscore_credentials>(effective.credentials) &&
                 std::get<oscore_credentials>(effective.credentials).bootstrap_method ==
                     oscore_bootstrap::edhoc) {
-                // The EDHOC handshake itself is transport-neutral (lakers does
-                // the crypto behind an abstract edhoc_transport), but running
-                // it needs a `.well-known/edhoc` exchange this backend does not
-                // yet offer. Static provisioning works today.
+                // The bootstrap is implemented (see coap_edhoc_bootstrap.hpp),
+                // but the handshake itself needs lakers. Refusing beats
+                // silently behaving as if static credentials had been supplied.
                 throw coap_security_error(
-                    std::string("the libnyoci CoAP backend cannot run the EDHOC bootstrap for "
-                                "this ") +
-                    role +
-                    " yet; supply static OSCORE credentials (oscore_bootstrap::static_provisioned) "
-                    "or use the libcoap backend. See .kiro/specs/coap-transport-libnyoci/ Task 5.");
+                    std::string("the EDHOC bootstrap was requested for this ") + role +
+                    ", but this build has no lakers. Rebuild with the vcpkg 'edhoc' feature, or "
+                    "supply static OSCORE credentials.");
             }
+#endif
             return {channel::oscore, std::move(effective)};
     }
     throw coap_security_config_error("unknown coap_auth_mode");
@@ -752,8 +754,15 @@ public:
         const auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "client");
         _secure = selected_channel == libnyoci_detail::channel::dtls;
         if (selected_channel == libnyoci_detail::channel::oscore) {
-            _oscore = std::make_shared<oscore::security_context>(
-                std::get<oscore_credentials>(security.credentials));
+            _security = security;
+            const auto& creds = std::get<oscore_credentials>(security.credentials);
+            if (creds.bootstrap_method == oscore_bootstrap::edhoc) {
+                // Left null on purpose: the context is derived by the EDHOC
+                // handshake on first use (ensure_edhoc_context).
+                _edhoc_bootstrap = true;
+            } else {
+                _oscore = std::make_shared<oscore::security_context>(creds);
+            }
         }
 #ifdef LIBNYOCI_AVAILABLE
         _instance = nyoci_create();
@@ -871,6 +880,12 @@ private:
         /// verifying the response will need. Protection happens once, at send
         /// time, so a libnyoci retransmission re-sends byte-identical bytes
         /// rather than burning a fresh Partial IV per attempt.
+        /// Raw mode: the payload is sent verbatim to `resource_path`, with no
+        /// serializer, no negotiation and no OSCORE. Used only for the EDHOC
+        /// bootstrap, which by definition runs before a Security Context
+        /// exists -- and which authenticates on its own, so carrying it in the
+        /// clear is the design rather than a gap.
+        bool raw{false};
         bool oscore_protected{false};
         std::vector<std::byte> oscore_option;
         oscore::request_binding oscore_binding;
@@ -918,6 +933,78 @@ private:
         nyoci_transaction_t transaction{nullptr};
 #endif
     };
+
+    /// POST `payload` verbatim to `resource_path` on `target` and hand back the
+    /// response body. No serializer, no negotiation, no OSCORE -- this exists
+    /// for the EDHOC bootstrap, which runs before any Security Context does.
+    [[nodiscard]] auto post_raw(std::uint64_t target, const std::string& resource_path,
+                                std::vector<std::byte> payload, std::chrono::milliseconds timeout)
+        -> std::vector<std::byte> {
+#ifdef LIBNYOCI_AVAILABLE
+        const auto endpoint = _node_id_to_endpoint.find(target);
+        if (endpoint == _node_id_to_endpoint.end()) {
+            throw coap_network_error("no CoAP endpoint configured for node " +
+                                     std::to_string(target));
+        }
+        auto promise = std::make_shared<promise_template<std::vector<std::byte>>>();
+        auto future = promise->getFuture();
+
+        auto rpc = std::make_unique<pending_rpc>();
+        rpc->raw = true;
+        // Always plain CoAP, whatever the configured channel: EDHOC is what
+        // establishes the protection, so it cannot itself be protected.
+        rpc->uri = libnyoci_detail::build_request_uri(endpoint->second, resource_path, false);
+        rpc->resource_path = resource_path;
+        rpc->target = target;
+        rpc->payload = std::move(payload);
+        rpc->timeout = timeout;
+        rpc->confirmable = true;
+        rpc->resolve_callback = [promise](std::vector<std::byte> body, const std::string&) {
+            promise->setValue(std::move(body));
+        };
+        rpc->reject_callback = [promise](std::exception_ptr error) {
+            promise->setException(error);
+        };
+        {
+            const std::lock_guard lock(_mutex);
+            if (_shutting_down) {
+                throw coap_transport_error("libnyoci CoAP client is shutting down");
+            }
+            _queued.push_back(std::move(rpc));
+        }
+        return std::move(future).get();
+#else
+        (void)target;
+        (void)resource_path;
+        (void)payload;
+        (void)timeout;
+        throw coap_transport_error("libnyoci CoAP backend unavailable");
+#endif
+    }
+
+    /// Run the EDHOC handshake against `target` and install the OSCORE context
+    /// it derives.
+    ///
+    /// Lazy, and deliberately so: the peer may not be listening when this
+    /// client is constructed, and a constructor is the wrong place to block on
+    /// the network. The first RPC to a peer pays for the handshake; the rest
+    /// reuse the context. Guarded so concurrent first calls run it once.
+    auto ensure_edhoc_context(std::uint64_t target) -> void {
+        const std::lock_guard lock(_bootstrap_mutex);
+        if (_oscore) {
+            return;
+        }
+        const auto& creds = std::get<oscore_credentials>(_security.credentials);
+        edhoc_initiator_transport transport{[this, target](const std::vector<std::byte>& message) {
+            return post_raw(target, edhoc_well_known_path, message,
+                            std::chrono::seconds{edhoc_step_timeout});
+        }};
+        auto derived = run_edhoc_handshake(creds.edhoc, transport);
+        // run_edhoc_handshake() supplies sender/recipient ids, master secret and
+        // salt; the AEAD choice stays whatever the config asked for.
+        derived.aead_algorithm = creds.aead_algorithm;
+        _oscore = std::make_shared<oscore::security_context>(derived);
+    }
 
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, const std::string& resource_path, const Request& request,
@@ -975,6 +1062,10 @@ private:
             rpc->reject_callback = [promise](std::exception_ptr error) {
                 promise->setException(error);
             };
+            if (_edhoc_bootstrap && !_oscore) {
+                // First RPC to this peer pays for the handshake.
+                ensure_edhoc_context(target);
+            }
             if (_oscore) {
                 rpc->oscore_protected = true;
                 rpc->oscore_context = _oscore;
@@ -1179,7 +1270,10 @@ private:
         if (status != NYOCI_STATUS_OK) {
             return status;
         }
-        if (rpc->oscore_protected) {
+        if (rpc->raw) {
+            // No Content-Format, no Accept: an EDHOC message is an opaque blob
+            // and the peer knows what it is from the resource it arrived on.
+        } else if (rpc->oscore_protected) {
             // Content-Format and Accept are Class E too; the only outer option
             // this message carries is OSCORE itself.
             // libnyoci's coap.h predates RFC 8613 and has no enumerator for
@@ -1262,6 +1356,21 @@ private:
         }
 
         const auto options = libnyoci_detail::scan_inbound_options();
+
+        if (rpc->raw) {
+            if (!rpc->settled) {
+                rpc->settled = true;
+                const coap_size_t length = nyoci_inbound_get_content_len();
+                const char* content = nyoci_inbound_get_content_ptr();
+                std::vector<std::byte> body;
+                if (content != nullptr && length > 0) {
+                    const auto* raw_bytes = reinterpret_cast<const std::byte*>(content);
+                    body.assign(raw_bytes, raw_bytes + length);
+                }
+                rpc->resolve_callback(std::move(body), std::string{});
+            }
+            return NYOCI_STATUS_OK;
+        }
 
         if (rpc->oscore_protected) {
             // An OSCORE exchange never uses Block2 (the adapter refuses the
@@ -1425,6 +1534,11 @@ private:
     /// rather than owned outright because the response trampoline needs it and
     /// only sees the pending_rpc.
     std::shared_ptr<oscore::security_context> _oscore;
+    /// Set when the OSCORE context is to be derived by EDHOC rather than
+    /// supplied; `_oscore` stays null until the first RPC bootstraps it.
+    bool _edhoc_bootstrap{false};
+    coap_security_config _security{};
+    std::mutex _bootstrap_mutex;
 
 #ifdef LIBNYOCI_AVAILABLE
     // Outlives _instance's use of it; destroyed after nyoci_release().
@@ -1466,8 +1580,15 @@ public:
         auto [selected_channel, security] = libnyoci_detail::plan_security(_config, "server");
         _secure = selected_channel == libnyoci_detail::channel::dtls;
         if (selected_channel == libnyoci_detail::channel::oscore) {
-            _oscore = std::make_shared<oscore::security_context>(
-                std::get<oscore_credentials>(security.credentials));
+            const auto& creds = std::get<oscore_credentials>(security.credentials);
+            if (creds.bootstrap_method == oscore_bootstrap::edhoc) {
+                // Left null on purpose: the context arrives when a peer runs
+                // the EDHOC handshake against /.well-known/edhoc. Until then
+                // this server serves that resource and nothing else.
+                _edhoc_bootstrap = true;
+            } else {
+                _oscore = std::make_shared<oscore::security_context>(creds);
+            }
         }
         _security = std::move(security);
     }
@@ -1564,6 +1685,15 @@ public:
 
     auto stop() -> void {
 #ifdef LIBNYOCI_AVAILABLE
+        // Wake the responder out of receive() before joining anything, or a
+        // half-finished handshake parks the thread for its full step timeout.
+        if (_edhoc_channel) {
+            _edhoc_channel->abandon();
+        }
+        if (_edhoc_thread.joinable()) {
+            _edhoc_thread.join();
+        }
+        _edhoc_channel.reset();
         if (_event_thread.joinable()) {
             _event_thread.request_stop();
             _event_thread.join();
@@ -1612,10 +1742,26 @@ private:
 
         const auto options = libnyoci_detail::scan_inbound_options();
 
-        if (_oscore) {
+        if (_edhoc_bootstrap && !options.oscore.has_value()) {
+            // EDHOC runs before any Security Context exists, so its messages
+            // arrive unprotected. That is the *only* thing an OSCORE server
+            // will answer in the clear, and only on this one resource.
+            std::array<char, 128> bootstrap_path{};
+            nyoci_inbound_get_path(bootstrap_path.data(), bootstrap_path.size(),
+                                   NYOCI_GET_PATH_LEADING_SLASH);
+            if (std::string{bootstrap_path.data()} == edhoc_well_known_path) {
+                return handle_edhoc_request();
+            }
+        }
+
+        if (_oscore || _edhoc_bootstrap) {
             // Everything the dispatch needs -- path, Content-Format, Accept,
             // body -- is inside the ciphertext, so it has to be recovered
-            // before any of it can be looked at.
+            // before any of it can be looked at. Before the handshake has run
+            // there is no context, so nothing can be answered.
+            if (!_oscore) {
+                return NYOCI_STATUS_UNAUTHORIZED;
+            }
             return handle_oscore_request(options);
         }
 
@@ -1695,6 +1841,77 @@ private:
         }
         return NYOCI_STATUS_NOT_FOUND;
     }
+
+    /// Serve one EDHOC message on `/.well-known/edhoc`.
+    ///
+    /// The responder half of the handshake blocks in receive(), so it runs on
+    /// its own thread and this handler rendezvouses with it: hand the inbound
+    /// message over, wait for the reply, send it back. The thread is started
+    /// lazily by the first message of an exchange, so a server that is never
+    /// bootstrapped never spawns one.
+    auto handle_edhoc_request() -> nyoci_status_t {
+#ifdef LAKERS_AVAILABLE
+        const coap_size_t length = nyoci_inbound_get_content_len();
+        const char* content = nyoci_inbound_get_content_ptr();
+        if (content == nullptr || length == 0) {
+            return NYOCI_STATUS_BAD_ARGUMENT;
+        }
+        const auto* bytes = reinterpret_cast<const std::byte*>(content);
+        std::vector<std::byte> message(bytes, bytes + length);
+
+        start_edhoc_responder_if_needed();
+
+        auto reply = _edhoc_channel->exchange(std::move(message));
+        if (!reply) {
+            // The handshake failed or timed out. 4.01 with no detail, matching
+            // how a failed OSCORE verification is answered.
+            return NYOCI_STATUS_UNAUTHORIZED;
+        }
+
+        auto status = nyoci_outbound_begin_response(COAP_RESULT_204_CHANGED);
+        if (status != NYOCI_STATUS_OK) {
+            return status;
+        }
+        // message_3 has no EDHOC reply, so an empty body here is correct rather
+        // than a failure -- it is what tells the initiator the exchange is done.
+        return append_and_send(reply->data(), reply->size());
+#else
+        return NYOCI_STATUS_NOT_IMPLEMENTED;
+#endif
+    }
+
+#ifdef LAKERS_AVAILABLE
+    /// Spawn the responder thread on the first message of an exchange.
+    ///
+    /// One handshake at a time, which is what this backend needs: it holds a
+    /// single Security Context, so a second concurrent bootstrap would race to
+    /// install a second one. A peer arriving mid-handshake simply waits.
+    auto start_edhoc_responder_if_needed() -> void {
+        if (_edhoc_channel && _edhoc_thread.joinable()) {
+            return;
+        }
+        _edhoc_channel = std::make_shared<edhoc_responder_channel>();
+        auto channel = _edhoc_channel;
+        const auto params = std::get<oscore_credentials>(_security.credentials).edhoc;
+        const auto aead = std::get<oscore_credentials>(_security.credentials).aead_algorithm;
+        _edhoc_thread = std::jthread([this, channel, params, aead] {
+            try {
+                auto derived = run_edhoc_handshake(params, *channel);
+                derived.aead_algorithm = aead;
+                auto context = std::make_shared<oscore::security_context>(derived);
+                {
+                    const std::lock_guard lock(_mutex);
+                    _oscore = std::move(context);
+                }
+                // Releases the handler still holding message_3.
+                channel->finish();
+            } catch (...) {
+                // Never leave a handler blocked on a handshake that died.
+                channel->fail();
+            }
+        });
+    }
+#endif
 
     /// Verify an OSCORE-protected request, dispatch on the *inner* message,
     /// and protect the reply. The outer message carries nothing but the OSCORE
@@ -2032,6 +2249,10 @@ private:
     /// Partial inner-Block1 request body. Touched only from the event thread,
     /// inside libnyoci's request dispatch, so it needs no lock.
     std::vector<std::byte> _block1_assembly;
+    /// Set when the OSCORE context is to arrive via EDHOC rather than config.
+    bool _edhoc_bootstrap{false};
+    std::shared_ptr<edhoc_responder_channel> _edhoc_channel;
+    std::jthread _edhoc_thread;
 
     std::function<kythira::request_vote_response<>(const kythira::request_vote_request<>&)>
         _request_vote_handler;
