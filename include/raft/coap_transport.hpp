@@ -6,6 +6,10 @@
 #include <raft/network.hpp>
 #include <raft/coap_exceptions.hpp>
 #include <raft/coap_security.hpp>
+// coap_client_config / coap_server_config / pending_message /
+// received_message_info / translate_legacy_fields() live here, deliberately
+// free of any libcoap type so the libnyoci backend can share them.
+#include <raft/coap_transport_config.hpp>
 #include <raft/coap_edhoc.hpp>
 #include <raft/coap_ace_oauth.hpp>
 #include <raft/metrics.hpp>
@@ -69,49 +73,12 @@ static_assert(coap_max_token_length == COAP_TOKEN_DEFAULT_MAX,
               "kythira::coap_max_token_length must match libcoap's own token limit");
 #endif
 
-// Message tracking structures - using callbacks to work with generic future types
-struct pending_message {
-    std::string token;
-    std::uint16_t message_id;
-    std::chrono::steady_clock::time_point send_time;
-    std::chrono::milliseconds timeout;
-    std::size_t retransmission_count{0};
-    /// Takes the media type the response actually arrived in alongside the
-    /// bytes, because only `handle_response` can see the PDU's Content-Format
-    /// option and only this callback knows the `Response` type to decode into.
-    /// Passing it explicitly keeps that one fact from becoming mutable state
-    /// shared between the two (Requirement 6.4).
-    std::function<void(std::vector<std::byte>, const std::string&)> resolve_callback;
-    std::function<void(std::exception_ptr)> reject_callback;
-    std::vector<std::byte> original_payload;
-    std::string target_endpoint;
-    std::string resource_path;
-    bool is_confirmable{true};
-
-    pending_message(std::string tok, std::uint16_t msg_id, std::chrono::milliseconds to,
-                    std::function<void(std::vector<std::byte>, const std::string&)> resolve_cb,
-                    std::function<void(std::exception_ptr)> reject_cb,
-                    std::vector<std::byte> payload, std::string endpoint, std::string path,
-                    bool confirmable)
-        : token(std::move(tok)),
-          message_id(msg_id),
-          send_time(std::chrono::steady_clock::now()),
-          timeout(to),
-          resolve_callback(std::move(resolve_cb)),
-          reject_callback(std::move(reject_cb)),
-          original_payload(std::move(payload)),
-          target_endpoint(std::move(endpoint)),
-          resource_path(std::move(path)),
-          is_confirmable(confirmable) {}
-};
-
-struct received_message_info {
-    std::uint16_t message_id;
-    std::chrono::steady_clock::time_point received_time;
-
-    received_message_info(std::uint16_t msg_id)
-        : message_id(msg_id), received_time(std::chrono::steady_clock::now()) {}
-};
+// pending_message and received_message_info moved to
+// raft/coap_transport_config.hpp (included above) alongside
+// coap_client_config/coap_server_config, so the libnyoci backend can share
+// them — it cannot include this header, because <coap3/coap.h> and
+// <libnyoci/libnyoci.h> cannot coexist in one translation unit. See that
+// file's header comment for the full reason.
 
 // Block transfer state management
 struct block_transfer_state {
@@ -201,111 +168,13 @@ struct default_transport_types {
     using port_type = std::uint16_t;
 };
 
-// Configuration structures
-struct coap_client_config {
-    bool enable_dtls{false};
-    bool enable_block_transfer{true};
-    std::size_t max_block_size{1024};
-    std::size_t max_sessions{100};
-    std::chrono::milliseconds session_timeout{30000};
-    std::chrono::milliseconds ack_timeout{2000};
-    std::chrono::milliseconds ack_random_factor_ms{1000};
-    std::size_t max_retransmit{4};
-    bool use_confirmable_messages{true};
-    std::size_t max_retransmissions{4};
-    std::chrono::milliseconds retransmission_timeout{2000};
-    double exponential_backoff_factor{2.0};
-
-    // DTLS configuration
-    std::string cert_file;
-    std::string key_file;
-    std::string ca_file;
-    std::string psk_identity;
-    std::vector<std::byte> psk_key;
-    bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true};    // Enable DTLS session resumption
-
-    // Multicast configuration
-    bool enable_multicast{false};
-    std::string multicast_address{"224.0.1.187"};
-    std::uint16_t multicast_port{5683};
-
-    // Performance optimization settings
-    bool enable_session_reuse{true};
-    bool enable_connection_pooling{true};
-    std::size_t connection_pool_size{10};
-    bool enable_concurrent_processing{true};
-    std::size_t max_concurrent_requests{50};
-    bool enable_memory_optimization{false};
-    std::size_t memory_pool_size{1024 * 1024};      // 1MB
-    std::size_t memory_pool_block_size{4096};       // 4KB blocks
-    bool enable_periodic_pool_reset{false};         // Enable periodic memory pool reset
-    std::chrono::seconds pool_reset_interval{300};  // Reset interval (5 minutes default)
-    bool enable_serialization_caching{false};
-    std::size_t serialization_cache_size{100};
-    std::size_t max_cache_entries{100};
-    std::chrono::milliseconds cache_ttl{60000};  // 1 minute
-    bool enable_certificate_validation{true};
-
-    // Explicit channel-security mode (coap-transport-security spec). Left at
-    // its default (mode == none), the legacy DTLS fields above continue to
-    // drive behavior via translate_legacy_fields() (Requirement 8). Setting
-    // security.mode explicitly selects one of the five coap_auth_mode
-    // values without any field inference (Requirement 1.2).
-    coap_security_config security{};
-
-    // Required when security.mode == oscore and its oscore_credentials
-    // have bootstrap_method == edhoc: constructs the edhoc_transport used
-    // to carry EDHOC's messages to/from the peer (Requirement 5.2). Left
-    // null, EDHOC bootstrap fails construction with
-    // coap_credential_bootstrap_error (Requirement 5.4) rather than
-    // guessing at a transport.
-    std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
-};
-
-struct coap_server_config {
-    bool enable_dtls{false};
-    bool enable_block_transfer{true};
-    std::size_t max_block_size{1024};
-    std::size_t max_concurrent_sessions{100};
-    std::chrono::milliseconds session_timeout{30000};
-    std::size_t max_request_size{65536};
-
-    // DTLS configuration
-    std::string cert_file;
-    std::string key_file;
-    std::string ca_file;
-    std::string psk_identity;
-    std::vector<std::byte> psk_key;
-    bool verify_peer_cert{true};
-    std::vector<std::string> cipher_suites;  // Allowed cipher suites for DTLS
-    bool enable_session_resumption{true};    // Enable DTLS session resumption
-
-    // Multicast configuration
-    bool enable_multicast{false};
-    std::string multicast_address{"224.0.1.187"};  // CoAP multicast address
-    std::uint16_t multicast_port{5683};
-
-    // Performance optimization settings
-    bool enable_concurrent_processing{true};
-    std::size_t max_concurrent_requests{100};
-    bool enable_memory_optimization{false};
-    std::size_t memory_pool_size{1024 * 1024};      // 1MB
-    std::size_t memory_pool_block_size{4096};       // 4KB blocks
-    bool enable_periodic_pool_reset{false};         // Enable periodic memory pool reset
-    std::chrono::seconds pool_reset_interval{300};  // Reset interval (5 minutes default)
-    bool enable_serialization_caching{false};
-    std::size_t serialization_cache_size{100};
-
-    // Explicit channel-security mode (coap-transport-security spec). See
-    // coap_client_config::security for the same semantics.
-    coap_security_config security{};
-
-    // See coap_client_config::edhoc_transport_factory for the same
-    // semantics (Requirement 5.2).
-    std::function<std::unique_ptr<edhoc_transport>()> edhoc_transport_factory;
-};
+// coap_client_config and coap_server_config moved to
+// raft/coap_transport_config.hpp (included at the top of this file), so the
+// libnyoci backend can accept exactly the same configuration objects this one
+// does without having to include <coap3/coap.h> transitively — the two C
+// libraries' headers cannot share a translation unit. Every existing use of
+// kythira::coap_client_config / kythira::coap_server_config keeps working
+// unchanged.
 
 // Memory pool for optimization - see memory_pool.hpp for implementation
 

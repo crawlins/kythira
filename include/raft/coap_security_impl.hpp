@@ -534,41 +534,13 @@ inline auto make_security_provider(const coap_security_config& config, coap_secu
 }
 
 // ── legacy field translation (Requirement 8) ──────────────────────────────
-// Reproduces today's setup_dtls_context() field-inference exactly when
-// security.mode is left at its default (coap_auth_mode::none): cert_file
-// populated selects dtls_pki, psk_identity populated selects dtls_psk,
-// neither selects none. When security.mode is explicitly set, the legacy
-// fields must be empty (Requirement 2.3) — populating both is rejected as a
-// configuration error rather than guessed at.
-
-template<typename LegacyConfig>
-inline auto translate_legacy_fields(const LegacyConfig& cfg) -> coap_security_config {
-    const bool legacy_pki = !cfg.cert_file.empty();
-    const bool legacy_psk = !cfg.psk_identity.empty();
-
-    if (cfg.security.mode != coap_auth_mode::none) {
-        if (legacy_pki || legacy_psk) {
-            throw coap_security_config_error(
-                "both security.mode and legacy DTLS fields (cert_file/psk_identity) are "
-                "set; populate only one");
-        }
-        return cfg.security;
-    }
-
-    if (legacy_pki) {
-        pki_credentials creds;
-        creds.cert_file = cfg.cert_file;
-        creds.key_file = cfg.key_file;
-        creds.ca_file = cfg.ca_file;
-        creds.verify_peer_cert = cfg.verify_peer_cert;
-        creds.cipher_suites = cfg.cipher_suites;
-        return coap_security_config{coap_auth_mode::dtls_pki, creds, std::nullopt};
-    }
-    if (legacy_psk) {
-        psk_credentials creds{cfg.psk_identity, cfg.psk_key};
-        return coap_security_config{coap_auth_mode::dtls_psk, creds, std::nullopt};
-    }
-    return coap_security_config{coap_auth_mode::none, std::monostate{}, std::nullopt};
-}
+// translate_legacy_fields() moved to raft/coap_transport_config.hpp, which
+// this header pulls in transitively via raft/coap_transport.hpp, so every
+// existing call site keeps compiling unchanged. It moved because it is a pure
+// function of coap_client_config/coap_server_config that touches no libcoap
+// type, and the libnyoci backend has to reach the same verdict about a given
+// config while being unable to include *this* header at all — libcoap's and
+// libnyoci's C headers cannot share a translation unit (see the comment at the
+// top of coap_transport_config.hpp).
 
 }  // namespace kythira
