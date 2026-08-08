@@ -538,8 +538,22 @@ unverified completion claim.
   property first.
 
 
-- **A PR that does not target `main` runs no CI at all, and reports itself
-  green (found August 7, 2026 — open).** `ci.yml` triggers on
+- **A PR that does not target `main` ran no CI at all, and reported itself
+  green (found August 7, 2026 — FIXED August 8, 2026).** `ci.yml` now triggers
+  on `pull_request: branches: ['**']`, so a stacked PR is covered like any
+  other. The three options below were weighed and the first taken, because it is
+  the only one that removes the trap rather than documenting around it — the
+  other two leave a PR that is never retargeted, or whose author never reads the
+  note, silently uncovered.
+  - **The accepted cost**: a stacked PR now pays for the full matrix, ~55
+    minutes of cold build per compat leg since the backend-matrix widening.
+    Judged worth it against a failure mode whose whole danger is that it is
+    invisible.
+  - The `gh pr checks <n>` habit below is still worth keeping, but it is now a
+    backstop rather than the only defence.
+  - Original entry follows, since the reasoning is what makes the fix legible.
+
+  `ci.yml` used to trigger on
   `pull_request: branches: [main]`, so a **stacked PR** — one whose base is
   another feature branch — skips the entire workflow. PR #178 was opened that
   way and showed a single passing check (GitGuardian) with
@@ -552,15 +566,16 @@ unverified completion claim.
     workflow's `pull_request` trigger uses the default activity types
     (`opened`, `synchronize`, `reopened`) and a base change is `edited`. A push
     is required.
-  - Options, unresolved: widen to `pull_request: branches: ['**']` so stacked
-    PRs are covered — honest, but every stacked PR then pays for the full
-    matrix, which since the backend-matrix widening is ~55 minutes of cold
-    build per compat leg; or add an `edited` type so at least a retarget
-    re-runs; or simply do not stack PRs in this repo and say so somewhere a
-    reader will find it. The first is the only one that removes the trap rather
-    than documenting around it.
-  - Until then: **check `gh pr checks <n>` returns more than one row** before
-    believing a PR is green. One row is not a pass, it is an absence.
+  - The three options as they were written down, with the first now taken:
+    widen to `pull_request: branches: ['**']` so stacked PRs are covered —
+    honest, but every stacked PR then pays for the full matrix, which since the
+    backend-matrix widening is ~55 minutes of cold build per compat leg; or add
+    an `edited` type so at least a retarget re-runs; or simply do not stack PRs
+    in this repo and say so somewhere a reader will find it. The first is the
+    only one that removes the trap rather than documenting around it.
+  - Still worth the habit, now as a backstop: **check `gh pr checks <n>`
+    returns more than one row** before believing a PR is green. One row is not a
+    pass, it is an absence.
 
 - **Systematise "did the job actually do the work?" as CI jobs.** This repo's
   single most repeated failure is machinery that reports success while doing
