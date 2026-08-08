@@ -3845,6 +3845,46 @@ add_test(NAME coap_libnyoci_oscore_test COMMAND coap_libnyoci_oscore_test)
 set_tests_properties(coap_libnyoci_oscore_test PROPERTIES
     TIMEOUT 600 LABELS "coap;libnyoci;oscore;security;integration")
 
+# ── coap-transport-cantcoap spec: the codec-only CoAP backend ────────────────
+# Unconditional, like the libnyoci targets and for the same reason: the adapter
+# keeps its full concept surface with or without cantcoap, so the conformance
+# static_asserts stay meaningful in a default build and the integration suite
+# collapses to a single "skipped" case.
+add_executable(coap_cantcoap_concept_conformance_test coap_cantcoap_concept_conformance_test.cpp)
+target_link_libraries(coap_cantcoap_concept_conformance_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_cantcoap_concept_conformance_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_cantcoap_concept_conformance_test PRIVATE cxx_std_23)
+add_test(NAME coap_cantcoap_concept_conformance_test
+         COMMAND coap_cantcoap_concept_conformance_test)
+set_tests_properties(coap_cantcoap_concept_conformance_test PROPERTIES
+    TIMEOUT 60 LABELS "coap;cantcoap;unit")
+
+# Real loopback sockets, and this backend owns the socket and the retransmission
+# timer itself, so the budget covers a deliberately unanswered request waiting
+# out its full retransmission schedule.
+add_executable(coap_cantcoap_integration_test coap_cantcoap_integration_test.cpp)
+target_link_libraries(coap_cantcoap_integration_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_cantcoap_integration_test PRIVATE Folly::folly)
+endif()
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(coap_cantcoap_integration_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(coap_cantcoap_integration_test PRIVATE cxx_std_23)
+add_test(NAME coap_cantcoap_integration_test COMMAND coap_cantcoap_integration_test)
+set_tests_properties(coap_cantcoap_integration_test PROPERTIES
+    TIMEOUT 600 LABELS "coap;cantcoap;integration")
+
 # ── OSCORE (RFC 8613) ────────────────────────────────────────────────────────
 # The conformance suite for include/raft/oscore.hpp, checked against every test
 # vector in RFC 8613 Appendix C. Deliberately depends on nothing but OpenSSL and
