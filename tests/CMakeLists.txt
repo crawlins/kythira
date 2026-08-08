@@ -1047,6 +1047,81 @@ else()
     message(STATUS "http_negotiation_integration_test: skipped (requires Folly)")
 endif()
 
+# Two-serializer negotiation over a live HTTP transport (spec Task 14). The only
+# suite that runs a multi_serializer_registry through a socket: every shipped
+# Types bundle hardcodes single_serializer_registry, so the multi path is
+# reachable only from a test-local bundle like this one's.
+if(TARGET Folly::folly)
+    add_executable(multi_serializer_negotiation_property_test
+        multi_serializer_negotiation_property_test.cpp)
+    target_link_libraries(multi_serializer_negotiation_property_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(multi_serializer_negotiation_property_test PRIVATE cxx_std_23)
+    add_test(NAME multi_serializer_negotiation_property_test
+        COMMAND multi_serializer_negotiation_property_test)
+    set_tests_properties(multi_serializer_negotiation_property_test
+        PROPERTIES TIMEOUT 180 LABELS "http;integration")
+else()
+    message(STATUS "multi_serializer_negotiation_property_test: skipped (requires Folly)")
+endif()
+
+# Multi- <-> single-serializer interoperability, both directions (spec Task 15).
+if(TARGET Folly::folly)
+    add_executable(multi_serializer_interop_test multi_serializer_interop_test.cpp)
+    target_link_libraries(multi_serializer_interop_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(multi_serializer_interop_test PRIVATE cxx_std_23)
+    add_test(NAME multi_serializer_interop_test COMMAND multi_serializer_interop_test)
+    set_tests_properties(multi_serializer_interop_test
+        PROPERTIES TIMEOUT 180 LABELS "http;integration")
+else()
+    message(STATUS "multi_serializer_interop_test: skipped (requires Folly)")
+endif()
+
+# Client-side negotiation failure paths (spec Task 16). Uses a raw httplib::Server
+# as a deliberately non-conforming peer: cpp_httplib_server can never emit an
+# unregistered response label, so these client branches are otherwise unreachable.
+if(TARGET Folly::folly)
+    add_executable(negotiation_failure_test negotiation_failure_test.cpp)
+    target_link_libraries(negotiation_failure_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(negotiation_failure_test PRIVATE cxx_std_23)
+    add_test(NAME negotiation_failure_test COMMAND negotiation_failure_test)
+    set_tests_properties(negotiation_failure_test
+        PROPERTIES TIMEOUT 180 LABELS "http;integration")
+else()
+    message(STATUS "negotiation_failure_test: skipped (requires Folly)")
+endif()
+
+# Single-serializer wire behaviour is unchanged by registries (spec Task 13).
+if(TARGET Folly::folly)
+    add_executable(single_serializer_regression_test single_serializer_regression_test.cpp)
+    target_link_libraries(single_serializer_regression_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(single_serializer_regression_test PRIVATE cxx_std_23)
+    add_test(NAME single_serializer_regression_test COMMAND single_serializer_regression_test)
+    set_tests_properties(single_serializer_regression_test
+        PROPERTIES TIMEOUT 180 LABELS "http;integration")
+else()
+    message(STATUS "single_serializer_regression_test: skipped (requires Folly)")
+endif()
+
 # HTTP client test
 if(TARGET Folly::folly)
     add_executable(http_client_test http_client_test.cpp)
