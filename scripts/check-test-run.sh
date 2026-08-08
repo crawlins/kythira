@@ -21,6 +21,28 @@
 # that the expected set of tests existed, ran, and were not quietly skipped —
 # and it reports retry-absorbed failures that the job status hides.
 #
+# ── Why a floor as well as a derived count ───────────────────────────────────
+#
+# Deriving the expectation from `ctest -N` is self-maintaining, and it catches a
+# filter that matches nothing and a target that failed to build. It cannot catch
+# the case that motivated this script's own TODO entry: a *configure* change
+# that silently drops targets — an `if(TARGET Folly::folly)` that stops
+# matching, a `find_package` that quietly fails. `ctest -N` reads the same
+# broken registry the run did, so the expectation shrinks in lockstep with the
+# damage and every remaining test passes. 100% of a diminished suite reports
+# exactly like 100% of the whole one.
+#
+# That is this repo's signature failure — machinery reporting success while
+# doing nothing — wearing the costume of the check meant to prevent it. The
+# floor is the fixed point: a number that lives in the workflow rather than in
+# the build, so a configure regression has to argue with a value it cannot
+# influence.
+#
+# The floor is a lower bound, not an equality. Tests are added far more often
+# than removed, so an exact count would be a merge conflict on every PR; a
+# deliberate removal that crosses the floor is meant to be a visible, justified
+# edit, exactly like coverage_floor.txt.
+#
 # Usage:
 #   scripts/check-test-run.sh --build-dir DIR --log FILE [options] [-- CTEST_FILTER_ARGS...]
 #
@@ -30,6 +52,11 @@
 #                     with the same filter args, which is self-maintaining and
 #                     preferred; pass it explicitly only where the count is
 #                     itself the thing under test.
+#   --floor N         minimum number of tests the filter must *match*. Unlike
+#                     --expect, this is an absolute lower bound checked into
+#                     the repo rather than derived from the build, and it is
+#                     the only check here that a broken configure cannot move.
+#                     See "Why a floor as well as a derived count" below.
 #   --allow-skip RE   extended regex of test names allowed to report "Skipped".
 #                     Repeatable. Any skip outside the allowlist fails.
 #   --strict-retries  also fail when --repeat absorbed a first-attempt failure.
@@ -47,6 +74,7 @@ set -euo pipefail
 BUILD_DIR=""
 LOG_FILE=""
 EXPECTED=""
+FLOOR=""
 STRICT_RETRIES=0
 ALLOW_SKIP=()
 CTEST_FILTER_ARGS=()
@@ -56,6 +84,7 @@ while [[ $# -gt 0 ]]; do
         --build-dir)      BUILD_DIR="$2"; shift 2 ;;
         --log)            LOG_FILE="$2"; shift 2 ;;
         --expect)         EXPECTED="$2"; shift 2 ;;
+        --floor)          FLOOR="$2"; shift 2 ;;
         --allow-skip)     ALLOW_SKIP+=("$2"); shift 2 ;;
         --strict-retries) STRICT_RETRIES=1; shift ;;
         --)               shift; CTEST_FILTER_ARGS=("$@"); break ;;
@@ -94,6 +123,38 @@ if [[ -z "$EXPECTED" ]]; then
     note "expected count derived from 'ctest -N': $EXPECTED"
 else
     note "expected count given explicitly: $EXPECTED"
+fi
+
+# ── Check 0: the registry itself is not diminished ───────────────────────────
+# Deliberately *before* the ran-vs-expected check. If configure dropped targets,
+# both numbers agree at the lower value and Check 1 passes; this is the only
+# assertion that notices. Ordering it first also means the error message a
+# reader sees names the real cause rather than a downstream symptom.
+if [[ -n "$FLOOR" ]]; then
+    if ! [[ "$FLOOR" =~ ^[0-9]+$ ]]; then
+        echo "[check-test-run] --floor must be a non-negative integer, got: $FLOOR" >&2
+        exit 2
+    fi
+    if [[ "$EXPECTED" -lt "$FLOOR" ]]; then
+        fail "only $EXPECTED tests are registered, below the floor of $FLOOR"
+        echo "                 The suite got SMALLER. Nothing failed, because" >&2
+        echo "                 the tests that vanished cannot fail -- which is" >&2
+        echo "                 exactly why this check exists and why the" >&2
+        echo "                 derived count cannot catch it." >&2
+        echo "                 Likely causes: a find_package() that stopped" >&2
+        echo "                 finding, an if(TARGET ...) guard that stopped" >&2
+        echo "                 matching, or a dependency missing from the" >&2
+        echo "                 runner image, so CMake skipped registering a" >&2
+        echo "                 whole family of tests." >&2
+        echo "                 Compare 'cmake' configure output against a" >&2
+        echo "                 known-good run: the '-- <thing>: skipped'" >&2
+        echo "                 lines are the ones that changed." >&2
+        echo "                 If the removal is deliberate, lower the" >&2
+        echo "                 --floor in .github/workflows/ci.yml in the same" >&2
+        echo "                 commit, so it is a reviewed edit." >&2
+        exit 1
+    fi
+    note "registered $EXPECTED tests, at or above the floor of $FLOOR"
 fi
 
 # ── Parse the run log ────────────────────────────────────────────────────────

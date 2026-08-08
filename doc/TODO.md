@@ -558,17 +558,36 @@ unverified completion claim.
   a human reading a log on a hunch. That does not scale and it is not reliable:
   the ones nobody happened to look at are, by construction, still green. Turn
   the manual check into automated assertions that fail the build.
-  - **Assert a test-count floor.** `Build & Test` runs 409 tests. A configure
-    change that silently drops a target — an `if(TARGET Folly::folly)` that
-    stops matching, a `find_package` that quietly fails — reduces the count and
-    still reports 100% passed. Record the expected count (or a floor) and fail
-    when the run comes in under it. This alone would have caught several past
-    incidents.
-  - **Assert the skip list, do not just tolerate skips.** CMake emits
-    `message(STATUS "<test>: skipped (requires Folly)")` and ctest reports
-    `Test suite ... is skipped because disabled`. Both currently read as
-    success. Compare the actual skip set against a checked-in allowlist and
-    fail on anything new, so a broken precondition cannot masquerade as a pass.
+  - **Assert a test-count floor. DONE, August 7, 2026** —
+    `scripts/check-test-run.sh --floor N`, wired into all four
+    `check-test-run.sh` call sites in `ci.yml`.
+
+    **The interesting part is why #172's version did not already cover this.**
+    That script derives its expectation from `ctest -N` *with the same filter*,
+    which is self-maintaining and catches a filter matching nothing or a target
+    that failed to build. It cannot catch a **configure** regression, because
+    `ctest -N` reads the same diminished registry the run did: the expectation
+    shrinks in lockstep with the damage, every surviving test passes, and 100%
+    of a smaller suite reports exactly like 100% of the whole one. The check
+    built to prevent this repo's signature failure had that failure inside it.
+  - The floor is the fixed point — a number in `ci.yml`, not read from the
+    build, so a broken configure has to argue with a value it cannot influence.
+    Floors are lower bounds, not equalities, so adding tests never conflicts;
+    crossing one downward is meant to be a visible, justified edit like
+    `coverage_floor.txt`. Set from PR #181's green run: **400** for
+    `Build & Test` (actual 412) and the two compat legs (412 boost / 415
+    stdexec), **395** for Coverage (actual 405), **7** for ThreadSanitizer
+    (actual 7 — exact, because its `-R` is an explicit seven-name list).
+  - **A stale claim removed with it:** the comment above the TSan check asserted
+    that deriving from `ctest -N` made a dropped target "fail loudly". It did
+    not, and that was the dangerous part — a protection documented but absent.
+  - **Assert the skip list, do not just tolerate skips. Already covered** by
+    #172's `--allow-skip`, and covered more strictly than this entry proposed:
+    `ci.yml` passes *no* allowlist at all, so **any** skip fails. Every
+    skip-capable test in this repo carries a label the job filters already
+    exclude, so a skip appearing in these runs is a real regression rather than
+    an expected one to be listed. Revisit only if a test legitimately needs to
+    skip inside a filtered run.
   - **Surface first-attempt failures.** `ctest --repeat until-pass:3` hides
     flakes completely: the summary says passed and only the raw log shows the
     first attempt failed. **Two live examples found August 6, 2026 in PR #167's
