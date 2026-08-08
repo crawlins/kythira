@@ -1,10 +1,19 @@
 # Implementation Plan
 
-**Status (August 6, 2026): Tasks 1-4, 6 and 12 are implemented.** They form the
-protocol-independent core — the concepts, the two registries, the exception, and
-their unit tests — and land as one self-contained change. Everything from Task 5
-onward is transport wiring, which touches every `Types` bundle and all four
-transports and is deliberately left as separate work.
+**Status (August 8, 2026): Tasks 1-12 and 10a are implemented — 13 of the 17
+top-level tasks. Only the four test suites, 13-16, remain.** The wiring is
+complete across all four transports: cpp-httplib (9), Beast (10), Proxygen
+(10a) and CoAP (11).
+
+Count the tasks before quoting a denominator: this file has **17** top-level
+tasks, not 16 — `10a` was inserted between 10 and 11 on August 7, 2026 and is
+easy to miss when skimming the numbering. It also has 29 leaf items.
+
+The original status note read "Tasks 1-4, 6 and 12 are implemented", describing
+the protocol-independent core — the concepts, the two registries, the
+exceptions, and their unit tests — which landed as one self-contained change.
+Everything from Task 5 onward was transport wiring, deliberately left as
+separate work because it touches every `Types` bundle and all four transports.
 
 - [x] 1. Strengthen the `rpc_serializer` concept and add `media_type()`
   - Added `{ s.media_type() } -> std::convertible_to<std::string>;` to
@@ -214,7 +223,13 @@ transports and is deliberately left as separate work.
     when it needs to change its format
   - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
 
-- [ ] 10a. Wire content negotiation into `proxygen_client`/`proxygen_server`
+- [x] 10a. Wire content negotiation into `proxygen_client`/`proxygen_server`
+  - **Checkboxes reconciled August 8, 2026.** The four subtasks below shipped
+    with the task's own write-up in #175 but were never ticked, so this task
+    read as not-started while its code was on `main` — which made the spec's
+    own task denominator untrustworthy. Each box below was re-checked against
+    the tree before ticking, with the verifying line named; none was ticked on
+    the strength of the prose above it
   - Added August 7, 2026, after the fact. This spec was drafted around the two
     HTTP transports that existed then and enumerated them by name throughout;
     Proxygen landed separately and nobody revisited the enumeration, so Tasks 9
@@ -226,23 +241,39 @@ transports and is deliberately left as separate work.
     and because 11-16 are referenced by number from `doc/TODO.md` and from Task
     10's own write-up — renumbering them to make room would break those
     references to buy nothing
-  - [ ] 10a.1 Client: add `serializer_registry_type _registry` and a
+  - [x] 10a.1 Client: add `serializer_registry_type _registry` and a
     `peer_capability_cache<std::uint64_t>`; pick the request `Media_Type` via
     `select_request_media_type`, encode through the registry, and set both
     `Content-Type` and the full `Accept` list
+    - Members at `proxygen_http_transport.hpp:467,473`; the selection and both
+      headers at `proxygen_http_transport_impl.hpp:837` (generic bridge) and
+      `:1038` (Folly fast path) — both paths, per the note below
     - _Requirements: 6.1, 6.2, 6.3, 9.4_
-  - [ ] 10a.2 Client: read the response `Content-Type` (absent → registry default),
+  - [x] 10a.2 Client: read the response `Content-Type` (absent → registry default),
     reject an unsupported one with `unsupported_media_type_error` while leaving the
     cache untouched, decode through the registry, and record the cache entry only
     on a clean decode
+    - `proxygen_http_transport_impl.hpp:932-961` and `:1104-1133`. The
+      `_capability_cache.record` call sits *after* a successful
+      `decode_with`, and the unsupported branch throws before reaching it, so
+      "untouched" is structural rather than a comment
     - _Requirements: 6.4, 6.5, 6.6_
-  - [ ] 10a.3 Server: thread the request `Media_Type` and parsed `Accept` list into
+  - [x] 10a.3 Server: thread the request `Media_Type` and parsed `Accept` list into
     `proxygen_server::dispatch`, and report back the `Media_Type` actually encoded;
     415 before the handler on an unsupported `Content-Type`, 406 before the handler
     on an unsatisfiable `Accept`
+    - Signature at `proxygen_http_transport_impl.hpp:1657`, call site at `:1259`.
+      Both rejections precede the `handler(request)` call at `:1722`, and both
+      precede the `decode_with` at `:1715` — so an unsatisfiable `Accept` also
+      costs no decode
     - _Requirements: 4.1-4.4, 5.1-5.4_
-  - [ ] 10a.4 Add the `media_type` dimension to the `proxygen_http.*` metrics and
+  - [x] 10a.4 Add the `media_type` dimension to the `proxygen_http.*` metrics and
     emit `error_type=unsupported_media_type` on negotiation failure
+    - Client request/response at `:854` and `:1054`, client error at `:942-943`
+      and `:1114-1115`, server error at `:1692` (415) and `:1707` (406), server
+      latency at `:1739`. The 406 metric carries the *rejected `Accept` list*
+      rather than a single type, since no single type was unsupported — the
+      whole list was unsatisfiable
     - _Requirements: 10.1, 10.2, 10.3_
   - **Both client paths, not one.** Unlike httplib and Beast, Proxygen has two
     client send paths — the generic bridge (Requirement 14) and the Folly-native
@@ -253,6 +284,15 @@ transports and is deliberately left as separate work.
     it was compiled with. Both get the same treatment, and the shared
     `http_response` struct carries the response `Content-Type` so the two bridges
     cannot diverge on how they read it
+  - **Pinned by `tests/proxygen_negotiation_integration_test.cpp`**, 10 cases,
+    driving a live `proxygen_server` with a raw `httplib::Client` — a foreign
+    client is the only way to send the headers that reach 415 and 406, which a
+    Proxygen client would never emit. Covers the supported/labelled happy path,
+    415 before the handler, 406 before the handler, an absent `Content-Type`
+    falling back to the default, httplib's injected `text/plain` being rejected
+    like any other unknown type, a `charset` parameter not defeating the match,
+    `*/*` and `type/*` wildcards, an `Accept` list picking the first supported
+    entry, and a malformed body in a *supported* type being 400 rather than 415
   - _Requirements: 4.1-4.4, 5.1-5.4, 6.1-6.6, 9.4, 10.1-10.3_
 
 - [x] 11. Wire content negotiation into `coap_client`/`coap_server`
