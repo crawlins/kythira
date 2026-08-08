@@ -673,7 +673,33 @@ unverified completion claim.
     negotiation branches rather than for this item — a foreign client is the
     only way to send the headers that reach 415/406 — but it is the httplib →
     Proxygen cell, and it is the reason the response-label defect became
-    testable at all. Seven cells remain.
+    testable at all.
+  - **Count corrected August 8, 2026: five cells remained at that point, not
+    the "seven" recorded here.** Nine cells, minus three on the diagonal, minus
+    the httplib → Proxygen cell above, is five — the old figure did not follow
+    from this entry's own sentences. Recounted by enumerating which client type
+    each test file instantiates against which server type, not by arithmetic on
+    the previous number.
+  - **Two more cells landed August 8, 2026**, as
+    `tests/http_implementation_interop_test.cpp`: `cpp_httplib_client` →
+    `boost_beast_server` and `boost_beast_client` → `cpp_httplib_server`. Both
+    **pass** — the two implementations do interoperate, which was not a
+    foregone conclusion given the warning below. These are the two off-diagonal
+    cells that build on every default CI leg.
+  - **The new suite was mutation-tested against exactly the blind spot this
+    item describes.** Making `boost_beast_server` reject any request whose
+    `User-Agent` is not `raft-boost-beast/1.0` — a real difference, since the
+    two clients genuinely send different agents — **fails the new interop suite
+    and leaves `beast_cross_transport_equivalence_test` green**. That is the
+    argument for this item, demonstrated rather than asserted: an
+    implementation-specific assumption is invisible to a suite that only ever
+    pairs a client with its own server.
+  - **Three cells remain**, all involving Proxygen: Beast → Proxygen, Proxygen
+    → httplib, Proxygen → Beast. They need `KYTHIRA_BUILD_PROXYGEN_TRANSPORT`,
+    so they cannot go in the same always-built file. Note also that the
+    httplib → Proxygen cell is covered only by a *raw* `httplib::Client`, not
+    by `cpp_httplib_client`; if the grid is meant to be about our own
+    transports talking to each other, that cell deserves a second look.
   - **The Proxygen blocker is gone.** This item used to depend on deciding
     whether Proxygen negotiates; it does, as of the entry above, so the
     Proxygen cells can now be written against specified behaviour rather than
