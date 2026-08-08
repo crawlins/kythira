@@ -1,9 +1,18 @@
 # Implementation Plan
 
-**Status (August 8, 2026): Tasks 1-12 and 10a are implemented — 13 of the 17
-top-level tasks. Only the four test suites, 13-16, remain.** The wiring is
-complete across all four transports: cpp-httplib (9), Beast (10), Proxygen
-(10a) and CoAP (11).
+**Status (August 8, 2026): all 17 top-level tasks are ticked, over both HTTP and
+CoAP.** The wiring is complete across all four transports — cpp-httplib (9),
+Beast (10), Proxygen (10a) and CoAP (11) — and the four test suites (13-16) are
+in. One thing remains open inside a ticked task, stated rather than glossed: a
+**Requirement 7.3 interop violation** that Task 15 found and pinned rather than
+fixed, because fixing it is a design decision — see Task 15 and `doc/TODO.md`.
+
+Writing the test suites to the requirements rather than to the code found two
+defects, which is the main reason Tasks 13-16 were worth doing beyond the
+checkbox. One is the 7.3 violation above. The other — **CoAP's 4.06 branch was
+unreachable**, so a peer that could read none of our formats got a success
+carrying a body it could not decode — was a local bug with no design question
+attached, and is fixed under Task 16.
 
 Count the tasks before quoting a denominator: this file has **17** top-level
 tasks, not 16 — `10a` was inserted between 10 and 11 on August 7, 2026 and is
@@ -371,27 +380,160 @@ separate work because it touches every `Types` bundle and all four transports.
     `request_vote_request` round-trip through JSON
   - _Requirements: 11.1, 11.2_
 
-- [ ] 13. Regression property tests: single-serializer configurations unchanged
-  - Re-run existing HTTP/CoAP property test suites against `Types` bundles using
-    `single_serializer_registry`, asserting identical wire behavior to pre-change
-    (Requirement 7)
+**Tasks 13-16, August 8, 2026: the HTTP half is done; the CoAP half is not.**
+All four suites are implemented, mutation-tested and green over cpp-httplib.
+Tasks 15 and 16 also name CoAP, and that remains open — see the note under Task
+16. The four share one rig, `tests/negotiation_test_harness.hpp`, whose whole
+job is to make the negotiated media type *observable*: it carries a recording
+metrics backend and the suites read the `media_type` dimension back. A
+round-trip that merely succeeds proves the two sides agreed on something, not
+that they negotiated rather than both defaulting to the same thing and ignoring
+the headers, and that distinction is the entire subject of these tasks.
+
+- [x] 13. Regression property tests: single-serializer configurations unchanged
+  - `tests/single_serializer_regression_test.cpp`, 4 cases. Driven by a raw
+    `httplib::Client` rather than by ours, because a pre-negotiation peer is
+    exactly what `cpp_httplib_client` can no longer imitate — it always sets
+    both `Accept` and `Content-Type`, and the peers Requirement 7.3 is about set
+    neither
+  - **The load-bearing assertion is byte equality against the serializer called
+    directly**, not a successful round-trip. A round-trip also passes for a
+    registry that wrapped or re-framed the payload, provided it did so
+    symmetrically at both ends — and such a node would be silently unable to
+    talk to any unmodified peer, which is the precise regression Requirement 7
+    exists to prevent
+  - The CBOR case is what makes the suite able to fail: the JSON cases cannot
+    distinguish "labelled with the configured serializer's type" from "always
+    labelled `application/json`", because for them the two answers coincide.
+    Mutation-tested — restoring the hardcoded `application/json` that
+    Requirement 9.4 removed fails the CBOR case and *only* the CBOR case
+  - Also pins the two ways a pre-negotiation peer can present: no `Accept` header
+    at all, and `Accept: */*`. Both must be served rather than answered 406,
+    since a 406 would mean every unmodified node in an existing cluster stopped
+    being able to talk to an upgraded one
   - _Requirements: 7.1, 7.2, 7.3, 11.3_
 
-- [ ] 14. Property tests: two-serializer negotiation
-  - All four client-order × server-order combinations round-trip correctly for
-    `request_vote`, `append_entries`, `install_snapshot` (and, where applicable,
-    ClusterJoin/ClusterLeave, RequestPreVote, `fetch_log_entries`)
-  - `Peer_Capability_Cache` converges to a stable `Media_Type` after first exchange
+- [x] 14. Property tests: two-serializer negotiation
+  - `tests/multi_serializer_negotiation_property_test.cpp`, 5 cases. **The first
+    test anywhere to run a `multi_serializer_registry` through a socket**: every
+    shipped bundle hardcodes `single_serializer_registry`, so until this suite
+    declared a test-local bundle, the feature the whole spec exists for had
+    never been exercised end to end
+  - All four client-order × server-order combinations, each over `request_vote`,
+    `append_entries` and `install_snapshot`. Three RPCs rather than one because
+    each has its own endpoint and its own `handle` instantiation in `dispatch`,
+    so negotiation wired into one and not the others would round-trip perfectly
+    on whichever one a single-RPC test happened to pick
+  - The property asserted is **the negotiated type is the client's first
+    preference, whatever the server's own order is** — `select_output_media_type`'s
+    "the peer's order wins" rule, observed on the wire. The two mixed-order
+    cells are what distinguish it from "our order wins"; the two same-order
+    cells cannot, and mutation-testing confirms exactly that split
+  - Cache convergence is asserted as *stability across three exchanges* plus
+    agreement with the server-side type. "Request 2 matches request 1" alone
+    would also hold for a cache never written to at all; the "our order wins"
+    mutation proves the assertion is not vacuous, because under it the cache
+    records the server's choice and requests 2 and 3 diverge from request 1
+  - **A second mutation measured what the tree covered before this suite: with
+    the client's `Accept` header suppressed entirely,
+    `http_negotiation_integration_test`, `http_integration_test` and
+    `http_client_test` all still pass.** Nothing protected that header, because
+    every shipped bundle is single-serializer — where a missing `Accept` still
+    yields the one type the server has. Worth knowing before trusting any
+    existing suite to cover a negotiation change
+  - ClusterJoin/ClusterLeave, RequestPreVote and `fetch_log_entries` are not
+    covered: they are not part of the `cpp_httplib_client`/`server` RPC surface
+    these suites drive, which is why the task text hedged them as "where
+    applicable"
   - _Requirements: 11.4_
 
-- [ ] 15. Integration tests: multi-serializer ↔ single-serializer interoperability
-  - Both directions (multi-as-client/single-as-server and vice versa), over HTTP and CoAP
+- [x] 15. Integration tests: multi-serializer ↔ single-serializer interoperability
+  - `tests/multi_serializer_interop_test.cpp`, 5 cells, over HTTP. **One of them
+    pins a genuine Requirement 7.3 violation rather than a pass** — see below
+  - The two directions are not symmetric, which is why this is a separate suite
+    rather than more cells in Task 14. HTTP negotiates the *response* through
+    `Accept`, which the server reads before answering, so a single-serializer
+    server can always satisfy a multi-serializer client's response leg — the
+    three passing cells. The *request* carries whatever the client chose before
+    it had heard anything from the server; there is no mechanism by which a
+    client learns a peer's formats in advance, so the request leg is not
+    negotiated at all. It is guessed, from the registry default
+  - **Defect found: a multi-serializer client whose default the single-serializer
+    server does not speak is permanently broken.** Measured — the client sends
+    `application/cbor`, the JSON-only server answers 415, the handler is never
+    entered, and nothing recovers: there is no retry, and the capability cache
+    is deliberately not written on failure, so every subsequent request repeats
+    the identical mistake. Requirement 7.3 says these two SHALL interoperate.
+    Recorded in `doc/TODO.md`; the cell asserts today's behaviour and says so in
+    its name, so **it will fail when someone implements the fix**, which is how
+    they will find out it is there
+  - Mutation-tested with a mutation the other suites' mutations do not catch —
+    the server ignoring the request's `Accept` entirely. It kills the two cells
+    where the client's and server's preferences differ and leaves the three that
+    cannot distinguish it passing
   - _Requirements: 7.3, 11.5_
 
-- [ ] 16. Negative tests for content-negotiation failures
-  - Unsupported `Content-Type`/`Content-Format` on input → 415/4.15
-  - Unsatisfiable `Accept` on output → 406/4.06
-  - Client-side unrecognized response `Content_Declaration` → error future, cache
-    untouched
-  - Assert no crash, hang, or unresolved future/promise in any case
+- [x] 16. Negative tests for content-negotiation failures
+  - `tests/negotiation_failure_test.cpp`, 4 cases, covering **the one failure
+    class of the four that had no test anywhere**: a client receiving a response
+    labelled with a media type its registry does not know. The other three are
+    server-side and were already pinned — 415 and 406 by
+    `http_negotiation_integration_test` and `proxygen_negotiation_integration_test`,
+    both of which reach those branches by driving our server with a raw
+    `httplib::Client`
+  - Reaching the client-side branch needs the mirror-image trick: a **server**
+    that answers something ours never would. `cpp_httplib_server` cannot be made
+    to emit an unregistered response label — it only ever answers with a type its
+    own registry selected, which is correct, and is exactly why the client's
+    handling of a non-conforming peer is untestable through it. So the suite
+    stands a raw `httplib::Server` in front of a real `cpp_httplib_client`
+  - Cases: an unregistered response type fails the future with the *typed*
+    `unsupported_media_type_error` naming the offending type (a generic
+    `runtime_error` would be indistinguishable from a transport fault, and the
+    two call for opposite responses); an **absent** response `Content-Type`
+    falls back to the client default rather than erroring (Requirement 6.4's
+    client-side half — the server-side half was covered, and they are separate
+    code paths); a *supported* label over foreign bytes surfaces as a decode
+    error rather than a media-type error (Requirement 8.3); and a failed
+    negotiation leaves the client usable for the next request
+  - **"Cache untouched" is asserted as its observable consequence, not directly.**
+    The cache is private, and probing it through the request label would prove
+    nothing: `select_request_media_type` ignores a cached type the registry no
+    longer supports, so a wrongly-recorded bogus entry gets filtered out on the
+    way back and looks identical to never having been recorded. What is
+    genuinely observable is that the client still works afterwards, which the
+    last case checks against the same client instance
+  - Requirement 11.6's "no crash, hang, or unresolved future" holds structurally:
+    every case takes a future and completes it, with a client request timeout
+    well under ctest's, so a hang fails the case by name instead of killing the
+    run with no attribution
+  - Mutation-tested: suppressing the client's `supports()` guard fails the two
+    cases that depend on it and correctly leaves the other two passing
+  - **The CoAP half of Tasks 15 and 16 is done too**, as
+    `tests/coap_negotiation_failure_test.cpp` — 5 cases driving a real
+    `coap_server` with a raw libcoap client. That peer is necessary rather than
+    stylistic, exactly as on the HTTP side: `coap_client` always sends a
+    `Content-Format` and `Accept` drawn from its own registry, so 4.15 and 4.06
+    cannot be reached from it at all. Covers 4.15 for an unregistered format
+    *and* for a format the codebase knows but this server's registry lacks (the
+    pair proves the server rejects on its own registry rather than on the global
+    table), an absent `Content-Format` falling back to the default, a
+    multi-serializer server honouring the peer's `Accept` over its own
+    preference, and 4.06
+  - **Writing the 4.06 case to the requirement found that the branch was
+    unreachable**, and it is fixed in the same change. The `Accept` loop dropped
+    options it could not resolve through the registry, so an `Accept` naming
+    only unsupported formats collapsed to an empty list — which correctly means
+    "no preference stated" and yields the default. Every surviving entry had
+    also been resolved *through the registry*, so `select_output_media_type`
+    could never reject it. The server therefore answered `2.05 Content` with a
+    body the peer had just said it could not decode: worse than a wrong status
+    code, because the client then reports a deserialization failure pointing at
+    the payload rather than at the negotiation. HTTP never had this because
+    `parse_accept_header` keeps unsupported entries verbatim, so its list stays
+    non-empty and the registry does the rejecting
+  - The CoAP-specific trap recorded under Task 11 held up in practice: options
+    in the new test are written with `coap_encode_var_safe`, and nothing asserts
+    a non-zero option length, since CoAP strips leading zeros and Content-Format
+    0 (`text/plain`) is legitimately zero-length
   - _Requirements: 8.2, 8.3, 8.4, 8.5, 11.6_

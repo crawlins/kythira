@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: August 4, 2026
+**Last Updated**: August 8, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -17,6 +17,16 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
   **not** in that 403, since the `ion` vcpkg feature is opt-in and absent
   from the default CI install; the `grpc_*` binaries **are**, since `grpc`
   is an unconditional `vcpkg.json` dependency.
+  - **This 403 predates August 8, 2026 and is now a floor rather than the
+    figure.** Four ctest targets were added that day for spec Tasks 13-16
+    (`single_serializer_regression_test`,
+    `multi_serializer_negotiation_property_test`,
+    `multi_serializer_interop_test`, `negotiation_failure_test` — 18 cases
+    between them), and earlier work has landed since as well. The number is
+    deliberately **not** revised by arithmetic: this line's whole value is that
+    it was read off the JUnit artifacts of a named green run, and a count
+    derived by adding to it would look identical while being unverified. Re-read
+    it from a run once those PRs merge, and name that run here.
 - The `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
   `ca_cluster_node_rpc_tls_restart_test` family's own intermittent SIGTERM-
   shutdown hang (see "Known Follow-ups" below) is fixed and verified, not
@@ -94,7 +104,7 @@ nothing and would have been answered with 406.
 
 | Spec | Tasks | Notes |
 |------|-------|-------|
-| `transport-multi-serializer` | 13/17 tasks | Came **off** the "Not Started" table on August 6, 2026. The protocol-independent core is implemented and unit-tested: `media_type()` on the `rpc_serializer` concept and on all four shipped serializers (Task 1), the `serializer_registry` concept (2), `single_`/`multi_serializer_registry` in `include/raft/serializer_registry.hpp` (3), the tagged test serializer (4), both media-type exceptions (6), `parse_accept_header` in `include/raft/http_content_negotiation.hpp` (8), and 29 cases in `tests/serializer_registry_unit_test.cpp` (12). Later the same day: `transport_types` gained a checked `serializer_registry_type` (5) — across 8 production bundles and 16 test-local ones, since a hard concept requirement binds every model of it, not just the ones the task named — and CoAP got its media-type-keyed Content-Format table plus registry validation (7). Later still: HTTP content negotiation landed for both cpp-httplib and Beast (9, 10) — `Accept`/`Content-Type` on the wire, 415/406 rejection *before* the handler runs, a shared `peer_capability_cache`, and a `media_type` metrics dimension. August 7, 2026: CoAP's half of the wiring landed (11) — repeated `Accept` options, `Content-Format` on request and response, 4.15 before the handler runs and 4.06 before it runs too, the shared `peer_capability_cache`, and a `media_type` metrics dimension. That work also fixed a latent wire bug: every `Content-Format` option in the CoAP transport was written as the host-order bytes of a `uint16_t`, so CBOR's 60 went out as 15360. It never mattered while nothing *read* the option, which is exactly what negotiation changed. **Bookkeeping discrepancy resolved August 8, 2026: the checkboxes were stale, not the code.** Task 10a (Proxygen) read as not-started while all four subtasks were on `main` from PR #175. Each was re-verified against the tree before ticking, not taken from the task's own prose: the registry and capability-cache members (`proxygen_http_transport.hpp:467,473`), the media-type selection and both headers on *both* client send paths (`proxygen_http_transport_impl.hpp:837` and `:1038`), the response-`Content-Type` path where `_capability_cache.record` structurally follows a successful `decode_with` (`:932-961`, `:1104-1133`), `dispatch`'s threaded media type and `Accept` list with 415 and 406 both preceding the handler *and* the decode (`:1657`, `:1686`, `:1700`, `:1715`, `:1722`), and the `media_type` dimension on all seven metric emissions. `tests/proxygen_negotiation_integration_test.cpp` pins the behaviour in 10 cases. `tasks.md`'s own header now states the top-level count, because the miscount that produced this row's old "13/16" was reading 17 tasks as 16 — `10a` sits between 10 and 11 and is easy to skim past. What remains is the regression/interop/negative suites (13-16). One behaviour change to know about: a cpp-httplib peer POSTing without an explicit `Content-Type` now gets 415, because httplib labels such a request `text/plain`; node-to-node traffic is unaffected since both clients set the header. Note the old "0/27" denominator here did not match `tasks.md`, which has 17 top-level tasks and 29 leaf items; this row counts top-level tasks |
+| `transport-multi-serializer` | 17/17 tasks | Came **off** the "Not Started" table on August 6, 2026. The protocol-independent core is implemented and unit-tested: `media_type()` on the `rpc_serializer` concept and on all four shipped serializers (Task 1), the `serializer_registry` concept (2), `single_`/`multi_serializer_registry` in `include/raft/serializer_registry.hpp` (3), the tagged test serializer (4), both media-type exceptions (6), `parse_accept_header` in `include/raft/http_content_negotiation.hpp` (8), and 29 cases in `tests/serializer_registry_unit_test.cpp` (12). Later the same day: `transport_types` gained a checked `serializer_registry_type` (5) — across 8 production bundles and 16 test-local ones, since a hard concept requirement binds every model of it, not just the ones the task named — and CoAP got its media-type-keyed Content-Format table plus registry validation (7). Later still: HTTP content negotiation landed for both cpp-httplib and Beast (9, 10) — `Accept`/`Content-Type` on the wire, 415/406 rejection *before* the handler runs, a shared `peer_capability_cache`, and a `media_type` metrics dimension. August 7, 2026: CoAP's half of the wiring landed (11) — repeated `Accept` options, `Content-Format` on request and response, 4.15 before the handler runs and 4.06 before it runs too, the shared `peer_capability_cache`, and a `media_type` metrics dimension. That work also fixed a latent wire bug: every `Content-Format` option in the CoAP transport was written as the host-order bytes of a `uint16_t`, so CBOR's 60 went out as 15360. It never mattered while nothing *read* the option, which is exactly what negotiation changed. **Bookkeeping discrepancy resolved August 8, 2026: the checkboxes were stale, not the code.** Task 10a (Proxygen) read as not-started while all four subtasks were on `main` from PR #175. Each was re-verified against the tree before ticking, not taken from the task's own prose: the registry and capability-cache members (`proxygen_http_transport.hpp:467,473`), the media-type selection and both headers on *both* client send paths (`proxygen_http_transport_impl.hpp:837` and `:1038`), the response-`Content-Type` path where `_capability_cache.record` structurally follows a successful `decode_with` (`:932-961`, `:1104-1133`), `dispatch`'s threaded media type and `Accept` list with 415 and 406 both preceding the handler *and* the decode (`:1657`, `:1686`, `:1700`, `:1715`, `:1722`), and the `media_type` dimension on all seven metric emissions. `tests/proxygen_negotiation_integration_test.cpp` pins the behaviour in 10 cases. `tasks.md`'s own header now states the top-level count, because the miscount that produced this row's old "13/16" was reading 17 tasks as 16 — `10a` sits between 10 and 11 and is easy to skim past. What remains is the regression/interop/negative suites (13-16). August 8, 2026: the regression/interop/negative suites (13-16) landed for HTTP — `single_serializer_regression_test`, `multi_serializer_negotiation_property_test`, `multi_serializer_interop_test` and `negotiation_failure_test`, 18 cases over a shared rig that makes the negotiated media type *observable* by reading back the `media_type` metric dimension. That work produced two findings worth more than the tests: **a Requirement 7.3 interop violation** (a multi-serializer client cannot talk to a single-serializer peer that does not speak its default — see the entry below), and the measurement that **suppressing the client's `Accept` header entirely leaves every pre-existing HTTP suite green**, because all shipped bundles are single-serializer. The CoAP half of 15 and 16 followed the same day, as `coap_negotiation_failure_test` — 5 cases driving a real `coap_server` with a raw libcoap client, which is required rather than stylistic since `coap_client` only ever sends a `Content-Format` and `Accept` drawn from its own registry. Writing its 4.06 case to the requirement found a third defect and **fixed** it: **CoAP's 4.06 branch was unreachable**, so a peer that could read none of our formats got `2.05 Content` carrying a body it had just said it could not decode — see the entry below. All 17 top-level tasks are now ticked over both transports. One behaviour change to know about: a cpp-httplib peer POSTing without an explicit `Content-Type` now gets 415, because httplib labels such a request `text/plain`; node-to-node traffic is unaffected since both clients set the header. Note the old "0/27" denominator here did not match `tasks.md`, which has 17 top-level tasks and 29 leaf items; this row counts top-level tasks |
 | `grpc-transport` | 12.5/13 phases | Tasks 1–12 are implemented and **CI-verified**: `proto/raft.proto`, the `raft_grpc_transport` target, `include/raft/grpc_transport{,_impl}.hpp`, `grpc_exceptions.hpp`, `grpc_message_conversion.hpp`, plus `grpc_transport_conversion_property_test`, `grpc_transport_integration_test` and `grpc_transport_example_test` — all three of which pass on all four `Build & Test` legs. Its `tasks.md` had flagged Tasks 1.5/13 as needing "a build machine with gRPC/Protobuf present"; CI *is* one, because `grpc` is an unconditional `vcpkg.json` dependency (which is why nothing in `ci.yml` mentions gRPC by name, and why this went unnoticed). What genuinely remains of Task 13 is narrower: the `KYTHIRA_KCONFIG_STRICT` and graceful-degradation configure checks, and a performance sanity pass |
 
 `boost-beast-http-transport` and `proxygen-http-transport` both reached full
@@ -614,6 +624,90 @@ unverified completion claim.
     is exactly this class of problem. The fix for that one gap is a wider
     matrix; the fix for the *class* is making "this job covered what it claims"
     a checked property rather than an assumption.
+
+- **CoAP's 4.06 branch was unreachable, so an unsatisfiable `Accept` got a
+  success carrying an undecodable body — FIXED August 8, 2026.** Found the same
+  way as the entry below: by writing spec Task 16's CoAP case to Requirement 5.5
+  and measuring, rather than to the code and asserting it back.
+  - **Measured before the fix**, `tests/coap_negotiation_failure_test.cpp`: a
+    raw libcoap peer declaring `Accept: application/cbor` against a JSON-only
+    `coap_server` received `2.05 Content` with a 61-byte JSON body, and the
+    handler *ran*. Requirement 5.5 specifies 4.06, with no payload, before the
+    handler.
+  - **Root cause, and why it was dead rather than merely rare.** The
+    Accept-collection loop resolves each repeated `Accept` option through the
+    registry and drops the ones it cannot resolve. An `Accept` naming only
+    unsupported formats therefore collapsed to an *empty* vector — and empty
+    correctly means "the peer stated no preference", which yields the default.
+    The two situations are opposites and had become indistinguishable by the
+    time the decision was made. Worse, every entry that *did* survive had been
+    resolved through the registry, so it was a supported media type by
+    construction and `select_output_media_type` could never reject it. The
+    branch could not execute under any input.
+  - **The failure mode was worse than a wrong status code.** A *success*
+    carrying a body the peer had explicitly said it could not read makes the
+    client report a deserialization failure, pointing the operator at the
+    payload rather than at the negotiation that produced it.
+  - **HTTP never had it, and the asymmetry is the lesson.**
+    `parse_accept_header` keeps unsupported entries verbatim, so its list stays
+    non-empty and the registry does the rejecting. CoAP has to map wire numbers
+    to media types before it can decide, and **that mapping step silently
+    doubled as a filter**. Any protocol that must translate before deciding has
+    the same trap available to it.
+  - Fix: record whether the peer sent any `Accept` option at all, and treat
+    "sent one, none survived resolution" as the empty intersection it is. Blast
+    radius was checked rather than assumed — `coap_client` emits `Accept` only
+    for types from its own registry, so any node pair sharing a registry
+    resolves every entry and is unaffected; only peers with disjoint format
+    support change behaviour, from a silent wrong-format 2.05 to a clean 4.06.
+    All 12 CoAP suites currently built pass against it.
+
+- **A multi-serializer client cannot talk to a single-serializer peer that does
+  not speak its default — a Requirement 7.3 violation, open (found August 8,
+  2026).** Found by writing spec Task 15's interop suite to the requirement and
+  measuring what happened, rather than to the code and asserting it back.
+  - **Measured**, `tests/multi_serializer_interop_test.cpp`: a client with
+    `multi_serializer_registry<cbor, json>` against a server with
+    `single_serializer_registry<json>` gets
+    `HTTP client error 415: Unsupported Content-Type: application/cbor` on
+    every RPC, and the handler is never entered. Requirement 7.3 says a
+    multi-serializer node and a single-serializer node **SHALL** interoperate in
+    both directions whenever the single node's format is one the multi node also
+    supports — and JSON is. This direction does not.
+  - **It is permanent, not first-request-only.** There is no retry, and the
+    capability cache is deliberately not written on a failure (Requirement 6.5,
+    and correctly so — caching the type that just failed would make the next
+    request repeat the mistake with more confidence). So every subsequent
+    request re-sends the same default and gets the same 415. The pairing never
+    recovers.
+  - **The cause is structural, not a missing branch.** HTTP negotiates the
+    *response* through `Accept`, which the server reads before answering — which
+    is why the reverse direction works and why the three other interop cells
+    pass. The *request* has no equivalent: the client must choose a format
+    before it has heard anything from the server, so it sends
+    `select_request_media_type`'s answer, which on a cold cache is the registry
+    default. Nothing in HTTP tells a client a peer's formats in advance.
+  - **Fixing it is a design decision, which is why it is filed here rather than
+    fixed in passing.** The server's 415 does not say what it *would* accept, so
+    a client-side retry needs either `Accept-Post` (W3C Linked Data Platform
+    1.0 §7.1; IANA-registered, and there is an expired IETF draft,
+    `draft-wilde-accept-post`) on the rejection,
+    or a fixed "on 415, try the next preferred type" policy. Either is a
+    wire-behaviour change and would have to land in all four transports at once,
+    for the same reason Task 10a's write-up gives about Proxygen's two client
+    paths: negotiating differently in one transport than another makes a node's
+    behaviour depend on how it was built. The capability cache is already the
+    right home for the outcome — a successful retry would record the working
+    type and every later request would be one round trip again.
+  - **Until then the constraint is on configuration**: a multi-serializer node's
+    *first* declared serializer must be one every peer it will meet can decode.
+    That is a real deployment constraint and it is written down nowhere else.
+  - The interop cell asserts today's behaviour, names itself
+    `..._is_a_known_415`, and says in its comment that **it will fail when the
+    fix lands** — which is how whoever fixes this finds out the cell exists and
+    updates it to `check_interoperates(obs, json_media)`. It is not marked
+    allowed-to-fail, and it does check something real meanwhile: that the
+    failure is clean, typed, immediate, and costs no handler side effects.
 
 - **Proxygen content negotiation — answered and implemented (August 7, 2026 —
   resolved).** The open question was "is Proxygen a first-class transport?"

@@ -137,7 +137,8 @@ BOOST_AUTO_TEST_CASE(multi_client_preferring_json_against_single_json_server) {
 /// Fixing it is a design decision rather than a bug fix, which is why this cell
 /// pins the defect instead of quietly expecting a pass: the server's 415 does
 /// not say what it *would* accept, so a client retry needs either `Accept-Post`
-/// (RFC 7694) on the rejection or a fixed "try the next preferred type" policy,
+/// (W3C Linked Data Platform 1.0) on the rejection or a fixed "try the next
+/// preferred type" policy,
 /// and either one is a wire-behaviour change across all four transports. Logged
 /// in `doc/TODO.md`.
 ///
