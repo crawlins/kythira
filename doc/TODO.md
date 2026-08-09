@@ -8,25 +8,28 @@ For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
 The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 
-- **403/403 tests passing, 0 failures, 0 skipped** on the full
+- **430/430 tests passing, 0 failures, 0 errors, 0 skipped** on the full
   `ci_full_defconfig` suite, on all four `Build & Test` legs (`g++-13`/
-  `clang++-18` × x64/arm64). Read off the JUnit artifacts of a specific
-  green run rather than asserted — run
-  [30947491385](https://github.com/crawlins/kythira/actions/runs/30947491385),
-  commit `1a52e1f`, August 4, 2026. Counting note: the `ion_*` binaries are
-  **not** in that 403, since the `ion` vcpkg feature is opt-in and absent
-  from the default CI install; the `grpc_*` binaries **are**, since `grpc`
-  is an unconditional `vcpkg.json` dependency.
-  - **This 403 predates August 8, 2026 and is now a floor rather than the
-    figure.** Four ctest targets were added that day for spec Tasks 13-16
-    (`single_serializer_regression_test`,
-    `multi_serializer_negotiation_property_test`,
-    `multi_serializer_interop_test`, `negotiation_failure_test` — 18 cases
-    between them), and earlier work has landed since as well. The number is
-    deliberately **not** revised by arithmetic: this line's whole value is that
-    it was read off the JUnit artifacts of a named green run, and a count
-    derived by adding to it would look identical while being unverified. Re-read
-    it from a run once those PRs merge, and name that run here.
+  `clang++-18` × x64/arm64) — 430 on every leg, not 430 in aggregate. Read
+  off the JUnit artifacts of a specific green run rather than asserted — run
+  [31317748177](https://github.com/crawlins/kythira/actions/runs/31317748177),
+  commit `ec5fb02`, August 9, 2026. Counting note, re-verified against that
+  run's `testcase` names rather than carried over: the `ion_*` binaries are
+  **not** in the 430 (0 present), since the `ion` vcpkg feature is opt-in and
+  absent from the default CI install; the `grpc_*` binaries **are** (3
+  present), since `grpc` is an unconditional `vcpkg.json` dependency.
+  - **Treat this as a floor, not the figure**, and **never revise it by
+    arithmetic.** This line's whole value is that it was read off the JUnit
+    artifacts of a named green run; a count derived by adding the tests a PR
+    introduced would look identical while being unverified. When it goes
+    stale, re-read it the same way — download the four `test-results-*`
+    artifacts from a green run and sum the `testsuite` `tests` attributes —
+    and name the new run here.
+  - The previous figure was **403**, from run 30947491385 (commit `1a52e1f`,
+    August 4, 2026). The 27 added between them are real targets landed since,
+    chiefly the multi-serializer negotiation work (spec Tasks 13-16) and the
+    three CoAP backends; that reconciliation is offered as a sanity check on
+    the new reading, and is explicitly *not* how the 430 was obtained.
 - The `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
   `ca_cluster_node_rpc_tls_restart_test` family's own intermittent SIGTERM-
   shutdown hang (see "Known Follow-ups" below) is fixed and verified, not
@@ -1911,8 +1914,8 @@ surface a conforming implementation must cover).
   bugs, three of them upstream in `ion-c` itself (notably its `ASSERT()`
   macro spinning forever under `-DNDEBUG` on malformed input, fixed by an
   overlay patch). Because the `ion` feature is opt-in, these binaries are
-  **not** part of the default CI build's 403 — enabling them needs
-  `vcpkg install --x-feature=ion`
+  **not** part of the default CI build's 430 (see "Current Status") — enabling
+  them needs `vcpkg install --x-feature=ion`
 
 ### Metrics Backends
 
