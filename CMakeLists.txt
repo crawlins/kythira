@@ -242,6 +242,51 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT)
 endif()
 kythira_kconfig_require(COAP_TRANSPORT LIBCOAP_FOUND "libcoap")
 
+# coap-transport-libnyoci spec: libnyoci backs a *second* implementation of the
+# same network_client/network_server concepts the libcoap-backed
+# coap_client/coap_server satisfy (include/raft/coap_transport_libnyoci_impl.hpp).
+# Structurally identical to the LIBCOAP_FOUND -> LIBCOAP_AVAILABLE wiring above,
+# with three deliberate differences:
+#
+#  * Discovery is pkg-config only. libnyoci is autotools and ships no CMake
+#    config package at all, so there is no find_package(... CONFIG) first
+#    attempt -- only the pkg_check_modules path libcoap uses as its *fallback*.
+#  * It defaults to OFF (CONFIG_COAP_TRANSPORT_LIBNYOCI=n, and the vcpkg
+#    "coap-libnyoci" feature is opt-in), so a normal build neither fetches nor
+#    links it -- Requirement 2.1.
+#  * It does not depend on COAP_TRANSPORT. The two backends are additive and
+#    coexist at link time (Requirement 2.4), verified by linking a program that
+#    calls into both archives. The two export exactly one name in common --
+#    coap_insert_option -- and that is survivable only because these are static
+#    archives: the linker pulls an object file solely to satisfy an undefined
+#    symbol, and no translation unit references both libraries (it cannot; their
+#    headers are mutually exclusive, see coap_transport_config.hpp). If either
+#    is ever built shared, or a third name starts overlapping, revisit this.
+kythira_kconfig_gate(COAP_TRANSPORT_LIBNYOCI)
+if(_KYTHIRA_GATE_COAP_TRANSPORT_LIBNYOCI)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBNYOCI QUIET libnyoci)
+    endif()
+endif()
+kythira_kconfig_require(COAP_TRANSPORT_LIBNYOCI LIBNYOCI_FOUND "libnyoci")
+
+# coap-transport-cantcoap spec: a *third* implementation of the same
+# network_client/network_server concepts, this one over cantcoap
+# (include/raft/coap_transport_cantcoap_impl.hpp). Unlike libcoap and libnyoci,
+# cantcoap is a message codec only -- no socket, no reliability, no block-wise,
+# no DTLS -- so the adapter supplies all of that itself.
+#
+# Discovery is find_package(... CONFIG) against the config package the overlay
+# port's vendored CMakeLists exports, not pkg-config: cantcoap ships no build
+# system at all, so the port supplies both. Defaults OFF and does not depend on
+# COAP_TRANSPORT; all three backends are additive.
+kythira_kconfig_gate(COAP_TRANSPORT_CANTCOAP)
+if(_KYTHIRA_GATE_COAP_TRANSPORT_CANTCOAP)
+    find_package(cantcoap QUIET CONFIG)
+endif()
+kythira_kconfig_require(COAP_TRANSPORT_CANTCOAP cantcoap_FOUND "cantcoap")
+
 # grpc-transport spec: gRPC + Protocol Buffers back a third full-concept-family
 # transport (.kiro/specs/grpc-transport/). Optional and gracefully degrading,
 # exactly like libcoap above: probed only when CONFIG_GRPC_TRANSPORT is wanted,
@@ -741,6 +786,37 @@ if(LIBCOAP_FOUND)
     # implementation instead, regardless of whether libcoap was actually
     # available.
     target_compile_definitions(network_simulator INTERFACE LIBCOAP_AVAILABLE)
+endif()
+
+if(LIBNYOCI_FOUND)
+    target_include_directories(network_simulator INTERFACE ${LIBNYOCI_INCLUDE_DIRS})
+    target_link_libraries(network_simulator INTERFACE ${LIBNYOCI_LIBRARIES})
+    target_link_directories(network_simulator INTERFACE ${LIBNYOCI_LIBRARY_DIRS})
+    target_compile_definitions(network_simulator INTERFACE ${LIBNYOCI_CFLAGS_OTHER})
+    # Backs LIBNYOCI_AVAILABLE project-wide, exactly as the LIBCOAP_AVAILABLE
+    # line above does -- without it coap_transport_libnyoci_impl.hpp compiles
+    # to its stub and every coap_libnyoci_* test silently skips, which is the
+    # failure mode that hid the libcoap backend from its own test suite for as
+    # long as it did.
+    target_compile_definitions(network_simulator INTERFACE LIBNYOCI_AVAILABLE)
+    message(STATUS "libnyoci found: ${LIBNYOCI_VERSION} — alternate CoAP backend enabled "
+                   "(.kiro/specs/coap-transport-libnyoci/)")
+else()
+    message(STATUS "libnyoci not found — alternate CoAP backend disabled "
+                   "(opt in with --x-feature=coap-libnyoci)")
+endif()
+
+if(cantcoap_FOUND)
+    target_link_libraries(network_simulator INTERFACE cantcoap::cantcoap)
+    # Backs CANTCOAP_AVAILABLE project-wide, as the two blocks above do for
+    # their libraries. Without it coap_transport_cantcoap_impl.hpp compiles to
+    # its stub and every cantcoap test silently skips.
+    target_compile_definitions(network_simulator INTERFACE CANTCOAP_AVAILABLE)
+    message(STATUS "cantcoap found — codec-only CoAP backend enabled "
+                   "(.kiro/specs/coap-transport-cantcoap/)")
+else()
+    message(STATUS "cantcoap not found — codec-only CoAP backend disabled "
+                   "(opt in with --x-feature=coap-cantcoap)")
 endif()
 
 if(LIBLDNS_FOUND)

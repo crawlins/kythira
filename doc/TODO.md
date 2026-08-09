@@ -169,6 +169,45 @@ unverified completion claim.
 
 ## Known Follow-ups
 
+- **A transport-neutral OSCORE — RESOLVED (August 8, 2026), one day after it
+  was raised.** `include/raft/oscore.hpp` now implements RFC 8613 against CoAP
+  *message bytes*, so any backend can speak OSCORE regardless of which CoAP
+  library it uses. The libnyoci backend does, end to end
+  (`tests/coap_libnyoci_oscore_test.cpp`).
+
+  The original entry called this an "acquire an OSCORE implementation" project
+  rather than a refactor, and that was right: kythira does not implement OSCORE,
+  it configures libcoap's (`oscore_provider` wraps
+  `coap_context_oscore_server()` and friends; there is no AES-CCM, COSE or key
+  derivation anywhere else in the tree). So the work was to write RFC 8613 —
+  security-context derivation, the AEAD nonce, plaintext and AAD constructions,
+  OSCORE option compression, and the protect/verify procedures — on top of
+  OpenSSL, plus the small CoAP codec that splits Class E options from Class U
+  ones.
+
+  What makes it trustworthy is `tests/oscore_rfc8613_vectors_test.cpp`: every
+  test vector in RFC 8613 Appendix C, including the whole protected request of
+  C.4 and protected response of C.7 compared byte for byte against the
+  published hex. Do not change the crypto without re-running those.
+
+  Observe, block-wise and the EDHOC bootstrap were listed here as still-open
+  and have since been implemented (August 8, 2026): notifications with their
+  own Partial IV verified against Appendix C.8, inner Block1/Block2 that finally
+  lets a 16 KiB InstallSnapshot cross libnyoci, and a `/.well-known/edhoc`
+  exchange that derives the context instead of being handed one.
+
+  Still open:
+  - **Observe at the transport level.** The OSCORE half is done, but neither
+    transport exposes a subscribe API — `network_client` has no such method,
+    and adding one changes the concepts.
+  - **Outer block options**, needed only if a CoAP proxy is ever in the path.
+  - **Algorithms other than AES-CCM-16-64-128** with HKDF-SHA-256, the
+    mandatory-to-implement pair.
+
+  DTLS still cannot go through a byte-level seam — it is a handshake plus a
+  record layer, not a per-message transform — which is why the libnyoci backend
+  uses libnyoci's own OpenSSL plugin for it.
+
 - **Beast suites segfault under the stdexec future backend, and CI cannot see
   it (found August 6, 2026 — RESOLVED same day, PR #169).** The diagnosis
   below was right that no CI job covered it and wrong about where the bug
