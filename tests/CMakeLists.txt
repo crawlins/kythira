@@ -764,6 +764,20 @@ add_test(NAME coap_edhoc_oscore_bootstrap_test COMMAND coap_edhoc_oscore_bootstr
 set_tests_properties(coap_edhoc_oscore_bootstrap_test PROPERTIES TIMEOUT 60
     LABELS "coap;coap-security;integration")
 
+# The message-carrying half of the EDHOC bootstrap, without the handshake.
+# Deliberately links neither lakers nor any CoAP backend: coap_edhoc_bootstrap.hpp
+# is written to be transport-neutral, so it must be testable with no transport,
+# and this runs in every build rather than only where the edhoc feature is on.
+add_executable(coap_edhoc_bootstrap_channel_test coap_edhoc_bootstrap_channel_test.cpp)
+target_link_libraries(coap_edhoc_bootstrap_channel_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+target_compile_features(coap_edhoc_bootstrap_channel_test PRIVATE cxx_std_23)
+add_test(NAME coap_edhoc_bootstrap_channel_test COMMAND coap_edhoc_bootstrap_channel_test)
+set_tests_properties(coap_edhoc_bootstrap_channel_test PROPERTIES TIMEOUT 60
+    LABELS "coap;coap-security")
+
 # ACE-OAuth (Requirement 9.6) — mock Authorization Server via httplib.
 add_executable(coap_ace_oauth_test coap_ace_oauth_test.cpp)
 target_link_libraries(coap_ace_oauth_test PRIVATE
@@ -3788,6 +3802,25 @@ add_test(NAME coap_libnyoci_concept_conformance_test
 set_tests_properties(coap_libnyoci_concept_conformance_test PROPERTIES
     TIMEOUT 60 LABELS "coap;libnyoci;unit")
 
+# The pure helpers in libnyoci_detail: URI assembly, Uri-Path splitting, CoAP
+# unsigned option encoding, inner-request construction. They compile with or
+# without the backend, so this runs in every build -- which matters most for
+# build_request_uri, where getting the scheme wrong sends a DTLS client's
+# request in the clear.
+add_executable(coap_libnyoci_helpers_test coap_libnyoci_helpers_test.cpp)
+target_link_libraries(coap_libnyoci_helpers_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+    boost_json
+)
+if(TARGET Folly::folly)
+    target_link_libraries(coap_libnyoci_helpers_test PRIVATE Folly::folly)
+endif()
+target_compile_features(coap_libnyoci_helpers_test PRIVATE cxx_std_23)
+add_test(NAME coap_libnyoci_helpers_test COMMAND coap_libnyoci_helpers_test)
+set_tests_properties(coap_libnyoci_helpers_test PROPERTIES
+    TIMEOUT 60 LABELS "coap;libnyoci;unit")
+
 # Real loopback sockets, so this one needs a generous CTest budget: the
 # block-wise case walks a couple of hundred bytes of JSON sixteen bytes at a
 # time, and the cancellation cases deliberately wait on peers that never
@@ -3905,6 +3938,24 @@ endif()
 target_compile_features(oscore_rfc8613_vectors_test PRIVATE cxx_std_23)
 add_test(NAME oscore_rfc8613_vectors_test COMMAND oscore_rfc8613_vectors_test)
 set_tests_properties(oscore_rfc8613_vectors_test PROPERTIES
+    TIMEOUT 60 LABELS "oscore;security;unit")
+
+# Everything in oscore.hpp *around* the cryptography the vectors test pins: the
+# message codec, the Class E/U split, inner block options, and the request /
+# response binding. Links no CoAP backend on purpose -- the header is
+# transport-neutral, so this runs in every build rather than only where
+# libnyoci or cantcoap happens to be installed.
+add_executable(oscore_transport_neutral_test oscore_transport_neutral_test.cpp)
+target_link_libraries(oscore_transport_neutral_test PRIVATE
+    network_simulator
+    Boost::unit_test_framework
+)
+if(TARGET OpenSSL::SSL)
+    target_link_libraries(oscore_transport_neutral_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+endif()
+target_compile_features(oscore_transport_neutral_test PRIVATE cxx_std_23)
+add_test(NAME oscore_transport_neutral_test COMMAND oscore_transport_neutral_test)
+set_tests_properties(oscore_transport_neutral_test PROPERTIES
     TIMEOUT 60 LABELS "oscore;security;unit")
 
 # ── Test-timeout scaling for slow build configurations ───────────────────────
