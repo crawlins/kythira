@@ -12,8 +12,9 @@
 #
 # Step 3 — coverage ratchet (slow, full instrumented build + test run):
 #   Builds the instrumented tree, runs a label-filtered test subset, measures
-#   line coverage, and rejects the commit if coverage would fall below the value
-#   stored in coverage_floor.txt.
+#   function coverage, and rejects the commit if coverage would fall below the
+#   value stored in coverage_floor.txt. It never *raises* that floor — see the
+#   "above" case at the bottom for why.
 #
 # Escape hatches for WIP commits:
 #   SKIP_FORMAT_CHECK=1   git commit -m "..."  (skip format check only)
@@ -245,9 +246,14 @@ for _b in "${_TEST_BINS[@]:1}"; do
     _EXTRA_BINS+=(-object "$_b")
 done
 
-# ── Report line coverage ───────────────────────────────────────────────────────
-# llvm-cov report columns: Filename Regions Missed Cover% Lines Missed LineCover% …
-# $7 on the TOTAL row is the line coverage percentage.
+# ── Report function coverage ──────────────────────────────────────────────────
+# llvm-cov report columns:
+#   Filename Regions "Missed Regions" Cover Functions "Missed Functions" \
+#   Executed Lines "Missed Lines" Cover Branches "Missed Branches" Cover
+# $7 on the TOTAL row is therefore the *function* coverage percentage
+# ("Executed"), not line coverage — ci.yml's ratchet parses the same column.
+# Line coverage is $10 and runs about two points lower; do not relabel one as
+# the other without changing both this script and the CI job together.
 LLVM_COV_OUT=$(DEBUGINFOD_URLS="" "$LLVM_COV" report \
     --instr-profile="${COVERAGE_PROFDATA}" \
     "${_MAIN_BIN}" \
@@ -282,9 +288,18 @@ fi
 OLD_FLOOR=$(cat "${FLOOR_FILE}" 2>/dev/null || echo "0.0")
 
 # ── Compare ───────────────────────────────────────────────────────────────────
-RESULT=$(awk -v new="$NEW_PCT" -v old="$OLD_FLOOR" \
+# Same 0.50pp band CI's Coverage job applies, and for the same reason — but note
+# the reason differs by side. In CI the band absorbs run-to-run noise; here it
+# also absorbs the systematic offset between this machine's measurement and the
+# CI run the floor was taken from. Gating exactly would make this hook reject
+# commits the authoritative gate accepts, which is a worse failure than letting
+# a marginal one through: CI still catches it, and a hook that cries wolf gets
+# routed around with SKIP_COVERAGE_CHECK=1 until it may as well not exist.
+TOLERANCE=0.50
+RESULT=$(awk -v new="$NEW_PCT" -v old="$OLD_FLOOR" -v tol="$TOLERANCE" \
     'BEGIN {
-        if (new+0 < old+0) print "below"
+        if (new+0 < old+0-tol) print "below"
+        else if (new+0 < old+0) print "within"
         else if (new+0 > old+0) print "above"
         else print "same"
     }')
@@ -299,7 +314,7 @@ case "$RESULT" in
         echo "  ╔══════════════════════════════════════╗"
         echo "  ║      COVERAGE RATCHET FAILED         ║"
         echo "  ╠══════════════════════════════════════╣"
-        echo "  ║  Floor  : ${OLD_FLOOR}%"
+        echo "  ║  Floor  : ${OLD_FLOOR}%  (±${TOLERANCE} band)"
         echo "  ║  Current: ${NEW_PCT}%"
         echo "  ║  Shortfall: -${SHORTFALL}%"
         echo "  ╠══════════════════════════════════════╣"
@@ -311,9 +326,26 @@ case "$RESULT" in
         exit 1
         ;;
     above)
-        printf '%s\n' "$NEW_PCT" > "${FLOOR_FILE}"
-        git -C "${REPO}" add "${FLOOR_FILE}"
-        echo "  [coverage] Floor raised: ${OLD_FLOOR}% → ${NEW_PCT}%  (${ELAPSED}s)"
+        # Deliberately does NOT write the floor. This hook measures on a dev
+        # machine; the ratchet is enforced in CI, whose own measurement of the
+        # same tree runs a few tenths of a point lower (different runner, test
+        # retries, scheduling). Auto-raising from the local number therefore
+        # wrote a floor CI could never meet, and — because it also staged the
+        # file — did so inside whatever commit happened to be running. That is
+        # how 87.12 became 89.09 in commit 6326305, a commit about core dumps,
+        # six days after f616679 had re-baselined the floor by hand and called
+        # the correction one-time. Raising the floor is now a deliberate act,
+        # taken from CI's published figure.
+        echo "  [coverage] ${NEW_PCT}% — above the ${OLD_FLOOR}% floor  (${ELAPSED}s)"
+        echo "             Floor left unchanged. To raise it, use the figure"
+        echo "             from a green CI Coverage job, not this one:"
+        echo "               echo <ci-pct> > coverage_floor.txt"
+        ;;
+    within)
+        echo "  [coverage] ${NEW_PCT}% — under the ${OLD_FLOOR}% floor but inside"
+        echo "             the ${TOLERANCE}pp band, so CI will accept it  (${ELAPSED}s)"
+        echo "             Worth a look before you rely on it: the band exists"
+        echo "             for measurement noise, not for shedding coverage."
         ;;
     same)
         echo "  [coverage] Unchanged at ${NEW_PCT}%  (${ELAPSED}s)"
