@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE RaftTimeoutClassificationPropertyTest
 
+#include "test_timeout_scale.hpp"
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
@@ -229,11 +230,20 @@ BOOST_AUTO_TEST_CASE(raft_timeout_classification_property_test, *boost::unit_tes
                 BOOST_TEST_MESSAGE("Timeout retry delays: " << delay1.count() << "ms, "
                                                             << delay2.count() << "ms");
 
-                // Expected: 50ms, 100ms (with timing tolerance)
+                // Expected: 50ms, 100ms. The lower bounds stay as they were --
+                // a timer does not fire early. The upper bounds were 70 and
+                // 120, which left 20ms of room for the scheduler; delay2 was
+                // observed at 127ms on an arm64 runner with the backoff itself
+                // perfectly correct. delay_upper_bound() sizes the room from
+                // that measurement.
+                constexpr std::chrono::milliseconds first_delay{50};
+                constexpr std::chrono::milliseconds second_delay{100};
                 BOOST_CHECK_GE(delay1.count(), 30);
-                BOOST_CHECK_LE(delay1.count(), 70);
+                BOOST_CHECK_LE(delay1.count(),
+                               kythira::testing::delay_upper_bound(first_delay).count());
                 BOOST_CHECK_GE(delay2.count(), 80);
-                BOOST_CHECK_LE(delay2.count(), 120);
+                BOOST_CHECK_LE(delay2.count(),
+                               kythira::testing::delay_upper_bound(second_delay).count());
 
                 BOOST_TEST_MESSAGE("✓ Timeout retry backoff pattern verified");
             }

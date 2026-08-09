@@ -13,6 +13,7 @@
  */
 
 #define BOOST_TEST_MODULE RaftRetryLogicExponentialBackoffIntegrationTest
+#include "test_timeout_scale.hpp"
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 
@@ -680,11 +681,15 @@ BOOST_AUTO_TEST_CASE(exponential_backoff_delay_verification, *boost::unit_test::
                                             << expected_delays[i].count() << "ms"
                                             << ", Actual " << actual_delays[i].count() << "ms");
 
-            // Allow 30% tolerance for timing variations
+            // 30% either side, plus a fixed allowance on the upper bound only.
+            // The first delay here is 100ms, where 30% leaves 30ms of room for
+            // the scheduler -- the same margin that failed elsewhere in this
+            // suite at an observed 127ms. See delay_upper_bound().
             auto expected = expected_delays[i].count();
             auto actual = actual_delays[i].count();
             BOOST_CHECK_GE(actual, expected * 0.7);
-            BOOST_CHECK_LE(actual, expected * 1.3);
+            BOOST_CHECK_LE(actual,
+                           kythira::testing::delay_upper_bound(expected_delays[i], 1.3).count());
         }
 
         // Verify exponential growth pattern

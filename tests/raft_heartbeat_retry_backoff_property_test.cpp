@@ -1,5 +1,6 @@
 #define BOOST_TEST_MODULE RaftHeartbeatRetryBackoffPropertyTest
 
+#include "test_timeout_scale.hpp"
 #include <boost/test/unit_test.hpp>
 #include <raft/future_default.hpp>
 #include <raft/error_handler.hpp>
@@ -138,11 +139,15 @@ BOOST_AUTO_TEST_CASE(raft_heartbeat_retry_backoff_property_test, *boost::unit_te
                     }
                     expected_base_delay = std::min(expected_base_delay, max_delay);
 
-                    // Allow for jitter (±20%) and timing overhead
+                    // Allow for the policy's own jitter and for timing
+                    // overhead. The upper bound also carries a fixed scheduler
+                    // allowance: the first retry is base_delay (100ms), where
+                    // the factor alone leaves 50ms, and jitter of 12-27ms has
+                    // been measured on CI runners. See delay_upper_bound().
                     auto min_expected = std::chrono::milliseconds{static_cast<long long>(
                         static_cast<double>(expected_base_delay.count()) * 0.7)};
-                    auto max_expected = std::chrono::milliseconds{static_cast<long long>(
-                        static_cast<double>(expected_base_delay.count()) * 1.5)};
+                    auto max_expected =
+                        kythira::testing::delay_upper_bound(expected_base_delay, 1.5);
 
                     BOOST_TEST_MESSAGE("Retry " << i << ": delay=" << delay.count()
                                                 << "ms, expected range=[" << min_expected.count()

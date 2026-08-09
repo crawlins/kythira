@@ -67,4 +67,54 @@ namespace kythira::testing {
                                      static_cast<unsigned>(KYTHIRA_TEST_TIMEOUT_SCALE)};
 }
 
+/// @brief How much longer than nominal an observed sleep may take before the
+///        test calls it a backoff defect.
+///
+/// Scheduler jitter, not build slowness. A retry delay is a real wall-clock
+/// sleep, so how long it takes does not depend on whether the binary is
+/// instrumented -- which is why this is *not* multiplied by
+/// KYTHIRA_TEST_TIMEOUT_SCALE, unlike everything else in this header. What it
+/// absorbs is the runner declining to schedule the thread the instant the
+/// timer fires.
+///
+/// The value is additive because the delay it models is additive: a thread
+/// waiting on a 50ms timer and one waiting on a 200ms timer are both handed
+/// back late by roughly the same amount, having waited on the same kind of
+/// timer on the same loaded machine.
+inline constexpr std::chrono::milliseconds scheduler_jitter_allowance{50};
+
+/// @brief Upper bound for an observed delay whose nominal value is `nominal`.
+///
+/// Backoff assertions were written as a bare percentage of nominal -- 20% --
+/// which is the wrong shape for what actually goes wrong. A percentage band
+/// narrows in absolute terms as the delay shrinks, so it is tightest on the
+/// *first* retry, which is the shortest one and therefore the one every
+/// exponential schedule starts with. At 50ms nominal, 20% is 10ms of headroom:
+/// less than a scheduling quantum on a contended runner.
+///
+/// Observed on GitHub runners, all three from the same week of CI:
+///
+/// | test                                    | nominal | observed | old limit |
+/// |-----------------------------------------|--------:|---------:|----------:|
+/// | error_handler_async_retry (delay1)      |    50ms |     62ms |      60ms |
+/// | error_handler_async_retry (delay2)      |   100ms |    122ms |     120ms |
+/// | raft_timeout_classification (delay2)    |   100ms |    127ms |     120ms |
+///
+/// Every one of those is 12-27ms of jitter on a schedule that was otherwise
+/// exactly right, failing a bound it missed by single-digit milliseconds.
+///
+/// Keeping the multiplicative factor *and* adding a fixed allowance leaves the
+/// assertion sharp where it matters. At the 50/100/200ms schedule these tests
+/// use, the bounds become 110/170/290ms, which still separates every mistake
+/// the test exists to catch: a first delay that jumped straight to the cap
+/// (200 > 110), a multiplier of 4 rather than 2 (200 > 170), and a cap that was
+/// never applied (400 > 290).
+[[nodiscard]] constexpr auto delay_upper_bound(std::chrono::milliseconds nominal,
+                                               double factor = 1.2) noexcept
+    -> std::chrono::milliseconds {
+    return std::chrono::milliseconds{static_cast<std::chrono::milliseconds::rep>(
+               static_cast<double>(nominal.count()) * factor)} +
+           scheduler_jitter_allowance;
+}
+
 }  // namespace kythira::testing
