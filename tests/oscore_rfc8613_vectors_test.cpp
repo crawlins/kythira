@@ -7,6 +7,8 @@
 
 #include <raft/oscore.hpp>
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -630,13 +632,13 @@ BOOST_AUTO_TEST_CASE(test_notifications_must_advance) {
     const auto first = notify(1, 1);
     const auto second = notify(2, 2);
 
-    std::uint64_t last = 0;
+    std::optional<std::uint64_t> last;
     BOOST_REQUIRE_NO_THROW(
         (void)client.unprotect_notification(osc::parse_message(first), binding, last));
-    BOOST_TEST(last == 1U);
+    BOOST_TEST(last.value() == 1U);
 
     const auto accepted = client.unprotect_notification(osc::parse_message(second), binding, last);
-    BOOST_TEST(last == 2U);
+    BOOST_TEST(last.value() == 2U);
     // The Observe option itself must come back out of the ciphertext.
     BOOST_REQUIRE(accepted.options.size() == 1U);
     BOOST_TEST(accepted.options[0].number == 6U);
@@ -645,7 +647,41 @@ BOOST_AUTO_TEST_CASE(test_notifications_must_advance) {
     // be refused: accepting it would roll the observer's view backwards.
     BOOST_CHECK_THROW((void)client.unprotect_notification(osc::parse_message(first), binding, last),
                       osc::verification_error);
-    BOOST_TEST(last == 2U, "a rejected notification must not move the window");
+    BOOST_TEST(last.value() == 2U, "a rejected notification must not move the window");
+}
+
+// Partial IV 0 is a legal value, not a "nothing seen yet" sentinel -- a server
+// whose Sender Sequence Number is still at its initial value sends exactly that
+// in its first notification. Tracking the window as a bare std::uint64_t seeded
+// to 0 rejected it as a replay, which broke the first notification of every
+// fresh observation; std::optional distinguishes the two states.
+BOOST_AUTO_TEST_CASE(test_a_first_notification_with_partial_iv_zero_is_accepted) {
+    namespace osc = kythira::oscore;
+    osc::security_context client{c1_client_credentials()};
+    osc::security_context server{c1_server_credentials()};
+
+    osc::request_binding binding;
+    binding.kid = from_hex("");
+    binding.partial_iv = from_hex("14");
+    binding.nonce = from_hex("4622d4dd6d944168eefb549868");
+
+    server.set_sender_sequence_for_testing(0);
+    osc::coap_message response;
+    response.code = 0x45;
+    response.options = {{6, {std::byte{0x01}}}};  // Observe, Class E
+    response.payload = {std::byte{0x01}};
+    response.has_payload = true;
+    const auto wire = osc::serialize_message(server.protect_response(response, binding, true));
+
+    std::optional<std::uint64_t> last;
+    BOOST_REQUIRE_NO_THROW(
+        (void)client.unprotect_notification(osc::parse_message(wire), binding, last));
+    BOOST_TEST(last.value() == 0U);
+
+    // ...and it still closes behind itself: the same notification replayed is
+    // now refused, even though the recorded value is 0.
+    BOOST_CHECK_THROW((void)client.unprotect_notification(osc::parse_message(wire), binding, last),
+                      osc::verification_error);
 }
 
 BOOST_AUTO_TEST_CASE(test_notification_without_a_partial_iv_is_refused) {
@@ -666,7 +702,7 @@ BOOST_AUTO_TEST_CASE(test_notification_without_a_partial_iv_is_refused) {
     // ordered against other notifications.
     const auto wire = osc::serialize_message(server.protect_response(response, binding, false));
 
-    std::uint64_t last = 0;
+    std::optional<std::uint64_t> last;
     BOOST_CHECK_THROW((void)client.unprotect_notification(osc::parse_message(wire), binding, last),
                       osc::verification_error);
 }
