@@ -935,9 +935,17 @@ public:
     /// which authenticates perfectly and rolls the observer's view backwards.
     /// The Partial IV is what orders them, so each notification's must exceed
     /// the last accepted one for this observation.
+    ///
+    /// `last_partial_iv` is empty until the first notification is accepted, and
+    /// deliberately not a plain zero: Partial IV 0 is a legal value (RFC 8613
+    /// Appendix C.1 derives a nonce from exactly that), so a sentinel of 0
+    /// cannot be told apart from a server whose Sender Sequence Number is still
+    /// at its initial value. Encoding "nothing accepted yet" as a zero would
+    /// reject the first notification of every fresh observation as a replay.
     [[nodiscard]] auto unprotect_notification(const coap_message& message,
                                               const request_binding& binding,
-                                              std::uint64_t& last_partial_iv) -> coap_message {
+                                              std::optional<std::uint64_t>& last_partial_iv)
+        -> coap_message {
         const auto fields = extract_option(message);
         if (fields.partial_iv.empty()) {
             throw verification_error(
@@ -947,7 +955,7 @@ public:
         // Verify first, then order: an unauthenticated message must never be
         // able to move the window.
         auto plaintext_message = unprotect_response(message, binding);
-        if (sequence <= last_partial_iv) {
+        if (last_partial_iv.has_value() && sequence <= *last_partial_iv) {
             throw verification_error("replayed or reordered Observe notification");
         }
         last_partial_iv = sequence;
