@@ -1049,10 +1049,33 @@ unverified completion claim.
   local runs cannot currently falsify anything here.
 
   Next steps, cheapest first:
-  - Log wall-clock deltas per iteration in the test itself, so a stall is
-    attributable from the artifact without reading timestamps by hand.
-  - Sample load on the runner (`/proc/loadavg`, `nproc`) at case entry and
-    exit, which would settle the starvation hypothesis directly.
+  - ~~Log wall-clock deltas per iteration in the test itself~~ and
+    ~~sample load on the runner~~ — **both done**, in
+    `test_concurrent_request_processing_property`. Every iteration emits one
+    `[stall-probe]` line carrying `gap_ms`, `prev_body_ms`, `elapsed_ms` and
+    `/proc/loadavg`, plus an `entry` line with `hw_concurrency` and an `exit`
+    line with the total. Three things about it are load-bearing, and each
+    was a way of getting it wrong that had to be checked rather than assumed:
+    - **Written to `std::cout`, not `BOOST_TEST_MESSAGE`.** Boost's default
+      log level discards messages: this case's existing
+      `BOOST_TEST_MESSAGE("Peak concurrent requests: ...")` appears **zero**
+      times in green run 31317748177's job log. `ctest --output-on-failure`
+      dumps a failing test's stdout, which is how #190's token lines reached
+      the artifact, so stdout is the only channel known to survive.
+    - **Emitted and flushed per iteration, never summarised at the end.** The
+      failure is a SIGALRM at the case's own timeout, which unwinds by
+      `siglongjmp()` and never reaches the end of the case — an end-of-case
+      summary would be empty in exactly the run that needs it.
+    - **Both `gap_ms` and `prev_body_ms`, not one of them.** The entry above
+      reads the #190 log as stalling *between* iterations, so `gap_ms` alone
+      looked sufficient. It is not: locally `gap_ms` is **0 on every
+      iteration** while `prev_body_ms` ranges 21–141ms, i.e. all the time is
+      *inside* the body. An instrument reporting only the gap would have read
+      0 forever and looked like a clean run.
+  - **The local/CI gap is still unexplained and is now the thing to measure.**
+    The whole 3-case binary takes 37.60s on CI (green run 31317748177) against
+    ~0.7s for case 1 locally. Until that is understood, a local green run
+    falsifies nothing.
   - If starvation is confirmed, the fix is scheduling, not code: this test
     should not share a runner with the rest of the suite under `ctest -j`, or
     its budget should be sized against contention rather than wall clock.
