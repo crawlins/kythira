@@ -701,7 +701,8 @@ jobs:
             --ignore-filename-regex='.*/examples/.*'
           )
 
-          # Line-coverage summary (TOTAL line col 7 is line-coverage %).
+          # Coverage summary. The ratchet below reads col 7 of the TOTAL row,
+          # which is *function* coverage; line coverage is col 10.
           llvm-cov-18 report \
             --instr-profile=build-coverage/merged.profdata \
             "$MAIN_BIN" "${EXTRA_ARGS[@]}" \
@@ -718,7 +719,7 @@ jobs:
 
           # Parse coverage percentage from the TOTAL row.
           # llvm-cov report columns: Filename Regions Miss Cover% Functions Miss Cover% Lines Miss Cover% ...
-          # $7 is the function-coverage % — matches the field used by the pre-commit hook to set the floor.
+          # $7 is the function-coverage % — the same field the pre-commit hook gates on.
           NEW_PCT=$(awk '/^TOTAL/ { gsub(/%/, "", $7); print $7; exit }' \
             build-coverage/coverage-summary.txt)
           OLD_FLOOR=$(cat ${{ github.workspace }}/coverage_floor.txt)
@@ -726,14 +727,15 @@ jobs:
           echo "Coverage: ${NEW_PCT}%  Floor: ${OLD_FLOOR}%"
           echo "coverage_pct=${NEW_PCT}" >> "$GITHUB_OUTPUT"
 
-          # The floor is ratcheted up locally by scripts/pre-commit-coverage.sh
-          # on whichever dev machine authored the commit; CI's own measurement
-          # of the same tree can land a few tenths of a point lower purely
-          # from run-to-run scheduling/coverage-counter noise (see e.g. commit
-          # 089927a and the 88.10%-vs-88.16% CI failure it left behind), not
-          # an actual coverage regression. Give CI's enforcement a small
-          # tolerance band rather than a byte-exact comparison; the ratchet
-          # itself (which only ever moves the floor up) stays exact.
+          # The tolerance absorbs run-to-run noise in CI's own measurement
+          # (scheduling, test retries, coverage counters) — see commit 089927a
+          # and the 88.10%-vs-88.16% failure it left behind. It is NOT there to
+          # absorb a systematic gap between a dev machine's figure and this
+          # one: coverage_floor.txt is now set only from a green run of this
+          # job, so the two numbers are measured the same way and the band is
+          # free to do the job it was added for. scripts/pre-commit-coverage.sh
+          # gates against the floor locally but no longer raises it; when this
+          # job reports a durable improvement, update the file by hand.
           TOLERANCE=0.50
           awk -v new="${NEW_PCT}" -v old="${OLD_FLOOR}" -v tol="${TOLERANCE}" \
             'BEGIN { if (new+0 < old+0-tol) {
@@ -756,7 +758,7 @@ jobs:
             echo ""
             echo "| | Value |"
             echo "|---|---|"
-            echo "| **Line coverage** | **${PCT}%** |"
+            echo "| **Function coverage** | **${PCT}%** |"
             echo "| Floor | ${FLOOR}% |"
             echo ""
             echo "<details><summary>Full llvm-cov summary</summary>"
@@ -776,7 +778,7 @@ jobs:
             const pct  = '${{ steps.coverage.outputs.coverage_pct }}';
             const floor = require('fs').readFileSync('${{ github.workspace }}/coverage_floor.txt', 'utf8').trim();
             const icon  = parseFloat(pct) >= 85 ? '🟢' : parseFloat(pct) >= 70 ? '🟡' : '🔴';
-            const body  = `## ${icon} Coverage Report\n\n| | Value |\n|---|---|\n| **Line coverage** | **${pct}%** |\n| Floor | ${floor}% |`;
+            const body  = `## ${icon} Coverage Report\n\n| | Value |\n|---|---|\n| **Function coverage** | **${pct}%** |\n| Floor | ${floor}% |`;
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number,

@@ -45,8 +45,9 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 - Both Folly-decoupling follow-up gaps closed for `tests/`/`certificate_authority`:
   test-bootstrap backend-conditional gating (PR #93) and per-target rather than
   subdirectory-level Folly CMake gating (PR #94) — see "Known Follow-ups" below
-- Coverage floor: 89.09% (non-decreasing ratchet, see `coverage_floor.txt` —
-  that file is the authority; this line has drifted from it before)
+- Coverage floor: 88.85% **function** coverage, set from CI's own measurement
+  (see `coverage_floor.txt` — that file is the authority; this line has drifted
+  from it before). Line coverage, which the gate does *not* enforce, is 86.73%.
 
 ---
 
@@ -1381,13 +1382,27 @@ unverified completion claim.
   source-based instrumentation (`llvm-profdata`/`llvm-cov`, switched from an
   earlier gcovr approach that undercounted template-heavy headers via
   COMDAT folding), HTML reports, pre-commit ratchet hook, and a dedicated CI
-  coverage job (`coverage_floor.txt` = 88.99%); code-coverage spec now
-  20/20 tasks complete
+  coverage job (`coverage_floor.txt` — the authority for the current value);
+  code-coverage spec now 20/20 tasks complete.
+  **Who may write the floor:** only a human, and only from a green CI Coverage
+  job's figure. The pre-commit hook gates against the floor but does not raise
+  it. It used to, from a *local* measurement, and also `git add`ed the file —
+  so the floor ratcheted to local highs that CI's lower measurement could never
+  meet, landing inside unrelated commits (87.12 → 89.09 in `6326305`, a commit
+  about core dumps). That put the floor above the measured figure with only the
+  0.50pp tolerance holding CI green. Re-baselining by hand had already been
+  tried once (`f616679`, "one-time"); it recurred within six days, because the
+  correction never touched the mechanism. Both are fixed now — do not restore
+  the auto-raise as a convenience.
+  **What is measured:** column 7 of `llvm-cov report`'s TOTAL row, which is
+  **function** coverage, not line coverage (column 10, ~2 points lower). The
+  job summary and PR comment used to label it "Line coverage"; they no longer
+  do. If you change the enforced column, change both the label and this entry.
 - [x] **CI reliability (flaky build-and-test/coverage jobs)** — `ca_cluster_node_test`
   (real multi-process Raft cluster, flaked under `ctest -j$(nproc)` CPU
   contention) now retries via `--repeat until-pass:3` and is isolated from
   co-scheduling via `PROCESSORS 4`; coverage floor check has a 0.50pp
-  tolerance band for CI-vs-local measurement noise; coverage job's
+  tolerance band for CI run-to-run measurement noise; coverage job's
   disk-reclaim step widened after intermittent "No space left on device"
   link failures
 - [x] **stdexec future backend** — a second, `stdexec` (P2300 sender/receiver)
