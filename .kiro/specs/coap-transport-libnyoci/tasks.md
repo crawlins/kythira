@@ -196,6 +196,13 @@ libnyoci owns sockets/retransmit/dedup/Block2.*
     - Conformance: every RFC 8613 Appendix C test vector, including the whole
       protected request of C.4 and protected response of C.7 compared byte for
       byte (`tests/oscore_rfc8613_vectors_test.cpp`, 27 cases).
+    - Everything *around* the cryptography — the message codec, the Class E/U
+      split, inner block options and the request/response binding — is covered
+      separately by `tests/oscore_transport_neutral_test.cpp`, which links no
+      CoAP backend at all. That is the sharpest available statement of the
+      neutrality claim, and unlike the backend suites it runs in every build
+      rather than only where libnyoci or cantcoap is installed. It is also what
+      found the Partial IV 0 defect recorded under Follow-ups.
     - The wire shape is why this fits libnyoci without touching it: an OSCORE
       message *is* an ordinary POST carrying an OSCORE option and a ciphertext,
       so the adapter protects the inner message itself and hands libnyoci the
@@ -317,6 +324,17 @@ and a translation unit selects a backend by which header it includes.
   transport exposes an observe/subscribe API — `network_client` has no such
   method. Adding one changes the concepts, which is a larger decision than
   OSCORE support and deliberately not taken here.
+
+  A defect in that ordering check surfaced afterwards, found by writing
+  `tests/oscore_transport_neutral_test.cpp`: the "last accepted Partial IV"
+  window was a
+  bare `std::uint64_t` seeded to 0, but **Partial IV 0 is a legal value** —
+  RFC 8613 Appendix C.1 derives a nonce from exactly that. Nothing
+  distinguished "nothing accepted yet" from "accepted sequence 0", so the first
+  notification of every fresh observation was refused as a replay. The window
+  is now `std::optional<std::uint64_t>`. The existing vector test missed it
+  because it seeds `set_sender_sequence_for_testing(1)`, stepping over the one
+  value that fails.
 - **Outer block options and proxy support.** Only the inner (end-to-end) form
   is emitted; a CoAP proxy in the path would need the outer form too.
 - **DTLS-RPK** (Task 5.3) would need OpenSSL >= 3.2 and certificate-type
