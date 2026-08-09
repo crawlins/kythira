@@ -1,0 +1,130 @@
+diff --git a/Makefile.am b/Makefile.am
+index 18c09c1..0cdec2e 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -27,4 +27,4 @@ EXTRA_VERSION = $(shell                                                  \
+ 
+ distdir = $(PACKAGE)-$(VERSION)$(EXTRA_VERSION)
+ 
+-@CODE_COVERAGE_RULES@
++
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 5c90984..f1257e4 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -30,7 +30,7 @@ endif
+ 
+ SUBDIRS += tests
+ 
+-@CODE_COVERAGE_RULES@
++
+ AM_LIBS = $(CODE_COVERAGE_LDFLAGS)
+ AM_CFLAGS = $(CODE_COVERAGE_CFLAGS)
+ 
+diff --git a/src/examples/Makefile.am b/src/examples/Makefile.am
+index 797f557..636b031 100644
+--- a/src/examples/Makefile.am
++++ b/src/examples/Makefile.am
+@@ -1,4 +1,4 @@
+-@CODE_COVERAGE_RULES@
++
+ 
+ AM_LIBS = $(CODE_COVERAGE_LDFLAGS)
+ AM_CFLAGS = $(CFLAGS) $(CODE_COVERAGE_CFLAGS)
+diff --git a/src/libnyoci/Makefile.am b/src/libnyoci/Makefile.am
+index d80a4a3..9f07f77 100644
+--- a/src/libnyoci/Makefile.am
++++ b/src/libnyoci/Makefile.am
+@@ -1,6 +1,6 @@
+ 
+ AUTOMAKE_OPTIONS = subdir-objects
+-@CODE_COVERAGE_RULES@
++
+ 
+ lib_LTLIBRARIES = libnyoci.la
+ 
+diff --git a/src/libnyociextra/Makefile.am b/src/libnyociextra/Makefile.am
+index 23c81d1..ae35b9a 100644
+--- a/src/libnyociextra/Makefile.am
++++ b/src/libnyociextra/Makefile.am
+@@ -4,7 +4,7 @@ DISTCLEANFILES = .deps Makefile
+ 
+ lib_LTLIBRARIES = libnyociextra.la
+ 
+-@CODE_COVERAGE_RULES@
++
+ 
+ pkgconfigdir = ${prefix}/lib/pkgconfig
+ pkgconfig_DATA = libnyociextra.pc
+diff --git a/src/nyocictl/Makefile.am b/src/nyocictl/Makefile.am
+index 646febd..61afd1e 100644
+--- a/src/nyocictl/Makefile.am
++++ b/src/nyocictl/Makefile.am
+@@ -1,4 +1,4 @@
+-@CODE_COVERAGE_RULES@
++
+ 
+ AM_LIBS = $(CODE_COVERAGE_LDFLAGS)
+ AM_CFLAGS = $(CODE_COVERAGE_CFLAGS)
+diff --git a/src/plat-net/posix/Makefile.am b/src/plat-net/posix/Makefile.am
+index 9240007..9b7e3ad 100644
+--- a/src/plat-net/posix/Makefile.am
++++ b/src/plat-net/posix/Makefile.am
+@@ -2,7 +2,7 @@
+ AUTOMAKE_OPTIONS = subdir-objects
+ DISTCLEANFILES = .deps Makefile
+ 
+-@CODE_COVERAGE_RULES@
++
+ 
+ noinst_LTLIBRARIES = libnyoci-plat-net.la
+ 
+diff --git a/src/plat-net/uip/Makefile.am b/src/plat-net/uip/Makefile.am
+index b44ce18..d8d2c69 100644
+--- a/src/plat-net/uip/Makefile.am
++++ b/src/plat-net/uip/Makefile.am
+@@ -3,7 +3,7 @@ AUTOMAKE_OPTIONS = subdir-objects
+ DISTCLEANFILES = .deps Makefile
+ AM_CPPFLAGS = $(CPPFLAGS) $(NYOCI_CPPFLAGS)
+ 
+-@CODE_COVERAGE_RULES@
++
+ 
+ noinst_LTLIBRARIES = libnyoci-plat-net.la
+ 
+diff --git a/src/plat-tls/openssl/Makefile.am b/src/plat-tls/openssl/Makefile.am
+index c1f58d0..7ed431d 100644
+--- a/src/plat-tls/openssl/Makefile.am
++++ b/src/plat-tls/openssl/Makefile.am
+@@ -2,7 +2,7 @@
+ AUTOMAKE_OPTIONS = subdir-objects
+ DISTCLEANFILES = .deps Makefile
+ 
+-@CODE_COVERAGE_RULES@
++
+ 
+ noinst_LTLIBRARIES = libnyoci-plat-tls.la
+ 
+diff --git a/src/plugtest/Makefile.am b/src/plugtest/Makefile.am
+index de0fc31..4879463 100644
+--- a/src/plugtest/Makefile.am
++++ b/src/plugtest/Makefile.am
+@@ -1,4 +1,4 @@
+-@CODE_COVERAGE_RULES@
++
+ 
+ AM_LIBS = $(CODE_COVERAGE_LDFLAGS)
+ AM_CFLAGS = $(CFLAGS) $(CODE_COVERAGE_CFLAGS)
+diff --git a/src/tests/Makefile.am b/src/tests/Makefile.am
+index 9220960..723e7d0 100644
+--- a/src/tests/Makefile.am
++++ b/src/tests/Makefile.am
+@@ -2,7 +2,7 @@ AM_CPPFLAGS = $(CPPFLAGS) $(NYOCI_CPPFLAGS)
+ 
+ check_PROGRAMS =
+ 
+-@CODE_COVERAGE_RULES@
++
+ 
+ AM_LIBS = $(CODE_COVERAGE_LDFLAGS)
+ AM_CFLAGS = $(CODE_COVERAGE_CFLAGS)

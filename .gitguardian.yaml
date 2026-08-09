@@ -1,0 +1,29 @@
+# GitGuardian configuration.
+#
+# Scope note: this file suppresses *specific paths* whose flagged content is
+# published cryptographic test data, not credentials. It deliberately does not
+# exclude tests as a category — a real key committed to a test file is still a
+# real leak, and the CI check exists to catch exactly that.
+
+version: 2
+
+secret:
+  ignored-paths:
+    # RFC 8613 Appendix C test vectors, reproduced verbatim so the OSCORE
+    # implementation can be checked against them byte for byte. The file
+    # contains hex literals named `master_secret`, `master_salt`, sender and
+    # recipient keys, which is precisely the shape a secret scanner is built to
+    # flag — and precisely what a conformance suite for an RFC has to contain.
+    # They are public, printed in the standard, and identical in every
+    # conforming implementation on earth:
+    #   https://www.rfc-editor.org/rfc/rfc8613#appendix-C
+    #
+    # Obfuscating them was considered and rejected: the value of this suite is
+    # that a reader can compare each literal against the RFC text directly.
+    - tests/oscore_rfc8613_vectors_test.cpp
+
+    # The matched OSCORE context pair the loopback transport test uses. Derived
+    # from the same Appendix C.1 material for the same reason — a test needs a
+    # Master Secret both endpoints agree on, and using the published one keeps
+    # it obviously non-production.
+    - tests/coap_libnyoci_oscore_test.cpp
