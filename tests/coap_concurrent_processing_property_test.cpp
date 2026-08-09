@@ -18,6 +18,9 @@
 #include "coap_test_support.hpp"
 #include <atomic>
 #include <chrono>
+#include <fstream>
+#include <iostream>
+#include <string>
 
 #include "test_timeout_scale.hpp"
 
@@ -52,6 +55,56 @@ constexpr const char* test_endpoint = "coap://127.0.0.1:61010";
 // thread).
 constexpr std::size_t test_concurrent_requests = 15;
 constexpr std::chrono::milliseconds test_timeout{5000};
+
+// ── Stall probe ──────────────────────────────────────────────────────────────
+//
+// Instrumentation for the 720s stalls tracked in doc/TODO.md ("stalls at its
+// 720s budget -- OPEN"). CI logs showed every request sent and processed within
+// the same millisecond, with 77s, 85s and 220s gaps *between* iterations and
+// nothing logged in them. That shape says the process is not being scheduled
+// rather than that a lock is held, but the evidence had to be reconstructed by
+// reading raw timestamps by hand, and it could not say what the runner was
+// doing during a gap. These probes make the next occurrence attributable from
+// the artifact alone.
+//
+// Two deliberate choices, both of which the obvious implementation gets wrong:
+//
+//   * Output goes to std::cout, NOT BOOST_TEST_MESSAGE. Boost's default log
+//     level discards messages, and this was checked rather than assumed --
+//     this case's existing BOOST_TEST_MESSAGE at "Peak concurrent requests"
+//     appears zero times in the log of green run 31317748177. ctest dumps a
+//     failing test's stdout under --output-on-failure, which is how #190's
+//     token lines reached the artifact in the first place, so stdout is the
+//     one channel known to survive.
+//
+//   * Every line is emitted and flushed where it happens, never accumulated
+//     into an end-of-case summary. The failure being instrumented is a SIGALRM
+//     at the case's own timeout, which unwinds by siglongjmp() (see this
+//     file's header comment) and never returns to the end of the case. A
+//     summary would therefore be empty in precisely the run that needs it.
+// The line is assembled first and inserted in one operation, newline included,
+// rather than streamed in pieces. The transport's console_logger writes to the
+// same stdout from its own threads, and a multi-insert probe was observed
+// landing *inside* one of its lines ("...[received_messages=[stall-probe] iter
+// i=8..."). A single insert does not make this atomic in any guaranteed sense,
+// but it narrows the window to one call and keeps the whole record on the far
+// side of the marker, so `grep '\[stall-probe\]'` still recovers every field
+// even when a line is interleaved.
+void stall_probe(const std::string& detail) {
+    std::cout << ("[stall-probe] " + detail + "\n") << std::flush;
+}
+
+// The runner's 1/5/15-minute load averages, or a marker if unreadable. Read
+// fresh on each call: the point is to catch load *during* a stall, so a value
+// cached at case entry would be worthless.
+std::string runner_loadavg() {
+    std::ifstream file("/proc/loadavg");
+    std::string line;
+    if (!std::getline(file, line) || line.empty()) {
+        return "unavailable";
+    }
+    return line;
+}
 
 // Define test types for CoAP transport
 struct test_transport_types {
@@ -112,6 +165,10 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     std::atomic<std::size_t> concurrent_active{0};
     std::atomic<std::size_t> concurrent_peak{0};
 
+    stall_probe("entry hw_concurrency=" + std::to_string(std::thread::hardware_concurrency()) +
+                " requests=" + std::to_string(test_concurrent_requests) + " loadavg=[" +
+                runner_loadavg() + "]");
+
     // Track timing to verify parallel processing
     auto start_time = std::chrono::steady_clock::now();
     std::vector<std::chrono::steady_clock::time_point> request_start_times(
@@ -139,6 +196,11 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     std::vector<kythira::future_default<void>> request_futures;
     request_futures.reserve(test_concurrent_requests);
 
+    // Previous iteration's end, so the gap *between* iterations is measured --
+    // that is where #190's 77s/85s/220s stalls sat, with the iterations
+    // themselves completing in under a millisecond.
+    auto previous_iteration_end = std::chrono::steady_clock::now();
+
     for (std::size_t i = 0; i < test_concurrent_requests; ++i) {
         // Was previously wrapped in folly::makeFuture().via(&folly::InlineExecutor::instance())
         // .thenValue(...) - InlineExecutor runs synchronously (no actual deferral), so this
@@ -146,6 +208,32 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
         // and timing while staying backend-neutral.
         request_start_times[i] = std::chrono::steady_clock::now();
         requests_started.fetch_add(1);
+
+        // Report both intervals, because the stall could live in either and
+        // reporting one alone would look identical to no stall at all.
+        // `gap_ms` is time spent outside any iteration body -- the shape
+        // #190's log pointed at. `prev_body_ms` is how long the previous
+        // iteration's own send/receive took, which is where the time would sit
+        // instead if the process is scheduled fine and send_request_vote is
+        // what blocks. Leaving the second to be derived from a running total
+        // by subtraction is the kind of arithmetic this file's history says
+        // not to make a reader do while diagnosing a red run.
+        const auto gap = i == 0 ? request_start_times[0] - previous_iteration_end
+                                : request_start_times[i] - request_end_times[i - 1];
+        const auto previous_body = i == 0 ? std::chrono::steady_clock::duration::zero()
+                                          : request_end_times[i - 1] - request_start_times[i - 1];
+
+        stall_probe(
+            "iter i=" + std::to_string(i) + " gap_ms=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(gap).count()) +
+            " prev_body_ms=" +
+            std::to_string(
+                std::chrono::duration_cast<std::chrono::milliseconds>(previous_body).count()) +
+            " elapsed_ms=" +
+            std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                               request_start_times[i] - start_time)
+                               .count()) +
+            " loadavg=[" + runner_loadavg() + "]");
 
         try {
             // Test concurrent slot acquisition - this may fail due to limits
@@ -188,6 +276,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
             request_end_times[i] = std::chrono::steady_clock::now();
         }
 
+        previous_iteration_end = request_end_times[i];
         request_futures.push_back(kythira::future_factory_default::makeFuture());
     }
 
@@ -199,6 +288,16 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
     auto end_time = std::chrono::steady_clock::now();
     auto total_duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+    // last_body_ms closes the gap in the per-iteration lines: each of those
+    // reports the *previous* body, so without this the final iteration's own
+    // duration would be the one interval never printed.
+    stall_probe("exit total_ms=" + std::to_string(total_duration.count()) + " last_body_ms=" +
+                std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   request_end_times[test_concurrent_requests - 1] -
+                                   request_start_times[test_concurrent_requests - 1])
+                                   .count()) +
+                " loadavg=[" + runner_loadavg() + "]");
 
     // Verify concurrent processing properties
 
