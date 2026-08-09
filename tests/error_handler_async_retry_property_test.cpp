@@ -12,6 +12,7 @@
  */
 
 #define BOOST_TEST_MODULE error_handler_async_retry_property_test
+#include "test_timeout_scale.hpp"
 #include <boost/test/unit_test.hpp>
 #include <raft/error_handler.hpp>
 #include <raft/executor_default.hpp>
@@ -417,16 +418,21 @@ BOOST_AUTO_TEST_CASE(property_exponential_backoff_with_async_delays,
         auto delay3 = std::chrono::duration_cast<std::chrono::milliseconds>(attempt_times[3] -
                                                                             attempt_times[2]);
 
-        // Allow 20% tolerance for timing variations
+        // Lower bounds stay a plain percentage: a delay that finishes early is
+        // a backoff that did not happen, and nothing about a loaded machine
+        // makes a timer fire sooner. The upper bounds carry an additive
+        // allowance instead -- see delay_upper_bound() for why 20% of 50ms is
+        // not enough headroom to get a thread scheduled in.
         BOOST_CHECK_GE(delay1.count(), short_delay.count() * 0.8);
-        BOOST_CHECK_LE(delay1.count(), short_delay.count() * 1.2);
+        BOOST_CHECK_LE(delay1.count(), kythira::testing::delay_upper_bound(short_delay).count());
 
         BOOST_CHECK_GE(delay2.count(), (short_delay.count() * 2) * 0.8);
-        BOOST_CHECK_LE(delay2.count(), (short_delay.count() * 2) * 1.2);
+        BOOST_CHECK_LE(delay2.count(),
+                       kythira::testing::delay_upper_bound(short_delay * 2).count());
 
         // Third delay should be capped at long_delay (200ms)
         BOOST_CHECK_GE(delay3.count(), long_delay.count() * 0.8);
-        BOOST_CHECK_LE(delay3.count(), long_delay.count() * 1.2);
+        BOOST_CHECK_LE(delay3.count(), kythira::testing::delay_upper_bound(long_delay).count());
     }
 }
 
