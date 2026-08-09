@@ -3707,8 +3707,33 @@ if(KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND KYTHIRA_BUILD_PROXYGEN_TRANSPORT)
     set_tests_properties(three_way_http_transport_equivalence_test PROPERTIES
         LABELS "beast-http;proxygen-http"
         TIMEOUT 180)
+
+    # The interop axis the equivalence test above does *not* cover, for the
+    # four grid cells that involve Proxygen (doc/TODO.md, "client-implementation
+    # x server-implementation interop grid"). Same three-transport dependency
+    # set and the same gating, for the same reason: one implementation's client
+    # has to meet a different implementation's server in a single process. The
+    # httplib <-> Beast cells need neither Proxygen nor Folly and stay in
+    # http_implementation_interop_test, which builds on every default leg.
+    add_executable(proxygen_implementation_interop_test proxygen_implementation_interop_test.cpp)
+    target_link_libraries(proxygen_implementation_interop_test PRIVATE kythira_test_pch
+        Boost::beast proxygen::proxygen proxygen::proxygenhttpserver Folly::folly)
+    if(TARGET OpenSSL::SSL)
+        target_link_libraries(proxygen_implementation_interop_test PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # See add_beast_test()'s/add_proxygen_test()'s own identical comment.
+        target_link_libraries(proxygen_implementation_interop_test PRIVATE atomic)
+    endif()
+    target_precompile_headers(proxygen_implementation_interop_test REUSE_FROM kythira_test_pch)
+    add_test(NAME proxygen_implementation_interop_test COMMAND proxygen_implementation_interop_test)
+    set_tests_properties(proxygen_implementation_interop_test PROPERTIES
+        LABELS "beast-http;proxygen-http"
+        TIMEOUT 180)
 else()
     message(STATUS "three_way_http_transport_equivalence_test: skipped (requires both "
+                    "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
+    message(STATUS "proxygen_implementation_interop_test: skipped (requires both "
                     "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 # ── future-backend-performance-benchmark (.kiro/specs/future-backend-performance-benchmark/) ─
