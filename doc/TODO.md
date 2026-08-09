@@ -1000,6 +1000,69 @@ unverified completion claim.
     Reading Boost's own source rather than the comments in the tree is what
     broke the cycle.
 
+- **`coap_concurrent_processing_property_test` stalls at its 720s budget —
+  OPEN, twice now, and the evidence says it is not a deadlock (August 9,
+  2026).** The crash pattern in this test was fixed in `1a52e1f` (see the sweep
+  above); this is a *different* failure in the same test, and it has recurred:
+
+  | PR | head | result |
+  |---|---|---|
+  | [#187](https://github.com/crawlins/kythira/pull/187) | `736f7f5` | SIGALRM at 720s, re-run green |
+  | [#190](https://github.com/crawlins/kythira/pull/190) | `ab6f7e8` | SIGALRM at 720s, 3/3 retries, re-run green |
+
+  Both times the PR was innocent — #187 touched only `ci.yml`, and #190's head
+  had already passed the same job one run earlier. 720s is the case's
+  `timeout(180)` times `KYTHIRA_TEST_TIMEOUT_SCALE=4`, so the budget is
+  exhausted rather than a lock being held forever.
+
+  **What #190's log shows, and why it matters.** Every request is sent *and*
+  processed within the same millisecond. The stalls are entirely *between*
+  iterations, with nothing logged at all:
+
+  ```
+  04:02:40.901  ... token=00000008 processed
+  04:03:57.567  ... token=00000009        <- 77s later
+  04:05:22.884  ... token=0000000a        <- 85s later
+  04:09:02.230  ... token=0000000b        <- 220s later
+  ```
+
+  A held lock or a lost future would strand a request *mid-flight*, with a
+  token outstanding and no completion logged. This is the opposite shape: every
+  unit of work completes instantly and the process is simply not scheduled in
+  between. That points at runner starvation, not at this test's own
+  concurrency.
+
+  **What argues against dismissing it as "CI was busy".** 400+ other tests in
+  the same job did not stall. The likeliest reconciliation is that this test is
+  the one *exposed* by starvation rather than the one causing it — it is a
+  long-running property test issuing many sequential real-socket round trips,
+  so it holds the largest budget for the longest and is first to exhaust it.
+  That is a hypothesis, not a finding.
+
+  **Not reproducible locally.** Runs in 1-2s under both g++-13 and clang++-18,
+  including under 3x CPU oversubscription. Against ~48s for the same test on a
+  GitHub runner — a 25-50x gap that is itself worth explaining, and which means
+  local runs cannot currently falsify anything here.
+
+  Next steps, cheapest first:
+  - Log wall-clock deltas per iteration in the test itself, so a stall is
+    attributable from the artifact without reading timestamps by hand.
+  - Sample load on the runner (`/proc/loadavg`, `nproc`) at case entry and
+    exit, which would settle the starvation hypothesis directly.
+  - If starvation is confirmed, the fix is scheduling, not code: this test
+    should not share a runner with the rest of the suite under `ctest -j`, or
+    its budget should be sized against contention rather than wall clock.
+  - Do **not** simply raise the timeout. That is the fifth iteration of the
+    cycle documented in the sweep above, and it has never removed a failure.
+
+  Related but distinct: the backoff-tolerance flakes fixed in
+  [#194](https://github.com/crawlins/kythira/pull/194) were percentage bounds
+  too tight for scheduler jitter (`error_handler_async_retry_property_test`,
+  `raft_timeout_classification_property_test`). Same underlying environment,
+  different defect — those were assertions that the runner was not busy, and
+  they are now sized additively. This one is a budget being exhausted, and is
+  not addressed by that change.
+
 - **`ca_cluster_node_test` intermittent hang — fixed and verified (July 30,
   2026).** Root cause, found in commit `19b05e2` (July 29, 2026):
   `run_ca_cluster_node()`'s shutdown sequence joined `http_thread`,
