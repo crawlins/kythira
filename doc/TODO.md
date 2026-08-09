@@ -840,7 +840,14 @@ unverified completion claim.
     live `proxygen_server`) — see the interop-grid item below, which this
     partially opens.
 
-- **Test the client-implementation × server-implementation interop grid.**
+- **Test the client-implementation × server-implementation interop grid —
+  COMPLETE August 9, 2026.** All nine cells are now covered: three on the
+  diagonal by the equivalence suites, six off it by
+  `tests/http_implementation_interop_test.cpp` (httplib ↔ Beast) and
+  `tests/proxygen_implementation_interop_test.cpp` (the four involving
+  Proxygen). The history below is kept because the *way* the item was
+  repeatedly miscounted, and the mutation tests that made each batch of cells
+  worth anything, are the reusable parts.
   Until August 7, 2026 there was **no test anywhere** that paired one HTTP
   implementation's client with a different implementation's server. The two
   tests whose names suggest otherwise do not:
@@ -881,12 +888,48 @@ unverified completion claim.
     argument for this item, demonstrated rather than asserted: an
     implementation-specific assumption is invisible to a suite that only ever
     pairs a client with its own server.
-  - **Three cells remain**, all involving Proxygen: Beast → Proxygen, Proxygen
-    → httplib, Proxygen → Beast. They need `KYTHIRA_BUILD_PROXYGEN_TRANSPORT`,
-    so they cannot go in the same always-built file. Note also that the
-    httplib → Proxygen cell is covered only by a *raw* `httplib::Client`, not
-    by `cpp_httplib_client`; if the grid is meant to be about our own
-    transports talking to each other, that cell deserves a second look.
+  - **The last four cells landed August 9, 2026**, as
+    `tests/proxygen_implementation_interop_test.cpp`: Beast → Proxygen,
+    Proxygen → Beast, Proxygen → httplib, and — the "second look" the previous
+    revision of this bullet asked for — `cpp_httplib_client` → Proxygen. That
+    fourth one is **not** a duplicate of `proxygen_negotiation_integration_test`:
+    that suite drives `proxygen_server` with a *raw* `httplib::Client`, which
+    answers "would an arbitrary HTTP peer interoperate" and says nothing about
+    `cpp_httplib_client`, which picks its own headers, body framing and error
+    mapping. Four cells rather than three is why this item's count moved again;
+    the number was right about what was *missing* and wrong about the raw-client
+    cell already counting.
+  - Separate file rather than three more cases in
+    `http_implementation_interop_test.cpp`, because Proxygen is an optional
+    vcpkg dependency: same `KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT AND
+    KYTHIRA_BUILD_PROXYGEN_TRANSPORT` gate and the same three-transport link
+    set as `three_way_http_transport_equivalence_test`. Everything except which
+    client meets which server was factored into `tests/http_interop_rpc_rig.hpp`
+    and is shared by both files — a cell's result only means something next to
+    the other cells' results, so two rigs that drifted would turn "Beast →
+    Proxygen passes and Proxygen → Beast fails" from a finding about the
+    transports into a finding about the test files.
+  - **All four passed on the first run**, which this item's own
+    "expect red on day one" warning says to distrust, so each cell was mutation
+    tested with a control, the same way the August 8 pair was:
+    - `proxygen_server` made to reject `raft-boost-beast/1.0` and
+      `raft-cpp-httplib/1.0` — the two cells with a foreign client into
+      Proxygen fail (404), the two with `proxygen_client` still pass, and
+      `three_way_http_transport_equivalence_test` stays **green**.
+    - `boost_beast_server` and `cpp_httplib_server` made to reject
+      `raft-proxygen/1.0` — the two `proxygen_client` cells fail (404 and 403),
+      the other two still pass, and `http_implementation_interop_test` stays
+      **green**.
+    Four cells, four independent failures, each in the direction its own
+    pairing predicts.
+  - **A control that failed is worth more than the one that passed.** The first
+    version of the Proxygen-server mutation rejected *every* agent but
+    `raft-proxygen/1.0`, and `three_way_http_transport_equivalence_test` went
+    red — not because equivalence tests can see interop failures, but because
+    that suite's malformed-body/unknown-endpoint case drives all three servers
+    with a raw `httplib::Client`. Narrowing the mutation to our own two clients
+    restored it as a clean control. Anything treating that file as a pure
+    diagonal control needs to know its second case is not one.
   - **The Proxygen blocker is gone.** This item used to depend on deciding
     whether Proxygen negotiates; it does, as of the entry above, so the
     Proxygen cells can now be written against specified behaviour rather than
