@@ -99,10 +99,32 @@ BOOST_AUTO_TEST_CASE(test_ion_content_type_and_format_mapping) {
         BOOST_TEST(static_cast<int>(format) ==
                    static_cast<int>(coap_utils::coap_content_format::application_ion));
         BOOST_TEST(coap_utils::content_format_to_string(format) == "application/ion");
-        BOOST_TEST(kythira::content_type_for_serializer(ion_serializer_type(
-                       serializer_name == "ion-binary" ? kythira::ion_encoding::binary
-                                                       : kythira::ion_encoding::text)) ==
-                   "application/ion");
+        // Was `kythira::content_type_for_serializer(...) == "application/ion"`,
+        // which is gone rather than merely unused: it derived the Content-Type
+        // from the serializer's name() by substring matching, on the premise
+        // that both sides always share one serializer_type. Content negotiation
+        // ended that premise, and the media type is now carried by the
+        // serializer (see the note at http_transport_impl.hpp:40).
+        //
+        // The expected string changed with it, and that is the point of keeping
+        // this assertion rather than deleting it. `application/ion` is what
+        // `content_format_to_string` *renders* for display; it is not a media
+        // type any serializer reports — `coap_utils.hpp:222` says so outright.
+        // The wire tokens are the IANA-registered ones, and they differ per
+        // encoding, so a single expected value cannot cover both arms of this
+        // loop the way the old helper's name-substring match did.
+        const bool is_binary = serializer_name == "ion-binary";
+        const ion_serializer_type serializer(is_binary ? kythira::ion_encoding::binary
+                                                       : kythira::ion_encoding::text);
+        BOOST_CHECK_EQUAL(serializer.media_type(),
+                          is_binary ? "application/x-amzn-ion" : "text/x-amzn-ion");
+        // Both spellings still collapse onto Content-Format 65000, which is the
+        // property that lets an Ion peer negotiate over CoAP at all.
+        const auto mapped =
+            kythira::coap_utils::media_type_to_coap_content_format(serializer.media_type());
+        BOOST_REQUIRE(mapped.has_value());
+        BOOST_CHECK_EQUAL(static_cast<int>(*mapped),
+                          static_cast<int>(coap_utils::coap_content_format::application_ion));
     }
 }
 
