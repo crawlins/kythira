@@ -1844,7 +1844,29 @@ unverified completion claim.
   co-scheduling via `PROCESSORS 4`; coverage floor check has a 0.50pp
   tolerance band for CI run-to-run measurement noise; coverage job's
   disk-reclaim step widened after intermittent "No space left on device"
-  link failures
+  link failures.
+  **August 10, 2026 — `grpc_transport_integration_test` port race, fixed.**
+  It bound a fixed counter from 50751, one port per scenario. That avoided
+  collisions between its own scenarios but nothing else, and **50751 is inside
+  Linux's default ephemeral range (32768-60999)**, so the kernel could hand the
+  same port to an unrelated process as a source port. It did, on `main` at
+  `7d9f51c`: `mutual_tls_end_to_end` (6th scenario, port 50756) failed with
+  "Address already in use" on all three `--repeat until-pass:3` attempts,
+  because a squatter outlives a retry — **retry cannot rescue a bind
+  collision**, which is worth knowing before adding `until-pass` to anything
+  port-bound.
+  Fixed by binding **port 0** and reading the kernel's choice back through the
+  new `grpc_server::bound_port()`. Moving the constant elsewhere would only
+  narrow the window: any port picked before the bind can be taken before the
+  bind happens. Port 0 is the only version with no window at all.
+  Verified with a control rather than a green run: a squatter holding
+  50751-50760 makes the **old** binary fail with exactly the CI message
+  (`failed to bind 127.0.0.1:50751`, exit 201) while the new one passes under
+  identical conditions.
+  **Applies to other suites**: ~11 port literals elsewhere in `tests/` sit
+  inside the ephemeral range and have the same latent race. The rest of the
+  suite uses 18xxx, which is below it and therefore safe from the kernel,
+  though still hand-allocated — `grep tests/*.cpp` before taking a new one.
 - [x] **stdexec future backend** — a second, `stdexec` (P2300 sender/receiver)
   backed `Future`/`Promise`/`Try`/`Executor` implementation alongside the
   default Folly one, for new code wanting direct access to `stdexec`

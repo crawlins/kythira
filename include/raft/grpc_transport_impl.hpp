@@ -617,8 +617,14 @@ public:
         }
 
         grpc::ServerBuilder builder;
+        // The three-argument overload reports back which port was actually
+        // bound. That matters when _bind_port is 0: gRPC then asks the kernel
+        // for a free port, and this is the only way to learn which one. It also
+        // sharpens failure detection -- gRPC sets selected_port to 0 when a bind
+        // fails, which is checked below alongside BuildAndStart's result.
+        int selected_port = 0;
         builder.AddListeningPort(std::format("{}:{}", _bind_address, _bind_port),
-                                 _server_credentials);
+                                 _server_credentials, &selected_port);
         builder.SetMaxSendMessageSize(static_cast<int>(_config.max_send_message_size));
         builder.SetMaxReceiveMessageSize(static_cast<int>(_config.max_receive_message_size));
         builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
@@ -651,11 +657,13 @@ public:
         }
 
         _server = builder.BuildAndStart();
-        if (!_server) {
+        if (!_server || selected_port == 0) {
+            _server.reset();
             throw grpc_transport_error(
                 grpc::StatusCode::INTERNAL,
                 std::format("grpc_server: failed to bind {}:{}", _bind_address, _bind_port));
         }
+        _bound_port.store(static_cast<std::uint16_t>(selected_port));
         _running.store(true);
         emit_lifecycle_metric("grpc.server.started");
     }
@@ -680,6 +688,15 @@ public:
     }
 
     [[nodiscard]] auto is_running() const -> bool { return _running.load(); }
+
+    /// @brief The port this server is actually listening on, or 0 before the
+    /// first successful `start()`.
+    ///
+    /// Equal to the constructor's `bind_port` whenever that was non-zero. Pass 0
+    /// instead to have the kernel allocate a free port, then read it back here
+    /// to address the server — the only collision-free way to pick a port, since
+    /// any port chosen in advance can be taken by another process in between.
+    [[nodiscard]] auto bound_port() const -> std::uint16_t { return _bound_port.load(); }
 
     // ── CallbackService overrides ────────────────────────────────────────────
 
@@ -881,6 +898,9 @@ private:
 
     std::string _bind_address;
     std::uint16_t _bind_port;
+    // Resolved by start(); atomic because bound_port() is callable without the
+    // mutex, in the same spirit as _running.
+    std::atomic<std::uint16_t> _bound_port{0};
     grpc_server_config _config;
     metrics_type _metrics;
     executor_type& _executor;

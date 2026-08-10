@@ -29,16 +29,24 @@ namespace {
 using types = kythira::grpc_kythira_transport_types;
 using namespace std::chrono_literals;
 
-// Distinct port per scenario to avoid TIME_WAIT / cross-test collisions.
-std::atomic<std::uint16_t> g_next_port{50751};
-auto next_port() -> std::uint16_t {
-    return g_next_port.fetch_add(1);
-}
-
-auto make_server(std::uint16_t port, folly::CPUThreadPoolExecutor& exec,
-                 kythira::grpc_server_config cfg = {})
+// Bind port 0 so the kernel allocates a free port, then read it back with
+// `server->bound_port()` after start() to address the server.
+//
+// This used to be a counter from a fixed base of 50751, one port per scenario,
+// which avoided collisions *between these scenarios* but not with anything else
+// on the machine -- and 50751 sits inside Linux's default ephemeral range
+// (32768-60999), so the kernel is free to hand the same port to an unrelated
+// process as a source port. On August 10 2026 it did: `mutual_tls_end_to_end`
+// (the 6th scenario, so port 50756) failed on main at 7d9f51c with "Address
+// already in use", identically on all three `--repeat until-pass:3` attempts
+// because the squatter outlived them all.
+//
+// Picking a different constant only narrows the window -- any port chosen ahead
+// of the bind can be taken before the bind happens. Port 0 closes it: the kernel
+// reserves the port as it assigns it.
+auto make_server(folly::CPUThreadPoolExecutor& exec, kythira::grpc_server_config cfg = {})
     -> std::unique_ptr<kythira::grpc_server<types>> {
-    return std::make_unique<kythira::grpc_server<types>>("127.0.0.1", port, std::move(cfg),
+    return std::make_unique<kythira::grpc_server<types>>("127.0.0.1", 0, std::move(cfg),
                                                          kythira::noop_metrics{}, exec);
 }
 
@@ -53,16 +61,15 @@ auto make_client(std::uint16_t port, folly::CPUThreadPoolExecutor& exec,
 
 BOOST_AUTO_TEST_CASE(request_vote_end_to_end_insecure) {
     folly::CPUThreadPoolExecutor exec(4);
-    const auto port = next_port();
 
-    auto server = make_server(port, exec);
+    auto server = make_server(exec);
     server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
         return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
     });
     server->start();
     BOOST_TEST(server->is_running());
 
-    auto client = make_client(port, exec);
+    auto client = make_client(server->bound_port(), exec);
     kythira::request_vote_request<> req{
         ._term = 7, ._candidate_id = 2, ._last_log_index = 5, ._last_log_term = 6};
     auto resp = client->send_request_vote(1, req, 2000ms).get();
@@ -75,16 +82,15 @@ BOOST_AUTO_TEST_CASE(request_vote_end_to_end_insecure) {
 
 BOOST_AUTO_TEST_CASE(handler_exception_maps_to_server_error) {
     folly::CPUThreadPoolExecutor exec(4);
-    const auto port = next_port();
 
-    auto server = make_server(port, exec);
+    auto server = make_server(exec);
     server->register_append_entries_handler(
         [](const kythira::append_entries_request<>&) -> kythira::append_entries_response<> {
             throw std::runtime_error("handler blew up");
         });
     server->start();
 
-    auto client = make_client(port, exec);
+    auto client = make_client(server->bound_port(), exec);
     kythira::append_entries_request<> req{._term = 1,
                                           ._leader_id = 1,
                                           ._prev_log_index = 0,
@@ -100,18 +106,17 @@ BOOST_AUTO_TEST_CASE(handler_exception_maps_to_server_error) {
 
 BOOST_AUTO_TEST_CASE(unregistered_extension_returns_unimplemented) {
     folly::CPUThreadPoolExecutor exec(4);
-    const auto port = next_port();
 
     // Only a core handler is registered; the pre-vote extension service is
     // never added to the builder, so a pre-vote call must come back
     // UNIMPLEMENTED rather than hang or crash (Property 5, Requirement 6.3).
-    auto server = make_server(port, exec);
+    auto server = make_server(exec);
     server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
         return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = false};
     });
     server->start();
 
-    auto client = make_client(port, exec);
+    auto client = make_client(server->bound_port(), exec);
     kythira::request_pre_vote_request<> req{
         ._term = 3, ._candidate_id = 2, ._last_log_index = 1, ._last_log_term = 1};
     bool threw = false;
@@ -128,8 +133,7 @@ BOOST_AUTO_TEST_CASE(unregistered_extension_returns_unimplemented) {
 
 BOOST_AUTO_TEST_CASE(lifecycle_repeated_start_stop_is_safe) {
     folly::CPUThreadPoolExecutor exec(2);
-    const auto port = next_port();
-    auto server = make_server(port, exec);
+    auto server = make_server(exec);
     server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
         return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
     });
@@ -145,9 +149,8 @@ BOOST_AUTO_TEST_CASE(lifecycle_repeated_start_stop_is_safe) {
 
 BOOST_AUTO_TEST_CASE(concurrent_calls_no_cross_talk) {
     folly::CPUThreadPoolExecutor exec(8);
-    const auto port = next_port();
 
-    auto server = make_server(port, exec);
+    auto server = make_server(exec);
     // Echo the term back so each caller can verify it got its own response.
     server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
         return kythira::request_vote_response<>{._term = req.term(),
@@ -155,7 +158,7 @@ BOOST_AUTO_TEST_CASE(concurrent_calls_no_cross_talk) {
     });
     server->start();
 
-    auto client = make_client(port, exec);
+    auto client = make_client(server->bound_port(), exec);
     constexpr int thread_count = 8;
     constexpr int calls_per_thread = 20;
     std::atomic<int> failures{0};
@@ -203,7 +206,6 @@ BOOST_AUTO_TEST_CASE(mutual_tls_end_to_end) {
     auto client_cert = ca.issue(client_opts);
 
     folly::CPUThreadPoolExecutor exec(4);
-    const auto port = next_port();
 
     kythira::grpc_server_config server_cfg;
     server_cfg.enable_tls = true;
@@ -212,7 +214,7 @@ BOOST_AUTO_TEST_CASE(mutual_tls_end_to_end) {
     server_cfg.ca_cert_pem = ca.root_certificate_pem();
     server_cfg.require_client_cert = true;
 
-    auto server = make_server(port, exec, server_cfg);
+    auto server = make_server(exec, server_cfg);
     server->register_request_vote_handler([](const kythira::request_vote_request<>& req) {
         return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = true};
     });
@@ -225,7 +227,7 @@ BOOST_AUTO_TEST_CASE(mutual_tls_end_to_end) {
     client_cfg.client_key_pem = client_cert.private_key_pem;
     client_cfg.target_name_override = "localhost";  // SAN matches, connecting to 127.0.0.1
 
-    auto client = make_client(port, exec, client_cfg);
+    auto client = make_client(server->bound_port(), exec, client_cfg);
     kythira::request_vote_request<> req{
         ._term = 9, ._candidate_id = 3, ._last_log_index = 0, ._last_log_term = 0};
     auto resp = client->send_request_vote(1, req, 3000ms).get();
@@ -241,14 +243,12 @@ BOOST_AUTO_TEST_CASE(tls_misconfiguration_fails_closed) {
     // rather than silently downgrading to insecure (Property 7, Requirement 9.6).
     kythira::grpc_server_config bad_server;
     bad_server.enable_tls = true;  // server_cert_pem / server_key_pem left empty
-    BOOST_CHECK_THROW(make_server(next_port(), exec, bad_server),
-                      kythira::grpc_tls_configuration_error);
+    BOOST_CHECK_THROW(make_server(exec, bad_server), kythira::grpc_tls_configuration_error);
 
     // Client with only half of an mTLS pair → also fails closed.
     kythira::grpc_client_config bad_client;
     bad_client.enable_tls = true;
     bad_client.client_cert_pem = "-----BEGIN CERTIFICATE-----\nnot-real\n-----END CERTIFICATE-----";
     // client_key_pem intentionally empty
-    BOOST_CHECK_THROW(make_client(next_port(), exec, bad_client),
-                      kythira::grpc_tls_configuration_error);
+    BOOST_CHECK_THROW(make_client(0, exec, bad_client), kythira::grpc_tls_configuration_error);
 }
