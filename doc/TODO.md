@@ -1255,6 +1255,40 @@ unverified completion claim.
     emitted for a deliberate `=n` as well as a genuine absence — and before the
     fix, `=n` produced the *enabled* message, so the log actively misreported
     the configuration.
+- **`CONFIG_COAP_TRANSPORT=n` is inert — OPEN, found August 10, 2026.** The
+  last finding from the gate audit, and the one that is not a one-line fix.
+  - **Measured with the other symbols held constant** — `ci_full_defconfig`
+    against the same file plus `CONFIG_COAP_TRANSPORT=n`, so only that symbol
+    moves: **523 targets both ways, 54 `coap_*` targets both ways, and the two
+    target lists are identical.** The symbol changes nothing it claims to. The
+    root does print `libcoap not found. CoAP transport will not be available.`,
+    so the log says the feature is off while the build is byte-identical.
+    - A first attempt at this measurement compared against a defconfig
+      containing *only* the CoAP line, which silently also turned off Beast,
+      Proxygen, protobuf and the alternate backends and produced a 26-target
+      difference that had nothing to do with CoAP. Hold the other symbols
+      constant or the number is meaningless.
+  - **The mechanism is not the one first suspected.** `LIBCOAP_FOUND` is indeed
+    re-probed outside the gate, but at exactly one site
+    (`tests/CMakeLists.txt:2178`, for `coap_integration_test`'s link line). The
+    reason all 54 survive is simpler and larger: **the CoAP test targets are
+    gated on `if(TARGET Folly::folly)`, never on CoAP.** They were never
+    connected to the feature symbol at all.
+  - **What is genuinely undecided, and why this is not just "add the gate".**
+    Those targets currently build against the compiled-out path when libcoap is
+    absent, and that path has value — enabling `LIBCOAP_AVAILABLE` for the
+    first time is what surfaced a batch of latent bugs, so the backend-free
+    surface is worth compiling. The question is whether `CONFIG_COAP_TRANSPORT`
+    should mean "do not build the CoAP transport at all" or "build it without a
+    backend". Pick one and make the symbol mean it; today it means neither.
+    `feat/coap-transport-libnyoci`'s own "cover the backend-free surface in
+    every build" commit suggests the second reading was intended, in which case
+    the fix is mostly to stop the root printing "will not be available" for a
+    build that still contains the whole suite.
+  - Related and smaller: whichever reading wins, the one ungated
+    `pkg_check_modules(LIBCOAP ...)` at `tests/CMakeLists.txt:2178` should move
+    inside the decision, so `coap_integration_test` stops linking libcoap in a
+    configuration that says CoAP is off.
   - **A latent duplicate of the same shape** may exist wherever one feature's
     `find_package` sets a variable another feature's `if()` tests. `Protobuf`
     is the one confirmed. The gRPC block's own
