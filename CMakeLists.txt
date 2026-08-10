@@ -295,15 +295,25 @@ kythira_kconfig_require(COAP_TRANSPORT_CANTCOAP cantcoap_FOUND "cantcoap")
 # transitively via the vcpkg `grpc` port, but we find_package(Protobuf)
 # explicitly too so the protobuf::protoc / gRPC::grpc_cpp_plugin codegen
 # targets are guaranteed to be imported.
+#
+# The `gRPC_FOUND AND Protobuf_FOUND` test lives *inside* the gate, and the
+# variable is initialised to FALSE before it. Written that way on purpose: this
+# block shares `Protobuf_FOUND` with the PROTOBUF_SERIALIZER block below, and
+# with the test outside the gate the result depended on which block CMake had
+# already executed. It happened to be correct only because this one runs first,
+# so neither variable is populated yet when the test is reached. Moving these
+# two blocks, or adding a third protobuf consumer above this line, would have
+# silently made `CONFIG_GRPC_TRANSPORT=n` stop disabling the transport — the
+# exact defect that `CONFIG_PROTOBUF_SERIALIZER` shipped with. Correctness here
+# should not be a property of statement order.
+set(GRPC_TRANSPORT_FOUND FALSE)
 kythira_kconfig_gate(GRPC_TRANSPORT)
 if(_KYTHIRA_GATE_GRPC_TRANSPORT)
     find_package(gRPC CONFIG QUIET)
     find_package(Protobuf CONFIG QUIET)
-endif()
-if(gRPC_FOUND AND Protobuf_FOUND)
-    set(GRPC_TRANSPORT_FOUND TRUE)
-else()
-    set(GRPC_TRANSPORT_FOUND FALSE)
+    if(gRPC_FOUND AND Protobuf_FOUND)
+        set(GRPC_TRANSPORT_FOUND TRUE)
+    endif()
 endif()
 kythira_kconfig_require(GRPC_TRANSPORT GRPC_TRANSPORT_FOUND "grpc")
 
@@ -995,15 +1005,22 @@ endif()
 # for the component's own imported target afterward (rather than trusting
 # AWSSDK_FOUND) additionally guards against the component genuinely being
 # absent, matching the project's find_package(AWSSDK...) result caching model.
+# The `if(TARGET ...)` test is inside the gate deliberately. An imported target
+# is global and outlives the find_package() that created it, so testing for one
+# outside the gate asks "does this target exist anywhere in this configure",
+# not "did this feature's own probe succeed" -- and any other AWSSDK
+# find_package that happens to define it would then defeat CONFIG_AWS_ACM_PCA=n
+# silently. That is precisely how CONFIG_PROTOBUF_SERIALIZER came to be inert.
+# The `unset(AWSSDK_FOUND)` below is a hint that this file has already been
+# bitten once by AWSSDK's variables leaking between component probes.
+set(_KYTHIRA_AWS_ACM_PCA_FOUND FALSE)
 kythira_kconfig_gate(AWS_ACM_PCA)
 if(_KYTHIRA_GATE_AWS_ACM_PCA)
     unset(AWSSDK_FOUND)
     find_package(AWSSDK QUIET COMPONENTS acm-pca)
-endif()
-if(TARGET aws-cpp-sdk-acm-pca)
-    set(_KYTHIRA_AWS_ACM_PCA_FOUND TRUE)
-else()
-    set(_KYTHIRA_AWS_ACM_PCA_FOUND FALSE)
+    if(TARGET aws-cpp-sdk-acm-pca)
+        set(_KYTHIRA_AWS_ACM_PCA_FOUND TRUE)
+    endif()
 endif()
 kythira_kconfig_require(AWS_ACM_PCA _KYTHIRA_AWS_ACM_PCA_FOUND "AWS ACM Private CA SDK component")
 if(TARGET aws-cpp-sdk-acm-pca)
@@ -1025,18 +1042,20 @@ endif()
 # from that three-target condition: it is used only by the real-GCE test's
 # launch-ladder discovery, never by the production managers, so a build lacking
 # it should still get working GCP quorum managers rather than none.
+set(_KYTHIRA_GCP_SDK_FOUND FALSE)
 kythira_kconfig_gate(GCP_SDK)
 if(_KYTHIRA_GATE_GCP_SDK)
     find_package(google_cloud_cpp_compute QUIET COMPONENTS
         compute_instances compute_instance_group_managers compute_zone_operations
         compute_machine_types)
-endif()
-if(TARGET google-cloud-cpp::compute_instances
-        AND TARGET google-cloud-cpp::compute_instance_group_managers
-        AND TARGET google-cloud-cpp::compute_zone_operations)
-    set(_KYTHIRA_GCP_SDK_FOUND TRUE)
-else()
-    set(_KYTHIRA_GCP_SDK_FOUND FALSE)
+    # Inside the gate: imported targets are global, so this test outside it
+    # would ask whether the target exists anywhere rather than whether this
+    # feature's probe found it. See the AWS_ACM_PCA block above.
+    if(TARGET google-cloud-cpp::compute_instances
+            AND TARGET google-cloud-cpp::compute_instance_group_managers
+            AND TARGET google-cloud-cpp::compute_zone_operations)
+        set(_KYTHIRA_GCP_SDK_FOUND TRUE)
+    endif()
 endif()
 kythira_kconfig_require(GCP_SDK _KYTHIRA_GCP_SDK_FOUND "google-cloud-cpp compute components")
 if(_KYTHIRA_GCP_SDK_FOUND)
@@ -1068,14 +1087,14 @@ endif()
 # independence from KYTHIRA_HAS_AWS_SDK): an environment with the compute
 # components but without privateca still builds everything except the
 # certificate provider, and vice versa.
+set(_KYTHIRA_GCP_PRIVATECA_FOUND FALSE)
 kythira_kconfig_gate(GCP_PRIVATECA)
 if(_KYTHIRA_GATE_GCP_PRIVATECA)
     find_package(google_cloud_cpp_privateca QUIET)
-endif()
-if(TARGET google-cloud-cpp::privateca)
-    set(_KYTHIRA_GCP_PRIVATECA_FOUND TRUE)
-else()
-    set(_KYTHIRA_GCP_PRIVATECA_FOUND FALSE)
+    # Inside the gate, for the same reason as the two blocks above.
+    if(TARGET google-cloud-cpp::privateca)
+        set(_KYTHIRA_GCP_PRIVATECA_FOUND TRUE)
+    endif()
 endif()
 kythira_kconfig_require(GCP_PRIVATECA _KYTHIRA_GCP_PRIVATECA_FOUND "google-cloud-cpp privateca component")
 if(_KYTHIRA_GCP_PRIVATECA_FOUND)
