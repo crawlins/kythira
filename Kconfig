@@ -281,6 +281,37 @@ config AZURE_KEY_VAULT
 
 endmenu # Azure Integration
 
+menu "OCI Integration"
+
+# Unlike every other cloud menu above, these two gate no find_package call.
+# There is no OCI SDK to look for: the providers sign their own requests
+# (include/raft/oci_signing.hpp) and send them over httplib, which is exactly
+# what keeps this feature out of vcpkg.json. So these symbols select whether
+# OCI support is *built*, not whether a dependency was *found* — which is why
+# neither has a KYTHIRA_HAS_* counterpart, and why turning one off cannot fail
+# a strict-mode configure the way GCP_SDK=y without the SDK does.
+
+config OCI_QUORUM_MANAGER
+	bool "OCI Instance Pool quorum manager"
+	default y
+	help
+	  Builds oci_instance_pool_quorum_manager and the OCI request-signing
+	  and HTTP plumbing it shares with the certificate provider. Needs only
+	  OpenSSL, httplib and boost::json, all of which are unconditional
+	  dependencies already.
+
+config OCI_CERTIFICATES_PROVIDER
+	bool "OCI Certificates Management certificate provider"
+	default y
+	help
+	  Builds oci_certificates_provider. Independent of OCI_QUORUM_MANAGER
+	  rather than depending on it — the two share the signing/HTTP layer but
+	  neither uses the other, mirroring how AWS_ACM_PCA is found separately
+	  from AWS_SDK, so a deployment can take certificates without quorum
+	  management or the reverse.
+
+endmenu # OCI Integration
+
 menu "Test-Only Dependencies"
 
 config LIBSSH2_TESTS

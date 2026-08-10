@@ -18,10 +18,35 @@ Finding 1 unblocked:
   without it they would sit in the tree unbuilt by CI, which is
   indistinguishable from not having written them.
 
-**Still open in Task 1**: `include/raft/oci_http_client.hpp`, the
-`KYTHIRA_OCI_QUORUM_MANAGER`/`KYTHIRA_OCI_CERTIFICATES_PROVIDER` kconfig
-flags, and the `DEPENDENCIES.md` cross-reference (Requirements 1.7–1.9,
-11.1–11.3). Tasks 2–7 are untouched.
+**Task 1 completed later the same day**:
+
+- `include/raft/oci_http_client.hpp` — signed JSON requests, per-service host
+  derivation, OCI `code`/`message` surfaced on non-2xx, and the single bounded
+  429 retry (Requirements 1.7–1.9), with `tests/oci_http_client_unit_test.cpp`
+  (10 cases) driving a real local `httplib::Server` rather than a stub.
+- `CONFIG_OCI_QUORUM_MANAGER` / `CONFIG_OCI_CERTIFICATES_PROVIDER` in
+  `Kconfig`, both defaulting to `y`, gated in `CMakeLists.txt` via
+  `kythira_kconfig_gate` (Requirements 11.1–11.2). **No `kythira_kconfig_require`
+  and no `find_package`**, deliberately: there is no OCI SDK to probe, so these
+  answer "is OCI support wanted?" rather than "was a dependency found?", and a
+  `require` would assert a condition that cannot be false.
+- `DEPENDENCIES.md` (Requirement 11.3) — see the correction below.
+
+**Requirement 11.3's premise was wrong, and the fix is broader than it asked
+for.** It says to add a note "under the existing `httplib`/OpenSSL/`boost::json`
+entries ... mirroring the existing note calling out
+`acme_certificate_provider.hpp`". None of that existed: `DEPENDENCIES.md` had
+**no cpp-httplib entry at all**, Boost's component list omitted `json`, and the
+string "acme" appeared **zero** times in the file. So the cross-reference had
+nothing to attach to. Rather than skip it or invent a mirror of a note that was
+never written, the missing entries were added — cpp-httplib as the required
+dependency it has always been, `json` added to Boost's components with the note
+that it is a compiled library — and the OCI consumers recorded against those and
+against OpenSSL. That is a documentation fix this spec happened to surface, not
+OCI-specific work.
+
+**Tasks 2–7 remain untouched**, and Requirement 1.6 (Instance Principal) is
+still blocked on Task 0(b) exactly as before.
 
 ## Overview
 
