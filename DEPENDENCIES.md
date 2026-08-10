@@ -36,8 +36,13 @@ This document lists the dependencies required to build and use the network simul
 
 #### Boost
 - **Status**: Required
-- **Components**: system, thread, unit_test_framework
+- **Components**: system, thread, unit_test_framework, json
 - **Minimum Version**: 1.70+
+- **Notes**: `boost::json` is a *compiled* component, not header-only — a consumer that
+  parses JSON must link it or fail at link time rather than at configure time. Consumed by
+  `acme_certificate_provider.hpp` and by the OCI providers
+  (`oci_http_client.hpp`, and the `oci_instance_pool_quorum_manager.hpp` /
+  `oci_certificates_provider.hpp` built on it), which parse every OCI REST response through it.
 - **Installation**:
   ```bash
   # Ubuntu/Debian
@@ -46,6 +51,16 @@ This document lists the dependencies required to build and use the network simul
   # macOS (Homebrew)
   brew install boost
   ```
+
+#### cpp-httplib
+- **Status**: Required
+- **Purpose**: The HTTP client and server behind `cpp_httplib_client`/`cpp_httplib_server`
+  (`include/raft/http_transport.hpp`), `acme_certificate_provider.hpp`'s ACME (RFC 8555)
+  client, and `oci_http_client.hpp` — the signed-JSON transport shared by
+  `oci_instance_pool_quorum_manager.hpp` and `oci_certificates_provider.hpp`.
+- **Notes**: Unconditional, header-only, and supplied by vcpkg. Listed here because it was
+  previously undocumented despite being required; the OCI components add no dependency of
+  their own, they only add consumers of this one.
 
 ## Optional Dependencies
 
@@ -75,6 +90,21 @@ This document lists the dependencies required to build and use the network simul
   `ca_cluster_node`, and any test target depending on them are simply not defined; the rest
   of the build is unaffected (`KYTHIRA_HAS_OPENSSL` mirrors the existing `KYTHIRA_HAS_LDNS` /
   `KYTHIRA_HAS_POCO_DNSSD` optional-dependency pattern).
+- **Additional consumers**: `acme_certificate_provider.hpp` (JWS/ES256 request signing) and
+  `oci_signing.hpp` — the latter implements OCI Request Signing Version 1 (RSA-SHA256 over a
+  canonical string) entirely on OpenSSL EVP primitives, which is precisely why OCI support
+  needs no vendor SDK and adds nothing to `vcpkg.json`.
+
+### OCI (Oracle Cloud Infrastructure) — no new dependency
+- **Status**: Built by default; opt out with `CONFIG_OCI_QUORUM_MANAGER=n` and/or
+  `CONFIG_OCI_CERTIFICATES_PROVIDER=n`.
+- **Purpose**: `oci_instance_pool_quorum_manager.hpp` and `oci_certificates_provider.hpp`.
+- **Notes**: Listed for discoverability rather than because anything must be installed.
+  Unlike the AWS/GCP/Azure entries below, there is **no vendor SDK to detect** and no
+  `find_package` call: the providers sign their own requests against OpenSSL and send them
+  over cpp-httplib, parsing responses with `boost::json` — all three already required above.
+  The kconfig flags therefore select whether OCI support is *built*, not whether a dependency
+  was *found*, so disabling them can never be the cause of a configure failure.
 
 ### gRPC + Protocol Buffers — gRPC transport
 - **Status**: Optional — `raft_grpc_transport` target only compiled when detected

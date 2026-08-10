@@ -2362,7 +2362,7 @@ endif()
 # beyond it -- the whole point of hand-rolling the signing scheme rather than
 # taking an OCI SDK -- so there is nothing else that could be missing. No Folly
 # guard either, since signing is a pure function with no futures in it.
-if(TARGET OpenSSL::SSL)
+if(TARGET OpenSSL::SSL AND KYTHIRA_OCI_SHARED)
     add_executable(oci_signing_unit_test oci_signing_unit_test.cpp)
     target_link_libraries(oci_signing_unit_test PRIVATE
         Boost::unit_test_framework
@@ -2376,8 +2376,45 @@ if(TARGET OpenSSL::SSL)
         TIMEOUT 60
         LABELS "unit;oci;cloud"
     )
+elseif(NOT KYTHIRA_OCI_SHARED)
+    message(STATUS "oci_signing_unit_test: skipped (OCI support disabled by Kconfig)")
 else()
     message(STATUS "oci_signing_unit_test: skipped (requires OpenSSL)")
+endif()
+
+# OCI signed-JSON HTTP client tests
+#
+# Additionally needs httplib -- on both sides: the client wraps it, and the
+# tests stand up a real local server rather than stubbing the HTTP layer the
+# class mostly consists of.
+if(TARGET OpenSSL::SSL AND TARGET httplib::httplib AND KYTHIRA_OCI_SHARED)
+    add_executable(oci_http_client_unit_test oci_http_client_unit_test.cpp)
+    target_link_libraries(oci_http_client_unit_test PRIVATE
+        Boost::unit_test_framework
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    # Boost.JSON is a compiled library here, not header-only: the vcpkg static
+    # archive is preferred when present, matching what every other JSON-using
+    # test in this file does rather than inventing a second convention.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        target_link_libraries(oci_http_client_unit_test PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(oci_http_client_unit_test PRIVATE Boost::json)
+    endif()
+    target_include_directories(oci_http_client_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(oci_http_client_unit_test PRIVATE cxx_std_23)
+    add_test(NAME oci_http_client_unit_test COMMAND oci_http_client_unit_test)
+    set_tests_properties(oci_http_client_unit_test PROPERTIES
+        TIMEOUT 120
+        LABELS "unit;oci;cloud;http"
+    )
+elseif(NOT KYTHIRA_OCI_SHARED)
+    message(STATUS "oci_http_client_unit_test: skipped (OCI support disabled by Kconfig)")
+else()
+    message(STATUS "oci_http_client_unit_test: skipped (requires OpenSSL and httplib)")
 endif()
 # HTTP SSL Context Configuration Unit Tests
 if(TARGET Folly::folly)

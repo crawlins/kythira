@@ -343,6 +343,30 @@ if(_KYTHIRA_GATE_GRPC_TRANSPORT)
 endif()
 kythira_kconfig_require(GRPC_TRANSPORT GRPC_TRANSPORT_FOUND "grpc")
 
+# oci-cloud-provider spec: OCI Instance Pool quorum management and Certificates
+# Management certificate issuance, both speaking the OCI REST API directly.
+#
+# No find_package and no kythira_kconfig_require, unlike every gate above. That
+# is not an omission: there is no OCI SDK to probe. The providers hand-roll OCI
+# Request Signing v1 over OpenSSL and send it with httplib
+# (include/raft/oci_signing.hpp, include/raft/oci_http_client.hpp), and all
+# three of OpenSSL, httplib and boost::json are unconditional dependencies. So
+# these gates answer "is OCI support wanted?" rather than "was a dependency
+# found?", and there is no configuration in which wanting it can fail — which
+# is why adding a `require` here would assert something that cannot be false.
+kythira_kconfig_gate(OCI_QUORUM_MANAGER)
+kythira_kconfig_gate(OCI_CERTIFICATES_PROVIDER)
+if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER OR _KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER)
+    # The signing/HTTP layer is shared, so it is built when *either* provider is
+    # wanted rather than being duplicated under each.
+    set(KYTHIRA_OCI_SHARED TRUE)
+    message(STATUS "OCI support: enabled (quorum_manager=${_KYTHIRA_GATE_OCI_QUORUM_MANAGER}, "
+                   "certificates_provider=${_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER})")
+else()
+    set(KYTHIRA_OCI_SHARED FALSE)
+    message(STATUS "OCI support: disabled by Kconfig")
+endif()
+
 # ion-rpc-serializer spec: Amazon Ion (via the ion-c C library) backs a second
 # rpc_serializer implementation (ion_rpc_serializer, include/raft/ion_serializer.hpp)
 # alongside json_rpc_serializer. Optional and gracefully degrading, exactly like
