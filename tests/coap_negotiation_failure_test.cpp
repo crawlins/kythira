@@ -59,7 +59,20 @@ using json_serializer = kythira::json_rpc_serializer<data_type>;
 using cbor_serializer = kythira::cbor_rpc_serializer<data_type>;
 
 constexpr const char* bind_address = "127.0.0.1";
-constexpr std::chrono::milliseconds exchange_timeout{5000};
+// Scaled, like every case timeout in this file and unlike its own previous
+// literal. This is a deadline handed *into* the code under test -- it is both
+// the RPC timeout argument and the `future.wait()` budget -- so
+// `scaled_timeout` on the cases does not reach it, which is exactly the
+// distinction `scaled_deadline` was added for (see its comment, and the
+// proxygen `ingress timeout, timeout=3000ms` failure that produced it).
+//
+// It mattered here because the 4.15 retry case spends this budget on *two*
+// sequential CoAP round trips, and CI runs with KYTHIRA_TEST_TIMEOUT_SCALE=4:
+// the case got 120s while the exchange inside it still got 5s. The margin was
+// visibly thin rather than theoretical -- the same binary took 30.68s on a
+// green `main` boost-backend run (31339964251) and failed at 42.86s, 3/3
+// attempts, on two consecutive runs of PR #201.
+constexpr std::chrono::milliseconds exchange_timeout = kythira::testing::scaled_deadline(5000);
 
 // Response codes as libcoap encodes them (class << 5 | detail).
 constexpr int code_unsupported_content_format = 0x8F;  // 4.15
