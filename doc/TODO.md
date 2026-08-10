@@ -1,6 +1,6 @@
 ## TODO: Outstanding Tasks and Improvements
 
-**Last Updated**: August 8, 2026
+**Last Updated**: August 10, 2026
 
 For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -8,16 +8,25 @@ For a dated history of what changed and why, see [CHANGELOG.md](CHANGELOG.md).
 
 The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
 
-- **430/430 tests passing, 0 failures, 0 errors, 0 skipped** on the full
+- **432/432 tests passing, 0 failures, 0 errors, 0 skipped** on the full
   `ci_full_defconfig` suite, on all four `Build & Test` legs (`g++-13`/
-  `clang++-18` × x64/arm64) — 430 on every leg, not 430 in aggregate. Read
+  `clang++-18` × x64/arm64) — 432 on every leg, not 432 in aggregate. Read
   off the JUnit artifacts of a specific green run rather than asserted — run
-  [31317748177](https://github.com/crawlins/kythira/actions/runs/31317748177),
-  commit `ec5fb02`, August 9, 2026. Counting note, re-verified against that
+  [31385274717](https://github.com/crawlins/kythira/actions/runs/31385274717),
+  commit `0d172fe`, August 10, 2026. Counting note, re-verified against that
   run's `testcase` names rather than carried over: the `ion_*` binaries are
-  **not** in the 430 (0 present), since the `ion` vcpkg feature is opt-in and
+  **not** in the 432 (0 present), since the `ion` vcpkg feature is opt-in and
   absent from the default CI install; the `grpc_*` binaries **are** (3
   present), since `grpc` is an unconditional `vcpkg.json` dependency.
+  - **The `Full suite (boost future backend)` leg reads 435, and that is not a
+    competing figure.** Its artifact is a strict superset of a `Build & Test`
+    leg's — the same 432 plus `boost_backend_migration_guide_example_test`,
+    `boost_future_concept_compliance_property_test` and
+    `boost_future_continuation_and_collector_property_test`, which exist only
+    on a boost-backend build. Verified as a set difference against this run's
+    own artifacts, not inferred from the totals. Recorded because a number read
+    off that leg has been taken for a correction to this one before, and the
+    two are counting different suites.
   - **Treat this as a floor, not the figure**, and **never revise it by
     arithmetic.** This line's whole value is that it was read off the JUnit
     artifacts of a named green run; a count derived by adding the tests a PR
@@ -25,11 +34,15 @@ The project is **PRODUCTION READY** ✅ with a 99%+ test pass rate.
     stale, re-read it the same way — download the four `test-results-*`
     artifacts from a green run and sum the `testsuite` `tests` attributes —
     and name the new run here.
-  - The previous figure was **403**, from run 30947491385 (commit `1a52e1f`,
-    August 4, 2026). The 27 added between them are real targets landed since,
-    chiefly the multi-serializer negotiation work (spec Tasks 13-16) and the
-    three CoAP backends; that reconciliation is offered as a sanity check on
-    the new reading, and is explicitly *not* how the 430 was obtained.
+  - The previous figure was **430**, from run 31317748177 (commit `ec5fb02`,
+    August 9, 2026). The two added between them are
+    `proxygen_implementation_interop_test` and `accept_post_negotiation_test`,
+    and **nothing was removed** — established by differencing the two runs'
+    `testcase` name sets, not by subtracting the totals, so a coincidental
+    one-added-one-removed could not hide inside a matching arithmetic. That
+    reconciliation is offered as a sanity check on the new reading, and is
+    explicitly *not* how the 432 was obtained. Before that the figure was
+    **403**, from run 30947491385 (commit `1a52e1f`, August 4, 2026).
 - The `ca_cluster_node_test`/`ca_cluster_node_rpc_tls_test`/
   `ca_cluster_node_rpc_tls_restart_test` family's own intermittent SIGTERM-
   shutdown hang (see "Known Follow-ups" below) is fixed and verified, not
