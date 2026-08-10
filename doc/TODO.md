@@ -1518,6 +1518,18 @@ unverified completion claim.
   Gap 2 (per-target `folly_FOUND` CMake gating across 100+ targets) remains
   deliberately out of scope, unchanged from the note above.
 
+  **Re-verified August 10, 2026, and still closed** — recorded because a
+  session handoff had it listed as outstanding work, which it is not. The
+  documented probe (`-DCMAKE_DISABLE_FIND_PACKAGE_folly=ON
+  -DKYTHIRA_DEFAULT_FUTURE_BACKEND=stdexec`) still configures cleanly: exit 0,
+  no CMake error, 325 targets against the default build's 518, with 75 of the
+  difference reported individually as `skipped (requires Folly)`. That last
+  number is the point — the Folly-only targets are gated out *by name* rather
+  than the configure failing on the first one, which is what gap 2 was about.
+  What is left is only the two things the note above puts out of scope by
+  design: HTTP/CoAP header-level decoupling, and the `examples/`/`cmd/*`
+  executables whose own `main()`s call `folly::init()`.
+
   **Unrelated, found and fixed along the way**: the repo-root
   `vcpkg_installed/x64-linux` dependency cache (gitignored, local-only) had
   silent file-level corruption in three `boost/intrusive` headers
