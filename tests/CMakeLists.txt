@@ -2355,6 +2355,30 @@ if(TARGET Folly::folly)
 else()
     message(STATUS "http_ssl_certificate_loading_unit_test: skipped (requires Folly)")
 endif()
+
+# OCI Request Signing Version 1 unit tests
+#
+# Guarded only on OpenSSL, deliberately: oci_signing.hpp adds no dependency
+# beyond it -- the whole point of hand-rolling the signing scheme rather than
+# taking an OCI SDK -- so there is nothing else that could be missing. No Folly
+# guard either, since signing is a pure function with no futures in it.
+if(TARGET OpenSSL::SSL)
+    add_executable(oci_signing_unit_test oci_signing_unit_test.cpp)
+    target_link_libraries(oci_signing_unit_test PRIVATE
+        Boost::unit_test_framework
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    target_include_directories(oci_signing_unit_test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(oci_signing_unit_test PRIVATE cxx_std_23)
+    add_test(NAME oci_signing_unit_test COMMAND oci_signing_unit_test)
+    set_tests_properties(oci_signing_unit_test PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;oci;cloud"
+    )
+else()
+    message(STATUS "oci_signing_unit_test: skipped (requires OpenSSL)")
+endif()
 # HTTP SSL Context Configuration Unit Tests
 if(TARGET Folly::folly)
     add_executable(http_ssl_context_configuration_unit_test http_ssl_context_configuration_unit_test.cpp)
