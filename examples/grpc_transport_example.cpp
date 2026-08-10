@@ -24,8 +24,14 @@ namespace {
 using types = kythira::grpc_kythira_transport_types;
 using namespace std::chrono_literals;
 
-constexpr std::uint16_t insecure_port = 51701;
-constexpr std::uint16_t tls_port = 51702;
+// Bind port 0 and read the kernel's choice back with server.bound_port() after
+// start(), rather than naming a port up front. 51701/51702 were the previous
+// literals and both sit inside Linux's default ephemeral range (32768-60999),
+// so the kernel could hand either to an unrelated process as a source port --
+// which is how this example failed on main at beb5c94, "Address already in use"
+// on 51702 for all three --repeat until-pass attempts. Any port picked before
+// the bind can be taken before the bind happens; port 0 has no such window.
+constexpr std::uint16_t ephemeral_port = 0;
 
 // Register handlers for every RPC the transport supports, so the example can
 // exercise both the base concept and each optional extension.
@@ -62,13 +68,13 @@ auto register_all_handlers(kythira::grpc_server<types>& server) -> void {
 auto demonstrate_core_rpcs(folly::CPUThreadPoolExecutor& exec) -> bool {
     std::cout << "\n[1] Core RPCs over insecure gRPC\n";
     try {
-        auto server = kythira::grpc_server<types>("127.0.0.1", insecure_port, {},
+        auto server = kythira::grpc_server<types>("127.0.0.1", ephemeral_port, {},
                                                   kythira::noop_metrics{}, exec);
         register_all_handlers(server);
         server.start();
 
         std::unordered_map<std::uint64_t, std::string> book{
-            {1, "127.0.0.1:" + std::to_string(insecure_port)}};
+            {1, "127.0.0.1:" + std::to_string(server.bound_port())}};
         auto client = kythira::grpc_client<types>(book, {}, kythira::noop_metrics{}, exec);
 
         auto vote =
@@ -119,13 +125,13 @@ auto demonstrate_core_rpcs(folly::CPUThreadPoolExecutor& exec) -> bool {
 auto demonstrate_optional_extensions(folly::CPUThreadPoolExecutor& exec) -> bool {
     std::cout << "\n[2] Optional extension RPCs (pre-vote, bootstrap, log-fetch)\n";
     try {
-        auto server = kythira::grpc_server<types>("127.0.0.1", insecure_port, {},
+        auto server = kythira::grpc_server<types>("127.0.0.1", ephemeral_port, {},
                                                   kythira::noop_metrics{}, exec);
         register_all_handlers(server);
         server.start();
 
         std::unordered_map<std::uint64_t, std::string> book{
-            {1, "127.0.0.1:" + std::to_string(insecure_port)}};
+            {1, "127.0.0.1:" + std::to_string(server.bound_port())}};
         auto client = kythira::grpc_client<types>(book, {}, kythira::noop_metrics{}, exec);
 
         auto pre =
@@ -138,7 +144,7 @@ auto demonstrate_optional_extensions(folly::CPUThreadPoolExecutor& exec) -> bool
                 .get();
         std::cout << "  RequestPreVote → granted=" << std::boolalpha << pre.vote_granted() << "\n";
 
-        const std::string addr = "127.0.0.1:" + std::to_string(insecure_port);
+        const std::string addr = "127.0.0.1:" + std::to_string(server.bound_port());
         auto join =
             client
                 .send_cluster_join_request(
@@ -168,7 +174,7 @@ auto demonstrate_error_handling(folly::CPUThreadPoolExecutor& exec) -> bool {
     std::cout << "\n[3] Error handling: unregistered extension → UNIMPLEMENTED\n";
     try {
         // Only a core handler; the pre-vote service is never registered.
-        auto server = kythira::grpc_server<types>("127.0.0.1", insecure_port, {},
+        auto server = kythira::grpc_server<types>("127.0.0.1", ephemeral_port, {},
                                                   kythira::noop_metrics{}, exec);
         server.register_request_vote_handler([](const kythira::request_vote_request<>& req) {
             return kythira::request_vote_response<>{._term = req.term(), ._vote_granted = false};
@@ -176,7 +182,7 @@ auto demonstrate_error_handling(folly::CPUThreadPoolExecutor& exec) -> bool {
         server.start();
 
         std::unordered_map<std::uint64_t, std::string> book{
-            {1, "127.0.0.1:" + std::to_string(insecure_port)}};
+            {1, "127.0.0.1:" + std::to_string(server.bound_port())}};
         auto client = kythira::grpc_client<types>(book, {}, kythira::noop_metrics{}, exec);
 
         bool caught = false;
@@ -226,7 +232,7 @@ auto demonstrate_mutual_tls(folly::CPUThreadPoolExecutor& exec) -> bool {
         server_cfg.ca_cert_pem = ca.root_certificate_pem();
         server_cfg.require_client_cert = true;
 
-        auto server = kythira::grpc_server<types>("127.0.0.1", tls_port, server_cfg,
+        auto server = kythira::grpc_server<types>("127.0.0.1", ephemeral_port, server_cfg,
                                                   kythira::noop_metrics{}, exec);
         register_all_handlers(server);
         server.start();
@@ -239,7 +245,7 @@ auto demonstrate_mutual_tls(folly::CPUThreadPoolExecutor& exec) -> bool {
         client_cfg.target_name_override = "localhost";
 
         std::unordered_map<std::uint64_t, std::string> book{
-            {1, "127.0.0.1:" + std::to_string(tls_port)}};
+            {1, "127.0.0.1:" + std::to_string(server.bound_port())}};
         auto client = kythira::grpc_client<types>(book, client_cfg, kythira::noop_metrics{}, exec);
 
         auto vote =
