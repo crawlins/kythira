@@ -1255,9 +1255,12 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
                 Response response =
                     _registry.template decode_with<Response>(response_media_type, response_data);
 
-                // Only now, after a clean decode, is the peer's choice worth
-                // remembering (Requirement 6.6).
-                _capability_cache.record(target, response_media_type);
+                // Record what the peer *accepted*, which is `content_type` --
+                // the type on the attempt that was not refused -- and not
+                // `response_media_type`, which is only what it answered in.
+                // Recorded here rather than at the 200 so that a response we
+                // cannot decode still leaves the cache alone (Requirement 6.5).
+                _capability_cache.record(target, content_type);
 
                 // Record response size
                 auto size_metric = _metrics;

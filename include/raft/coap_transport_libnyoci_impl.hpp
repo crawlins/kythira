@@ -1045,14 +1045,17 @@ private:
                     rpc->accept_formats.push_back(static_cast<std::uint16_t>(*format));
                 }
             }
-            rpc->resolve_callback = [promise, this, target](std::vector<std::byte> body,
-                                                            const std::string& media_type) {
+            rpc->resolve_callback = [promise, this, target, request_media_type](
+                                        std::vector<std::byte> body,
+                                        const std::string& media_type) {
                 try {
                     Response response = _registry.template decode_with<Response>(media_type, body);
-                    // Only recorded on a successful decode: caching a type we
-                    // could not read would make every later call to this peer
-                    // fail the same way.
-                    _capability_cache.record(target, media_type);
+                    // What the peer *accepted*, not what it answered in: the
+                    // two need not agree, and only the former is what the next
+                    // request has to get right (`peer_capability_cache.hpp`).
+                    // Only on a successful decode, so a response we could not
+                    // read never leaves a record of half an exchange.
+                    _capability_cache.record(target, request_media_type);
                     promise->setValue(std::move(response));
                 } catch (const std::exception& e) {
                     promise->setException(std::make_exception_ptr(coap_transport_error(

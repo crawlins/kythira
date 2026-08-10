@@ -1,20 +1,39 @@
 #pragma once
 
 /// @file peer_capability_cache.hpp
-/// @brief Remembers which media type each peer last answered in, so a client
-///        stops guessing after the first successful exchange.
+/// @brief Remembers which media type each peer last *accepted a request in*, so
+///        a client stops guessing after the first successful exchange.
 ///
 /// Shared by `cpp_httplib_client` and `boost_beast_client` rather than
 /// reimplemented per transport, for the same reason `parse_accept_header` is
 /// shared: two copies of a caching rule drift, and the drift is invisible until
 /// a peer happens to use the transport with the stale copy.
 ///
+/// **Accepted, not answered — and the distinction is the whole correctness
+/// argument.** What this cache is consulted for is the *request* encoding, so
+/// the only evidence worth storing is evidence about what the peer will decode:
+/// a request `Content-Type`/`Content-Format` that came back as anything other
+/// than a 415. The media type a peer *answers* in looks like the same fact and
+/// is not one. They coincide for our own server, which answers in a type drawn
+/// from a set it also decodes, and nothing in HTTP or CoAP obliges a foreign
+/// peer to accept what it replies in. Recording the response type instead — as
+/// this did until the asymmetry was measured — leaves a peer that decodes cbor
+/// but always answers json cached as json, 415ing and retrying on *every*
+/// subsequent request rather than converging after one, which is exactly the
+/// promise the next paragraph makes.
+///
 /// The cache is an *optimisation, not a protocol*. Every request still
 /// advertises the client's full `Accept` list, so a stale or missing entry
 /// costs at most one extra round of the peer choosing again — it can never make
 /// a request fail. That is what lets this have no TTL and no invalidation: a
-/// peer that changes its formats has its entry corrected by its next successful
-/// response, and in the meantime its own `Accept`-driven choice still wins.
+/// peer that changes what it decodes has its entry corrected by the next
+/// exchange that succeeds, and in the meantime its own `Accept`-driven choice
+/// still wins on the response leg.
+///
+/// `accept_post_negotiation_test` holds both halves of that claim as counts
+/// rather than as outcomes: a client that never converges completes every RPC
+/// too, just at one extra round trip each, so only the attempt count separates
+/// "corrected once" from "paying forever".
 
 #include <raft/http_content_negotiation.hpp>
 
@@ -29,7 +48,7 @@
 
 namespace kythira {
 
-/// @brief Per-target record of the media type a peer last successfully used.
+/// @brief Per-target record of the media type a peer last accepted a request in.
 /// @tparam Key Target identifier — `std::uint64_t` node id for ordinary RPCs,
 ///         or an address type for bootstrap calls that predate having a node id.
 ///
@@ -42,7 +61,8 @@ namespace kythira {
 /// copy, so the extra lock is not contended in any way that matters.
 template<typename Key = std::uint64_t> class peer_capability_cache {
 public:
-    /// @brief The media type @p key last answered in, if one was recorded.
+    /// @brief The media type @p key last accepted a request in, if one was
+    ///        recorded.
     [[nodiscard]] auto get(const Key& key) const -> std::optional<std::string> {
         const std::lock_guard<std::mutex> lock(_mutex);
         const auto it = _entries.find(key);
@@ -52,11 +72,17 @@ public:
         return it->second;
     }
 
-    /// @brief Record that @p key successfully answered in @p media_type.
+    /// @brief Record that @p key accepted a request encoded in @p media_type.
     ///
-    /// Only ever called after a response has decoded cleanly. Recording on a
-    /// failure would cache the very media type that just did not work, and the
-    /// next request would repeat the mistake with more confidence.
+    /// @p media_type is the *request*'s own `Content-Type`/`Content-Format` on
+    /// an attempt the peer did not reject — never the type the response came
+    /// back in. See the file comment: only the former is evidence about the leg
+    /// this cache steers.
+    ///
+    /// Only ever called after the whole exchange succeeded, response decode
+    /// included. Recording on a failure would cache the very media type that
+    /// just did not work, and the next request would repeat the mistake with
+    /// more confidence.
     auto record(const Key& key, std::string media_type) -> void {
         const std::lock_guard<std::mutex> lock(_mutex);
         _entries[key] = std::move(media_type);
@@ -80,6 +106,10 @@ private:
 };
 
 /// @brief Choose the media type to send to @p target.
+///
+/// Reads the cache written by `record` above, which is why that has to hold
+/// what the peer *accepts*: this is the request leg, and a cache of response
+/// types answers a different question.
 ///
 /// The cached type wins only if the registry still supports it — a registry can
 /// be reconfigured between calls, and sending a type this client can no longer

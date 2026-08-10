@@ -869,7 +869,7 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
         }();
 
         return std::move(response_future)
-            .thenValue([this, target, rpc_type, start_time,
+            .thenValue([this, target, rpc_type, start_time, content_type,
                         in_flight](beast_http::response<beast_http::string_body> resp) -> Response {
                 auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - start_time);
@@ -919,8 +919,12 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                     try {
                         auto decoded = _registry.template decode_with<Response>(response_media_type,
                                                                                 response_data);
-                        // Only a clean decode earns a cache entry (Requirement 6.6).
-                        _capability_cache.record(target, response_media_type);
+                        // The type the peer *accepted* -- this attempt's
+                        // request `Content-Type` -- not the one it answered
+                        // in. See `peer_capability_cache.hpp`; the two need
+                        // not agree, and only the former is what the next
+                        // request has to get right.
+                        _capability_cache.record(target, content_type);
                         return decoded;
                     } catch (const kythira::unsupported_media_type_error&) {
                         // Already the right type and already counted above;

@@ -316,9 +316,16 @@ and does not participate in wire-level content negotiation.
 **Client, receiving a response:**
 
 1. Read `Content-Type` from the response. If absent, treat as `registry.default_media_type()`.
-2. If `registry.supports(content_type)`: `response = registry.decode_with<Response>(content_type, body)`;
-   update `Peer_Capability_Cache[target] = content_type`.
-3. Else: fail the future with `unsupported_media_type_error` and leave the cache
+   Call it `response_media_type`, and keep it distinct from the `media_type` the *request*
+   was sent with — step 3 turns on the difference.
+2. If `registry.supports(response_media_type)`:
+   `response = registry.decode_with<Response>(response_media_type, body)`.
+3. On a clean decode, update `Peer_Capability_Cache[target] = media_type` — the
+   **request**'s type, not `response_media_type` (Requirement 6.4). The cache is read
+   only by step 1 of *sending*, so what it must hold is what the peer decodes; a peer
+   that answers in a type it will not accept is otherwise re-taught the same lesson on
+   every call. See `peer_capability_cache.hpp`'s file comment.
+4. Else: fail the future with `unsupported_media_type_error` and leave the cache
    untouched (Requirement 6.5).
 
 **Server (`cpp_httplib_server`/`boost_beast_server`/`proxygen_server`), receiving a request:**
@@ -413,11 +420,21 @@ A small `std::unordered_map<NodeId, std::string>` (or `Address` for bootstrap-on
 calls that address by contact address rather than node id) owned by the client, guarded
 by the same mutex the client already uses for its connection map. Read before encoding a
 request (Requirement 6.3), written after successfully decoding a response (Requirement
-6.4), never written on a negotiation failure (Requirement 6.5). No expiry/TTL — a peer
-that changes its supported formats will simply have its cache entry corrected on its next
-successful response, or the request will still succeed anyway since the client always
-also advertises its full `Accept` list on every request, giving the peer a fresh chance
-to pick a still-mutually-supported format even if the cached guess is stale.
+6.4), never written on a negotiation failure (Requirement 6.5).
+
+**What it stores is the request `Media_Type` the peer accepted, not the one it answered
+in.** The map is read on exactly one path — choosing how to encode the next request — so
+the only fact that belongs in it is a fact about what the peer decodes. The response's
+`Content-Type` is a different fact wearing the same shape: the two coincide for our own
+server, and a foreign peer may answer in a type it would reject on the way in. Storing
+the response's type makes such a peer permanently miscached, and the miss is re-paid on
+every call rather than once, which is precisely the bound the paragraph below claims.
+
+No expiry/TTL — a peer that changes what it decodes will simply have its cache entry
+corrected by the next exchange that succeeds, and in the meantime the request will still
+succeed anyway, since the client always also advertises its full `Accept` list on every
+request, giving the peer a fresh chance to pick a still-mutually-supported format even if
+the cached guess is stale.
 
 ## Testing Strategy
 
@@ -441,6 +458,12 @@ to pick a still-mutually-supported format even if the cached guess is stale.
 - **Property-based negotiation tests**: two-serializer client × two-serializer server,
   all four registry-order combinations, verifying request/response round-trips and that
   the `Peer_Capability_Cache` converges after the first exchange.
+- **An asymmetric peer** — one that accepts requests in a `Media_Type` it never answers
+  in (Requirement 6.7). A real server cannot be configured this way (its decodable set
+  comes from its registry *type*), so this needs a hand-rolled peer, and it is the only
+  shape that tells a cache of accepted types from a cache of answered ones. Asserted as
+  an **attempt count**, since both converge-immediately and never-converge complete every
+  RPC.
 - **Integration tests**: multi-serializer node ↔ single-serializer node, both directions,
   over both HTTP and CoAP.
 - **Negative tests**: unsupported `Content-Type` on input (415/4.15), unsatisfiable
