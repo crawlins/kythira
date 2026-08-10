@@ -61,11 +61,14 @@ constexpr std::chrono::milliseconds test_timeout{5000};
 // Instrumentation for the 720s stalls tracked in doc/TODO.md ("stalls at its
 // 720s budget -- OPEN"). CI logs showed every request sent and processed within
 // the same millisecond, with 77s, 85s and 220s gaps *between* iterations and
-// nothing logged in them. That shape says the process is not being scheduled
-// rather than that a lock is held, but the evidence had to be reconstructed by
-// reading raw timestamps by hand, and it could not say what the runner was
-// doing during a gap. These probes make the next occurrence attributable from
-// the artifact alone.
+// nothing logged in them, which was read as the process not being scheduled.
+// That reading was reconstructed from raw timestamps by hand, and these probes
+// disproved it the first time they fired (PR #199, run 31342882519): gap_ms is
+// 0 on every iteration, /proc/loadavg is ~0 on a 4-core runner, and all the
+// time -- up to 286 seconds of it -- is inside the iteration body. The lesson
+// is the reason this file measures rather than infers: log lines emitted by the
+// transport's own threads were never a record of where the *test's* iteration
+// boundaries fell.
 //
 // Two deliberate choices, both of which the obvious implementation gets wrong:
 //
@@ -235,9 +238,21 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
                                .count()) +
             " loadavg=[" + runner_loadavg() + "]");
 
+        // Sub-interval timestamps, so `prev_body_ms` can be attributed rather
+        // than only observed. The August 9 CI occurrence put 100-290 *seconds*
+        // inside a body whose four steps are a slot acquire, a 5ms sleep, a
+        // `send_request_vote` that returns a future without waiting on it, and a
+        // slot release -- none of which has any business taking a minute on an
+        // idle runner. One number cannot say which, and the whole point of this
+        // probe is that the next occurrence should not need another round trip
+        // to narrow.
+        auto acquired_at = request_start_times[i];
+        auto sent_at = request_start_times[i];
+
         try {
             // Test concurrent slot acquisition - this may fail due to limits
             if (client->acquire_concurrent_slot()) {
+                acquired_at = std::chrono::steady_clock::now();
                 successful_acquisitions.fetch_add(1);
 
                 // Track concurrent activity
@@ -259,6 +274,7 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
                 // Send request (this will fail in stub implementation, but we're
                 // testing the concurrency control)
                 auto future = client->send_request_vote(1, request, test_timeout);
+                sent_at = std::chrono::steady_clock::now();
 
                 // Release slot
                 client->release_concurrent_slot();
@@ -275,6 +291,24 @@ BOOST_AUTO_TEST_CASE(test_concurrent_request_processing_property,
             // Expected in stub implementation
             request_end_times[i] = std::chrono::steady_clock::now();
         }
+
+        // The body just measured, broken into its three intervals, emitted
+        // immediately rather than carried to the next iteration's line: a
+        // SIGALRM lands mid-body, and the iteration that stalls is precisely the
+        // one whose breakdown would otherwise never be printed. The three sum to
+        // this iteration's own `prev_body_ms` on the *next* line, which is the
+        // cross-check that they were measured around the right calls.
+        //
+        // A slot that was refused leaves `acquire_ms` covering the whole body
+        // and the other two at 0, since neither timestamp moves -- which is
+        // itself the answer if that is where the time goes.
+        const auto ms = [](auto d) {
+            return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(d).count());
+        };
+        stall_probe("body i=" + std::to_string(i) +
+                    " acquire_ms=" + ms(acquired_at - request_start_times[i]) +
+                    " send_ms=" + ms(sent_at - acquired_at) +
+                    " release_ms=" + ms(request_end_times[i] - sent_at));
 
         previous_iteration_end = request_end_times[i];
         request_futures.push_back(kythira::future_factory_default::makeFuture());
