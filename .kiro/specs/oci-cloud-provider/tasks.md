@@ -1,6 +1,27 @@
 # Implementation Plan — OCI Cloud Provider Support
 
-## Status: Not started (Task 0 partially complete — see `spike-notes.md`, dated 2026-07-28)
+## Status: Task 1 partially complete (Task 0 partially complete — see `spike-notes.md`, dated 2026-07-28)
+
+**Done, August 10, 2026** — the API-key signing path, which `spike-notes.md`
+Finding 1 unblocked:
+
+- `include/raft/oci_client_config.hpp` — the aggregate, unconditionally
+  compiled (Requirements 1.2–1.3).
+- `include/raft/oci_signing.hpp` — `sign_request` for API-key auth
+  (Requirements 1.4–1.5), plus `build_signing_string` and
+  `signed_header_names` split out so the canonical form is directly
+  assertable rather than only observable through a signature.
+  `instance_principal_signer` is the named stub Requirement 1.6 asks for
+  and throws pointing at `spike-notes.md` Task 0(b).
+- `tests/oci_signing_unit_test.cpp` — 8 cases. This is Task 5 work pulled
+  forward on purpose: nothing else in the build compiles these headers, so
+  without it they would sit in the tree unbuilt by CI, which is
+  indistinguishable from not having written them.
+
+**Still open in Task 1**: `include/raft/oci_http_client.hpp`, the
+`KYTHIRA_OCI_QUORUM_MANAGER`/`KYTHIRA_OCI_CERTIFICATES_PROVIDER` kconfig
+flags, and the `DEPENDENCIES.md` cross-reference (Requirements 1.7–1.9,
+11.1–11.3). Tasks 2–7 are untouched.
 
 ## Overview
 
