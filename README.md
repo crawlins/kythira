@@ -542,7 +542,7 @@ and mutual TLS) lives in
 full design is in
 [`.kiro/specs/grpc-transport/`](.kiro/specs/grpc-transport/); build-time
 troubleshooting is in
-[`doc/grpc_transport_README.md`](doc/grpc_transport_README.md).
+[`doc/grpc_transport_README.md`](https://github.com/crawlins/kythira/blob/main/doc/grpc_transport_README.md).
 
 ## Architecture
 
@@ -669,7 +669,7 @@ in-tree:
   [`proto/raft_messages.proto`](proto/raft_messages.proto). Like CBOR it carries
   byte fields natively (no base64), and it is measurably smaller and faster than
   JSON across every `AppendEntries` scenario benchmarked (see
-  [doc/protobuf_serializer_performance_comparison.md](doc/protobuf_serializer_performance_comparison.md)).
+  [doc/protobuf_serializer_performance_comparison.md](https://github.com/crawlins/kythira/blob/main/doc/protobuf_serializer_performance_comparison.md)).
   Unlike CBOR it depends on the `protobuf` package (declared in `vcpkg.json`) and
   is gated behind the `PROTOBUF_SERIALIZER` Kconfig symbol — when Protobuf is not
   found the serializer is skipped and the rest of the build is unaffected. It is
@@ -734,7 +734,7 @@ JSON, and shows the media type the transports emit.
 
 ### Test Status
 
-See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis, [doc/TODO.md](doc/TODO.md) for full task-by-task project status, and [doc/CHANGELOG.md](doc/CHANGELOG.md) for a dated history of what changed and why.
+See [doc/RAFT_TESTS_FINAL_STATUS.md](https://github.com/crawlins/kythira/blob/main/doc/RAFT_TESTS_FINAL_STATUS.md) for comprehensive test analysis, [doc/TODO.md](https://github.com/crawlins/kythira/blob/main/doc/TODO.md) for full task-by-task project status, and [doc/CHANGELOG.md](https://github.com/crawlins/kythira/blob/main/doc/CHANGELOG.md) for a dated history of what changed and why.
 
 **Summary**:
 - **Total Tests**: 393 (registered in CTest)
@@ -751,7 +751,7 @@ See [doc/RAFT_TESTS_FINAL_STATUS.md](doc/RAFT_TESTS_FINAL_STATUS.md) for compreh
 
 ### Running Tests
 
-**Important**: For large test suites, always store output first, then analyze. See [Test Execution Standards](.kiro/steering/test-execution-standards.md) for details.
+**Important**: For large test suites, always store output first, then analyze. See [Test Execution Standards](https://github.com/crawlins/kythira/blob/main/.kiro/steering/test-execution-standards.md) for details.
 
 ```bash
 # Recommended: Use the efficient test script
@@ -783,7 +783,8 @@ ctest --test-dir build --rerun-failed --output-on-failure
 - Preserve test history for comparison
 - More efficient use of resources
 
-See [test_results/README.md](test_results/README.md) for more analysis examples.
+`test_results/` is gitignored, so it is created on first use and its contents
+never leave your working tree.
 
 ## Code Style
 
@@ -923,7 +924,7 @@ All fault points follow the pattern `"raft/<layer>/<operation>"`:
 | `raft/state_machine/apply`               | Application-layer command rejection      |
 
 The full catalogue and design rationale are in
-[`.kiro/specs/libfiu-integration/design.md`](.kiro/specs/libfiu-integration/design.md).
+[`.kiro/specs/libfiu-integration/design.md`](https://github.com/crawlins/kythira/blob/main/.kiro/specs/libfiu-integration/design.md).
 
 ---
 
@@ -1044,7 +1045,7 @@ n3.unpartition();                                           // flush iptables
 ```
 
 The full design is in
-[`.kiro/specs/docker-chaos/design.md`](.kiro/specs/docker-chaos/design.md).
+[`.kiro/specs/docker-chaos/design.md`](https://github.com/crawlins/kythira/blob/main/.kiro/specs/docker-chaos/design.md).
 
 ---
 
@@ -1364,7 +1365,7 @@ for a runnable side-by-side comparison of both backends.
 > small-buffer-optimized move constructor at `-O2`/`-O3` was found and
 > fixed during implementation (`-fno-strict-aliasing` for GCC builds in
 > `CMakeLists.txt`) — see
-> [`spike-notes.md`](.kiro/specs/stdexec-future-backend/spike-notes.md)'s
+> [`spike-notes.md`](https://github.com/crawlins/kythira/blob/main/.kiro/specs/stdexec-future-backend/spike-notes.md)'s
 > "Phase 3 findings" for the full diagnosis if you hit unexplained
 > heap corruption while working in this area on GCC.
 
@@ -1386,7 +1387,7 @@ ctest --test-dir build -L future-backend
 ./build/examples/future_backend_benchmark_report
 ```
 
-See [`doc/future_backend_performance_comparison.md`](doc/future_backend_performance_comparison.md)
+See [`doc/future_backend_performance_comparison.md`](https://github.com/crawlins/kythira/blob/main/doc/future_backend_performance_comparison.md)
 for the full scenario catalog, methodology, known structural asymmetries,
 and reference numbers.
 
@@ -1461,45 +1462,45 @@ BOOST_AUTO_TEST_CASE(property_election_safety, * boost::unit_test::timeout(60)) 
 
 ### Raft Implementation
 
-- **[Raft Test Status](doc/RAFT_TESTS_FINAL_STATUS.md)** - Comprehensive test suite analysis
-- **[Raft Implementation Status](doc/RAFT_IMPLEMENTATION_STATUS.md)** - Per-component implementation status
-- **[Performance Validation](doc/PERFORMANCE_VALIDATION.md)** - Benchmark methodology and results
-- **[Test Fix Summary](TEST_FIX_SUMMARY.md)** - Property-based testing improvements
-- **[Raft Design](.kiro/specs/raft-consensus/design.md)** - Architecture and design decisions
-- **[Raft Requirements](.kiro/specs/raft-consensus/requirements.md)** - Detailed requirements
-- **[Raft Tasks](.kiro/specs/raft-consensus/tasks.md)** - Implementation task list
+- **[Raft Test Status](https://github.com/crawlins/kythira/blob/main/doc/RAFT_TESTS_FINAL_STATUS.md)** - Comprehensive test suite analysis
+- **[Raft Implementation Status](https://github.com/crawlins/kythira/blob/main/doc/RAFT_IMPLEMENTATION_STATUS.md)** - Per-component implementation status
+- **[Performance Validation](https://github.com/crawlins/kythira/blob/main/doc/PERFORMANCE_VALIDATION.md)** - Benchmark methodology and results
+- **[Test Fix Summary](https://github.com/crawlins/kythira/blob/main/TEST_FIX_SUMMARY.md)** - Property-based testing improvements
+- **[Raft Design](https://github.com/crawlins/kythira/blob/main/.kiro/specs/raft-consensus/design.md)** - Architecture and design decisions
+- **[Raft Requirements](https://github.com/crawlins/kythira/blob/main/.kiro/specs/raft-consensus/requirements.md)** - Detailed requirements
+- **[Raft Tasks](https://github.com/crawlins/kythira/blob/main/.kiro/specs/raft-consensus/tasks.md)** - Implementation task list
 
 ### Transport Layers
 
-- **[HTTP Transport Design](.kiro/specs/http-transport/design.md)** - HTTP/HTTPS transport architecture
-- **[HTTP Transport Troubleshooting](doc/http_transport_troubleshooting.md)** - Common issues and solutions
-- **[CoAP Transport README](doc/coap_transport_README.md)** - CoAP/CoAPS overview and quick start
-- **[CoAP Transport API](doc/coap_transport_api.md)** - Complete CoAP API reference
-- **[CoAP DTLS Configuration](doc/coap_dtls_configuration.md)** - Security setup guide
-- **[CoAP Performance Tuning](doc/coap_performance_tuning.md)** - Optimization recommendations
-- **[CoAP Troubleshooting](doc/coap_troubleshooting.md)** - Diagnostic procedures
-- **[gRPC Transport Design](.kiro/specs/grpc-transport/design.md)** - gRPC/Protobuf transport architecture
-- **[gRPC Transport README](doc/grpc_transport_README.md)** - Overview and build/TLS troubleshooting
-- **[Network Simulator Design](.kiro/specs/network-simulator/design.md)** - Simulator architecture
+- **[HTTP Transport Design](https://github.com/crawlins/kythira/blob/main/.kiro/specs/http-transport/design.md)** - HTTP/HTTPS transport architecture
+- **[HTTP Transport Troubleshooting](https://github.com/crawlins/kythira/blob/main/doc/http_transport_troubleshooting.md)** - Common issues and solutions
+- **[CoAP Transport README](https://github.com/crawlins/kythira/blob/main/doc/coap_transport_README.md)** - CoAP/CoAPS overview and quick start
+- **[CoAP Transport API](https://github.com/crawlins/kythira/blob/main/doc/coap_transport_api.md)** - Complete CoAP API reference
+- **[CoAP DTLS Configuration](https://github.com/crawlins/kythira/blob/main/doc/coap_dtls_configuration.md)** - Security setup guide
+- **[CoAP Performance Tuning](https://github.com/crawlins/kythira/blob/main/doc/coap_performance_tuning.md)** - Optimization recommendations
+- **[CoAP Troubleshooting](https://github.com/crawlins/kythira/blob/main/doc/coap_troubleshooting.md)** - Diagnostic procedures
+- **[gRPC Transport Design](https://github.com/crawlins/kythira/blob/main/.kiro/specs/grpc-transport/design.md)** - gRPC/Protobuf transport architecture
+- **[gRPC Transport README](https://github.com/crawlins/kythira/blob/main/doc/grpc_transport_README.md)** - Overview and build/TLS troubleshooting
+- **[Network Simulator Design](https://github.com/crawlins/kythira/blob/main/.kiro/specs/network-simulator/design.md)** - Simulator architecture
 
 ### Certificate Authority & ACME
 
-- **[Certificate Authority Design](.kiro/specs/certificate-authority/design.md)** - `certificate_authority`, `ca_service`, `ca_cluster_node`, and ACME architecture
-- **[Certificate Authority Requirements](.kiro/specs/certificate-authority/requirements.md)** - Detailed requirements
-- **[Certificate Authority Tasks](.kiro/specs/certificate-authority/tasks.md)** - Implementation task list
+- **[Certificate Authority Design](https://github.com/crawlins/kythira/blob/main/.kiro/specs/certificate-authority/design.md)** - `certificate_authority`, `ca_service`, `ca_cluster_node`, and ACME architecture
+- **[Certificate Authority Requirements](https://github.com/crawlins/kythira/blob/main/.kiro/specs/certificate-authority/requirements.md)** - Detailed requirements
+- **[Certificate Authority Tasks](https://github.com/crawlins/kythira/blob/main/.kiro/specs/certificate-authority/tasks.md)** - Implementation task list
 
 ### Async Operations
 
-- **[Async Retry Patterns](doc/async_retry_patterns.md)** - Retry logic and error handling
-- **[Async Retry Validation](doc/async_retry_validation.md)** - Testing async retry behavior
-- **[Future Wrapper Requirements](doc/future_wrapper_async_retry_requirements.md)** - Future abstraction design
+- **[Async Retry Patterns](https://github.com/crawlins/kythira/blob/main/doc/async_retry_patterns.md)** - Retry logic and error handling
+- **[Async Retry Validation](https://github.com/crawlins/kythira/blob/main/doc/async_retry_validation.md)** - Testing async retry behavior
+- **[Future Wrapper Requirements](https://github.com/crawlins/kythira/blob/main/doc/future_wrapper_async_retry_requirements.md)** - Future abstraction design
 
 ### Core Concepts
 
-- **[Concepts Documentation](doc/concepts_documentation.md)** - Enhanced C++20 concepts guide
-- **[Concepts API Reference](doc/concepts_api_reference.md)** - Complete API reference
-- **[Generic Future Architecture](doc/generic_future_architecture.md)** - Future abstraction design
-- **[Future Migration Guide](doc/future_migration_guide.md)** - Migrating to generic futures
+- **[Concepts Documentation](https://github.com/crawlins/kythira/blob/main/doc/concepts_documentation.md)** - Enhanced C++20 concepts guide
+- **[Concepts API Reference](https://github.com/crawlins/kythira/blob/main/doc/concepts_api_reference.md)** - Complete API reference
+- **[Generic Future Architecture](https://github.com/crawlins/kythira/blob/main/doc/generic_future_architecture.md)** - Future abstraction design
+- **[Future Migration Guide](https://github.com/crawlins/kythira/blob/main/doc/future_migration_guide.md)** - Migrating to generic futures
 
 ### Examples
 
@@ -1572,7 +1573,7 @@ The implementation has been tested with multiple transport layers:
   (direct Compute Engine instances), `gcp_mig_quorum_manager` (Managed
   Instance Groups), and `gcp_privateca_certificate_provider` (Certificate
   Authority Service). See
-  [`doc/gcp_quorum_manager_README.md`](doc/gcp_quorum_manager_README.md).
+  [`doc/gcp_quorum_manager_README.md`](https://github.com/crawlins/kythira/blob/main/doc/gcp_quorum_manager_README.md).
 ✅ **Peer-to-Peer Log Replication**: opt-in gossip-based catch-up
   (`tcp_gossip_peer2peer_replicator`) so lagging followers can pull missing
   entries from any peer, not just the leader; leader remains sole commit
@@ -1585,7 +1586,7 @@ The implementation has been tested with multiple transport layers:
   default cpp-httplib transport — same `transport_types` concept, a
   template-argument swap away; neither replaces cpp-httplib as the default
   for any existing call site. See
-  [`doc/http_transport_performance_comparison.md`](doc/http_transport_performance_comparison.md)
+  [`doc/http_transport_performance_comparison.md`](https://github.com/crawlins/kythira/blob/main/doc/http_transport_performance_comparison.md)
   for a measured throughput/latency comparison across all three.
 ✅ **Testing**: 393/395 tests passing, comprehensive property/integration/chaos testing
   (the 2 non-passing are a pre-existing, already-documented intermittent-hang
@@ -1595,8 +1596,8 @@ The implementation has been tested with multiple transport layers:
   `azure_vmss_quorum_manager`, and `azure_key_vault_ca_provider` — see the
   dedicated section below. AWS, Azure, and GCP are all implemented today.
 
-See [`doc/TODO.md`](doc/TODO.md) for the full task-by-task status, or
-[`doc/CHANGELOG.md`](doc/CHANGELOG.md) for a dated history of what changed and why.
+See [`doc/TODO.md`](https://github.com/crawlins/kythira/blob/main/doc/TODO.md) for the full task-by-task status, or
+[`doc/CHANGELOG.md`](https://github.com/crawlins/kythira/blob/main/doc/CHANGELOG.md) for a dated history of what changed and why.
 
 ### What's In Progress
 
@@ -1619,7 +1620,7 @@ Before deploying to production:
 
 ## Contributing
 
-Contributions are welcome! See [`doc/TODO.md`](doc/TODO.md) for the full
+Contributions are welcome! See [`doc/TODO.md`](https://github.com/crawlins/kythira/blob/main/doc/TODO.md) for the full
 outstanding-work list. Areas where help is needed:
 
 1. **Additional cloud providers**: OCI and Alibaba Cloud quorum
@@ -1647,7 +1648,7 @@ outstanding-work list. Areas where help is needed:
 - Ensure sufficient file descriptors for connections
 - Check logs for detailed error messages
 
-See [HTTP Transport Troubleshooting](doc/http_transport_troubleshooting.md) for transport-specific issues.
+See [HTTP Transport Troubleshooting](https://github.com/crawlins/kythira/blob/main/doc/http_transport_troubleshooting.md) for transport-specific issues.
 
 ## References
 

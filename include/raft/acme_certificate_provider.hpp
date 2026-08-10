@@ -105,6 +105,13 @@ enum class kind : std::uint8_t {
     return kind::dns;
 }
 
+/// @brief Selects the ACME challenge type for an identifier.
+///
+/// The explicit `@brief` matters here: `JAVADOC_AUTOBRIEF` ends the brief at the
+/// first period, which without it lands *inside* the `_acme-challenge.<ip>.`
+/// code span and splits the generated `<tt>` open and close tags across the
+/// brief/detail boundary — five Doxygen warnings.
+///
 /// `ip` identifiers always use `http-01` (RFC 8738 §3 — there is no sensible
 /// `_acme-challenge.<ip>.` dns-01 zone for a bare IP literal); `dns`
 /// identifiers use whichever challenge type `configured` selects.

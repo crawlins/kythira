@@ -277,15 +277,22 @@ struct DefaultNetworkTypes {
 
 }  // namespace network_simulator
 
+// These are written as members of an explicitly reopened `namespace std` rather
+// than as `template<> struct std::hash<...>` at global scope.  Both forms are
+// valid C++, but Doxygen 1.9.x cannot resolve the qualified-name form and emits
+// "Internal inconsistency: scope for class std::hash< ... > not found!" for each
+// one.  Reopening the namespace is what makes the docs build warning-free.
+namespace std {
+
 // Hash specialization for IPv4Address
-template<> struct std::hash<network_simulator::IPv4Address> {
+template<> struct hash<network_simulator::IPv4Address> {
     auto operator()(const network_simulator::IPv4Address& addr) const -> std::size_t {
         return std::hash<uint32_t>{}(addr._addr.s_addr);
     }
 };
 
 // Hash specialization for IPv6Address
-template<> struct std::hash<network_simulator::IPv6Address> {
+template<> struct hash<network_simulator::IPv6Address> {
     auto operator()(const network_simulator::IPv6Address& addr) const -> std::size_t {
         std::size_t hash = 0;
         for (std::size_t i = 0; i < sizeof(in6_addr); ++i) {
@@ -298,7 +305,7 @@ template<> struct std::hash<network_simulator::IPv6Address> {
 };
 
 // Hash specialization for Endpoint
-template<typename Types> struct std::hash<network_simulator::Endpoint<Types>> {
+template<typename Types> struct hash<network_simulator::Endpoint<Types>> {
     auto operator()(const network_simulator::Endpoint<Types>& ep) const -> std::size_t {
         std::size_t h1 = std::hash<typename Types::address_type>{}(ep.address);
         std::size_t h2 = std::hash<typename Types::port_type>{}(ep.port);
@@ -307,7 +314,7 @@ template<typename Types> struct std::hash<network_simulator::Endpoint<Types>> {
 };
 
 // Hash specialization for ConnectionId
-template<typename Types> struct std::hash<network_simulator::ConnectionId<Types>> {
+template<typename Types> struct hash<network_simulator::ConnectionId<Types>> {
     auto operator()(const network_simulator::ConnectionId<Types>& conn_id) const -> std::size_t {
         std::size_t h1 = std::hash<typename Types::address_type>{}(conn_id.src_addr);
         std::size_t h2 = std::hash<typename Types::port_type>{}(conn_id.src_port);
@@ -316,3 +323,5 @@ template<typename Types> struct std::hash<network_simulator::ConnectionId<Types>
         return h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3);
     }
 };
+
+}  // namespace std
