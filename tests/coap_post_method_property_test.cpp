@@ -27,7 +27,6 @@ constexpr std::uint64_t max_node_id = 100;
 // fixed literal well outside the ephemeral range (32768-60999) and distinct
 // from every other coap_*_test.cpp's assigned literal is safe.
 constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61140";
-constexpr std::chrono::milliseconds test_timeout{5000};
 }
 
 // Define test types for CoAP transport

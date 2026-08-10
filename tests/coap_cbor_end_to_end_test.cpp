@@ -38,7 +38,13 @@ constexpr const char* test_bind_address = "127.0.0.1";
 // test uses 57831 -- but it silently assumes both that the port is unoccupied
 // on the runner and that no future test picks the same number.
 constexpr std::uint64_t test_node_id = 1;
-constexpr std::chrono::milliseconds test_timeout{5000};
+// Scaled, because this is handed *into* the code under test -- it is both the
+// RPC's own deadline and the budget of the BOOST_REQUIRE(future.wait(...)) that
+// follows it. Scaling each case's timeout() never reaches it, so at CI's
+// KYTHIRA_TEST_TIMEOUT_SCALE=4 the case gets 120s while the exchange inside it
+// would keep 5s. Same shape as the coap_negotiation_failure_test deadline that
+// failed the boost leg 3/3 attempts on two consecutive runs.
+constexpr auto test_timeout = kythira::testing::scaled_deadline(5000);
 
 using test_serializer = kythira::cbor_rpc_serializer<std::vector<std::byte>>;
 

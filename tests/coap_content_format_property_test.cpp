@@ -26,7 +26,14 @@ constexpr std::uint64_t max_node_id = 100;
 // so a fixed literal well outside the ephemeral range (32768-60999) and
 // distinct from every other coap_*_test.cpp's assigned literal is safe.
 constexpr const char* test_coap_endpoint = "coap://127.0.0.1:61020";
-constexpr std::chrono::milliseconds test_timeout{5000};
+// Scaled, because this is handed *into* the code under test -- in the first
+// case it is purely the budget of BOOST_TEST(future.wait(...)) waiting on the
+// nack handler, and elsewhere it is that budget and the RPC's own deadline
+// both. Scaling each case's timeout() never reaches it, so at CI's
+// KYTHIRA_TEST_TIMEOUT_SCALE=4 a case gets 240s while the wait inside it would
+// keep 5s. Costs nothing when the build is fast: wait() returns as soon as the
+// future resolves.
+constexpr auto test_timeout = kythira::testing::scaled_deadline(5000);
 
 // Define test types for CoAP transport
 struct test_transport_types {

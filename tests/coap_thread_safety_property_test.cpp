@@ -50,7 +50,6 @@ using namespace kythira;
 
 namespace {
 constexpr std::size_t test_iterations = 10;  // Reduced for faster execution
-constexpr std::chrono::milliseconds test_timeout{45000};
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 16683;
 constexpr std::size_t test_thread_count = 8;

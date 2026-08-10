@@ -21,7 +21,6 @@ constexpr std::size_t max_payload_size = 8192;
 constexpr std::size_t min_block_size = 64;
 constexpr std::size_t max_block_size = 1024;
 constexpr std::size_t test_iterations = 50;
-constexpr std::chrono::milliseconds test_timeout{30000};  // 30 seconds
 }
 
 BOOST_AUTO_TEST_CASE(test_block_option_encoding_decoding,

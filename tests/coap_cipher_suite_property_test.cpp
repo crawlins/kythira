@@ -16,7 +16,6 @@ using namespace kythira;
 
 namespace {
 constexpr std::size_t test_iterations = 100;
-constexpr std::chrono::milliseconds test_timeout{30000};
 constexpr const char* test_bind_address = "127.0.0.1";
 constexpr std::uint16_t test_bind_port = 19683;
 constexpr const char* test_cert_file = "/tmp/test_cert.pem";
