@@ -883,15 +883,39 @@ unverified completion claim.
       overwrite an existing entry fails that case alone, at `6 != 5`, with the
       other four still green — so the case is attributable, and it is the only
       thing in the tree that can see the correction happen.
-  - **Still not covered, and worth a look**: a peer whose request and response
-    media types *differ*. `record()` stores the type the peer **answered** in
-    and `select_request_media_type()` reuses it as the type to **send** in, so
-    the cache is only sound while those coincide — which they do for our own
-    server and need not for a foreign one. A peer that decodes cbor but always
-    answers json would be cached as json, 415 on every subsequent request, and
-    pay the retry forever rather than once. The case above deliberately keeps
-    the two types equal so that "the cache was contradicted" is the only
-    variable moving.
+  - **The asymmetric peer was a real defect, and is FIXED — August 10, 2026.**
+    This was carried here as "still not covered, and worth a look" on the
+    strength of reading the code; measuring it confirmed it outright.
+    `record()` stored the type the peer **answered** in while
+    `select_request_media_type()` reused it as the type to **send** in, so the
+    cache was only sound while those coincided — which they do for our own
+    server and need not for a foreign one, since nothing in HTTP or CoAP
+    obliges a peer to accept the media type it replies in.
+    - **Measured before it was fixed.** `flipping_peer` gained an optional
+      "answers in" type, and a sixth case stands up a peer accepting **cbor**
+      and answering **json**, both types the client holds. Against the old
+      code, three RPCs cost **five attempts** — send cbor, get json back, cache
+      json, then 415-and-retry on every single later call. Not a slow
+      convergence: no convergence, unbounded, and the RPCs all *succeed*, so
+      only an attempt count can see it. After the fix, three attempts and zero
+      retries.
+    - **The fix is one line per transport**: record the *request*'s own
+      `Content-Type`/`Content-Format` — the attempt the peer did not answer
+      with 415/4.15 — rather than the response's. That is the direct evidence,
+      and it is the only kind the cache is read for, since it steers the
+      request leg alone. Six sites: cpp-httplib, Beast, Proxygen (both the
+      generic-bridge and the folly fast path), libcoap, libnyoci and cantcoap.
+    - **What it gives up, deliberately**: recording the response type let a
+      pair drift onto the *peer's* preferred format for requests too. That was
+      never a requirement, and it is worth nothing here — `default_media_type()`
+      is `preferred_media_types()[0]`, so the drift could only ever move a
+      request off our own top preference, and it is exactly the mechanism that
+      produced the unbounded retry.
+    - The claim in `peer_capability_cache.hpp` that justifies having no TTL —
+      "costs at most one extra round" — was false for this shape of peer by an
+      unbounded margin. It is now true, and the file says which fact it stores
+      and why the other one looks identical. Requirement 6.4 said to store the
+      response's type and has been corrected; 6.7 states the bound as a count.
 
 - **CoAP's `Accept` option is not repeatable, and the client was sending several
   — FIXED August 8, 2026.** Found while adding the retry above, because that was

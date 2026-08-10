@@ -135,12 +135,23 @@ BOOST_AUTO_TEST_CASE(cbor_first_client_against_cbor_first_server_uses_cbor) {
 /// Convergence is asserted as *stability across three exchanges*, which is what
 /// the requirement is about: the cache is an optimisation, so the observable
 /// promise is that it never sends the client somewhere worse than where it
-/// started. Asserting only "the second request matches the first" would also
-/// hold for a cache that was never written to at all, so the server-side type is
-/// checked alongside — the two agreeing on every exchange is what rules that
-/// out. The "our order wins" mutation confirms the assertion is not vacuous: it
-/// makes the cache record the server's choice, and requests 2 and 3 then differ
-/// from request 1.
+/// started.
+///
+/// **This cell no longer distinguishes a written cache from an absent one, and
+/// that is deliberate rather than an oversight.** It used to: the cache held the
+/// media type the peer *answered* in, so an "our order wins" mutation on the
+/// server made the response json, the cache recorded json, and requests 2 and 3
+/// visibly diverged from request 1. Requirement 6.4 now stores the type the peer
+/// **accepted** — the request's own — precisely because the response type is a
+/// different fact (see `peer_capability_cache.hpp`), and under that rule a
+/// client with no cache at all sends its default all three times and looks
+/// identical from here.
+///
+/// What still pins that the cache is written is `accept_post_negotiation_test`,
+/// where the first attempt is *refused*: requests 2 and 3 open with the type the
+/// retry found only if the first exchange left a record, and the attempt count
+/// separates the two outright. This case keeps the stability property, which is
+/// the one Task 14 names.
 BOOST_AUTO_TEST_CASE(the_capability_cache_converges_after_the_first_exchange) {
     const auto obs = run_exchange<cbor_first_types, json_first_types>(18254);
 

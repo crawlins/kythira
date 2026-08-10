@@ -2570,8 +2570,8 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
             std::lock_guard lock(_mutex);
             auto pending_msg = std::make_unique<pending_message>(
                 token, coap_pdu_get_mid(pdu), timeout,
-                [promise, this, target](std::vector<std::byte> response_data,
-                                        const std::string& response_media_type) {
+                [promise, this, target, request_media_type](
+                    std::vector<std::byte> response_data, const std::string& response_media_type) {
                     try {
                         // Decode in the type the peer declared, not whichever
                         // serializer this client was built with.
@@ -2579,13 +2579,15 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                         // registry cannot decode, so this lookup cannot fail.
                         Response response = _registry.template decode_with<Response>(
                             response_media_type, response_data);
-                        // Remember what worked, so the next call to this peer
-                        // starts from a format it has actually spoken
-                        // (Requirement 6.4). Recorded only on a successful
-                        // decode: caching a type we could not read would make
-                        // every subsequent request to this peer fail the same
-                        // way.
-                        _capability_cache.record(target, response_media_type);
+                        // Remember what the peer *accepted* -- the request's
+                        // own Content-Format, which this exchange proved it
+                        // decodes -- rather than what it answered in. The two
+                        // need not agree, and only the former is what the next
+                        // request has to get right; see
+                        // `peer_capability_cache.hpp`. Recorded only on a
+                        // successful decode: caching after a response we could
+                        // not read would mean acting on half an exchange.
+                        _capability_cache.record(target, request_media_type);
                         promise->setValue(std::move(response));
                     } catch (const std::exception& e) {
                         promise->setException(std::make_exception_ptr(coap_transport_error(

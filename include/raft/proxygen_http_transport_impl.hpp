@@ -970,8 +970,8 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                         });
                         return hop_future;
                     })
-                    .thenValue([this, target, rpc_type,
-                                start_time](proxygen_detail::http_response resp) -> Response {
+                    .thenValue([this, target, rpc_type, start_time,
+                                content_type](proxygen_detail::http_response resp) -> Response {
                         auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now() - start_time);
                         auto latency_metric = _metrics;
@@ -1015,9 +1015,11 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                             try {
                                 auto decoded = _registry.template decode_with<Response>(
                                     response_media_type, response_data);
-                                // Only a clean decode earns a cache entry
-                                // (Requirement 6.6).
-                                _capability_cache.record(target, response_media_type);
+                                // The type the peer *accepted* -- this
+                                // attempt's request `Content-Type` -- not the
+                                // one it answered in; see
+                                // `peer_capability_cache.hpp`.
+                                _capability_cache.record(target, content_type);
                                 return decoded;
                             } catch (const kythira::unsupported_media_type_error&) {
                                 // Already the right type and already counted
@@ -1147,8 +1149,8 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                                                                       content_type, accept);
                     })
                     .via(evb)
-                    .thenValue([this, target, rpc_type,
-                                start_time](proxygen_detail::http_response resp) -> Response {
+                    .thenValue([this, target, rpc_type, start_time,
+                                content_type](proxygen_detail::http_response resp) -> Response {
                         auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
                             std::chrono::steady_clock::now() - start_time);
                         auto latency_metric = _metrics;
@@ -1192,9 +1194,11 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                             try {
                                 auto decoded = _registry.template decode_with<Response>(
                                     response_media_type, response_data);
-                                // Only a clean decode earns a cache entry
-                                // (Requirement 6.6).
-                                _capability_cache.record(target, response_media_type);
+                                // The type the peer *accepted* -- this
+                                // attempt's request `Content-Type` -- not the
+                                // one it answered in; see
+                                // `peer_capability_cache.hpp`.
+                                _capability_cache.record(target, content_type);
                                 return decoded;
                             } catch (const kythira::unsupported_media_type_error&) {
                                 // Already the right type and already counted

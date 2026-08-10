@@ -265,16 +265,28 @@ without renegotiating from scratch on every call.
    encode the outgoing request body with that cached `Media_Type`'s serializer instead
    of the default.
 4. WHEN a response is received THEN the system SHALL read the response's
-   `Content-Type`/`Content-Format` `Content_Declaration`, use the matching registered
-   serializer to decode it, and update the `Peer_Capability_Cache` entry for that target
-   node to the observed `Media_Type` (creating the entry on first contact).
+   `Content-Type`/`Content-Format` `Content_Declaration` and use the matching registered
+   serializer to decode it; and WHEN that decode succeeds THEN the system SHALL update
+   the `Peer_Capability_Cache` entry for that target node (creating it on first contact)
+   to the `Media_Type` the **request** was encoded in — the attempt the peer did not
+   answer with 415/4.15 — and SHALL NOT set it from the `Media_Type` of the response.
+   The two are different facts. This cache is read only to pick a *request* encoding, so
+   the evidence it needs is evidence about what the peer decodes; a peer is nowhere
+   obliged to accept the `Media_Type` it replies in, and one that decodes cbor while
+   always answering json would otherwise be cached as json and pay a rejected first
+   attempt on every subsequent call rather than converging after one.
 5. WHEN a response's `Content_Declaration` names a `Media_Type` absent from the client's
    own registry THEN the system SHALL set the pending future/promise to an error state
-   with `Unsupported_Media_Type_Error` and SHALL NOT update the `Peer_Capability_Cache`
-   from that response.
+   with `Unsupported_Media_Type_Error` and SHALL NOT update the `Peer_Capability_Cache`.
 6. WHEN a response has no `Content_Declaration` at all (header/option absent) THEN the
    system SHALL decode using the registry's `Default_Serializer`, matching today's
-   behavior, and SHALL NOT update the `Peer_Capability_Cache` from that response.
+   behavior. The cache update in 6.4 still applies: it is drawn from the request, so an
+   absent response declaration leaves nothing about it to be uncertain of.
+7. WHEN a peer accepts requests in one `Media_Type` and answers in a different one, both
+   of which the client supports, THEN the system SHALL issue at most one rejected
+   attempt across all calls to that peer — not one per call. This is the property 6.4's
+   choice of `Media_Type` exists to hold, and it is observable only as an attempt count:
+   a client that never converges completes every RPC too, one round trip slower each.
 
 ### Requirement 7
 

@@ -76,6 +76,7 @@ constexpr std::uint16_t advertise_port = 18310;
 constexpr std::uint16_t informed_retry_port = 18311;
 constexpr std::uint16_t single_serializer_port = 18312;
 constexpr std::uint16_t flip_port = 18313;
+constexpr std::uint16_t asymmetric_port = 18314;
 
 // Spelled locally, as `negotiation_failure_test` does for the same reason: the
 // transport's own copies live in an anonymous namespace inside `kythira`, so
@@ -107,13 +108,15 @@ using single_cbor_types =
 /// justifies the cache having no TTL and no invalidation path entirely
 /// unexercised.
 ///
-/// Answers in the same media type it accepted. That is the symmetric case and
-/// deliberately the one tested: it isolates "the cache was contradicted" from
-/// the separate question of a peer whose request and response types differ,
-/// which would move two variables at once.
+/// Answers in the same media type it accepted unless @p answers_in says
+/// otherwise. Symmetric is the default because it isolates "the cache was
+/// contradicted" from the separate question of a peer whose request and response
+/// types differ, which would move two variables at once. The asymmetric case is
+/// its own test below, and the one place this parameter is used.
 class flipping_peer {
 public:
-    explicit flipping_peer(std::string accepted) : _accepted(std::move(accepted)) {
+    explicit flipping_peer(std::string accepted, std::string answers_in = {})
+        : _accepted(std::move(accepted)), _answers_in(std::move(answers_in)) {
         _server.Post(endpoint_request_vote, [this](const httplib::Request& req,
                                                    httplib::Response& resp) { handle(req, resp); });
     }
@@ -125,8 +128,8 @@ public:
         _accepted = std::move(media_type);
     }
 
-    auto start() -> void {
-        _thread = std::thread([this] { _server.listen(bind_address, flip_port); });
+    auto start(std::uint16_t port) -> void {
+        _thread = std::thread([this, port] { _server.listen(bind_address, port); });
         _server.wait_until_ready();
     }
 
@@ -181,11 +184,14 @@ private:
         response._term = 6;
         response._vote_granted = true;
 
+        // What this peer answers in, which is not necessarily what it accepts.
+        const std::string answer = _answers_in.empty() ? accepted : _answers_in;
+
         // Encoded through the same serializers the client holds, so a decode
         // failure would be a real incompatibility rather than an artefact of a
         // hand-written body.
-        data_type encoded = accepted == cbor_media ? cbor_serializer{}.serialize(response)
-                                                   : json_serializer{}.serialize(response);
+        data_type encoded = answer == cbor_media ? cbor_serializer{}.serialize(response)
+                                                 : json_serializer{}.serialize(response);
 
         std::string body;
         body.reserve(encoded.size());
@@ -193,13 +199,15 @@ private:
             body.push_back(static_cast<char>(b));
         }
         resp.status = 200;
-        resp.set_content(body, accepted.c_str());
+        resp.set_content(body, answer.c_str());
     }
 
     httplib::Server _server;
     std::thread _thread;
     mutable std::mutex _mutex;
     std::string _accepted;
+    /// Empty means "answer in whatever was accepted"; see the class comment.
+    std::string _answers_in;
     std::vector<std::string> _received;
     std::atomic<int> _accepted_requests{0};
 };
@@ -343,7 +351,7 @@ BOOST_AUTO_TEST_CASE(a_single_serializer_client_still_fails_cleanly_when_adverti
 /// all three.
 BOOST_AUTO_TEST_CASE(a_cached_media_type_is_corrected_when_the_peer_stops_taking_it) {
     flipping_peer peer{json_media};
-    peer.start();
+    peer.start(flip_port);
 
     recording_metrics client_metrics;
     int failures = 0;
@@ -421,6 +429,99 @@ BOOST_AUTO_TEST_CASE(a_cached_media_type_is_corrected_when_the_peer_stops_taking
     // The peer's own record of what arrived, as a cross-check on the metric. If
     // these ever disagree, the metric is measuring something other than what
     // went on the wire, and every conclusion above drawn from it is void.
+    const auto received = peer.received_content_types();
+    BOOST_REQUIRE_EQUAL(received.size(), sent.size());
+    for (std::size_t i = 0; i < received.size(); ++i) {
+        BOOST_CHECK_EQUAL(received[i], sent[i]);
+    }
+}
+
+/// A peer whose request and response media types differ — the case the cache's
+/// own header comment promises cannot cost more than one extra round trip.
+///
+/// `peer_capability_cache.hpp` says a stale entry "costs at most one extra round
+/// of the peer choosing again". That holds only while "the type this peer
+/// answered in" and "the type this peer accepts" are the same thing. They
+/// coincide for our own server, which answers in whatever its `Accept`-driven
+/// choice picked from a set it also decodes, and they need not coincide for a
+/// foreign one: nothing in HTTP, and nothing in Requirement 6, obliges a server
+/// to accept the media type it replies in.
+///
+/// This peer decodes **cbor only** and answers in **json** every time. Both are
+/// types the client holds, so nothing here fails; the whole defect is a cost.
+/// Under a cache keyed on the *response* type the client relearns the same
+/// lesson on every single call — send json, take a 415, retry cbor — and the
+/// "at most one extra round" claim is false by an unbounded margin rather than
+/// off by one.
+///
+/// **Counted, not merely succeeded**, for the same reason as the flip test
+/// above: a client that never converges and a client that converges immediately
+/// both complete all three RPCs. Three attempts means the cache learned what the
+/// peer accepts; five means it is paying the retry forever.
+BOOST_AUTO_TEST_CASE(a_peer_that_answers_in_a_type_it_will_not_accept_converges) {
+    // Accepts cbor, answers json. The client's default guess is cbor, so the
+    // *first* call succeeds outright and the cache is written from a success —
+    // there is no rejection anywhere in this test to blame the cost on.
+    flipping_peer peer{cbor_media, json_media};
+    peer.start(asymmetric_port);
+
+    recording_metrics client_metrics;
+    int failures = 0;
+    std::string first_error;
+
+    {
+        kythira::cpp_httplib_client_config client_config;
+        client_config.connection_timeout = std::chrono::milliseconds{2000};
+        client_config.request_timeout = std::chrono::milliseconds{4000};
+
+        std::unordered_map<std::uint64_t, std::string> node_urls;
+        node_urls[peer_node_id] =
+            std::string("http://") + bind_address + ":" + std::to_string(asymmetric_port);
+
+        kythira::cpp_httplib_client<multi_three_types> client(std::move(node_urls), client_config,
+                                                              client_metrics);
+
+        for (std::uint64_t term = 5; term <= 7; ++term) {
+            try {
+                kythira::request_vote_request<> req;
+                req._term = term;
+                req._candidate_id = 42;
+                req._last_log_index = 10;
+                req._last_log_term = 4;
+                auto resp =
+                    client.send_request_vote(peer_node_id, req, std::chrono::milliseconds{3000})
+                        .get();
+                BOOST_TEST(resp.vote_granted());
+            } catch (const std::exception& e) {
+                ++failures;
+                if (first_error.empty()) {
+                    first_error = e.what();
+                }
+            }
+        }
+    }
+
+    peer.stop();
+
+    const auto sent = client_metrics.recorder()->media_types_of("http.client.request.sent");
+    const auto retries = client_metrics.recorder()->media_types_of("http.client.media_type_retry");
+
+    BOOST_TEST(failures == 0, "an RPC failed against the asymmetric peer: " << first_error);
+    BOOST_TEST(peer.accepted_requests() == 3);
+
+    // The assertion the whole case exists for. Five sends is the defect: json on
+    // calls 2 and 3 because that is what the peer *answered* in, each refused,
+    // each retried back to cbor.
+    BOOST_REQUIRE_EQUAL(sent.size(), 3U);
+    BOOST_CHECK_EQUAL(sent[0], cbor_media);  // default guess, and accepted
+    BOOST_CHECK_EQUAL(sent[1], cbor_media);  // cached from what the peer took
+    BOOST_CHECK_EQUAL(sent[2], cbor_media);
+    // Stated separately: a peer that never refuses anything must never provoke a
+    // retry. This is what distinguishes "converged" from "guessed right twice".
+    BOOST_TEST(retries.empty());
+
+    // Cross-check against the peer's own record, as above: if the metric and the
+    // wire disagree, every count drawn from the metric is void.
     const auto received = peer.received_content_types();
     BOOST_REQUIRE_EQUAL(received.size(), sent.size());
     for (std::size_t i = 0; i < received.size(); ++i) {

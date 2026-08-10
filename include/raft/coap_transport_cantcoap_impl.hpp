@@ -569,12 +569,14 @@ private:
             const auto token = next_token();
             exchange->message = std::make_unique<pending_message>(
                 token, 0, timeout,
-                [promise, this, target](std::vector<std::byte> body,
-                                        const std::string& response_media_type) {
+                [promise, this, target, media_type](std::vector<std::byte> body,
+                                                    const std::string& response_media_type) {
                     try {
                         Response response =
                             _registry.template decode_with<Response>(response_media_type, body);
-                        _capability_cache.record(target, response_media_type);
+                        // What the peer accepted, not what it answered in; see
+                        // `peer_capability_cache.hpp`.
+                        _capability_cache.record(target, media_type);
                         promise->setValue(std::move(response));
                     } catch (const std::exception& e) {
                         promise->setException(std::make_exception_ptr(coap_transport_error(
