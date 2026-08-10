@@ -28,6 +28,9 @@
 #include <raft/serializer_registry.hpp>
 
 #include "beast_test_thread_pool.hpp"
+#include "recording_metrics.hpp"
+
+#include <httplib.h>
 
 #include <atomic>
 #include <chrono>
@@ -64,6 +67,40 @@ using single_cbor =
 using multi_cbor_first = beast_negotiating_types<
     kythira::cbor_serializer,
     kythira::multi_serializer_registry<kythira::cbor_serializer, kythira::json_serializer>>;
+
+/// A serializer byte-identical to JSON that announces a different media type.
+///
+/// The `Accept-Post` case needs a **third** registered type before the peer's
+/// choice can differ from the client's own next preference — with two, the
+/// second is the only candidate and an informed jump is indistinguishable from
+/// a blind walk. A third label is enough, since the retry never gets as far as
+/// encoding in this one, and a third real codec would tie this suite to
+/// whichever optional serializer happened to be installed.
+struct alt_json_serializer : kythira::json_serializer {
+    [[nodiscard]] auto media_type() const -> std::string { return "application/x-alt-json"; }
+    [[nodiscard]] auto name() const -> std::string { return "alt-json"; }
+};
+
+/// The same bundle shape with a metrics backend that remembers what it was told.
+/// The retry *count* is not visible from the RPC's return value — both policies
+/// return the same response — so the `media_type_retry` emission is the only
+/// place to observe it.
+template<typename Default_Serializer, typename Registry>
+struct beast_recording_types
+    : kythira::future_default_http_transport_types<
+          Default_Serializer, kythira::testing::recording_metrics, kythira::executor_default> {
+    using serializer_registry_type = Registry;
+};
+
+/// Preference order `{cbor, alt-json, json}`: cbor is the first guess, alt-json
+/// is what a blind walk would try next, json is what the peer will name.
+using multi_three_recording = beast_recording_types<
+    kythira::cbor_serializer,
+    kythira::multi_serializer_registry<kythira::cbor_serializer, alt_json_serializer,
+                                       kythira::json_serializer>>;
+
+constexpr std::uint16_t accept_post_server_port = 18297;
+constexpr std::uint16_t advertise_server_port = 18298;
 
 }  // namespace
 
@@ -164,6 +201,105 @@ BOOST_AUTO_TEST_CASE(a_beast_client_with_no_alternative_fails_cleanly) {
 
     BOOST_TEST(status == 415);
     BOOST_TEST(handler_invocations.load() == 0);
+
+    server.stop();
+}
+
+/// @brief `Accept-Post` (W3C LDP 1.0 §7.1) on Beast's 415: the server names what
+///        it *would* have taken.
+///
+/// Read off the wire with a raw `httplib::Client` rather than through
+/// `boost_beast_client`, which is the only way to tell "the header went out"
+/// from "our own two ends agree with each other". Beast is also where an emitted
+/// header is easiest to get wrong: the response object is built in the session
+/// from `dispatch`'s out-parameters, so a header added on the wrong side of that
+/// split would compile and simply never appear.
+BOOST_AUTO_TEST_CASE(a_beast_415_names_what_the_server_would_have_taken) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    kythira::boost_beast_server<single_json> server(ioc, bind_address, advertise_server_port, {},
+                                                    kythira::noop_metrics{});
+    std::atomic<int> handler_invocations{0};
+    server.register_request_vote_handler(
+        [&](const kythira::request_vote_request<>&) -> kythira::request_vote_response<> {
+            handler_invocations.fetch_add(1);
+            return {};
+        });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+    httplib::Client raw(bind_address, advertise_server_port);
+    raw.set_connection_timeout(5, 0);
+    auto res = raw.Post("/v1/raft/request_vote", "{}", "application/x-not-a-thing");
+
+    BOOST_REQUIRE_MESSAGE(res, "the request itself failed");
+    BOOST_REQUIRE_EQUAL(res->status, 415);
+    BOOST_CHECK(res->has_header(kythira::header_accept_post));
+    BOOST_CHECK_EQUAL(res->get_header_value(kythira::header_accept_post), "application/json");
+    // Advertising must not have moved the rejection past the handler, which is
+    // what makes retrying safe in the first place.
+    BOOST_TEST(handler_invocations.load() == 0);
+
+    server.stop();
+}
+
+/// @brief The client half over Beast, and the case that can tell `Accept-Post`
+///        from the blind walk at all.
+///
+/// Three serializers, `{cbor, alt-json, json}`, against a JSON-only server. cbor
+/// is refused; the 415 names `application/json`; the retry goes straight there.
+/// **One retry, naming json** is the assertion — the blind walk would record
+/// two, the first of them `alt-json`, and would otherwise finish with the
+/// identical response and the identical handler count.
+///
+/// Beast is the transport where this is least obviously correct: the retry lives
+/// in a `thenError` continuation attached *outside* the connection teardown, so
+/// the peer's header has to survive being carried on the exception across that
+/// boundary rather than being read from a response object that no longer exists.
+BOOST_AUTO_TEST_CASE(a_beast_client_retries_straight_to_the_type_the_peer_named) {
+    boost::asio::io_context ioc;
+    kythira::testing::io_thread_pool io_threads(ioc, 2);
+
+    kythira::boost_beast_server<single_json> server(ioc, bind_address, accept_post_server_port, {},
+                                                    kythira::noop_metrics{});
+    std::atomic<int> handler_invocations{0};
+    server.register_request_vote_handler(
+        [&](const kythira::request_vote_request<>& req) -> kythira::request_vote_response<> {
+            handler_invocations.fetch_add(1);
+            kythira::request_vote_response<> resp{};
+            resp._term = req.term() + 1;
+            resp._vote_granted = true;
+            return resp;
+        });
+    server.start();
+    std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {peer_node_id,
+         std::string("http://") + bind_address + ":" + std::to_string(accept_post_server_port)}};
+    kythira::testing::recording_metrics client_metrics;
+    kythira::boost_beast_client<multi_three_recording> client(ioc, node_map, {}, client_metrics);
+
+    kythira::request_vote_request<> req{};
+    req._term = 5;
+    req._candidate_id = 42;
+
+    bool succeeded = false;
+    try {
+        auto resp = client.send_request_vote(peer_node_id, req, rpc_timeout).get();
+        succeeded = resp.term() == 6 && resp.vote_granted();
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE("informed retry did not recover: " << e.what());
+    }
+
+    BOOST_TEST(succeeded);
+    BOOST_TEST(handler_invocations.load() == 1);
+
+    const auto retries =
+        client_metrics.recorder()->media_types_of("beast_http.client.media_type_retry");
+    BOOST_REQUIRE_EQUAL(retries.size(), 1U);
+    BOOST_CHECK_EQUAL(retries.front(), "application/json");
 
     server.stop();
 }

@@ -16,11 +16,14 @@
 /// peer that changes its formats has its entry corrected by its next successful
 /// response, and in the meantime its own `Accept`-driven choice still wins.
 
+#include <raft/http_content_negotiation.hpp>
+
 #include <algorithm>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -104,15 +107,14 @@ template<typename Registry, typename Cache, typename Key>
 /// says a multi-serializer node and a single-serializer node SHALL interoperate
 /// whenever they share a format, which is precisely this case.
 ///
-/// `Accept-Post` (W3C Linked Data Platform 1.0 §7.1) would let the rejecting
-/// server say what it *would* take, converging in one retry instead of up to N.
-/// It was not chosen as the mechanism because it requires the **peer** to change,
-/// and Requirement 7.3 promises interoperation "without requiring the
-/// single-serializer node to change" — an unmodified peer emits no such header,
-/// which is exactly the case the requirement is about. It also has no CoAP
-/// analogue, and this policy has to hold across all four transports. Adding
-/// `Accept-Post` later as an *optimisation* composes with this rather than
-/// replacing it: use it when present, fall back to this when absent.
+/// `Accept-Post` (W3C Linked Data Platform 1.0 §7.1) lets the rejecting server
+/// say what it *would* take, converging in one retry instead of up to N. It is
+/// not the mechanism, because it requires the **peer** to change and Requirement
+/// 7.3 promises interoperation "without requiring the single-serializer node to
+/// change" — an unmodified peer emits no such header, which is exactly the case
+/// the requirement is about. It also has no CoAP analogue, and this policy has
+/// to hold across all four transports. It is layered on top instead, by the
+/// overload below: use it when present, fall back to this when absent.
 ///
 /// @param registry      Supplies `preferred_media_types()`, in preference order.
 /// @param already_tried Every type already sent to this peer for this call,
@@ -138,6 +140,53 @@ template<typename Registry>
         }
     }
     return std::nullopt;
+}
+
+/// @brief The same choice, but informed by the rejecting peer's `Accept-Post`.
+///
+/// `Accept-Post` (W3C Linked Data Platform 1.0 §7.1) is the response header a
+/// server may put on a 415 to name the request media types it *would* have
+/// accepted. When a peer sends one, this returns the first type in **the peer's
+/// own order** that this client can also produce and has not already tried — so
+/// a client with N registered serializers converges on the second attempt rather
+/// than possibly the Nth.
+///
+/// **Strictly an optimisation, and shaped so it cannot become anything else.**
+/// Three properties, each deliberate:
+///
+///   * An absent or empty header is exactly the old behaviour. This is the
+///     common case and always will be: an unmodified single-serializer peer —
+///     the case Requirement 7.3 is about — emits no such header.
+///   * The peer's order wins over ours when both would work. The peer is the one
+///     that just refused something; between two types we can both handle, its
+///     stated preference is the better information, and either choice succeeds.
+///   * **A header that names nothing usable falls back to the blind walk rather
+///     than giving up.** A peer could list only types we do not have, list types
+///     we already tried, send a wildcard, or simply be wrong about itself. In
+///     every one of those cases the blind walk is what would have run anyway, so
+///     trusting the header can cost a few wasted round trips but can never turn
+///     an exchange that the blind walk would have completed into a failure. That
+///     asymmetry is the whole justification for layering this on at all.
+///
+/// The header is parsed with `parse_accept_header`, not a second parser of its
+/// own: `Accept-Post` is a comma-separated media-type list with the same
+/// syntax, and two parsers for one grammar is how the copy that is subtly wrong
+/// stays hidden. Wildcards therefore come through verbatim and simply fail
+/// `registry.supports()`, which lands on the fallback — the right answer, since
+/// a peer that says it accepts `*/*` has told us nothing that narrows the walk.
+///
+/// @param accept_post The peer's raw header value; empty when it sent none.
+template<typename Registry>
+[[nodiscard]] auto next_request_media_type_after_rejection(
+    const Registry& registry, const std::vector<std::string>& already_tried,
+    std::string_view accept_post) -> std::optional<std::string> {
+    for (const auto& offered : parse_accept_header(accept_post)) {
+        if (registry.supports(offered) &&
+            std::find(already_tried.begin(), already_tried.end(), offered) == already_tried.end()) {
+            return offered;
+        }
+    }
+    return next_request_media_type_after_rejection(registry, already_tried);
 }
 
 }  // namespace kythira

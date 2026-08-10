@@ -2653,6 +2653,14 @@ auto coap_client<Types>::send_rpc(std::uint64_t target, const std::string& resou
                     if (client_error.response_code() ==
                         COAP_RESPONSE_CODE_UNSUPPORTED_CONTENT_FORMAT) {
                         attempted.push_back(request_media_type);
+                        // The two-argument form — the blind walk — on purpose.
+                        // The three HTTP transports pass the peer's
+                        // `Accept-Post` here to converge in one retry, and CoAP
+                        // has no analogue: RFC 7252's option registry defines no
+                        // "formats I would have accepted" response option, so a
+                        // 4.15 carries nothing to read. This stays the blind
+                        // walk until one exists, which is why the walk and not
+                        // `Accept-Post` is the mechanism the policy is built on.
                         if (auto next = kythira::next_request_media_type_after_rejection(
                                 _registry, attempted)) {
                             auto retry_metric = _metrics;

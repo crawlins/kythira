@@ -358,6 +358,7 @@ inline auto transaction_bridge::onHeadersComplete(
     std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
     _response.status_code = msg->getStatusCode();
     _response.content_type = message_media_type(*msg);
+    _response.accept_post = msg->getHeaders().getSingleOrEmpty(kythira::header_accept_post);
 }
 
 inline auto transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
@@ -417,6 +418,7 @@ inline auto folly_transaction_bridge::onHeadersComplete(
     std::unique_ptr<proxygen::HTTPMessage> msg) noexcept -> void {
     _response.status_code = msg->getStatusCode();
     _response.content_type = message_media_type(*msg);
+    _response.accept_post = msg->getHeaders().getSingleOrEmpty(kythira::header_accept_post);
 }
 
 inline auto folly_transaction_bridge::onBody(std::unique_ptr<folly::IOBuf> chain) noexcept -> void {
@@ -803,15 +805,17 @@ requires kythira::proxygen_future_default_transport_types<Types>
 template<typename Request, typename Response>
 auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
                                       const Request& request, std::chrono::milliseconds timeout,
-                                      std::vector<std::string> attempted)
-    -> future_template<Response> {
+                                      std::vector<std::string> attempted,
+                                      std::string chosen_media_type) -> future_template<Response> {
     // Chosen here, once, and handed to whichever path runs. On a 415 re-entry
-    // `attempted` is non-empty and the next unrefused type is used; the retry
-    // below has already established one exists.
+    // the retry below has already chosen, and hands the choice down rather than
+    // letting this re-derive it -- it may have read the peer's `Accept-Post`,
+    // which is not visible from here. Re-deriving discarded that and walked the
+    // preference list blind, at the cost of one silent extra round trip.
     const std::string content_type =
-        attempted.empty()
+        chosen_media_type.empty()
             ? kythira::select_request_media_type(_registry, _capability_cache, target)
-            : kythira::next_request_media_type_after_rejection(_registry, attempted).value();
+            : std::move(chosen_media_type);
 
     // Requirement 16.1: compile-time dispatch purely on Types's own
     // future_template member type -- not a KYTHIRA_DEFAULT_FUTURE_BACKEND
@@ -841,8 +845,11 @@ auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view end
             } catch (const kythira::http_client_error& client_error) {
                 if (client_error.status_code() == 415) {
                     attempted.push_back(content_type);
-                    if (auto next = kythira::next_request_media_type_after_rejection(_registry,
-                                                                                     attempted)) {
+                    // The peer may have named what it would take; when it did
+                    // not, `accept_post()` is empty and this is the blind walk
+                    // it always was.
+                    if (auto next = kythira::next_request_media_type_after_rejection(
+                            _registry, attempted, client_error.accept_post())) {
                         auto retry_metric = _metrics;
                         retry_metric.set_metric_name("proxygen_http.client.media_type_retry");
                         retry_metric.add_dimension("target_node_id", std::to_string(target));
@@ -851,7 +858,7 @@ auto proxygen_client<Types>::send_rpc(std::uint64_t target, std::string_view end
                         retry_metric.add_one();
                         retry_metric.emit();
                         return send_rpc<Request, Response>(target, endpoint, request, timeout,
-                                                           std::move(attempted));
+                                                           std::move(attempted), *std::move(next));
                     }
                 }
             } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -1024,9 +1031,15 @@ auto proxygen_client<Types>::send_rpc_generic_bridge(std::uint64_t target,
                             }
                         }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
+                            // Carry `Accept-Post` on the exception: the 415
+                            // retry runs in a `thenError` continuation, where
+                            // the response object is gone, so the header has to
+                            // travel with the error or not at all.
                             throw kythira::http_client_error(
-                                resp.status_code, std::format("HTTP client error {}: {}",
-                                                              resp.status_code, resp.body));
+                                resp.status_code,
+                                std::format("HTTP client error {}: {}", resp.status_code,
+                                            resp.body),
+                                resp.accept_post);
                         }
                         if (resp.status_code >= 500) {
                             throw kythira::http_server_error(
@@ -1195,9 +1208,15 @@ auto proxygen_client<Types>::send_rpc_folly_fast_path(std::uint64_t target,
                             }
                         }
                         if (resp.status_code >= 400 && resp.status_code < 500) {
+                            // Carry `Accept-Post` on the exception: the 415
+                            // retry runs in a `thenError` continuation, where
+                            // the response object is gone, so the header has to
+                            // travel with the error or not at all.
                             throw kythira::http_client_error(
-                                resp.status_code, std::format("HTTP client error {}: {}",
-                                                              resp.status_code, resp.body));
+                                resp.status_code,
+                                std::format("HTTP client error {}: {}", resp.status_code,
+                                            resp.body),
+                                resp.accept_post);
                         }
                         if (resp.status_code >= 500) {
                             throw kythira::http_server_error(
@@ -1314,11 +1333,20 @@ public:
         // previous `status_code == 200 ? "application/json" : "text/plain"`
         // labelled every successful response JSON no matter which serializer
         // produced it, which is the defect Requirement 9.4 exists to remove.
-        proxygen::ResponseBuilder(downstream_)
-            .status(static_cast<std::uint16_t>(status_code), proxygen_status_reason(status_code))
-            .header(proxygen::HTTP_HEADER_CONTENT_TYPE, response_media_type)
-            .body(std::move(response_body))
-            .sendWithEOM();
+        proxygen::ResponseBuilder builder(downstream_);
+        builder.status(static_cast<std::uint16_t>(status_code), proxygen_status_reason(status_code))
+            .header(proxygen::HTTP_HEADER_CONTENT_TYPE, response_media_type);
+        // Name what the server *would* have taken, so the peer's retry converges
+        // in one round trip instead of walking its whole preference list (W3C
+        // LDP 1.0 7.1). 415 only: on any other status it either does not apply
+        // or would be answering a question nobody asked. Built in steps rather
+        // than as one fluent chain because the header is conditional.
+        if (status_code == 415) {
+            if (auto accept_post = _server->accept_post_header(); !accept_post.empty()) {
+                builder.header(std::string(kythira::header_accept_post), accept_post);
+            }
+        }
+        builder.body(std::move(response_body)).sendWithEOM();
     }
 
     auto requestComplete() noexcept -> void override {
@@ -1701,6 +1729,12 @@ template<typename Types>
 requires kythira::proxygen_future_default_transport_types<Types>
 auto proxygen_server<Types>::default_media_type() const -> std::string {
     return _registry.default_media_type();
+}
+
+template<typename Types>
+requires kythira::proxygen_future_default_transport_types<Types>
+auto proxygen_server<Types>::accept_post_header() const -> std::string {
+    return format_accept_header(_registry.preferred_media_types());
 }
 
 template<typename Types>
