@@ -17,6 +17,18 @@
 
 namespace kythira {
 
+/// @brief The `Accept-Post` response header name (W3C Linked Data Platform 1.0
+///        §7.1).
+///
+/// A server puts this on a 415 to name the request media types it *would* have
+/// accepted, turning the client's blind walk through its own preference list
+/// into a single informed retry. One spelling in one place because all three
+/// HTTP transports emit it and all three read it, and a header name that
+/// disagreed between two of them would fail silently — the reader simply would
+/// not find it, and the exchange would fall back to the blind walk and still
+/// succeed, so nothing would ever point at the typo.
+inline constexpr const char* header_accept_post = "Accept-Post";
+
 /// @brief Splits an HTTP `Accept` header value into media types, most-preferred
 ///        first, with parameters stripped.
 ///

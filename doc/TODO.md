@@ -747,8 +747,9 @@ unverified completion claim.
     "without requiring the single-serializer node to change" — an unmodified
     peer emits no such header, which is exactly the case the requirement is
     about. Second, it has no CoAP analogue, and the policy has to hold across
-    all four transports. It remains worth adding later as an *optimisation*
-    layered on top: use it when present, fall back to the blind walk when absent.
+    all four transports. **Added August 9, 2026 as the optimisation layered on
+    top** — use it when present, fall back to the blind walk when absent. See
+    the entry below.
   - **Retrying is safe because 415/4.15 is answered before the handler runs.**
     That ordering was specified for side-effect reasons in Tasks 9/10/11 and is
     what makes a retry provably not double-apply. A fix predating it would have
@@ -775,6 +776,80 @@ unverified completion claim.
   - The deployment constraint this used to imply — a multi-serializer node's
     first declared serializer had to be one every peer could decode — no longer
     applies.
+
+- **`Accept-Post` layered on top of the 415 retry — DONE August 9, 2026.** The
+  blind walk above is still the mechanism, and has to be: an unmodified peer
+  says nothing about itself, and that is the case Requirement 7.3 is about.
+  `Accept-Post` (W3C LDP 1.0 §7.1) is the peer saying it anyway, so a client
+  with N serializers converges on the second attempt instead of possibly the
+  Nth.
+  - **All three HTTP servers now emit it on 415**, naming every request media
+    type they can decode, in preference order. 415 only — a 404 or a 400 says
+    nothing about media types, and a client reading the header there would be
+    acting on an answer to a different question.
+  - **All three HTTP clients read it**, through one extra overload of
+    `next_request_media_type_after_rejection` that takes the raw header value.
+    Absent or empty is byte-for-byte the old behaviour, which is what keeps the
+    common case free.
+  - **A header naming nothing usable falls back to the blind walk rather than
+    giving up.** A peer can list types we do not have, list types we already
+    tried, send a wildcard, or simply be wrong about itself. In each case the
+    walk is what would have run anyway, so trusting the header can cost a wasted
+    round trip but can never turn an exchange the walk would have completed into
+    a failure. That asymmetry is the whole justification for layering it on.
+  - **CoAP is deliberately unchanged.** RFC 7252's option registry defines no
+    "formats I would have accepted" response option, so a 4.15 carries nothing
+    to read. Its retry call site now says so, rather than looking like an
+    oversight.
+  - **The header is parsed with `parse_accept_header`, not a second parser.**
+    `Accept-Post` is a comma-separated media-type list with the same syntax, and
+    two parsers for one grammar is how the copy that is subtly wrong stays
+    hidden. Wildcards therefore arrive verbatim, fail `supports()`, and land on
+    the fallback — which is right, since `*/*` narrows nothing.
+  - **The real finding: both async transports were computing the informed
+    choice and then throwing it away.** `boost_beast_client::send_rpc` and
+    `proxygen_client::send_rpc` re-derived the request media type from
+    `attempted` on every 415 re-entry, using the *two-argument* blind walk — so
+    the `Accept-Post`-informed type the `thenError` had just chosen was
+    discarded and the client walked its own list anyway. Both halves of the
+    feature were present and correct and the feature did nothing. The only
+    symptom was one extra round trip, which no existing assertion could see.
+    Fixed by passing the chosen type down (`send_rpc`'s new
+    `chosen_media_type`) instead of re-deriving it; that also removes a
+    `.value()` on an `optional` whose non-emptiness was an unchecked precondition.
+    `cpp_httplib_client` never had the bug — its retry is a loop in one function
+    that assigns the choice directly.
+    - **`coap_client::send_rpc` still re-derives**, and is still correct,
+      because its retry is the blind walk and re-deriving reproduces the same
+      answer. Left alone deliberately: the edit would be behaviour-neutral today
+      and is not free of risk. Whoever adds a CoAP analogue for `Accept-Post`
+      has to change that line first.
+  - **Three serializers, not two, is what made any of this testable.** With two,
+    the second is the only candidate left after the first rejection, so an
+    informed jump and a blind walk pick the same type and every assertion passes
+    with the feature deleted. The suites use `{cbor, alt-json, json}` against a
+    JSON-only peer, where the walk *must* spend a round trip on `alt-json` and
+    the jump *must not*. `alt-json` is a relabelled JSON serializer rather than a
+    third real codec — the policy compares media-type strings and never encodes
+    in it, and a real one would tie the suites to whichever optional serializer
+    a build leg happened to install.
+  - **The retry count is not visible from an RPC's return value** — both
+    policies return the same response and invoke the handler the same number of
+    times — so the suites read the `media_type_retry` metric instead. That moved
+    `recording_metrics` out of `negotiation_test_harness.hpp` (which drags in an
+    httplib client/server rig) and into `tests/recording_metrics.hpp`, so the
+    Beast and Proxygen suites can observe the same thing without it.
+  - Covered per transport, same as the retry itself: `accept_post_negotiation_test`
+    (httplib, plus the server-side advertise checked on the wire with a raw
+    `httplib::Client`), `beast_negotiation_retry_test`,
+    `proxygen_negotiation_integration_test`, and nine policy cases in
+    `http_content_negotiation_unit_test`. Each half was mutation tested
+    separately — server stops advertising, client stops reading — and each
+    failure was attributed to the half that caused it.
+  - **Not measured**: whether the saved round trip is worth anything under load.
+    The unmeasured-latency gap recorded against the retry itself applies here
+    unchanged, and this narrows it only in the sense of making the worst case
+    shorter.
 
 - **CoAP's `Accept` option is not repeatable, and the client was sending several
   — FIXED August 8, 2026.** Found while adding the retry above, because that was

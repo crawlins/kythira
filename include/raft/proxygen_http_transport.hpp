@@ -197,6 +197,19 @@ struct http_response {
     ///     that both fill is what stops the two paths from disagreeing about
     ///     what an absent or parameterised `Content-Type` means.
     std::string content_type;
+    /// @brief The response's `Accept-Post` value, verbatim, or empty when the
+    ///     peer sent none.
+    ///
+    ///     Only meaningful on a 415, where it is the rejecting server naming the
+    ///     request media types it *would* have taken (W3C LDP 1.0 §7.1), so the
+    ///     client's retry converges in one round trip rather than walking its
+    ///     whole preference list.
+    ///
+    ///     Here for the same reason `content_type` is: two client paths, two
+    ///     transaction bridges, and a header read in one of them only would make
+    ///     a node's retry behaviour depend on which future backend it was
+    ///     compiled with.
+    std::string accept_post;
 };
 
 /// @brief Collapses concurrent connect attempts for one pooled connection
@@ -495,10 +508,18 @@ private:
     ///        point, rather than in either path body -- both paths would
     ///        otherwise need their own copy, which is exactly how Task 10a's
     ///        hardcoded `application/json` came to differ between them.
+    /// @param chosen_media_type The encoding this attempt must use, empty on the
+    ///        caller's first entry (where it comes from the cache or the
+    ///        registry default instead). Passed in rather than re-derived from
+    ///        @p attempted, because the retry path has *already* decided -- and
+    ///        may have decided using the peer's `Accept-Post`, which is
+    ///        information this function does not have. Re-deriving here silently
+    ///        discarded that and walked the preference list blind; the only
+    ///        symptom was one extra round trip, which nothing observed.
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
-                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
-        -> future_template<Response>;
+                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {},
+                  std::string chosen_media_type = {}) -> future_template<Response>;
 
     /// @brief The generic (any-future-backend) bridge body (Requirement 14)
     ///     -- `send_rpc`'s `else` branch delegates here unconditionally;
@@ -615,6 +636,17 @@ public:
     /// that from `dispatch` and asks for this one only to fill in for an absent
     /// request `Content-Type` (Requirement 4.1, 4.2).
     [[nodiscard]] auto default_media_type() const -> std::string;
+
+    /// @brief This server's `Accept-Post` value -- every request media type it
+    ///     can decode, in preference order -- or empty if it has none.
+    ///
+    /// Read by the `RequestHandler` when `dispatch` returns 415, so the peer's
+    /// retry can converge in one round trip (W3C LDP 1.0 §7.1). Exposed here
+    /// rather than returned from `dispatch` as an eighth out-parameter because
+    /// the existing split puts negotiation *policy* in `dispatch` and header
+    /// *mechanics* in the handler that owns the `HTTPMessage`, and an
+    /// `Accept-Post` header is mechanics.
+    [[nodiscard]] auto accept_post_header() const -> std::string;
 
     /// @brief Bracket a request's lifetime for `stop()`'s drain (Property
     ///     8) -- mirrors `boost_beast_server::register_session`/

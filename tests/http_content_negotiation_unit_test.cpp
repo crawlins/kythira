@@ -28,6 +28,20 @@ namespace {
 using data_type = std::vector<std::byte>;
 using json_serializer = kythira::json_rpc_serializer<data_type>;
 using cbor_serializer = kythira::cbor_rpc_serializer<data_type>;
+
+/// A serializer byte-identical to JSON that announces a different media type.
+///
+/// The `Accept-Post` cases need a registry with **three** types before the
+/// peer's choice can differ from our own next preference — with two, the second
+/// is the only candidate and an informed jump is indistinguishable from a blind
+/// walk. A third *codec* would add nothing a third *label* does not here, since
+/// the policy compares media-type strings and never encodes anything, and using
+/// a real one would tie these cases to whichever optional serializer happened to
+/// be installed.
+struct alt_json_serializer : json_serializer {
+    [[nodiscard]] auto media_type() const -> std::string { return "application/x-alt-json"; }
+    [[nodiscard]] auto name() const -> std::string { return "alt-json"; }
+};
 }  // namespace
 
 BOOST_AUTO_TEST_SUITE(format_accept_header_tests)
@@ -245,6 +259,122 @@ BOOST_AUTO_TEST_CASE(an_unrecognised_tried_entry_does_not_block_a_real_candidate
         kythira::next_request_media_type_after_rejection(registry, {"application/x-gone"});
     BOOST_REQUIRE(next.has_value());
     BOOST_CHECK_EQUAL(*next, "application/json");
+}
+
+BOOST_AUTO_TEST_SUITE_END()
+
+/// The `Accept-Post` overload (W3C Linked Data Platform 1.0 §7.1): the same
+/// choice, but informed by what the rejecting peer said it would take.
+///
+/// Every case here is written against the same three-serializer registry,
+/// because three is the smallest number that can tell the two policies apart. In
+/// `{cbor, json, alt-json}` with cbor just refused, the blind walk always
+/// answers `application/json`; an answer of `application/x-alt-json` can only
+/// have come from reading the header.
+BOOST_AUTO_TEST_SUITE(accept_post_informed_retry_tests)
+
+using multi_three =
+    kythira::multi_serializer_registry<cbor_serializer, json_serializer, alt_json_serializer>;
+
+constexpr const char* cbor_media = "application/cbor";
+constexpr const char* json_media = "application/json";
+constexpr const char* alt_media = "application/x-alt-json";
+
+/// The point of the whole feature: the peer names a type that is *not* our next
+/// preference, and we go straight to it instead of spending a round trip on the
+/// one it did not ask for.
+BOOST_AUTO_TEST_CASE(the_peers_named_type_wins_over_our_own_next_preference) {
+    const multi_three registry;
+    const auto next =
+        kythira::next_request_media_type_after_rejection(registry, {cbor_media}, alt_media);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, alt_media);
+    // The control that makes the line above mean something: without the header,
+    // the very same call answers differently.
+    const auto blind = kythira::next_request_media_type_after_rejection(registry, {cbor_media});
+    BOOST_REQUIRE(blind.has_value());
+    BOOST_CHECK_EQUAL(*blind, json_media);
+}
+
+/// Among several types we both speak, the peer's order decides — it is the side
+/// that just refused something, so its stated preference is better information,
+/// and either choice would have worked.
+BOOST_AUTO_TEST_CASE(the_peers_order_decides_between_two_types_we_both_speak) {
+    const multi_three registry;
+    const auto next = kythira::next_request_media_type_after_rejection(
+        registry, {cbor_media}, std::string(alt_media) + ", " + json_media);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, alt_media);
+}
+
+/// A peer may list types we do not have. Those are skipped rather than chosen
+/// and then failing to encode.
+BOOST_AUTO_TEST_CASE(a_type_we_do_not_support_is_skipped) {
+    const multi_three registry;
+    const auto next = kythira::next_request_media_type_after_rejection(
+        registry, {cbor_media}, std::string("application/x-nonesuch, ") + alt_media);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, alt_media);
+}
+
+/// A peer that names the type it just rejected — or one we already tried — must
+/// not send us round the same loop again. This is what keeps the retry bounded
+/// once the header is in play.
+BOOST_AUTO_TEST_CASE(a_type_already_tried_is_skipped) {
+    const multi_three registry;
+    const auto next = kythira::next_request_media_type_after_rejection(
+        registry, {cbor_media, json_media}, std::string(cbor_media) + ", " + json_media);
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, alt_media);
+}
+
+/// The common case, and the one that must stay free: an unmodified peer sends no
+/// such header, and the overload has to be exactly the blind walk.
+BOOST_AUTO_TEST_CASE(an_absent_header_is_the_blind_walk) {
+    const multi_three registry;
+    const auto informed = kythira::next_request_media_type_after_rejection(registry, {cbor_media},
+                                                                           std::string_view{});
+    const auto blind = kythira::next_request_media_type_after_rejection(registry, {cbor_media});
+    BOOST_REQUIRE(informed.has_value());
+    BOOST_REQUIRE(blind.has_value());
+    BOOST_CHECK_EQUAL(*informed, *blind);
+}
+
+/// A header naming nothing we can use falls back to the walk rather than giving
+/// up. A peer can be wrong about itself; trusting it must be able to cost a
+/// wasted round trip and never a failed exchange.
+BOOST_AUTO_TEST_CASE(a_header_naming_nothing_usable_falls_back_to_the_walk) {
+    const multi_three registry;
+    const auto next = kythira::next_request_media_type_after_rejection(
+        registry, {cbor_media}, "application/x-nonesuch, application/x-also-nonesuch");
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, json_media);
+}
+
+/// A wildcard narrows nothing, so it must not be *treated* as narrowing
+/// something. It fails `supports()` and lands on the same fallback.
+BOOST_AUTO_TEST_CASE(a_wildcard_falls_back_to_the_walk) {
+    const multi_three registry;
+    const auto next =
+        kythira::next_request_media_type_after_rejection(registry, {cbor_media}, "*/*");
+    BOOST_REQUIRE(next.has_value());
+    BOOST_CHECK_EQUAL(*next, json_media);
+}
+
+/// Exhaustion still terminates. A peer insisting on a type we have already tried
+/// cannot resurrect the loop.
+BOOST_AUTO_TEST_CASE(exhaustion_still_yields_nothing_with_a_header_present) {
+    const multi_three registry;
+    BOOST_CHECK(!kythira::next_request_media_type_after_rejection(
+        registry, {cbor_media, json_media, alt_media}, std::string(json_media) + ", " + alt_media));
+}
+
+/// A single-serializer registry pays nothing even when a peer does send the
+/// header: its one type is the one just refused, and no header can change that.
+BOOST_AUTO_TEST_CASE(a_single_serializer_registry_still_has_no_alternative) {
+    const kythira::single_serializer_registry<json_serializer> registry;
+    BOOST_CHECK(!kythira::next_request_media_type_after_rejection(registry, {json_media},
+                                                                  "application/cbor"));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

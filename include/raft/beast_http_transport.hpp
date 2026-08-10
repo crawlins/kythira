@@ -639,10 +639,18 @@ private:
     ///        is what keeps a retried attempt identical to a first one in every
     ///        respect except the encoding: same connect, same pooling, same
     ///        metrics, same timeout handling.
+    /// @param chosen_media_type The encoding this attempt must use, empty on the
+    ///        caller's first entry (where it comes from the cache or the
+    ///        registry default instead). Passed in rather than re-derived from
+    ///        @p attempted, because the retry path has *already* decided — and
+    ///        may have decided using the peer's `Accept-Post`, which is
+    ///        information this function does not have. Re-deriving here silently
+    ///        discarded that and walked the preference list blind; the only
+    ///        symptom was one extra round trip, which nothing observed.
     template<typename Request, typename Response>
     auto send_rpc(std::uint64_t target, std::string_view endpoint, const Request& request,
-                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {})
-        -> future_template<Response>;
+                  std::chrono::milliseconds timeout, std::vector<std::string> attempted = {},
+                  std::string chosen_media_type = {}) -> future_template<Response>;
 };
 
 /// @brief `network_server` implementation backed by Boost.Beast's
@@ -755,6 +763,17 @@ public:
     /// success content type — it has whichever one this exchange settled on —
     /// so the session now learns that from `dispatch` instead of asking.
     [[nodiscard]] auto default_media_type() const -> std::string;
+
+    /// @brief This server's `Accept-Post` value — every request media type it
+    ///        can decode, in preference order — or empty if it has none.
+    ///
+    /// Read by the session when `dispatch` returns 415, so the peer's retry can
+    /// converge in one round trip (W3C LDP 1.0 §7.1). Exposed here rather than
+    /// returned from `dispatch` as an eighth out-parameter because the existing
+    /// split puts negotiation *policy* in `dispatch` and header *mechanics* in
+    /// the session that owns the response object, and an `Accept-Post` header is
+    /// mechanics.
+    [[nodiscard]] auto accept_post_header() const -> std::string;
 
 private:
     net::io_context& _ioc;

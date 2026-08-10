@@ -36,6 +36,7 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <httplib.h>
 
+#include "recording_metrics.hpp"
 #include "test_timeout_scale.hpp"
 
 #include <atomic>
@@ -78,6 +79,36 @@ using multi_cbor_first_types = proxygen_negotiating_types<
 using cbor_only_types =
     proxygen_negotiating_types<cbor_serializer_type,
                                kythira::single_serializer_registry<cbor_serializer_type>>;
+
+/// A serializer byte-identical to JSON that announces a different media type.
+///
+/// The `Accept-Post` case needs a **third** registered type before the peer's
+/// choice can differ from the client's own next preference — with two, the
+/// second is the only candidate and an informed jump is indistinguishable from
+/// a blind walk. A third label is enough, since the retry never gets as far as
+/// encoding in this one, and a third real codec would tie this suite to whichever
+/// optional serializer happened to be installed.
+struct alt_json_serializer : serializer_type {
+    [[nodiscard]] auto media_type() const -> std::string { return "application/x-alt-json"; }
+    [[nodiscard]] auto name() const -> std::string { return "alt-json"; }
+};
+
+/// The same bundle shape, but with a metrics backend that remembers what it was
+/// told. The retry count is not visible from the RPC's return value — both
+/// policies return the same response — so the only place to observe it is the
+/// `media_type_retry` emission.
+template<typename Default_Serializer, typename Registry>
+struct proxygen_recording_types
+    : kythira::future_default_proxygen_transport_types<
+          Default_Serializer, kythira::testing::recording_metrics, kythira::executor_default> {
+    using serializer_registry_type = Registry;
+};
+
+/// Preference order `{cbor, alt-json, json}`: cbor is the first guess, alt-json
+/// is what a blind walk would try next, json is what the peer will name.
+using multi_three_recording_types = proxygen_recording_types<
+    cbor_serializer_type,
+    kythira::multi_serializer_registry<cbor_serializer_type, alt_json_serializer, serializer_type>>;
 
 /// A well-formed request body in the server's own default media type, so any
 /// rejection observed below is attributable to the *headers* rather than to the
@@ -170,6 +201,39 @@ BOOST_AUTO_TEST_CASE(an_unsupported_content_type_is_rejected_before_the_handler,
     // Asserting only the code passes straight through that.
     BOOST_CHECK_EQUAL(res->reason, "Unsupported Media Type");
     BOOST_CHECK_EQUAL(handler_invocations.load(), before);
+}
+
+/// `Accept-Post` (W3C LDP 1.0 §7.1) on the 415: the server names what it *would*
+/// have taken, so the peer's retry can converge in one round trip instead of
+/// walking its own preference list.
+///
+/// Read off the wire with the raw client rather than through `proxygen_client`,
+/// which is the only way to tell "the header went out" from "our own two ends
+/// agree with each other". Proxygen is also the transport where an emitted
+/// header is least obvious: the response is assembled by `ResponseBuilder`, and
+/// this one is conditional on the status rather than part of the fluent chain.
+BOOST_AUTO_TEST_CASE(a_415_names_what_the_server_would_have_taken,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    auto res = post({{"Content-Type", "application/x-not-a-thing"}});
+
+    BOOST_REQUIRE(res);
+    BOOST_REQUIRE_EQUAL(res->status, 415);
+    BOOST_CHECK(res->has_header(kythira::header_accept_post));
+    BOOST_CHECK_EQUAL(res->get_header_value(kythira::header_accept_post), "application/json");
+}
+
+/// And not on a status that says nothing about media types. A client reading it
+/// there would be acting on an answer to a different question.
+BOOST_AUTO_TEST_CASE(an_unrelated_error_carries_no_accept_post,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    httplib::Client client(bind_address, bind_port);
+    client.set_connection_timeout(std::chrono::seconds{2});
+    client.set_read_timeout(std::chrono::seconds{5});
+    auto res = client.Post("/v1/raft/no_such_endpoint", valid_request_body(), "application/json");
+
+    BOOST_REQUIRE(res);
+    BOOST_REQUIRE_EQUAL(res->status, 404);
+    BOOST_CHECK(!res->has_header(kythira::header_accept_post));
 }
 
 /// Requirement 5.3: 406, and again the handler must not have run. Ordering the
@@ -312,6 +376,50 @@ BOOST_AUTO_TEST_CASE(a_multi_serializer_proxygen_client_retries_after_415) {
     // Exactly one handler entry: the CBOR attempt was refused before the
     // handler, and only the JSON retry reached it.
     BOOST_TEST(handler_invocations.load() == before + 1);
+}
+
+/// The client half of `Accept-Post`, and the case that can tell it from the
+/// blind walk at all.
+///
+/// Three serializers, `{cbor, alt-json, json}`, against this file's JSON-only
+/// server. cbor is refused; the 415 names `application/json`; the retry goes
+/// straight there. **One retry, naming json** is the assertion — the blind walk
+/// would record two, the first of them `alt-json`, and would otherwise finish
+/// with the identical response and the identical handler count.
+///
+/// Two serializers could not distinguish the two policies: the second would be
+/// the only candidate left and both would pick it.
+BOOST_AUTO_TEST_CASE(a_proxygen_client_retries_straight_to_the_type_the_peer_named,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
+    folly::IOThreadPoolExecutor client_io(2);
+    std::unordered_map<std::uint64_t, std::string> node_map{
+        {1, std::string("http://") + bind_address + ":" + std::to_string(bind_port)}};
+    kythira::testing::recording_metrics client_metrics;
+    kythira::proxygen_client<multi_three_recording_types> client(client_io, node_map, {},
+                                                                 client_metrics);
+
+    const auto before = handler_invocations.load();
+    kythira::request_vote_request<> req{};
+    req._term = 5;
+    req._candidate_id = 42;
+
+    bool succeeded = false;
+    try {
+        auto resp =
+            std::move(client.send_request_vote(1, req, kythira::testing::scaled_deadline(5000)))
+                .get();
+        succeeded = resp.term() == 6 && resp.vote_granted();
+    } catch (const std::exception& e) {
+        BOOST_TEST_MESSAGE("informed retry did not recover: " << e.what());
+    }
+
+    BOOST_TEST(succeeded);
+    BOOST_TEST(handler_invocations.load() == before + 1);
+
+    const auto retries =
+        client_metrics.recorder()->media_types_of("proxygen_http.client.media_type_retry");
+    BOOST_REQUIRE_EQUAL(retries.size(), 1U);
+    BOOST_CHECK_EQUAL(retries.front(), "application/json");
 }
 
 /// @brief Exhaustion over Proxygen: nothing left to offer fails cleanly.

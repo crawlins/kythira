@@ -1154,7 +1154,13 @@ auto cpp_httplib_client<Types>::send_rpc(std::uint64_t target, const std::string
             if (!result || result->status != 415) {
                 break;
             }
-            auto next = next_request_media_type_after_rejection(_registry, attempted);
+            // The peer may have named what it *would* take (W3C LDP 1.0 §7.1).
+            // When it did, the retry goes straight to a type we both speak
+            // instead of walking our own list; when it did not — every
+            // unmodified peer — this is the empty string and the walk is
+            // exactly what it always was.
+            auto next = next_request_media_type_after_rejection(
+                _registry, attempted, result->get_header_value(header_accept_post));
             if (!next) {
                 // Nothing left to offer: fall through and surface the 415 as the
                 // error it is, rather than inventing a different one.
@@ -1766,6 +1772,15 @@ auto cpp_httplib_server<Types>::handle_rpc_endpoint(const httplib::Request& http
             http_resp.status = 415;
             http_resp.body = "Unsupported Content-Type: " + request_media_type;
             http_resp.set_header(header_content_type, "text/plain");
+            // Name what we *would* have taken, so the peer's retry converges in
+            // one round trip instead of walking its whole preference list
+            // (W3C LDP 1.0 §7.1). Purely an optimisation on top of that walk --
+            // a client that ignores this header is exactly as correct, and
+            // slower only when it has more than one serializer to try.
+            if (const auto accept_post = format_accept_header(_registry.preferred_media_types());
+                !accept_post.empty()) {
+                http_resp.set_header(header_accept_post, accept_post);
+            }
             return;
         }
 

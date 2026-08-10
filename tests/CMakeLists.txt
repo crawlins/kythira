@@ -1100,6 +1100,27 @@ else()
     message(STATUS "multi_serializer_interop_test: skipped (requires Folly)")
 endif()
 
+# `Accept-Post` layered on top of the 415 retry (W3C LDP 1.0 7.1). Same
+# dependency set and same rig as the interop suite above -- it observes the
+# retry through the `media_type_retry` metric, which is the only place the
+# distinction between an informed jump and a blind walk is visible from outside
+# the transport.
+if(TARGET Folly::folly)
+    add_executable(accept_post_negotiation_test accept_post_negotiation_test.cpp)
+    target_link_libraries(accept_post_negotiation_test PRIVATE
+        network_simulator
+        Boost::unit_test_framework
+        boost_json
+        Folly::folly
+    )
+    target_compile_features(accept_post_negotiation_test PRIVATE cxx_std_23)
+    add_test(NAME accept_post_negotiation_test COMMAND accept_post_negotiation_test)
+    set_tests_properties(accept_post_negotiation_test
+        PROPERTIES TIMEOUT 180 LABELS "http;integration")
+else()
+    message(STATUS "accept_post_negotiation_test: skipped (requires Folly)")
+endif()
+
 # Client-side negotiation failure paths (spec Task 16). Uses a raw httplib::Server
 # as a deliberately non-conforming peer: cpp_httplib_server can never emit an
 # unregistered response label, so these client branches are otherwise unreachable.

@@ -785,7 +785,8 @@ requires kythira::future_default_transport_types<Types>
 template<typename Request, typename Response>
 auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view endpoint,
                                          const Request& request, std::chrono::milliseconds timeout,
-                                         std::vector<std::string> attempted)
+                                         std::vector<std::string> attempted,
+                                         std::string chosen_media_type)
     -> future_template<Response> {
     std::string rpc_type;
     if (endpoint == beast_endpoint_request_vote) {
@@ -809,13 +810,15 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
 
         // Same negotiation as cpp_httplib_client, expressed through Beast's
         // header API: cached type if the registry still supports it, else the
-        // default (Requirement 6.1-6.3). On a 415 re-entry, `attempted` is
-        // non-empty and the next unrefused type is used instead; the caller
-        // below has already established that one exists.
+        // default (Requirement 6.1-6.3). On a 415 re-entry the retry path has
+        // already chosen, and hands the choice down rather than letting this
+        // re-derive it -- it may have read the peer's `Accept-Post`, which is
+        // not visible from here. Re-deriving discarded that and walked the
+        // preference list blind, at the cost of one silent extra round trip.
         const std::string content_type =
-            attempted.empty()
+            chosen_media_type.empty()
                 ? select_request_media_type(_registry, _capability_cache, target)
-                : next_request_media_type_after_rejection(_registry, attempted).value();
+                : std::move(chosen_media_type);
         auto serialized = _registry.encode_with(content_type, request);
         std::string body(reinterpret_cast<const char*>(serialized.data()), serialized.size());
 
@@ -930,9 +933,19 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                     }
                 }
                 if (status >= 400 && status < 500) {
+                    // Carry `Accept-Post` on the exception: this transport's 415
+                    // retry runs in a `thenError` continuation, where the
+                    // response object is long gone, so the header has to travel
+                    // with the error or not at all. Empty for every status but
+                    // 415, and for the 415s of every peer that does not send it.
+                    std::string accept_post;
+                    if (const auto it = resp.find(kythira::header_accept_post); it != resp.end()) {
+                        accept_post.assign(it->value().data(), it->value().size());
+                    }
                     throw kythira::http_client_error(
                         static_cast<int>(status),
-                        std::format("HTTP client error {}: {}", status, resp.body()));
+                        std::format("HTTP client error {}: {}", status, resp.body()),
+                        std::move(accept_post));
                 }
                 if (status >= 500) {
                     throw kythira::http_server_error(
@@ -974,8 +987,11 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                 } catch (const kythira::http_client_error& client_error) {
                     if (client_error.status_code() == 415) {
                         attempted.push_back(content_type);
-                        if (auto next =
-                                next_request_media_type_after_rejection(_registry, attempted)) {
+                        // The peer may have named what it would take; when it
+                        // did not, `accept_post()` is empty and this is the
+                        // blind walk it always was.
+                        if (auto next = next_request_media_type_after_rejection(
+                                _registry, attempted, client_error.accept_post())) {
                             auto retry_metric = _metrics;
                             retry_metric.set_metric_name("beast_http.client.media_type_retry");
                             retry_metric.add_dimension("target_node_id", std::to_string(target));
@@ -984,7 +1000,8 @@ auto boost_beast_client<Types>::send_rpc(std::uint64_t target, std::string_view 
                             retry_metric.add_one();
                             retry_metric.emit();
                             return send_rpc<Request, Response>(target, endpoint, request, timeout,
-                                                               std::move(attempted));
+                                                               std::move(attempted),
+                                                               *std::move(next));
                         }
                     }
                 } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -1234,6 +1251,15 @@ private:
         // the server for a single "success content type" stopped being
         // meaningful once the answer could differ per exchange.
         res->set(beast_http::field::content_type, response_media_type);
+        // Name what the server *would* have taken, so the peer's retry converges
+        // in one round trip instead of walking its whole preference list (W3C
+        // LDP 1.0 §7.1). 415 only: on any other status it either does not apply
+        // or would be answering a question nobody asked.
+        if (status_code == 415) {
+            if (auto accept_post = _server->accept_post_header(); !accept_post.empty()) {
+                res->set(kythira::header_accept_post, accept_post);
+            }
+        }
         res->keep_alive(_req.keep_alive());
         res->body() = std::move(response_body);
         res->prepare_payload();
@@ -1532,6 +1558,12 @@ template<typename Types>
 requires kythira::future_default_transport_types<Types>
 auto boost_beast_server<Types>::default_media_type() const -> std::string {
     return _registry.default_media_type();
+}
+
+template<typename Types>
+requires kythira::future_default_transport_types<Types>
+auto boost_beast_server<Types>::accept_post_header() const -> std::string {
+    return format_accept_header(_registry.preferred_media_types());
 }
 
 template<typename Types>
