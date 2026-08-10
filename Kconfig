@@ -68,11 +68,40 @@ config PROXYGEN_TRANSPORT
 	  active.
 
 config COAP_TRANSPORT
-	bool "CoAP transport (libcoap, DTLS)"
+	bool "CoAP transport"
+	default y
+	help
+	  Whether to build the CoAP transport at all. This is the *feature*
+	  symbol, not a backend: n means no CoAP target is created anywhere,
+	  including its 45 test binaries. y means the transport is built, and
+	  which wire implementation it gets is chosen by the backend symbols
+	  below.
+
+	  y with every backend n is a supported configuration, not an
+	  accident: it builds the backend-free surface -- the concept
+	  conformance, config, message-construction and content-format tests
+	  that need no library at all. Compiling that surface has caught real
+	  bugs, which is why it is reachable deliberately rather than only
+	  when a library happens to be missing from the host.
+
+	  Until August 10, 2026 this symbol also *was* the libcoap backend,
+	  and setting it n disabled nothing whatsoever -- the CoAP targets
+	  were gated on Folly instead and were never wired to it.
+
+config COAP_BACKEND_LIBCOAP
+	bool "libcoap backend (DTLS)"
+	depends on COAP_TRANSPORT
 	default y
 	help
 	  find_package(libcoap CONFIG) or PkgConfig fallback (libcoap-3).
 	  Backs LIBCOAP_AVAILABLE. vcpkg package: libcoap (feature: dtls).
+
+	  Defaults y because libcoap is the original and default backend, so
+	  a build that says nothing about backends keeps getting it. Split
+	  out of COAP_TRANSPORT so that the three backends are symmetrical:
+	  this, COAP_TRANSPORT_LIBNYOCI and COAP_TRANSPORT_CANTCOAP are now
+	  the same kind of thing and can each be turned off independently of
+	  whether the transport itself is built.
 
 config COAP_TRANSPORT_LIBNYOCI
 	bool "Alternate CoAP transport backend (libnyoci)"

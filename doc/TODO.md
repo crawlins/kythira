@@ -1255,8 +1255,43 @@ unverified completion claim.
     emitted for a deliberate `=n` as well as a genuine absence — and before the
     fix, `=n` produced the *enabled* message, so the log actively misreported
     the configuration.
-- **`CONFIG_COAP_TRANSPORT=n` is inert — OPEN, found August 10, 2026.** The
-  last finding from the gate audit, and the one that is not a one-line fix.
+- **`CONFIG_COAP_TRANSPORT=n` was inert — FIXED August 10, 2026**, by splitting
+  the feature from its backend. The last finding from the gate audit, and the
+  only one that needed a decision rather than an edit.
+  - **The decision**: `n` means *build nothing* — no CoAP target anywhere. `y`
+    with every backend off means *build the transport without a backend*, i.e.
+    the backend-free surface, which is a supported configuration rather than an
+    accident of a host missing a library.
+  - **That required a new symbol.** `COAP_TRANSPORT` was both the feature and
+    the libcoap backend (its help text read "find_package(libcoap …). Backs
+    LIBCOAP_AVAILABLE"), so "enabled with no backend" was not expressible as a
+    *configuration* — only as a property of the machine. `COAP_BACKEND_LIBCOAP`
+    (default `y`, so existing builds are unchanged) now sits alongside
+    `COAP_TRANSPORT_LIBNYOCI` and `COAP_TRANSPORT_CANTCOAP`, making all three
+    backends symmetrical.
+  - **The strict-mode requirement moved with it**, from the feature symbol to
+    the backend symbol. Left on the feature it would have contradicted the new
+    semantics by rejecting a legal backend-free build; on the backend symbol it
+    still fails fast when libcoap stops being installable in an image that
+    asked for it.
+  - **Verified as a three-way matrix**, and the counts are the evidence rather
+    than the messages: `y` + libcoap → 523 targets / 56 CoAP (identical to
+    before the change); `n` → **467 / 0**, and 523−467 = 56 exactly; `y` +
+    `COAP_BACKEND_LIBCOAP=n` → 523 / 56 with `LIBCOAP_AVAILABLE` absent, and
+    `coap_content_negotiation_unit_test` builds and passes there, so the
+    backend-free surface genuinely compiles rather than merely configuring.
+  - The single old warning (`libcoap not found. CoAP transport will not be
+    available.`) is now three messages, because it was wrong in both new
+    directions — it fired for a deliberate backend-free build, and it claimed
+    unavailability in configurations that built all 56 targets.
+  - **The gating is where the work was.** The CoAP targets were spread over
+    four depth-0 clusters in `tests/CMakeLists.txt` plus five scattered
+    `add_network_test()` one-liners and six `examples/raft` entries. Two of the
+    four clusters could not be wrapped at their obvious boundaries — the
+    regions spanned an `if(TARGET Folly::folly)` block, so an `if()`/`endif()`
+    pair there would have been unbalanced. Boundaries were computed by nesting
+    depth and checked for homogeneity (no non-CoAP target inside) before
+    editing.
   - **Measured with the other symbols held constant** — `ci_full_defconfig`
     against the same file plus `CONFIG_COAP_TRANSPORT=n`, so only that symbol
     moves: **523 targets both ways, 54 `coap_*` targets both ways, and the two
