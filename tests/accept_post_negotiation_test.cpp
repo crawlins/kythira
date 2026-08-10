@@ -38,11 +38,14 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -72,6 +75,13 @@ constexpr const char* alt_media = "application/x-alt-json";
 constexpr std::uint16_t advertise_port = 18310;
 constexpr std::uint16_t informed_retry_port = 18311;
 constexpr std::uint16_t single_serializer_port = 18312;
+constexpr std::uint16_t flip_port = 18313;
+
+// Spelled locally, as `negotiation_failure_test` does for the same reason: the
+// transport's own copies live in an anonymous namespace inside `kythira`, so
+// they are per-translation-unit and not this file's to reach into.
+constexpr const char* endpoint_request_vote = "/v1/raft/request_vote";
+constexpr const char* header_content_type = "Content-Type";
 
 using single_json = kythira::single_serializer_registry<json_serializer>;
 /// Preference order `{cbor, alt-json, json}`: cbor is the default and therefore
@@ -85,6 +95,114 @@ using multi_three_types = negotiating_transport_types<cbor_serializer, multi_thr
 using single_cbor_types =
     negotiating_transport_types<cbor_serializer,
                                 kythira::single_serializer_registry<cbor_serializer>>;
+
+/// @brief A peer that decodes exactly one request media type at a time, and can
+///        be told to change its mind between RPCs.
+///
+/// **A hand-rolled peer rather than `cpp_httplib_server`, which is the only way
+/// to ask this question at all.** A real server derives what it decodes from its
+/// registry *type*, so its decodable set is fixed at compile time. Every suite
+/// in the tree therefore drives a peer that never contradicts what was cached
+/// about it — which leaves the claim in `peer_capability_cache.hpp` that
+/// justifies the cache having no TTL and no invalidation path entirely
+/// unexercised.
+///
+/// Answers in the same media type it accepted. That is the symmetric case and
+/// deliberately the one tested: it isolates "the cache was contradicted" from
+/// the separate question of a peer whose request and response types differ,
+/// which would move two variables at once.
+class flipping_peer {
+public:
+    explicit flipping_peer(std::string accepted) : _accepted(std::move(accepted)) {
+        _server.Post(endpoint_request_vote, [this](const httplib::Request& req,
+                                                   httplib::Response& resp) { handle(req, resp); });
+    }
+
+    /// Change what the peer decodes. The RPCs below are sequential, so this only
+    /// ever runs between them.
+    auto accept_only(std::string media_type) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _accepted = std::move(media_type);
+    }
+
+    auto start() -> void {
+        _thread = std::thread([this] { _server.listen(bind_address, flip_port); });
+        _server.wait_until_ready();
+    }
+
+    auto stop() -> void {
+        _server.stop();
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+    }
+
+    /// Requests that got as far as being decoded — this peer's equivalent of the
+    /// handler count, so "it round-tripped" can be told from "it 415'd".
+    [[nodiscard]] auto accepted_requests() const -> int { return _accepted_requests.load(); }
+
+    /// Every `Content-Type` this peer was sent, in order, 415s included. The
+    /// client-side metric records the same sequence, so a disagreement between
+    /// the two is visible rather than averaged away.
+    [[nodiscard]] auto received_content_types() const -> std::vector<std::string> {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        return _received;
+    }
+
+private:
+    auto handle(const httplib::Request& req, httplib::Response& resp) -> void {
+        std::string content_type;
+        if (req.has_header(header_content_type)) {
+            content_type =
+                kythira::strip_media_type_parameters(req.get_header_value(header_content_type));
+        }
+
+        std::string accepted;
+        {
+            const std::lock_guard<std::mutex> lock(_mutex);
+            _received.push_back(content_type);
+            accepted = _accepted;
+        }
+
+        if (content_type != accepted) {
+            // Byte-for-byte the 415 `cpp_httplib_server` emits. A client reading
+            // a differently-shaped rejection here would prove nothing about the
+            // real pairing.
+            resp.status = 415;
+            resp.body = "Unsupported Content-Type: " + content_type;
+            resp.set_header(header_content_type, "text/plain");
+            resp.set_header(kythira::header_accept_post, accepted);
+            return;
+        }
+
+        _accepted_requests.fetch_add(1);
+
+        kythira::request_vote_response<> response;
+        response._term = 6;
+        response._vote_granted = true;
+
+        // Encoded through the same serializers the client holds, so a decode
+        // failure would be a real incompatibility rather than an artefact of a
+        // hand-written body.
+        data_type encoded = accepted == cbor_media ? cbor_serializer{}.serialize(response)
+                                                   : json_serializer{}.serialize(response);
+
+        std::string body;
+        body.reserve(encoded.size());
+        for (auto b : encoded) {
+            body.push_back(static_cast<char>(b));
+        }
+        resp.status = 200;
+        resp.set_content(body, accepted.c_str());
+    }
+
+    httplib::Server _server;
+    std::thread _thread;
+    mutable std::mutex _mutex;
+    std::string _accepted;
+    std::vector<std::string> _received;
+    std::atomic<int> _accepted_requests{0};
+};
 
 }  // namespace
 
@@ -196,6 +314,118 @@ BOOST_AUTO_TEST_CASE(a_single_serializer_client_still_fails_cleanly_when_adverti
     BOOST_TEST(obs.retry_media_types.empty());
     BOOST_TEST(obs.first_error.find("415") != std::string::npos,
                "expected the 415 itself, got: " << obs.first_error);
+}
+
+/// The case no other suite reaches: a peer that accepts a media type, is cached
+/// as accepting it, and then stops.
+///
+/// `peer_capability_cache.hpp` justifies having no TTL and no invalidation path
+/// with a specific claim — that a stale entry "costs at most one extra round of
+/// the peer choosing again" and "can never make a request fail", because "a peer
+/// that changes its formats has its entry corrected by its next successful
+/// response". Every other negotiation suite drives a peer whose decodable set is
+/// fixed for the life of the test, so the cache is written once and never
+/// contradicted, and neither half of that claim is exercised anywhere.
+///
+/// Three `request_vote` calls rather than one of each RPC, which is the opposite
+/// of what `negotiation_test_harness` does and deliberate. The harness spreads
+/// across all three endpoints because *server dispatch* is what it exercises,
+/// and negotiation wired into one endpoint and not the others would hide there.
+/// Here the subject is the client's per-peer cache, which is keyed by node id
+/// and shared across endpoints, so repeating one endpoint is what makes the flip
+/// legible: each call differs from the last only in what the peer will now take.
+///
+/// **The load-bearing assertion is a count.** A client that ignored the cache, a
+/// client that corrected it, and a client that never corrected it all complete
+/// all three RPCs; they differ only in how many attempts that takes. Five
+/// attempts means the flip was paid for once, six means it is paid on every
+/// subsequent call forever. Asserting that the RPCs succeeded would pass under
+/// all three.
+BOOST_AUTO_TEST_CASE(a_cached_media_type_is_corrected_when_the_peer_stops_taking_it) {
+    flipping_peer peer{json_media};
+    peer.start();
+
+    recording_metrics client_metrics;
+    int failures = 0;
+    std::string first_error;
+
+    {
+        kythira::cpp_httplib_client_config client_config;
+        client_config.connection_timeout = std::chrono::milliseconds{2000};
+        client_config.request_timeout = std::chrono::milliseconds{4000};
+
+        std::unordered_map<std::uint64_t, std::string> node_urls;
+        node_urls[peer_node_id] =
+            std::string("http://") + bind_address + ":" + std::to_string(flip_port);
+
+        kythira::cpp_httplib_client<multi_three_types> client(std::move(node_urls), client_config,
+                                                              client_metrics);
+
+        const auto call = [&](std::uint64_t term) {
+            try {
+                kythira::request_vote_request<> req;
+                req._term = term;
+                req._candidate_id = 42;
+                req._last_log_index = 10;
+                req._last_log_term = 4;
+                auto resp =
+                    client.send_request_vote(peer_node_id, req, std::chrono::milliseconds{3000})
+                        .get();
+                BOOST_TEST(resp.vote_granted());
+            } catch (const std::exception& e) {
+                ++failures;
+                if (first_error.empty()) {
+                    first_error = e.what();
+                }
+            }
+        };
+
+        // 1. Cache empty: the default (cbor) is refused, `Accept-Post` names
+        //    json, the retry lands, and json is what gets cached.
+        call(5);
+        // The peer changes its mind. Nothing tells the client.
+        peer.accept_only(cbor_media);
+        // 2. The cache is now wrong. This is the request the claim is about.
+        call(6);
+        // 3. And this is the one that separates "corrected" from "survived".
+        call(7);
+    }
+
+    peer.stop();
+
+    const auto sent = client_metrics.recorder()->media_types_of("http.client.request.sent");
+    const auto retries = client_metrics.recorder()->media_types_of("http.client.media_type_retry");
+
+    // The half of the claim that would be a correctness bug rather than a cost.
+    BOOST_TEST(failures == 0, "an RPC failed across the flip: " << first_error);
+    BOOST_TEST(peer.accepted_requests() == 3);
+
+    BOOST_REQUIRE_EQUAL(sent.size(), 5U);
+    BOOST_CHECK_EQUAL(sent[0], cbor_media);  // default guess
+    BOOST_CHECK_EQUAL(sent[1], json_media);  // Accept-Post-informed retry
+    BOOST_CHECK_EQUAL(sent[2], json_media);  // cached, and now wrong
+    BOOST_CHECK_EQUAL(sent[3], cbor_media);  // re-negotiated after the flip
+    BOOST_CHECK_EQUAL(sent[4], cbor_media);  // corrected: the flip is paid once
+
+    // Both retries read the header rather than falling back to the blind walk.
+    // Stated separately from the sequence above because it is a different
+    // property: the sequence would still be five long if the second jump had
+    // guessed right by luck, since alt-json is not what the peer now wants.
+    BOOST_REQUIRE_EQUAL(retries.size(), 2U);
+    BOOST_CHECK_EQUAL(retries[0], json_media);
+    BOOST_CHECK_EQUAL(retries[1], cbor_media);
+    // Reduced to a bool first: BOOST_TEST would try to print the iterator pair.
+    const auto spent_on_alt = std::find(sent.begin(), sent.end(), alt_media) != sent.end();
+    BOOST_CHECK_MESSAGE(!spent_on_alt, "an attempt was spent on " << alt_media);
+
+    // The peer's own record of what arrived, as a cross-check on the metric. If
+    // these ever disagree, the metric is measuring something other than what
+    // went on the wire, and every conclusion above drawn from it is void.
+    const auto received = peer.received_content_types();
+    BOOST_REQUIRE_EQUAL(received.size(), sent.size());
+    for (std::size_t i = 0; i < received.size(); ++i) {
+        BOOST_CHECK_EQUAL(received[i], sent[i]);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

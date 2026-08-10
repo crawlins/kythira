@@ -850,6 +850,35 @@ unverified completion claim.
     The unmeasured-latency gap recorded against the retry itself applies here
     unchanged, and this narrows it only in the sense of making the worst case
     shorter.
+  - **A peer that 415s *intermittently* is now covered — August 10, 2026.**
+    Every other suite drives a peer whose decodable set is fixed for the life
+    of the test, because `cpp_httplib_server` derives what it decodes from its
+    registry *type*. So the `peer_capability_cache` was written once and never
+    contradicted anywhere in the tree, which left the claim that justifies it
+    having no TTL and no invalidation path — a stale entry "costs at most one
+    extra round" and "can never make a request fail", because the peer's entry
+    "is corrected by its next successful response" — entirely unexercised.
+    `accept_post_negotiation_test`'s fifth case stands a hand-rolled
+    `httplib::Server` in front of a real client and flips what it accepts
+    between RPCs: cbor refused → json cached → peer switches to cbor → the
+    client re-negotiates and the correction sticks.
+    - **The assertion is an attempt count, not a success.** A client that
+      ignored the cache, one that corrected it, and one that never corrected it
+      all complete all three RPCs. Five attempts means the flip was paid for
+      once; six means it is paid again on every later call, forever.
+    - **Mutation tested**: making `peer_capability_cache::record` refuse to
+      overwrite an existing entry fails that case alone, at `6 != 5`, with the
+      other four still green — so the case is attributable, and it is the only
+      thing in the tree that can see the correction happen.
+  - **Still not covered, and worth a look**: a peer whose request and response
+    media types *differ*. `record()` stores the type the peer **answered** in
+    and `select_request_media_type()` reuses it as the type to **send** in, so
+    the cache is only sound while those coincide — which they do for our own
+    server and need not for a foreign one. A peer that decodes cbor but always
+    answers json would be cached as json, 415 on every subsequent request, and
+    pay the retry forever rather than once. The case above deliberately keeps
+    the two types equal so that "the cache was contradicted" is the only
+    variable moving.
 
 - **CoAP's `Accept` option is not repeatable, and the client was sending several
   — FIXED August 8, 2026.** Found while adding the retry above, because that was
