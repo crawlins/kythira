@@ -25,7 +25,12 @@ OUTPUT_LANGUAGE        = English
 #---------------------------------------------------------------------------
 INPUT                  = include README.md
 RECURSIVE              = YES
-FILE_PATTERNS          = *.hpp
+# *.md picks up include/raft/future_stdexec_README.md, which README.md links to;
+# without it that link is an unresolvable \ref.  Markdown targets outside INPUT
+# (doc/, .kiro/) are linked from README.md as absolute GitHub URLs instead —
+# pulling those trees in resolves README's links but imports ~40 warnings of
+# their own, a net loss.
+FILE_PATTERNS          = *.hpp *.md
 # Exclude generated / backup / implementation-detail headers
 EXCLUDE_PATTERNS       = *_impl*.hpp      \
                          *.hpp.backup      \
@@ -67,6 +72,10 @@ QT_AUTOBRIEF           = NO
 INHERIT_DOCS           = YES
 SEPARATE_MEMBER_PAGES  = NO
 TAB_SIZE               = 4
+
+# Generate GitHub-style heading anchors so README.md's own `#section` links
+# resolve.  Without this, every intra-README link is an unresolvable \ref.
+MARKDOWN_ID_STYLE      = GITHUB
 
 #---------------------------------------------------------------------------
 # Warnings
@@ -122,7 +131,10 @@ GENERATE_DOCBOOK       = NO
 # Graph / dot — off (no dot dependency in CI)
 #---------------------------------------------------------------------------
 HAVE_DOT               = NO
-CLASS_DIAGRAMS         = NO
+# Was CLASS_DIAGRAMS = NO, obsolete since 1.9.x and warned about on every run.
+# Doxygen mapped that to CLASS_GRAPH = TEXT, so setting it explicitly keeps the
+# generated output identical while dropping the warning.
+CLASS_GRAPH            = TEXT
 
 #---------------------------------------------------------------------------
 # Sorting

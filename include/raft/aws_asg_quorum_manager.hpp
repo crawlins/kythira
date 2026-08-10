@@ -284,7 +284,7 @@ public:
     /// @param target_group Placement-group key in `asg_by_group`.
     /// @param replacing    Ignored; present for interface compatibility.
     /// @return Future with the new node's identity and address on success.
-    auto provision_node(std::string target_group, std::optional<NodeId> /*replacing*/)
+    auto provision_node(std::string target_group, [[maybe_unused]] std::optional<NodeId> replacing)
         -> kythira::future_default<peer_info<NodeId, Address>> {
         try {
             fiu_do_on("raft/aws/asg/update_asg",
