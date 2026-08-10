@@ -1806,6 +1806,38 @@ unverified completion claim.
   **function** coverage, not line coverage (column 10, ~2 points lower). The
   job summary and PR comment used to label it "Line coverage"; they no longer
   do. If you change the enforced column, change both the label and this entry.
+- [x] **API documentation (Doxygen) — now an actual gate.** `Doxyfile` +
+  a `docs` CI job that builds the site and a `docs-deploy` job that publishes it
+  to GitHub Pages. Both halves used to be inert, in the two ways that compound:
+  the job was `if: github.event_name == 'push'`, so it **never ran on a pull
+  request** (that is the "skipped `docs` check" people kept seeing, routinely
+  misread as "the runner has no Doxygen" — it always had), and `WARN_AS_ERROR`
+  was `NO`, so `doxygen` exited 0 regardless. It could not run where it would
+  block a regression, and could not have failed if it had. The tree had
+  accumulated **69 unnoticed warnings**; it is at **0** now, with
+  `WARN_AS_ERROR = FAIL_ON_WARNINGS` holding it there.
+  **`FAIL_ON_WARNINGS`, not `YES`:** `YES` stops at the first warning, so a run
+  would reveal one problem per push. `FAIL_ON_WARNINGS` prints all of them and
+  then exits non-zero.
+  **The trap that cost the most to find, and will recur:** `JAVADOC_AUTOBRIEF`
+  ends the brief at the first period — *including a period inside a code span*.
+  `` `_acme-challenge.<ip>.` `` in `acme_certificate_provider.hpp` therefore had
+  its generated `<tt>` open and close tags split across the brief/detail
+  boundary, for 5 warnings whose text (`</tt>` unmatched) points nowhere near
+  the cause. Escaping the angle brackets does nothing; an explicit `@brief` is
+  the fix. Any doc comment whose first sentence contains `` `a.b` `` has this.
+  **Two other shapes worth knowing:** `template<> struct std::hash<X>` at global
+  scope is unresolvable to Doxygen 1.9.x ("Internal inconsistency: scope for
+  class ... not found!") — reopen `namespace std` instead, which is equally
+  valid C++ (`network_simulator/types.hpp`); and `@param x` cannot match a
+  parameter whose name is commented out as `/*x*/`.
+  **README links:** markdown links to `.md` files outside `INPUT` become
+  unresolvable `\ref`s **and render as dead text on the published site**. Fixed
+  by pointing them at absolute `https://github.com/crawlins/kythira/blob/main/…`
+  URLs, which work from both GitHub and Pages. Do **not** "fix" this by adding
+  `doc/` and `.kiro/` to `INPUT`: measured, that resolves README's 45 but
+  imports ~40 warnings of those files' own broken links — 92 total against 58, a
+  net loss. Intra-README `#anchor` links need `MARKDOWN_ID_STYLE = GITHUB`.
 - [x] **CI reliability (flaky build-and-test/coverage jobs)** — `ca_cluster_node_test`
   (real multi-process Raft cluster, flaked under `ctest -j$(nproc)` CPU
   contention) now retries via `--repeat until-pass:3` and is isolated from

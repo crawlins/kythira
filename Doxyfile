@@ -86,7 +86,11 @@ WARN_IF_UNDOCUMENTED   = NO
 WARN_IF_DOC_ERROR      = YES
 WARN_NO_PARAMDOC       = NO
 WARN_IF_INCOMPLETE_DOC = NO
-WARN_AS_ERROR          = NO
+# FAIL_ON_WARNINGS rather than YES: YES stops at the first warning, so a CI run
+# would reveal one problem per push.  FAIL_ON_WARNINGS prints every warning and
+# then exits non-zero, which is what makes the `docs` job a usable gate.
+# The tree is warning-free as of this change -- keep it that way.
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
 WARN_FORMAT            = "$file:$line: $text"
 WARN_LOGFILE           =
 
