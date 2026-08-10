@@ -223,6 +223,16 @@ public:
     auto stop() -> void;
     auto is_running() const -> bool;
 
+    /// @brief The port this server is actually listening on, or 0 before the
+    /// first successful `start()`.
+    ///
+    /// Equal to the constructor's `bind_port` whenever that was non-zero. Pass 0
+    /// instead to have the kernel allocate a free port, then read it back here
+    /// to build the client's URL — the only collision-free way to pick a port,
+    /// since any port chosen in advance can be taken before the bind happens.
+    /// Mirrors `coap_server::bound_port()` and `grpc_server::bound_port()`.
+    auto bound_port() const -> std::uint16_t;
+
     /// Re-reads `ssl_cert_path`/`ssl_key_path`/`ca_cert_path` from disk and applies
     /// them to the live SSL context, without closing the listening socket or
     /// dropping any established connection. Validates the new material first
@@ -256,6 +266,9 @@ private:
         _install_snapshot_handler;
     std::string _bind_address;
     std::uint16_t _bind_port;
+    // Resolved by start(); atomic because bound_port() is callable without the
+    // mutex, in the same spirit as _running.
+    std::atomic<std::uint16_t> _bound_port{0};
     cpp_httplib_server_config _config;
     metrics_type _metrics;
     std::atomic<bool> _running{false};

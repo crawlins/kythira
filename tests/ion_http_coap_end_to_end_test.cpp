@@ -35,8 +35,15 @@ using namespace kythira;
 
 namespace {
 constexpr const char* test_bind_address = "127.0.0.1";
-constexpr std::uint16_t coap_bind_port = 57931;
-constexpr std::uint16_t http_bind_port = 58231;
+// Both servers bind port 0 and each client endpoint is built from the server's
+// bound_port() after start(), so nothing here depends on a fixed port being
+// free. These were 57931 and 58231, which sit inside Linux's default ephemeral
+// range (32768-60999) -- the kernel is free to hand either to an unrelated
+// process as a source port, which is exactly how grpc_transport_integration_test
+// failed on main at 7d9f51c. Picking constants outside the range would only
+// narrow the window; port 0 closes it, since the kernel reserves the port as it
+// assigns it. Matches coap_cbor_end_to_end_test.cpp.
+constexpr std::uint16_t ephemeral_bind_port = 0;
 constexpr std::uint64_t test_node_id = 1;
 constexpr std::chrono::milliseconds test_timeout{5000};
 
@@ -132,15 +139,15 @@ BOOST_AUTO_TEST_CASE(test_ion_coap_round_trip, *boost::unit_test::timeout(30)) {
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
-    coap_server<coap_test_transport_types> server(test_bind_address, coap_bind_port, server_config,
-                                                  server_metrics);
+    coap_server<coap_test_transport_types> server(test_bind_address, ephemeral_bind_port,
+                                                  server_config, server_metrics);
     register_handlers(server);
     server.start();
 
     kythira::coap_client_config client_config;
     client_config.enable_dtls = false;
     std::unordered_map<std::uint64_t, std::string> endpoints;
-    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, coap_bind_port);
+    endpoints[test_node_id] = std::format("coap://{}:{}", test_bind_address, server.bound_port());
     kythira::noop_metrics client_metrics;
     coap_client<coap_test_transport_types> client(std::move(endpoints), client_config,
                                                   client_metrics);
@@ -174,15 +181,15 @@ BOOST_AUTO_TEST_CASE(test_ion_coap_round_trip, *boost::unit_test::timeout(30)) {
 }
 
 BOOST_AUTO_TEST_CASE(test_ion_http_round_trip) {
-    kythira::cpp_httplib_server<http_test_transport_types> server(test_bind_address, http_bind_port,
-                                                                  {}, kythira::noop_metrics{});
+    kythira::cpp_httplib_server<http_test_transport_types> server(
+        test_bind_address, ephemeral_bind_port, {}, kythira::noop_metrics{});
     register_handlers(server);
     server.start();
     BOOST_TEST(server.is_running());
 
     std::unordered_map<std::uint64_t, std::string> node_map{
         {test_node_id,
-         std::string("http://") + test_bind_address + ":" + std::to_string(http_bind_port)}};
+         std::string("http://") + test_bind_address + ":" + std::to_string(server.bound_port())}};
     kythira::cpp_httplib_client<http_test_transport_types> client(node_map, {},
                                                                   kythira::noop_metrics{});
 
