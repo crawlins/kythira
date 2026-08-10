@@ -1341,22 +1341,26 @@ jobs:
             packer/ca_cluster_node/scripts/provision.sh
 
   # ── API documentation → GitHub Pages ───────────────────────────────────────
-  # Runs only on pushes to main (not on pull-request builds).
-  # Requires GitHub Pages to be enabled in the repository settings with the
-  # source set to "GitHub Actions".
+  # This job builds the docs on **every** push and pull request, and is a real
+  # gate: `Doxyfile` sets WARN_AS_ERROR = FAIL_ON_WARNINGS, so any documentation
+  # warning fails it.
+  #
+  # It used to be `if: github.event_name == 'push'`, which meant it never ran on
+  # a PR -- the skipped `docs` check people kept seeing. Combined with the old
+  # WARN_AS_ERROR = NO that made it doubly inert: it could not run where it would
+  # block a regression, and could not have failed if it had. The tree carried 69
+  # unnoticed Doxygen warnings when this was fixed.
+  #
+  # Deployment is split into `docs-deploy` below so that only the deploy half
+  # needs Pages credentials and the `github-pages` environment. A PR build gets
+  # the gate without touching a deployment.
   docs:
-    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     permissions:
       contents: read
-      pages: write       # upload Pages artifact
-      id-token: write    # request OIDC token for deployment
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      pages: write       # configure-pages, on the main-push path only
 
     steps:
       - name: Checkout
@@ -1367,17 +1371,40 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends doxygen
 
+      # Fails on any warning -- see WARN_AS_ERROR in Doxyfile.
       - name: Generate documentation
         run: doxygen Doxyfile
 
       - name: Setup GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v4
 
+      # Uploaded unconditionally: on main it is what `docs-deploy` publishes, and
+      # on a PR it gives the reviewer a downloadable copy of the rendered docs.
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: doxygen-output/html
 
+  # Publishes the artifact `docs` produced. Pushes to main only -- `on:` above
+  # restricts push to main already, so the ref test is belt-and-braces.
+  # Requires GitHub Pages to be enabled in the repository settings with the
+  # source set to "GitHub Actions".
+  docs-deploy:
+    needs: docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    permissions:
+      pages: write       # publish the Pages artifact
+      id-token: write    # request OIDC token for deployment
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
       - name: Deploy to GitHub Pages
         id: deploy
         uses: actions/deploy-pages@v4
