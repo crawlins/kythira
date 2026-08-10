@@ -209,8 +209,28 @@ kythira_find_optional(HTTP_TRANSPORT httplib)
 kythira_find_optional(OPENSSL OpenSSL)
 
 # Find libcoap using CMake config (vcpkg) or PkgConfig (system)
+#
+# Two symbols, not one. `COAP_TRANSPORT` decides whether the transport is built
+# at all -- `KYTHIRA_BUILD_COAP_TRANSPORT` below carries that answer to every
+# CoAP target, including the 45 test binaries in tests/CMakeLists.txt, which
+# until August 10, 2026 were gated on `TARGET Folly::folly` and so were never
+# connected to this symbol: setting it n produced a byte-identical build.
+# `COAP_BACKEND_LIBCOAP` decides whether the libcoap wire implementation is one
+# of the backends built into it, making libcoap symmetrical with
+# COAP_TRANSPORT_LIBNYOCI and COAP_TRANSPORT_CANTCOAP below.
+#
+# The combination "transport on, every backend off" is deliberate and
+# supported: it builds the backend-free surface. `LIBCOAP_FOUND` stays purely a
+# statement about the library being present, which is what the
+# `LIBCOAP_AVAILABLE` wiring further down keys on.
+set(KYTHIRA_BUILD_COAP_TRANSPORT FALSE)
 kythira_kconfig_gate(COAP_TRANSPORT)
 if(_KYTHIRA_GATE_COAP_TRANSPORT)
+    set(KYTHIRA_BUILD_COAP_TRANSPORT TRUE)
+endif()
+
+kythira_kconfig_gate(COAP_BACKEND_LIBCOAP)
+if(_KYTHIRA_GATE_COAP_TRANSPORT AND _KYTHIRA_GATE_COAP_BACKEND_LIBCOAP)
     find_package(libcoap QUIET CONFIG)
     if(NOT libcoap_FOUND)
         # Fallback to PkgConfig for system installations
@@ -240,7 +260,13 @@ if(_KYTHIRA_GATE_COAP_TRANSPORT)
         set(LIBCOAP_LIBRARIES libcoap::coap-3)
     endif()
 endif()
-kythira_kconfig_require(COAP_TRANSPORT LIBCOAP_FOUND "libcoap")
+# The requirement belongs to the backend symbol, not the feature: under the
+# split above, "transport on, libcoap off" is a legal configuration, so
+# requiring libcoap whenever COAP_TRANSPORT=y would contradict it. Keying on
+# COAP_BACKEND_LIBCOAP preserves what this line was actually for -- strict mode
+# still fails fast if libcoap stops being installable in an image that asked
+# for it.
+kythira_kconfig_require(COAP_BACKEND_LIBCOAP LIBCOAP_FOUND "libcoap")
 
 # coap-transport-libnyoci spec: libnyoci backs a *second* implementation of the
 # same network_client/network_server concepts the libcoap-backed
@@ -526,8 +552,20 @@ if(NOT OpenSSL_FOUND)
     message(WARNING "OpenSSL not found. HTTPS/TLS support will not be available.")
 endif()
 
-if(NOT LIBCOAP_FOUND)
-    message(WARNING "libcoap not found. CoAP transport will not be available.")
+# Three outcomes, three messages. The single old warning ("libcoap not found.
+# CoAP transport will not be available.") was wrong in both new directions: it
+# fired for a deliberate backend-free build, and it claimed the transport was
+# unavailable in configurations that built all 45 of its targets.
+if(NOT KYTHIRA_BUILD_COAP_TRANSPORT)
+    message(STATUS "CoAP transport disabled (CONFIG_COAP_TRANSPORT=n) — no CoAP targets.")
+elseif(LIBCOAP_FOUND)
+    message(STATUS "CoAP transport enabled, libcoap backend available.")
+elseif(NOT _KYTHIRA_GATE_COAP_BACKEND_LIBCOAP)
+    message(STATUS "CoAP transport enabled without the libcoap backend "
+                   "(CONFIG_COAP_BACKEND_LIBCOAP=n) — backend-free surface only.")
+else()
+    message(WARNING "libcoap not found. CoAP transport will build its "
+                    "backend-free surface only.")
 endif()
 
 # ── protobuf_rpc_serializer: generated-code target ───────────────────────────

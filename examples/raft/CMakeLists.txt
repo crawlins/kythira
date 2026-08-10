@@ -191,13 +191,17 @@ else()
                     "KYTHIRA_BUILD_BOOST_BEAST_TRANSPORT and KYTHIRA_BUILD_PROXYGEN_TRANSPORT)")
 endif()
 
-# CoAP transport examples - demonstrate CoAP/DTLS integration
-add_raft_example(coap_transport_basic_example coap_transport_basic_example.cpp)
-add_raft_example(coap_dtls_security_example coap_dtls_security_example.cpp)
-add_raft_example(coap_multicast_example coap_multicast_example.cpp)
-add_raft_example(coap_block_transfer_example coap_block_transfer_example.cpp)
-add_raft_example(coap_performance_validation_example coap_performance_validation_example.cpp)
-add_raft_example(coap_final_integration_validation coap_final_integration_validation.cpp)
+# CoAP transport examples - demonstrate CoAP/DTLS integration.
+# Gated on the feature symbol: CONFIG_COAP_TRANSPORT=n means no CoAP target
+# exists anywhere, examples included.
+if(KYTHIRA_BUILD_COAP_TRANSPORT)
+    add_raft_example(coap_transport_basic_example coap_transport_basic_example.cpp)
+    add_raft_example(coap_dtls_security_example coap_dtls_security_example.cpp)
+    add_raft_example(coap_multicast_example coap_multicast_example.cpp)
+    add_raft_example(coap_block_transfer_example coap_block_transfer_example.cpp)
+    add_raft_example(coap_performance_validation_example coap_performance_validation_example.cpp)
+    add_raft_example(coap_final_integration_validation coap_final_integration_validation.cpp)
+endif()
 
 # Raft completion examples - demonstrate async coordination and error handling
 add_raft_example(async_operations_example async_operations_example.cpp)
