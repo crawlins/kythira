@@ -391,14 +391,33 @@ kythira_kconfig_require(DNS_DISCOVERY LIBLDNS_FOUND "libldns")
 # package first, then fall back to CMake's module-mode FindProtobuf for system
 # installs. Both provide the protobuf::libprotobuf and protobuf::protoc targets
 # this feature needs. See .kiro/specs/protobuf-rpc-serializer/ for the design.
+#
+# `PROTOBUF_SERIALIZER_FOUND` rather than bare `Protobuf_FOUND` at the use
+# sites, and computed *inside* the gate. `Protobuf_FOUND` is not this feature's
+# to read: the GRPC_TRANSPORT block above already calls
+# find_package(Protobuf CONFIG QUIET) for its own codegen targets, so the
+# variable is set whenever gRPC is enabled — which is the default. Gating the
+# probe while testing `Protobuf_FOUND` downstream therefore did nothing at all:
+# `CONFIG_PROTOBUF_SERIALIZER=n` still produced a build with the serializer,
+# its target and its four test binaries, silently and with no warning. What
+# actually controlled this feature was CONFIG_GRPC_TRANSPORT.
+#
+# The gRPC block's own `if(gRPC_FOUND AND Protobuf_FOUND)` sits outside its
+# gate and is correct only because it runs first, so nothing has populated
+# either variable yet. That is a property of statement order, not of the code,
+# and it is why this one is written the robust way instead of matching it.
+set(PROTOBUF_SERIALIZER_FOUND FALSE)
 kythira_kconfig_gate(PROTOBUF_SERIALIZER)
 if(_KYTHIRA_GATE_PROTOBUF_SERIALIZER)
     find_package(Protobuf CONFIG QUIET)
     if(NOT Protobuf_FOUND)
         find_package(Protobuf QUIET)
     endif()
+    if(Protobuf_FOUND)
+        set(PROTOBUF_SERIALIZER_FOUND TRUE)
+    endif()
 endif()
-kythira_kconfig_require(PROTOBUF_SERIALIZER Protobuf_FOUND "protobuf")
+kythira_kconfig_require(PROTOBUF_SERIALIZER PROTOBUF_SERIALIZER_FOUND "protobuf")
 
 # EDHOC support (coap-transport-security spec, Requirement 5) — optional;
 # only present when vcpkg installed with the "edhoc" feature enabled (it
@@ -509,7 +528,7 @@ endif()
 # Protobuf runtime -- no gRPC). Only defined when Protobuf was found; otherwise
 # the target is skipped and the rest of the project configures unaffected
 # (Requirement 9.1), the same graceful-degradation pattern LIBCOAP_FOUND uses.
-if(Protobuf_FOUND)
+if(PROTOBUF_SERIALIZER_FOUND)
     set(RAFT_MESSAGES_PROTO "${CMAKE_CURRENT_SOURCE_DIR}/proto/raft_messages.proto")
     set(PROTOBUF_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/raft_messages")
     file(MAKE_DIRECTORY "${PROTOBUF_GENERATED_DIR}")
@@ -535,6 +554,13 @@ if(Protobuf_FOUND)
     target_link_libraries(raft_protobuf_serializer PUBLIC protobuf::libprotobuf)
     target_compile_features(raft_protobuf_serializer PUBLIC cxx_std_23)
     message(STATUS "protobuf_rpc_serializer enabled (.kiro/specs/protobuf-rpc-serializer/)")
+elseif(NOT _KYTHIRA_GATE_PROTOBUF_SERIALIZER)
+    # Deliberate, so STATUS rather than WARNING — and worth distinguishing from
+    # "not found", because until this gate was honoured the two were
+    # indistinguishable from the log: turning the symbol off produced the
+    # *enabled* message.
+    message(STATUS
+        "protobuf_rpc_serializer disabled (CONFIG_PROTOBUF_SERIALIZER=n).")
 else()
     message(WARNING "Protobuf not found. protobuf_rpc_serializer will not be available.")
 endif()
