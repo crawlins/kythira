@@ -1992,10 +1992,30 @@ auto cpp_httplib_server<Types>::start() -> void {
     metric.add_one();
     metric.emit();
 
-    // Start the server in a separate thread
+    // Bind on this thread rather than inside the server thread, so that the
+    // chosen port is known before start() returns. listen() would do both at
+    // once, which makes a _bind_port of 0 useless -- the kernel picks a port and
+    // only the server thread could observe it. It also means a bind failure is
+    // now visible here instead of surfacing as _running silently going false.
+    int selected_port = 0;
+    if (_bind_port == 0) {
+        selected_port = active_server()->bind_to_any_port(_bind_address);
+    } else if (active_server()->bind_to_port(_bind_address, _bind_port)) {
+        selected_port = _bind_port;
+    }
+    if (selected_port <= 0) {
+        _running.store(false);
+        throw kythira::http_transport_error(
+            std::format("cpp_httplib_server: failed to bind {}:{}", _bind_address, _bind_port));
+    }
+    _bound_port.store(static_cast<std::uint16_t>(selected_port));
+
+    // Start the server in a separate thread. The socket is already listening at
+    // this point, so connections arriving before the accept loop spins up are
+    // held in the kernel backlog rather than refused.
     _server_thread = std::thread([this]() {
         try {
-            if (!active_server()->listen(_bind_address, _bind_port)) {
+            if (!active_server()->listen_after_bind()) {
                 _running.store(false);
             }
         } catch (const std::exception& e) {
@@ -2038,6 +2058,14 @@ template<typename Types>
 requires kythira::transport_types<Types>
 auto cpp_httplib_server<Types>::is_running() const -> bool {
     return _running.load();
+}
+
+// The port actually bound by start(); see the declaration for why a caller
+// would pass 0 and read it back here.
+template<typename Types>
+requires kythira::transport_types<Types>
+auto cpp_httplib_server<Types>::bound_port() const -> std::uint16_t {
+    return _bound_port.load();
 }
 
 }  // namespace kythira

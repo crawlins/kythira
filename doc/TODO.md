@@ -1898,10 +1898,28 @@ unverified completion claim.
   50751-50760 makes the **old** binary fail with exactly the CI message
   (`failed to bind 127.0.0.1:50751`, exit 201) while the new one passes under
   identical conditions.
-  **Applies to other suites**: ~11 port literals elsewhere in `tests/` sit
-  inside the ephemeral range and have the same latent race. The rest of the
-  suite uses 18xxx, which is below it and therefore safe from the kernel,
-  though still hand-allocated — `grep tests/*.cpp` before taking a new one.
+  **Swept the rest of `tests/`, and the sweep corrected its own first answer.**
+  An initial numeric grep suggested "~11 other literals inside the ephemeral
+  range"; that number was wrong and is recorded here only because it is the kind
+  of wrong that looks authoritative. It counted CoAP *option numbers* (60000),
+  buffer sizes, and the range bounds `32768`/`60999` quoted inside comments
+  explaining the hazard. Filtering to identifiers actually used as bind ports
+  leaves **two**, both in `ion_http_coap_end_to_end_test.cpp` (57931, 58231),
+  now on port 0 as well. Everything else binds either port 0 already or a
+  literal below 32768 (5683-9090, 18xxx), where the kernel cannot hand it out;
+  `coap_event_logging_property_test.cpp`'s 61050 is above the range and
+  client-only. Those remain hand-allocated, so `grep tests/*.cpp` before taking
+  a new one.
+  **Neither of the two could have failed CI**: `ION_SERIALIZER` is off in every
+  CI job (see the note in `configs/ci_full_defconfig`), so that test is never
+  built there. It was fixed because it still runs for anyone who enables ion
+  locally — verified by configuring a local ion build, not by reasoning.
+  Closing them needed `cpp_httplib_server::bound_port()`, which did not exist;
+  `coap_server` and now `grpc_server` both had one. Adding it meant binding
+  before the server thread starts instead of inside it, which had a second
+  payoff: a bind failure used to flip `_running` to false from inside the thread
+  and let `start()` return as if it had worked, so the old binary **SIGABRTs**
+  under a squatter where the new one throws `http_transport_error`.
 - [x] **stdexec future backend** — a second, `stdexec` (P2300 sender/receiver)
   backed `Future`/`Promise`/`Try`/`Executor` implementation alongside the
   default Folly one, for new code wanting direct access to `stdexec`
