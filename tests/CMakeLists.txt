@@ -1379,13 +1379,18 @@ target_compile_features(cbor_json_size_comparison_property_test PRIVATE cxx_std_
 add_test(NAME cbor_json_size_comparison_property_test COMMAND cbor_json_size_comparison_property_test)
 
 # ── protobuf_rpc_serializer tests (.kiro/specs/protobuf-rpc-serializer/) ──────
-# Gated on Protobuf_FOUND: the raft_protobuf_serializer target (built from the
-# protoc-generated raft_messages.pb.cc) only exists when Protobuf was found.
-# Skipped gracefully otherwise (Requirement 9.1), the same conditional-
-# add_executable pattern CoAP-dependent tests use for LIBCOAP_FOUND. Each links
-# raft_protobuf_serializer for the generated message classes plus
-# network_simulator/boost_json for the kythira RPC structs.
-if(Protobuf_FOUND)
+# Gated on PROTOBUF_SERIALIZER_FOUND: the raft_protobuf_serializer target
+# (built from the protoc-generated raft_messages.pb.cc) only exists when that
+# is true. Skipped gracefully otherwise (Requirement 9.1), the same
+# conditional-add_executable pattern CoAP-dependent tests use for
+# LIBCOAP_FOUND. Each links raft_protobuf_serializer for the generated message
+# classes plus network_simulator/boost_json for the kythira RPC structs.
+#
+# Not bare `Protobuf_FOUND`, which the gRPC block sets independently of whether
+# this feature was selected — see the root CMakeLists.txt where
+# PROTOBUF_SERIALIZER_FOUND is computed. These four binaries were previously
+# built even with CONFIG_PROTOBUF_SERIALIZER=n.
+if(PROTOBUF_SERIALIZER_FOUND)
     # Concept conformance + serialize/deserialize smoke test (Requirement 10.1).
     add_executable(protobuf_rpc_serializer_concept_test protobuf_rpc_serializer_concept_test.cpp)
     target_link_libraries(protobuf_rpc_serializer_concept_test PRIVATE
@@ -1439,12 +1444,19 @@ if(Protobuf_FOUND)
     add_test(NAME protobuf_json_benchmark_test COMMAND protobuf_json_benchmark_test)
     set_tests_properties(protobuf_json_benchmark_test PROPERTIES LABELS "benchmark")
 else()
-    message(STATUS "protobuf_rpc_serializer unit/property tests: skipped (Protobuf not found)")
+    # Two distinct reasons, and saying "not found" for both would misreport the
+    # deliberate one — Protobuf is present in every build where gRPC is.
+    if(NOT _KYTHIRA_GATE_PROTOBUF_SERIALIZER)
+        message(STATUS "protobuf_rpc_serializer unit/property tests: "
+                       "skipped (CONFIG_PROTOBUF_SERIALIZER=n)")
+    else()
+        message(STATUS "protobuf_rpc_serializer unit/property tests: skipped (Protobuf not found)")
+    endif()
 endif()
 
 # End-to-end HTTP drop-in test additionally needs Folly and the HTTP transport
 # (Property 5 / Requirement 10.4).
-if(Protobuf_FOUND AND TARGET Folly::folly)
+if(PROTOBUF_SERIALIZER_FOUND AND TARGET Folly::folly)
     add_executable(protobuf_rpc_integration_test protobuf_rpc_integration_test.cpp)
     target_link_libraries(protobuf_rpc_integration_test PRIVATE
         network_simulator

@@ -1,19 +1,47 @@
-# ci_full_defconfig — every optional dependency selected (y). Every other
-# symbol not listed here keeps its Kconfig-declared default, which for every
-# non-listed optional dependency is already y (Requirement 4.4) — this file
-# only needs to list the ones that differ from default: EDHOC, the two
-# alternate future backends (STDEXEC_BACKEND, BOOST_FUTURE_BACKEND), and the
-# two alternate HTTP transports (BOOST_BEAST_TRANSPORT, PROXYGEN_TRANSPORT)
-# all default to n. COVERAGE is deliberately left at its default (n): forcing
-# it on here would require Clang and CMAKE_BUILD_TYPE=Debug project-wide,
-# breaking the g++-13 build/test CI jobs that also want to apply this
-# defconfig — coverage is a separate build variant with its own dedicated CI
-# job and its own direct -DENABLE_COVERAGE=ON, not a feature toggle this
-# defconfig should force. Intended for use with -DKYTHIRA_KCONFIG_STRICT=ON
-# so CI fails fast if a dependency silently stops being installable in the
-# CI image, per Requirement 5.1.
+# ci_full_defconfig — every optional dependency that the CI image actually
+# installs, selected (y). Every other symbol keeps its Kconfig-declared
+# default.
+#
+# The list below is the complete set of `default n` bool symbols this file
+# turns on. Getting that set right matters, because a symbol that defaults n
+# and is not listed here is *off* in this configuration — which is the opposite
+# of what "full" suggests. Four symbols default n and are deliberately NOT
+# listed; each is excluded for its own reason, and none of them is an
+# oversight:
+#
+#   COVERAGE                — forcing it on would require Clang and
+#                             CMAKE_BUILD_TYPE=Debug project-wide, breaking the
+#                             g++-13 jobs that also apply this defconfig.
+#                             Coverage is a separate build variant with its own
+#                             CI job and its own -DENABLE_COVERAGE=ON.
+#   ION_SERIALIZER          — ion-c comes from the opt-in `ion` vcpkg feature,
+#                             and no CI job installs it (the main legs use
+#                             --x-feature=edhoc only). Selecting it here would
+#                             make a strict configure fail on an image that
+#                             cannot satisfy it. Enable the vcpkg feature in
+#                             ci.yml *first* if this is ever wanted.
+#   COAP_TRANSPORT_LIBNYOCI — same shape: opt-in `coap-libnyoci` vcpkg feature,
+#   COAP_TRANSPORT_CANTCOAP   and opt-in `coap-cantcoap`; neither is installed
+#                             by any CI job.
+#
+# GCP_SDK is a related trap in the other direction: it defaults **y**, but
+# google-cloud-cpp is installed only by the dedicated GCP job
+# (--x-feature=gcp), so this defconfig under strict mode cannot pass on the
+# main legs as things stand.
+#
+# Intended for use with -DKYTHIRA_KCONFIG_STRICT=ON so CI fails fast if a
+# dependency silently stops being installable in the CI image, per Requirement
+# 5.1. Note that as of August 10, 2026 nothing in ci.yml passes either
+# -DKYTHIRA_KCONFIG or -DKYTHIRA_KCONFIG_STRICT, so that intent is not yet
+# realised — see doc/TODO.md.
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y
 CONFIG_BOOST_BEAST_TRANSPORT=y
 CONFIG_PROXYGEN_TRANSPORT=y
+# Protobuf is always available — `grpc` is an unconditional vcpkg.json
+# dependency and pulls it in — so unlike ion-c this is safe to select. It was
+# missing from this list while CONFIG_PROTOBUF_SERIALIZER was inert (the
+# feature enabled itself off the gRPC block's Protobuf_FOUND regardless), so
+# the omission had no visible effect. Honouring the gate made it load-bearing.
+CONFIG_PROTOBUF_SERIALIZER=y

@@ -1224,7 +1224,7 @@ unverified completion claim.
     defaults `y` while `--x-feature=gcp` runs only in the dedicated GCP job.
     Whatever fixes this has to reconcile the defconfig with what each job
     actually installs, per job — it is not a one-line edit.
-- **`CONFIG_PROTOBUF_SERIALIZER` does nothing — August 10, 2026.** The
+- **`CONFIG_PROTOBUF_SERIALIZER` did nothing — FIXED August 10, 2026.** The
   Kconfig gate is applied (`CMakeLists.txt:394`) but the *enabling* condition
   at `:512` is `if(Protobuf_FOUND)`, and `Protobuf_FOUND` is already set by the
   gRPC block's own `find_package(Protobuf CONFIG QUIET)` at `:301`. So the
@@ -1235,13 +1235,32 @@ unverified completion claim.
   found. protobuf_rpc_serializer will not be available.` A user who turns the
   symbol off gets no warning and no effect. Contrast `ION_SERIALIZER`, which
   works precisely because `ionc` is probed *only* inside its own gate.
-  - **Not fixed here.** The obvious repair — gate `:512` on
-    `_KYTHIRA_GATE_PROTOBUF_SERIALIZER` too — would change what a default
-    build produces if any current configuration relies on the leak, and that
-    wants checking against CI rather than asserting.
+  - **The fix**: a `PROTOBUF_SERIALIZER_FOUND` variable computed *inside* the
+    gate, used at the three consumer sites (`CMakeLists.txt:512`,
+    `tests/CMakeLists.txt`'s two blocks). `Protobuf_FOUND` was never this
+    feature's to read. Verified as a three-way matrix rather than one run,
+    because the risk was regressing the default: **autodetect** (no Kconfig —
+    what every CI leg actually does) still reports the serializer enabled,
+    unchanged; **`CONFIG_PROTOBUF_SERIALIZER=n` with gRPC left on** now
+    disables the serializer and its five tests while `raft_grpc_transport`
+    stays enabled, which is the behaviour the symbol always claimed; and
+    `ci_full_defconfig` keeps it enabled. All five `protobuf_*` binaries build
+    and pass.
+  - **`ci_full_defconfig` gained `CONFIG_PROTOBUF_SERIALIZER=y` in the same
+    change, and had to.** Honouring the gate made the symbol load-bearing, so
+    leaving it off that list would have silently dropped protobuf from the one
+    configuration named "full". Safe to select, unlike ion: `grpc` is an
+    unconditional `vcpkg.json` dependency and pulls protobuf in everywhere.
+  - **The messages now distinguish the two reasons.** "Protobuf not found" was
+    emitted for a deliberate `=n` as well as a genuine absence — and before the
+    fix, `=n` produced the *enabled* message, so the log actively misreported
+    the configuration.
   - **A latent duplicate of the same shape** may exist wherever one feature's
     `find_package` sets a variable another feature's `if()` tests. `Protobuf`
-    is the one confirmed.
+    is the one confirmed. The gRPC block's own
+    `if(gRPC_FOUND AND Protobuf_FOUND)` (`:303`) sits *outside* its gate and is
+    correct only because it runs before anything else populates either
+    variable — safe today, by statement order rather than by construction.
   - **A correction worth keeping.** Three places in the tree recorded that an
     overrunning case aborts via `~std::thread()`'s `std::terminate()` on a
     still-joinable thread. That is true of a normal exception unwind and
