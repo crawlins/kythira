@@ -1123,23 +1123,69 @@ unverified completion claim.
     broke the cycle.
 
 - **`coap_concurrent_processing_property_test` stalls at its 720s budget —
-  OPEN, twice now, and the evidence says it is not a deadlock (August 9,
-  2026).** The crash pattern in this test was fixed in `1a52e1f` (see the sweep
-  above); this is a *different* failure in the same test, and it has recurred:
+  OPEN, three times now. The starvation reading below is DISPROVEN as of
+  August 9, 2026; the time is inside the iteration body on an idle runner.**
+  The crash pattern in this test was fixed in `1a52e1f` (see the sweep above);
+  this is a *different* failure in the same test, and it has recurred:
 
   | PR | head | result |
   |---|---|---|
   | [#187](https://github.com/crawlins/kythira/pull/187) | `736f7f5` | SIGALRM at 720s, re-run green |
   | [#190](https://github.com/crawlins/kythira/pull/190) | `ab6f7e8` | SIGALRM at 720s, 3/3 retries, re-run green |
+  | [#199](https://github.com/crawlins/kythira/pull/199) | `bea9a88` | SIGALRM at 720s, **3/3 retries all failed**, `[stall-probe]` present |
 
-  Both times the PR was innocent — #187 touched only `ci.yml`, and #190's head
-  had already passed the same job one run earlier. 720s is the case's
-  `timeout(180)` times `KYTHIRA_TEST_TIMEOUT_SCALE=4`, so the budget is
-  exhausted rather than a lock being held forever.
+  Every time the PR was innocent — #187 touched only `ci.yml`, #190's head had
+  already passed the same job one run earlier, and #199 adds test files that
+  this binary does not link. 720s is the case's `timeout(180)` times
+  `KYTHIRA_TEST_TIMEOUT_SCALE=4`, so the budget is exhausted rather than a lock
+  being held forever.
 
-  **What #190's log shows, and why it matters.** Every request is sent *and*
-  processed within the same millisecond. The stalls are entirely *between*
-  iterations, with nothing logged at all:
+  **August 9, 2026: the probe fired, and it answers the question the entry was
+  written to ask.** Run
+  [31342882519](https://github.com/crawlins/kythira/actions/runs/31342882519),
+  job `Build & Test (clang++-18, x64)`, three attempts under
+  `--repeat until-pass:3`, ~40 `[stall-probe]` lines. Two readings, both
+  unambiguous:
+
+  - **`gap_ms=0` on every single iteration of all three attempts.** The process
+    is being scheduled. Whatever this is, it is not the runner declining to run
+    it *between* iterations, which is what the reconstruction below claimed.
+  - **`loadavg` is 0.00–0.22 throughout**, on a 4-core runner. The machine is
+    idle. That removes contention as the explanation rather than leaving it as
+    a hypothesis, and it is the reason this reading is a finding and not a
+    swapped guess.
+
+  All the time is in `prev_body_ms`, and it is enormous and wildly variable —
+  60ms, 2 330ms, 46 660ms, 102 006ms, 194 037ms, **286 874ms** — inside a body
+  that on this same test takes 21–141ms locally.
+
+  ```
+  [stall-probe] iter i=7  gap_ms=0 prev_body_ms=1568   elapsed_ms=74495  loadavg=[0.18 0.62 1.90 ...]
+  [stall-probe] iter i=8  gap_ms=0 prev_body_ms=102006 elapsed_ms=176501 loadavg=[0.03 0.44 1.70 ...]
+  [stall-probe] iter i=13 gap_ms=0 prev_body_ms=194037 elapsed_ms=699701 loadavg=[0.00 0.07 0.95 ...]
+  ```
+
+  **What that leaves.** The body is four steps: `acquire_concurrent_slot()`, a
+  5ms sleep, `send_request_vote()` — whose future is deliberately *not* waited
+  on — and `release_concurrent_slot()`. One of those is taking minutes on an
+  idle machine. `send_request_vote` is the only one that touches a socket, so it
+  is the obvious suspect, but the probe as it stood could not say so and neither
+  can this entry. **The instrumentation is therefore split one level finer**: a
+  `[stall-probe] body i=N acquire_ms=… send_ms=… release_ms=…` line per
+  iteration, emitted inside the body rather than carried to the next line, since
+  the iteration that stalls is exactly the one a deferred line would never print.
+  The three sum to the next line's `prev_body_ms`, which is the cross-check that
+  they bracket the right calls.
+
+  **This is the third instrument in a row whose first reading contradicted the
+  prose it was built to confirm**, and the reason to keep writing them: the
+  "between iterations" reading was reconstructed by hand from timestamps in
+  #190's log, and it was wrong.
+
+  **What #190's log was read as saying — kept because the reading is what the
+  probe disproved, not because it is true.** Every request appeared to be sent
+  *and* processed within the same millisecond, with the stalls entirely
+  *between* iterations and nothing logged at all:
 
   ```
   04:02:40.901  ... token=00000008 processed
@@ -1148,18 +1194,20 @@ unverified completion claim.
   04:09:02.230  ... token=0000000b        <- 220s later
   ```
 
-  A held lock or a lost future would strand a request *mid-flight*, with a
-  token outstanding and no completion logged. This is the opposite shape: every
-  unit of work completes instantly and the process is simply not scheduled in
-  between. That points at runner starvation, not at this test's own
-  concurrency.
+  The argument ran: a held lock or a lost future would strand a request
+  *mid-flight*, with a token outstanding and no completion logged; this is the
+  opposite shape, every unit of work completing instantly with the process not
+  scheduled in between, which points at runner starvation rather than at this
+  test's own concurrency. **The probe measured both intervals directly and
+  found `gap_ms=0` everywhere on an idle machine, so that inference does not
+  hold.** The most likely reconciliation is that these log lines came from the
+  transport's own threads and were never a faithful record of where the
+  *test's* iteration boundaries fell — which is precisely why the intervals had
+  to be measured in the test rather than reconstructed from a log.
 
-  **What argues against dismissing it as "CI was busy".** 400+ other tests in
-  the same job did not stall. The likeliest reconciliation is that this test is
-  the one *exposed* by starvation rather than the one causing it — it is a
-  long-running property test issuing many sequential real-socket round trips,
-  so it holds the largest budget for the longest and is first to exhaust it.
-  That is a hypothesis, not a finding.
+  The companion argument — that 400+ other tests in the same job did not stall,
+  so this is the test *exposed* by starvation rather than the one causing it —
+  now cuts the other way. Nothing was starving it, and it stalled anyway.
 
   **Not reproducible locally.** Runs in 1-2s under both g++-13 and clang++-18,
   including under 3x CPU oversubscription. Against ~48s for the same test on a
@@ -1189,14 +1237,34 @@ unverified completion claim.
       looked sufficient. It is not: locally `gap_ms` is **0 on every
       iteration** while `prev_body_ms` ranges 21–141ms, i.e. all the time is
       *inside* the body. An instrument reporting only the gap would have read
-      0 forever and looked like a clean run.
-  - **The local/CI gap is still unexplained and is now the thing to measure.**
-    The whole 3-case binary takes 37.60s on CI (green run 31317748177) against
-    ~0.7s for case 1 locally. Until that is understood, a local green run
-    falsifies nothing.
-  - If starvation is confirmed, the fix is scheduling, not code: this test
-    should not share a runner with the rest of the suite under `ctest -j`, or
-    its budget should be sized against contention rather than wall clock.
+      0 forever and looked like a clean run — and on CI it read 0 too, which is
+      what disproved the starvation hypothesis rather than confirming it.
+  - ~~Attribute the stall to the gap or the body~~ — **done, it is the body**,
+    on an idle runner. See the August 9 reading above.
+  - **Split `prev_body_ms` into its three calls** — done in the same commit as
+    this entry: `acquire_ms`, `send_ms`, `release_ms` per iteration. Run before
+    shipping, per this file's own rule about instruments that read 0 forever,
+    and it reads: **`acquire_ms=0` and `release_ms=0` on every iteration, with
+    `send_ms` carrying 101–463ms** — i.e. locally the entire body is
+    `send_request_vote`, and the two slot calls are free. So the instrument
+    discriminates, and it already names the step locally.
+  - **`send_request_vote` is therefore the suspect, and the odd part is that it
+    should not block at all here.** The test does not wait on the future it
+    returns — it discards it and pushes a ready one instead — so every
+    millisecond in `send_ms` is synchronous work happening before the future is
+    handed back. 101–463ms of that locally is already more than a non-blocking
+    send should cost; the CI occurrence would make it 100–290 *seconds*. Confirm
+    against a CI reading before acting: the next stall says whether `send_ms`
+    carries the minutes there too, and if it does, the question becomes what
+    inside `send_request_vote` is synchronous.
+  - **The local/CI gap is still unexplained**, and matters less now than it did:
+    the whole 3-case binary takes 37.60s on CI (green run 31317748177) against
+    ~0.7s for case 1 locally. A local green run still falsifies nothing, but the
+    CI reading no longer depends on reproducing it.
+  - **The scheduling fix is off the table** unless something new revives it.
+    Isolating this test from `ctest -j`, or sizing its budget against
+    contention, would have been the response to starvation; the runner was idle,
+    so neither addresses what was measured.
   - Do **not** simply raise the timeout. That is the fifth iteration of the
     cycle documented in the sweep above, and it has never removed a failure.
 
