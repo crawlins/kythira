@@ -54,6 +54,13 @@ constexpr const char* test_endpoint = "coap://127.0.0.1:61010";
 // fixing the underlying mutex-starvation bug in coap_client's io-pump
 // thread).
 constexpr std::size_t test_concurrent_requests = 15;
+// Deliberately *not* scaled_deadline()d, unlike its counterparts in
+// coap_cbor_end_to_end_test and coap_content_format_property_test. This is the
+// deadline handed to the send_request_vote() whose synchronous portion the
+// stall probe below is measuring, and widening it mid-investigation would
+// change the thing being measured. It is inert either way today: the test
+// discards that future, and the futures it later waits on are fresh
+// makeFuture()s. Revisit when the 720s stall entry in doc/TODO.md closes.
 constexpr std::chrono::milliseconds test_timeout{5000};
 
 // ── Stall probe ──────────────────────────────────────────────────────────────

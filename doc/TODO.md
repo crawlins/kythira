@@ -1111,6 +1111,49 @@ unverified completion claim.
     locally** across 70 runs, so this reduces fragility rather than proving
     a root cause — tracked as still open in
     `.kiro/specs/proxygen-http-transport/tasks.md`.
+  - **The unscaled-deadline sweep is done, and it is mostly a negative
+    result.** `coap_negotiation_failure_test`'s `exchange_timeout` was found
+    by accident — one bare `constexpr 5000ms` in a file where every case
+    carries `scaled_timeout(30)`, so CI's `KYTHIRA_TEST_TIMEOUT_SCALE=4` gave
+    the case 120s while the exchange inside it kept 5s. That raised the
+    obvious question of how many others there were. Answer: of **17** bare
+    duration constants across the 50 `tests/` files that do scale their case
+    budgets, **two** could actually fail this way, and both are now
+    `scaled_deadline`d — `coap_cbor_end_to_end_test` (the deadline is the
+    RPC's *and* the budget of the `BOOST_REQUIRE(future.wait(...))` that
+    follows) and `coap_content_format_property_test` (same, plus one case
+    where it is purely the wait budget for the nack handler).
+    - **The other fifteen were checked and deliberately left alone**, which is
+      the part worth recording, because "same shape" was not enough — the
+      discriminator is whether the deadline gates a *hard assertion*.
+      `coap_connection_reuse` and `coap_confirmable_message` discard the
+      futures they hand the deadline to and assert only that nothing crashes;
+      `coap_future_resolution` counts a timeout error as a resolution, so
+      expiry is a pass; `coap_multicast_delivery` waits only on already-failed
+      futures from its error paths; `coap_config_test`'s four are config
+      *validation* values, never deadlines. Five more —
+      `coap_cipher_suite`, `coap_thread_safety`, `coap_post_method`,
+      `coap_real_block_transfer`, `coap_dtls_handshake` — declared a
+      `test_timeout` that nothing ever read; those are deleted, so the next
+      sweep does not have to re-derive that they are inert.
+    - **The sweep's population was files that call `scaled_timeout()`, and that
+      is narrower than the problem.** `tests/CMakeLists.txt:4021` scales *every*
+      CTest `TIMEOUT` property by the same factor, so a file with no Boost
+      `timeout()` attribute at all still gets a 4x-wider outer budget in CI
+      while any millisecond deadline inside it stays fixed — the identical
+      mismatch, reached by a different route. `negotiation_test_harness.hpp` is
+      a known instance: its RPC deadline and `request_timeout` are bare
+      `3000`/`4000ms` under a CTest budget CI scales from 180s to 720s. Nothing
+      has failed there yet, which is why this is recorded rather than changed;
+      the point is that "the sweep is done" means one of the two populations.
+    - **`coap_concurrent_processing_property_test:57` is the one knowing
+      exception.** It has the shape and it is left unscaled on purpose: the
+      constant is handed to the `send_request_vote` whose synchronous portion
+      the `[stall-probe]` is currently measuring, and changing that call's
+      deadline mid-investigation changes the thing being measured. It is also
+      inert today — the test discards that future, and the futures it later
+      waits on are fresh `makeFuture()`s. Revisit once the stall entry below
+      closes.
   - **A correction worth keeping.** Three places in the tree recorded that an
     overrunning case aborts via `~std::thread()`'s `std::terminate()` on a
     still-joinable thread. That is true of a normal exception unwind and
