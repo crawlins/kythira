@@ -1920,6 +1920,16 @@ unverified completion claim.
   payoff: a bind failure used to flip `_running` to false from inside the thread
   and let `start()` return as if it had worked, so the old binary **SIGABRTs**
   under a squatter where the new one throws `http_transport_error`.
+  **The sweep's scope was wrong too, and CI said so within the hour.** It looked
+  at `tests/` only. `examples/` also registers its programs as ctest tests via
+  `add_raft_example()`, and `grpc_transport_example.cpp` held **51701/51702** —
+  both inside the ephemeral range. `main` at `beb5c94` went red on
+  `Build & Test (clang++-18, x64)` with "Address already in use" on 51702, three
+  attempts out of three: the same defect as the one just fixed, in the directory
+  the sweep did not look at, found the same day. Both are now port 0 via
+  `bound_port()`. Everything else under `examples/` is 5683-9090, below the
+  range. **When sweeping for port literals, `grep tests/ examples/` — a ctest
+  entry does not have to live in `tests/`.**
 - [x] **stdexec future backend** — a second, `stdexec` (P2300 sender/receiver)
   backed `Future`/`Promise`/`Try`/`Executor` implementation alongside the
   default Folly one, for new code wanting direct access to `stdexec`
