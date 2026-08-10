@@ -1,6 +1,6 @@
 # Build directories
 build/
-build-coverage/
+build-*/
 cmake-build-*/
 
 # IDE files
@@ -28,7 +28,7 @@ Makefile
 !CMakeLists.txt
 !vcpkg-overlays/**/*.cmake
 !cmake/Kconfig.cmake
-vcpkg_installed/
+vcpkg_installed
 
 # Rust build output (vcpkg overlay ports built via cargo)
 vcpkg-overlays/**/target/
