@@ -26,6 +26,8 @@
 #include <raft/executor_default.hpp>
 #include <raft/serializer_registry.hpp>
 
+#include "test_timeout_scale.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -45,7 +47,13 @@ constexpr const char* test_bind_address = "127.0.0.1";
 // assigns it. Matches coap_cbor_end_to_end_test.cpp.
 constexpr std::uint16_t ephemeral_bind_port = 0;
 constexpr std::uint64_t test_node_id = 1;
-constexpr std::chrono::milliseconds test_timeout{5000};
+// Scaled, like coap_cbor_end_to_end_test.cpp's identical constant. This is a
+// deadline handed *into* the transport -- the RPC timeout argument and the
+// `future.wait()` beside it -- so `scaled_deadline`, not `scaled_timeout`:
+// widening Boost's own SIGALRM budget would not help if it is this deadline
+// that expires. A coverage build runs several times slower than the Release
+// build 5000ms was sized against.
+constexpr auto test_timeout = kythira::testing::scaled_deadline(5000);
 
 using ion_serializer_type = kythira::ion_rpc_serializer<std::vector<std::byte>>;
 
@@ -135,7 +143,8 @@ BOOST_AUTO_TEST_CASE(test_ion_content_type_and_format_mapping) {
     }
 }
 
-BOOST_AUTO_TEST_CASE(test_ion_coap_round_trip, *boost::unit_test::timeout(30)) {
+BOOST_AUTO_TEST_CASE(test_ion_coap_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::coap_server_config server_config;
     server_config.enable_dtls = false;
     kythira::noop_metrics server_metrics;
@@ -180,7 +189,12 @@ BOOST_AUTO_TEST_CASE(test_ion_coap_round_trip, *boost::unit_test::timeout(30)) {
     server.stop();
 }
 
-BOOST_AUTO_TEST_CASE(test_ion_http_round_trip) {
+// Carries a budget for the same reason the CoAP case above does: it drives a
+// real server over a real socket, so it can hang rather than fail. It had none
+// at all, which meant a hang here was a stuck test run rather than a failure
+// anyone could read.
+BOOST_AUTO_TEST_CASE(test_ion_http_round_trip,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(30))) {
     kythira::cpp_httplib_server<http_test_transport_types> server(
         test_bind_address, ephemeral_bind_port, {}, kythira::noop_metrics{});
     register_handlers(server);
