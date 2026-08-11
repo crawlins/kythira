@@ -234,16 +234,40 @@ Now run stages 3-4, then stage 6.
 
 ### 6. Certificate Authority (only for the `certificates` bundle)
 
-A CA requires a Vault master encryption key — a dependency that is not obvious
-from the CA documentation, and **the one resource here that bills while
-idle**. If the certificates bundle is not worth a standing charge, enable only
-`instance-pool`; the per-bundle toggle exists for exactly this.
+A CA requires a Vault and a master encryption key — a dependency that is not
+obvious from the CA documentation, and **the one part of this setup that bills
+while idle**. If the certificates bundle is not worth a standing charge, enable
+only `instance-pool`; the per-bundle toggle exists for exactly this.
+
+Three things to get right, each of which costs a full create cycle to discover:
 
 ```bash
-oci certs-mgmt certificate-authority create-root-ca-by-generating-config \
-  --compartment-id "$COMPARTMENT_ID" --name kythira-ci-ca \
-  --kms-key-id "$KMS_KEY_ID" --subject '{"commonName": "kythira ci root"}'
+# 1. DEFAULT, not VIRTUAL_PRIVATE. A virtual private vault is a dedicated HSM
+#    partition and is *substantially* more expensive; nothing here needs one.
+VAULT_ID=$(oci kms management vault create --compartment-id "$COMPARTMENT_ID" \
+  --display-name kythira-ci-vault --vault-type DEFAULT \
+  --wait-for-state ACTIVE --query 'data.id' --raw-output)
+EP=$(oci kms management vault get --vault-id "$VAULT_ID" \
+  --query 'data."management-endpoint"' --raw-output)
+
+# 2. The key must be RSA. A CA signs, so a symmetric key is not usable — an AES
+#    key is accepted by `key create` and then rejected by the CA with
+#    `InvalidParameter: The encryption key with the OCID ... has an invalid
+#    shape.`, which does not mention the algorithm. `length` is in BYTES:
+#    256 = RSA-2048.
+KEY_ID=$(oci kms management key create --compartment-id "$COMPARTMENT_ID" \
+  --display-name kythira-ci-ca-key --key-shape '{"algorithm":"RSA","length":256}' \
+  --endpoint "$EP" --wait-for-state ENABLED --query 'data.id' --raw-output)
+
+# 3. The subcommand ends in `-details`. Without it the CLI suggests the right
+#    name, but only after the vault and key already exist.
+oci certs-mgmt certificate-authority create-root-ca-by-generating-config-details \
+  --compartment-id "$COMPARTMENT_ID" --name kythira-ci-ca --kms-key-id "$KEY_ID" \
+  --subject '{"commonName": "kythira ci root"}' \
+  --wait-for-state ACTIVE --max-wait-seconds 1200
 ```
+
+Vault and CA creation are both slow — minutes each, not seconds.
 
 `oci_certificates_provider` issues with
 `configType = MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA`: the caller generates
