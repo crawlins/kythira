@@ -207,7 +207,7 @@ certificate provider can be built on the same tested foundation.
    | `private_key_pem` | `std::string` | `""` | RSA private key PEM for API-key signing; required unless `use_instance_principal` is true |
    | `private_key_passphrase` | `std::string` | `""` | Passphrase for `private_key_pem`, if encrypted |
    | `use_instance_principal` | `bool` | `false` | When true, ignore the four API-key fields above and authenticate via the instance metadata service (Requirement 1.6) |
-   | `endpoint_override` | `std::string` | `""` | Override the derived `https://{service}.{region}.oci.oraclecloud.com` base URL — for future local-mock testing (Requirement 13) |
+   | `endpoint_override` | `std::string` | `""` | Override the derived per-service base URL (`iaas.{region}.oraclecloud.com`, `certificatesmanagement.{region}.oci.oraclecloud.com`, ... — see `spike-notes.md` Finding 10) — for future local-mock testing (Requirement 13) |
    | `api_timeout` | `std::chrono::seconds` | `30s` | Per-call HTTP timeout |
 
 3. `oci_client_config` SHALL be an aggregate (no user-declared constructors),
@@ -244,7 +244,7 @@ certificate provider can be built on the same tested foundation.
        -> boost::json::value;     // parsed response body; throws on non-2xx
    ```
    applying `oci_signing::sign_request`'s headers to every call, and
-   deriving `host`/base-URL from `{service}.{cfg.region}.oci.oraclecloud.com`
+   deriving `host`/base-URL per service — Core Services is `iaas.{cfg.region}.oraclecloud.com`, the certificate services are `{service}.{cfg.region}.oci.oraclecloud.com`; no single template is correct (`spike-notes.md` Finding 10)
    (or `cfg.endpoint_override` when non-empty) where `{service}` is supplied
    per-call (`"iaas"` for Compute/VCN, `"certificatesmanagement"`, etc.).
 8. `oci_http_client` SHALL surface non-2xx responses as `std::runtime_error`

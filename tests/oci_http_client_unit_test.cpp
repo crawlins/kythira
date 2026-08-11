@@ -141,9 +141,16 @@ BOOST_AUTO_TEST_CASE(the_service_host_is_derived_from_the_region_unless_overridd
     cfg.endpoint_override.clear();
     const oci_http_client client(cfg);
 
-    BOOST_CHECK_EQUAL(client.host_for("iaas"), "iaas.us-phoenix-1.oci.oraclecloud.com");
+    // Per-service, not one template — established by probing live OCI. Core
+    // Services predates the `oci` label and 404s `GetVnic` under it; the
+    // certificate services have no DNS record without it. Getting this wrong
+    // is invisible to every other test here, since `endpoint_override` replaces
+    // the whole host.
+    BOOST_CHECK_EQUAL(client.host_for("iaas"), "iaas.us-phoenix-1.oraclecloud.com");
     BOOST_CHECK_EQUAL(client.host_for("certificatesmanagement"),
                       "certificatesmanagement.us-phoenix-1.oci.oraclecloud.com");
+    BOOST_CHECK_EQUAL(client.host_for("certificates"),
+                      "certificates.us-phoenix-1.oci.oraclecloud.com");
 
     oci_client_config overridden = make_config(pem);
     overridden.endpoint_override = "http://127.0.0.1:9999";
@@ -182,7 +189,7 @@ BOOST_AUTO_TEST_CASE(the_request_sets_host_itself_to_the_string_it_signed) {
     BOOST_REQUIRE_MESSAGE(headers.contains("Host"),
                           "no explicit Host header — httplib would choose it, and for a default "
                           "port it appends ':443' to a host the signature does not cover");
-    BOOST_CHECK_EQUAL(headers.at("Host"), "iaas.us-phoenix-1.oci.oraclecloud.com");
+    BOOST_CHECK_EQUAL(headers.at("Host"), "iaas.us-phoenix-1.oraclecloud.com");
     // ...and the signature must be over that same spelling, not the origin.
     BOOST_CHECK(headers.at("authorization").find("headers=\"date (request-target) host\"") !=
                 std::string::npos);

@@ -197,6 +197,64 @@ BOOST_AUTO_TEST_CASE(oci_provision_three_nodes,
     }
 }
 
+/// A newly launched instance is not taggable the instant it appears.
+///
+/// The regression test for the failure the *first* real `provision_node`
+/// against OCI hit. The instance shows up in `ListInstancePoolInstances` while
+/// the pool is still building it, and `UpdateInstance` against one in that
+/// state is refused: `409 Conflict: instance ... is currently being modified,
+/// try again later`. Since tagging is the very next thing `provision_node`
+/// does, taking the candidate too early fails the whole provision.
+///
+/// `set_provisioning_reads(3)` is what makes this expressible at all — the
+/// default mock materialises instances already `RUNNING`, which is precisely
+/// why 31 green tests had nothing to say about it. What makes the case
+/// non-vacuous is that the manager must *wait*: drop the `lifecycle_state ==
+/// "RUNNING"` guard from the candidate scan and this fails with that 409.
+BOOST_AUTO_TEST_CASE(provisioning_waits_for_the_instance_to_stop_being_modified,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    MockFixture fixture;
+    fixture.server.set_provisioning_reads(3);
+    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+
+    auto peer =
+        std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt)).get();
+
+    BOOST_CHECK_EQUAL(peer.node_id, 1U);
+    const auto instances = fixture.server.pool_instances();
+    BOOST_REQUIRE_EQUAL(instances.size(), 1U);
+    BOOST_CHECK_EQUAL(instances[0].lifecycle_state, "RUNNING");
+    BOOST_CHECK_EQUAL(instances[0].freeform_tags.at("kythira-node-id"), "1");
+}
+
+/// A decommission that follows a provision must wait for the pool to settle.
+///
+/// The regression test for the last defect the live lifecycle turned up, and
+/// the least exotic of them: `UpdateInstancePool` leaves the pool `SCALING`,
+/// and `DetachInstancePoolInstance` is refused for the duration with
+/// `409 IncorrectState: instancepool ... Must be in State 'Running'`. So
+/// provision-then-decommission — which is not a corner case but precisely what
+/// `maintain_quorum` does to replace a node — failed against real OCI.
+///
+/// `set_scaling_reads(2)` is what makes it expressible; the default mock keeps
+/// the pool `RUNNING` forever. Drop `await_pool_running()` from
+/// `decommission_node` and this fails with that 409.
+BOOST_AUTO_TEST_CASE(decommission_waits_for_the_pool_to_leave_scaling,
+                     *boost::unit_test::timeout(kythira::testing::scaled_timeout(90))) {
+    MockFixture fixture;
+    fixture.server.set_scaling_reads(2);
+    oci_instance_pool_quorum_manager<> mgr{fixture.config()};
+
+    auto peer =
+        std::move(mgr.provision_node(fixture.server.availability_domain(), std::nullopt)).get();
+    BOOST_CHECK_EQUAL(peer.node_id, 1U);
+
+    // Straight into a decommission, with the pool still reporting SCALING.
+    BOOST_CHECK_NO_THROW(std::move(mgr.decommission_node(peer.node_id)).get());
+    BOOST_CHECK(fixture.server.pool_instances().empty());
+    BOOST_CHECK_EQUAL(fixture.server.pool_size(), 0);
+}
+
 /// Requirement 4.3: `extra_tags` are merged, and cannot displace the four keys
 /// the manager owns. Without the second half an operator could point a managed
 /// instance at another cluster's node id by setting one config field.

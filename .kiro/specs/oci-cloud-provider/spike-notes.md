@@ -226,7 +226,16 @@ not check signatures.
 It found two defects in code that had shipped green, and confirmed one earlier
 finding far more strongly than desk research could.
 
-### Finding 5: the endpoint domain is `{service}.{region}.oci.oraclecloud.com`
+### Finding 5: the endpoint domain is per-service — **superseded by Finding 10**
+
+> **Correction, later the same day.** This finding concluded that *every*
+> service takes the `oci` label. That is wrong for Core Services and the error
+> was not academic: it broke `GetVnic` and therefore every `provision_node`.
+> The corrected matrix is Finding 10; the table below is right only about the
+> two certificate services. Left in place rather than rewritten because the
+> shape of the mistake matters — the `oci` form *resolves and mostly works* for
+> `iaas`, which is exactly why one passing call was not evidence.
+
 
 The `oci` label is **not optional**, and `host_for()` omitted it. Of the four
 services these providers use, only two tolerate its absence:
@@ -309,3 +318,112 @@ Task 0(b) (Instance Principal) and 0(f) (CI OIDC federation) are untouched by
 this pass. Task 0(g)'s capacity-error shape and pricing-API questions are also
 still open — they need launches, and this pass deliberately created no billable
 resource.
+
+---
+
+## Third pass — August 11, 2026: driving the real manager
+
+Method: `scripts/ci-cloud-credentials/oci/oci_tenancy_check.cpp` stage 6 —
+`oci_instance_pool_quorum_manager` provisioning, assessing and decommissioning
+a real instance in a real Instance Pool, with the OCI CLI as an oracle whenever
+a call disagreed with it.
+
+Four more defects, each only reachable after fixing the one before it. **Every
+one of them was invisible to all 31 mock tests**, and the reasons are
+structural rather than a matter of coverage — listed with each finding, because
+that is the reusable part.
+
+### Finding 8: every request with a body carried two `Content-Type` headers
+
+cpp-httplib takes the content type as a separate argument on every body-bearing
+overload — there is no `Put(path, headers, body)` — and sets the header from
+it. Supplying our own signed `content-type` as well put both on the wire. OCI
+answers `400` with an **empty body**, so the error says nothing at all.
+
+Fixed by withholding `content-type` from httplib's header map and letting it
+own the header; the value is identical and the signature covers the value, not
+the sent letter case.
+
+*Why the mock could not see it*: cpp-httplib's **server** accepts duplicate
+headers, and `get_header_value` returns the first. The POST test asserting
+`content-type == application/json` passed with both present.
+
+### Finding 9: a new instance is not taggable the moment it appears
+
+`provision_node` polls for an instance lacking a `kythira-node-id` tag. The
+instance appears in `ListInstancePoolInstances` while the pool is still
+building it, and `UpdateInstance` against one in that state is refused:
+`409 Conflict: instance ... is currently being modified, try again later`.
+Since tagging is the next thing `provision_node` does, taking the candidate
+that early fails the provision.
+
+Fixed by requiring `lifecycleState == RUNNING` before adopting a candidate,
+which also matches `aws_asg_quorum_manager` waiting for `InService`.
+
+*Why the mock could not see it*: it materialised instances already `RUNNING`.
+It now models the gap (`set_provisioning_reads`).
+
+### Finding 10: the endpoint domain is per-service — corrects Finding 5
+
+Probed against a live tenancy in `us-phoenix-1`:
+
+| service | `{svc}.{region}.oraclecloud.com` | `{svc}.{region}.oci.oraclecloud.com` |
+|---|---|---|
+| `iaas` | **works** | 404 on `GetVnic`, `GetSubnet` |
+| `identity` | works | works |
+| `certificatesmanagement` | **no DNS record** | works |
+| `certificates` | **no DNS record** | works |
+
+Core Services predates the `oci` label and must not carry it; the certificate
+services exist only with it. **No single template is correct.** `host_for` now
+maps service to suffix explicitly.
+
+`iaas` is the trap worth naming. The `oci` form resolves *and serves most
+operations* — instances, instance pools, `GetInstance`, `UpdateInstance` all
+worked — while 404ing `GetVnic`, which `provision_node` needs to return an
+address at all. Finding 5 was written on the strength of calls that succeeded;
+they were not evidence about the ones that had not been tried.
+
+The diagnosis also took a wrong turn worth recording: the 404 was first read as
+eventual consistency, and `private_ip_of` gained a poll to absorb it. The poll
+then ran its **full 600-second budget** without ever succeeding, which is what
+disproved the theory. The polling was kept — it is correct defensively and free
+when the host is right — but it fixed nothing.
+
+*Why the mock could not see it*: `endpoint_override` replaces the whole host,
+so the derivation is never exercised by any test, at any coverage level.
+
+### Finding 11: the pool must be `RUNNING` before an instance can be detached
+
+`UpdateInstancePool` leaves the pool `SCALING`, and
+`DetachInstancePoolInstance` is refused for the duration:
+`409 IncorrectState: instancepool ... Must be in State 'Running'`. So a
+decommission shortly after a provision fails — which is not an exotic sequence,
+it is exactly what `maintain_quorum` does to replace a node.
+
+Fixed with a bounded `await_pool_running()` before every detach, including the
+failure-path cleanup.
+
+*Why the mock could not see it*: its pool was always `RUNNING`. It now models
+the window (`set_scaling_reads`).
+
+### Also confirmed by this pass
+
+- **The full lifecycle works.** `provision_node` → `assess_quorum` →
+  `decommission_node` against a real pool: node 1 at `10.0.1.29:7000` in 175s,
+  assessed live 1/1, decommissioned, and a post-run audit showing every
+  instance terminated and **no leaked boot volumes**.
+- **A regional subnet serves an AD-scoped placement configuration.** Instances
+  launched into one and received addresses from its range.
+- **Requirement 6.7's rollback was not enough.** It covers only the launch-poll
+  timeout, so a failure at the tag write or the VNIC lookup left a tagged,
+  running, billed instance. That happened twice for real before
+  `best_effort_detach` was added; it is a deliberate step beyond what
+  Requirement 6.7 specifies.
+- **Transient connection failures during the provision poll are normal.** Four
+  `Could not establish connection` errors appeared in one successful run and
+  were absorbed by the poll loop, which treats a failed poll as non-fatal and
+  bounds itself by the deadline instead.
+- **Pool scale-down terminates with a lag** of a minute or two after
+  `UpdateInstancePool` returns. Long enough to look like a leak if audited
+  immediately.

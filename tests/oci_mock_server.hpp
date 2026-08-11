@@ -84,6 +84,10 @@ public:
         std::string private_ip;
         std::string vnic_id;
         bool in_pool{true};
+        /// Remaining `GetInstance` reads that report `PROVISIONING` before this
+        /// instance settles into `RUNNING`. While non-zero, `UpdateInstance`
+        /// against it answers 409, exactly as OCI does.
+        int provisioning_reads_remaining{0};
     };
 
     /// One certificate version, as `ListCertificateVersions` reports it.
@@ -165,6 +169,38 @@ public:
             throw std::runtime_error("oci_mock_server: could not read the signing key PEM");
         }
         _public_key.reset(key);
+    }
+
+    /// @brief How long a newly launched instance stays `PROVISIONING`.
+    ///
+    /// Zero (the default) is Task 4's instantaneous transition. Non-zero models
+    /// what live OCI does: the instance appears in the pool listing at once but
+    /// is not yet modifiable, and `UpdateInstance` against it answers
+    /// `409 Conflict: instance ... is currently being modified`.
+    ///
+    /// That gap broke the first real `provision_node`, which took the candidate
+    /// as soon as it appeared and immediately tried to tag it. A mock that hands
+    /// out instances already `RUNNING` cannot express the bug, which is the only
+    /// reason this knob exists.
+    auto set_provisioning_reads(int reads) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _provisioning_reads = reads;
+    }
+
+    /// @brief How many `GetInstancePool` reads report `SCALING` after a size
+    ///        change before the pool settles back to `RUNNING`.
+    ///
+    /// Zero (the default) keeps the pool always `RUNNING`. Non-zero models what
+    /// live OCI does after `UpdateInstancePool`, including refusing
+    /// `DetachInstancePoolInstance` with `409 IncorrectState: instancepool ...
+    /// Must be in State 'Running'` for the duration.
+    ///
+    /// That window is why a decommission immediately after a provision failed
+    /// against real OCI — which is not an exotic sequence, it is exactly what
+    /// `maintain_quorum` does when it replaces a node.
+    auto set_scaling_reads(int reads) -> void {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _scaling_reads = reads;
     }
 
     /// @brief Whether growing the pool immediately materialises instances.
@@ -419,6 +455,10 @@ private:
         inst.time_created = rfc3339_now();
         inst.private_ip = "10.0.0." + std::to_string(10 + ordinal);
         inst.vnic_id = "ocid1.vnic.oc1.phx.mock" + std::to_string(ordinal);
+        inst.provisioning_reads_remaining = _provisioning_reads;
+        if (inst.provisioning_reads_remaining > 0) {
+            inst.lifecycle_state = "PROVISIONING";
+        }
         _pool_membership.push_back(inst.id);
         _instances.emplace(inst.id, std::move(inst));
         return _pool_membership.back();
@@ -471,7 +511,12 @@ private:
             pool["id"] = _pool_id;
             pool["compartmentId"] = "ocid1.compartment.oc1..mock";
             pool["size"] = _pool_size;
-            pool["lifecycleState"] = "RUNNING";
+            // Composed before the countdown ticks, so `reads = N` yields
+            // exactly N answers of SCALING.
+            pool["lifecycleState"] = _scaling_reads_remaining > 0 ? "SCALING" : "RUNNING";
+            if (_scaling_reads_remaining > 0) {
+                --_scaling_reads_remaining;
+            }
             pool["placementConfigurations"] = boost::json::array{std::move(placement)};
             json_reply(resp, pool);
         });
@@ -503,6 +548,9 @@ private:
             }
             _pool_size = size->is_int64() ? size->get_int64()
                                           : static_cast<std::int64_t>(size->get_uint64());
+            // A size change puts the pool into SCALING, exactly as OCI does —
+            // and that is what refuses a detach until it settles.
+            _scaling_reads_remaining = _scaling_reads;
             reconcile_size_locked();
             boost::json::object pool;
             pool["id"] = _pool_id;
@@ -565,6 +613,11 @@ private:
                     error_reply(resp, 400, "InvalidParameter", "instanceId is required");
                     return;
                 }
+                if (_scaling_reads_remaining > 0) {
+                    error_reply(resp, 409, "IncorrectState",
+                                "instancepool " + _pool_id + " is Must be in State 'Running'");
+                    return;
+                }
                 const auto it = _instances.find(std::string(instance_id->get_string()));
                 if (it == _instances.end() || !it->second.in_pool) {
                     error_reply(resp, 404, "NotAuthorizedOrNotFound",
@@ -600,7 +653,16 @@ private:
                             error_reply(resp, 404, "NotAuthorizedOrNotFound", "instance not found");
                             return;
                         }
-                        json_reply(resp, instance_json(it->second));
+                        // Composed before the countdown ticks, so `reads = N`
+                        // means exactly N answers of PROVISIONING.
+                        auto reply = instance_json(it->second);
+                        if (it->second.provisioning_reads_remaining > 0) {
+                            --it->second.provisioning_reads_remaining;
+                            if (it->second.provisioning_reads_remaining == 0) {
+                                it->second.lifecycle_state = "RUNNING";
+                            }
+                        }
+                        json_reply(resp, reply);
                     });
 
         // UpdateInstance — replaces freeformTags outright, exactly as OCI does.
@@ -615,6 +677,12 @@ private:
             const auto it = _instances.find(req.matches[1]);
             if (it == _instances.end()) {
                 error_reply(resp, 404, "NotAuthorizedOrNotFound", "instance not found");
+                return;
+            }
+            if (it->second.provisioning_reads_remaining > 0) {
+                error_reply(
+                    resp, 409, "Conflict",
+                    "instance " + it->second.id + " is currently being modified, try again later");
                 return;
             }
             boost::json::value parsed;
@@ -973,6 +1041,9 @@ private:
         "-----BEGIN CERTIFICATE-----\nmock-oci-root\n-----END CERTIFICATE-----\n"};
     std::int64_t _pool_size{0};
     bool _auto_launch{true};
+    int _provisioning_reads{0};
+    int _scaling_reads{0};
+    int _scaling_reads_remaining{0};
     std::uint64_t _instance_counter{0};
     std::uint64_t _certificate_counter{0};
     int _certificate_creating_polls{0};
