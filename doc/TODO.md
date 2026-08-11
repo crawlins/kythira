@@ -2393,9 +2393,37 @@ time a provider lands, so it is worth clearing before OCI or Alibaba start.
   while CTest reported the skip as a pass, and `provision_timeout_cleanup`
   never timing out while leaking its instance). Like AWS and Azure, still
   missing the example config file documented at the top of this section.
-- [ ] **Oracle Cloud Infrastructure (OCI)** — quorum manager backed by an
-  Instance Pool and a `certificate_provider` backed by OCI Certificates
-  Service
+- [ ] **Oracle Cloud Infrastructure (OCI)** — `oci_instance_pool_quorum_manager`
+  (Instance Pool `size` for provisioning, `DetachInstancePoolInstance` for
+  decommission, tag-scan `next_node_id()` since an OCID's trailing segment is
+  not hex-decodable, `lifecycleState` + a `kythira-last-heartbeat` freeform
+  tag for liveness) and `oci_certificates_provider` (`certificate_provider`
+  backed by OCI Certificates Management, `configType =
+  MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA` so the caller's CSR is submitted
+  and the private key never reaches OCI). Spec at
+  `.kiro/specs/oci-cloud-provider/`, Tasks 1-5 and 7 of 0-7 complete.
+  **No new dependency**: Oracle publishes no C++ SDK, so both components
+  speak the OCI REST API directly over httplib/boost::json/OpenSSL with
+  hand-rolled Request Signing v1 (`oci_signing.hpp`), gated behind the
+  independent `CONFIG_OCI_QUORUM_MANAGER`/`CONFIG_OCI_CERTIFICATES_PROVIDER`
+  kconfig flags rather than SDK detection — `vcpkg.json` is unchanged.
+  **This is the first provider to ship the example config file this section
+  requires** (`docker/oci_quorum_manager/`), which AWS, Azure and GCP still
+  lack.
+  Still open, and the reason this stays unticked: **Task 6, the real-OCI
+  integration tier and CI wiring**. Everything above is verified against
+  `tests/oci_mock_server.hpp` — 31 cases across five CTest entries, with the
+  tag read-merge-write, heartbeat and provision-rollback claims each
+  mutation-tested — but never against a live tenancy, so it is in the same
+  position AWS/Azure/GCP were in before their first live run, each of which
+  surfaced three or four real defects. Two of Task 6's inputs are themselves
+  unresolved Task 0 spike questions: OCI's exact out-of-host-capacity error
+  shape (the escalation ladder's classifier is a string match and cannot be
+  written from inspection) and whether OCI federates GitHub Actions' OIDC
+  tokens to a Dynamic Group. **Instance Principal auth (Requirement 1.6) is
+  also still a deliberate throwing stub** — the metadata-service contract is
+  unconfirmed, and guessing it would yield a client that passes against a
+  mock built from the same guess.
 - [ ] **Alibaba Cloud** — quorum manager backed by an Auto Scaling Group and
   a `certificate_provider` backed by Alibaba Cloud SSL Certificates Service
 
