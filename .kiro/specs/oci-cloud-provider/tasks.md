@@ -1,6 +1,18 @@
 # Implementation Plan — OCI Cloud Provider Support
 
-## Status: Task 0 closed; Tasks 1-5 and 7 complete; Task 6 the only one open
+## Status: Tasks 0-5 and 7 complete; Task 6 code-complete, pending one console-side step
+
+**Task 6's code is done and live-verified** — both real-OCI suites pass against
+a real tenancy (4/4 and 3/3), the shared harness encodes Findings 14/15's
+classifier and pricing, and the `oci` CI job body is written. **The checkbox
+stays open for one reason**: the job's credential step needs an OCI IAM
+identity-domain trust for this repository (Workload Identity Federation,
+Finding 17), which is console-side work, and until it exists the step fails by
+design rather than falling back to the long-lived key Requirement 14.2
+forbids. Task 6 — and with it `doc/TODO.md`'s bullet, per Requirement 15.3 —
+should be ticked after that trust exists and the job has produced one green
+run. A task whose CI job cannot yet execute is not complete, however finished
+its code is.
 
 **August 11, 2026.** Both components, the mock server, the test tier and the
 documentation are on `main`, and every one of them has been exercised against a
