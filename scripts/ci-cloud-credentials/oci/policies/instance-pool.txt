@@ -1,0 +1,44 @@
+# Bundle: instance-pool
+# CTest binary: oci_quorum_manager_real_test
+# Toggle: REAL_CLOUD_TESTS_OCI_INSTANCE_POOL_ENABLED
+#
+# Statements for oci_instance_pool_quorum_manager. Substitute {GROUP} and
+# {COMPARTMENT}; lines beginning with '#' are stripped by
+# provision-ci-identity.sh.
+#
+# Unlike the AWS bundles next door these are not JSON. An OCI policy is a list
+# of English-like statements, not an IAM document, so mirroring the AWS
+# directory's *shape* (one fragment per bundle) is possible but mirroring its
+# file format is not.
+#
+# Which verb covers what, since OCI's resource families do not line up with the
+# call names:
+#
+#   instance-pools          GetInstancePool, UpdateInstancePool,
+#                           ListInstancePoolInstances,
+#                           DetachInstancePoolInstance
+#   instance-family         GetInstance and — the one that catches people —
+#                           UpdateInstance, which is how tags are written.
+#                           Granting instance-pools alone provisions fine and
+#                           then fails at the tag write, leaving an untagged
+#                           instance that the *next* provision_node adopts.
+#   virtual-network-family  ListVnicAttachments and GetVnic, the only way the
+#                           node's private IP is discovered. Without it
+#                           provision_node launches an instance and then cannot
+#                           return an address for it.
+#   instance-configurations the pool launches from one; the pool needs to read it
+#   subnets / vnics         placing the launched instance's primary VNIC
+#
+# CAVEAT, and it is a real one: this list is derived from the operations the
+# code actually calls, and has **not** been verified against a least-privilege
+# user. Every live run so far used a tenancy administrator, so an over-broad
+# grant would not have been noticed. Verify by creating the group below,
+# putting a non-admin user in it, and running oci_tenancy_check with
+# KYTHIRA_OCI_ALLOW_LAUNCH=1.
+
+Allow group {GROUP} to manage instance-pools in compartment {COMPARTMENT}
+Allow group {GROUP} to manage instance-family in compartment {COMPARTMENT}
+Allow group {GROUP} to read virtual-network-family in compartment {COMPARTMENT}
+Allow group {GROUP} to use instance-configurations in compartment {COMPARTMENT}
+Allow group {GROUP} to use subnets in compartment {COMPARTMENT}
+Allow group {GROUP} to use vnics in compartment {COMPARTMENT}

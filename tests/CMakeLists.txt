@@ -2471,6 +2471,38 @@ else()
     message(STATUS "oci_quorum_manager tests: skipped (requires OpenSSL and httplib)")
 endif()
 
+# The OCI tenancy validator (scripts/ci-cloud-credentials/oci/).
+#
+# Built, and deliberately **never** registered with add_test(): it needs real
+# tenancy credentials, so as a CTest entry it could only ever fail or skip. But
+# it must still be *compiled*, because an unbuilt tool rots into a file that
+# looks like it works — the same reasoning that pulled Task 5's tests forward
+# to cover oci_signing.hpp. It found two live defects (spike-notes.md Findings
+# 5 and 6) that the whole mock suite could not see, which is exactly why it is
+# worth keeping compilable.
+#
+# The source lives beside its README rather than in tests/ because it is an
+# operator tool, not a test; the build wiring lives here because this is where
+# every other OCI target's wiring lives.
+if(_KYTHIRA_GATE_OCI_QUORUM_MANAGER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
+    add_executable(oci_tenancy_check
+        ${CMAKE_SOURCE_DIR}/scripts/ci-cloud-credentials/oci/oci_tenancy_check.cpp)
+    target_link_libraries(oci_tenancy_check PRIVATE
+        network_simulator
+        httplib::httplib
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    if(EXISTS "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+        target_link_libraries(oci_tenancy_check PRIVATE
+            "${CMAKE_SOURCE_DIR}/vcpkg_installed/${KYTHIRA_VCPKG_TRIPLET}/lib/libboost_json.a")
+    elseif(TARGET Boost::json)
+        target_link_libraries(oci_tenancy_check PRIVATE Boost::json)
+    endif()
+    target_include_directories(oci_tenancy_check PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_features(oci_tenancy_check PRIVATE cxx_std_23)
+endif()
+
 if(_KYTHIRA_GATE_OCI_CERTIFICATES_PROVIDER AND TARGET OpenSSL::SSL AND TARGET httplib::httplib)
     kythira_add_oci_test(oci_certificates_provider_mock_test)
     add_test(NAME oci_certificates_provider_mock_test COMMAND oci_certificates_provider_mock_test)
