@@ -60,8 +60,9 @@ struct oci_client_config {
     /// instance metadata service instead of the API-key fields above.
     ///
     /// **Not yet implemented** — `oci_signing::instance_principal_signer`
-    /// throws until the metadata-service contract is confirmed. See
-    /// `.kiro/specs/oci-cloud-provider/spike-notes.md`, Task 0(b).
+    /// throws. The metadata-service and federation contract is now confirmed
+    /// (`.kiro/specs/oci-cloud-provider/spike-notes.md` Finding 16); what is
+    /// missing is the federation client itself, not the knowledge to write it.
     bool use_instance_principal{false};
 
     /// When non-empty, overrides the derived service endpoint host. Points the

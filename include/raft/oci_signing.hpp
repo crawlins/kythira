@@ -266,8 +266,9 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
     -> std::map<std::string, std::string> {
     if (cfg.use_instance_principal) {
         throw std::runtime_error(
-            "oci_signing: Instance Principal signing is not yet implemented — see "
-            ".kiro/specs/oci-cloud-provider/spike-notes.md Task 0(b)");
+            "oci_signing: Instance Principal signing is not yet implemented — the "
+            "contract is known (see .kiro/specs/oci-cloud-provider/spike-notes.md "
+            "Finding 16); the federation client has simply not been written");
     }
 
     // Named individually rather than as "credentials are incomplete", because
@@ -326,14 +327,24 @@ using bio_ptr = std::unique_ptr<BIO, openssl_deleter<BIO, BIO_free_all>>;
 /// config flag that select it exist and compile, and so the reason it throws is
 /// attached to the thing that throws rather than living only in a spec.
 ///
-/// What is missing is not code but a *contract*: the instance metadata service
-/// paths that hand out the short-lived certificate and key, and the cadence at
-/// which they must be refreshed before expiry. Both are unconfirmed
-/// (`.kiro/specs/oci-cloud-provider/spike-notes.md`, Task 0(b)), and guessing
-/// them would produce a client that appears to work against a mock built from
-/// the same guess. The canonical-string construction and the `authorization`
-/// header shape are identical to the API-key path, so what lands here later is
-/// the credential fetch and its refresh, not a second signer.
+/// **The contract is now known** (`spike-notes.md` Finding 16, Task 0(b) —
+/// closed) and it is larger than this stub's original note assumed. Requests
+/// are *not* signed with the instance certificate at all:
+///
+///   1. Read `/instance/region`, `/identity/cert.pem`, `/identity/key.pem` and
+///      `/identity/intermediate.pem` from `http://169.254.169.254/opc/v2`
+///      (overridable via `OCI_METADATA_BASE_URL`).
+///   2. Generate an ephemeral **session key pair**.
+///   3. Exchange the leaf certificate for a security token at the Auth
+///      service's X.509 federation endpoint, signing that exchange with
+///      `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`.
+///   4. Sign ordinary requests with the **session** key and
+///      `keyId = "ST$" + token`, renewing when the token stops being valid.
+///
+/// So what lands here is a federation client and a second keyId scheme, not
+/// "the credential fetch and its refresh" as originally supposed. The
+/// canonical string is unchanged — that part was right. This remains a stub
+/// because the work has not been done, **not** because anything is unknown.
 class instance_principal_signer {
 public:
     [[noreturn]] static auto sign(const oci_client_config& /*cfg*/, std::string_view /*method*/,
@@ -341,8 +352,9 @@ public:
                                   const std::string& /*body*/)
         -> std::map<std::string, std::string> {
         throw std::runtime_error(
-            "oci_signing: Instance Principal signing is not yet implemented — see "
-            ".kiro/specs/oci-cloud-provider/spike-notes.md Task 0(b)");
+            "oci_signing: Instance Principal signing is not yet implemented — the "
+            "contract is known (see .kiro/specs/oci-cloud-provider/spike-notes.md "
+            "Finding 16); the federation client has simply not been written");
     }
 };
 

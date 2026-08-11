@@ -131,14 +131,18 @@ Allow group kythira-operators to read certificate-authority-family in compartmen
 surface (`oci_client_config::use_instance_principal`) but is **not
 implemented**: setting it makes every signing attempt throw a named error.
 
-That is deliberate, and the alternative was worse. What is missing is not
-code but a *contract* — the instance metadata service endpoints that hand out
-the short-lived signing certificate, and the cadence at which they must be
-refreshed before expiry (`spike-notes.md`, Task 0(b)). Implementing it from a
-guess would produce a client that passes against a mock built from the same
-guess and fails against OCI. A silent fallback to the API-key path would be
-worse still: it would authenticate as the wrong principal, which is an
-authorization decision made by accident.
+The stub throws rather than silently falling back to the API-key path, which
+would authenticate as the wrong principal — an authorization decision made by
+accident.
+
+**The contract is now known** (`spike-notes.md` Finding 16, Task 0(b) closed),
+so this is unimplemented rather than unknown. It is also a bigger job than it
+first looked: requests are not signed with the instance certificate at all.
+The cert, key and intermediate come from `http://169.254.169.254/opc/v2`, an
+ephemeral session key pair is generated locally, the leaf certificate is
+exchanged for a security token at the Auth service's X.509 federation
+endpoint, and ordinary requests are then signed with the *session* key and
+`keyId = "ST$" + token`.
 
 So, until that is closed:
 

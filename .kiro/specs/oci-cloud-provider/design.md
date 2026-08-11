@@ -194,14 +194,27 @@ Signature version="1",headers="date (request-target) host content-length
 `x-content-sha256` from both the signed-headers list and the canonical
 string, leaving just `date`, `(request-target)`, `host` in that order.
 
-Instance Principal signing replaces the API-key `keyId`/private-key pair
-with a short-lived X.509 certificate + private key fetched from the local
-instance metadata service, refreshed before expiry; the canonical-string
-construction and `authorization` header shape are otherwise identical.
-**The exact metadata-service paths and refresh cadence remain unconfirmed**
-(`spike-notes.md`'s Conclusions, Task 0(b)) — `instance_principal_signer`'s
-implementation is blocked on a follow-up desk-research or live-tenancy pass
-before Requirement 1.6 can be implemented as more than a stub.
+Instance Principal signing is **not** simply the API-key path with different
+credentials — an earlier draft of this section said the canonical-string
+construction and `authorization` header shape were "otherwise identical", and
+that is wrong (`spike-notes.md` Finding 16, from `oci-go-sdk`'s
+`common/auth/`). Requests are never signed with the instance certificate's key.
+The flow is:
+
+1. Read `/instance/region`, `/identity/cert.pem`, `/identity/key.pem` and
+   `/identity/intermediate.pem` from `http://169.254.169.254/opc/v2`
+   (overridable via `OCI_METADATA_BASE_URL`).
+2. Generate an **ephemeral session key pair**.
+3. Exchange the leaf certificate for a security token at the Auth service's
+   X.509 federation endpoint, signing *that* request with the leaf certificate
+   and `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`.
+4. Sign ordinary API requests with the **session** private key and
+   `keyId = "ST$" + token`, renewing whenever the token stops being valid.
+
+The canonical string is unchanged — that much the original draft had right.
+`instance_principal_signer` is therefore a second signer plus a federation
+client, not a credential swap, and Task 0(b) is no longer a blocker on
+implementing Requirement 1.6.
 
 ## Components and Interfaces
 

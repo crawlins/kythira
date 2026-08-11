@@ -485,3 +485,172 @@ Every stage of `oci_tenancy_check` now passes against a live tenancy: signing,
 compartment access, `GetInstancePool`, `ListInstancePoolInstances`,
 `GetCertificateAuthorityBundle`, and the full provision/assess/decommission
 lifecycle.
+
+---
+
+## Fourth pass — August 11, 2026: closing Task 0(b), (d), (f) and (g)
+
+Method: empirical probes against the live tenancy where one was possible, and
+Oracle's own SDK source otherwise. **All four remaining sub-questions are now
+answered, and three of the four contradict what the spec assumed.**
+
+### Finding 13 — 0(d): freeform tag keys DO allow the colon
+
+Probed by writing candidate keys to a real VCN and recording accept/reject:
+
+| key | result |
+|---|---|
+| `kythira-cluster` (hyphen) | accepted |
+| `kythira:cluster` (**colon**) | **accepted** |
+| `kythira_cluster` | accepted |
+| `kythira/cluster` | accepted |
+| `Kythira-Cluster` (uppercase) | accepted |
+| `kythira+cluster` | accepted |
+| `kythira.cluster` (dot) | **rejected** — `Invalid tags` |
+| `kythira cluster` (space) | **rejected** — `Invalid tags` |
+
+**Requirement 4.1's premise is false.** It states "OCI freeform tag *keys*
+disallow the colon character `raft`/AWS tags use (`kythira:cluster`); this spec
+uses a hyphen instead — confirm the exact allowed character set during Task 0's
+spike and adjust if the assumption above is wrong." It was wrong:
+`kythira:cluster` is accepted, and the tags could have matched the AWS names
+exactly.
+
+**The hyphens are kept anyway**, and that is a deliberate choice rather than
+inertia: they are already written on live instances, the tag key is the
+manager's lookup key, and renaming it is a migration — every existing managed
+instance would become invisible to `find_instance`/`next_node_id` at once. The
+cost of the change is real and the benefit is cosmetic. What changes is the
+*justification*: Requirement 4.1 must stop claiming the colon is disallowed.
+
+### Finding 14 — 0(g) part 1: the capacity error, caught in the wild
+
+Provoked by requesting `VM.Standard.A1.Flex` (4 OCPU) in each Availability
+Domain. AD-1 and AD-3 launched; **AD-2 refused**:
+
+```
+status:  500
+code:    InternalError
+message: Out of host capacity.
+```
+
+Two things matter here, and one of them invalidates the spec's plan.
+
+**The `code` is useless as a classifier.** Requirement 13.14 anticipated
+`OutOfHostCapacity`. The real code is `InternalError` — generic, shared with
+ordinary transient failures, and matching on it would treat every 500 as a
+stockout. **The classifier must match the message string `Out of host
+capacity.`** (note the trailing period), which is exactly the fragility
+Requirement 13.14 warned about when it said this "cannot be written correctly
+from inspection alone". It could not have been, and it was not.
+
+**Per-AD stockout is confirmed, not assumed.** One AD refused while two
+succeeded, at the same moment, for the same shape. That is direct evidence for
+Requirement 13.13's `(shape, Availability Domain)` ladder: a shape-only ladder
+would have retried into the same shortage.
+
+Both probe instances were terminated; a post-run audit confirmed it.
+
+### Finding 15 — 0(g) part 2: on-demand pricing is queryable, preemptible is not
+
+`https://apexapps.oracle.com/pls/apex/cetools/api/v1/products/` is public and
+unauthenticated. `?serviceCategory=Compute%20-%20Virtual%20Machine` returns the
+catalog with per-currency `PAY_AS_YOU_GO` values:
+
+```
+B93113  Compute - Standard - E4 - OCPU   OCPU Per Hour  USD 0.025
+B97384  Compute - Standard - E5 - OCPU   OCPU Per Hour  USD 0.03
+B93297  Compute - Standard - A1 - OCPU   OCPU Per Hour  USD 0
+```
+
+So Requirement 13.12's cheapest-first ordering **can** be computed at runtime;
+no hand-maintained table is needed, unlike the Azure work.
+
+**But there is no preemptible SKU** — zero of 648 catalog entries mention it.
+OCI prices preemptible as a discount off the on-demand rate rather than as a
+separate product. Two consequences:
+
+- The harness cannot *look up* a preemptible price. It must apply the
+  documented discount factor. **This pass did not verify what that factor is**
+  — do not write one into code from memory.
+- If the discount is uniform across shapes, the preemptible cheapest-first
+  ordering is **identical to the on-demand ordering**, since a constant factor
+  cannot reorder a sorted list. That would make Requirement 13.12's ladder
+  considerably simpler than it reads. Worth confirming before relying on it.
+
+Note `A1` listing at USD 0 — that is presumably the Always Free allocation
+rather than a true zero marginal rate, and a naive cheapest-first sort would
+put it first on that basis. Combined with Finding 14 (A1 is also the shape most
+likely to be out of capacity) that is a trap worth handling deliberately.
+
+### Finding 16 — 0(b): Instance Principal needs a federation exchange
+
+Sourced from `oci-go-sdk`'s `common/auth/instance_principal_key_provider.go`
+and `federation_client.go`.
+
+**Metadata service** — base `http://169.254.169.254/opc/v2`, overridable via
+the `OCI_METADATA_BASE_URL` environment variable:
+
+| path | content |
+|---|---|
+| `/instance/region` | the instance's region |
+| `/identity/cert.pem` | leaf certificate |
+| `/identity/key.pem` | leaf private key (no passphrase on Compute) |
+| `/identity/intermediate.pem` | intermediate certificate |
+
+**`design.md` is wrong about the rest of it.** It currently says Instance
+Principal "replaces the API-key `keyId`/private-key pair with a short-lived
+X.509 certificate + private key fetched from the local instance metadata
+service ... the canonical-string construction and `authorization` header shape
+are otherwise identical." Requests are **not** signed with the instance
+certificate's key. The real flow is:
+
+1. Read the leaf cert, leaf key and intermediate from the metadata service.
+2. Generate an **ephemeral session key pair** locally.
+3. Call the Auth service's X.509 federation endpoint — `region.Endpoint("auth")`
+   — signing *that* request with the leaf certificate, using
+   `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`.
+4. Receive a **security token**.
+5. Sign ordinary API requests with the **session** private key and
+   `keyId = "ST$" + token`.
+
+So Requirement 1.6 is a larger piece of work than "swap the credentials":
+there is a second service call, an ephemeral key, and a different `keyId`
+scheme. The canonical string itself is unchanged, which is the one part the
+design got right.
+
+**Refresh**: renew when `securityToken == nil || !securityToken.Valid()`,
+checked before every signing operation rather than on a timer. (The OAuth
+variant of the same client uses a 20-minute stale window; the X.509 path
+relies on the token's own validity.)
+
+### Finding 17 — 0(f): keyless CI federation exists, but not via Dynamic Groups
+
+OCI IAM **Workload Identity Federation** supports exchanging a third-party OIDC
+JWT — including GitHub Actions' — for a short-lived **User Principal Session
+Token** (UPST) via the Token Exchange grant. The workload submits its JWT plus a
+public key; OCI validates the signature, audience and authorization rules and
+returns a UPST bound to that key; the workload then signs OCI API calls with the
+matching private key.
+
+**Requirement 14.2's fallback is not needed.** It said "if the spike finds no
+such mechanism currently available, the fallback SHALL be a long-lived API key
+stored as a CI secret ... a decision requiring explicit sign-off". The stronger
+posture is available, so no sign-off is required and no long-lived key should be
+stored.
+
+**But the shape differs from what Requirement 14.2 assumed.** It describes
+federation "adapted to OCI's Dynamic Group + Policy model". This is an
+*identity-domain* mechanism producing a **User** Principal Session Token, so
+policy is written against a user/group principal, not a dynamic group. Dynamic
+Groups remain the right model for the *certificate authority* resource
+principal (Finding 12) — the two mechanisms coexist and should not be confused.
+
+An off-the-shelf GitHub Action implementing the exchange exists
+(`gtrevorrow/oci-token-exchange-action`), which is worth evaluating before
+writing one, though it is third-party and unvetted.
+
+### Task 0 status after this pass
+
+All seven sub-questions are resolved. (a), (c), (e) from the first pass;
+(b), (d), (f), (g) here. Task 6 is no longer blocked on Task 0 for anything.

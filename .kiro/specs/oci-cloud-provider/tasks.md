@@ -1,12 +1,20 @@
 # Implementation Plan — OCI Cloud Provider Support
 
-## Status: Tasks 1-5 and 7 complete; Task 6 open, Task 0 partially complete
+## Status: Task 0 closed; Tasks 1-5 and 7 complete; Task 6 the only one open
 
 **August 11, 2026.** Both components, the mock server, the test tier and the
-documentation are on `main`. **Task 6 — the real-OCI integration tier and CI
-wiring — is the one substantive item left**, and two of its inputs are
-themselves open Task 0 spike questions (see below). Requirement 1.6 (Instance
-Principal) remains a deliberate throwing stub, blocked on Task 0(b).
+documentation are on `main`, and every one of them has been exercised against a
+**live OCI tenancy** — see `spike-notes.md`'s second, third and fourth passes.
+
+**Task 6 — the real-OCI integration tier and CI wiring — is the only task left,
+and it is no longer blocked on anything.** Task 0's last four sub-questions were
+closed on the same day (Findings 13-17), including both of the ones Task 6
+depended on: the out-of-host-capacity classifier and the CI federation
+mechanism.
+
+Requirement 1.6 (Instance Principal) is still a deliberate throwing stub, but
+the reason has changed: the contract is now known (Finding 16), so what remains
+is writing a federation client rather than discovering how one would work.
 
 What landed for Tasks 2-5 and 7, August 11:
 
@@ -218,10 +226,14 @@ Reference implementations to study before starting:
 
 ## Tasks
 
-- [ ] 0. **Spike: confirm OCI signing scheme, Instance Principal
+- [x] 0. **Spike: confirm OCI signing scheme, Instance Principal
       contract, and Certificates Management issuance model — partially
-      complete (4 of 6 sub-questions resolved), see `spike-notes.md`
-      (dated 2026-07-28)**
+      **CLOSED, August 11, 2026 — all 7 sub-questions resolved.** The first
+      pass (2026-07-28, desk research) closed (a)/(c)/(e); the fourth pass
+      (2026-08-11, live tenancy + SDK source) closed (b)/(d)/(f)/(g). Three of
+      those four contradicted what this spec assumed — see `spike-notes.md`
+      Findings 13-17 and the corrections applied to `requirements.md` 1.6,
+      4.1, 13.14 and 14.2, and to `design.md`'s Instance Principal section.**
 
   This task produces a dated `spike-notes.md` in this spec directory,
   mirroring `.kiro/specs/boost-beast-http-transport/spike-notes.md`'s format
@@ -244,7 +256,11 @@ Reference implementations to study before starting:
      `requirements.md` Requirement 1.1 in this same pass, correcting an
      earlier header-order assumption. Minor edge cases (multi-value
      headers, exact whitespace) remain unconfirmed but low-risk.
-  b. [ ] **Instance Principal auth**: STILL OPEN. Exact instance metadata
+  b. [x] **Instance Principal auth**: CLOSED — `spike-notes.md` Finding 16.
+     Metadata paths under `http://169.254.169.254/opc/v2`, and — the part the
+     design had wrong — a **federation exchange is required**: an ephemeral
+     session key, a token from the Auth service's X.509 endpoint, and
+     `keyId = "ST$" + token`. Requirement 1.6 and `design.md` corrected. WAS: Exact instance metadata
      service endpoints/paths, refresh cadence, and whether a federation
      token exchange step is required were not investigated in the first
      pass. Next step: read `oci-go-sdk`'s/`oci-python-sdk`'s
@@ -257,7 +273,10 @@ Reference implementations to study before starting:
      algorithm distributes across placement configs. The one-pool-per-AD
      design (Requirement 6.2, `design.md` Non-Goals) is confirmed required,
      not a contingency.
-  d. [ ] **Freeform tag key character set**: STILL OPEN. Not investigated in
+  d. [x] **Freeform tag key character set**: CLOSED — `spike-notes.md`
+     Finding 13. The colon **is** accepted; only `.` and space are rejected.
+     Requirement 4.1's premise was false and is corrected; the hyphens stay,
+     since the tag key is the manager's lookup key. WAS: Not investigated in
      the first pass.
   e. [x] **OCI Certificates Management CSR support**: CONFIRMED supported —
      `spike-notes.md` Finding 3, sourced from `oci-go-sdk`'s
@@ -269,12 +288,22 @@ Reference implementations to study before starting:
      longer needed. The certificate-revocation operation name is also
      corrected (Finding 4): `RevokeCertificateVersion`, not
      `ScheduleCertificateDeletion`.
-  f. [ ] **CI federation**: STILL OPEN. Whether OCI supports federating
+  f. [x] **CI federation**: CLOSED — `spike-notes.md` Finding 17. OCI IAM
+     Workload Identity Federation exchanges a GitHub OIDC JWT for a
+     short-lived UPST, so **no long-lived API key and no sign-off are
+     needed**. Not a Dynamic Group mechanism, as Requirement 14.2 assumed.
+     WAS: Whether OCI supports federating
      GitHub Actions' OIDC tokens directly to a Dynamic Group was not
      investigated in the first pass. Needed before Requirement 14.2 can be
      implemented as designed rather than falling back to a long-lived API
      key (with the explicit sign-off that fallback requires).
-  g. [ ] **Capacity-error shape and preemptible pricing**: STILL OPEN, added
+  g. [x] **Capacity-error shape and preemptible pricing**: CLOSED —
+     `spike-notes.md` Findings 14 and 15. The live error is `status 500`,
+     `code InternalError`, `message "Out of host capacity."` — the code is
+     generic and useless as a classifier, so the match must be on the message.
+     Per-AD stockout confirmed directly (AD-2 refused while AD-1/AD-3
+     launched). On-demand pricing is queryable from a public API; preemptible
+     is not a separate SKU. WAS:
      2026-08-05 alongside Requirements 13.12–13.15. Record two things the
      escalation ladder cannot be written without:
      - The **exact** error code and message text OCI returns when a shape is
@@ -553,14 +582,13 @@ Reference implementations to study before starting:
 
 ## Notes
 
-- Task 0 gates the rest — but as of `spike-notes.md` (2026-07-28), four of
-  its six sub-questions are resolved, so Tasks 1–5 and most of Task 6 are
-  unblocked. Only Requirement 1.6 (Instance Principal signing) and
-  Requirement 14.2 (CI OIDC federation) still need a follow-up desk-research
-  or live-tenancy pass before their specific code is written — do not
-  implement `instance_principal_signer` beyond a stub, or wire real OCI CI
-  federation, until Task 0(b)/(f) are closed. Task 1's `oci_signing::sign_request`
-  (API-key path) and Task 2/Task 3's REST call sequences are not blocked.
+- **Task 0 no longer gates anything** — all seven sub-questions closed as of
+  2026-08-11. `instance_principal_signer` can now be implemented (Finding 16
+  gives the full contract: metadata paths, the federation exchange, and the
+  `ST$` keyId scheme) and real CI federation can be wired (Finding 17: OCI IAM
+  Workload Identity Federation exchanges a GitHub OIDC JWT for a UPST — no
+  long-lived key, and none of the sign-off Requirement 14.2 would have
+  demanded). Nothing in Tasks 1-7 is blocked on a spike question any more.
 - The one-pool-per-AD operational constraint (design.md Non-Goals,
   confirmed by `spike-notes.md` Finding 2) means Task 2 needs no special
   workaround code: each configured manager instance already only ever
