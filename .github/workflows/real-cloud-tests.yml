@@ -1002,6 +1002,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect.
+      # This job passed the flag without installing kconfiglib from the day
+      # it was written, which silently configured in autodetect mode instead
+      # — cmake/Kconfig.cmake now FATAL_ERRORs on exactly that, so this step
+      # is load-bearing, not hygiene.
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \

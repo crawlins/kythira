@@ -68,6 +68,17 @@ if(_KYTHIRA_KCONFIG_OK)
         message(STATUS "Kconfig: no .config supplied -- using Kconfig-declared defaults")
     endif()
 else()
+    # An explicitly requested config file that cannot take effect must be a
+    # hard error, not a fall-through: silently resolving a *different* feature
+    # set than the one named on the command line is exactly the CI/local
+    # divergence this integration exists to prevent.
+    if(KYTHIRA_KCONFIG)
+        message(FATAL_ERROR "Kconfig: -DKYTHIRA_KCONFIG=${KYTHIRA_KCONFIG} was "
+                            "given, but python3/kconfiglib is unavailable, so "
+                            "the file cannot be applied and configure would "
+                            "silently fall back to autodetect mode. "
+                            "Install with: pip install -r scripts/kconfig/requirements.txt")
+    endif()
     message(STATUS "Kconfig: python3/kconfiglib not found -- "
                     "menuconfig/defconfig unavailable, all optional "
                     "find_package() calls fall back to unconditional QUIET "
