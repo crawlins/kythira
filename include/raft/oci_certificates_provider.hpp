@@ -242,17 +242,20 @@ public:
                 throw std::invalid_argument("sign_csr: csr_pem must be non-empty");
             }
 
-            const auto validity =
-                options.validity.count() > 0 ? options.validity : _config.validity;
-
             boost::json::object config_details;
             config_details["configType"] = "MANAGED_EXTERNALLY_ISSUED_BY_INTERNAL_CA";
             config_details["issuerCertificateAuthorityId"] = _config.certificate_authority_id;
             config_details["csrPem"] = csr_pem;
-            boost::json::object validity_obj;
-            validity_obj["timeOfValidityNotAfter"] = oci_certificates_detail::rfc3339_utc(
-                std::time(nullptr) + static_cast<std::time_t>(validity.count()));
-            config_details["validity"] = std::move(validity_obj);
+            // **No `validity` field.** An earlier version sent
+            // `certificateConfig.validity.timeOfValidityNotAfter`, and OCI
+            // rejected the whole request with
+            // `400 InvalidParameter: Unable to process JSON input` — a
+            // *parser*-level error that names no field and looks like
+            // malformed JSON rather than an unexpected one. Removing it makes
+            // the identical request succeed
+            // (`spike-notes.md` Finding 18). The certificate takes the issuing
+            // CA's validity instead, which is why `config.validity` and
+            // `options.validity` are no longer consulted here.
 
             boost::json::object create;
             create["compartmentId"] = _config.compartment_id;
