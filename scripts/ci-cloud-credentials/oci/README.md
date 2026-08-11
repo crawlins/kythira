@@ -311,18 +311,30 @@ cheapest version of the audit that catches it.
 
 ## Credentials
 
-**Preferred (Requirement 14.2): federated, no long-lived secret.** Blocked on
-Task 0(f) — whether OCI federates GitHub Actions' OIDC tokens to a Dynamic
-Group for this shape is an open spike question. `provision-ci-identity.sh`
-deliberately stops short of issuing anything rather than quietly doing the
-weaker thing.
+**Use federation. It exists, and no long-lived key is needed** — Task 0(f) is
+closed (`spike-notes.md` Finding 17). OCI IAM **Workload Identity Federation**
+exchanges a third-party OIDC JWT — GitHub Actions' included — plus a locally
+generated public key, for a short-lived **User Principal Session Token**
+(UPST) via the Token Exchange grant. The job then signs OCI API calls with the
+matching private key.
 
-**Fallback: a long-lived API key as a CI secret.** Requirement 14.2 permits it
-only with "explicit sign-off ... not a silent regression from the AWS job's
-stronger posture", recorded in `spike-notes.md`. If you take this path, scope
-the user to the group above and nothing else, and rotate on your tenancy's
-schedule — `oci_client_config::private_key_pem` takes the key as a string, so
-rotation is a config reload rather than a rebuild.
+Two things worth knowing before wiring it:
+
+- It is an **identity-domain** mechanism producing a *User* Principal Session
+  Token, so policy targets a user/group principal. It is **not** the Dynamic
+  Group model Requirement 14.2 originally assumed — Dynamic Groups are the
+  right model for the certificate authority's resource principal (see
+  [`policies/certificates.txt`](policies/certificates.txt)), and conflating
+  the two will waste an afternoon.
+- An off-the-shelf action implementing the exchange exists
+  (`gtrevorrow/oci-token-exchange-action`). It is third-party and unvetted;
+  worth evaluating before writing one, not before reading one.
+
+**The long-lived API key fallback is no longer on the table.** Requirement 14.2
+permitted it only if no federation mechanism existed, and only with explicit
+sign-off. One exists, so neither applies. `provision-ci-identity.sh` still
+issues no credentials — that remains correct, since the UPST exchange happens
+in the job, not at provisioning time.
 
 **Instance Principal is not implemented** (`oci_client_config::
 use_instance_principal`). Setting it throws a named error rather than silently

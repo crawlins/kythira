@@ -229,12 +229,18 @@ certificate provider can be built on the same tested foundation.
 5. WHEN `cfg.use_instance_principal` is `false` AND any of `tenancy_id`,
    `user_id`, `fingerprint`, or `private_key_pem` is empty THEN
    `sign_request` SHALL throw `std::invalid_argument`.
-6. WHEN `cfg.use_instance_principal` is `true` THEN signing SHALL instead use
-   the short-lived certificate and private key obtained from the local
-   instance metadata service (`http://169.254.169.254/opc/v2/identity/...`,
-   confirmed by Task 0), refreshed automatically before its documented
-   expiry. The exact refresh cadence and endpoint set SHALL be recorded in
-   `spike-notes.md`.
+6. WHEN `cfg.use_instance_principal` is `true` THEN signing SHALL use a
+   **federated security token**, not the instance certificate directly
+   (**corrected by Task 0(b)** — `spike-notes.md` Finding 16). The flow is:
+   read `/instance/region`, `/identity/cert.pem`, `/identity/key.pem` and
+   `/identity/intermediate.pem` from `http://169.254.169.254/opc/v2`
+   (overridable via `OCI_METADATA_BASE_URL`); generate an **ephemeral session
+   key pair**; exchange the leaf certificate for a security token at the Auth
+   service's X.509 federation endpoint, signing that exchange with
+   `keyId = "{tenancy}/fed-x509-sha256/{fingerprint}"`; then sign ordinary API
+   requests with the **session** private key and `keyId = "ST$" + token`,
+   renewing whenever the token is no longer valid. The canonical string itself
+   is unchanged from the API-key path.
 7. An `oci_http_client` component (`include/raft/oci_http_client.hpp`) SHALL
    wrap `httplib::Client` (the same library `acme_certificate_provider`
    already depends on) and expose:
@@ -358,10 +364,13 @@ process restart, exactly as the AWS managers already do via EC2 tags.
    | `kythira-group` | `{availability_domain}` |
    | `kythira-managed-by` | `kythira-oci-instance-pool-quorum-manager` |
 
-   (OCI freeform tag *keys* disallow the colon character `raft`/AWS tags use
-   (`kythira:cluster`); this spec uses a hyphen (`kythira-cluster`) instead —
-   confirm the exact allowed character set during Task 0's spike and adjust
-   if the assumption above is wrong.)
+   (**Corrected by Task 0(d)** — `spike-notes.md` Finding 13. This spec
+   originally claimed OCI freeform tag *keys* disallow the colon that the
+   AWS tags use, and chose hyphens for that reason. Probed against a live
+   tenancy, the colon is **accepted**; only `.` and space are rejected. The
+   hyphens are kept regardless — the tag key is the manager's lookup key, so
+   renaming it would orphan every already-tagged instance at once — but the
+   stated reason was false and is corrected here rather than left to mislead.)
 2. Because `UpdateInstance` **replaces** the freeform tag map rather than
    merging into it, every tag-writing call SHALL first read the instance's
    current `freeformTags` via `GetInstance`, merge in the new/changed keys
@@ -819,11 +828,21 @@ that **no official local OCI emulator equivalent to LocalStack exists**.
     not masked as a stockout — matching
     `is_insufficient_capacity()`'s contract in the AWS harness.
 
-    OCI signals this condition with an `Out of host capacity` /
-    `OutOfHostCapacity` error rather than AWS's
-    `InsufficientInstanceCapacity`; Task 0's spike SHALL record the exact
-    code and message shape (`spike-notes.md`), since the classifier is a
-    string match and cannot be written correctly from inspection alone.
+    **Recorded by Task 0(g)** (`spike-notes.md` Finding 14), provoked against
+    a live tenancy rather than guessed:
+
+    ```
+    status:  500
+    code:    InternalError
+    message: Out of host capacity.
+    ```
+
+    The `code` is **useless as a classifier** — this requirement previously
+    anticipated `OutOfHostCapacity`, but the real code is the generic
+    `InternalError`, shared with ordinary transient failures, so matching on
+    it would treat every 500 as a stockout. The classifier MUST match the
+    message string `Out of host capacity.` (trailing period included). That is
+    precisely the fragility this requirement warned of.
     This matters: the GCP suite's first scheduled run after enablement
     (2026-08-03) failed outright on precisely this class of error —
     `[ZONE_RESOURCE_POOL_EXHAUSTED] The zone 'us-central1-c' does not have
@@ -854,17 +873,21 @@ the `aws` job.
    `REAL_CLOUD_TESTS_OCI_CERTIFICATES_ENABLED` bundle-level variables gate
    each test binary independently, mirroring
    `REAL_CLOUD_TESTS_AWS_EC2_QUORUM_ENABLED`.
-2. CI authentication SHALL use OCI's native workload-identity federation for
-   GitHub Actions OIDC (OCI supports federating an external OIDC identity
-   provider — including GitHub's — to a Dynamic Group without long-lived
-   API keys stored as CI secrets), confirmed and documented precisely by
-   Task 0's spike rather than assumed, mirroring the `aws` job's OIDC role
-   assumption but adapted to OCI's Dynamic Group + Policy model (Glossary).
-   If the spike finds no such mechanism currently available, the fallback
-   SHALL be a long-lived API key stored as a CI secret with the same
-   security caveat AWS's design explicitly avoided — a decision requiring
-   explicit sign-off in `spike-notes.md`, not a silent regression from the
-   AWS job's stronger posture.
+2. CI authentication SHALL use OCI IAM **Workload Identity Federation**
+   (**confirmed by Task 0(f)** — `spike-notes.md` Finding 17): the job
+   exchanges its GitHub Actions OIDC JWT, plus a locally generated public key,
+   for a short-lived **User Principal Session Token** (UPST) via the Token
+   Exchange grant, then signs OCI API calls with the matching private key. **No
+   long-lived API key is stored, and the fallback this requirement previously
+   allowed is therefore not needed** — nor is the sign-off that fallback would
+   have required.
+
+   This requirement originally described the mechanism as federation "adapted
+   to OCI's Dynamic Group + Policy model". That is the wrong model: WIF is an
+   *identity-domain* mechanism issuing a **User** Principal Session Token, so
+   policy is written against a user/group principal. Dynamic Groups remain
+   correct for the *certificate authority* resource principal (Finding 12); the
+   two mechanisms coexist and must not be conflated.
 3. A `scripts/ci-cloud-credentials/oci/` directory SHALL be added, mirroring
    `scripts/ci-cloud-credentials/aws/`'s shape: a provisioning script for
    CI's own federated identity, a `policies/` directory holding IAM Policy
