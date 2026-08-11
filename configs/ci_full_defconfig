@@ -29,11 +29,13 @@
 # (--x-feature=gcp), so this defconfig under strict mode cannot pass on the
 # main legs as things stand.
 #
-# Intended for use with -DKYTHIRA_KCONFIG_STRICT=ON so CI fails fast if a
-# dependency silently stops being installable in the CI image, per Requirement
-# 5.1. Note that as of August 10, 2026 nothing in ci.yml passes either
-# -DKYTHIRA_KCONFIG or -DKYTHIRA_KCONFIG_STRICT, so that intent is not yet
-# realised — see doc/TODO.md.
+# Every CMake-configuring job in ci.yml passes -DKYTHIRA_KCONFIG= this file
+# (and installs kconfiglib so the flag takes effect — cmake/Kconfig.cmake
+# FATAL_ERRORs on an explicit flag it cannot apply), so CI and a
+# kconfiglib-equipped local machine resolve the same feature set from the
+# same command. -DKYTHIRA_KCONFIG_STRICT=ON is still not passed anywhere:
+# the GCP_SDK default-y trap above means strict mode cannot pass on the
+# main legs as things stand, per Requirement 5.1 — see doc/TODO.md.
 CONFIG_EDHOC=y
 CONFIG_STDEXEC_BACKEND=y
 CONFIG_BOOST_FUTURE_BACKEND=y

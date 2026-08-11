@@ -1248,6 +1248,17 @@ unverified completion claim.
     defaults `y` while `--x-feature=gcp` runs only in the dedicated GCP job.
     Whatever fixes this has to reconcile the defconfig with what each job
     actually installs, per job — it is not a one-line edit.
+  - **Update August 11, 2026: the dead-config half is fixed.** Every
+    CMake-configuring job in `ci.yml` (the four Build & Test legs, GCP SDK
+    Build, Coverage, ThreadSanitizer, both Full-suite legs) now installs
+    kconfiglib and passes `-DKYTHIRA_KCONFIG=configs/ci_full_defconfig`, so
+    CI and a kconfiglib-equipped local machine resolve the same feature set
+    from the same configure command. `cmake/Kconfig.cmake` now `FATAL_ERROR`s
+    when an explicitly passed config file cannot be applied (kconfiglib
+    missing), so a job that misses the pip install fails at configure instead
+    of silently reverting to autodetect. **Strict mode remains unwired** —
+    reconciling `GCP_SDK`'s default-`y` with what each job installs is still
+    the blocker for Requirement 5.1, exactly as described above.
 - **`CONFIG_PROTOBUF_SERIALIZER` did nothing — FIXED August 10, 2026.** The
   Kconfig gate is applied (`CMakeLists.txt:394`) but the *enabling* condition
   at `:512` is `if(Protobuf_FOUND)`, and `Protobuf_FOUND` is already set by the

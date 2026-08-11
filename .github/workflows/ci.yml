@@ -119,6 +119,11 @@ jobs:
       - name: Install Python tools
         run: |
           pip3 install --user "clang-format==22.1.5"
+          # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect.
+          # Without it cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag
+          # rather than silently resolving a different feature set than the
+          # one named (autodetect mode) — see that file's header comment.
+          pip3 install --user -r scripts/kconfig/requirements.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
@@ -216,6 +221,7 @@ jobs:
           cmake -B build-fmt -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }}
 
       - name: Check formatting
@@ -258,6 +264,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -377,6 +384,11 @@ jobs:
           echo "::error::apt-get install failed after 3 attempts" >&2
           exit 1
 
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
       - name: Resolve vcpkg triplet
         id: triplet
         run: echo "value=x64-linux" >> "$GITHUB_OUTPUT"
@@ -435,6 +447,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/${{ steps.triplet.outputs.value }} \
             -DKYTHIRA_GCP_REAL_TESTS=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
@@ -520,6 +533,11 @@ jobs:
             automake \
             libtool
 
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
       # Required to build the lakers (EDHOC) overlay port's ffi/ crate from
       # source (vcpkg's "edhoc" feature below) — see the identical step in
       # build-and-test for why this is pinned explicitly.
@@ -603,9 +621,14 @@ jobs:
 
       - name: Configure (Coverage)
         run: |
+          # -DENABLE_COVERAGE=ON on the command line wins over the defconfig's
+          # CONFIG_COVERAGE=n (the root CMakeLists.txt documents the
+          # precedence at its KCONFIG_COVERAGE block), so the explicit
+          # feature set and coverage instrumentation compose.
           cmake -B build-coverage -G Ninja \
             -DENABLE_COVERAGE=ON \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_CXX_COMPILER=clang++-18 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
@@ -856,6 +879,11 @@ jobs:
           echo "::error::apt-get install failed after 3 attempts" >&2
           exit 1
 
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -928,6 +956,7 @@ jobs:
           cmake -B build-tsan -G Ninja \
             -DKYTHIRA_SANITIZER=thread \
             -DCMAKE_CXX_COMPILER=g++-13 \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
       - name: Assert ThreadSanitizer was requested
@@ -1132,6 +1161,11 @@ jobs:
           echo "::error::apt-get install failed after 3 attempts" >&2
           exit 1
 
+      # kconfiglib, so the -DKYTHIRA_KCONFIG= below actually takes effect
+      # (cmake/Kconfig.cmake FATAL_ERRORs on the explicit flag without it).
+      - name: Install kconfiglib
+        run: pip3 install --user -r scripts/kconfig/requirements.txt
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -1212,6 +1246,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=g++-13 \
             -DKYTHIRA_DEFAULT_FUTURE_BACKEND=${{ matrix.backend }} \
+            -DKYTHIRA_KCONFIG=configs/ci_full_defconfig \
             -DKYTHIRA_TEST_TIMEOUT_SCALE=4 \
             -DCMAKE_PREFIX_PATH=${{ github.workspace }}/vcpkg_installed/x64-linux
 
