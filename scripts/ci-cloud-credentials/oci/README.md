@@ -235,9 +235,15 @@ Now run stages 3-4, then stage 6.
 ### 6. Certificate Authority (only for the `certificates` bundle)
 
 A CA requires a Vault and a master encryption key — a dependency that is not
-obvious from the CA documentation, and **the one part of this setup that bills
-while idle**. If the certificates bundle is not worth a standing charge, enable
-only `instance-pool`; the per-bundle toggle exists for exactly this.
+obvious from the CA documentation. Despite appearances, **the whole
+certificates setup has a standing cost of zero**: a `DEFAULT` vault has no
+charge of its own, key versions are USD 0/month (Oracle price list SKU B92092
+"Key Versions"), and no Certificates SKU exists at all. Confirmed empirically:
+COST and USAGE queries covering a live campaign against this setup returned no
+row for Key Management or Certificates. The one real cost hazard is the vault
+type — `VIRTUAL_PRIVATE` is a dedicated HSM partition at USD 3.724/hour
+(~USD 2,700/month), billed while idle. Use `DEFAULT`. The per-bundle toggle
+still lets you enable only `instance-pool` when certificates aren't needed.
 
 Three things to get right, each of which costs a full create cycle to discover:
 
